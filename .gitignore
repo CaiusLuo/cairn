@@ -1,0 +1,22 @@
+# Ignore virtual environment directories
+.env
+
+# Ignore Python bytecode files
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Ignore Python test and coverage files
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Ignore Build and distribution directories
+build/
+dist/
+
+# Ignore litellm specific files
+.litellm/
+litellm_cache/

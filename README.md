@@ -1,0 +1,1 @@
+A cairn marks the path for whoever comes next. So does a harness.
