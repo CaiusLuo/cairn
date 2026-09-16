@@ -8,3 +8,8 @@ class Message(BaseModel):
 
 class LLMResponse(BaseModel):
     content: str
+
+class ToolResult(BaseModel):
+    stdout: str = ""
+    stderr: str = ""
+    exit_code: int
