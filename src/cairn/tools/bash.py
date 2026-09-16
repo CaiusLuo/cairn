@@ -33,7 +33,6 @@ class BashTool:
                     "additionalProperties": False
                 }
             },
-            "required": ["command"]
         }
 
     async def execute(
