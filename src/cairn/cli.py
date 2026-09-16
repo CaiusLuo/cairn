@@ -6,11 +6,14 @@ from cairn.models import Message
 
 from cairn.llm.litellm_client import LiteLLMClient
 from cairn.ui import print_banner
+from cairn.state import AgentState
 
 async def main():
     load_dotenv()
 
     print_banner()
+
+    state = AgentState()
 
     model = os.getenv("CAIRN_LLM_MODEL")
     if not model:
@@ -30,20 +33,19 @@ async def main():
         api_base=base_url
     )
 
+    state.add_system_message("You are Cairn, a personal agent.")
+
     while True:
         user_input = input("cairn> ").strip()
 
         if user_input.lower() in ['/exit', '/quit']:
             break
 
-        messages = [
-            Message(
-                role="user", 
-                content=user_input
-            )
-        ]
+        state.add_user_message(user_input)
 
-        response = await client.generate(messages=messages)
+        response = await client.generate(messages=state.messages)
+
+        state.add_assistant_message(response.content)
 
         print(f"Cairn> {response.content}\n")
 
