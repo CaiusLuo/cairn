@@ -15,7 +15,12 @@ async def run_turn(
         *agent.state.messages
     ]
 
-    response = await agent.llm.generate(messages)
+    response = await agent.llm.generate(
+        messages,
+        tools=agent.tools.schemas(),
+    )
+
+    print(f"DEBUG: LLM response: {response}")
 
     agent.state.add_assistant_message(
         response.content

@@ -2,11 +2,14 @@ import asyncio
 import os
 
 from dotenv import load_dotenv
+from pathlib import Path
 
 from cairn.llm.litellm_client import LiteLLMClient
 from cairn.ui import print_banner
 from cairn.loop import run_turn
 from cairn.agent import Agent
+from cairn.tools.registry import ToolRegistry
+from cairn.tools.bash import BashTool
 
 async def main():
     load_dotenv()
@@ -25,12 +28,21 @@ async def main():
     if not base_url:
         raise ValueError("CAIRN_BASE_URL environment variable is not set.")
 
+    registry = ToolRegistry()
+
+    registry.register_tool(
+        BashTool(
+            cwd=Path.cwd()
+        )
+    )
+
     agent=Agent(
         llm=LiteLLMClient(
             model=model, 
             api_key=api_key, 
             api_base=base_url
-        )
+        ),
+        tools=registry,
     )
 
     while True:
@@ -41,7 +53,7 @@ async def main():
 
         response = await run_turn(
             agent,
-            user_input=user_input
+            user_input=user_input,
         )
 
         print(f"Cairn> {response}\n")

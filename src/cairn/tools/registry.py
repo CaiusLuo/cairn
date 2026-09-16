@@ -20,7 +20,7 @@ class ToolRegistry:
 
         return tool
 
-    def schema(self) -> dict[str, Any]:
+    def schemas(self) -> dict[str, Any]:
         return [
             tool.schema()
             for tool in self.tools.values()
