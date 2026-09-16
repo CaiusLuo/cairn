@@ -20,13 +20,3 @@ class AgentState(BaseModel):
                 content=content
             )
         )
-
-    # TODO: It may limit the system message to being 
-    # initialized only once or must be at the front
-    def add_system_message(self, content: str) -> None:
-        self.messages.append(
-            Message(
-                role="system", 
-                content=content
-            )
-        )
