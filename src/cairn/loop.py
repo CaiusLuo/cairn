@@ -1,3 +1,5 @@
+import json
+
 from cairn.agent import Agent
 from cairn.models import Message
 
@@ -7,23 +9,50 @@ async def run_turn(
     ) -> str:
     agent.state.add_user_message(user_input)
 
-    messages = [
-        Message(
-            role="system", 
-            content=agent.system_prompt
-        ),
-        *agent.state.messages
-    ]
+    while True:
 
-    response = await agent.llm.generate(
-        messages,
-        tools=agent.tools.schemas(),
-    )
+        messages = [
+            Message(
+                role="system", 
+                content=agent.system_prompt
+            ),
+            *agent.state.messages
+        ]
 
-    print(f"DEBUG: LLM response: {response}")
+        response = await agent.llm.generate(
+            messages,
+            tools=agent.tools.schemas(),
+        )
 
-    agent.state.add_assistant_message(
-        response.content
-    )
+        agent.state.add_assistant_message(
+            response.content,
+            tool_calls=response.tool_calls,
+        )
 
-    return response.content
+        if not response.tool_calls:
+            return response.content or ""
+
+        for tool_call in response.tool_calls:
+            print(
+                f"[tool] {tool_call.name} "
+                f"{tool_call.arguments}"
+            )
+
+            result = await agent.tools.execute(
+                name=tool_call.name,
+                arguments=tool_call.arguments,
+            )
+
+            print(
+                f"[result] exit_code={result.exit_code} "
+            )
+
+            tool_content = json.dumps(
+                result.model_dump(),
+                ensure_ascii=False,
+            )
+
+            agent.state.add_tool_message(
+                tool_call_id=tool_call.id,
+                content=tool_content,
+            )

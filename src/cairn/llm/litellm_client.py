@@ -15,6 +15,37 @@ class LiteLLMClient:
         self.api_key = api_key
         self.api_base = api_base
 
+    def _to_llm_message(
+            self, 
+            message: Message,
+        ) -> dict:
+            result = {
+                "role": message.role,
+                "content": message.content,
+            }
+    
+            if message.tool_call_id is not None:
+                result["tool_call_id"] = message.tool_call_id
+    
+            if message.tool_calls:
+                result["tool_calls"] = [
+                    {
+                        "id": tool_call.id,
+                        "name": "function",
+                        "function": {
+                            "name": tool_call.name,
+                            "arguments": json.dumps(
+                                tool_call.arguments,
+                                ensure_ascii=False,
+                            ),
+                        }
+                    }
+                    for tool_call in message.tool_calls
+                ]
+    
+            return result
+    
+
     async def generate(
             self,
             messages: list[Message],
@@ -22,7 +53,7 @@ class LiteLLMClient:
     ) -> LLMResponse:
         
         lite_messages = [
-            message.model_dump()
+            self._to_llm_message(message)
             for message in messages
         ]
 

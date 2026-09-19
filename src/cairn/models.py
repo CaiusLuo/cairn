@@ -2,17 +2,29 @@ from typing import Literal, Any
 
 from pydantic import BaseModel, Field
 
-class Message(BaseModel):
-    role: Literal["system", "user", "assistant"]
-    content: str
-
 class ToolCall(BaseModel):
     id: str
     name: str
     arguments: dict[str, Any]
 
+class Message(BaseModel):
+    role: Literal[
+        "system", 
+        "user", 
+        "assistant",
+        "tool",
+    ]
+
+    content: str | None = None
+    tool_call_id: str | None = None
+
+    tool_calls: list[ToolCall] = Field(
+        default_factory=list
+    )
+
 class LLMResponse(BaseModel):
-    content: str
+    content: str | None = None
+
     tool_calls: list[ToolCall] = Field(
         default_factory=list
     )
