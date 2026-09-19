@@ -11,7 +11,7 @@ from cairn.agent import Agent
 from cairn.tools.registry import ToolRegistry
 from cairn.tools.bash import BashTool
 
-async def main():
+async def main() -> None:
     load_dotenv()
 
     print_banner()
