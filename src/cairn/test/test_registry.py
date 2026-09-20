@@ -13,7 +13,7 @@ async def main():
         )
     )
 
-    print(registry.schema())
+    print(registry.schemas())
 
     result = await registry.execute(
         "bash",

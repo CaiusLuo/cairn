@@ -14,8 +14,6 @@ from cairn.tools.bash import BashTool
 async def main() -> None:
     load_dotenv()
 
-    print_banner()
-
     model = os.getenv("CAIRN_LLM_MODEL")
     if not model:
         raise ValueError("CAIRN_LLM_MODEL environment variable is not set.")
@@ -27,6 +25,8 @@ async def main() -> None:
     base_url = os.getenv("CAIRN_BASE_URL")
     if not base_url:
         raise ValueError("CAIRN_BASE_URL environment variable is not set.")
+
+    print_banner()
 
     registry = ToolRegistry()
 
@@ -49,6 +49,7 @@ async def main() -> None:
         user_input = input("cairn> ").strip()
 
         if user_input.lower() in ['/exit', '/quit']:
+            print("Goodbye! see you next time.")
             break
 
         response = await run_turn(

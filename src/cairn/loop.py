@@ -42,10 +42,27 @@ async def run_turn(
                 f"{tool_call.arguments}"
             )
 
-            result = await agent.tools.execute(
-                name=tool_call.name,
-                arguments=tool_call.arguments,
-            )
+            try:
+                result = await agent.tools.execute(
+                    name=tool_call.name,
+                    arguments=tool_call.arguments,
+                )
+
+            except Exception as exc:
+                tool_content = json.dumps(
+                    {
+                        "err": str(exc),
+                        "type": type(exc).__name__,
+                    },
+                    ensure_ascii=False,
+                )
+
+                agent.state.add_tool_message(
+                    tool_call_id=tool_call.id,
+                    content=tool_content,
+                )
+
+                continue
 
             print(
                 f"[result] exit_code={result.exit_code} "
