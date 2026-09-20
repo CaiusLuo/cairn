@@ -1,4 +1,4 @@
-from cairn.events import Event
+from cairn.core.events import Event
 
 
 def test_event():

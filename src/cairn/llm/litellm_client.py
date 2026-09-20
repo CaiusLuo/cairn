@@ -1,8 +1,8 @@
 import json
 from litellm import acompletion
 
-from cairn.models import LLMResponse, Message
-from cairn.models import ToolCall
+from cairn.core.models import LLMResponse, Message
+from cairn.core.models import ToolCall
 
 class LiteLLMClient:
     def __init__(

@@ -1,7 +1,7 @@
 from typing import Any
 
 from cairn.tools.base import Tool
-from cairn.models import ToolResult
+from cairn.core.models import ToolResult
 
 class ToolRegistry:
     def __init__(self):

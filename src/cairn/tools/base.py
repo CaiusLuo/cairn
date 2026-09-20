@@ -1,6 +1,6 @@
 from typing import Protocol, Any
 
-from cairn.models import ToolResult
+from cairn.core.models import ToolResult
 
 class Tool(Protocol):
     name: str

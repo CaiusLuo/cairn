@@ -1,7 +1,7 @@
 from cairn.llm.base import LLMClient
-from cairn.state import AgentState
+from cairn.core.state import AgentState
 from cairn.tools.registry import ToolRegistry
-from cairn.events import Event, EventHandler
+from cairn.core.events import Event, EventHandler
 
 DEFAULT_SYSTEM_PROMPT = """
 You are Cairn, a personal agent.

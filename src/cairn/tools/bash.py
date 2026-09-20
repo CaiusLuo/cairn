@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from cairn.models import ToolResult
+from cairn.core.models import ToolResult
 
 class BashTool:
     name = "bash"

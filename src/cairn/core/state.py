@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 
-from cairn.models import Message, ToolCall
+from cairn.core.models import Message, ToolCall
 
 class AgentState(BaseModel):
     messages: list[Message] = Field(default_factory=list)

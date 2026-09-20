@@ -1,7 +1,7 @@
 import json
 
-from cairn.agent import Agent
-from cairn.models import Message
+from cairn.core.agent import Agent
+from cairn.core.models import Message
 
 MAX_STEPS = 20
 

@@ -1,6 +1,6 @@
 from typing import Protocol
 
-from cairn.models import LLMResponse, Message
+from cairn.core.models import LLMResponse, Message
 
 class LLMClient(Protocol):
     def generate(
