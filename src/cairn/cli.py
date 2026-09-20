@@ -7,7 +7,8 @@ from pathlib import Path
 from cairn.llm.litellm_client import LiteLLMClient
 from cairn.ui import (
     print_banner, 
-    console_event_handler
+    console_event_handler,
+    print_assistant_response,
 )
 from cairn.core.loop import run_turn
 from cairn.core.agent import Agent
@@ -61,7 +62,7 @@ async def main() -> None:
             user_input=user_input,
         )
 
-        print(f"Cairn> {response}\n")
+        print_assistant_response(response)
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -2,9 +2,16 @@ from importlib.resources import files
 
 from rich.console import Console
 
+from rich.markdown import Markdown
+
 from cairn.core.events import Event
 
 console = Console()
+
+def print_assistant_response(content: str) -> None:
+    console.print("[bold]Cairn>[/bold]")
+    console.print(Markdown(content))
+    console.print()
 
 def print_banner() -> None:
     console.print(
