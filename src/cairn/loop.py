@@ -3,13 +3,17 @@ import json
 from cairn.agent import Agent
 from cairn.models import Message
 
+MAX_STEPS = 20
+
 async def run_turn(
         agent: Agent, 
         user_input: str
     ) -> str:
     agent.state.add_user_message(user_input)
 
-    while True:
+    for step in range(MAX_STEPS):
+
+        print(f"[step] {step + 1}/ {MAX_STEPS}")
 
         messages = [
             Message(
@@ -56,3 +60,7 @@ async def run_turn(
                 tool_call_id=tool_call.id,
                 content=tool_content,
             )
+
+    raise RuntimeError(
+        f"Agent exceeded maximum steps: {MAX_STEPS}"  
+    )
