@@ -5,7 +5,10 @@ from dotenv import load_dotenv
 from pathlib import Path
 
 from cairn.llm.litellm_client import LiteLLMClient
-from cairn.ui import print_banner
+from cairn.ui import (
+    print_banner, 
+    console_event_handler
+)
 from cairn.core.loop import run_turn
 from cairn.core.agent import Agent
 from cairn.tools.registry import ToolRegistry
@@ -43,6 +46,7 @@ async def main() -> None:
             api_base=base_url
         ),
         tools=registry,
+        event_handler=console_event_handler
     )
 
     while True:
