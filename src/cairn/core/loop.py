@@ -2,18 +2,27 @@ import json
 
 from cairn.core.agent import Agent
 from cairn.core.models import Message
+from cairn.core.events import Event
 
-MAX_STEPS = 20
 
 async def run_turn(
         agent: Agent, 
-        user_input: str
+        user_input: str,
+        max_steps: int = 20,
     ) -> str:
     agent.state.add_user_message(user_input)
 
-    for step in range(MAX_STEPS):
+    for step in range(max_steps):
 
-        print(f"[step] {step + 1}/ {MAX_STEPS}")
+        agent.emit(
+            Event(
+                type="agent_step",
+                data={
+                    "step": step + 1,
+                    "max_steps": max_steps,
+                },
+            )
+        )
 
         messages = [
             Message(
@@ -34,12 +43,27 @@ async def run_turn(
         )
 
         if not response.tool_calls:
+            agent.emit(
+                Event(
+                    type="agent_finish",
+                    data={
+                        "content": response.content,
+                        "step": step + 1,
+                    }
+                )
+            )
+
             return response.content or ""
 
         for tool_call in response.tool_calls:
-            print(
-                f"[tool] {tool_call.name} "
-                f"{tool_call.arguments}"
+            agent.emit(
+                Event(
+                    type="tool_call",
+                    data={
+                        "tool": tool_call.name,
+                        "arguments": tool_call.arguments,
+                    },
+                )
             )
 
             try:
@@ -49,6 +73,17 @@ async def run_turn(
                 )
 
             except Exception as exc:
+                agent.emit(
+                    Event(
+                        type="tool_error",
+                        data={
+                            "tool": tool_call.name,
+                            "error": str(exc),
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+                )
+
                 tool_content = json.dumps(
                     {
                         "err": str(exc),
@@ -64,8 +99,16 @@ async def run_turn(
 
                 continue
 
-            print(
-                f"[result] exit_code={result.exit_code} "
+            agent.emit(
+                Event(
+                    type="tool_result",
+                    data={
+                        "tool": tool_call.name,
+                        "exit_code": result.exit_code,
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                    },
+                )
             )
 
             tool_content = json.dumps(
@@ -78,6 +121,15 @@ async def run_turn(
                 content=tool_content,
             )
 
+    agent.emit(
+               Event(
+                    type="agent_step_limit",
+                    data={
+                         "max_steps": max_steps,
+                    },
+               )
+           )
+    
     raise RuntimeError(
-        f"Agent exceeded maximum steps: {MAX_STEPS}"  
+       f"Agent exceeded maximum steps: {max_steps}"
     )

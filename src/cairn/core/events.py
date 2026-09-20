@@ -8,6 +8,7 @@ EventType = Literal[
     "tool_result",
     "tool_error",
     "agent_finish",
+    "agent_step_limit",
 ]
 
 class Event(BaseModel):
