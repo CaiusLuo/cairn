@@ -8,7 +8,10 @@ from rich.prompt import Confirm
 
 from cairn.core.events import Event
 
-from cairn.core.permissions import PermissionDecision
+from cairn.core.permissions import (
+    PermissionDecision,
+    check_permission,
+)
 
 from cairn.core.models import ToolCall
 
@@ -90,6 +93,12 @@ def console_event_handler(event: Event) -> None:
 def console_permission_handler(
         tool_call: ToolCall
     ) -> PermissionDecision:
+
+    decision = check_permission(tool_call)
+
+    if decision != PermissionDecision.ASK:
+        return decision
+
     console.print(
         f"\n[bold yellow]Permission required[/bold yellow]"
     )
@@ -113,9 +122,10 @@ def console_permission_handler(
         default=False,
     )
 
-    if allow: 
-        return PermissionDecision.ALLOW
-
-    return PermissionDecision.DENY
+    return (
+        PermissionDecision.ALLOW 
+        if allow else 
+        PermissionDecision.DENY
+    )
 
 
