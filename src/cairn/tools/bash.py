@@ -1,21 +1,19 @@
 import asyncio
 from pathlib import Path
+from typing import Any
 
 from cairn.core.models import ToolResult
+
 
 class BashTool:
     name = "bash"
     description = "Execute a shell command in the current workspace."
 
-    def __init__(
-            self, 
-            cwd: Path,
-            timeout: float = 30.0
-        ):
+    def __init__(self, cwd: Path, timeout: float = 30.0):
         self.cwd = cwd
         self.timeout = timeout
 
-    def schema(self) -> dict:
+    def schema(self) -> dict[str, Any]:
         return {
             "type": "function",
             "function": {
@@ -26,18 +24,18 @@ class BashTool:
                     "properties": {
                         "command": {
                             "type": "string",
-                            "description": "The shell command to execute."
+                            "description": "The shell command to execute.",
                         }
                     },
                     "required": ["command"],
-                    "additionalProperties": False
-                }
+                    "additionalProperties": False,
+                },
             },
         }
 
     async def execute(
         self,
-        arguments: dict
+        arguments: dict[str, Any],
     ) -> ToolResult:
         command = arguments["command"]
 
@@ -45,27 +43,24 @@ class BashTool:
             command,
             cwd=self.cwd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
         )
 
         try:
             stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=self.timeout
+                process.communicate(), timeout=self.timeout
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             process.kill()
             await process.communicate()
 
             return ToolResult(
-                stderr=f"Command '{command}' time out after {self.timeout}s", 
-                exit_code=-1
+                stderr=f"Command '{command}' time out after {self.timeout}s",
+                exit_code=-1,
             )
 
         return ToolResult(
             stdout=stdout.decode(),
             stderr=stderr.decode(),
-            exit_code=process.returncode
+            exit_code=await process.wait(),
         )
-
-

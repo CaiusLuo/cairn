@@ -1,8 +1,8 @@
-from cairn.llm.base import LLMClient
-from cairn.core.state import AgentState
-from cairn.tools.registry import ToolRegistry
 from cairn.core.events import Event, EventHandler
 from cairn.core.permissions import PermissionHandler
+from cairn.core.state import AgentState
+from cairn.llm.base import LLMClient
+from cairn.tools.registry import ToolRegistry
 
 DEFAULT_SYSTEM_PROMPT = """
 You are Cairn, a personal software engineering agent.
@@ -15,15 +15,16 @@ When working on code:
 - Do not claim success without evidence.
 """
 
+
 class Agent:
     def __init__(
-            self,
-            llm: LLMClient,
-            tools: ToolRegistry,
-            system_prompt: str = DEFAULT_SYSTEM_PROMPT,
-            event_handler: EventHandler | None = None,
-            permission_handler: PermissionHandler | None = None
-        ) -> AgentState:
+        self,
+        llm: LLMClient,
+        tools: ToolRegistry,
+        system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        event_handler: EventHandler | None = None,
+        permission_handler: PermissionHandler | None = None,
+    ) -> None:
         self.llm = llm
         self.tools = tools
         self.system_prompt = system_prompt

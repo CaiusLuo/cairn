@@ -1,6 +1,5 @@
 import shlex
-
-from enum import Enum
+from enum import StrEnum
 from typing import Protocol
 
 from cairn.core.models import ToolCall
@@ -19,21 +18,21 @@ DENY_COMMANDS = {
     "sudo",
 }
 
-class PermissionDecision(str ,Enum):
+
+class PermissionDecision(StrEnum):
     ALLOW = "allow"
     DENY = "deny"
     ASK = "ask"
 
+
 class PermissionHandler(Protocol):
     def __call__(
-            self,
-            tool_call: ToolCall,
-    ) -> PermissionDecision:
-        ...
+        self,
+        tool_call: ToolCall,
+    ) -> PermissionDecision: ...
 
-def check_permission(
-        tool_call: ToolCall
-    ) -> PermissionDecision:
+
+def check_permission(tool_call: ToolCall) -> PermissionDecision:
     if tool_call.name != "bash":
         return PermissionDecision.ASK
 
@@ -60,17 +59,21 @@ def check_permission(
 
     if executable in SAFE_COMMANDS:
         return PermissionDecision.ALLOW
-    
+
     if executable in DENY_COMMANDS:
         return PermissionDecision.DENY
 
-    if executable == "git" and len(part) >= 2:
-        if part[1] in {
+    if (
+        executable == "git"
+        and len(part) >= 2
+        and part[1]
+        in {
             "status",
             "diff",
             "log",
             "show",
-        }:
-            return PermissionDecision.ALLOW
-        
+        }
+    ):
+        return PermissionDecision.ALLOW
+
     return PermissionDecision.ASK

@@ -1,22 +1,21 @@
 import json
 
 from cairn.core.agent import Agent
-from cairn.core.models import Message
 from cairn.core.events import Event
+from cairn.core.models import Message
 from cairn.core.permissions import (
     PermissionDecision,
 )
 
 
 async def run_turn(
-        agent: Agent, 
-        user_input: str,
-        max_steps: int = 20,
-    ) -> str:
+    agent: Agent,
+    user_input: str,
+    max_steps: int = 20,
+) -> str:
     agent.state.add_user_message(user_input)
 
     for step in range(max_steps):
-
         agent.emit(
             Event(
                 type="agent_step",
@@ -28,11 +27,8 @@ async def run_turn(
         )
 
         messages = [
-            Message(
-                role="system", 
-                content=agent.system_prompt
-            ),
-            *agent.state.messages
+            Message(role="system", content=agent.system_prompt),
+            *agent.state.messages,
         ]
 
         response = await agent.llm.generate(
@@ -52,7 +48,7 @@ async def run_turn(
                     data={
                         "content": response.content,
                         "step": step + 1,
-                    }
+                    },
                 )
             )
 
@@ -81,7 +77,7 @@ async def run_turn(
                         ensure_ascii=False,
                     )
 
-                    result = agent.state.add_tool_message (
+                    agent.state.add_tool_message(
                         tool_call_id=tool_call.id,
                         content=tool_content,
                     )
@@ -144,14 +140,12 @@ async def run_turn(
             )
 
     agent.emit(
-               Event(
-                    type="agent_step_limit",
-                    data={
-                         "max_steps": max_steps,
-                    },
-               )
-           )
-    
-    raise RuntimeError(
-       f"Agent exceeded maximum steps: {max_steps}"
+        Event(
+            type="agent_step_limit",
+            data={
+                "max_steps": max_steps,
+            },
+        )
     )
+
+    raise RuntimeError(f"Agent exceeded maximum steps: {max_steps}")

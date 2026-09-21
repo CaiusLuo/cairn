@@ -11,12 +11,11 @@ EventType = Literal[
     "agent_step_limit",
 ]
 
+
 class Event(BaseModel):
     type: EventType
-    data: dict[str, Any] = Field(
-        default_factory=dict
-    )
+    data: dict[str, Any] = Field(default_factory=dict)
+
 
 class EventHandler(Protocol):
-    async def handle_event(self, event: Event) -> None:
-        ...
+    def __call__(self, event: Event) -> None: ...

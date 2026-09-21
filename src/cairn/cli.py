@@ -1,20 +1,21 @@
 import asyncio
 import os
-
-from dotenv import load_dotenv
 from pathlib import Path
 
-from cairn.llm.litellm_client import LiteLLMClient
-from cairn.ui import (
-    print_banner, 
-    console_event_handler,
-    print_assistant_response,
-    console_permission_handler,
-)
-from cairn.core.loop import run_turn
+from dotenv import load_dotenv
+
 from cairn.core.agent import Agent
-from cairn.tools.registry import ToolRegistry
+from cairn.core.loop import run_turn
+from cairn.llm.litellm_client import LiteLLMClient
 from cairn.tools.bash import BashTool
+from cairn.tools.registry import ToolRegistry
+from cairn.ui import (
+    console_event_handler,
+    console_permission_handler,
+    print_assistant_response,
+    print_banner,
+)
+
 
 async def main() -> None:
     load_dotenv()
@@ -35,18 +36,10 @@ async def main() -> None:
 
     registry = ToolRegistry()
 
-    registry.register_tool(
-        BashTool(
-            cwd=Path.cwd()
-        )
-    )
+    registry.register_tool(BashTool(cwd=Path.cwd()))
 
-    agent=Agent(
-        llm=LiteLLMClient(
-            model=model, 
-            api_key=api_key, 
-            api_base=base_url
-        ),
+    agent = Agent(
+        llm=LiteLLMClient(model=model, api_key=api_key, api_base=base_url),
         tools=registry,
         event_handler=console_event_handler,
         permission_handler=console_permission_handler,
@@ -55,7 +48,7 @@ async def main() -> None:
     while True:
         user_input = input("cairn> ").strip()
 
-        if user_input.lower() in ['/exit', '/quit']:
+        if user_input.lower() in ["/exit", "/quit"]:
             print("Goodbye! see you next time.")
             break
 
@@ -66,5 +59,10 @@ async def main() -> None:
 
         print_assistant_response(response)
 
-if __name__ == "__main__":
+
+def cli() -> None:
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    cli()

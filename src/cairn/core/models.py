@@ -1,16 +1,18 @@
-from typing import Literal, Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
 
 class ToolCall(BaseModel):
     id: str
     name: str
     arguments: dict[str, Any]
 
+
 class Message(BaseModel):
     role: Literal[
-        "system", 
-        "user", 
+        "system",
+        "user",
         "assistant",
         "tool",
     ]
@@ -18,16 +20,14 @@ class Message(BaseModel):
     content: str | None = None
     tool_call_id: str | None = None
 
-    tool_calls: list[ToolCall] = Field(
-        default_factory=list
-    )
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+
 
 class LLMResponse(BaseModel):
     content: str | None = None
 
-    tool_calls: list[ToolCall] = Field(
-        default_factory=list
-    )
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+
 
 class ToolResult(BaseModel):
     stdout: str = ""

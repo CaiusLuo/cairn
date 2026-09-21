@@ -7,11 +7,14 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+.mypy_cache/
 .ruff_cache/
 
 # Ignore Python test and coverage files
 .pytest_cache/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 
 # Ignore Build and distribution directories

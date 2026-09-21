@@ -1,14 +1,12 @@
 from cairn.core.events import Event
 
 
-def test_event():
+def test_event() -> None:
     event = Event(
         type="tool_call",
         data={
             "tool": "bash",
-            "arguments": {
-                "command": "pwd"
-            },
+            "arguments": {"command": "pwd"},
         },
     )
 
