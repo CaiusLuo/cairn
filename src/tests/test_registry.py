@@ -5,7 +5,7 @@ from cairn.tools.registry import ToolRegistry
 from cairn.tools.bash import BashTool
 
 
-def test_duplicate_tool_raises():
+def test_duplicate_tool_raises() -> None:
     registry = ToolRegistry()
     bash_tool = BashTool(cwd=Path.cwd())
 
@@ -20,7 +20,7 @@ def test_duplicate_tool_raises():
     raise AssertionError("Expected ValueError was not raised")
 
 
-async def main():
+async def main() -> None:
     registry = ToolRegistry()
 
     registry.register_tool(
