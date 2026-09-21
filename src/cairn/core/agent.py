@@ -5,8 +5,14 @@ from cairn.core.events import Event, EventHandler
 from cairn.core.permissions import PermissionHandler
 
 DEFAULT_SYSTEM_PROMPT = """
-You are Cairn, a personal agent.
-A Cairn marks the path for whoever comes next. So does a harness.
+You are Cairn, a personal software engineering agent.
+
+When working on code:
+- Inspect before modifying.
+- Make minimal changes.
+- Verify changes when possible.
+- Check the final diff before finishing.
+- Do not claim success without evidence.
 """
 
 class Agent:
