@@ -12,7 +12,7 @@ class LiteLLMClient:
         model: str,
         api_key: str | None = None,
         api_base: str | None = None,
-    ):
+    ) -> None:
         self.model = model
         self.api_key = api_key
         self.api_base = api_base
@@ -52,7 +52,6 @@ class LiteLLMClient:
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
-
         lite_messages = [self._to_llm_message(message) for message in messages]
 
         response = await acompletion(

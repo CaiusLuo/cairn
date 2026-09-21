@@ -1,13 +1,12 @@
 import asyncio
 import builtins
-from collections.abc import Iterator
 
 import pytest
 
 import cairn.cli as cli_module
 from cairn.core.agent import Agent
 
-ENVIRONMENT = {
+ENVIRONMENT: dict[str, str] = {
     "CAIRN_LLM_MODEL": "provider/model",
     "CAIRN_LLM_API_KEY": "secret",
     "CAIRN_BASE_URL": "https://example.test/v1",
@@ -19,6 +18,17 @@ def _disable_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
         return False
 
     monkeypatch.setattr(cli_module, "load_dotenv", load_nothing)
+
+
+def _set_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    environment: dict[str, str],
+) -> None:
+    _disable_dotenv(monkeypatch)
+    for name in ENVIRONMENT:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
 
 
 @pytest.mark.parametrize(
@@ -40,11 +50,7 @@ def test_main_requires_configuration(
     environment: dict[str, str],
     message: str,
 ) -> None:
-    _disable_dotenv(monkeypatch)
-    for name in ENVIRONMENT:
-        monkeypatch.delenv(name, raising=False)
-    for name, value in environment.items():
-        monkeypatch.setenv(name, value)
+    _set_environment(monkeypatch, environment)
 
     with pytest.raises(ValueError, match=message):
         asyncio.run(cli_module.main())
@@ -54,9 +60,7 @@ def test_cli_entrypoint_starts_and_exits(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _disable_dotenv(monkeypatch)
-    for name, value in ENVIRONMENT.items():
-        monkeypatch.setenv(name, value)
+    _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     monkeypatch.setattr(builtins, "input", lambda _prompt: "/exit")
 
@@ -66,11 +70,9 @@ def test_cli_entrypoint_starts_and_exits(
 
 
 def test_main_runs_turn_and_prints_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    _disable_dotenv(monkeypatch)
-    for name, value in ENVIRONMENT.items():
-        monkeypatch.setenv(name, value)
+    _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
-    inputs: Iterator[str] = iter(("hello", "/quit"))
+    inputs = iter(("hello", "/quit"))
     monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
     responses: list[str] = []
 

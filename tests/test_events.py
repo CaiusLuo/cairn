@@ -1,7 +1,7 @@
 from cairn.core.events import Event
 
 
-def test_event() -> None:
+def test_event_preserves_type_and_data() -> None:
     event = Event(
         type="tool_call",
         data={

@@ -4,7 +4,6 @@ from typing import Any
 import pytest
 
 from cairn.core.models import ToolResult
-from cairn.tools.base import Tool
 from cairn.tools.registry import ToolRegistry
 
 
@@ -21,7 +20,7 @@ class EchoTool:
 
 def test_duplicate_tool_raises() -> None:
     registry = ToolRegistry()
-    tool: Tool = EchoTool()
+    tool = EchoTool()
 
     registry.register_tool(tool)
 
@@ -36,7 +35,7 @@ def test_get_missing_tool_raises() -> None:
 
 def test_registry_exposes_schemas_and_executes_tools() -> None:
     registry = ToolRegistry()
-    tool: Tool = EchoTool()
+    tool = EchoTool()
     registry.register_tool(tool)
 
     result = asyncio.run(

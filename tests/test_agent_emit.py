@@ -27,18 +27,16 @@ def test_agent_emit() -> None:
         event_handler=handler,
     )
 
-    agent.emit(
-        Event(
-            type="tool_call",
-            data={
-                "tool": "bash",
-                "arguments": {"command": "pwd"},
-            },
-        )
+    event = Event(
+        type="tool_call",
+        data={
+            "tool": "bash",
+            "arguments": {"command": "pwd"},
+        },
     )
+    agent.emit(event)
 
-    assert len(received) == 1
-    assert received[0].type == "tool_call"
+    assert received == [event]
 
 
 def test_agent_emit_without_handler_is_a_no_op() -> None:

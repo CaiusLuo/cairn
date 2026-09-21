@@ -31,14 +31,14 @@ sandbox, persistent memory, or background execution.
 
 ```text
 src/
-├── cairn/
-│   ├── core/          # Agent, loop, state, events, models, permissions
-│   ├── llm/           # LLM protocol and LiteLLM adapter
-│   ├── tools/         # Tool protocol, registry, and Bash tool
-│   ├── resources/     # Terminal banner
-│   ├── cli.py         # Interactive application wiring
-│   └── ui.py          # Rich output and permission prompts
-└── tests/             # Unit and behavior tests
+└── cairn/
+    ├── core/          # Agent, loop, state, events, models, permissions
+    ├── llm/           # LLM protocol and LiteLLM adapter
+    ├── tools/         # Tool protocol, registry, and Bash tool
+    ├── resources/     # Terminal banner
+    ├── cli.py         # Interactive application wiring
+    └── ui.py          # Rich output and permission prompts
+tests/                 # Unit and behavior tests
 ```
 
 Small protocols define the model-client, tool, event-handler, and
@@ -62,7 +62,7 @@ uv sync --locked --all-groups
 Create a local environment file:
 
 ```bash
-cp .env-example .env
+cp .env.example .env
 ```
 
 Set these values in `.env` for your provider:
@@ -100,13 +100,13 @@ Run the complete local quality suite:
 ```bash
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy src
-uv run pytest
+uv run mypy src tests
 uv run pytest --cov=cairn --cov-report=term-missing
 ```
 
-Coverage is measured with branch coverage and has an 80% project gate. GitHub
-Actions runs the same commands from a clean checkout.
+The coverage command runs the complete pytest suite, measures branch coverage,
+and enforces the 80% project gate. For a faster local test run without coverage,
+use `uv run pytest`. GitHub Actions runs the quality suite from a clean checkout.
 
 To apply the repository formatter locally:
 

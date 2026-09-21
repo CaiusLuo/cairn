@@ -1,7 +1,7 @@
-# Ignore virtual environment directories
+# Ignore local environment configuration
 .env
 
-# Ignore Python bytecode files
+# Ignore Python environments and bytecode files
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -17,10 +17,10 @@ venv/
 coverage.xml
 htmlcov/
 
-# Ignore Build and distribution directories
+# Ignore build and distribution directories
 build/
 dist/
 
-# Ignore litellm specific files
+# Ignore LiteLLM-specific files
 .litellm/
 litellm_cache/

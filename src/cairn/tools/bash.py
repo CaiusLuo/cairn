@@ -9,7 +9,7 @@ class BashTool:
     name = "bash"
     description = "Execute a shell command in the current workspace."
 
-    def __init__(self, cwd: Path, timeout: float = 30.0):
+    def __init__(self, cwd: Path, timeout: float = 30.0) -> None:
         self.cwd = cwd
         self.timeout = timeout
 

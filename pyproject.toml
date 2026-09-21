@@ -12,7 +12,6 @@ dependencies = [
     "pydantic>=2.13.5",
     "python-dotenv>=1.2.3",
     "rich>=15.0.0",
-    "typer>=0.27.2",
 ]
 
 [project.scripts]
@@ -47,7 +46,7 @@ pretty = true
 
 [tool.pytest.ini_options]
 addopts = ["--strict-config", "--strict-markers"]
-testpaths = ["src/tests"]
+testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
