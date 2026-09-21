@@ -9,6 +9,7 @@ from cairn.ui import (
     print_banner, 
     console_event_handler,
     print_assistant_response,
+    console_permission_handler,
 )
 from cairn.core.loop import run_turn
 from cairn.core.agent import Agent
@@ -47,7 +48,8 @@ async def main() -> None:
             api_base=base_url
         ),
         tools=registry,
-        event_handler=console_event_handler
+        event_handler=console_event_handler,
+        permission_handler=console_permission_handler,
     )
 
     while True:

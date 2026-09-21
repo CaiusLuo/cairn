@@ -3,6 +3,7 @@ import json
 from cairn.core.agent import Agent
 from cairn.core.models import Message
 from cairn.core.events import Event
+from cairn.core.permissions import PermissionDecision
 
 
 async def run_turn(
@@ -65,6 +66,25 @@ async def run_turn(
                     },
                 )
             )
+
+            if agent.permission_handler is not None:
+                descision = agent.permission_handler(tool_call)
+
+                if descision == PermissionDecision.DENY:
+                    tool_content = json.dumps(
+                        {
+                            "error": "Permission denied by user.",
+                            "type": "PermissionDenied",
+                        },
+                        ensure_ascii=False,
+                    )
+
+                    result = agent.state.add_tool_message (
+                        tool_call_id=tool_call.id,
+                        content=tool_content,
+                    )
+
+                    continue
 
             try:
                 result = await agent.tools.execute(

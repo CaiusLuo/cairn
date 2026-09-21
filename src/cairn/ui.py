@@ -4,7 +4,13 @@ from rich.console import Console
 
 from rich.markdown import Markdown
 
+from rich.prompt import Confirm
+
 from cairn.core.events import Event
+
+from cairn.core.permissions import PermissionDecision
+
+from cairn.core.models import ToolCall
 
 console = Console()
 
@@ -80,3 +86,36 @@ def console_event_handler(event: Event) -> None:
                 f"Agent stopped after {max_steps} steps."
                 f"[/bold red]"
             )
+
+def console_permission_handler(
+        tool_call: ToolCall
+    ) -> PermissionDecision:
+    console.print(
+        f"\n[bold yellow]Permission required[/bold yellow]"
+    )
+
+    console.print(
+        f"[bold]Tool:[/bold] {tool_call.name}"
+    )
+
+    if tool_call.name == "bash":
+        command = tool_call.arguments.get("command")
+        console.print(
+            f"[bold]Command:[/bold] {command}"
+        )
+    else:
+        console.print(
+            f"[bold]Arguments:[/bold] {tool_call.arguments}"
+        )
+
+    allow = Confirm.ask(
+        "Allow this action?",
+        default=False,
+    )
+
+    if allow: 
+        return PermissionDecision.ALLOW
+
+    return PermissionDecision.DENY
+
+
