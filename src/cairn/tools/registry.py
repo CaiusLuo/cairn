@@ -8,6 +8,10 @@ class ToolRegistry:
         self.tools: dict[str, Tool] = {}
 
     def register_tool(self, tool: Tool) -> None:
+        if tool.name in self.tools:
+            raise ValueError(
+                f"Tool already registered: {tool.name}"
+            )
         self.tools[tool.name] = tool
 
     def get_tool(self, name: str) -> Tool:
