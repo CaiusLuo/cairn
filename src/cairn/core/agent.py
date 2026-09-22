@@ -2,6 +2,7 @@ from cairn.core.events import Event, EventHandler
 from cairn.core.permissions import PermissionHandler
 from cairn.core.state import AgentState
 from cairn.llm.base import LLMClient
+from cairn.observability.tracer import Tracer
 from cairn.tools.registry import ToolRegistry
 
 DEFAULT_SYSTEM_PROMPT = """
@@ -24,12 +25,14 @@ class Agent:
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         event_handler: EventHandler | None = None,
         permission_handler: PermissionHandler | None = None,
+        tracer: Tracer | None = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
         self.system_prompt = system_prompt
         self.event_handler = event_handler
         self.permission_handler = permission_handler
+        self.tracer = tracer
         self.state = AgentState()
 
     def emit(self, event: Event) -> None:

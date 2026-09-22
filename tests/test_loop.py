@@ -9,6 +9,8 @@ from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.core.models import LLMResponse, Message, ToolCall, ToolResult
 from cairn.core.permissions import PermissionDecision
+from cairn.observability.models import Span, SpanStatus
+from cairn.observability.tracer import Tracer
 from cairn.tools.base import Tool
 from cairn.tools.registry import ToolRegistry
 
@@ -45,6 +47,14 @@ class RecordingTool:
 class FailingTool(RecordingTool):
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
         raise RuntimeError("tool failed")
+
+
+class RecordingSink:
+    def __init__(self) -> None:
+        self.spans: list[Span] = []
+
+    def emit(self, span: Span) -> None:
+        self.spans.append(span)
 
 
 def _agent(
@@ -90,6 +100,28 @@ def test_run_turn_returns_direct_model_response() -> None:
     assert [message.role for message in agent.state.messages] == ["user", "assistant"]
     assert [event.type for event in events] == ["agent_step", "agent_finish"]
     assert llm.calls[0][0][0].role == "system"
+
+
+def test_run_turn_emits_root_trace() -> None:
+    sink = RecordingSink()
+    tracer = Tracer(sink)
+    llm = SequenceLLM([LLMResponse(content="done")])
+    agent = Agent(
+        llm=llm,
+        tools=ToolRegistry(),
+        tracer=tracer,
+    )
+
+    result = asyncio.run(run_turn(agent, "hello"))
+
+    assert result == "done"
+    assert len(sink.spans) == 1
+
+    span = sink.spans[0]
+
+    assert span.name == "agent.turn"
+    assert span.status == SpanStatus.OK
+    assert span.end_time is not None
 
 
 def test_run_turn_executes_tool_and_returns_follow_up() -> None:
@@ -167,3 +199,25 @@ def test_run_turn_emits_and_raises_at_step_limit() -> None:
         asyncio.run(run_turn(agent, "keep going", max_steps=1))
 
     assert events[-1] == Event(type="agent_step_limit", data={"max_steps": 1})
+
+
+def test_run_turn_marks_root_trace_as_error_at_step_limit() -> None:
+    sink = RecordingSink()
+    tracer = Tracer(sink)
+    llm = SequenceLLM([_tool_response()])
+    registry = ToolRegistry()
+    registry.register_tool(RecordingTool())
+    agent = Agent(
+        llm=llm,
+        tools=registry,
+        tracer=tracer,
+    )
+
+    with pytest.raises(RuntimeError, match="Agent exceeded maximum steps: 1"):
+        asyncio.run(run_turn(agent, "keep going", max_steps=1))
+
+    span = sink.spans[-1]
+
+    assert span.name == "agent.turn"
+    assert span.status == SpanStatus.ERROR
+    assert span.error is not None

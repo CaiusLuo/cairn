@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 from cairn.core.agent import Agent
 from cairn.core.loop import run_turn
 from cairn.llm.litellm_client import LiteLLMClient
+from cairn.observability.sinks import JsonlTraceSink
+from cairn.observability.tracer import Tracer
 from cairn.tools.bash import BashTool
 from cairn.tools.registry import ToolRegistry
 from cairn.ui import (
@@ -38,11 +40,14 @@ async def main() -> None:
 
     registry.register_tool(BashTool(cwd=Path.cwd()))
 
+    tracer = Tracer(JsonlTraceSink(Path(".cairn/traces")))
+
     agent = Agent(
         llm=LiteLLMClient(model=model, api_key=api_key, api_base=base_url),
         tools=registry,
         event_handler=console_event_handler,
         permission_handler=console_permission_handler,
+        tracer=tracer,
     )
 
     while True:
