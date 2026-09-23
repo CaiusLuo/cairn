@@ -29,6 +29,15 @@ class SequenceLLM:
         return self.responses.pop(0)
 
 
+class FailingLLM:
+    async def generate(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
+        raise RuntimeError("llm failed")
+
+
 class RecordingTool:
     name = "record"
     description = "Record arguments and return a deterministic result."
@@ -115,13 +124,49 @@ def test_run_turn_emits_root_trace() -> None:
     result = asyncio.run(run_turn(agent, "hello"))
 
     assert result == "done"
-    assert len(sink.spans) == 1
+    assert len(sink.spans) == 2
 
-    span = sink.spans[0]
+    llm_span = sink.spans[0]
+    turn_span = sink.spans[1]
 
-    assert span.name == "agent.turn"
-    assert span.status == SpanStatus.OK
-    assert span.end_time is not None
+    assert llm_span.name == "llm.generate"
+    assert llm_span.status == SpanStatus.OK
+
+    assert turn_span.name == "agent.turn"
+    assert turn_span.status == SpanStatus.OK
+
+    assert llm_span.context.trace_id == turn_span.context.trace_id
+    assert llm_span.context.parent_span_id == turn_span.context.span_id
+    assert llm_span.attributes["step"] == 1
+
+
+def test_run_turn_marks_llm_and_root_traces_as_error() -> None:
+    sink = RecordingSink()
+    tracer = Tracer(sink)
+    agent = Agent(
+        llm=FailingLLM(),
+        tools=ToolRegistry(),
+        tracer=tracer,
+    )
+
+    with pytest.raises(RuntimeError, match="llm failed"):
+        asyncio.run(run_turn(agent, "hello"))
+
+    assert len(sink.spans) == 2
+
+    llm_span = sink.spans[0]
+    turn_span = sink.spans[1]
+
+    assert llm_span.name == "llm.generate"
+    assert llm_span.status == SpanStatus.ERROR
+    assert llm_span.error == "RuntimeError: llm failed"
+
+    assert turn_span.name == "agent.turn"
+    assert turn_span.status == SpanStatus.ERROR
+    assert turn_span.error == "RuntimeError: llm failed"
+
+    assert llm_span.context.trace_id == turn_span.context.trace_id
+    assert llm_span.context.parent_span_id == turn_span.context.span_id
 
 
 def test_run_turn_executes_tool_and_returns_follow_up() -> None:

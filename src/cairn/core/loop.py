@@ -45,10 +45,44 @@ async def run_turn(
                 *agent.state.messages,
             ]
 
-            response = await agent.llm.generate(
-                messages,
-                tools=agent.tools.schemas(),
-            )
+            llm_span = None
+
+            tool_schemas = agent.tools.schemas()
+
+            if agent.tracer is not None and turn_span is not None:
+                llm_span = agent.tracer.start_child_span(
+                    turn_span,
+                    "llm.generate",
+                    attributes={
+                        "step": step + 1,
+                        "message_count": len(messages),
+                        "tool_schema_count": len(tool_schemas),
+                    },
+                )
+
+            try:
+                response = await agent.llm.generate(
+                    messages,
+                    tools=tool_schemas,
+                )
+
+            except Exception as exc:
+                if llm_span is not None and agent.tracer is not None:
+                    agent.tracer.end_span(
+                        llm_span,
+                        status=SpanStatus.ERROR,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                raise
+
+            else:
+                if llm_span is not None and agent.tracer is not None:
+                    llm_span.attributes["tool_call_count"] = len(response.tool_calls)
+                    llm_span.attributes["has_content"] = response.content is not None
+                    agent.tracer.end_span(
+                        llm_span,
+                        status=SpanStatus.OK,
+                    )
 
             agent.state.add_assistant_message(
                 response.content,

@@ -24,3 +24,6 @@ dist/
 # Ignore LiteLLM-specific files
 .litellm/
 litellm_cache/
+
+# Ignore local traces files
+.cairn/*
