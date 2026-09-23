@@ -2,11 +2,12 @@ import asyncio
 import os
 from pathlib import Path
 
+import typer
 from dotenv import load_dotenv
 
+from cairn.commands.trace import trace_app
 from cairn.core.agent import Agent
 from cairn.core.loop import run_turn
-from cairn.llm.litellm_client import LiteLLMClient
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.tracer import Tracer
 from cairn.tools.bash import BashTool
@@ -17,6 +18,18 @@ from cairn.ui import (
     print_assistant_response,
     print_banner,
 )
+
+app = typer.Typer(
+    invoke_without_command=True,
+)
+
+app.add_typer(trace_app, name="trace")
+
+
+@app.callback()
+def root(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is None:
+        asyncio.run(main())
 
 
 async def main() -> None:
@@ -33,6 +46,8 @@ async def main() -> None:
     base_url = os.getenv("CAIRN_BASE_URL")
     if not base_url:
         raise ValueError("CAIRN_BASE_URL environment variable is not set.")
+
+    from cairn.llm.litellm_client import LiteLLMClient
 
     print_banner()
 
@@ -65,9 +80,5 @@ async def main() -> None:
         print_assistant_response(response)
 
 
-def cli() -> None:
-    asyncio.run(main())
-
-
 if __name__ == "__main__":
-    cli()
+    app()

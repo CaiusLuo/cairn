@@ -1,10 +1,17 @@
 import asyncio
 import builtins
+from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 import cairn.cli as cli_module
+from cairn.cli import app
 from cairn.core.agent import Agent
+from cairn.observability.sinks import JsonlTraceSink
+from cairn.observability.tracer import Tracer
+
+runner = CliRunner()
 
 ENVIRONMENT: dict[str, str] = {
     "CAIRN_LLM_MODEL": "provider/model",
@@ -56,17 +63,17 @@ def test_main_requires_configuration(
         asyncio.run(cli_module.main())
 
 
-def test_cli_entrypoint_starts_and_exits(
+def test_cli_without_command_starts_and_exits(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     monkeypatch.setattr(builtins, "input", lambda _prompt: "/exit")
 
-    cli_module.cli()
+    result = runner.invoke(app, [])
 
-    assert "Goodbye! see you next time." in capsys.readouterr().out
+    assert result.exit_code == 0
+    assert "Goodbye! see you next time." in result.stdout
 
 
 def test_main_runs_turn_and_prints_response(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -94,3 +101,57 @@ def test_main_runs_turn_and_prints_response(monkeypatch: pytest.MonkeyPatch) -> 
     asyncio.run(cli_module.main())
 
     assert responses == ["reply to hello"]
+
+
+def _write_trace() -> str:
+    tracer = Tracer(JsonlTraceSink(Path(".cairn/traces")))
+    root = tracer.start_root_span("agent.turn")
+    child = tracer.start_child_span(root, "llm.generate")
+    tracer.end_span(child)
+    tracer.end_span(root)
+    return root.context.trace_id
+
+
+def test_trace_show_renders_trace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    trace_id = _write_trace()
+
+    result = runner.invoke(app, ["trace", "show", trace_id[:8]])
+
+    assert result.exit_code == 0
+    assert "agent.turn" in result.stdout
+    assert "llm.generate" in result.stdout
+
+
+def test_trace_show_reports_missing_trace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["trace", "show", "deadbeef"])
+
+    assert result.exit_code == 1
+    assert "Trace not found" in result.stdout
+
+
+def test_trace_show_does_not_require_llm_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _set_environment(monkeypatch, {})
+    trace_id = _write_trace()
+
+    async def unexpected_main() -> None:
+        pytest.fail("trace show initialized the agent runtime")
+
+    monkeypatch.setattr(cli_module, "main", unexpected_main)
+
+    result = runner.invoke(app, ["trace", "show", trace_id[:8]])
+
+    assert result.exit_code == 0
+    assert "agent.turn" in result.stdout

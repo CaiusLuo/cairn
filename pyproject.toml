@@ -12,10 +12,11 @@ dependencies = [
     "pydantic>=2.13.5",
     "python-dotenv>=1.2.3",
     "rich>=15.0.0",
+    "typer>=0.27.2",
 ]
 
 [project.scripts]
-cairn = "cairn.cli:cli"
+cairn = "cairn.cli:app"
 
 [build-system]
 requires = ["uv_build>=0.11.3,<0.12.0"]
