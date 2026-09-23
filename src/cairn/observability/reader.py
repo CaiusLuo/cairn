@@ -1,17 +1,18 @@
 from pathlib import Path
 
 from cairn.observability.models import Span
+from cairn.observability.resolver import TraceResolver
 
 
 class JsonlTraceReader:
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.resolver = TraceResolver(root)
 
     def read(self, trace_id: str) -> list[Span]:
-        if not trace_id or Path(trace_id).name != trace_id:
-            raise ValueError(f"Invalid trace ID: {trace_id}")
+        resolved_id = self.resolver.resolve(trace_id)
 
-        path = self.root / f"{trace_id}.jsonl"
+        path = self.root / f"{resolved_id}.jsonl"
 
         if not path.exists():
             raise FileNotFoundError(f"Trace not found: {trace_id}")
