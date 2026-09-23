@@ -170,10 +170,12 @@ def test_run_turn_marks_llm_and_root_traces_as_error() -> None:
 
 
 def test_run_turn_executes_tool_and_returns_follow_up() -> None:
+    sink = RecordingSink()
     events: list[Event] = []
     llm = SequenceLLM([_tool_response(), LLMResponse(content="finished")])
     tool = RecordingTool()
     agent = _agent(llm, tool, events)
+    agent.tracer = Tracer(sink)
 
     result = asyncio.run(run_turn(agent, "use the tool"))
 
@@ -197,6 +199,16 @@ def test_run_turn_executes_tool_and_returns_follow_up() -> None:
         "agent_step",
         "agent_finish",
     ]
+    tool_spans = [span for span in sink.spans if span.name == "tool.execute"]
+    assert len(tool_spans) == 1
+    tool_span = tool_spans[0]
+    assert tool_span.status == SpanStatus.OK
+    assert tool_span.attributes["tool"] == "record"
+    assert tool_span.attributes["tool_call_id"] == "call-1"
+    assert tool_span.attributes["exit_code"] == 0
+    assert tool_span.attributes["stdout_length"] == len("recorded")
+    turn_span = next(span for span in sink.spans if span.name == "agent.turn")
+    assert tool_span.context.parent_span_id == turn_span.context.span_id
 
 
 def test_run_turn_records_permission_denial_without_executing_tool() -> None:
@@ -290,9 +302,11 @@ def test_run_turn_ends_permission_span_once_when_handler_raises() -> None:
 
 
 def test_run_turn_records_tool_errors_and_continues() -> None:
+    sink = RecordingSink()
     events: list[Event] = []
     llm = SequenceLLM([_tool_response(), LLMResponse(content="recovered")])
     agent = _agent(llm, FailingTool(), events)
+    agent.tracer = Tracer(sink)
 
     result = asyncio.run(run_turn(agent, "run it"))
 
@@ -302,6 +316,12 @@ def test_run_turn_records_tool_errors_and_continues() -> None:
         "type": "RuntimeError",
     }
     assert any(event.type == "tool_error" for event in events)
+    tool_spans = [span for span in sink.spans if span.name == "tool.execute"]
+    assert len(tool_spans) == 1
+    assert tool_spans[0].status == SpanStatus.ERROR
+    assert tool_spans[0].error == "RuntimeError: tool failed"
+    turn_span = next(span for span in sink.spans if span.name == "agent.turn")
+    assert turn_span.status == SpanStatus.OK
 
 
 def test_run_turn_emits_and_raises_at_step_limit() -> None:

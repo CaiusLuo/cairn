@@ -172,6 +172,18 @@ async def run_turn(
 
                         continue
 
+                tool_span = None
+
+                if agent.tracer is not None and turn_span is not None:
+                    tool_span = agent.tracer.start_child_span(
+                        turn_span,
+                        "tool.execute",
+                        attributes={
+                            "tool": tool_call.name,
+                            "tool_call_id": tool_call.id,
+                        },
+                    )
+
                 try:
                     result = await agent.tools.execute(
                         name=tool_call.name,
@@ -179,6 +191,15 @@ async def run_turn(
                     )
 
                 except Exception as exc:
+                    if tool_span is not None and agent.tracer is not None:
+                        tool_span.attributes["error_type"] = type(exc).__name__
+
+                        agent.tracer.end_span(
+                            tool_span,
+                            status=SpanStatus.ERROR,
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+
                     agent.emit(
                         Event(
                             type="tool_error",
@@ -204,6 +225,19 @@ async def run_turn(
                     )
 
                     continue
+                else:
+                    if tool_span is not None and agent.tracer is not None:
+                        tool_span.attributes.update(
+                            {
+                                "exit_code": result.exit_code,
+                                "stdout_length": len(result.stdout),
+                                "stderr_length": len(result.stderr),
+                            }
+                        )
+                        agent.tracer.end_span(
+                            tool_span,
+                            status=SpanStatus.OK,
+                        )
 
                 agent.emit(
                     Event(
