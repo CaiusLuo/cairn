@@ -37,6 +37,7 @@ def test_console_event_handler_renders_each_event_type(
 ) -> None:
     output = _capture_console(monkeypatch)
     events = [
+        Event(type="trace_start", data={"trace_id": "0123456789abcdef"}),
         Event(type="agent_step", data={"step": 1, "max_steps": 3}),
         Event(type="tool_call", data={"tool": "bash", "arguments": {"command": "pwd"}}),
         Event(
@@ -58,6 +59,7 @@ def test_console_event_handler_renders_each_event_type(
 
     rendered = output.getvalue()
     for expected in (
+        "trace: 0123456789abcdef",
         "step 1/3",
         "→ bash",
         "workspace",

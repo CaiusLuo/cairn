@@ -71,6 +71,9 @@ def console_event_handler(event: Event) -> None:
             console.print(
                 f"[bold red]Agent stopped after {max_steps} steps.[/bold red]"
             )
+        case "trace_start":
+            trace_id = event.data["trace_id"]
+            console.print(f"[dim]trace: {trace_id}[/dim]")
 
 
 def console_permission_handler(tool_call: ToolCall) -> PermissionResult:
