@@ -7,7 +7,7 @@ from rich.prompt import Confirm
 import cairn.ui as ui
 from cairn.core.events import Event
 from cairn.core.models import ToolCall
-from cairn.core.permissions import PermissionDecision
+from cairn.core.permissions import PermissionDecision, PermissionResult
 
 
 def _capture_console(monkeypatch: pytest.MonkeyPatch) -> StringIO:
@@ -79,7 +79,10 @@ def test_console_permission_handler_returns_automatic_decision(
         arguments={"command": "pwd"},
     )
 
-    assert ui.console_permission_handler(tool_call) == PermissionDecision.ALLOW
+    assert ui.console_permission_handler(tool_call) == PermissionResult(
+        policy_decision=PermissionDecision.ALLOW,
+        allowed=True,
+    )
 
 
 def test_console_permission_handler_prompts_for_bash(
@@ -97,7 +100,11 @@ def test_console_permission_handler_prompts_for_bash(
         arguments={"command": "python -V"},
     )
 
-    assert ui.console_permission_handler(tool_call) == PermissionDecision.ALLOW
+    assert ui.console_permission_handler(tool_call) == PermissionResult(
+        policy_decision=PermissionDecision.ASK,
+        allowed=True,
+        prompted=True,
+    )
     assert "Command: python -V" in output.getvalue()
 
 
@@ -116,5 +123,9 @@ def test_console_permission_handler_can_deny_other_tools(
         arguments={"value": 1},
     )
 
-    assert ui.console_permission_handler(tool_call) == PermissionDecision.DENY
+    assert ui.console_permission_handler(tool_call) == PermissionResult(
+        policy_decision=PermissionDecision.ASK,
+        allowed=False,
+        prompted=True,
+    )
     assert "Arguments: {'value': 1}" in output.getvalue()

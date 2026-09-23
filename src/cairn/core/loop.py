@@ -118,25 +118,23 @@ async def run_turn(
                         "permission.check",
                         attributes={
                             "tool": tool_call.name,
-                            "tool_id": tool_call.id,
+                            "tool_call_id": tool_call.id,
                             "handler_configured": agent.permission_handler is not None,
                         },
                     )
 
-                if agent.permission_handler is not None:
+                if agent.permission_handler is None:
+                    if permission_span is not None and agent.tracer is not None:
+                        permission_span.attributes.update(
+                            {
+                                "allowed": True,
+                                "source": "no_handler",
+                            }
+                        )
+                        agent.tracer.end_span(permission_span, status=SpanStatus.OK)
+                else:
                     try:
                         permission = agent.permission_handler(tool_call)
-
-                    except Exception as exc:
-                        if permission_span is not None and agent.tracer is not None:
-                            agent.tracer.end_span(
-                                permission_span,
-                                status=SpanStatus.ERROR,
-                                error=f"{type(exc).__name__}: {exc}",
-                            )
-                        raise
-
-                    else:
                         if permission_span is not None and agent.tracer is not None:
                             permission_span.attributes.update(
                                 {
@@ -145,13 +143,20 @@ async def run_turn(
                                     "prompted": permission.prompted,
                                 }
                             )
-
+                        allowed = permission.allowed
+                    except Exception as exc:
+                        if permission_span is not None and agent.tracer is not None:
                             agent.tracer.end_span(
                                 permission_span,
-                                status=SpanStatus.OK,
+                                status=SpanStatus.ERROR,
+                                error=f"{type(exc).__name__}: {exc}",
                             )
+                        raise
+                    else:
+                        if permission_span is not None and agent.tracer is not None:
+                            agent.tracer.end_span(permission_span, status=SpanStatus.OK)
 
-                    if not permission.allowed:
+                    if not allowed:
                         tool_content = json.dumps(
                             {
                                 "error": "Permission denied by user.",
@@ -166,19 +171,6 @@ async def run_turn(
                         )
 
                         continue
-                    else:
-                        if permission_span is not None and agent.tracer is not None:
-                            permission_span.attributes.update(
-                                {
-                                    "allowed": True,
-                                    "source": "no_handler",
-                                }
-                            )
-
-                            agent.tracer.end_span(
-                                permission_span,
-                                status=SpanStatus.OK,
-                            )
 
                 try:
                     result = await agent.tools.execute(
