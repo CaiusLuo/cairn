@@ -24,6 +24,15 @@ async def run_turn(
                 },
             )
 
+            agent.emit(
+                Event(
+                    type="trace_start",
+                    data={
+                        "trace_id": turn_span.context.trace_id,
+                    },
+                )
+            )
+
         agent.state.add_user_message(user_input)
 
         for step in range(max_steps):

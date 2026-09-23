@@ -56,6 +56,7 @@ def test_run_turn_executes_tool_and_returns_follow_up() -> None:
         "exit_code": 0,
     }
     assert [event.type for event in events] == [
+        "trace_start",
         "agent_step",
         "tool_call",
         "tool_result",
@@ -71,6 +72,7 @@ def test_run_turn_executes_tool_and_returns_follow_up() -> None:
     assert tool_span.attributes["exit_code"] == 0
     assert tool_span.attributes["stdout_length"] == len("recorded")
     turn_span = next(span for span in sink.spans if span.name == "agent.turn")
+    assert events[0].data == {"trace_id": turn_span.context.trace_id}
     assert tool_span.context.parent_span_id == turn_span.context.span_id
 
 

@@ -9,6 +9,7 @@ EventType = Literal[
     "tool_error",
     "agent_finish",
     "agent_step_limit",
+    "trace_start",
 ]
 
 
