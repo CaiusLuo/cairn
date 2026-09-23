@@ -80,6 +80,24 @@ def test_reader_restores_spans(tmp_path: Path) -> None:
     assert spans == [child, root]
 
 
+def test_reader_resolves_unique_trace_prefix(tmp_path: Path) -> None:
+    tracer = Tracer(JsonlTraceSink(tmp_path))
+    root = tracer.start_root_span("agent.turn")
+    tracer.end_span(root)
+
+    spans = JsonlTraceReader(tmp_path).read(root.context.trace_id[:8])
+
+    assert spans == [root]
+
+
+def test_reader_rejects_ambiguous_trace_prefix(tmp_path: Path) -> None:
+    for trace_id in ("abcd1111", "abcd2222"):
+        (tmp_path / f"{trace_id}.jsonl").write_text("", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Ambiguous trace prefix"):
+        JsonlTraceReader(tmp_path).read("abcd")
+
+
 @pytest.mark.parametrize("trace_id", ["", "../outside", "/tmp/outside"])
 def test_reader_rejects_trace_ids_outside_root(tmp_path: Path, trace_id: str) -> None:
     with pytest.raises(ValueError, match="Invalid trace ID"):

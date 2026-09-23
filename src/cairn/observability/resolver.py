@@ -1,16 +1,17 @@
 from pathlib import Path
 
+
 class TraceResolver:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path) -> None:
         self.root = root
 
-    def resolve(self, trace_id: str) -> Path:
-        if not trace_id:
-            raise ValueError("Trace ID is empty")
+    def resolve(self, trace_id: str) -> str:
+        if not trace_id or Path(trace_id).name != trace_id:
+            raise ValueError(f"Invalid trace ID: {trace_id}")
 
         files = [
             path.stem
-            for path in self.root.glob("*.json")
+            for path in self.root.glob("*.jsonl")
             if path.stem.startswith(trace_id)
         ]
 
