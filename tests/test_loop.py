@@ -8,7 +8,7 @@ from cairn.core.agent import Agent
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.core.models import LLMResponse, Message, ToolCall, ToolResult
-from cairn.core.permissions import PermissionDecision
+from cairn.core.permissions import PermissionDecision, PermissionResult
 from cairn.observability.models import Span, SpanStatus
 from cairn.observability.tracer import Tracer
 from cairn.tools.base import Tool
@@ -200,13 +200,18 @@ def test_run_turn_executes_tool_and_returns_follow_up() -> None:
 
 
 def test_run_turn_records_permission_denial_without_executing_tool() -> None:
+    sink = RecordingSink()
     llm = SequenceLLM([_tool_response(), LLMResponse(content="denied handled")])
     tool = RecordingTool()
     agent = _agent(llm, tool)
+    agent.tracer = Tracer(sink)
 
-    def deny(tool_call: ToolCall) -> PermissionDecision:
+    def deny(tool_call: ToolCall) -> PermissionResult:
         assert tool_call.name == "record"
-        return PermissionDecision.DENY
+        return PermissionResult(
+            policy_decision=PermissionDecision.DENY,
+            allowed=False,
+        )
 
     agent.permission_handler = deny
 
@@ -214,6 +219,11 @@ def test_run_turn_records_permission_denial_without_executing_tool() -> None:
 
     assert result == "denied handled"
     assert tool.calls == []
+    permission_span = next(
+        span for span in sink.spans if span.name == "permission.check"
+    )
+    assert permission_span.status == SpanStatus.OK
+    assert permission_span.attributes["allowed"] is False
     assert json.loads(agent.state.messages[2].content or "") == {
         "error": "Permission denied by user.",
         "type": "PermissionDenied",

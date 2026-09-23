@@ -3,9 +3,6 @@ import json
 from cairn.core.agent import Agent
 from cairn.core.events import Event
 from cairn.core.models import Message
-from cairn.core.permissions import (
-    PermissionDecision,
-)
 from cairn.observability.models import SpanStatus
 
 
@@ -113,10 +110,48 @@ async def run_turn(
                     )
                 )
 
-                if agent.permission_handler is not None:
-                    decision = agent.permission_handler(tool_call)
+                permission_span = None
 
-                    if decision == PermissionDecision.DENY:
+                if agent.tracer is not None and turn_span is not None:
+                    permission_span = agent.tracer.start_child_span(
+                        turn_span,
+                        "permission.check",
+                        attributes={
+                            "tool": tool_call.name,
+                            "tool_id": tool_call.id,
+                            "handler_configured": agent.permission_handler is not None,
+                        },
+                    )
+
+                if agent.permission_handler is not None:
+                    try:
+                        permission = agent.permission_handler(tool_call)
+
+                    except Exception as exc:
+                        if permission_span is not None and agent.tracer is not None:
+                            agent.tracer.end_span(
+                                permission_span,
+                                status=SpanStatus.ERROR,
+                                error=f"{type(exc).__name__}: {exc}",
+                            )
+                        raise
+
+                    else:
+                        if permission_span is not None and agent.tracer is not None:
+                            permission_span.attributes.update(
+                                {
+                                    "policy_decision": permission.policy_decision.value,
+                                    "allowed": permission.allowed,
+                                    "prompted": permission.prompted,
+                                }
+                            )
+
+                            agent.tracer.end_span(
+                                permission_span,
+                                status=SpanStatus.OK,
+                            )
+
+                    if not permission.allowed:
                         tool_content = json.dumps(
                             {
                                 "error": "Permission denied by user.",
@@ -131,6 +166,19 @@ async def run_turn(
                         )
 
                         continue
+                    else:
+                        if permission_span is not None and agent.tracer is not None:
+                            permission_span.attributes.update(
+                                {
+                                    "allowed": True,
+                                    "source": "no_handler",
+                                }
+                            )
+
+                            agent.tracer.end_span(
+                                permission_span,
+                                status=SpanStatus.OK,
+                            )
 
                 try:
                     result = await agent.tools.execute(

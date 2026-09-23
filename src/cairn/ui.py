@@ -8,6 +8,7 @@ from cairn.core.events import Event
 from cairn.core.models import ToolCall
 from cairn.core.permissions import (
     PermissionDecision,
+    PermissionResult,
     check_permission,
 )
 
@@ -72,15 +73,23 @@ def console_event_handler(event: Event) -> None:
             )
 
 
-def console_permission_handler(tool_call: ToolCall) -> PermissionDecision:
+def console_permission_handler(tool_call: ToolCall) -> PermissionResult:
 
     decision = check_permission(tool_call)
 
-    if decision != PermissionDecision.ASK:
-        return decision
+    if decision == PermissionDecision.ALLOW:
+        return PermissionResult(
+            policy_decision=decision,
+            allowed=True,
+        )
+
+    if decision == PermissionDecision.DENY:
+        return PermissionResult(
+            policy_decision=decision,
+            allowed=False,
+        )
 
     console.print("\n[bold yellow]Permission required[/bold yellow]")
-
     console.print(f"[bold]Tool:[/bold] {tool_call.name}")
 
     if tool_call.name == "bash":
@@ -89,9 +98,13 @@ def console_permission_handler(tool_call: ToolCall) -> PermissionDecision:
     else:
         console.print(f"[bold]Arguments:[/bold] {tool_call.arguments}")
 
-    allow = Confirm.ask(
+    allowed = Confirm.ask(
         "Allow this action?",
         default=False,
     )
 
-    return PermissionDecision.ALLOW if allow else PermissionDecision.DENY
+    return PermissionResult(
+        policy_decision=PermissionDecision.ASK,
+        allowed=allowed,
+        prompted=True,
+    )
