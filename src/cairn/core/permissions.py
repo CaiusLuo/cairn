@@ -6,15 +6,7 @@ from pydantic import BaseModel
 
 from cairn.core.models import ToolCall
 
-SAFE_COMMANDS = {
-    "pwd",
-    "ls",
-    "cat",
-    "head",
-    "tail",
-    "rg",
-    "grep",
-}
+SAFE_COMMANDS = {"pwd", "ls"}
 
 DENY_COMMANDS = {
     "sudo",
@@ -46,42 +38,19 @@ def check_permission(tool_call: ToolCall) -> PermissionDecision:
 
     command = tool_call.arguments.get("command")
 
-    if not command:
+    if not isinstance(command, str) or not command.strip():
         return PermissionDecision.DENY
 
-    # 有 shell 组合操作时先不自动放行
-    shell_operators = ["&&", "||", ";", "|", ">", "<", "$(", "`"]
-
-    if any(op in command for op in shell_operators):
-        return PermissionDecision.ASK
+    # Only exact commands are safe to pass through a shell without prompting.
+    if command.strip() in SAFE_COMMANDS:
+        return PermissionDecision.ALLOW
 
     try:
         part = shlex.split(command)
     except ValueError:
         return PermissionDecision.DENY
 
-    if not part:
+    if part and part[0] in DENY_COMMANDS:
         return PermissionDecision.DENY
-
-    executable = part[0]
-
-    if executable in SAFE_COMMANDS:
-        return PermissionDecision.ALLOW
-
-    if executable in DENY_COMMANDS:
-        return PermissionDecision.DENY
-
-    if (
-        executable == "git"
-        and len(part) >= 2
-        and part[1]
-        in {
-            "status",
-            "diff",
-            "log",
-            "show",
-        }
-    ):
-        return PermissionDecision.ALLOW
 
     return PermissionDecision.ASK

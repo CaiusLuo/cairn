@@ -23,9 +23,10 @@ autonomous coding agent.
   and step-limit termination.
 - A Rich-powered interactive terminal interface.
 
-The Bash tool executes commands in the current workspace after the permission
-handler approves them. Cairn does not currently provide an operating-system
-sandbox, persistent memory, or background execution.
+The Bash tool executes commands in an OS sandbox after the permission handler
+approves them. Its workspace is writable; commands cannot read other files in
+the user's home directory or use the network. Cairn does not currently provide
+persistent memory or background execution.
 
 ## Architecture
 
@@ -51,6 +52,7 @@ Prerequisites:
 
 - Python 3.12 or newer
 - [uv](https://docs.astral.sh/uv/)
+- macOS `sandbox-exec` or Linux `bubblewrap`
 - An API endpoint supported by LiteLLM
 
 Install the project and development dependencies from the lock file:

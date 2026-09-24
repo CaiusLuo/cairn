@@ -33,7 +33,7 @@ class LiteLLMClient:
             result["tool_calls"] = [
                 {
                     "id": tool_call.id,
-                    "name": "function",
+                    "type": "function",
                     "function": {
                         "name": tool_call.name,
                         "arguments": json.dumps(

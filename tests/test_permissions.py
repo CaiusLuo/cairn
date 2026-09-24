@@ -25,7 +25,7 @@ PERMISSION_CASES: tuple[tuple[ToolCall, PermissionDecision], ...] = (
         PermissionDecision.DENY,
     ),
     (
-        ToolCall(id="6", name="bash", arguments={"command": "pwd -P"}),
+        ToolCall(id="6", name="bash", arguments={"command": "pwd"}),
         PermissionDecision.ALLOW,
     ),
     (
@@ -34,7 +34,7 @@ PERMISSION_CASES: tuple[tuple[ToolCall, PermissionDecision], ...] = (
     ),
     (
         ToolCall(id="8", name="bash", arguments={"command": "git status --short"}),
-        PermissionDecision.ALLOW,
+        PermissionDecision.ASK,
     ),
     (
         ToolCall(id="9", name="bash", arguments={"command": "git branch"}),
@@ -42,6 +42,26 @@ PERMISSION_CASES: tuple[tuple[ToolCall, PermissionDecision], ...] = (
     ),
     (
         ToolCall(id="10", name="bash", arguments={"command": "python -V"}),
+        PermissionDecision.ASK,
+    ),
+    (
+        ToolCall(id="11", name="bash", arguments={"command": "ls"}),
+        PermissionDecision.ALLOW,
+    ),
+    (
+        ToolCall(id="12", name="bash", arguments={"command": "pwd\nprintf unsafe"}),
+        PermissionDecision.ASK,
+    ),
+    (
+        ToolCall(id="13", name="bash", arguments={"command": "cat .env"}),
+        PermissionDecision.ASK,
+    ),
+    (
+        ToolCall(id="14", name="bash", arguments={"command": "rg --pre=sh pattern"}),
+        PermissionDecision.ASK,
+    ),
+    (
+        ToolCall(id="15", name="bash", arguments={"command": "ls ../"}),
         PermissionDecision.ASK,
     ),
 )

@@ -59,7 +59,7 @@ def test_to_llm_message_serializes_tool_context() -> None:
         "tool_calls": [
             {
                 "id": "call-1",
-                "name": "function",
+                "type": "function",
                 "function": {
                     "name": "bash",
                     "arguments": '{"command": "pwd"}',
