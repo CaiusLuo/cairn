@@ -1,6 +1,7 @@
 import asyncio
 import builtins
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -109,26 +110,36 @@ def test_main_runs_turn_and_prints_response(monkeypatch: pytest.MonkeyPatch) -> 
     [
         ("/help", "Available commands:"),
         ("/trace", "No trace available yet."),
+        ("/exit", "Goodbye! see you next time."),
         ("/unknown", "Unknown command: /unknown"),
     ],
 )
-def test_interactive_commands_do_not_call_model(
+def test_interactive_commands_do_not_call_model_or_mutate_state(
     monkeypatch: pytest.MonkeyPatch, command: str, expected: str
 ) -> None:
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     inputs = iter((command, "/QUIT"))
     monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+    created_agents: list[Agent] = []
+
+    def capture_agent(**kwargs: Any) -> Agent:
+        agent = Agent(**kwargs)
+        created_agents.append(agent)
+        return agent
 
     async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
         pytest.fail("Interactive command reached the model")
 
+    monkeypatch.setattr(cli_module, "Agent", capture_agent)
     monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
 
     result = runner.invoke(app, [])
 
     assert result.exit_code == 0
     assert expected in result.stdout
+    assert len(created_agents) == 1
+    assert created_agents[0].state.messages == []
 
 
 def test_interactive_trace_uses_latest_completed_turn(
