@@ -1,6 +1,7 @@
 from collections import defaultdict
 
 from rich.console import Console
+from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
@@ -63,3 +64,26 @@ def print_trace(spans: list[Span]) -> None:
         tree = Tree(_label(root))
         add_children(tree, root)
         console.print(tree)
+
+
+def print_trace_list(spans: list[Span]) -> None:
+    if not spans:
+        console.print("[dim]No traces found.[/dim]")
+        return
+
+    table = Table()
+
+    table.add_column("TIME")
+    table.add_column("TRACE")
+    table.add_column("STATUS")
+    table.add_column("DURATION")
+
+    for span in spans:
+        table.add_row(
+            span.start_time.astimezone().strftime("%H:%M:%S"),
+            span.context.trace_id[:8],
+            str(span.status),
+            _duration(span),
+        )
+
+    console.print(table)

@@ -26,3 +26,21 @@ class JsonlTraceReader:
             spans.append(Span.model_validate_json(line))
 
         return spans
+
+    def list_traces(self, limit: int = 20) -> list[Span]:
+        roots: list[Span] = []
+
+        for path in self.root.glob("*.jsonl"):
+            spans = self.read(path.stem)
+
+            root = next(
+                (span for span in spans if span.context.parent_span_id is None),
+                None,
+            )
+
+            if root is not None:
+                roots.append(root)
+
+        roots.sort(key=lambda span: span.start_time, reverse=True)
+
+        return roots[:limit]

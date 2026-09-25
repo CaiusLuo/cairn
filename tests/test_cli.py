@@ -10,6 +10,7 @@ import cairn.cli as cli_module
 from cairn.cli import app
 from cairn.core.agent import Agent
 from cairn.core.events import Event
+from cairn.core.models import Message
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.tracer import Tracer
 
@@ -233,6 +234,42 @@ def test_interactive_trace_renders_requested_trace(
     assert result.exit_code == 0
     assert "agent.turn" in result.stdout
     assert "llm.generate" in result.stdout
+
+
+def test_interactive_trace_list_does_not_call_model_or_mutate_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    trace_id = _write_trace()
+    inputs = iter(("/trace list", "/quit"))
+    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+    created_agents: list[Agent] = []
+
+    def capture_agent(**kwargs: Any) -> Agent:
+        agent = Agent(**kwargs)
+        agent.state.add_user_message("previous")
+        agent.state.add_assistant_message("previous answer")
+        created_agents.append(agent)
+        return agent
+
+    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
+        pytest.fail("Interactive command reached the model")
+
+    monkeypatch.setattr(cli_module, "Agent", capture_agent)
+    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert trace_id[:8] in result.stdout
+    assert len(created_agents) == 1
+    assert created_agents[0].state.messages == [
+        Message(role="user", content="previous"),
+        Message(role="assistant", content="previous answer"),
+    ]
 
 
 def test_interactive_trace_reports_missing_trace(

@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 
@@ -78,6 +78,47 @@ def test_reader_restores_spans(tmp_path: Path) -> None:
     assert len(spans) == 2
     assert {span.name for span in spans} == {"agent.turn", "llm.generate"}
     assert spans == [child, root]
+
+
+def _write_trace_root(sink: JsonlTraceSink, start_time: datetime) -> Span:
+    root = Span(
+        context=new_trace_context(),
+        name="agent.turn",
+        start_time=start_time,
+    )
+    sink.emit(root)
+    return root
+
+
+def test_reader_lists_traces_newest_first(tmp_path: Path) -> None:
+    sink = JsonlTraceSink(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    newest = _write_trace_root(sink, now + timedelta(minutes=2))
+    oldest = _write_trace_root(sink, now)
+    middle = _write_trace_root(sink, now + timedelta(minutes=1))
+
+    roots = JsonlTraceReader(tmp_path).list_traces()
+
+    assert [root.context.trace_id for root in roots] == [
+        newest.context.trace_id,
+        middle.context.trace_id,
+        oldest.context.trace_id,
+    ]
+
+
+def test_reader_limits_trace_list(tmp_path: Path) -> None:
+    sink = JsonlTraceSink(tmp_path)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    _write_trace_root(sink, now)
+    middle = _write_trace_root(sink, now + timedelta(minutes=1))
+    newest = _write_trace_root(sink, now + timedelta(minutes=2))
+
+    roots = JsonlTraceReader(tmp_path).list_traces(limit=2)
+
+    assert [root.context.trace_id for root in roots] == [
+        newest.context.trace_id,
+        middle.context.trace_id,
+    ]
 
 
 def test_reader_resolves_unique_trace_prefix(tmp_path: Path) -> None:
