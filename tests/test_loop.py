@@ -3,13 +3,16 @@ import json
 
 import pytest
 
+from cairn.core.agent import Agent
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.core.models import LLMResponse, ToolCall
 from cairn.core.permissions import PermissionDecision, PermissionResult
 from cairn.observability.models import SpanStatus
 from cairn.observability.tracer import Tracer
+from cairn.tools.registry import ToolRegistry
 from tests.loop_support import (
+    FailingLLM,
     FailingTool,
     RecordingSink,
     RecordingTool,
@@ -30,6 +33,18 @@ def test_run_turn_returns_direct_model_response() -> None:
     assert [message.role for message in agent.state.messages] == ["user", "assistant"]
     assert [event.type for event in events] == ["agent_step", "agent_finish"]
     assert llm.calls[0][0][0].role == "system"
+
+
+def test_failed_turn_rolls_back_state() -> None:
+    agent = Agent(llm=FailingLLM(), tools=ToolRegistry())
+    agent.state.add_user_message("previous")
+    agent.state.add_assistant_message("previous answer")
+    previous_messages = agent.state.messages.copy()
+
+    with pytest.raises(RuntimeError, match="llm failed"):
+        asyncio.run(run_turn(agent, "current"))
+
+    assert agent.state.messages == previous_messages
 
 
 def test_run_turn_executes_tool_and_returns_follow_up() -> None:

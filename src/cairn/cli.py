@@ -20,6 +20,7 @@ from cairn.ui import (
     console_permission_handler,
     print_assistant_response,
     print_banner,
+    print_runtime_error,
 )
 
 app = typer.Typer(
@@ -95,6 +96,9 @@ async def main() -> None:
 
         try:
             response = await run_turn(agent, user_input=user_input)
+        except Exception as exc:
+            print_runtime_error(exc)
+        else:
             print_assistant_response(response)
         finally:
             if pending_trace_finish is not None:

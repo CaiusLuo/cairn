@@ -16,6 +16,9 @@ async def run_turn(
     try:
         turn_span = None
 
+        # check point for exception rollback
+        turn_start = len(agent.state.messages)
+
         if agent.tracer is not None:
             turn_span = agent.tracer.start_root_span(
                 "agent.turn",
@@ -281,6 +284,7 @@ async def run_turn(
 
     except Exception as exc:
         trace_error = f"{type(exc).__name__}: {exc}"
+        del agent.state.messages[turn_start:]
         raise
 
     finally:

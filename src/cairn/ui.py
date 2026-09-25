@@ -112,3 +112,7 @@ def console_permission_handler(tool_call: ToolCall) -> PermissionResult:
         allowed=allowed,
         prompted=True,
     )
+
+
+def print_runtime_error(exc: Exception) -> None:
+    console.print(f"✗ {type(exc).__name__}: {exc}", style="bold red", markup=False)

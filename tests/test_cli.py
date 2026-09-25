@@ -105,6 +105,29 @@ def test_main_runs_turn_and_prints_response(monkeypatch: pytest.MonkeyPatch) -> 
     assert responses == ["reply to hello"]
 
 
+def test_cli_continues_after_failed_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    inputs = iter(("first", "second", "/quit"))
+    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+    turns: list[str] = []
+
+    async def fake_run_turn(agent: Agent, user_input: str) -> str:
+        turns.append(user_input)
+        if user_input == "first":
+            raise RuntimeError("first turn [/bold red] failed")
+        return "second response"
+
+    monkeypatch.setattr(cli_module, "run_turn", fake_run_turn)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert turns == ["first", "second"]
+    assert "RuntimeError: first turn [/bold red] failed" in result.stdout
+    assert "second response" in result.stdout
+
+
 @pytest.mark.parametrize(
     ("command", "expected"),
     [
