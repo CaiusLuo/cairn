@@ -77,6 +77,31 @@ def test_console_event_handler_renders_each_event_type(
     assert rendered.rstrip().endswith("trace: 0123456789abcdef (ok)")
 
 
+def test_file_tool_content_is_rendered_literally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = _capture_console(monkeypatch)
+    ui.console_event_handler(
+        Event(
+            type="tool_call",
+            data={"tool": "edit_file", "arguments": {"new_text": "[/dim]"}},
+        )
+    )
+    ui.console_event_handler(
+        Event(
+            type="tool_result",
+            data={"exit_code": 0, "stdout": "[/bold]", "stderr": ""},
+        )
+    )
+    ui.console_event_handler(
+        Event(type="tool_error", data={"tool": "edit_file", "error": "[/bold red]"})
+    )
+
+    assert "[/dim]" in output.getvalue()
+    assert "[/bold]" in output.getvalue()
+    assert "[/bold red]" in output.getvalue()
+
+
 def test_console_permission_handler_returns_automatic_decision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

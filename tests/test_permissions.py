@@ -64,6 +64,14 @@ PERMISSION_CASES: tuple[tuple[ToolCall, PermissionDecision], ...] = (
         ToolCall(id="15", name="bash", arguments={"command": "ls ../"}),
         PermissionDecision.ASK,
     ),
+    (
+        ToolCall(id="16", name="read_file", arguments={"path": "README.md"}),
+        PermissionDecision.ASK,
+    ),
+    (
+        ToolCall(id="17", name="edit_file", arguments={"path": "README.md"}),
+        PermissionDecision.ASK,
+    ),
 )
 
 

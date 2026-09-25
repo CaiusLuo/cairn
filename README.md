@@ -16,7 +16,7 @@ autonomous coding agent.
 - An asynchronous agent loop with a configurable step limit.
 - In-process conversation state for user, assistant, and tool messages.
 - LiteLLM-backed model calls, including tool-call parsing.
-- A tool registry with a built-in Bash tool.
+- A tool registry with Bash, bounded file reading, and guarded file editing.
 - Permission decisions that allow selected read-only commands, deny selected
   commands, and ask before everything else.
 - Runtime events for agent steps, tool calls, tool results, errors, completion,

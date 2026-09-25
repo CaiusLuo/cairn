@@ -92,6 +92,8 @@ def test_main_runs_turn_and_prints_response(monkeypatch: pytest.MonkeyPatch) -> 
         max_steps: int = 20,
     ) -> str:
         assert agent.tools.get_tool("bash").name == "bash"
+        assert agent.tools.get_tool("read_file").name == "read_file"
+        assert agent.tools.get_tool("edit_file").name == "edit_file"
         assert max_steps == 20
         return f"reply to {user_input}"
 

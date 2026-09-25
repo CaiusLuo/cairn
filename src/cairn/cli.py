@@ -14,6 +14,7 @@ from cairn.observability.reader import JsonlTraceReader
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.tracer import Tracer
 from cairn.tools.bash import BashTool
+from cairn.tools.files import EditFileTool, ReadFileTool
 from cairn.tools.registry import ToolRegistry
 from cairn.ui import (
     console_event_handler,
@@ -56,6 +57,8 @@ async def main() -> None:
     registry = ToolRegistry()
 
     registry.register_tool(BashTool(cwd=Path.cwd()))
+    registry.register_tool(ReadFileTool(cwd=Path.cwd()))
+    registry.register_tool(EditFileTool(cwd=Path.cwd()))
 
     trace_root = Path(".cairn/traces")
     tracer = Tracer(JsonlTraceSink(trace_root))

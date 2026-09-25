@@ -38,7 +38,7 @@ def console_event_handler(event: Event) -> None:
             arguments = event.data.get("arguments")
 
             console.print(f"\n[bold cyan]→ {tool}[/bold cyan]")
-            console.print(f"[dim]{arguments}[/dim]")
+            console.print(arguments, style="dim")
 
         case "tool_result":
             exit_code = event.data["exit_code"]
@@ -48,19 +48,20 @@ def console_event_handler(event: Event) -> None:
             console.print(f"[green]← exit {exit_code}[/green]")
 
             if stdout:
-                console.print(stdout.rstrip())
+                console.print(stdout.rstrip(), markup=False)
 
             if stderr:
                 console.print(
                     stderr.rstrip(),
                     style="yellow",
+                    markup=False,
                 )
 
         case "tool_error":
             tool = event.data["tool"]
             error = event.data["error"]
 
-            console.print(f"[bold red]✗ {tool}: {error}[/bold red]")
+            console.print(f"✗ {tool}: {error}", style="bold red", markup=False)
 
         case "agent_finish":
             console.print("[dim]✓ done[/dim]")
@@ -100,7 +101,7 @@ def console_permission_handler(tool_call: ToolCall) -> PermissionResult:
         command = tool_call.arguments.get("command")
         console.print(f"[bold]Command:[/bold] {command}")
     else:
-        console.print(f"[bold]Arguments:[/bold] {tool_call.arguments}")
+        console.print(f"Arguments: {tool_call.arguments}", markup=False)
 
     allowed = Confirm.ask(
         "Allow this action?",
