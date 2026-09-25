@@ -5,9 +5,12 @@ from pathlib import Path
 import typer
 from dotenv import load_dotenv
 
-from cairn.commands.trace import trace_app
+from cairn.commands.context import CommandContext
+from cairn.commands.router import CommandRouter
 from cairn.core.agent import Agent
+from cairn.core.events import Event
 from cairn.core.loop import run_turn
+from cairn.observability.reader import JsonlTraceReader
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.tracer import Tracer
 from cairn.tools.bash import BashTool
@@ -22,8 +25,6 @@ from cairn.ui import (
 app = typer.Typer(
     invoke_without_command=True,
 )
-
-app.add_typer(trace_app, name="trace")
 
 
 @app.callback()
@@ -55,29 +56,50 @@ async def main() -> None:
 
     registry.register_tool(BashTool(cwd=Path.cwd()))
 
-    tracer = Tracer(JsonlTraceSink(Path(".cairn/traces")))
+    trace_root = Path(".cairn/traces")
+    tracer = Tracer(JsonlTraceSink(trace_root))
+    command_context = CommandContext(trace_reader=JsonlTraceReader(trace_root))
+    pending_trace_finish: Event | None = None
+
+    def handle_event(event: Event) -> None:
+        nonlocal pending_trace_finish
+        if event.type == "trace_finish":
+            command_context.last_trace_id = event.data["trace_id"]
+            pending_trace_finish = event
+            return
+        console_event_handler(event)
 
     agent = Agent(
         llm=LiteLLMClient(model=model, api_key=api_key, api_base=base_url),
         tools=registry,
-        event_handler=console_event_handler,
+        event_handler=handle_event,
         permission_handler=console_permission_handler,
         tracer=tracer,
     )
 
+    router = CommandRouter()
+
     while True:
         user_input = input("cairn> ").strip()
 
-        if user_input.lower() in ["/exit", "/quit"]:
-            print("Goodbye! see you next time.")
-            break
-
-        response = await run_turn(
-            agent,
-            user_input=user_input,
+        command_result = router.handle(
+            user_input,
+            command_context,
         )
 
-        print_assistant_response(response)
+        if command_result.handled:
+            if command_result.should_exit:
+                print("Goodbye! see you next time.")
+                break
+            continue
+
+        try:
+            response = await run_turn(agent, user_input=user_input)
+            print_assistant_response(response)
+        finally:
+            if pending_trace_finish is not None:
+                console_event_handler(pending_trace_finish)
+                pending_trace_finish = None
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 import cairn.cli as cli_module
 from cairn.cli import app
 from cairn.core.agent import Agent
+from cairn.core.events import Event
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.tracer import Tracer
 
@@ -103,6 +104,71 @@ def test_main_runs_turn_and_prints_response(monkeypatch: pytest.MonkeyPatch) -> 
     assert responses == ["reply to hello"]
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("/help", "Available commands:"),
+        ("/trace", "No trace available yet."),
+        ("/unknown", "Unknown command: /unknown"),
+    ],
+)
+def test_interactive_commands_do_not_call_model(
+    monkeypatch: pytest.MonkeyPatch, command: str, expected: str
+) -> None:
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    inputs = iter((command, "/QUIT"))
+    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+
+    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
+        pytest.fail("Interactive command reached the model")
+
+    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert expected in result.stdout
+
+
+def test_interactive_trace_uses_latest_completed_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    inputs = iter(("hello", "/trace", "/quit"))
+    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+
+    async def fake_run_turn(agent: Agent, user_input: str) -> str:
+        assert user_input == "hello"
+        assert agent.tracer is not None
+        span = agent.tracer.start_root_span("agent.turn")
+        agent.emit(
+            Event(
+                type="trace_start",
+                data={"trace_id": span.context.trace_id},
+            )
+        )
+        agent.tracer.end_span(span)
+        agent.emit(
+            Event(
+                type="trace_finish",
+                data={"trace_id": span.context.trace_id, "status": "ok"},
+            )
+        )
+        return "done"
+
+    monkeypatch.setattr(cli_module, "run_turn", fake_run_turn)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert "agent.turn" in result.stdout
+    assert result.stdout.index("done") < result.stdout.index("trace:")
+    assert result.stdout.count("trace:") == 1
+
+
 def _write_trace() -> str:
     tracer = Tracer(JsonlTraceSink(Path(".cairn/traces")))
     root = tracer.start_root_span("agent.turn")
@@ -112,46 +178,45 @@ def _write_trace() -> str:
     return root.context.trace_id
 
 
-def test_trace_show_renders_trace(
+def test_interactive_trace_renders_requested_trace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     trace_id = _write_trace()
+    inputs = iter((f"/trace {trace_id[:8]}", "/quit"))
+    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
 
-    result = runner.invoke(app, ["trace", "show", trace_id[:8]])
+    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
+        pytest.fail("Interactive command reached the model")
+
+    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+
+    result = runner.invoke(app, [])
 
     assert result.exit_code == 0
     assert "agent.turn" in result.stdout
     assert "llm.generate" in result.stdout
 
 
-def test_trace_show_reports_missing_trace(
+def test_interactive_trace_reports_missing_trace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    inputs = iter(("/trace deadbeef", "/quit"))
+    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
 
-    result = runner.invoke(app, ["trace", "show", "deadbeef"])
+    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
+        pytest.fail("Interactive command reached the model")
 
-    assert result.exit_code == 1
-    assert "Trace not found" in result.stdout
+    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
 
-
-def test_trace_show_does_not_require_llm_environment(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    _set_environment(monkeypatch, {})
-    trace_id = _write_trace()
-
-    async def unexpected_main() -> None:
-        pytest.fail("trace show initialized the agent runtime")
-
-    monkeypatch.setattr(cli_module, "main", unexpected_main)
-
-    result = runner.invoke(app, ["trace", "show", trace_id[:8]])
+    result = runner.invoke(app, [])
 
     assert result.exit_code == 0
-    assert "agent.turn" in result.stdout
+    assert "Trace not found" in result.stdout

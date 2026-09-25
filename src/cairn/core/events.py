@@ -10,6 +10,7 @@ EventType = Literal[
     "agent_finish",
     "agent_step_limit",
     "trace_start",
+    "trace_finish",
 ]
 
 

@@ -62,6 +62,7 @@ def test_run_turn_executes_tool_and_returns_follow_up() -> None:
         "tool_result",
         "agent_step",
         "agent_finish",
+        "trace_finish",
     ]
     tool_spans = [span for span in sink.spans if span.name == "tool.execute"]
     assert len(tool_spans) == 1
@@ -73,6 +74,10 @@ def test_run_turn_executes_tool_and_returns_follow_up() -> None:
     assert tool_span.attributes["stdout_length"] == len("recorded")
     turn_span = next(span for span in sink.spans if span.name == "agent.turn")
     assert events[0].data == {"trace_id": turn_span.context.trace_id}
+    assert events[-1].data == {
+        "trace_id": turn_span.context.trace_id,
+        "status": "ok",
+    }
     assert tool_span.context.parent_span_id == turn_span.context.span_id
 
 
@@ -132,11 +137,16 @@ def test_run_turn_records_tool_errors_and_continues() -> None:
 
 
 def test_run_turn_emits_and_raises_at_step_limit() -> None:
+    sink = RecordingSink()
     events: list[Event] = []
     llm = SequenceLLM([tool_response()])
     agent = make_agent(llm, RecordingTool(), events)
+    agent.tracer = Tracer(sink)
 
     with pytest.raises(RuntimeError, match="Agent exceeded maximum steps: 1"):
         asyncio.run(run_turn(agent, "keep going", max_steps=1))
 
-    assert events[-1] == Event(type="agent_step_limit", data={"max_steps": 1})
+    assert events[-2] == Event(type="agent_step_limit", data={"max_steps": 1})
+    assert events[-1].type == "trace_finish"
+    assert events[-1].data["status"] == "error"
+    assert sink.spans[-1].status == SpanStatus.ERROR

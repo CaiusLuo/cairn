@@ -1,26 +1,18 @@
-from pathlib import Path
-
-import typer
-from rich.console import Console
-
-from cairn.observability.reader import JsonlTraceReader
+from cairn.commands.context import CommandContext
 from cairn.trace_ui import print_trace
 
-trace_app = typer.Typer(
-    help="Inspect Cairn execution traces.",
-)
 
-console = Console()
+def handle_trace(context: CommandContext, args: list[str]) -> None:
+    trace_id = args[0] if args else context.last_trace_id
 
-
-@trace_app.command("show")
-def show_trace(trace_id: str) -> None:
-    reader = JsonlTraceReader(Path(".cairn/traces"))
+    if trace_id is None:
+        print("No trace available yet.")
+        return
 
     try:
-        spans = reader.read(trace_id)
+        spans = context.trace_reader.read(trace_id)
     except (FileNotFoundError, ValueError) as exc:
-        console.print(str(exc), style="red")
-        raise typer.Exit(code=1) from exc
+        print(exc)
+        return
 
     print_trace(spans)

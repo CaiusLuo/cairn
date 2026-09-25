@@ -27,9 +27,7 @@ async def run_turn(
             agent.emit(
                 Event(
                     type="trace_start",
-                    data={
-                        "trace_id": turn_span.context.trace_id,
-                    },
+                    data={"trace_id": turn_span.context.trace_id},
                 )
             )
 
@@ -287,8 +285,18 @@ async def run_turn(
 
     finally:
         if turn_span is not None and agent.tracer is not None:
+            status = SpanStatus.OK if trace_error is None else SpanStatus.ERROR
             agent.tracer.end_span(
                 turn_span,
-                status=SpanStatus.ERROR if trace_error is not None else SpanStatus.OK,
+                status=status,
                 error=trace_error,
+            )
+            agent.emit(
+                Event(
+                    type="trace_finish",
+                    data={
+                        "trace_id": turn_span.context.trace_id,
+                        "status": status.value,
+                    },
+                )
             )
