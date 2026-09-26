@@ -18,8 +18,7 @@ def _parse_tool_arguments(
         parsed = json.loads(arguments)
     except json.JSONDecodeError as error:
         raise ValueError(
-            f"Invalid JSON arguments for tool '{tool_name}' "
-            f"(call ID '{call_id}')"
+            f"Invalid JSON arguments for tool '{tool_name}' (call ID '{call_id}')"
         ) from error
 
     if not isinstance(parsed, dict):
