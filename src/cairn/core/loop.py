@@ -244,10 +244,17 @@ async def run_turn(
                                 "stderr_length": len(result.stderr),
                             }
                         )
-                        agent.tracer.end_span(
-                            tool_span,
-                            status=SpanStatus.OK,
-                        )
+                        if result.exit_code == 0:
+                            agent.tracer.end_span(
+                                tool_span,
+                                status=SpanStatus.OK,
+                            )
+                        else:
+                            agent.tracer.end_span(
+                                tool_span,
+                                status=SpanStatus.ERROR,
+                                error=f"ToolError: exit_code {result.exit_code}",
+                            )
 
                 agent.emit(
                     Event(

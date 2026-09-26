@@ -1,12 +1,13 @@
 import asyncio
 import json
+from typing import Any
 
 import pytest
 
 from cairn.core.agent import Agent
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
-from cairn.core.models import LLMResponse, ToolCall
+from cairn.core.models import LLMResponse, ToolCall, ToolResult
 from cairn.core.permissions import PermissionDecision, PermissionResult
 from cairn.observability.models import SpanStatus
 from cairn.observability.tracer import Tracer
@@ -147,6 +148,59 @@ def test_run_turn_records_tool_errors_and_continues() -> None:
     assert len(tool_spans) == 1
     assert tool_spans[0].status == SpanStatus.ERROR
     assert tool_spans[0].error == "RuntimeError: tool failed"
+    turn_span = next(span for span in sink.spans if span.name == "agent.turn")
+    assert turn_span.status == SpanStatus.OK
+
+
+class ExitCodeTool(RecordingTool):
+    def __init__(self, exit_code: int) -> None:
+        super().__init__()
+        self.exit_code = exit_code
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        self.calls.append(arguments)
+        return ToolResult(
+            stdout="out",
+            stderr="err" if self.exit_code != 0 else "",
+            exit_code=self.exit_code,
+        )
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "expected_status"),
+    [
+        (0, SpanStatus.OK),
+        (3, SpanStatus.ERROR),
+        (-1, SpanStatus.ERROR),
+    ],
+)
+def test_run_turn_marks_tool_span_by_exit_code(
+    exit_code: int,
+    expected_status: SpanStatus,
+) -> None:
+    sink = RecordingSink()
+    events: list[Event] = []
+    llm = SequenceLLM([tool_response(), LLMResponse(content="recovered")])
+    agent = make_agent(llm, ExitCodeTool(exit_code), events)
+    agent.tracer = Tracer(sink)
+
+    result = asyncio.run(run_turn(agent, "run it"))
+
+    assert result == "recovered"
+    tool_spans = [span for span in sink.spans if span.name == "tool.execute"]
+    assert len(tool_spans) == 1
+    tool_span = tool_spans[0]
+    assert tool_span.status == expected_status
+    assert tool_span.attributes["exit_code"] == exit_code
+    assert tool_span.attributes["stdout_length"] == len("out")
+    assert tool_span.attributes["stderr_length"] == (
+        0 if exit_code == 0 else len("err")
+    )
+    if exit_code == 0:
+        assert tool_span.error is None
+    else:
+        assert tool_span.error is not None
+        assert str(exit_code) in tool_span.error
     turn_span = next(span for span in sink.spans if span.name == "agent.turn")
     assert turn_span.status == SpanStatus.OK
 
