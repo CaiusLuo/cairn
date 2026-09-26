@@ -85,6 +85,8 @@ async def main() -> None:
 
     while True:
         user_input = input("cairn> ").strip()
+        if not user_input:
+            continue
 
         command_result = router.handle(
             user_input,

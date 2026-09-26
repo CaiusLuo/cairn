@@ -79,18 +79,35 @@ def test_cli_without_command_starts_and_exits(
     assert "Goodbye! see you next time." in result.stdout
 
 
-def test_main_runs_turn_and_prints_response(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_ignores_blank_input_and_runs_normal_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
-    inputs = iter(("hello", "/quit"))
+    inputs = iter(("", "", "   ", "\t", "hello", "", " \t ", "/quit"))
     monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+    expected_history = [
+        Message(role="user", content="previous"),
+        Message(role="assistant", content="previous answer"),
+    ]
+    created_agents: list[Agent] = []
+    turns: list[str] = []
     responses: list[str] = []
+
+    def capture_agent(**kwargs: Any) -> Agent:
+        agent = Agent(**kwargs)
+        agent.state.add_user_message("previous")
+        agent.state.add_assistant_message("previous answer")
+        created_agents.append(agent)
+        return agent
 
     async def fake_run_turn(
         agent: Agent,
         user_input: str,
         max_steps: int = 20,
     ) -> str:
+        turns.append(user_input)
+        assert agent.state.messages == expected_history
         assert agent.tools.get_tool("bash").name == "bash"
         assert agent.tools.get_tool("read_file").name == "read_file"
         assert agent.tools.get_tool("edit_file").name == "edit_file"
@@ -100,12 +117,17 @@ def test_main_runs_turn_and_prints_response(monkeypatch: pytest.MonkeyPatch) -> 
     def record_response(content: str) -> None:
         responses.append(content)
 
+    monkeypatch.setattr(cli_module, "Agent", capture_agent)
     monkeypatch.setattr(cli_module, "run_turn", fake_run_turn)
     monkeypatch.setattr(cli_module, "print_assistant_response", record_response)
 
-    asyncio.run(cli_module.main())
+    result = runner.invoke(app, [])
 
+    assert result.exit_code == 0
+    assert turns == ["hello"]
     assert responses == ["reply to hello"]
+    assert len(created_agents) == 1
+    assert created_agents[0].state.messages == expected_history
 
 
 def test_cli_continues_after_failed_turn(monkeypatch: pytest.MonkeyPatch) -> None:
