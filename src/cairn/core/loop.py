@@ -2,8 +2,63 @@ import json
 
 from cairn.core.agent import Agent
 from cairn.core.events import Event
-from cairn.core.models import Message, ToolFailure
-from cairn.observability.models import SpanStatus
+from cairn.core.models import Message, ToolCall, ToolFailure
+from cairn.observability.models import Span, SpanStatus
+
+
+def _check_tool_permission(
+    agent: Agent,
+    tool_call: ToolCall,
+    turn_span: Span | None,
+) -> bool:
+    permission_span = None
+
+    if agent.tracer is not None and turn_span is not None:
+        permission_span = agent.tracer.start_child_span(
+            turn_span,
+            "permission.check",
+            attributes={
+                "tool": tool_call.name,
+                "tool_call_id": tool_call.id,
+                "handler_configured": agent.permission_handler is not None,
+            },
+        )
+
+    if agent.permission_handler is None:
+        if permission_span is not None and agent.tracer is not None:
+            permission_span.attributes.update(
+                {
+                    "allowed": True,
+                    "source": "no_handler",
+                }
+            )
+            agent.tracer.end_span(permission_span, status=SpanStatus.OK)
+        return True
+
+    try:
+        permission = agent.permission_handler(tool_call)
+        if permission_span is not None and agent.tracer is not None:
+            permission_span.attributes.update(
+                {
+                    "policy_decision": permission.policy_decision.value,
+                    "allowed": permission.allowed,
+                    "prompted": permission.prompted,
+                }
+            )
+        allowed = permission.allowed
+    except Exception as exc:
+        if permission_span is not None and agent.tracer is not None:
+            agent.tracer.end_span(
+                permission_span,
+                status=SpanStatus.ERROR,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        raise
+    else:
+        if permission_span is not None and agent.tracer is not None:
+            agent.tracer.end_span(permission_span, status=SpanStatus.OK)
+
+    return allowed
 
 
 async def run_turn(
@@ -120,64 +175,20 @@ async def run_turn(
                     )
                 )
 
-                permission_span = None
+                allowed = _check_tool_permission(agent, tool_call, turn_span)
 
-                if agent.tracer is not None and turn_span is not None:
-                    permission_span = agent.tracer.start_child_span(
-                        turn_span,
-                        "permission.check",
-                        attributes={
-                            "tool": tool_call.name,
-                            "tool_call_id": tool_call.id,
-                            "handler_configured": agent.permission_handler is not None,
-                        },
+                if not allowed:
+                    tool_content = ToolFailure(
+                        error="Permission denied by user.",
+                        type="PermissionDenied",
+                    ).to_content()
+
+                    agent.state.add_tool_message(
+                        tool_call_id=tool_call.id,
+                        content=tool_content,
                     )
 
-                if agent.permission_handler is None:
-                    if permission_span is not None and agent.tracer is not None:
-                        permission_span.attributes.update(
-                            {
-                                "allowed": True,
-                                "source": "no_handler",
-                            }
-                        )
-                        agent.tracer.end_span(permission_span, status=SpanStatus.OK)
-                else:
-                    try:
-                        permission = agent.permission_handler(tool_call)
-                        if permission_span is not None and agent.tracer is not None:
-                            permission_span.attributes.update(
-                                {
-                                    "policy_decision": permission.policy_decision.value,
-                                    "allowed": permission.allowed,
-                                    "prompted": permission.prompted,
-                                }
-                            )
-                        allowed = permission.allowed
-                    except Exception as exc:
-                        if permission_span is not None and agent.tracer is not None:
-                            agent.tracer.end_span(
-                                permission_span,
-                                status=SpanStatus.ERROR,
-                                error=f"{type(exc).__name__}: {exc}",
-                            )
-                        raise
-                    else:
-                        if permission_span is not None and agent.tracer is not None:
-                            agent.tracer.end_span(permission_span, status=SpanStatus.OK)
-
-                    if not allowed:
-                        tool_content = ToolFailure(
-                            error="Permission denied by user.",
-                            type="PermissionDenied",
-                        ).to_content()
-
-                        agent.state.add_tool_message(
-                            tool_call_id=tool_call.id,
-                            content=tool_content,
-                        )
-
-                        continue
+                    continue
 
                 tool_span = None
 
