@@ -44,12 +44,33 @@ def test_bash_tool_rejects_invalid_arguments_before_spawning(
     create_process.assert_not_called()
 
 
-def test_bash_tool_preserves_command_text(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "exit_code", "expected_stdout", "expected_stderr"),
+    [
+        (
+            "中文输出".encode(),
+            "中文错误".encode(),
+            0,
+            "中文输出",
+            "中文错误",
+        ),
+        (b"before\xffafter", b"", 3, "before\ufffdafter", ""),
+        (b"", b"warning:\xff", -1, "", "warning:\ufffd"),
+    ],
+    ids=("utf8", "invalid-stdout", "invalid-stderr"),
+)
+def test_bash_tool_preserves_command_text_and_decodes_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: bytes,
+    stderr: bytes,
+    exit_code: int,
+    expected_stdout: str,
+    expected_stderr: str,
 ) -> None:
     process = AsyncMock()
-    process.communicate.return_value = (b"hello", b"")
-    process.wait.return_value = 0
+    process.communicate.return_value = (stdout, stderr)
+    process.wait.return_value = exit_code
     create_process = AsyncMock(return_value=process)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
     monkeypatch.setattr("cairn.tools.bash.sys.platform", "darwin")
@@ -59,8 +80,9 @@ def test_bash_tool_preserves_command_text(
 
     create_process.assert_awaited_once()
     assert create_process.call_args.args[-3:] == ("/bin/sh", "-c", command)
-    assert result.stdout == "hello"
-    assert result.exit_code == 0
+    assert result.stdout == expected_stdout
+    assert result.stderr == expected_stderr
+    assert result.exit_code == exit_code
 
 
 def test_bash_tool_executes_in_configured_directory(tmp_path: Path) -> None:

@@ -122,7 +122,7 @@ class BashTool:
             )
 
         return ToolResult(
-            stdout=stdout.decode(),
-            stderr=stderr.decode(),
+            stdout=stdout.decode("utf-8", errors="replace"),
+            stderr=stderr.decode("utf-8", errors="replace"),
             exit_code=await process.wait(),
         )
