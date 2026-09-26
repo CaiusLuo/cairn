@@ -33,3 +33,11 @@ class ToolResult(BaseModel):
     stdout: str = ""
     stderr: str = ""
     exit_code: int
+
+
+class ToolFailure(BaseModel):
+    error: str
+    type: str
+
+    def to_content(self) -> str:
+        return self.model_dump_json(ensure_ascii=False)

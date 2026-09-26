@@ -2,7 +2,7 @@ import json
 
 from cairn.core.agent import Agent
 from cairn.core.events import Event
-from cairn.core.models import Message
+from cairn.core.models import Message, ToolFailure
 from cairn.observability.models import SpanStatus
 
 
@@ -167,13 +167,10 @@ async def run_turn(
                             agent.tracer.end_span(permission_span, status=SpanStatus.OK)
 
                     if not allowed:
-                        tool_content = json.dumps(
-                            {
-                                "error": "Permission denied by user.",
-                                "type": "PermissionDenied",
-                            },
-                            ensure_ascii=False,
-                        )
+                        tool_content = ToolFailure(
+                            error="Permission denied by user.",
+                            type="PermissionDenied",
+                        ).to_content()
 
                         agent.state.add_tool_message(
                             tool_call_id=tool_call.id,
@@ -221,13 +218,10 @@ async def run_turn(
                         )
                     )
 
-                    tool_content = json.dumps(
-                        {
-                            "err": str(exc),
-                            "type": type(exc).__name__,
-                        },
-                        ensure_ascii=False,
-                    )
+                    tool_content = ToolFailure(
+                        error=str(exc),
+                        type=type(exc).__name__,
+                    ).to_content()
 
                     agent.state.add_tool_message(
                         tool_call_id=tool_call.id,

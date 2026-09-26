@@ -7,7 +7,7 @@ import pytest
 from cairn.core.agent import Agent
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
-from cairn.core.models import LLMResponse, ToolCall, ToolResult
+from cairn.core.models import LLMResponse, ToolCall, ToolFailure, ToolResult
 from cairn.core.permissions import PermissionDecision, PermissionResult
 from cairn.observability.models import SpanStatus
 from cairn.observability.tracer import Tracer
@@ -97,6 +97,15 @@ def test_run_turn_executes_tool_and_returns_follow_up() -> None:
     assert tool_span.context.parent_span_id == turn_span.context.span_id
 
 
+def test_tool_failure_to_content_contract() -> None:
+    failure = ToolFailure(error="boom", type="RuntimeError")
+
+    assert json.loads(failure.to_content()) == {
+        "error": "boom",
+        "type": "RuntimeError",
+    }
+
+
 def test_run_turn_records_permission_denial_without_executing_tool() -> None:
     sink = RecordingSink()
     llm = SequenceLLM([tool_response(), LLMResponse(content="denied handled")])
@@ -140,7 +149,7 @@ def test_run_turn_records_tool_errors_and_continues() -> None:
 
     assert result == "recovered"
     assert json.loads(agent.state.messages[2].content or "") == {
-        "err": "tool failed",
+        "error": "tool failed",
         "type": "RuntimeError",
     }
     assert any(event.type == "tool_error" for event in events)
@@ -148,6 +157,28 @@ def test_run_turn_records_tool_errors_and_continues() -> None:
     assert len(tool_spans) == 1
     assert tool_spans[0].status == SpanStatus.ERROR
     assert tool_spans[0].error == "RuntimeError: tool failed"
+    turn_span = next(span for span in sink.spans if span.name == "agent.turn")
+    assert turn_span.status == SpanStatus.OK
+
+
+def test_run_turn_records_unknown_tool_with_same_error_fields() -> None:
+    sink = RecordingSink()
+    events: list[Event] = []
+    llm = SequenceLLM([tool_response(), LLMResponse(content="recovered")])
+    agent = make_agent(llm, events=events)
+    agent.tracer = Tracer(sink)
+
+    result = asyncio.run(run_turn(agent, "run it"))
+
+    assert result == "recovered"
+    assert json.loads(agent.state.messages[2].content or "") == {
+        "error": "Tool not found: record",
+        "type": "ValueError",
+    }
+    assert any(event.type == "tool_error" for event in events)
+    tool_spans = [span for span in sink.spans if span.name == "tool.execute"]
+    assert len(tool_spans) == 1
+    assert tool_spans[0].status == SpanStatus.ERROR
     turn_span = next(span for span in sink.spans if span.name == "agent.turn")
     assert turn_span.status == SpanStatus.OK
 
