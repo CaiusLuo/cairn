@@ -84,7 +84,10 @@ def test_file_tool_content_is_rendered_literally(
     ui.console_event_handler(
         Event(
             type="tool_call",
-            data={"tool": "edit_file", "arguments": {"new_text": "[/dim]"}},
+            data={
+                "tool": "edit_file[/bold]",
+                "arguments": {"new_text": "[/dim]"},
+            },
         )
     )
     ui.console_event_handler(
@@ -100,6 +103,7 @@ def test_file_tool_content_is_rendered_literally(
     assert "[/dim]" in output.getvalue()
     assert "[/bold]" in output.getvalue()
     assert "[/bold red]" in output.getvalue()
+    assert "→ edit_file[/bold]" in output.getvalue()
 
 
 def test_console_permission_handler_returns_automatic_decision(
@@ -122,15 +126,18 @@ def test_console_permission_handler_prompts_for_bash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = _capture_console(monkeypatch)
+    confirm_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    def confirm_yes(*_args: object, **_kwargs: object) -> bool:
+    def confirm_yes(*args: object, **kwargs: object) -> bool:
+        confirm_calls.append((args, kwargs))
         return True
 
     monkeypatch.setattr(Confirm, "ask", confirm_yes)
+    command = "printf '[/bold]'"
     tool_call = ToolCall(
         id="call-1",
         name="bash",
-        arguments={"command": "python -V"},
+        arguments={"command": command},
     )
 
     assert ui.console_permission_handler(tool_call) == PermissionResult(
@@ -138,7 +145,8 @@ def test_console_permission_handler_prompts_for_bash(
         allowed=True,
         prompted=True,
     )
-    assert "Command: python -V" in output.getvalue()
+    assert "Command: printf '[/bold]'" in output.getvalue()
+    assert confirm_calls == [(("Allow this action?",), {"default": False})]
 
 
 def test_console_permission_handler_can_deny_other_tools(
@@ -152,7 +160,7 @@ def test_console_permission_handler_can_deny_other_tools(
     monkeypatch.setattr(Confirm, "ask", confirm_no)
     tool_call = ToolCall(
         id="call-1",
-        name="other",
+        name="other[/bold]",
         arguments={"value": 1},
     )
 
@@ -161,4 +169,5 @@ def test_console_permission_handler_can_deny_other_tools(
         allowed=False,
         prompted=True,
     )
+    assert "Tool: other[/bold]" in output.getvalue()
     assert "Arguments: {'value': 1}" in output.getvalue()

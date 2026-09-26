@@ -3,6 +3,7 @@ from importlib.resources import files
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.prompt import Confirm
+from rich.text import Text
 
 from cairn.core.events import Event
 from cairn.core.models import ToolCall
@@ -37,7 +38,7 @@ def console_event_handler(event: Event) -> None:
             tool = event.data.get("tool")
             arguments = event.data.get("arguments")
 
-            console.print(f"\n[bold cyan]→ {tool}[/bold cyan]")
+            console.print(Text(f"\n→ {tool}", style="bold cyan"))
             console.print(arguments, style="dim")
 
         case "tool_result":
@@ -95,11 +96,15 @@ def console_permission_handler(tool_call: ToolCall) -> PermissionResult:
         )
 
     console.print("\n[bold yellow]Permission required[/bold yellow]")
-    console.print(f"[bold]Tool:[/bold] {tool_call.name}")
+    tool_label = Text("Tool:", style="bold")
+    tool_label.append(f" {tool_call.name}")
+    console.print(tool_label)
 
     if tool_call.name == "bash":
         command = tool_call.arguments.get("command")
-        console.print(f"[bold]Command:[/bold] {command}")
+        command_label = Text("Command:", style="bold")
+        command_label.append(f" {command}")
+        console.print(command_label)
     else:
         console.print(f"Arguments: {tool_call.arguments}", markup=False)
 
