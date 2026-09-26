@@ -6,6 +6,31 @@ from litellm import acompletion
 from cairn.core.models import LLMResponse, Message, ToolCall
 
 
+def _parse_tool_arguments(
+    arguments: str | None,
+    tool_name: str,
+    call_id: str,
+) -> dict[str, Any]:
+    if not arguments:
+        return {}
+
+    try:
+        parsed = json.loads(arguments)
+    except json.JSONDecodeError as error:
+        raise ValueError(
+            f"Invalid JSON arguments for tool '{tool_name}' "
+            f"(call ID '{call_id}')"
+        ) from error
+
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            f"Arguments for tool '{tool_name}' (call ID '{call_id}') "
+            "must be a JSON object"
+        )
+
+    return parsed
+
+
 class LiteLLMClient:
     def __init__(
         self,
@@ -68,20 +93,15 @@ class LiteLLMClient:
 
         if message.tool_calls:
             for call in message.tool_calls:
-                try:
-                    args = (
-                        json.loads(call.function.arguments)
-                        if call.function.arguments
-                        else {}
-                    )
-                except json.JSONDecodeError:
-                    args = {}
-
                 tool_calls.append(
                     ToolCall(
                         id=call.id,
                         name=call.function.name,
-                        arguments=args,
+                        arguments=_parse_tool_arguments(
+                            call.function.arguments,
+                            call.function.name,
+                            call.id,
+                        ),
                     )
                 )
 

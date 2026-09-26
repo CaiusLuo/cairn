@@ -90,10 +90,17 @@ def test_generate_forwards_request_and_parses_tool_calls(
                                 ),
                             ),
                             FakeToolCall(
-                                id="invalid",
+                                id="empty",
                                 function=FakeFunction(
                                     name="bash",
-                                    arguments="not-json",
+                                    arguments="",
+                                ),
+                            ),
+                            FakeToolCall(
+                                id="none",
+                                function=FakeFunction(
+                                    name="bash",
+                                    arguments=None,
                                 ),
                             ),
                         ],
@@ -127,8 +134,55 @@ def test_generate_forwards_request_and_parses_tool_calls(
     assert response.content == "tool requested"
     assert response.tool_calls == [
         ToolCall(id="valid", name="bash", arguments={"command": "pwd"}),
-        ToolCall(id="invalid", name="bash", arguments={}),
+        ToolCall(id="empty", name="bash", arguments={}),
+        ToolCall(id="none", name="bash", arguments={}),
     ]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ("not-json", "Invalid JSON arguments"),
+        ("[]", "must be a JSON object"),
+        ("null", "must be a JSON object"),
+    ],
+)
+def test_generate_rejects_invalid_tool_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: str,
+    message: str,
+) -> None:
+    async def fake_acompletion(**_kwargs: Any) -> FakeResponse:
+        return FakeResponse(
+            choices=[
+                FakeChoice(
+                    message=FakeMessage(
+                        content=None,
+                        tool_calls=[
+                            FakeToolCall(
+                                id="bad-call",
+                                function=FakeFunction(
+                                    name="bash",
+                                    arguments=arguments,
+                                ),
+                            )
+                        ],
+                    )
+                )
+            ]
+        )
+
+    monkeypatch.setattr(litellm_module, "acompletion", fake_acompletion)
+
+    with pytest.raises(ValueError, match=message) as error:
+        asyncio.run(
+            LiteLLMClient(model="test-model").generate(
+                [Message(role="user", content="hello")]
+            )
+        )
+
+    assert "bash" in str(error.value)
+    assert "bad-call" in str(error.value)
 
 
 def test_generate_handles_response_without_tool_calls(
