@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -12,6 +13,54 @@ def test_bash_tool_schema_describes_required_command(tmp_path: Path) -> None:
     assert schema["function"]["name"] == "bash"
     assert schema["function"]["parameters"]["required"] == ["command"]
     assert schema["function"]["parameters"]["additionalProperties"] is False
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"command": None},
+        {"command": 42},
+        {"command": True},
+        {"command": ""},
+        {"command": " \t\n"},
+        {"command": "pwd", "extra": True},
+    ],
+    ids=("missing", "none", "number", "boolean", "empty", "whitespace", "extra"),
+)
+def test_bash_tool_rejects_invalid_arguments_before_spawning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: dict[str, object],
+) -> None:
+    create_process = AsyncMock(
+        side_effect=AssertionError("Invalid arguments reached subprocess creation")
+    )
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+
+    with pytest.raises(ValueError, match="command"):
+        asyncio.run(BashTool(cwd=tmp_path).execute(arguments))
+
+    create_process.assert_not_called()
+
+
+def test_bash_tool_preserves_command_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = AsyncMock()
+    process.communicate.return_value = (b"hello", b"")
+    process.wait.return_value = 0
+    create_process = AsyncMock(return_value=process)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+    monkeypatch.setattr("cairn.tools.bash.sys.platform", "darwin")
+    command = "  printf '%s' 'hello'\n"
+
+    result = asyncio.run(BashTool(cwd=tmp_path).execute({"command": command}))
+
+    create_process.assert_awaited_once()
+    assert create_process.call_args.args[-3:] == ("/bin/sh", "-c", command)
+    assert result.stdout == "hello"
+    assert result.exit_code == 0
 
 
 def test_bash_tool_executes_in_configured_directory(tmp_path: Path) -> None:

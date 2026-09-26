@@ -40,7 +40,12 @@ class BashTool:
         self,
         arguments: dict[str, Any],
     ) -> ToolResult:
-        command = arguments["command"]
+        command = arguments.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise ValueError("command must be a non-empty string")
+        if arguments.keys() - {"command"}:
+            raise ValueError("bash only accepts the 'command' argument")
+
         cwd = self.cwd.resolve()
         env = {
             key: value
