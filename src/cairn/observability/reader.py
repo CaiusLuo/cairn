@@ -9,13 +9,11 @@ class JsonlTraceReader:
         self.root = root
         self.resolver = TraceResolver(root)
 
-    def read(self, trace_id: str) -> list[Span]:
-        resolved_id = self.resolver.resolve(trace_id)
-
-        path = self.root / f"{resolved_id}.jsonl"
+    def _read_path(self, stem: str) -> list[Span]:
+        path = self.root / f"{stem}.jsonl"
 
         if not path.exists():
-            raise FileNotFoundError(f"Trace not found: {trace_id}")
+            raise FileNotFoundError(f"Trace not found: {stem}")
 
         spans: list[Span] = []
 
@@ -27,11 +25,16 @@ class JsonlTraceReader:
 
         return spans
 
+    def read(self, trace_id: str) -> list[Span]:
+        resolved_id = self.resolver.resolve(trace_id)
+
+        return self._read_path(resolved_id)
+
     def list_traces(self, limit: int = 20) -> list[Span]:
         roots: list[Span] = []
 
         for path in self.root.glob("*.jsonl"):
-            spans = self.read(path.stem)
+            spans = self._read_path(path.stem)
 
             root = next(
                 (span for span in spans if span.context.parent_span_id is None),

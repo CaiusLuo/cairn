@@ -90,6 +90,50 @@ def _write_trace_root(sink: JsonlTraceSink, start_time: datetime) -> Span:
     return root
 
 
+def test_reader_lists_traces_no_repeated_resolver_scans(tmp_path: Path) -> None:
+    """Verify list_traces uses _read_path, not resolver, avoiding O(N) directory scans.
+
+    Writes 4 distinct trace files, then asserts list_traces returns those 4 roots
+    without calling resolver.resolve (call count == 0). read() with a full ID still
+    goes through resolver and works independently.
+    """
+    # Write exactly 4 trace files and remember their IDs.
+    expected_ids: list[str] = []
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    for i in range(4):
+        root = _write_trace_root(JsonlTraceSink(tmp_path), now + timedelta(minutes=i))
+        expected_ids.append(root.context.trace_id)
+
+    reader = JsonlTraceReader(tmp_path)
+
+    # Count resolver.resolve calls; list_traces must not invoke it.
+    calls: list[int] = [0]
+    original_resolve = reader.resolver.resolve
+
+    def counting_resolve(trace_id: str) -> str:
+        calls[0] += 1
+        return original_resolve(trace_id)
+
+    reader.resolver.resolve = counting_resolve
+
+    roots = reader.list_traces()
+    assert len(roots) == 4
+    assert calls[0] == 0, (
+        f"list_traces called resolver.resolve {calls[0]} times; expected 0 (uses _read_path)"
+    )
+    # Verify the returned roots match what we wrote.
+    actual_ids = {r.context.trace_id for r in roots}
+    assert actual_ids == set(expected_ids), (
+        f"Expected {set(expected_ids)}, got {actual_ids}"
+    )
+
+    # Read one full ID through resolver to confirm it still works.
+    first_root = roots[0]
+    read_spans = reader.read(first_root.context.trace_id)
+    # read() may return just the root if no child was emitted; assert the root is present.
+    assert any(span.name == "agent.turn" for span in read_spans)
+
+
 def test_reader_lists_traces_newest_first(tmp_path: Path) -> None:
     sink = JsonlTraceSink(tmp_path)
     now = datetime(2026, 1, 1, tzinfo=UTC)
