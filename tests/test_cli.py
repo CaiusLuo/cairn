@@ -293,3 +293,66 @@ def test_interactive_trace_reports_missing_trace(
 
     assert result.exit_code == 0
     assert "Trace not found" in result.stdout
+
+
+@pytest.mark.parametrize("failure", ("corrupt-jsonl", "unreadable-file"))
+def test_interactive_trace_read_errors_keep_session_available(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    if failure == "corrupt-jsonl":
+        trace_root = tmp_path / ".cairn" / "traces"
+        trace_root.mkdir(parents=True)
+        (trace_root / "corrupt.jsonl").write_text("{invalid json\n", encoding="utf-8")
+        trace_command = "/trace list"
+        expected_error = "json"
+    else:
+        trace_id = _write_trace()
+        trace_path = Path(".cairn/traces") / f"{trace_id}.jsonl"
+        original_read_text = Path.read_text
+
+        def fail_trace_read(
+            path: Path,
+            encoding: str | None = None,
+            errors: str | None = None,
+        ) -> str:
+            if path == trace_path:
+                raise PermissionError("permission denied")
+            return original_read_text(path, encoding=encoding, errors=errors)
+
+        monkeypatch.setattr(Path, "read_text", fail_trace_read)
+        trace_command = f"/trace {trace_id[:8]}"
+        expected_error = "permission denied"
+
+    inputs = iter((trace_command, "/help", "/quit"))
+    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+    created_agents: list[Agent] = []
+
+    def capture_agent(**kwargs: Any) -> Agent:
+        agent = Agent(**kwargs)
+        agent.state.add_user_message("previous")
+        agent.state.add_assistant_message("previous answer")
+        created_agents.append(agent)
+        return agent
+
+    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
+        pytest.fail("Trace command reached the model")
+
+    monkeypatch.setattr(cli_module, "Agent", capture_agent)
+    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert expected_error in result.stdout.lower()
+    assert "Available commands:" in result.stdout
+    assert "Goodbye! see you next time." in result.stdout
+    assert len(created_agents) == 1
+    assert created_agents[0].state.messages == [
+        Message(role="user", content="previous"),
+        Message(role="assistant", content="previous answer"),
+    ]
