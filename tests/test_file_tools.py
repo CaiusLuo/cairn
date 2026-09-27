@@ -107,3 +107,62 @@ def test_file_tools_reject_paths_outside_workspace(tmp_path: Path) -> None:
                 )
             )
     assert outside.read_text(encoding="utf-8") == "private"
+
+
+def test_file_tools_reject_symlinked_parent_into_git(
+    tmp_path: Path,
+) -> None:
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+
+    config = git_dir / "config"
+    config.write_text(
+        "dummy-test-data",
+        encoding="utf-8",
+    )
+
+    (tmp_path / "alias").symlink_to(
+        git_dir,
+        target_is_directory=True,
+    )
+
+    with pytest.raises(ValueError):
+        asyncio.run(ReadFileTool(tmp_path).execute({"path": "alias/config"}))
+
+    with pytest.raises(ValueError):
+        asyncio.run(
+            EditFileTool(tmp_path).execute(
+                {
+                    "path": "alias/config",
+                    "old_text": "dummy-test-data",
+                    "new_text": "changed",
+                }
+            )
+        )
+
+    assert config.read_text(encoding="utf-8") == "dummy-test-data"
+
+
+def test_edit_file_rejects_creation_through_symlinked_parent(
+    tmp_path: Path,
+) -> None:
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+
+    (tmp_path / "alias").symlink_to(
+        git_dir,
+        target_is_directory=True,
+    )
+
+    with pytest.raises(ValueError):
+        asyncio.run(
+            EditFileTool(tmp_path).execute(
+                {
+                    "path": "alias/new-file",
+                    "old_text": "",
+                    "new_text": "bad",
+                }
+            )
+        )
+
+    assert not (git_dir / "new-file").exists()

@@ -8,18 +8,37 @@ from typing import Any
 from cairn.core.models import ToolResult
 
 
+def _reject_symlink_components(root: Path, relative: Path) -> None:
+    current = root
+    for path in relative.parts:
+        current = current / path
+
+        if current.is_symlink():
+            raise ValueError("symlink targets are not supported")
+
+
 def _workspace_path(cwd: Path, raw: Any) -> Path:
     if not isinstance(raw, str) or not raw:
         raise ValueError("path must be a non-empty workspace-relative string")
+
+    root = cwd.resolve()
     relative = Path(raw)
+
     if relative.is_absolute() or ".." in relative.parts or ".git" in relative.parts:
         raise ValueError("path must stay inside the workspace")
-    candidate = cwd / relative
-    if candidate.is_symlink():
-        raise ValueError("symlink targets are not supported")
-    path = candidate.resolve()
-    if not path.is_relative_to(cwd.resolve()):
+
+    _reject_symlink_components(root, relative)
+
+    path = (root / relative).resolve()
+
+    if not path.is_relative_to(root):
         raise ValueError("path must stay inside the workspace")
+
+    resolved_relative = path.relative_to(root)
+
+    if ".git" in resolved_relative.parts:
+        raise ValueError("path must stay outside .git")
+
     return path
 
 
