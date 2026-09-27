@@ -1,8 +1,8 @@
 from enum import StrEnum
-from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel, Field
+from cairn.workspace.workspace import Workspace
 
 
 class EvalStatus(StrEnum):
@@ -33,4 +33,4 @@ class EvalCase(BaseModel):
 class EvalCheck(Protocol):
     name: str
 
-    async def evaluate(self, workspace: Path) -> CheckResult: ...
+    async def evaluate(self, workspace: Workspace) -> CheckResult: ...
