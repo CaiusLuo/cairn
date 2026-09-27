@@ -2,6 +2,7 @@ from enum import StrEnum
 from typing import Protocol
 
 from pydantic import BaseModel, Field
+
 from cairn.workspace.workspace import Workspace
 
 
