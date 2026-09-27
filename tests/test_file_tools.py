@@ -5,12 +5,13 @@ from pathlib import Path
 import pytest
 
 from cairn.tools.files import EditFileTool, ReadFileTool
+from cairn.workspace.workspace import Workspace
 
 
 def test_read_file_returns_requested_lines_and_caps_output(tmp_path: Path) -> None:
     path = tmp_path / "example.py"
     path.write_text("one\ntwo\nthree\n", encoding="utf-8")
-    tool = ReadFileTool(tmp_path)
+    tool = ReadFileTool(Workspace(tmp_path))
 
     result = asyncio.run(
         tool.execute({"path": "example.py", "start_line": 2, "end_line": 3})
@@ -37,7 +38,7 @@ def test_edit_file_replaces_once_and_leaves_failed_edits_unchanged(
 ) -> None:
     path = tmp_path / "example.py"
     path.write_text("alpha\nbeta\nalpha\n", encoding="utf-8")
-    tool = EditFileTool(tmp_path)
+    tool = EditFileTool(Workspace(tmp_path))
 
     result = asyncio.run(
         tool.execute({"path": "example.py", "old_text": "beta", "new_text": "gamma"})
@@ -69,7 +70,7 @@ def test_edit_file_keeps_original_if_replace_fails(
     monkeypatch.setattr(os, "replace", fail_replace)
     with pytest.raises(OSError, match="replace failed"):
         asyncio.run(
-            EditFileTool(tmp_path).execute(
+            EditFileTool(Workspace(tmp_path)).execute(
                 {"path": "example.py", "old_text": "before", "new_text": "after"}
             )
         )
@@ -79,7 +80,7 @@ def test_edit_file_keeps_original_if_replace_fails(
 
 
 def test_edit_file_creates_without_overwriting(tmp_path: Path) -> None:
-    tool = EditFileTool(tmp_path)
+    tool = EditFileTool(Workspace(tmp_path))
     arguments = {"path": "new/example.py", "old_text": "", "new_text": "print('ok')\n"}
 
     result = asyncio.run(tool.execute(arguments))
@@ -97,12 +98,12 @@ def test_file_tools_reject_paths_outside_workspace(tmp_path: Path) -> None:
     outside.write_text("private", encoding="utf-8")
     (tmp_path / "link.txt").symlink_to(outside)
 
-    for path in ("../outside.txt", "link.txt"):
+    for path in ("../outside.txt", str(outside), "link.txt"):
         with pytest.raises(ValueError):
-            asyncio.run(ReadFileTool(tmp_path).execute({"path": path}))
+            asyncio.run(ReadFileTool(Workspace(tmp_path)).execute({"path": path}))
         with pytest.raises(ValueError):
             asyncio.run(
-                EditFileTool(tmp_path).execute(
+                EditFileTool(Workspace(tmp_path)).execute(
                     {"path": path, "old_text": "private", "new_text": "bad"}
                 )
             )
@@ -127,11 +128,11 @@ def test_file_tools_reject_symlinked_parent_into_git(
     )
 
     with pytest.raises(ValueError):
-        asyncio.run(ReadFileTool(tmp_path).execute({"path": "alias/config"}))
+        asyncio.run(ReadFileTool(Workspace(tmp_path)).execute({"path": "alias/config"}))
 
     with pytest.raises(ValueError):
         asyncio.run(
-            EditFileTool(tmp_path).execute(
+            EditFileTool(Workspace(tmp_path)).execute(
                 {
                     "path": "alias/config",
                     "old_text": "dummy-test-data",
@@ -156,7 +157,7 @@ def test_edit_file_rejects_creation_through_symlinked_parent(
 
     with pytest.raises(ValueError):
         asyncio.run(
-            EditFileTool(tmp_path).execute(
+            EditFileTool(Workspace(tmp_path)).execute(
                 {
                     "path": "alias/new-file",
                     "old_text": "",
@@ -175,10 +176,10 @@ def test_file_tools_reject_direct_git_path(tmp_path: Path) -> None:
     config.write_text("dummy-test-data", encoding="utf-8")
 
     with pytest.raises(ValueError):
-        asyncio.run(ReadFileTool(tmp_path).execute({"path": ".git/config"}))
+        asyncio.run(ReadFileTool(Workspace(tmp_path)).execute({"path": ".git/config"}))
     with pytest.raises(ValueError):
         asyncio.run(
-            EditFileTool(tmp_path).execute(
+            EditFileTool(Workspace(tmp_path)).execute(
                 {
                     "path": ".git/config",
                     "old_text": "dummy-test-data",
@@ -203,10 +204,12 @@ def test_file_tools_reject_nested_symlink_components(tmp_path: Path) -> None:
     # Also start from a real directory so checking only the first component fails.
     for parent in ("alias1/alias2", "real_dir/alias2"):
         with pytest.raises(ValueError, match="symlink"):
-            asyncio.run(ReadFileTool(tmp_path).execute({"path": f"{parent}/config"}))
+            asyncio.run(
+                ReadFileTool(Workspace(tmp_path)).execute({"path": f"{parent}/config"})
+            )
         with pytest.raises(ValueError, match="symlink"):
             asyncio.run(
-                EditFileTool(tmp_path).execute(
+                EditFileTool(Workspace(tmp_path)).execute(
                     {
                         "path": f"{parent}/config",
                         "old_text": "dummy-test-data",
@@ -216,7 +219,7 @@ def test_file_tools_reject_nested_symlink_components(tmp_path: Path) -> None:
             )
         with pytest.raises(ValueError, match="symlink"):
             asyncio.run(
-                EditFileTool(tmp_path).execute(
+                EditFileTool(Workspace(tmp_path)).execute(
                     {
                         "path": f"{parent}/new/file",
                         "old_text": "",

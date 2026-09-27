@@ -6,14 +6,15 @@ from pathlib import Path
 from typing import Any
 
 from cairn.core.models import ToolResult
+from cairn.workspace.workspace import Workspace
 
 
 class BashTool:
     name = "bash"
     description = "Execute a shell command in the current workspace."
 
-    def __init__(self, cwd: Path, timeout: float = 30.0) -> None:
-        self.cwd = cwd
+    def __init__(self, workspace: Workspace, timeout: float = 30.0) -> None:
+        self.workspace = workspace
         self.timeout = timeout
 
     def schema(self) -> dict[str, Any]:
@@ -46,7 +47,7 @@ class BashTool:
         if arguments.keys() - {"command"}:
             raise ValueError("bash only accepts the 'command' argument")
 
-        cwd = self.cwd.resolve()
+        cwd = self.workspace.root
         env = {
             key: value
             for key in ("PATH", "LANG", "LC_ALL", "TERM", "VIRTUAL_ENV")

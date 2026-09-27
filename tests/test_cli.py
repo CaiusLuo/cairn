@@ -2,6 +2,7 @@ import asyncio
 import builtins
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from typer.testing import CliRunner
@@ -13,6 +14,8 @@ from cairn.core.events import Event
 from cairn.core.models import Message
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.tracer import Tracer
+from cairn.tools.bash import BashTool
+from cairn.tools.files import EditFileTool, ReadFileTool
 
 runner = CliRunner()
 
@@ -81,8 +84,12 @@ def test_cli_without_command_starts_and_exits(
 
 def test_cli_ignores_blank_input_and_runs_normal_turn(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.chdir(tmp_path)
+    path_factory = Mock(wraps=Path)
+    monkeypatch.setattr(cli_module, "Path", path_factory)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     inputs = iter(("", "", "   ", "\t", "hello", "", " \t ", "/quit"))
     monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
@@ -108,9 +115,14 @@ def test_cli_ignores_blank_input_and_runs_normal_turn(
     ) -> str:
         turns.append(user_input)
         assert agent.state.messages == expected_history
-        assert agent.tools.get_tool("bash").name == "bash"
-        assert agent.tools.get_tool("read_file").name == "read_file"
-        assert agent.tools.get_tool("edit_file").name == "edit_file"
+        bash = agent.tools.get_tool("bash")
+        reader = agent.tools.get_tool("read_file")
+        editor = agent.tools.get_tool("edit_file")
+        assert isinstance(bash, BashTool)
+        assert isinstance(reader, ReadFileTool)
+        assert isinstance(editor, EditFileTool)
+        assert bash.workspace is reader.workspace is editor.workspace
+        assert bash.workspace.root == tmp_path.resolve()
         assert max_steps == 20
         return f"reply to {user_input}"
 
@@ -124,6 +136,7 @@ def test_cli_ignores_blank_input_and_runs_normal_turn(
     result = runner.invoke(app, [])
 
     assert result.exit_code == 0
+    path_factory.cwd.assert_called_once_with()
     assert turns == ["hello"]
     assert responses == ["reply to hello"]
     assert len(created_agents) == 1

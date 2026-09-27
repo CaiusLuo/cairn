@@ -6,48 +6,15 @@ from pathlib import Path
 from typing import Any
 
 from cairn.core.models import ToolResult
-
-
-def _reject_symlink_components(root: Path, relative: Path) -> None:
-    current = root
-    for path in relative.parts:
-        current = current / path
-
-        if current.is_symlink():
-            raise ValueError("symlink targets are not supported")
-
-
-def _workspace_path(cwd: Path, raw: Any) -> Path:
-    if not isinstance(raw, str) or not raw:
-        raise ValueError("path must be a non-empty workspace-relative string")
-
-    root = cwd.resolve()
-    relative = Path(raw)
-
-    if relative.is_absolute() or ".." in relative.parts or ".git" in relative.parts:
-        raise ValueError("path must stay inside the workspace")
-
-    _reject_symlink_components(root, relative)
-
-    path = (root / relative).resolve()
-
-    if not path.is_relative_to(root):
-        raise ValueError("path must stay inside the workspace")
-
-    resolved_relative = path.relative_to(root)
-
-    if ".git" in resolved_relative.parts:
-        raise ValueError("path must stay outside .git")
-
-    return path
+from cairn.workspace.workspace import Workspace
 
 
 class ReadFileTool:
     name = "read_file"
     description = "Read up to 200 lines of a UTF-8 workspace file."
 
-    def __init__(self, cwd: Path) -> None:
-        self.cwd = cwd
+    def __init__(self, workspace: Workspace) -> None:
+        self.workspace = workspace
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -72,7 +39,7 @@ class ReadFileTool:
         }
 
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
-        path = _workspace_path(self.cwd, arguments.get("path"))
+        path = self.workspace.resolve_path(arguments.get("path"))
         start = arguments.get("start_line", 1)
         end = arguments.get("end_line", start + 199 if isinstance(start, int) else 0)
         if (
@@ -102,8 +69,8 @@ class EditFileTool:
         "Set old_text to empty to create a new file; existing files cannot be overwritten."
     )
 
-    def __init__(self, cwd: Path) -> None:
-        self.cwd = cwd
+    def __init__(self, workspace: Workspace) -> None:
+        self.workspace = workspace
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -128,7 +95,7 @@ class EditFileTool:
         }
 
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
-        path = _workspace_path(self.cwd, arguments.get("path"))
+        path = self.workspace.resolve_path(arguments.get("path"))
         old = arguments.get("old_text")
         new = arguments.get("new_text")
         if not isinstance(old, str) or not isinstance(new, str):

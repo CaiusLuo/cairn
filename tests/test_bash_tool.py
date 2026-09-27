@@ -5,10 +5,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from cairn.tools.bash import BashTool
+from cairn.workspace.workspace import Workspace
 
 
 def test_bash_tool_schema_describes_required_command(tmp_path: Path) -> None:
-    schema = BashTool(cwd=tmp_path).schema()
+    schema = BashTool(workspace=Workspace(tmp_path)).schema()
 
     assert schema["function"]["name"] == "bash"
     assert schema["function"]["parameters"]["required"] == ["command"]
@@ -39,7 +40,7 @@ def test_bash_tool_rejects_invalid_arguments_before_spawning(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
 
     with pytest.raises(ValueError, match="command"):
-        asyncio.run(BashTool(cwd=tmp_path).execute(arguments))
+        asyncio.run(BashTool(workspace=Workspace(tmp_path)).execute(arguments))
 
     create_process.assert_not_called()
 
@@ -76,7 +77,9 @@ def test_bash_tool_preserves_command_text_and_decodes_output(
     monkeypatch.setattr("cairn.tools.bash.sys.platform", "darwin")
     command = "  printf '%s' 'hello'\n"
 
-    result = asyncio.run(BashTool(cwd=tmp_path).execute({"command": command}))
+    result = asyncio.run(
+        BashTool(workspace=Workspace(tmp_path)).execute({"command": command})
+    )
 
     create_process.assert_awaited_once()
     assert create_process.call_args.args[-3:] == ("/bin/sh", "-c", command)
@@ -85,8 +88,13 @@ def test_bash_tool_preserves_command_text_and_decodes_output(
     assert result.exit_code == exit_code
 
 
-def test_bash_tool_executes_in_configured_directory(tmp_path: Path) -> None:
-    result = asyncio.run(BashTool(cwd=tmp_path).execute({"command": "pwd"}))
+def test_bash_tool_executes_in_configured_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tool = BashTool(workspace=Workspace(tmp_path))
+    monkeypatch.chdir(tmp_path.parent)
+
+    result = asyncio.run(tool.execute({"command": "pwd"}))
 
     assert result.exit_code == 0
     assert Path(result.stdout.strip()) == tmp_path
@@ -101,7 +109,9 @@ def test_auto_allowed_command_does_not_use_shell_path(
     fake_ls.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}:/bin:/usr/bin")
 
-    result = asyncio.run(BashTool(cwd=tmp_path).execute({"command": "ls"}))
+    result = asyncio.run(
+        BashTool(workspace=Workspace(tmp_path)).execute({"command": "ls"})
+    )
 
     assert result.exit_code == 0
     assert not (tmp_path / "pwned").exists()
@@ -109,7 +119,7 @@ def test_auto_allowed_command_does_not_use_shell_path(
 
 def test_bash_tool_returns_stderr_and_exit_code(tmp_path: Path) -> None:
     result = asyncio.run(
-        BashTool(cwd=tmp_path).execute(
+        BashTool(workspace=Workspace(tmp_path)).execute(
             {"command": "printf 'failure' >&2; exit 3"},
         )
     )
@@ -121,7 +131,9 @@ def test_bash_tool_returns_stderr_and_exit_code(tmp_path: Path) -> None:
 
 def test_bash_tool_kills_timed_out_process(tmp_path: Path) -> None:
     result = asyncio.run(
-        BashTool(cwd=tmp_path, timeout=0.01).execute({"command": "sleep 1"})
+        BashTool(workspace=Workspace(tmp_path), timeout=0.01).execute(
+            {"command": "sleep 1"}
+        )
     )
 
     assert result.exit_code == -1
@@ -134,7 +146,7 @@ def test_bash_tool_confines_files_to_workspace(
     monkeypatch.setenv("HOME", str(tmp_path.parent))
     outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
     outside.write_text("private", encoding="utf-8")
-    tool = BashTool(cwd=tmp_path)
+    tool = BashTool(workspace=Workspace(tmp_path))
 
     read = asyncio.run(tool.execute({"command": f"cat {outside}"}))
     asyncio.run(tool.execute({"command": f"printf data > {outside}"}))
@@ -153,7 +165,9 @@ def test_bash_tool_does_not_pass_api_key_to_command(
     monkeypatch.setenv("CAIRN_LLM_API_KEY", "private-key")
 
     result = asyncio.run(
-        BashTool(cwd=tmp_path).execute({"command": 'printf %s "$CAIRN_LLM_API_KEY"'})
+        BashTool(workspace=Workspace(tmp_path)).execute(
+            {"command": 'printf %s "$CAIRN_LLM_API_KEY"'}
+        )
     )
 
     assert result.exit_code == 0

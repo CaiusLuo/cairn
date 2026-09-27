@@ -23,6 +23,7 @@ from cairn.ui import (
     print_banner,
     print_runtime_error,
 )
+from cairn.workspace.workspace import Workspace
 
 app = typer.Typer(
     invoke_without_command=True,
@@ -55,10 +56,11 @@ async def main() -> None:
     print_banner()
 
     registry = ToolRegistry()
+    workspace = Workspace(Path.cwd())
 
-    registry.register_tool(BashTool(cwd=Path.cwd()))
-    registry.register_tool(ReadFileTool(cwd=Path.cwd()))
-    registry.register_tool(EditFileTool(cwd=Path.cwd()))
+    registry.register_tool(BashTool(workspace))
+    registry.register_tool(ReadFileTool(workspace))
+    registry.register_tool(EditFileTool(workspace))
 
     trace_root = Path(".cairn/traces")
     tracer = Tracer(JsonlTraceSink(trace_root))
