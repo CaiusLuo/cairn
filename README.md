@@ -135,10 +135,11 @@ uv run ruff format .
 
 ## Current Status / Roadmap
 
-Cairn currently demonstrates a single-agent, single-process runtime with one
-local tool and interactive permission checks. Near-term work can deepen the
-runtime with more robust tool contracts, provider-backed integration tests,
-permission policies, and end-to-end CLI validation.
+Cairn currently demonstrates a single-agent, single-process runtime with Bash,
+file-reading and file-editing tools, and interactive permission checks.
+Near-term work can deepen the runtime with more robust tool contracts,
+provider-backed integration tests, permission policies, and end-to-end CLI
+validation.
 
 Possible future work includes persistent memory, richer sandboxing, additional
 tools, GitHub-oriented agent workflows, worktree isolation, multi-agent
