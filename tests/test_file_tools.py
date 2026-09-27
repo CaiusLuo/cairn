@@ -166,3 +166,64 @@ def test_edit_file_rejects_creation_through_symlinked_parent(
         )
 
     assert not (git_dir / "new-file").exists()
+
+
+def test_file_tools_reject_direct_git_path(tmp_path: Path) -> None:
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    config = git_dir / "config"
+    config.write_text("dummy-test-data", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        asyncio.run(ReadFileTool(tmp_path).execute({"path": ".git/config"}))
+    with pytest.raises(ValueError):
+        asyncio.run(
+            EditFileTool(tmp_path).execute(
+                {
+                    "path": ".git/config",
+                    "old_text": "dummy-test-data",
+                    "new_text": "changed",
+                }
+            )
+        )
+
+    assert config.read_text(encoding="utf-8") == "dummy-test-data"
+
+
+def test_file_tools_reject_nested_symlink_components(tmp_path: Path) -> None:
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    config = git_dir / "config"
+    config.write_text("dummy-test-data", encoding="utf-8")
+    real_dir = tmp_path / "real_dir"
+    real_dir.mkdir()
+    (tmp_path / "alias1").symlink_to(real_dir, target_is_directory=True)
+    (real_dir / "alias2").symlink_to(git_dir, target_is_directory=True)
+
+    # Also start from a real directory so checking only the first component fails.
+    for parent in ("alias1/alias2", "real_dir/alias2"):
+        with pytest.raises(ValueError, match="symlink"):
+            asyncio.run(ReadFileTool(tmp_path).execute({"path": f"{parent}/config"}))
+        with pytest.raises(ValueError, match="symlink"):
+            asyncio.run(
+                EditFileTool(tmp_path).execute(
+                    {
+                        "path": f"{parent}/config",
+                        "old_text": "dummy-test-data",
+                        "new_text": "changed",
+                    }
+                )
+            )
+        with pytest.raises(ValueError, match="symlink"):
+            asyncio.run(
+                EditFileTool(tmp_path).execute(
+                    {
+                        "path": f"{parent}/new/file",
+                        "old_text": "",
+                        "new_text": "bad",
+                    }
+                )
+            )
+
+    assert config.read_text(encoding="utf-8") == "dummy-test-data"
+    assert not (git_dir / "new").exists()
