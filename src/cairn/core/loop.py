@@ -67,11 +67,13 @@ async def run_turn(
     max_steps: int = 20,
 ) -> str:
     trace_error: str | None = None
+    tool_execution_started = False
+    pending_tool_calls: list[ToolCall] = []
 
     try:
         turn_span = None
 
-        # check point for exception rollback
+        # Roll back only while no tool execution has been attempted.
         turn_start = len(agent.state.messages)
 
         if agent.tracer is not None:
@@ -150,6 +152,7 @@ async def run_turn(
                 response.content,
                 tool_calls=response.tool_calls,
             )
+            pending_tool_calls = response.tool_calls.copy()
 
             if not response.tool_calls:
                 agent.emit(
@@ -187,6 +190,7 @@ async def run_turn(
                         tool_call_id=tool_call.id,
                         content=tool_content,
                     )
+                    pending_tool_calls.pop(0)
 
                     continue
 
@@ -203,12 +207,24 @@ async def run_turn(
                     )
 
                 try:
+                    tool_execution_started = True
                     result = await agent.tools.execute(
                         name=tool_call.name,
                         arguments=tool_call.arguments,
                     )
 
                 except Exception as exc:
+                    tool_content = ToolFailure(
+                        error=str(exc),
+                        type=type(exc).__name__,
+                    ).to_content()
+
+                    agent.state.add_tool_message(
+                        tool_call_id=tool_call.id,
+                        content=tool_content,
+                    )
+                    pending_tool_calls.pop(0)
+
                     if tool_span is not None and agent.tracer is not None:
                         tool_span.attributes["error_type"] = type(exc).__name__
 
@@ -229,18 +245,19 @@ async def run_turn(
                         )
                     )
 
-                    tool_content = ToolFailure(
-                        error=str(exc),
-                        type=type(exc).__name__,
-                    ).to_content()
+                    continue
+                else:
+                    tool_content = json.dumps(
+                        result.model_dump(),
+                        ensure_ascii=False,
+                    )
 
                     agent.state.add_tool_message(
                         tool_call_id=tool_call.id,
                         content=tool_content,
                     )
+                    pending_tool_calls.pop(0)
 
-                    continue
-                else:
                     if tool_span is not None and agent.tracer is not None:
                         tool_span.attributes.update(
                             {
@@ -273,16 +290,6 @@ async def run_turn(
                     )
                 )
 
-                tool_content = json.dumps(
-                    result.model_dump(),
-                    ensure_ascii=False,
-                )
-
-                agent.state.add_tool_message(
-                    tool_call_id=tool_call.id,
-                    content=tool_content,
-                )
-
         agent.emit(
             Event(
                 type="agent_step_limit",
@@ -296,23 +303,38 @@ async def run_turn(
 
     except Exception as exc:
         trace_error = f"{type(exc).__name__}: {exc}"
-        del agent.state.messages[turn_start:]
+        if not tool_execution_started:
+            del agent.state.messages[turn_start:]
+        else:
+            for tool_call in pending_tool_calls:
+                agent.state.add_tool_message(
+                    tool_call_id=tool_call.id,
+                    content=ToolFailure(
+                        error=f"Tool was not executed because the turn aborted: {trace_error}",
+                        type="TurnAborted",
+                    ).to_content(),
+                )
         raise
 
     finally:
         if turn_span is not None and agent.tracer is not None:
             status = SpanStatus.OK if trace_error is None else SpanStatus.ERROR
-            agent.tracer.end_span(
-                turn_span,
-                status=status,
-                error=trace_error,
-            )
-            agent.emit(
-                Event(
-                    type="trace_finish",
-                    data={
-                        "trace_id": turn_span.context.trace_id,
-                        "status": status.value,
-                    },
+            try:
+                agent.tracer.end_span(
+                    turn_span,
+                    status=status,
+                    error=trace_error,
                 )
-            )
+                agent.emit(
+                    Event(
+                        type="trace_finish",
+                        data={
+                            "trace_id": turn_span.context.trace_id,
+                            "status": status.value,
+                        },
+                    )
+                )
+            except Exception:
+                if not tool_execution_started:
+                    del agent.state.messages[turn_start:]
+                raise
