@@ -35,16 +35,33 @@ src/
 └── cairn/
     ├── core/          # Agent, loop, state, events, models, permissions
     ├── llm/           # LLM protocol and LiteLLM adapter
-    ├── tools/         # Tool protocol, registry, and Bash tool
+    ├── tools/         # Tool protocol, registry, Bash and file tools
+    ├── workspace/     # Shared filesystem root and path protection
+    ├── evals/         # Eval models and check protocol; no runner yet
+    ├── observability/ # Trace models, recording, and reading
+    ├── commands/      # Interactive slash commands
     ├── resources/     # Terminal banner
+    ├── assembly.py    # Reusable agent and tool assembly
     ├── cli.py         # Interactive application wiring
     └── ui.py          # Rich output and permission prompts
 tests/                 # Unit and behavior tests
 ```
 
 Small protocols define the model-client, tool, event-handler, and
-permission-handler boundaries. The CLI assembles the concrete LiteLLM client,
-tool registry, Bash tool, and terminal handlers.
+permission-handler boundaries. `build_agent()` takes a Workspace, model client,
+and explicit permission, event, and trace dependencies, then wires the tools
+to the same Workspace. The CLI supplies environment configuration and terminal
+handlers; callers can also run an agent without a terminal.
+
+Directory ownership stays with the caller:
+
+- CLI cwd is only the source used to construct Workspace.
+- Workspace wraps an existing directory and normalizes its root; it does not
+  create or clean up directories.
+- A future EvalRunner will create and clean up its temporary directories;
+  Workspace will only wrap them.
+- A future worktree provider will create and clean up worktrees; Workspace
+  will still only wrap their directories.
 
 ## Quick Start
 

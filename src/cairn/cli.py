@@ -5,17 +5,14 @@ from pathlib import Path
 import typer
 from dotenv import load_dotenv
 
+from cairn.assembly import build_agent
 from cairn.commands.context import CommandContext
 from cairn.commands.router import CommandRouter
-from cairn.core.agent import Agent
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.observability.reader import JsonlTraceReader
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.tracer import Tracer
-from cairn.tools.bash import BashTool
-from cairn.tools.files import EditFileTool, ReadFileTool
-from cairn.tools.registry import ToolRegistry
 from cairn.ui import (
     console_event_handler,
     console_permission_handler,
@@ -55,13 +52,7 @@ async def main() -> None:
 
     print_banner()
 
-    registry = ToolRegistry()
     workspace = Workspace(Path.cwd())
-
-    registry.register_tool(BashTool(workspace))
-    registry.register_tool(ReadFileTool(workspace))
-    registry.register_tool(EditFileTool(workspace))
-
     trace_root = Path(".cairn/traces")
     tracer = Tracer(JsonlTraceSink(trace_root))
     command_context = CommandContext(trace_reader=JsonlTraceReader(trace_root))
@@ -75,9 +66,9 @@ async def main() -> None:
             return
         console_event_handler(event)
 
-    agent = Agent(
+    agent = build_agent(
+        workspace=workspace,
         llm=LiteLLMClient(model=model, api_key=api_key, api_base=base_url),
-        tools=registry,
         event_handler=handle_event,
         permission_handler=console_permission_handler,
         tracer=tracer,

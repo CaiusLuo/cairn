@@ -8,6 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 import cairn.cli as cli_module
+from cairn.assembly import build_agent
 from cairn.cli import app
 from cairn.core.agent import Agent
 from cairn.core.events import Event
@@ -102,7 +103,7 @@ def test_cli_ignores_blank_input_and_runs_normal_turn(
     responses: list[str] = []
 
     def capture_agent(**kwargs: Any) -> Agent:
-        agent = Agent(**kwargs)
+        agent = build_agent(**kwargs)
         agent.state.add_user_message("previous")
         agent.state.add_assistant_message("previous answer")
         created_agents.append(agent)
@@ -129,7 +130,7 @@ def test_cli_ignores_blank_input_and_runs_normal_turn(
     def record_response(content: str) -> None:
         responses.append(content)
 
-    monkeypatch.setattr(cli_module, "Agent", capture_agent)
+    monkeypatch.setattr(cli_module, "build_agent", capture_agent)
     monkeypatch.setattr(cli_module, "run_turn", fake_run_turn)
     monkeypatch.setattr(cli_module, "print_assistant_response", record_response)
 
@@ -185,14 +186,14 @@ def test_interactive_commands_do_not_call_model_or_mutate_state(
     created_agents: list[Agent] = []
 
     def capture_agent(**kwargs: Any) -> Agent:
-        agent = Agent(**kwargs)
+        agent = build_agent(**kwargs)
         created_agents.append(agent)
         return agent
 
     async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
         pytest.fail("Interactive command reached the model")
 
-    monkeypatch.setattr(cli_module, "Agent", capture_agent)
+    monkeypatch.setattr(cli_module, "build_agent", capture_agent)
     monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
 
     result = runner.invoke(app, [])
@@ -286,7 +287,7 @@ def test_interactive_trace_list_does_not_call_model_or_mutate_state(
     created_agents: list[Agent] = []
 
     def capture_agent(**kwargs: Any) -> Agent:
-        agent = Agent(**kwargs)
+        agent = build_agent(**kwargs)
         agent.state.add_user_message("previous")
         agent.state.add_assistant_message("previous answer")
         created_agents.append(agent)
@@ -295,7 +296,7 @@ def test_interactive_trace_list_does_not_call_model_or_mutate_state(
     async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
         pytest.fail("Interactive command reached the model")
 
-    monkeypatch.setattr(cli_module, "Agent", capture_agent)
+    monkeypatch.setattr(cli_module, "build_agent", capture_agent)
     monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
 
     result = runner.invoke(app, [])
@@ -368,7 +369,7 @@ def test_interactive_trace_read_errors_keep_session_available(
     created_agents: list[Agent] = []
 
     def capture_agent(**kwargs: Any) -> Agent:
-        agent = Agent(**kwargs)
+        agent = build_agent(**kwargs)
         agent.state.add_user_message("previous")
         agent.state.add_assistant_message("previous answer")
         created_agents.append(agent)
@@ -377,7 +378,7 @@ def test_interactive_trace_read_errors_keep_session_available(
     async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
         pytest.fail("Trace command reached the model")
 
-    monkeypatch.setattr(cli_module, "Agent", capture_agent)
+    monkeypatch.setattr(cli_module, "build_agent", capture_agent)
     monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
 
     result = runner.invoke(app, [])
