@@ -7,8 +7,9 @@ import pytest
 from cairn.core.agent import Agent
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
-from cairn.core.models import LLMResponse, ToolCall, ToolFailure, ToolResult
+from cairn.core.models import LLMResponse, Message, ToolCall, ToolFailure, ToolResult
 from cairn.core.permissions import PermissionDecision, PermissionResult
+from cairn.llm.litellm_client import LiteLLMClient
 from cairn.observability.models import SpanStatus
 from cairn.observability.tracer import Tracer
 from cairn.tools.registry import ToolRegistry
@@ -21,6 +22,265 @@ from tests.loop_support import (
     make_agent,
     tool_response,
 )
+
+
+class BlockingLLM:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def generate(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
+        self.started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+class BlockingTool:
+    name = "block"
+    description = "Block until cancelled."
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.calls: list[dict[str, Any]] = []
+
+    def schema(self) -> dict[str, Any]:
+        return {"name": self.name}
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        self.calls.append(arguments)
+        self.started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+def blocking_response() -> LLMResponse:
+    return LLMResponse(
+        tool_calls=[
+            ToolCall(
+                id="call-1",
+                name="block",
+                arguments={},
+            ),
+            ToolCall(
+                id="call-2",
+                name="block",
+                arguments={},
+            ),
+        ]
+    )
+
+
+def assert_serialized_tool_pairs(messages: list[Message]) -> None:
+    client = LiteLLMClient(model="test")
+    pending: list[str] = []
+    for message in messages:
+        serialized = client._to_llm_message(message)
+        if serialized["role"] == "tool":
+            assert pending
+            assert serialized["tool_call_id"] == pending.pop(0)
+        else:
+            assert not pending
+            pending = [call["id"] for call in serialized.get("tool_calls", [])]
+    assert not pending
+
+
+@pytest.mark.parametrize("with_tracer", [False, True])
+def test_run_turn_cancellation_during_tool_execution_preserves_facts(
+    with_tracer: bool,
+) -> None:
+    async def scenario() -> None:
+        sink = RecordingSink()
+        events: list[Event] = []
+
+        tool = BlockingTool()
+        llm = SequenceLLM([blocking_response()])
+        agent = make_agent(llm, tool, events)
+        if with_tracer:
+            agent.tracer = Tracer(sink)
+
+        task = asyncio.create_task(run_turn(agent, "run tools"))
+
+        await asyncio.wait_for(tool.started.wait(), timeout=1)
+
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1)
+
+        assert [message.role for message in agent.state.messages] == [
+            "user",
+            "assistant",
+            "tool",
+            "tool",
+        ]
+
+        cancelled = json.loads(agent.state.messages[2].content or "")
+        aborted = json.loads(agent.state.messages[3].content or "")
+
+        assert agent.state.messages[2].tool_call_id == "call-1"
+        assert cancelled["type"] == "ToolCancelled"
+
+        assert agent.state.messages[3].tool_call_id == "call-2"
+        assert aborted["type"] == "TurnAborted"
+
+        assert tool.calls == [{}]
+        assert not any(event.type == "agent_finish" for event in events)
+        trace_finish = [event for event in events if event.type == "trace_finish"]
+        if with_tracer:
+            tool_spans = [span for span in sink.spans if span.name == "tool.execute"]
+            turn_spans = [span for span in sink.spans if span.name == "agent.turn"]
+            assert len(tool_spans) == len(turn_spans) == 1
+            assert tool_spans[0].status == SpanStatus.ERROR
+            assert tool_spans[0].attributes["cancelled"] is True
+            assert turn_spans[0].status == SpanStatus.ERROR
+            assert all(span.end_time is not None for span in sink.spans)
+            assert len(trace_finish) == 1
+            assert trace_finish[0].data["status"] == "error"
+        else:
+            assert trace_finish == []
+
+        preserved = agent.state.messages.copy()
+        next_llm = SequenceLLM([LLMResponse(content="continued")])
+        agent.llm = next_llm
+        assert await run_turn(agent, "Continue") == "continued"
+        assert next_llm.calls[0][0][1:] == [
+            *preserved,
+            Message(role="user", content="Continue"),
+        ]
+        assert_serialized_tool_pairs(next_llm.calls[0][0])
+        assert tool.calls == [{}]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("with_tracer", [False, True])
+def test_run_turn_cancellation_during_llm_wait_rolls_back_and_marks_trace_error(
+    with_tracer: bool,
+) -> None:
+    async def scenario() -> None:
+        sink = RecordingSink()
+        events: list[Event] = []
+
+        llm = BlockingLLM()
+        agent = Agent(
+            llm=llm,
+            tools=ToolRegistry(),
+            event_handler=lambda event: events.append(event),
+            tracer=Tracer(sink) if with_tracer else None,
+        )
+
+        agent.state.add_user_message("previous")
+        agent.state.add_assistant_message("previous answer")
+        previous = agent.state.messages.copy()
+
+        task = asyncio.create_task(run_turn(agent, "current"))
+
+        await asyncio.wait_for(llm.started.wait(), timeout=1)
+
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1)
+
+        assert agent.state.messages == previous
+
+        assert not any(event.type == "agent_finish" for event in events)
+        trace_finish = [event for event in events if event.type == "trace_finish"]
+        if with_tracer:
+            assert [span.name for span in sink.spans] == ["llm.generate", "agent.turn"]
+            assert all(span.status == SpanStatus.ERROR for span in sink.spans)
+            assert all(span.end_time is not None for span in sink.spans)
+            assert sink.spans[0].attributes["cancelled"] is True
+            assert len(trace_finish) == 1
+            assert trace_finish[0].data["status"] == "error"
+        else:
+            assert trace_finish == []
+
+    asyncio.run(scenario())
+
+
+class BlockingFollowupLLM(SequenceLLM):
+    def __init__(self) -> None:
+        super().__init__([tool_response()])
+        self.started = asyncio.Event()
+
+    async def generate(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
+        if not self.calls:
+            return await super().generate(messages, tools)
+        self.started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+@pytest.mark.parametrize("with_tracer", [False, True])
+def test_run_turn_cancellation_after_tool_preserves_fact_for_next_turn(
+    with_tracer: bool,
+) -> None:
+    async def scenario() -> None:
+        sink = RecordingSink()
+        events: list[Event] = []
+        tool = RecordingTool()
+        llm = BlockingFollowupLLM()
+        agent = make_agent(llm, tool, events)
+        if with_tracer:
+            agent.tracer = Tracer(sink)
+        agent.state.add_user_message("previous")
+        agent.state.add_assistant_message("previous answer")
+        previous = agent.state.messages.copy()
+
+        task = asyncio.create_task(run_turn(agent, "run tool"))
+        await asyncio.wait_for(llm.started.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1)
+
+        assert agent.state.messages[:2] == previous
+        assert [message.role for message in agent.state.messages[2:]] == [
+            "user",
+            "assistant",
+            "tool",
+        ]
+        assert agent.state.messages[-1].tool_call_id == "call-1"
+        assert json.loads(agent.state.messages[-1].content or "") == {
+            "stdout": "recorded",
+            "stderr": "",
+            "exit_code": 0,
+        }
+        assert not any(event.type == "agent_finish" for event in events)
+        trace_finish = [event for event in events if event.type == "trace_finish"]
+        if with_tracer:
+            llm_spans = [span for span in sink.spans if span.name == "llm.generate"]
+            assert len(llm_spans) == 2
+            assert llm_spans[0].status == SpanStatus.OK
+            assert llm_spans[1].status == SpanStatus.ERROR
+            assert llm_spans[1].attributes["cancelled"] is True
+            assert sink.spans[-1].name == "agent.turn"
+            assert sink.spans[-1].status == SpanStatus.ERROR
+            assert all(span.end_time is not None for span in sink.spans)
+            assert len(trace_finish) == 1
+            assert trace_finish[0].data["status"] == "error"
+        else:
+            assert trace_finish == []
+
+        preserved = agent.state.messages.copy()
+        next_llm = SequenceLLM([LLMResponse(content="continued")])
+        agent.llm = next_llm
+        assert await run_turn(agent, "Continue") == "continued"
+        assert next_llm.calls[0][0][1:] == [
+            *preserved,
+            Message(role="user", content="Continue"),
+        ]
+        assert_serialized_tool_pairs(next_llm.calls[0][0])
+        assert tool.calls == [{"value": 42}]
+
+    asyncio.run(scenario())
 
 
 def test_run_turn_returns_direct_model_response() -> None:

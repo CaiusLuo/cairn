@@ -1,7 +1,9 @@
 import asyncio
 import json
 import os
+import signal
 import sys
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -13,9 +15,12 @@ class BashTool:
     name = "bash"
     description = "Execute a shell command in the current workspace."
 
-    def __init__(self, workspace: Workspace, timeout: float = 30.0) -> None:
+    def __init__(
+        self, workspace: Workspace, timeout: float = 30.0, cleanup_timeout: float = 2.0
+    ) -> None:
         self.workspace = workspace
         self.timeout = timeout
+        self.cleanup_timeout = cleanup_timeout
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -36,6 +41,13 @@ class BashTool:
                 },
             },
         }
+
+    async def _cleanup_process(self, process: asyncio.subprocess.Process) -> None:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+
+        with suppress(TimeoutError):
+            await asyncio.wait_for(process.wait(), timeout=self.cleanup_timeout)
 
     async def execute(
         self,
@@ -107,23 +119,34 @@ class BashTool:
             env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
 
+        # Keep draining the pipes while terminating the group: otherwise a full
+        # pipe can prevent asyncio's process waiter from completing after exit.
+        communication = asyncio.create_task(process.communicate())
         try:
             stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=self.timeout
+                asyncio.shield(communication), timeout=self.timeout
             )
         except TimeoutError:
-            process.kill()
-            await process.communicate()
-
             return ToolResult(
                 stderr=f"Command '{command}' time out after {self.timeout}s",
                 exit_code=-1,
             )
-
-        return ToolResult(
-            stdout=stdout.decode("utf-8", errors="replace"),
-            stderr=stderr.decode("utf-8", errors="replace"),
-            exit_code=await process.wait(),
-        )
+        else:
+            return ToolResult(
+                stdout=stdout.decode("utf-8", errors="replace"),
+                stderr=stderr.decode("utf-8", errors="replace"),
+                exit_code=await process.wait(),
+            )
+        finally:
+            # Also stop background children whose redirected output allowed
+            # communicate() to finish normally. Cancellation propagates only
+            # after this same bounded cleanup path.
+            try:
+                await self._cleanup_process(process)
+            finally:
+                communication.cancel()
+                with suppress(asyncio.CancelledError):
+                    await communication

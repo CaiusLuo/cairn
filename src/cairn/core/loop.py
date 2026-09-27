@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from cairn.core.agent import Agent
@@ -130,6 +131,16 @@ async def run_turn(
                     tools=tool_schemas,
                 )
 
+            except asyncio.CancelledError:
+                if llm_span is not None and agent.tracer is not None:
+                    llm_span.attributes["cancelled"] = True
+                    agent.tracer.end_span(
+                        llm_span,
+                        status=SpanStatus.ERROR,
+                        error="LLM generation was cancelled.",
+                    )
+                raise
+
             except Exception as exc:
                 if llm_span is not None and agent.tracer is not None:
                     agent.tracer.end_span(
@@ -212,6 +223,27 @@ async def run_turn(
                         name=tool_call.name,
                         arguments=tool_call.arguments,
                     )
+
+                except asyncio.CancelledError:
+                    tool_content = ToolFailure(
+                        error="Tool execution was cancelled.",
+                        type="ToolCancelled",
+                    ).to_content()
+
+                    agent.state.add_tool_message(
+                        tool_call_id=tool_call.id,
+                        content=tool_content,
+                    )
+                    pending_tool_calls.pop(0)
+
+                    if tool_span is not None and agent.tracer is not None:
+                        tool_span.attributes["cancelled"] = True
+                        agent.tracer.end_span(
+                            tool_span,
+                            status=SpanStatus.ERROR,
+                            error="CancelledError: tool execution cancelled",
+                        )
+                    raise
 
                 except Exception as exc:
                     tool_content = ToolFailure(
@@ -300,6 +332,21 @@ async def run_turn(
         )
 
         raise RuntimeError(f"Agent exceeded maximum steps: {max_steps}")
+
+    except asyncio.CancelledError:
+        trace_error = "CancelledError: turn cancelled"
+        if not tool_execution_started:
+            del agent.state.messages[turn_start:]
+        else:
+            for tool_call in pending_tool_calls:
+                agent.state.add_tool_message(
+                    tool_call_id=tool_call.id,
+                    content=ToolFailure(
+                        error="Tool was not executed because the turn was cancelled.",
+                        type="TurnAborted",
+                    ).to_content(),
+                )
+        raise
 
     except Exception as exc:
         trace_error = f"{type(exc).__name__}: {exc}"

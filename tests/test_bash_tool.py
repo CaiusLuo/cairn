@@ -1,11 +1,121 @@
 import asyncio
+import os
+import signal
+from contextlib import suppress
 from pathlib import Path
-from unittest.mock import AsyncMock
+from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from cairn.tools.bash import BashTool
 from cairn.workspace.workspace import Workspace
+
+
+async def wait_for_path(path: Path, timeout: float = 1.0) -> None:
+    async def wait() -> None:
+        while not path.exists():
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(wait(), timeout=timeout)
+
+
+async def wait_for_process_group_exit(pgid: int) -> None:
+    async def wait() -> None:
+        while True:
+            try:
+                os.killpg(pgid, 0)
+            except (ProcessLookupError, PermissionError):
+                return
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(wait(), timeout=2.0)
+
+
+@pytest.mark.parametrize("ending", ["normal", "timeout", "cancel", "parent-exited"])
+def test_bash_cleanup_removes_only_owned_process_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ending: str,
+) -> None:
+    async def scenario() -> None:
+        started = tmp_path / "started.txt"
+        survived = tmp_path / "survived.txt"
+        create_process = asyncio.create_subprocess_exec
+        owned: list[asyncio.subprocess.Process] = []
+
+        async def track_process(
+            *args: str, **kwargs: Any
+        ) -> asyncio.subprocess.Process:
+            # Exercise real process ownership independently of sandbox wrappers.
+            assert args[-3:-1] == ("/bin/sh", "-c")
+            process = await create_process(*args[-3:], **kwargs)
+            owned.append(process)
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", track_process)
+        monkeypatch.setattr("cairn.tools.bash.sys.platform", "darwin")
+        tool = BashTool(
+            Workspace(tmp_path),
+            timeout=0.5 if ending in {"timeout", "parent-exited"} else 30.0,
+            cleanup_timeout=0.5,
+        )
+        command = (
+            "(printf started > started.txt; sleep 30; printf leaked > survived.txt) "
+        )
+        if ending == "normal":
+            # Detached output lets the shell finish while its child is still alive.
+            command += (
+                ">/dev/null 2>&1 & "
+                "while [ ! -f started.txt ]; do sleep 0.01; done; printf done"
+            )
+        elif ending == "parent-exited":
+            command += "& exit 0"
+        else:
+            # Both descendants keep the shell's stdout/stderr pipes open.
+            command += "& wait"
+
+        unrelated = await create_process("/bin/sleep", "30", start_new_session=True)
+        task = asyncio.create_task(tool.execute({"command": command}))
+        try:
+            await wait_for_path(started)
+            if ending == "parent-exited":
+
+                async def wait_for_parent_exit() -> None:
+                    while owned[0].returncode is None:
+                        await asyncio.sleep(0.01)
+
+                await asyncio.wait_for(wait_for_parent_exit(), timeout=0.25)
+                assert not task.done(), "Descendant should still hold the output pipes"
+            if ending == "cancel":
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=2.0)
+            else:
+                result = await asyncio.wait_for(task, timeout=2.0)
+                assert result.exit_code == (0 if ending == "normal" else -1)
+                if ending == "normal":
+                    assert result.stdout == "done"
+
+            assert len(owned) == 1
+            assert owned[0].returncode is not None
+            await wait_for_process_group_exit(owned[0].pid)
+            assert not survived.exists()
+            assert unrelated.returncode is None
+            os.killpg(unrelated.pid, 0)
+        finally:
+            task.cancel()
+            try:
+                with suppress(asyncio.CancelledError):
+                    await task
+            finally:
+                for process in [*owned, unrelated]:
+                    with suppress(ProcessLookupError, PermissionError):
+                        os.killpg(process.pid, signal.SIGKILL)
+                for process in [*owned, unrelated]:
+                    await asyncio.wait_for(process.wait(), timeout=2.0)
+
+    asyncio.run(scenario())
 
 
 def test_bash_tool_schema_describes_required_command(tmp_path: Path) -> None:
@@ -70,10 +180,13 @@ def test_bash_tool_preserves_command_text_and_decodes_output(
     expected_stderr: str,
 ) -> None:
     process = AsyncMock()
+    process.pid = 12345
+    process.returncode = exit_code
     process.communicate.return_value = (stdout, stderr)
     process.wait.return_value = exit_code
     create_process = AsyncMock(return_value=process)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+    monkeypatch.setattr("cairn.tools.bash.os.killpg", Mock())
     monkeypatch.setattr("cairn.tools.bash.sys.platform", "darwin")
     command = "  printf '%s' 'hello'\n"
 
@@ -86,6 +199,191 @@ def test_bash_tool_preserves_command_text_and_decodes_output(
     assert result.stdout == expected_stdout
     assert result.stderr == expected_stderr
     assert result.exit_code == exit_code
+
+
+def test_bash_tool_cancellation_kills_owned_process_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        communicate_started = asyncio.Event()
+
+        process = AsyncMock()
+        process.pid = 12345
+        process.returncode = None
+
+        async def block_communicate() -> tuple[bytes, bytes]:
+            communicate_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        process.communicate.side_effect = block_communicate
+        process.wait.return_value = -9
+
+        create_process = AsyncMock(return_value=process)
+        killpg = Mock()
+
+        monkeypatch.setattr(
+            asyncio,
+            "create_subprocess_exec",
+            create_process,
+        )
+        monkeypatch.setattr(
+            "cairn.tools.bash.os.killpg",
+            killpg,
+        )
+        monkeypatch.setattr(
+            "cairn.tools.bash.sys.platform",
+            "darwin",
+        )
+
+        tool = BashTool(
+            Workspace(tmp_path),
+            timeout=30,
+            cleanup_timeout=0.1,
+        )
+
+        task = asyncio.create_task(tool.execute({"command": "sleep 100"}))
+
+        await communicate_started.wait()
+
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        killpg.assert_called_once_with(
+            12345,
+            signal.SIGKILL,
+        )
+
+        process.wait.assert_awaited_once()
+
+        assert create_process.call_args.kwargs["start_new_session"] is True
+
+    asyncio.run(scenario())
+
+
+def test_bash_tool_timeout_cleans_owned_process_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        process = AsyncMock()
+        process.pid = 12345
+        process.returncode = None
+
+        async def block_communicate() -> tuple[bytes, bytes]:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        process.communicate.side_effect = block_communicate
+        process.wait.return_value = -9
+
+        create_process = AsyncMock(return_value=process)
+        killpg = Mock()
+
+        monkeypatch.setattr(
+            asyncio,
+            "create_subprocess_exec",
+            create_process,
+        )
+        monkeypatch.setattr(
+            "cairn.tools.bash.os.killpg",
+            killpg,
+        )
+        monkeypatch.setattr(
+            "cairn.tools.bash.sys.platform",
+            "darwin",
+        )
+
+        tool = BashTool(
+            Workspace(tmp_path),
+            timeout=0.01,
+            cleanup_timeout=0.1,
+        )
+
+        result = await tool.execute({"command": "sleep 100"})
+
+        assert result.exit_code == -1
+        assert "time out after 0.01s" in result.stderr
+
+        killpg.assert_called_once_with(
+            12345,
+            signal.SIGKILL,
+        )
+
+        process.wait.assert_awaited_once()
+
+        # communicate 只应该是原始执行那一次
+        assert process.communicate.await_count == 1
+
+    asyncio.run(scenario())
+
+
+def test_bash_cleanup_tolerates_process_group_already_exited(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        process = AsyncMock()
+        process.pid = 12345
+        process.wait.return_value = 0
+
+        killpg = Mock(side_effect=ProcessLookupError)
+
+        monkeypatch.setattr(
+            "cairn.tools.bash.os.killpg",
+            killpg,
+        )
+
+        tool = BashTool(
+            Workspace(tmp_path),
+            cleanup_timeout=0.1,
+        )
+
+        await tool._cleanup_process(process)
+
+        killpg.assert_called_once_with(
+            12345,
+            signal.SIGKILL,
+        )
+
+        process.wait.assert_awaited_once()
+
+    asyncio.run(scenario())
+
+
+def test_bash_cleanup_wait_is_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        process = AsyncMock()
+        process.pid = 12345
+
+        async def block_wait() -> int:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        process.wait.side_effect = block_wait
+
+        monkeypatch.setattr(
+            "cairn.tools.bash.os.killpg",
+            Mock(),
+        )
+
+        tool = BashTool(
+            Workspace(tmp_path),
+            cleanup_timeout=0.01,
+        )
+
+        await asyncio.wait_for(
+            tool._cleanup_process(process),
+            timeout=0.1,
+        )
+
+    asyncio.run(scenario())
 
 
 def test_bash_tool_executes_in_configured_directory(
