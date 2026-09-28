@@ -66,6 +66,23 @@ def test_read_file_bounds_very_long_single_line(tmp_path: Path) -> None:
     assert "[read_file output truncated]" in result.stdout
 
 
+def test_read_file_stops_scanning_selected_content_after_truncation() -> None:
+    capture_limit = READ_FILE_CHUNK_SIZE + 1
+    stream = RecordingBytesIO(b"a" * 1_000_000)
+
+    data, truncated, _ = _read_bounded_range(
+        stream,
+        start_line=1,
+        end_line=1,
+        capture_limit=capture_limit,
+    )
+
+    assert data == b"a" * capture_limit
+    assert truncated is True
+    assert stream.tell() == READ_FILE_CHUNK_SIZE * 2
+    assert len(stream.readline_sizes) == 2
+
+
 def test_read_file_utf8_truncation_drops_partial_character() -> None:
     stream = io.BytesIO("你你".encode())
 

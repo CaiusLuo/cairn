@@ -110,16 +110,25 @@ class BashTool:
             await asyncio.wait_for(process.wait(), timeout=self.cleanup_timeout)
 
     async def _settle_collection(self, task: asyncio.Task[Any]) -> None:
-        if not task.done():
-            try:
+        # execute() has already selected its primary result or exception.
+        # Settling only prevents a leaked task and must not replace that outcome.
+        try:
+            if not task.done():
                 await asyncio.wait_for(
                     asyncio.shield(task), timeout=self.cleanup_timeout
                 )
-            except TimeoutError:
-                task.cancel()
-
-        with suppress(asyncio.CancelledError):
             await task
+        except TimeoutError:
+            if not task.done():
+                task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await task
+        except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling():
+                raise
+        except Exception:
+            pass
 
     async def execute(
         self,

@@ -428,6 +428,61 @@ def test_bash_tool_timeout_cleans_owned_process_group(
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("ending", ["timeout", "cancel"])
+def test_bash_collection_cleanup_error_preserves_primary_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ending: str,
+) -> None:
+    async def scenario() -> None:
+        collection_started = asyncio.Event()
+        release_collection = asyncio.Event()
+        process = AsyncMock()
+        process.pid = 12345
+
+        class CleanupErrorBashTool(BashTool):
+            async def _collect_output(
+                self,
+                owned_process: asyncio.subprocess.Process,
+            ) -> tuple[bytes, bool, bytes, bool, int]:
+                assert owned_process is process
+                collection_started.set()
+                await release_collection.wait()
+                raise RuntimeError("collection cleanup failed")
+
+            async def _cleanup_process(
+                self,
+                owned_process: asyncio.subprocess.Process,
+            ) -> None:
+                assert owned_process is process
+                release_collection.set()
+
+        monkeypatch.setattr(
+            asyncio,
+            "create_subprocess_exec",
+            AsyncMock(return_value=process),
+        )
+        monkeypatch.setattr("cairn.tools.bash.sys.platform", "darwin")
+        tool = CleanupErrorBashTool(
+            Workspace(tmp_path),
+            timeout=0.01 if ending == "timeout" else 30.0,
+            cleanup_timeout=0.1,
+        )
+        execution = asyncio.create_task(tool.execute({"command": "ignored"}))
+        await collection_started.wait()
+
+        if ending == "cancel":
+            execution.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await execution
+        else:
+            result = await execution
+            assert result.exit_code == -1
+            assert "time out after 0.01s" in result.stderr
+
+    asyncio.run(scenario())
+
+
 def test_bash_cleanup_tolerates_process_group_already_exited(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -89,6 +89,7 @@ def _read_bounded_range(
                 captured.extend(fragment[:remaining])
             if len(fragment) > remaining:
                 truncated = True
+                break
 
         if line_complete:
             if line_number >= end_line:
