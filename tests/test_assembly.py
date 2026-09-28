@@ -10,7 +10,7 @@ from cairn.core.loop import run_turn
 from cairn.core.models import LLMResponse, ToolCall
 from cairn.core.permissions import PermissionDecision, PermissionResult
 from cairn.workspace.workspace import Workspace
-from tests.loop_support import SequenceLLM
+from tests.loop_support import TEST_BUDGET, SequenceLLM
 
 
 def test_build_agent_runs_headless_tool_turn(
@@ -48,7 +48,7 @@ def test_build_agent_runs_headless_tool_turn(
         event_handler=None,
         tracer=None,
     )
-    result = asyncio.run(run_turn(agent, "Create answer.txt"))
+    result = asyncio.run(run_turn(agent, "Create answer.txt", budget=TEST_BUDGET))
 
     assert result == "done"
     assert (tmp_path / "answer.txt").is_file()

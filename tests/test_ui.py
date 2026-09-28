@@ -51,7 +51,10 @@ def test_console_event_handler_renders_each_event_type(
         Event(type="tool_result", data={"exit_code": 0, "stdout": "", "stderr": ""}),
         Event(type="tool_error", data={"tool": "bash", "error": "failed"}),
         Event(type="agent_finish"),
-        Event(type="agent_step_limit", data={"max_steps": 3}),
+        Event(
+            type="agent_budget_exhausted",
+            data={"reason": "max_steps", "limit": 3, "used": 3},
+        ),
         Event(
             type="trace_finish",
             data={"trace_id": "0123456789abcdef", "status": "ok"},
@@ -70,7 +73,7 @@ def test_console_event_handler_renders_each_event_type(
         "warning",
         "✗ bash: failed",
         "✓ done",
-        "Agent stopped after 3 steps.",
+        "Agent stopped: step budget exhausted (3/3).",
     ):
         assert expected in rendered
     assert rendered.count("trace:") == 1

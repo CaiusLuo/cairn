@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from cairn.core.agent import Agent
+from cairn.core.budget import RunBudget, RunBudgetExceeded
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.core.models import LLMResponse, Message, ToolCall, ToolResult
@@ -16,7 +17,12 @@ from cairn.observability.tracer import Tracer
 from cairn.tools.files import EditFileTool
 from cairn.tools.registry import ToolRegistry
 from cairn.workspace.workspace import Workspace
-from tests.loop_support import FailingLLM, RecordingSink, SequenceLLM
+from tests.loop_support import (
+    TEST_BUDGET,
+    FailingLLM,
+    RecordingSink,
+    SequenceLLM,
+)
 
 
 class FailingFollowupLLM(SequenceLLM):
@@ -104,7 +110,7 @@ def test_failure_before_execution_rolls_back_turn(
         agent.tracer = tracer
 
     with pytest.raises(RuntimeError, match="failed"):
-        asyncio.run(run_turn(agent, "Create answer.txt"))
+        asyncio.run(run_turn(agent, "Create answer.txt", budget=TEST_BUDGET))
 
     assert agent.state.messages == previous
     assert not (tmp_path / "answer.txt").exists()
@@ -123,7 +129,7 @@ def test_edit_fact_survives_llm_failure_and_reaches_next_turn(tmp_path: Path) ->
 
     agent.permission_handler = record_allow
     with pytest.raises(RuntimeError, match="llm failed"):
-        asyncio.run(run_turn(agent, "Create answer.txt"))
+        asyncio.run(run_turn(agent, "Create answer.txt", budget=TEST_BUDGET))
 
     assert (tmp_path / "answer.txt").read_text(encoding="utf-8") == "42\n"
     assert agent.state.messages[:2] == previous
@@ -145,7 +151,7 @@ def test_edit_fact_survives_llm_failure_and_reaches_next_turn(tmp_path: Path) ->
     next_llm = SequenceLLM([LLMResponse(content="done")])
     agent.llm = next_llm
 
-    assert asyncio.run(run_turn(agent, "Continue")) == "done"
+    assert asyncio.run(run_turn(agent, "Continue", budget=TEST_BUDGET)) == "done"
     assert next_llm.calls[0][0][1:] == [
         *preserved,
         Message(role="user", content="Continue"),
@@ -172,7 +178,7 @@ def test_unexecuted_calls_are_completed_after_permission_failure(
 
     agent.permission_handler = fail_second_permission
     with pytest.raises(RuntimeError, match="permission failed"):
-        asyncio.run(run_turn(agent, "Create the files"))
+        asyncio.run(run_turn(agent, "Create the files", budget=TEST_BUDGET))
 
     assert (tmp_path / "first.txt").read_text(encoding="utf-8") == "42\n"
     assert not (tmp_path / "second.txt").exists()
@@ -202,8 +208,14 @@ def test_step_limit_preserves_successful_and_failed_tool_facts(
     llm = SequenceLLM([edit_response("answer.txt")])
     agent = make_edit_agent(tmp_path, llm, tool_type)
 
-    with pytest.raises(RuntimeError, match="Agent exceeded maximum steps: 1"):
-        asyncio.run(run_turn(agent, "Create answer.txt", max_steps=1))
+    with pytest.raises(RunBudgetExceeded):
+        asyncio.run(
+            run_turn(
+                agent,
+                "Create answer.txt",
+                budget=RunBudget(max_steps=1),
+            )
+        )
 
     assert len(llm.calls) == 1
     assert (tmp_path / "answer.txt").read_text(encoding="utf-8") == "42\n"
@@ -244,7 +256,7 @@ def test_tool_fact_is_stored_before_failing_event(
     agent.event_handler = fail_event
 
     with pytest.raises(RuntimeError, match="event failed"):
-        asyncio.run(run_turn(agent, "Create the files"))
+        asyncio.run(run_turn(agent, "Create the files", budget=TEST_BUDGET))
 
     assert (tmp_path / "first.txt").read_text(encoding="utf-8") == "42\n"
     assert not (tmp_path / "second.txt").exists()
@@ -303,7 +315,9 @@ def test_trace_persistence_failure_does_not_interrupt_tool_facts(
     monkeypatch.setattr(sink, "emit", fail_trace)
     agent.tracer = Tracer(sink)
 
-    assert asyncio.run(run_turn(agent, "Create the files")) == "done"
+    assert (
+        asyncio.run(run_turn(agent, "Create the files", budget=TEST_BUDGET)) == "done"
+    )
     assert (tmp_path / "first.txt").read_text(encoding="utf-8") == "42\n"
     assert (tmp_path / "second.txt").read_text(encoding="utf-8") == "42\n"
     assert [message.role for message in agent.state.messages] == [
@@ -341,7 +355,7 @@ def test_final_event_failure_respects_execution_boundary(
     agent.event_handler = fail_event
 
     with pytest.raises(RuntimeError, match="event failed"):
-        asyncio.run(run_turn(agent, "hello"))
+        asyncio.run(run_turn(agent, "hello", budget=TEST_BUDGET))
 
     assert agent.state.messages[:2] == previous
     if with_tool:
@@ -383,7 +397,7 @@ def test_final_trace_persistence_failure_keeps_primary_success(
     monkeypatch.setattr(sink, "emit", fail_trace)
     agent.tracer = Tracer(sink)
 
-    assert asyncio.run(run_turn(agent, "hello")) == "done"
+    assert asyncio.run(run_turn(agent, "hello", budget=TEST_BUDGET)) == "done"
     assert agent.state.messages[:2] == previous
     expected_roles = ["user", "assistant"]
     if with_tool:

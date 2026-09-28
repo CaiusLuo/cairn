@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from cairn.core.agent import Agent
+from cairn.core.budget import RunBudget, RunBudgetExceeded
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.core.models import LLMResponse, Message, ToolCall
@@ -11,6 +12,7 @@ from cairn.observability.models import SpanStatus
 from cairn.observability.tracer import Tracer
 from cairn.tools.registry import ToolRegistry
 from tests.loop_support import (
+    TEST_BUDGET,
     FailingLLM,
     FailingSink,
     RecordingSink,
@@ -33,7 +35,7 @@ def test_run_turn_emits_root_trace() -> None:
         event_handler=lambda event: events.append(event),
     )
 
-    result = asyncio.run(run_turn(agent, "hello"))
+    result = asyncio.run(run_turn(agent, "hello", budget=TEST_BUDGET))
 
     assert result == "done"
     assert len(sink.spans) == 2
@@ -73,7 +75,7 @@ def test_run_turn_preserves_success_when_trace_sink_fails() -> None:
         event_handler=lambda event: events.append(event),
     )
 
-    assert asyncio.run(run_turn(agent, "hello")) == "done"
+    assert asyncio.run(run_turn(agent, "hello", budget=TEST_BUDGET)) == "done"
     assert agent.state.messages == [
         Message(role="user", content="hello"),
         Message(role="assistant", content="done"),
@@ -97,7 +99,7 @@ def test_run_turn_marks_llm_and_root_traces_as_error() -> None:
     )
 
     with pytest.raises(RuntimeError, match="llm failed"):
-        asyncio.run(run_turn(agent, "hello"))
+        asyncio.run(run_turn(agent, "hello", budget=TEST_BUDGET))
 
     assert len(sink.spans) == 2
 
@@ -127,7 +129,7 @@ def test_run_turn_preserves_llm_error_when_trace_sink_fails() -> None:
     )
 
     with pytest.raises(RuntimeError, match="llm failed"):
-        asyncio.run(run_turn(agent, "hello"))
+        asyncio.run(run_turn(agent, "hello", budget=TEST_BUDGET))
 
     assert agent.state.messages == []
     assert sink.calls == 1
@@ -159,7 +161,9 @@ def test_run_turn_ends_allowed_permission_span_once(with_handler: bool) -> None:
 
         agent.permission_handler = allow
 
-    assert asyncio.run(run_turn(agent, "use the tool")) == "finished"
+    assert (
+        asyncio.run(run_turn(agent, "use the tool", budget=TEST_BUDGET)) == "finished"
+    )
     assert tool.calls == [{"value": 42}]
 
     permission_spans = [span for span in sink.spans if span.name == "permission.check"]
@@ -189,7 +193,7 @@ def test_run_turn_ends_permission_span_once_when_handler_raises() -> None:
     agent.permission_handler = fail
 
     with pytest.raises(RuntimeError, match="permission failed"):
-        asyncio.run(run_turn(agent, "use the tool"))
+        asyncio.run(run_turn(agent, "use the tool", budget=TEST_BUDGET))
 
     assert tool.calls == []
     permission_spans = [span for span in sink.spans if span.name == "permission.check"]
@@ -210,8 +214,14 @@ def test_run_turn_marks_root_trace_as_error_at_step_limit() -> None:
         tracer=tracer,
     )
 
-    with pytest.raises(RuntimeError, match="Agent exceeded maximum steps: 1"):
-        asyncio.run(run_turn(agent, "keep going", max_steps=1))
+    with pytest.raises(RunBudgetExceeded):
+        asyncio.run(
+            run_turn(
+                agent,
+                "keep going",
+                budget=RunBudget(max_steps=1),
+            )
+        )
 
     span = sink.spans[-1]
 

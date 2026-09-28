@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from cairn.assembly import build_agent
 from cairn.commands.context import CommandContext
 from cairn.commands.router import CommandRouter
+from cairn.core.budget import RunBudget, RunBudgetExceeded
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.observability.reader import JsonlTraceReader
@@ -25,6 +26,8 @@ from cairn.workspace.workspace import Workspace
 app = typer.Typer(
     invoke_without_command=True,
 )
+
+DEFAULT_CLI_RUN_BUDGET = RunBudget(max_steps=50)
 
 
 @app.callback()
@@ -96,7 +99,13 @@ async def main() -> None:
             continue
 
         try:
-            response = await run_turn(agent, user_input=user_input)
+            response = await run_turn(
+                agent,
+                user_input=user_input,
+                budget=DEFAULT_CLI_RUN_BUDGET,
+            )
+        except RunBudgetExceeded:
+            pass
         except Exception as exc:
             print_runtime_error(exc)
         else:

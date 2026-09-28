@@ -11,6 +11,7 @@ import cairn.cli as cli_module
 from cairn.assembly import build_agent
 from cairn.cli import app
 from cairn.core.agent import Agent
+from cairn.core.budget import RunBudget
 from cairn.core.events import Event
 from cairn.core.models import Message
 from cairn.observability.sinks import JsonlTraceSink
@@ -112,9 +113,11 @@ def test_cli_ignores_blank_input_and_runs_normal_turn(
     async def fake_run_turn(
         agent: Agent,
         user_input: str,
-        max_steps: int = 20,
+        *,
+        budget: RunBudget,
     ) -> str:
         turns.append(user_input)
+        assert budget == cli_module.DEFAULT_CLI_RUN_BUDGET
         assert agent.state.messages == expected_history
         bash = agent.tools.get_tool("bash")
         reader = agent.tools.get_tool("read_file")
@@ -124,7 +127,6 @@ def test_cli_ignores_blank_input_and_runs_normal_turn(
         assert isinstance(editor, EditFileTool)
         assert bash.workspace is reader.workspace is editor.workspace
         assert bash.workspace.root == tmp_path.resolve()
-        assert max_steps == 20
         return f"reply to {user_input}"
 
     def record_response(content: str) -> None:
@@ -151,8 +153,14 @@ def test_cli_continues_after_failed_turn(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
     turns: list[str] = []
 
-    async def fake_run_turn(agent: Agent, user_input: str) -> str:
+    async def fake_run_turn(
+        agent: Agent,
+        user_input: str,
+        *,
+        budget: RunBudget,
+    ) -> str:
         turns.append(user_input)
+        assert budget == cli_module.DEFAULT_CLI_RUN_BUDGET
         if user_input == "first":
             raise RuntimeError("first turn [/bold red] failed")
         return "second response"
@@ -213,8 +221,14 @@ def test_interactive_trace_uses_latest_completed_turn(
     inputs = iter(("hello", "/trace", "/quit"))
     monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
 
-    async def fake_run_turn(agent: Agent, user_input: str) -> str:
+    async def fake_run_turn(
+        agent: Agent,
+        user_input: str,
+        *,
+        budget: RunBudget,
+    ) -> str:
         assert user_input == "hello"
+        assert budget == cli_module.DEFAULT_CLI_RUN_BUDGET
         assert agent.tracer is not None
         span = agent.tracer.start_root_span("agent.turn")
         agent.emit(
@@ -254,8 +268,14 @@ def test_interactive_trace_persistence_failure_is_not_saved_as_latest(
     inputs = iter(("hello", "/trace", "/quit"))
     monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
 
-    async def fake_run_turn(agent: Agent, user_input: str) -> str:
+    async def fake_run_turn(
+        agent: Agent,
+        user_input: str,
+        *,
+        budget: RunBudget,
+    ) -> str:
         assert user_input == "hello"
+        assert budget == cli_module.DEFAULT_CLI_RUN_BUDGET
         agent.emit(
             Event(
                 type="trace_finish",

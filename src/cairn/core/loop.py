@@ -2,6 +2,11 @@ import asyncio
 import json
 
 from cairn.core.agent import Agent
+from cairn.core.budget import (
+    BudgetReason,
+    RunBudget,
+    RunBudgetExceeded,
+)
 from cairn.core.events import Event
 from cairn.core.models import Message, ToolCall, ToolFailure
 from cairn.observability.models import Span, SpanStatus
@@ -65,7 +70,8 @@ def _check_tool_permission(
 async def run_turn(
     agent: Agent,
     user_input: str,
-    max_steps: int = 20,
+    *,
+    budget: RunBudget,
 ) -> str:
     trace_error: str | None = None
     tool_execution_started = False
@@ -81,7 +87,7 @@ async def run_turn(
             turn_span = agent.tracer.start_root_span(
                 "agent.turn",
                 attributes={
-                    "max_steps": max_steps,
+                    "max_steps": budget.max_steps,
                 },
             )
 
@@ -94,13 +100,13 @@ async def run_turn(
 
         agent.state.add_user_message(user_input)
 
-        for step in range(max_steps):
+        for step in range(budget.max_steps):
             agent.emit(
                 Event(
                     type="agent_step",
                     data={
                         "step": step + 1,
-                        "max_steps": max_steps,
+                        "max_steps": budget.max_steps,
                     },
                 )
             )
@@ -328,14 +334,20 @@ async def run_turn(
 
         agent.emit(
             Event(
-                type="agent_step_limit",
+                type="agent_budget_exhausted",
                 data={
-                    "max_steps": max_steps,
+                    "reason": BudgetReason.MAX_STEPS.value,
+                    "limit": budget.max_steps,
+                    "used": budget.max_steps,
                 },
             )
         )
 
-        raise RuntimeError(f"Agent exceeded maximum steps: {max_steps}")
+        raise RunBudgetExceeded(
+            reason=BudgetReason.MAX_STEPS,
+            limit=budget.max_steps,
+            used=budget.max_steps,
+        )
 
     except asyncio.CancelledError:
         trace_error = "CancelledError: turn cancelled"

@@ -67,12 +67,19 @@ def console_event_handler(event: Event) -> None:
         case "agent_finish":
             console.print("[dim]✓ done[/dim]")
 
-        case "agent_step_limit":
-            max_steps = event.data.get("max_steps")
+        case "agent_budget_exhausted":
+            reason = event.data["reason"]
+            limit = event.data["limit"]
+            used = event.data["used"]
 
-            console.print(
-                f"[bold red]Agent stopped after {max_steps} steps.[/bold red]"
-            )
+            if reason == "max_steps":
+                console.print(
+                    f"[bold yellow]"
+                    f"Agent stopped: step budget exhausted "
+                    f"({used}/{limit})."
+                    f"[/bold yellow]"
+                )
+
         case "trace_finish":
             trace_id = event.data["trace_id"]
             status = event.data["status"]

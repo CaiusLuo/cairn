@@ -1,11 +1,14 @@
 from typing import Any
 
 from cairn.core.agent import Agent
+from cairn.core.budget import RunBudget
 from cairn.core.events import Event
 from cairn.core.models import LLMResponse, Message, ToolCall, ToolResult
 from cairn.observability.models import Span
 from cairn.tools.base import Tool
 from cairn.tools.registry import ToolRegistry
+
+TEST_BUDGET = RunBudget(max_steps=20)
 
 
 class SequenceLLM:

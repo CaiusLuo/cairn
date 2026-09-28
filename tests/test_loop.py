@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from cairn.core.agent import Agent
+from cairn.core.budget import BudgetReason, RunBudget, RunBudgetExceeded
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.core.models import LLMResponse, Message, ToolCall, ToolFailure, ToolResult
@@ -14,6 +15,7 @@ from cairn.observability.models import SpanStatus
 from cairn.observability.tracer import Tracer
 from cairn.tools.registry import ToolRegistry
 from tests.loop_support import (
+    TEST_BUDGET,
     FailingLLM,
     FailingSink,
     FailingTool,
@@ -88,6 +90,11 @@ def assert_serialized_tool_pairs(messages: list[Message]) -> None:
     assert not pending
 
 
+def test_run_budget_rejects_invalid_step_limit() -> None:
+    with pytest.raises(ValueError, match="at least 1"):
+        RunBudget(max_steps=0)
+
+
 @pytest.mark.parametrize("with_tracer", [False, True])
 def test_run_turn_cancellation_during_tool_execution_preserves_facts(
     with_tracer: bool,
@@ -102,7 +109,7 @@ def test_run_turn_cancellation_during_tool_execution_preserves_facts(
         if with_tracer:
             agent.tracer = Tracer(sink)
 
-        task = asyncio.create_task(run_turn(agent, "run tools"))
+        task = asyncio.create_task(run_turn(agent, "run tools", budget=TEST_BUDGET))
 
         await asyncio.wait_for(tool.started.wait(), timeout=1)
 
@@ -146,7 +153,7 @@ def test_run_turn_cancellation_during_tool_execution_preserves_facts(
         preserved = agent.state.messages.copy()
         next_llm = SequenceLLM([LLMResponse(content="continued")])
         agent.llm = next_llm
-        assert await run_turn(agent, "Continue") == "continued"
+        assert await run_turn(agent, "Continue", budget=TEST_BUDGET) == "continued"
         assert next_llm.calls[0][0][1:] == [
             *preserved,
             Message(role="user", content="Continue"),
@@ -177,7 +184,7 @@ def test_run_turn_cancellation_during_llm_wait_rolls_back_and_marks_trace_error(
         agent.state.add_assistant_message("previous answer")
         previous = agent.state.messages.copy()
 
-        task = asyncio.create_task(run_turn(agent, "current"))
+        task = asyncio.create_task(run_turn(agent, "current", budget=TEST_BUDGET))
 
         await asyncio.wait_for(llm.started.wait(), timeout=1)
 
@@ -215,7 +222,7 @@ def test_run_turn_preserves_cancellation_when_trace_sink_fails() -> None:
             tracer=Tracer(sink),
         )
 
-        task = asyncio.create_task(run_turn(agent, "current"))
+        task = asyncio.create_task(run_turn(agent, "current", budget=TEST_BUDGET))
         await asyncio.wait_for(llm.started.wait(), timeout=1)
         task.cancel()
 
@@ -268,7 +275,7 @@ def test_run_turn_cancellation_after_tool_preserves_fact_for_next_turn(
         agent.state.add_assistant_message("previous answer")
         previous = agent.state.messages.copy()
 
-        task = asyncio.create_task(run_turn(agent, "run tool"))
+        task = asyncio.create_task(run_turn(agent, "run tool", budget=TEST_BUDGET))
         await asyncio.wait_for(llm.started.wait(), timeout=1)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -307,7 +314,7 @@ def test_run_turn_cancellation_after_tool_preserves_fact_for_next_turn(
         preserved = agent.state.messages.copy()
         next_llm = SequenceLLM([LLMResponse(content="continued")])
         agent.llm = next_llm
-        assert await run_turn(agent, "Continue") == "continued"
+        assert await run_turn(agent, "Continue", budget=TEST_BUDGET) == "continued"
         assert next_llm.calls[0][0][1:] == [
             *preserved,
             Message(role="user", content="Continue"),
@@ -323,7 +330,7 @@ def test_run_turn_returns_direct_model_response() -> None:
     llm = SequenceLLM([LLMResponse(content="done")])
     agent = make_agent(llm, events=events)
 
-    result = asyncio.run(run_turn(agent, "hello"))
+    result = asyncio.run(run_turn(agent, "hello", budget=TEST_BUDGET))
 
     assert result == "done"
     assert [message.role for message in agent.state.messages] == ["user", "assistant"]
@@ -338,7 +345,7 @@ def test_failed_turn_rolls_back_state() -> None:
     previous_messages = agent.state.messages.copy()
 
     with pytest.raises(RuntimeError, match="llm failed"):
-        asyncio.run(run_turn(agent, "current"))
+        asyncio.run(run_turn(agent, "current", budget=TEST_BUDGET))
 
     assert agent.state.messages == previous_messages
 
@@ -351,7 +358,7 @@ def test_run_turn_executes_tool_and_returns_follow_up() -> None:
     agent = make_agent(llm, tool, events)
     agent.tracer = Tracer(sink)
 
-    result = asyncio.run(run_turn(agent, "use the tool"))
+    result = asyncio.run(run_turn(agent, "use the tool", budget=TEST_BUDGET))
 
     assert result == "finished"
     assert tool.calls == [{"value": 42}]
@@ -433,7 +440,7 @@ def test_run_turn_records_permission_denial_without_executing_tool() -> None:
 
     agent.permission_handler = deny
 
-    result = asyncio.run(run_turn(agent, "do not run it"))
+    result = asyncio.run(run_turn(agent, "do not run it", budget=TEST_BUDGET))
 
     assert result == "denied handled"
     assert tool.calls == []
@@ -456,7 +463,7 @@ def test_run_turn_records_tool_errors_and_continues() -> None:
     agent = make_agent(llm, FailingTool(), events)
     agent.tracer = Tracer(sink)
 
-    result = asyncio.run(run_turn(agent, "run it"))
+    result = asyncio.run(run_turn(agent, "run it", budget=TEST_BUDGET))
 
     assert result == "recovered"
     assert json.loads(agent.state.messages[2].content or "") == {
@@ -479,7 +486,7 @@ def test_run_turn_records_unknown_tool_with_same_error_fields() -> None:
     agent = make_agent(llm, events=events)
     agent.tracer = Tracer(sink)
 
-    result = asyncio.run(run_turn(agent, "run it"))
+    result = asyncio.run(run_turn(agent, "run it", budget=TEST_BUDGET))
 
     assert result == "recovered"
     assert json.loads(agent.state.messages[2].content or "") == {
@@ -526,7 +533,7 @@ def test_run_turn_marks_tool_span_by_exit_code(
     agent = make_agent(llm, ExitCodeTool(exit_code), events)
     agent.tracer = Tracer(sink)
 
-    result = asyncio.run(run_turn(agent, "run it"))
+    result = asyncio.run(run_turn(agent, "run it", budget=TEST_BUDGET))
 
     assert result == "recovered"
     tool_spans = [span for span in sink.spans if span.name == "tool.execute"]
@@ -554,10 +561,52 @@ def test_run_turn_emits_and_raises_at_step_limit() -> None:
     agent = make_agent(llm, RecordingTool(), events)
     agent.tracer = Tracer(sink)
 
-    with pytest.raises(RuntimeError, match="Agent exceeded maximum steps: 1"):
-        asyncio.run(run_turn(agent, "keep going", max_steps=1))
+    budget = RunBudget(max_steps=1)
+    with pytest.raises(RunBudgetExceeded) as exc_info:
+        asyncio.run(run_turn(agent, "keep going", budget=budget))
 
-    assert events[-2] == Event(type="agent_step_limit", data={"max_steps": 1})
+    exc = exc_info.value
+    assert exc.reason == BudgetReason.MAX_STEPS
+    assert exc.limit == 1
+    assert exc.used == 1
+    assert events[-2] == Event(
+        type="agent_budget_exhausted",
+        data={
+            "reason": "max_steps",
+            "limit": 1,
+            "used": 1,
+        },
+    )
     assert events[-1].type == "trace_finish"
     assert events[-1].data["status"] == "error"
     assert sink.spans[-1].status == SpanStatus.ERROR
+
+
+def test_run_turn_uses_caller_budget_to_control_execution_capacity() -> None:
+    limited_llm = SequenceLLM([tool_response(), LLMResponse(content="done")])
+    limited_agent = make_agent(limited_llm, RecordingTool())
+
+    with pytest.raises(RunBudgetExceeded):
+        asyncio.run(
+            run_turn(
+                limited_agent,
+                "keep going",
+                budget=RunBudget(max_steps=1),
+            )
+        )
+
+    capable_llm = SequenceLLM([tool_response(), LLMResponse(content="done")])
+    capable_agent = make_agent(capable_llm, RecordingTool())
+
+    assert (
+        asyncio.run(
+            run_turn(
+                capable_agent,
+                "keep going",
+                budget=RunBudget(max_steps=2),
+            )
+        )
+        == "done"
+    )
+    assert len(limited_llm.calls) == 1
+    assert len(capable_llm.calls) == 2
