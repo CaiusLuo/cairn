@@ -1,6 +1,7 @@
 import asyncio
 import os
 import signal
+import sys
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,8 @@ import pytest
 
 from cairn.tools.bash import BashTool
 from cairn.workspace.workspace import Workspace
+
+_CREATE_SUBPROCESS_EXEC = asyncio.create_subprocess_exec
 
 
 async def wait_for_path(path: Path, timeout: float = 1.0) -> None:
@@ -21,12 +24,24 @@ async def wait_for_path(path: Path, timeout: float = 1.0) -> None:
 
 
 async def wait_for_process_group_exit(pgid: int) -> None:
+    async def group_members() -> list[str]:
+        process = await _CREATE_SUBPROCESS_EXEC(
+            "/bin/ps",
+            "-axo",
+            "pid=,pgid=,stat=",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        assert process.returncode == 0, stderr.decode()
+        return [
+            line
+            for line in stdout.decode().splitlines()
+            if len(parts := line.split()) >= 2 and int(parts[1]) == pgid
+        ]
+
     async def wait() -> None:
-        while True:
-            try:
-                os.killpg(pgid, 0)
-            except (ProcessLookupError, PermissionError):
-                return
+        while await group_members():
             await asyncio.sleep(0.01)
 
     await asyncio.wait_for(wait(), timeout=2.0)
@@ -113,6 +128,81 @@ def test_bash_cleanup_removes_only_owned_process_group(
                     with suppress(ProcessLookupError, PermissionError):
                         os.killpg(process.pid, signal.SIGKILL)
                 for process in [*owned, unrelated]:
+                    with suppress(TimeoutError):
+                        await asyncio.wait_for(process.wait(), timeout=2.0)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("ending", ["timeout", "cancel"])
+def test_bash_sandbox_wrapper_cleans_descendants(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ending: str,
+) -> None:
+    if sys.platform == "linux" and not Path("/usr/bin/bwrap").is_file():
+        pytest.skip("bubblewrap is not installed")
+
+    async def scenario() -> None:
+        tool = BashTool(Workspace(tmp_path), timeout=0.5, cleanup_timeout=0.5)
+        preflight = await tool.execute({"command": "printf sandbox-ready"})
+        namespace_errors = (
+            "No permissions to create new namespace",
+            "Creating new namespace failed: Operation not permitted",
+            "setting up uid map: Permission denied",
+        )
+        if sys.platform == "linux" and any(
+            error in preflight.stderr for error in namespace_errors
+        ):
+            pytest.skip(
+                f"bubblewrap namespaces unavailable: {preflight.stderr.strip()}"
+            )
+        assert preflight.exit_code == 0, preflight.stderr
+        assert preflight.stdout == "sandbox-ready"
+
+        create_process = asyncio.create_subprocess_exec
+        owned: list[asyncio.subprocess.Process] = []
+
+        async def track_process(
+            *args: str, **kwargs: Any
+        ) -> asyncio.subprocess.Process:
+            # Preserve the real sandbox-exec/bwrap argv and process-group ownership.
+            process = await create_process(*args, **kwargs)
+            owned.append(process)
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", track_process)
+        started = tmp_path / "started.txt"
+        survived = tmp_path / "survived.txt"
+        command = (
+            "(printf started > started.txt; sleep 30; "
+            "printf leaked > survived.txt) & wait"
+        )
+        task = asyncio.create_task(tool.execute({"command": command}))
+        try:
+            await wait_for_path(started)
+            if ending == "cancel":
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=2.0)
+            else:
+                result = await asyncio.wait_for(task, timeout=2.0)
+                assert result.exit_code == -1
+
+            assert len(owned) == 1
+            assert owned[0].returncode is not None
+            await wait_for_process_group_exit(owned[0].pid)
+            assert not survived.exists()
+        finally:
+            task.cancel()
+            try:
+                with suppress(asyncio.CancelledError):
+                    await task
+            finally:
+                for process in owned:
+                    with suppress(ProcessLookupError):
+                        os.killpg(process.pid, signal.SIGKILL)
+                for process in owned:
                     await asyncio.wait_for(process.wait(), timeout=2.0)
 
     asyncio.run(scenario())
