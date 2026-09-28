@@ -3,8 +3,8 @@ from pathlib import Path
 
 def _reject_symlink_components(root: Path, relative: Path) -> None:
     current = root
-    for path in relative.parts:
-        current = current / path
+    for part in relative.parts:
+        current = current / part
 
         if current.is_symlink():
             raise ValueError("symlink targets are not supported")

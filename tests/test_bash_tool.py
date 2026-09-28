@@ -405,7 +405,7 @@ def test_bash_tool_timeout_cleans_owned_process_group(
 
         process.wait.assert_awaited_once()
 
-        # communicate 只应该是原始执行那一次
+        # Cleanup must reuse the original communicate() call.
         assert process.communicate.await_count == 1
 
     asyncio.run(scenario())
