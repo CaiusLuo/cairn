@@ -252,6 +252,8 @@ def test_run_turn_cancellation_after_tool_preserves_fact_for_next_turn(
             "stdout": "recorded",
             "stderr": "",
             "exit_code": 0,
+            "stdout_truncated": False,
+            "stderr_truncated": False,
         }
         assert not any(event.type == "agent_finish" for event in events)
         trace_finish = [event for event in events if event.type == "trace_finish"]
@@ -330,6 +332,8 @@ def test_run_turn_executes_tool_and_returns_follow_up() -> None:
         "stdout": "recorded",
         "stderr": "",
         "exit_code": 0,
+        "stdout_truncated": False,
+        "stderr_truncated": False,
     }
     assert [event.type for event in events] == [
         "trace_start",
@@ -340,6 +344,15 @@ def test_run_turn_executes_tool_and_returns_follow_up() -> None:
         "agent_finish",
         "trace_finish",
     ]
+    tool_result_event = next(event for event in events if event.type == "tool_result")
+    assert tool_result_event.data == {
+        "tool": "record",
+        "exit_code": 0,
+        "stdout": "recorded",
+        "stderr": "",
+        "stdout_truncated": False,
+        "stderr_truncated": False,
+    }
     tool_spans = [span for span in sink.spans if span.name == "tool.execute"]
     assert len(tool_spans) == 1
     tool_span = tool_spans[0]
@@ -348,6 +361,9 @@ def test_run_turn_executes_tool_and_returns_follow_up() -> None:
     assert tool_span.attributes["tool_call_id"] == "call-1"
     assert tool_span.attributes["exit_code"] == 0
     assert tool_span.attributes["stdout_length"] == len("recorded")
+    assert tool_span.attributes["stderr_length"] == 0
+    assert tool_span.attributes["stdout_truncated"] is False
+    assert tool_span.attributes["stderr_truncated"] is False
     turn_span = next(span for span in sink.spans if span.name == "agent.turn")
     assert events[0].data == {"trace_id": turn_span.context.trace_id}
     assert events[-1].data == {

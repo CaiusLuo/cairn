@@ -65,6 +65,8 @@ def test_build_agent_runs_headless_tool_turn(
         "stdout": "Created answer.txt",
         "stderr": "",
         "exit_code": 0,
+        "stdout_truncated": False,
+        "stderr_truncated": False,
     }
     captured = capsys.readouterr()
     assert captured.out == ""

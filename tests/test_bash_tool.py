@@ -9,10 +9,23 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from cairn.tools.bash import BashTool
+from cairn.tools.bash import (
+    PIPE_READ_CHUNK_SIZE,
+    BashTool,
+    _decode_output,
+    _read_bounded,
+)
 from cairn.workspace.workspace import Workspace
 
 _CREATE_SUBPROCESS_EXEC = asyncio.create_subprocess_exec
+_LARGE_OUTPUT_CHUNK_BYTES = 64 * 1024
+_LARGE_OUTPUT_CHUNKS = 32
+
+
+def _completed_stream(data: bytes) -> AsyncMock:
+    stream = AsyncMock(spec=asyncio.StreamReader)
+    stream.read.side_effect = (data, b"")
+    return stream
 
 
 async def wait_for_path(path: Path, timeout: float = 1.0) -> None:
@@ -272,7 +285,8 @@ def test_bash_tool_preserves_command_text_and_decodes_output(
     process = AsyncMock()
     process.pid = 12345
     process.returncode = exit_code
-    process.communicate.return_value = (stdout, stderr)
+    process.stdout = _completed_stream(stdout)
+    process.stderr = _completed_stream(stderr)
     process.wait.return_value = exit_code
     create_process = AsyncMock(return_value=process)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
@@ -296,18 +310,19 @@ def test_bash_tool_cancellation_kills_owned_process_group(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def scenario() -> None:
-        communicate_started = asyncio.Event()
+        collection_started = asyncio.Event()
 
         process = AsyncMock()
         process.pid = 12345
         process.returncode = None
 
-        async def block_communicate() -> tuple[bytes, bytes]:
-            communicate_started.set()
+        async def block_read(_limit: int) -> bytes:
+            collection_started.set()
             await asyncio.Event().wait()
             raise AssertionError("unreachable")
 
-        process.communicate.side_effect = block_communicate
+        process.stdout.read.side_effect = block_read
+        process.stderr.read.side_effect = block_read
         process.wait.return_value = -9
 
         create_process = AsyncMock(return_value=process)
@@ -335,7 +350,7 @@ def test_bash_tool_cancellation_kills_owned_process_group(
 
         task = asyncio.create_task(tool.execute({"command": "sleep 100"}))
 
-        await communicate_started.wait()
+        await collection_started.wait()
 
         task.cancel()
 
@@ -347,7 +362,9 @@ def test_bash_tool_cancellation_kills_owned_process_group(
             signal.SIGKILL,
         )
 
-        process.wait.assert_awaited_once()
+        assert process.wait.await_count == 2
+        process.stdout.read.assert_awaited_once()
+        process.stderr.read.assert_awaited_once()
 
         assert create_process.call_args.kwargs["start_new_session"] is True
 
@@ -363,11 +380,12 @@ def test_bash_tool_timeout_cleans_owned_process_group(
         process.pid = 12345
         process.returncode = None
 
-        async def block_communicate() -> tuple[bytes, bytes]:
+        async def block_read(_limit: int) -> bytes:
             await asyncio.Event().wait()
             raise AssertionError("unreachable")
 
-        process.communicate.side_effect = block_communicate
+        process.stdout.read.side_effect = block_read
+        process.stderr.read.side_effect = block_read
         process.wait.return_value = -9
 
         create_process = AsyncMock(return_value=process)
@@ -403,10 +421,9 @@ def test_bash_tool_timeout_cleans_owned_process_group(
             signal.SIGKILL,
         )
 
-        process.wait.assert_awaited_once()
-
-        # Cleanup must reuse the original communicate() call.
-        assert process.communicate.await_count == 1
+        assert process.wait.await_count == 2
+        process.stdout.read.assert_awaited_once()
+        process.stderr.read.assert_awaited_once()
 
     asyncio.run(scenario())
 
@@ -560,3 +577,99 @@ def test_bash_tool_does_not_pass_api_key_to_command(
 
     assert result.exit_code == 0
     assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    ("write_stdout", "write_stderr"),
+    [
+        (True, False),
+        (False, True),
+        (True, True),
+    ],
+    ids=("stdout-only", "stderr-only", "stdout-and-stderr"),
+)
+def test_bash_drains_large_output_without_deadlock(
+    tmp_path: Path,
+    write_stdout: bool,
+    write_stderr: bool,
+) -> None:
+    writes: list[str] = []
+    if write_stdout:
+        writes.append(f"printf '%{_LARGE_OUTPUT_CHUNK_BYTES}s' x")
+    if write_stderr:
+        writes.append(f"printf '%{_LARGE_OUTPUT_CHUNK_BYTES}s' y >&2")
+    command = (
+        f'i=0; while [ "$i" -lt {_LARGE_OUTPUT_CHUNKS} ]; do '
+        + "; ".join(writes)
+        + "; i=$((i + 1)); done"
+    )
+    stdout_limit = 128
+    stderr_limit = 96
+
+    result = asyncio.run(
+        BashTool(
+            Workspace(tmp_path),
+            timeout=5.0,
+            stdout_limit=stdout_limit,
+            stderr_limit=stderr_limit,
+        ).execute({"command": command})
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == (" " * stdout_limit if write_stdout else "")
+    assert result.stderr == (" " * stderr_limit if write_stderr else "")
+    assert result.stdout_truncated is write_stdout
+    assert result.stderr_truncated is write_stderr
+
+
+def test_bash_does_not_mark_small_output_truncated(
+    tmp_path: Path,
+) -> None:
+    result = asyncio.run(
+        BashTool(
+            Workspace(tmp_path),
+            stdout_limit=128,
+            stderr_limit=128,
+        ).execute({"command": "printf hello; printf error >&2"})
+    )
+
+    assert result.stdout == "hello"
+    assert result.stderr == "error"
+    assert result.stdout_truncated is False
+    assert result.stderr_truncated is False
+
+
+def test_bounded_output_does_not_emit_partial_utf8_character() -> None:
+    async def scenario() -> None:
+        reader = asyncio.StreamReader()
+
+        reader.feed_data("你你".encode())
+        reader.feed_eof()
+
+        data, truncated = await _read_bounded(reader, 4)
+
+        assert truncated is True
+        assert _decode_output(data, truncated=True) == "你"
+
+    asyncio.run(scenario())
+
+
+def test_bounded_output_never_requests_unbounded_read() -> None:
+    async def scenario() -> None:
+        stream = AsyncMock(spec=asyncio.StreamReader)
+        stream.read.side_effect = (
+            b"a" * PIPE_READ_CHUNK_SIZE,
+            b"b",
+            b"",
+        )
+
+        data, truncated = await _read_bounded(stream, 4)
+
+        assert data == b"aaaa"
+        assert truncated is True
+        assert stream.read.await_count == 3
+        assert all(
+            read.args == (PIPE_READ_CHUNK_SIZE,) for read in stream.read.await_args_list
+        )
+
+    asyncio.run(scenario())

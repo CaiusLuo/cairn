@@ -34,6 +34,9 @@ class ToolResult(BaseModel):
     stderr: str = ""
     exit_code: int
 
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+
 
 class ToolFailure(BaseModel):
     error: str

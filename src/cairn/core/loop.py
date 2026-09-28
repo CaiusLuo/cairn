@@ -296,6 +296,8 @@ async def run_turn(
                                 "exit_code": result.exit_code,
                                 "stdout_length": len(result.stdout),
                                 "stderr_length": len(result.stderr),
+                                "stdout_truncated": result.stdout_truncated,
+                                "stderr_truncated": result.stderr_truncated,
                             }
                         )
                         if result.exit_code == 0:
@@ -318,6 +320,8 @@ async def run_turn(
                             "exit_code": result.exit_code,
                             "stdout": result.stdout,
                             "stderr": result.stderr,
+                            "stdout_truncated": result.stdout_truncated,
+                            "stderr_truncated": result.stderr_truncated,
                         },
                     )
                 )

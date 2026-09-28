@@ -138,6 +138,8 @@ def test_edit_fact_survives_llm_failure_and_reaches_next_turn(tmp_path: Path) ->
         "stdout": "Created answer.txt",
         "stderr": "",
         "exit_code": 0,
+        "stdout_truncated": False,
+        "stderr_truncated": False,
     }
     preserved = agent.state.messages.copy()
     next_llm = SequenceLLM([LLMResponse(content="done")])
@@ -215,7 +217,13 @@ def test_step_limit_preserves_successful_and_failed_tool_facts(
     if tool_type is WriteThenFailTool:
         assert payload == {"type": "RuntimeError", "error": "tool failed after writing"}
     else:
-        assert payload == {"stdout": "Created answer.txt", "stderr": "", "exit_code": 0}
+        assert payload == {
+            "stdout": "Created answer.txt",
+            "stderr": "",
+            "exit_code": 0,
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
 
 
 @pytest.mark.parametrize("callback", ["event", "trace"])
@@ -269,7 +277,13 @@ def test_tool_fact_is_stored_before_failing_callback(
     if tool_type is WriteThenFailTool:
         assert payload == {"type": "RuntimeError", "error": "tool failed after writing"}
     else:
-        assert payload == {"stdout": "Created first.txt", "stderr": "", "exit_code": 0}
+        assert payload == {
+            "stdout": "Created first.txt",
+            "stderr": "",
+            "exit_code": 0,
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
     assert aborted.tool_call_id == "edit-2"
     assert json.loads(aborted.content or "")["type"] == "TurnAborted"
 

@@ -1,4 +1,5 @@
 import asyncio
+import codecs
 import json
 import os
 import signal
@@ -10,17 +11,55 @@ from typing import Any
 from cairn.core.models import ToolResult
 from cairn.workspace.workspace import Workspace
 
+DEFAULT_STDOUT_CAPTURE_LIMIT = 64 * 1024
+DEFAULT_STDERR_CAPTURE_LIMIT = 64 * 1024
+PIPE_READ_CHUNK_SIZE = 16 * 1024
+
+
+async def _read_bounded(stream: asyncio.StreamReader, limit: int) -> tuple[bytes, bool]:
+    captured = bytearray()
+    truncated = False
+
+    while True:
+        chunk = await stream.read(PIPE_READ_CHUNK_SIZE)
+        if not chunk:
+            break
+
+        remaining = limit - len(captured)
+        if remaining > 0:
+            captured.extend(chunk[:remaining])
+
+        if len(chunk) > remaining:
+            truncated = True
+
+    return bytes(captured), truncated
+
+
+def _decode_output(data: bytes, truncated: bool) -> str:
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    return decoder.decode(data, final=not truncated)
+
 
 class BashTool:
     name = "bash"
     description = "Execute a shell command in the current workspace."
 
     def __init__(
-        self, workspace: Workspace, timeout: float = 30.0, cleanup_timeout: float = 2.0
+        self,
+        workspace: Workspace,
+        timeout: float = 30.0,
+        cleanup_timeout: float = 2.0,
+        stdout_limit: int = DEFAULT_STDOUT_CAPTURE_LIMIT,
+        stderr_limit: int = DEFAULT_STDERR_CAPTURE_LIMIT,
     ) -> None:
+        if stdout_limit < 0 or stderr_limit < 0:
+            raise ValueError("output capture limits must be non-negative")
+
         self.workspace = workspace
         self.timeout = timeout
         self.cleanup_timeout = cleanup_timeout
+        self.stdout_limit = stdout_limit
+        self.stderr_limit = stderr_limit
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -42,12 +81,45 @@ class BashTool:
             },
         }
 
+    async def _collect_output(
+        self, process: asyncio.subprocess.Process
+    ) -> tuple[bytes, bool, bytes, bool, int]:
+        assert process.stdout is not None
+        assert process.stderr is not None
+
+        stdout_task = asyncio.create_task(
+            _read_bounded(process.stdout, self.stdout_limit)
+        )
+        stderr_task = asyncio.create_task(
+            _read_bounded(process.stderr, self.stderr_limit)
+        )
+
+        (
+            (stdout, stdout_truncated),
+            (stderr, stderr_truncated),
+            exit_code,
+        ) = await asyncio.gather(stdout_task, stderr_task, process.wait())
+
+        return stdout, stdout_truncated, stderr, stderr_truncated, exit_code
+
     async def _cleanup_process(self, process: asyncio.subprocess.Process) -> None:
         with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
 
         with suppress(TimeoutError):
             await asyncio.wait_for(process.wait(), timeout=self.cleanup_timeout)
+
+    async def _settle_collection(self, task: asyncio.Task[Any]) -> None:
+        if not task.done():
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(task), timeout=self.cleanup_timeout
+                )
+            except TimeoutError:
+                task.cancel()
+
+        with suppress(asyncio.CancelledError):
+            await task
 
     async def execute(
         self,
@@ -124,11 +196,15 @@ class BashTool:
 
         # Keep draining the pipes while terminating the group: otherwise a full
         # pipe can prevent asyncio's process waiter from completing after exit.
-        communication = asyncio.create_task(process.communicate())
+        collection = asyncio.create_task(self._collect_output(process))
         try:
-            stdout, stderr = await asyncio.wait_for(
-                asyncio.shield(communication), timeout=self.timeout
-            )
+            (
+                stdout,
+                stdout_truncated,
+                stderr,
+                stderr_truncated,
+                exit_code,
+            ) = await asyncio.wait_for(asyncio.shield(collection), timeout=self.timeout)
         except TimeoutError:
             return ToolResult(
                 stderr=f"Command '{command}' time out after {self.timeout}s",
@@ -136,17 +212,14 @@ class BashTool:
             )
         else:
             return ToolResult(
-                stdout=stdout.decode("utf-8", errors="replace"),
-                stderr=stderr.decode("utf-8", errors="replace"),
-                exit_code=await process.wait(),
+                stdout=_decode_output(stdout, stdout_truncated),
+                stderr=_decode_output(stderr, stderr_truncated),
+                exit_code=exit_code,
+                stdout_truncated=stdout_truncated,
+                stderr_truncated=stderr_truncated,
             )
         finally:
-            # Also stop background children whose redirected output allowed
-            # communicate() to finish normally. Cancellation propagates only
-            # after this same bounded cleanup path.
             try:
                 await self._cleanup_process(process)
             finally:
-                communication.cancel()
-                with suppress(asyncio.CancelledError):
-                    await communication
+                await self._settle_collection(collection)

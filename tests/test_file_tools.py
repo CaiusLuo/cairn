@@ -1,11 +1,31 @@
 import asyncio
+import io
 import os
 from pathlib import Path
 
 import pytest
 
-from cairn.tools.files import EditFileTool, ReadFileTool
+from cairn.tools.files import (
+    EDIT_FILE_MAX_BYTES,
+    READ_FILE_CHUNK_SIZE,
+    EditFileTool,
+    ReadFileTool,
+    _decode_bounded_utf8,
+    _read_bounded_range,
+)
 from cairn.workspace.workspace import Workspace
+
+
+class RecordingBytesIO(io.BytesIO):
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.readline_sizes: list[int] = []
+
+    def readline(self, size: int | None = -1) -> bytes:
+        if size is None:
+            raise AssertionError("readline must use an explicit byte limit")
+        self.readline_sizes.append(size)
+        return super().readline(size)
 
 
 def test_read_file_returns_requested_lines_and_caps_output(tmp_path: Path) -> None:
@@ -33,6 +53,106 @@ def test_read_file_returns_requested_lines_and_caps_output(tmp_path: Path) -> No
     assert result.stdout.endswith("[read_file more lines available]")
 
 
+def test_read_file_bounds_very_long_single_line(tmp_path: Path) -> None:
+    path = tmp_path / "large.txt"
+    path.write_bytes(b"a" * 1_000_000)
+
+    result = asyncio.run(
+        ReadFileTool(Workspace(tmp_path)).execute({"path": "large.txt"})
+    )
+
+    assert len(result.stdout) < 20_000
+    assert result.stdout_truncated is True
+    assert "[read_file output truncated]" in result.stdout
+
+
+def test_read_file_utf8_truncation_drops_partial_character() -> None:
+    stream = io.BytesIO("你你".encode())
+
+    data, truncated, _ = _read_bounded_range(
+        stream,
+        start_line=1,
+        end_line=1,
+        capture_limit=4,
+    )
+
+    assert truncated is True
+    assert _decode_bounded_utf8(data, truncated=True) == "你"
+
+
+def test_read_file_preserves_carriage_return_line_boundaries(tmp_path: Path) -> None:
+    path = tmp_path / "carriage-returns.txt"
+    path.write_bytes(b"one\rtwo\rthree\r")
+
+    result = asyncio.run(
+        ReadFileTool(Workspace(tmp_path)).execute(
+            {
+                "path": "carriage-returns.txt",
+                "start_line": 2,
+                "end_line": 2,
+            }
+        )
+    )
+
+    assert result.stdout == "two\r\n[read_file more lines available]"
+
+
+def test_read_file_handles_crlf_across_chunk_boundary(tmp_path: Path) -> None:
+    path = tmp_path / "split-crlf.txt"
+    path.write_bytes(b"a" * (READ_FILE_CHUNK_SIZE - 1) + b"\r\nTARGET\r\n")
+
+    result = asyncio.run(
+        ReadFileTool(Workspace(tmp_path)).execute(
+            {
+                "path": "split-crlf.txt",
+                "start_line": 2,
+                "end_line": 2,
+            }
+        )
+    )
+
+    assert result.stdout == "TARGET\r\n"
+
+
+def test_read_file_rejects_invalid_utf8(tmp_path: Path) -> None:
+    path = tmp_path / "invalid.txt"
+    path.write_bytes(b"invalid:\xff\n")
+
+    with pytest.raises(UnicodeDecodeError):
+        asyncio.run(ReadFileTool(Workspace(tmp_path)).execute({"path": "invalid.txt"}))
+
+
+def test_read_file_reads_deep_line_without_buffering_prefix(tmp_path: Path) -> None:
+    path = tmp_path / "deep.txt"
+    path.write_text("skip\n" * 10_000 + "TARGET\n", encoding="utf-8")
+    tool = ReadFileTool(Workspace(tmp_path))
+
+    result = asyncio.run(
+        tool.execute(
+            {
+                "path": "deep.txt",
+                "start_line": 10_001,
+                "end_line": 10_001,
+            }
+        )
+    )
+
+    assert result.stdout == "TARGET\n"
+
+
+def test_read_file_never_requests_unbounded_line_read() -> None:
+    stream = RecordingBytesIO(b"a" * 1_000_000)
+
+    _read_bounded_range(
+        stream,
+        start_line=1,
+        end_line=1,
+    )
+
+    assert stream.readline_sizes
+    assert all(size == READ_FILE_CHUNK_SIZE for size in stream.readline_sizes)
+
+
 def test_edit_file_replaces_once_and_leaves_failed_edits_unchanged(
     tmp_path: Path,
 ) -> None:
@@ -55,6 +175,90 @@ def test_edit_file_replaces_once_and_leaves_failed_edits_unchanged(
                 )
             )
         assert path.read_text(encoding="utf-8") == "alpha\ngamma\nalpha\n"
+
+
+def test_edit_file_rejects_oversized_existing_file(tmp_path: Path) -> None:
+    path = tmp_path / "large.txt"
+    original = b"a" * (EDIT_FILE_MAX_BYTES + 1)
+    path.write_bytes(original)
+    tool = EditFileTool(Workspace(tmp_path))
+
+    with pytest.raises(ValueError, match="exceeds edit_file limit"):
+        asyncio.run(
+            tool.execute(
+                {
+                    "path": "large.txt",
+                    "old_text": "a",
+                    "new_text": "b",
+                }
+            )
+        )
+
+    assert path.read_bytes() == original
+
+
+def test_edit_file_rejects_oversized_result(tmp_path: Path) -> None:
+    path = tmp_path / "file.txt"
+    path.write_text("hello", encoding="utf-8")
+    tool = EditFileTool(Workspace(tmp_path))
+
+    with pytest.raises(ValueError, match="would exceed edit_file limit"):
+        asyncio.run(
+            tool.execute(
+                {
+                    "path": "file.txt",
+                    "old_text": "hello",
+                    "new_text": "x" * (EDIT_FILE_MAX_BYTES + 1),
+                }
+            )
+        )
+
+    assert path.read_text(encoding="utf-8") == "hello"
+
+
+def test_edit_file_rejects_oversized_create(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "new.txt"
+    tool = EditFileTool(Workspace(tmp_path))
+
+    def unexpected_mkstemp(*_args: object, **_kwargs: object) -> tuple[int, str]:
+        raise AssertionError("oversized create reached temporary file creation")
+
+    monkeypatch.setattr("cairn.tools.files.tempfile.mkstemp", unexpected_mkstemp)
+
+    with pytest.raises(ValueError, match="would exceed edit_file limit"):
+        asyncio.run(
+            tool.execute(
+                {
+                    "path": "new.txt",
+                    "old_text": "",
+                    "new_text": "x" * (EDIT_FILE_MAX_BYTES + 1),
+                }
+            )
+        )
+
+    assert not path.exists()
+
+
+def test_edit_file_limit_counts_utf8_bytes(tmp_path: Path) -> None:
+    path = tmp_path / "utf8.txt"
+    text = "你" * (EDIT_FILE_MAX_BYTES // 3 + 1)
+    tool = EditFileTool(Workspace(tmp_path))
+
+    with pytest.raises(ValueError):
+        asyncio.run(
+            tool.execute(
+                {
+                    "path": "utf8.txt",
+                    "old_text": "",
+                    "new_text": text,
+                }
+            )
+        )
+
+    assert not path.exists()
 
 
 def test_edit_file_keeps_original_if_replace_fails(
