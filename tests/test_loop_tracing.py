@@ -3,14 +3,16 @@ import asyncio
 import pytest
 
 from cairn.core.agent import Agent
+from cairn.core.events import Event
 from cairn.core.loop import run_turn
-from cairn.core.models import LLMResponse, ToolCall
+from cairn.core.models import LLMResponse, Message, ToolCall
 from cairn.core.permissions import PermissionDecision, PermissionResult
 from cairn.observability.models import SpanStatus
 from cairn.observability.tracer import Tracer
 from cairn.tools.registry import ToolRegistry
 from tests.loop_support import (
     FailingLLM,
+    FailingSink,
     RecordingSink,
     RecordingTool,
     SequenceLLM,
@@ -23,10 +25,12 @@ def test_run_turn_emits_root_trace() -> None:
     sink = RecordingSink()
     tracer = Tracer(sink)
     llm = SequenceLLM([LLMResponse(content="done")])
+    events: list[Event] = []
     agent = Agent(
         llm=llm,
         tools=ToolRegistry(),
         tracer=tracer,
+        event_handler=lambda event: events.append(event),
     )
 
     result = asyncio.run(run_turn(agent, "hello"))
@@ -46,6 +50,41 @@ def test_run_turn_emits_root_trace() -> None:
     assert llm_span.context.trace_id == turn_span.context.trace_id
     assert llm_span.context.parent_span_id == turn_span.context.span_id
     assert llm_span.attributes["step"] == 1
+    assert [event for event in events if event.type == "trace_finish"] == [
+        Event(
+            type="trace_finish",
+            data={
+                "trace_id": turn_span.context.trace_id,
+                "status": "ok",
+                "persisted": True,
+                "persistence_error": None,
+            },
+        )
+    ]
+
+
+def test_run_turn_preserves_success_when_trace_sink_fails() -> None:
+    sink = FailingSink()
+    events: list[Event] = []
+    agent = Agent(
+        llm=SequenceLLM([LLMResponse(content="done")]),
+        tools=ToolRegistry(),
+        tracer=Tracer(sink),
+        event_handler=lambda event: events.append(event),
+    )
+
+    assert asyncio.run(run_turn(agent, "hello")) == "done"
+    assert agent.state.messages == [
+        Message(role="user", content="hello"),
+        Message(role="assistant", content="done"),
+    ]
+    assert sink.calls == 1
+    trace_finish = [event for event in events if event.type == "trace_finish"]
+    assert len(trace_finish) == 1
+    assert trace_finish[0].data["persisted"] is False
+    assert trace_finish[0].data["persistence_error"] == (
+        "OSError: simulated trace write failure"
+    )
 
 
 def test_run_turn_marks_llm_and_root_traces_as_error() -> None:
@@ -75,6 +114,30 @@ def test_run_turn_marks_llm_and_root_traces_as_error() -> None:
 
     assert llm_span.context.trace_id == turn_span.context.trace_id
     assert llm_span.context.parent_span_id == turn_span.context.span_id
+
+
+def test_run_turn_preserves_llm_error_when_trace_sink_fails() -> None:
+    sink = FailingSink()
+    events: list[Event] = []
+    agent = Agent(
+        llm=FailingLLM(),
+        tools=ToolRegistry(),
+        tracer=Tracer(sink),
+        event_handler=lambda event: events.append(event),
+    )
+
+    with pytest.raises(RuntimeError, match="llm failed"):
+        asyncio.run(run_turn(agent, "hello"))
+
+    assert agent.state.messages == []
+    assert sink.calls == 1
+    trace_finish = [event for event in events if event.type == "trace_finish"]
+    assert len(trace_finish) == 1
+    assert trace_finish[0].data["status"] == "error"
+    assert trace_finish[0].data["persisted"] is False
+    assert trace_finish[0].data["persistence_error"] == (
+        "OSError: simulated trace write failure"
+    )
 
 
 @pytest.mark.parametrize("with_handler", [False, True])

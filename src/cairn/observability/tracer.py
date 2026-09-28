@@ -14,6 +14,7 @@ from cairn.observability.sinks import TraceSink
 class Tracer:
     def __init__(self, sink: TraceSink) -> None:
         self.sink = sink
+        self._persistence_errors: dict[str, str] = {}
 
     def start_root_span(
         self,
@@ -48,4 +49,17 @@ class Tracer:
         span.status = status
         span.error = error
 
-        self.sink.emit(span)
+        trace_id = span.context.trace_id
+
+        # Once persistence failed, the trace is already incomplete.
+        # Keep finalizing spans in memory but do not repeatedly hit the broken sink.
+        if trace_id in self._persistence_errors:
+            return
+
+        try:
+            self.sink.emit(span)
+        except Exception as exc:
+            self._persistence_errors[trace_id] = f"{type(exc).__name__}: {exc}"
+
+    def pop_persistence_error(self, trace_id: str) -> str | None:
+        return self._persistence_errors.pop(trace_id, None)

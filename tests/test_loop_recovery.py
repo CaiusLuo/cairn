@@ -226,12 +226,9 @@ def test_step_limit_preserves_successful_and_failed_tool_facts(
         }
 
 
-@pytest.mark.parametrize("callback", ["event", "trace"])
 @pytest.mark.parametrize("tool_type", [EditFileTool, WriteThenFailTool])
-def test_tool_fact_is_stored_before_failing_callback(
+def test_tool_fact_is_stored_before_failing_event(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    callback: str,
     tool_type: type[EditFileTool],
 ) -> None:
     agent = make_edit_agent(
@@ -244,22 +241,9 @@ def test_tool_fact_is_stored_before_failing_callback(
             facts_seen.append(agent.state.messages[-1])
             raise RuntimeError("event failed")
 
-    sink = RecordingSink()
-    emit_span = sink.emit
+    agent.event_handler = fail_event
 
-    def fail_trace(span: Span) -> None:
-        if span.name == "tool.execute":
-            facts_seen.append(agent.state.messages[-1])
-            raise RuntimeError("trace failed")
-        emit_span(span)
-
-    if callback == "event":
-        agent.event_handler = fail_event
-    else:
-        monkeypatch.setattr(sink, "emit", fail_trace)
-        agent.tracer = Tracer(sink)
-
-    with pytest.raises(RuntimeError, match=f"{callback} failed"):
+    with pytest.raises(RuntimeError, match="event failed"):
         asyncio.run(run_turn(agent, "Create the files"))
 
     assert (tmp_path / "first.txt").read_text(encoding="utf-8") == "42\n"
@@ -288,12 +272,57 @@ def test_tool_fact_is_stored_before_failing_callback(
     assert json.loads(aborted.content or "")["type"] == "TurnAborted"
 
 
-@pytest.mark.parametrize("callback", ["event", "trace"])
-@pytest.mark.parametrize("with_tool", [False, True])
-def test_final_callback_failure_respects_execution_boundary(
+@pytest.mark.parametrize("tool_type", [EditFileTool, WriteThenFailTool])
+def test_trace_persistence_failure_does_not_interrupt_tool_facts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    callback: str,
+    tool_type: type[EditFileTool],
+) -> None:
+    agent = make_edit_agent(
+        tmp_path,
+        SequenceLLM(
+            [
+                edit_response("first.txt", "second.txt"),
+                LLMResponse(content="done"),
+            ]
+        ),
+        tool_type,
+    )
+    events: list[Event] = []
+    agent.event_handler = lambda event: events.append(event)
+    facts_seen: list[Message] = []
+    sink = RecordingSink()
+    emit_span = sink.emit
+
+    def fail_trace(span: Span) -> None:
+        if span.name == "tool.execute":
+            facts_seen.append(agent.state.messages[-1])
+            raise RuntimeError("trace failed")
+        emit_span(span)
+
+    monkeypatch.setattr(sink, "emit", fail_trace)
+    agent.tracer = Tracer(sink)
+
+    assert asyncio.run(run_turn(agent, "Create the files")) == "done"
+    assert (tmp_path / "first.txt").read_text(encoding="utf-8") == "42\n"
+    assert (tmp_path / "second.txt").read_text(encoding="utf-8") == "42\n"
+    assert [message.role for message in agent.state.messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "tool",
+        "assistant",
+    ]
+    assert facts_seen == [agent.state.messages[2]]
+    trace_finish = [event for event in events if event.type == "trace_finish"]
+    assert len(trace_finish) == 1
+    assert trace_finish[0].data["persisted"] is False
+    assert trace_finish[0].data["persistence_error"] == "RuntimeError: trace failed"
+
+
+@pytest.mark.parametrize("with_tool", [False, True])
+def test_final_event_failure_respects_execution_boundary(
+    tmp_path: Path,
     with_tool: bool,
 ) -> None:
     responses = [LLMResponse(content="done")]
@@ -303,25 +332,15 @@ def test_final_callback_failure_respects_execution_boundary(
     agent.state.add_user_message("previous")
     agent.state.add_assistant_message("previous answer")
     previous = agent.state.messages.copy()
-    sink = RecordingSink()
-    emit_span = sink.emit
 
     def fail_event(event: Event) -> None:
         if event.type == "trace_finish":
             raise RuntimeError("event failed")
 
-    def fail_trace(span: Span) -> None:
-        if span.name == "agent.turn":
-            raise RuntimeError("trace failed")
-        emit_span(span)
+    agent.tracer = Tracer(RecordingSink())
+    agent.event_handler = fail_event
 
-    agent.tracer = Tracer(sink)
-    if callback == "event":
-        agent.event_handler = fail_event
-    else:
-        monkeypatch.setattr(sink, "emit", fail_trace)
-
-    with pytest.raises(RuntimeError, match=f"{callback} failed"):
+    with pytest.raises(RuntimeError, match="event failed"):
         asyncio.run(run_turn(agent, "hello"))
 
     assert agent.state.messages[:2] == previous
@@ -336,3 +355,42 @@ def test_final_callback_failure_respects_execution_boundary(
         assert json.loads(agent.state.messages[4].content or "")["exit_code"] == 0
     else:
         assert agent.state.messages == previous
+
+
+@pytest.mark.parametrize("with_tool", [False, True])
+def test_final_trace_persistence_failure_keeps_primary_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    with_tool: bool,
+) -> None:
+    responses = [LLMResponse(content="done")]
+    if with_tool:
+        responses.insert(0, edit_response("answer.txt"))
+    agent = make_edit_agent(tmp_path, SequenceLLM(responses))
+    agent.state.add_user_message("previous")
+    agent.state.add_assistant_message("previous answer")
+    previous = agent.state.messages.copy()
+    events: list[Event] = []
+    agent.event_handler = lambda event: events.append(event)
+    sink = RecordingSink()
+    emit_span = sink.emit
+
+    def fail_trace(span: Span) -> None:
+        if span.name == "agent.turn":
+            raise RuntimeError("trace failed")
+        emit_span(span)
+
+    monkeypatch.setattr(sink, "emit", fail_trace)
+    agent.tracer = Tracer(sink)
+
+    assert asyncio.run(run_turn(agent, "hello")) == "done"
+    assert agent.state.messages[:2] == previous
+    expected_roles = ["user", "assistant"]
+    if with_tool:
+        expected_roles = ["user", "assistant", "tool", "assistant"]
+        assert (tmp_path / "answer.txt").read_text(encoding="utf-8") == "42\n"
+    assert [message.role for message in agent.state.messages[2:]] == expected_roles
+    trace_finish = [event for event in events if event.type == "trace_finish"]
+    assert len(trace_finish) == 1
+    assert trace_finish[0].data["persisted"] is False
+    assert trace_finish[0].data["persistence_error"] == "RuntimeError: trace failed"

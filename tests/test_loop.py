@@ -15,6 +15,7 @@ from cairn.observability.tracer import Tracer
 from cairn.tools.registry import ToolRegistry
 from tests.loop_support import (
     FailingLLM,
+    FailingSink,
     FailingTool,
     RecordingSink,
     RecordingTool,
@@ -202,6 +203,38 @@ def test_run_turn_cancellation_during_llm_wait_rolls_back_and_marks_trace_error(
     asyncio.run(scenario())
 
 
+def test_run_turn_preserves_cancellation_when_trace_sink_fails() -> None:
+    async def scenario() -> None:
+        sink = FailingSink()
+        events: list[Event] = []
+        llm = BlockingLLM()
+        agent = Agent(
+            llm=llm,
+            tools=ToolRegistry(),
+            event_handler=lambda event: events.append(event),
+            tracer=Tracer(sink),
+        )
+
+        task = asyncio.create_task(run_turn(agent, "current"))
+        await asyncio.wait_for(llm.started.wait(), timeout=1)
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1)
+
+        assert agent.state.messages == []
+        assert sink.calls == 1
+        trace_finish = [event for event in events if event.type == "trace_finish"]
+        assert len(trace_finish) == 1
+        assert trace_finish[0].data["status"] == "error"
+        assert trace_finish[0].data["persisted"] is False
+        assert trace_finish[0].data["persistence_error"] == (
+            "OSError: simulated trace write failure"
+        )
+
+    asyncio.run(scenario())
+
+
 class BlockingFollowupLLM(SequenceLLM):
     def __init__(self) -> None:
         super().__init__([tool_response()])
@@ -369,6 +402,8 @@ def test_run_turn_executes_tool_and_returns_follow_up() -> None:
     assert events[-1].data == {
         "trace_id": turn_span.context.trace_id,
         "status": "ok",
+        "persisted": True,
+        "persistence_error": None,
     }
     assert tool_span.context.parent_span_id == turn_span.context.span_id
 

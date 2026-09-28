@@ -76,7 +76,15 @@ def console_event_handler(event: Event) -> None:
         case "trace_finish":
             trace_id = event.data["trace_id"]
             status = event.data["status"]
-            console.print(f"[dim]trace: {trace_id} ({status})[/dim]")
+            persisted = event.data.get("persisted", True)
+
+            if persisted:
+                console.print(f"[dim]trace: {trace_id} ({status})[/dim]")
+            else:
+                error = event.data.get("persistence_error")
+                console.print(
+                    f"[yellow]trace unavailable: persistence failed ({error})[/yellow]"
+                )
 
 
 def console_permission_handler(tool_call: ToolCall) -> PermissionResult:

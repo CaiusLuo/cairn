@@ -59,6 +59,15 @@ class RecordingSink:
         self.spans.append(span)
 
 
+class FailingSink:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def emit(self, span: Span) -> None:
+        self.calls += 1
+        raise OSError("simulated trace write failure")
+
+
 def make_agent(
     llm: SequenceLLM,
     tool: Tool | None = None,

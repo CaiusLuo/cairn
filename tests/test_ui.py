@@ -77,6 +77,29 @@ def test_console_event_handler_renders_each_event_type(
     assert rendered.rstrip().endswith("trace: 0123456789abcdef (ok)")
 
 
+def test_console_event_handler_reports_trace_persistence_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = _capture_console(monkeypatch)
+
+    ui.console_event_handler(
+        Event(
+            type="trace_finish",
+            data={
+                "trace_id": "failed-trace",
+                "status": "ok",
+                "persisted": False,
+                "persistence_error": "OSError: simulated trace write failure",
+            },
+        )
+    )
+
+    rendered = output.getvalue()
+    assert "trace unavailable: persistence failed" in rendered
+    assert "OSError: simulated trace write failure" in rendered
+    assert "trace: failed-trace" not in rendered
+
+
 def test_file_tool_content_is_rendered_literally(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

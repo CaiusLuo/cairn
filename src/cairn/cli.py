@@ -61,7 +61,10 @@ async def main() -> None:
     def handle_event(event: Event) -> None:
         nonlocal pending_trace_finish
         if event.type == "trace_finish":
-            command_context.last_trace_id = event.data["trace_id"]
+            if event.data.get("persisted", True):
+                command_context.last_trace_id = event.data["trace_id"]
+            else:
+                command_context.last_trace_id = None
             pending_trace_finish = event
             return
         console_event_handler(event)

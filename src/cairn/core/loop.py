@@ -376,12 +376,19 @@ async def run_turn(
                     status=status,
                     error=trace_error,
                 )
+
+                persistence_error = agent.tracer.pop_persistence_error(
+                    turn_span.context.trace_id
+                )
+
                 agent.emit(
                     Event(
                         type="trace_finish",
                         data={
                             "trace_id": turn_span.context.trace_id,
                             "status": status.value,
+                            "persisted": persistence_error is None,
+                            "persistence_error": persistence_error,
                         },
                     )
                 )

@@ -223,6 +223,7 @@ def test_interactive_trace_uses_latest_completed_turn(
                 data={"trace_id": span.context.trace_id},
             )
         )
+        agent.emit(Event(type="agent_step", data={"step": 1, "max_steps": 1}))
         agent.tracer.end_span(span)
         agent.emit(
             Event(
@@ -238,8 +239,44 @@ def test_interactive_trace_uses_latest_completed_turn(
 
     assert result.exit_code == 0
     assert "agent.turn" in result.stdout
+    assert "step 1/1" in result.stdout
     assert result.stdout.index("done") < result.stdout.index("trace:")
     assert result.stdout.count("trace:") == 1
+
+
+def test_interactive_trace_persistence_failure_is_not_saved_as_latest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    inputs = iter(("hello", "/trace", "/quit"))
+    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+
+    async def fake_run_turn(agent: Agent, user_input: str) -> str:
+        assert user_input == "hello"
+        agent.emit(
+            Event(
+                type="trace_finish",
+                data={
+                    "trace_id": "failed-trace",
+                    "status": "ok",
+                    "persisted": False,
+                    "persistence_error": "OSError: simulated trace write failure",
+                },
+            )
+        )
+        return "done"
+
+    monkeypatch.setattr(cli_module, "run_turn", fake_run_turn)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert "trace unavailable: persistence failed" in result.stdout
+    assert "OSError: simulated trace write failure" in result.stdout
+    assert "No trace available yet." in result.stdout
 
 
 def _write_trace() -> str:
