@@ -93,7 +93,7 @@ def _write_trace_root(sink: JsonlTraceSink, start_time: datetime) -> Span:
 def test_reader_lists_traces_no_repeated_resolver_scans(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verify list_traces uses _read_path, not resolver, avoiding O(N) directory scans.
+    """Verify list_traces avoids one resolver directory scan per trace.
 
     Writes 4 distinct trace files, then asserts list_traces returns those 4 roots
     without calling resolver.resolve (call count == 0). read() with a full ID still

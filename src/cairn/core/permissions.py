@@ -46,11 +46,11 @@ def check_permission(tool_call: ToolCall) -> PermissionDecision:
         return PermissionDecision.ALLOW
 
     try:
-        part = shlex.split(command)
+        parts = shlex.split(command)
     except ValueError:
         return PermissionDecision.DENY
 
-    if part and part[0] in DENY_COMMANDS:
+    if parts and parts[0] in DENY_COMMANDS:
         return PermissionDecision.DENY
 
     return PermissionDecision.ASK

@@ -21,6 +21,8 @@ autonomous coding agent.
   commands, and ask before everything else.
 - Runtime events for agent steps, tool calls, tool results, errors, completion,
   and step-limit termination.
+- JSONL traces for model, permission, tool, and turn spans, with interactive
+  commands for inspecting recorded traces.
 - A Rich-powered interactive terminal interface.
 
 The Bash tool executes commands in an OS sandbox after the permission handler
@@ -112,6 +114,18 @@ Goodbye! see you next time.
 Use `/exit` or `/quit` to end the session. Cairn asks for confirmation before a
 command that is not covered by its automatic allow or deny rules.
 
+Each turn records trace spans under `.cairn/traces/`. These commands inspect the
+latest completed turn in the current session, a stored trace by ID or unique ID
+prefix, or the list of recent traces without calling the model:
+
+```text
+/trace
+/trace TRACE_ID
+/trace list
+```
+
+Use `/help` to list all interactive commands.
+
 ## Development
 
 Run the complete local quality suite:
@@ -131,6 +145,12 @@ To apply the repository formatter locally:
 
 ```bash
 uv run ruff format .
+```
+
+To build the source distribution and wheel locally:
+
+```bash
+uv build
 ```
 
 ## Current Status / Roadmap

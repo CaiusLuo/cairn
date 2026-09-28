@@ -96,26 +96,26 @@ class EditFileTool:
 
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
         path = self.workspace.resolve_path(arguments.get("path"))
-        old = arguments.get("old_text")
-        new = arguments.get("new_text")
-        if not isinstance(old, str) or not isinstance(new, str):
+        old_text = arguments.get("old_text")
+        new_text = arguments.get("new_text")
+        if not isinstance(old_text, str) or not isinstance(new_text, str):
             raise ValueError("old_text and new_text must be strings")
 
-        creating = old == ""
+        creating = old_text == ""
         if creating:
             if path.exists():
                 raise ValueError("File already exists; no changes made")
             path.parent.mkdir(parents=True, exist_ok=True)
-            updated = new
+            updated = new_text
         else:
             if not path.is_file():
                 raise FileNotFoundError(f"File not found: {arguments['path']}")
             with path.open("r", encoding="utf-8", newline="") as file:
                 original = file.read()
-            matches = original.count(old)
+            matches = original.count(old_text)
             if matches != 1:
                 raise ValueError(f"old_text matched {matches} times; no changes made")
-            updated = original.replace(old, new, 1)
+            updated = original.replace(old_text, new_text, 1)
 
         fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".cairn-edit-")
         try:

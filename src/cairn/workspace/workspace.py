@@ -9,12 +9,12 @@ class Workspace:
     root: Path
 
     def __post_init__(self) -> None:
-        resolve = self.root.resolve()
+        resolved_root = self.root.resolve()
 
-        if not resolve.is_dir():
-            raise ValueError(f"Workspace does not exist: {resolve}")
+        if not resolved_root.is_dir():
+            raise ValueError(f"Workspace does not exist: {resolved_root}")
 
-        object.__setattr__(self, "root", resolve)
+        object.__setattr__(self, "root", resolved_root)
 
     def resolve_path(self, raw: object) -> Path:
         return resolve_workspace_path(self.root, raw)
