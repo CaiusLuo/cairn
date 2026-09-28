@@ -43,12 +43,12 @@ def test_console_event_handler_renders_each_event_type(
         Event(
             type="tool_result",
             data={
+                "tool": "bash",
                 "exit_code": 0,
                 "stdout": "workspace\n",
                 "stderr": "warning\n",
             },
         ),
-        Event(type="tool_result", data={"exit_code": 0, "stdout": "", "stderr": ""}),
         Event(type="tool_error", data={"tool": "bash", "error": "failed"}),
         Event(type="agent_finish"),
         Event(
@@ -68,14 +68,15 @@ def test_console_event_handler_renders_each_event_type(
     for expected in (
         "trace: 0123456789abcdef",
         "step 1/3",
-        "→ bash",
-        "workspace",
-        "warning",
+        "→ bash: pwd",
+        "✓ exit 0",
         "✗ bash: failed",
         "✓ done",
         "Agent stopped: step budget exhausted (3/3).",
     ):
         assert expected in rendered
+    assert "workspace" not in rendered
+    assert "warning" not in rendered
     assert rendered.count("trace:") == 1
     assert rendered.rstrip().endswith("trace: 0123456789abcdef (ok)")
 
@@ -103,33 +104,184 @@ def test_console_event_handler_reports_trace_persistence_failure(
     assert "trace: failed-trace" not in rendered
 
 
-def test_file_tool_content_is_rendered_literally(
+def test_compact_read_file_rendering_hides_file_contents(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = _capture_console(monkeypatch)
+    file_contents = "VERY-LONG-FILE-CONTENTS\n" * 200
+
     ui.console_event_handler(
         Event(
             type="tool_call",
             data={
-                "tool": "edit_file[/bold]",
-                "arguments": {"new_text": "[/dim]"},
+                "tool": "read_file",
+                "arguments": {
+                    "path": "src/cairn/core/loop.py",
+                    "start_line": 1,
+                    "end_line": 200,
+                },
             },
         )
     )
     ui.console_event_handler(
         Event(
             type="tool_result",
-            data={"exit_code": 0, "stdout": "[/bold]", "stderr": ""},
+            data={
+                "tool": "read_file",
+                "exit_code": 0,
+                "stdout": file_contents,
+                "stderr": "",
+            },
+        )
+    )
+
+    rendered = output.getvalue()
+    assert "→ read_file src/cairn/core/loop.py lines 1-200" in rendered
+    assert "✓ read_file" in rendered
+    assert "VERY-LONG-FILE-CONTENTS" not in rendered
+
+
+def test_compact_edit_file_rendering_hides_replacement_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = _capture_console(monkeypatch)
+    secret_payload = "VERY-LONG-CODE-PAYLOAD"
+
+    ui.console_event_handler(
+        Event(
+            type="tool_call",
+            data={
+                "tool": "edit_file",
+                "arguments": {
+                    "path": "a.py",
+                    "old_text": secret_payload,
+                    "new_text": secret_payload,
+                },
+            },
+        )
+    )
+    ui.console_event_handler(
+        Event(
+            type="tool_result",
+            data={
+                "tool": "edit_file",
+                "exit_code": 0,
+                "stdout": "Updated a.py",
+                "stderr": "",
+            },
+        )
+    )
+
+    rendered = output.getvalue()
+    assert "→ edit_file a.py" in rendered
+    assert "✓ Updated a.py" in rendered
+    assert secret_payload not in rendered
+
+
+def test_compact_bash_success_hides_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    output = _capture_console(monkeypatch)
+    command = "uv run pytest -q"
+    large_stdout = "VERY-LARGE-PYTEST-OUTPUT\n" * 1_000
+
+    ui.console_event_handler(
+        Event(
+            type="tool_call",
+            data={"tool": "bash", "arguments": {"command": command}},
+        )
+    )
+    ui.console_event_handler(
+        Event(
+            type="tool_result",
+            data={
+                "tool": "bash",
+                "exit_code": 0,
+                "stdout": large_stdout,
+                "stderr": "warning that stays compact",
+            },
+        )
+    )
+
+    rendered = output.getvalue()
+    assert f"→ bash: {command}" in rendered
+    assert "✓ exit 0" in rendered
+    assert "VERY-LARGE-PYTEST-OUTPUT" not in rendered
+    assert "warning that stays compact" not in rendered
+
+
+def test_compact_bash_failure_shows_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    output = _capture_console(monkeypatch)
+
+    ui.console_event_handler(
+        Event(
+            type="tool_result",
+            data={
+                "tool": "bash",
+                "exit_code": 1,
+                "stdout": "stdout should not replace stderr",
+                "stderr": "pytest collection failed",
+            },
+        )
+    )
+
+    rendered = output.getvalue()
+    assert "✗ exit 1" in rendered
+    assert "pytest collection failed" in rendered
+    assert "stdout should not replace stderr" not in rendered
+
+
+def test_compact_bash_failure_falls_back_to_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = _capture_console(monkeypatch)
+
+    ui.console_event_handler(
+        Event(
+            type="tool_result",
+            data={
+                "tool": "bash",
+                "exit_code": 2,
+                "stdout": "fallback diagnostic",
+                "stderr": "",
+            },
+        )
+    )
+
+    rendered = output.getvalue()
+    assert "✗ exit 2" in rendered
+    assert "fallback diagnostic" in rendered
+
+
+def test_compact_tool_fields_are_rendered_literally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = _capture_console(monkeypatch)
+    command = "printf '[/bold]'"
+
+    ui.console_event_handler(
+        Event(
+            type="tool_call",
+            data={"tool": "bash", "arguments": {"command": command}},
+        )
+    )
+    ui.console_event_handler(
+        Event(
+            type="tool_result",
+            data={
+                "tool": "bash",
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": "[/dim]",
+            },
         )
     )
     ui.console_event_handler(
         Event(type="tool_error", data={"tool": "edit_file", "error": "[/bold red]"})
     )
 
-    assert "[/dim]" in output.getvalue()
-    assert "[/bold]" in output.getvalue()
-    assert "[/bold red]" in output.getvalue()
-    assert "→ edit_file[/bold]" in output.getvalue()
+    rendered = output.getvalue()
+    assert command in rendered
+    assert "[/dim]" in rendered
+    assert "[/bold red]" in rendered
 
 
 def test_console_permission_handler_returns_automatic_decision(

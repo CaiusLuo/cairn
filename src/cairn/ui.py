@@ -26,6 +26,64 @@ def print_banner() -> None:
     console.print(files("cairn.resources").joinpath("banner.txt").read_text("utf-8"))
 
 
+def _render_tool_call(event: Event) -> None:
+    raw_tool = event.data.get("tool")
+    tool = raw_tool if isinstance(raw_tool, str) else "tool"
+    raw_arguments = event.data.get("arguments")
+    arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
+
+    if tool == "read_file":
+        path = arguments.get("path")
+        start = arguments.get("start_line", 1)
+        end = arguments.get("end_line")
+        path_suffix = f" {path}" if isinstance(path, str) else ""
+        if end is None or not path_suffix:
+            summary = f"→ read_file{path_suffix}"
+        else:
+            summary = f"→ read_file{path_suffix} lines {start}-{end}"
+    elif tool == "edit_file":
+        path = arguments.get("path")
+        path_suffix = f" {path}" if isinstance(path, str) else ""
+        summary = f"→ edit_file{path_suffix}"
+    elif tool == "bash":
+        command = arguments.get("command")
+        command_suffix = f": {command}" if isinstance(command, str) else ""
+        summary = f"→ bash{command_suffix}"
+    else:
+        summary = f"→ {tool}"
+
+    console.print(Text(f"\n{summary}", style="bold cyan"))
+
+
+def _render_tool_result(event: Event) -> None:
+    raw_tool = event.data.get("tool")
+    tool = raw_tool if isinstance(raw_tool, str) else "tool"
+    exit_code = event.data["exit_code"]
+    raw_stdout = event.data.get("stdout")
+    stdout = raw_stdout if isinstance(raw_stdout, str) else ""
+    raw_stderr = event.data.get("stderr")
+    stderr = raw_stderr if isinstance(raw_stderr, str) else ""
+
+    if exit_code != 0:
+        console.print(f"✗ exit {exit_code}", style="bold red", markup=False)
+        diagnostic = stderr or stdout
+        if diagnostic:
+            console.print(diagnostic.rstrip(), style="yellow", markup=False)
+        return
+
+    if tool == "read_file":
+        summary = "✓ read_file"
+    elif tool == "edit_file":
+        detail = stdout.strip()
+        summary = f"✓ {detail}" if detail else "✓ edit_file"
+    elif tool == "bash":
+        summary = f"✓ exit {exit_code}"
+    else:
+        summary = f"✓ {tool}"
+
+    console.print(summary, style="green", markup=False)
+
+
 def console_event_handler(event: Event) -> None:
     match event.type:
         case "agent_step":
@@ -35,28 +93,10 @@ def console_event_handler(event: Event) -> None:
             console.print(f"[dim]step {step}/{max_steps}[/dim]")
 
         case "tool_call":
-            tool = event.data.get("tool")
-            arguments = event.data.get("arguments")
-
-            console.print(Text(f"\n→ {tool}", style="bold cyan"))
-            console.print(arguments, style="dim")
+            _render_tool_call(event)
 
         case "tool_result":
-            exit_code = event.data["exit_code"]
-            stdout = event.data["stdout"]
-            stderr = event.data["stderr"]
-
-            console.print(f"[green]← exit {exit_code}[/green]")
-
-            if stdout:
-                console.print(stdout.rstrip(), markup=False)
-
-            if stderr:
-                console.print(
-                    stderr.rstrip(),
-                    style="yellow",
-                    markup=False,
-                )
+            _render_tool_result(event)
 
         case "tool_error":
             tool = event.data["tool"]
