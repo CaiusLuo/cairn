@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 import shlex
 import signal
@@ -15,7 +14,6 @@ from cairn.tools.bash import (
     PIPE_READ_CHUNK_SIZE,
     BashTool,
     _decode_output,
-    _macos_sandbox_profile,
     _read_bounded,
 )
 from cairn.workspace.workspace import Workspace
@@ -232,69 +230,6 @@ def test_bash_tool_schema_describes_required_command(tmp_path: Path) -> None:
     assert schema["function"]["parameters"]["additionalProperties"] is False
 
 
-def test_macos_sandbox_profile_allows_only_current_python_runtime(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    home = tmp_path / "home"
-    workspace = home / "projects" / "repo"
-    runtime_root = (
-        home
-        / ".local"
-        / "share"
-        / "uv"
-        / "python"
-        / "cpython-3.12.13-macos-aarch64-none"
-    )
-    runtime_alias = runtime_root.parent / "cpython-3.12-macos-aarch64-none"
-    workspace.mkdir(parents=True)
-    runtime_root.mkdir(parents=True)
-    runtime_alias.symlink_to(runtime_root)
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setattr("cairn.tools.bash.sys.base_prefix", str(runtime_root))
-    monkeypatch.setattr(
-        "cairn.tools.bash.sys.base_exec_prefix",
-        str(runtime_alias),
-    )
-    monkeypatch.setattr(
-        "cairn.tools.bash.sys.executable",
-        str(home / ".ssh" / "bin" / "python3.12"),
-    )
-
-    profile = _macos_sandbox_profile(workspace)
-
-    home_rule = f"(subpath {json.dumps(str(home))})"
-    workspace_parent_rule = f"(subpath {json.dumps(str(workspace.parent))})"
-    workspace_rule = f"(subpath {json.dumps(str(workspace))})"
-    runtime_rule = f"(subpath {json.dumps(str(runtime_root))})"
-    alias_rule = f"(literal {json.dumps(str(runtime_alias))})"
-    uv_store_rule = f"(subpath {json.dumps(str(runtime_root.parent))})"
-    assert f"(deny file-read* {home_rule} {workspace_parent_rule})" in profile
-    assert f"(allow file-read* {workspace_rule} {alias_rule} {runtime_rule})" in profile
-    assert f'(allow file-write* (literal "/dev/null") {workspace_rule})' in profile
-    assert uv_store_rule not in profile
-    assert profile.count(runtime_rule) == 1
-    assert ".ssh" not in profile
-
-
-@pytest.mark.parametrize("broad_runtime", ["home", "root"])
-def test_macos_sandbox_profile_refuses_broad_runtime_access(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    broad_runtime: str,
-) -> None:
-    home = tmp_path / "home"
-    workspace = home / "projects" / "repo"
-    workspace.mkdir(parents=True)
-    monkeypatch.setenv("HOME", str(home))
-    runtime = home if broad_runtime == "home" else Path("/")
-    monkeypatch.setattr("cairn.tools.bash.sys.base_prefix", str(runtime))
-    monkeypatch.setattr("cairn.tools.bash.sys.base_exec_prefix", str(runtime))
-
-    with pytest.raises(RuntimeError, match="narrow Python runtime access"):
-        _macos_sandbox_profile(workspace)
-
-
 @pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS sandbox-exec")
 def test_macos_sandbox_runs_workspace_uv_managed_python(tmp_path: Path) -> None:
     home = Path.home().resolve()
@@ -330,14 +265,26 @@ def test_macos_sandbox_runs_workspace_uv_managed_python(tmp_path: Path) -> None:
     assert result.stdout == "sandbox-python-ok\n"
     assert result.stderr == ""
 
-    parent_read = asyncio.run(
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS sandbox-exec")
+def test_macos_sandbox_denies_local_network_bind(tmp_path: Path) -> None:
+    python = tmp_path / "python"
+    python.symlink_to(Path(sys.executable).resolve())
+    script = (
+        "import socket\n"
+        'print("python-started", flush=True)\n'
+        "with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:\n"
+        '    sock.bind(("127.0.0.1", 0))\n'
+    )
+
+    result = asyncio.run(
         BashTool(Workspace(tmp_path)).execute(
-            {"command": (f"/bin/ls {shlex.quote(str(runtime_root.parent))} >/dev/null")}
+            {"command": f"{shlex.quote(str(python))} -c {shlex.quote(script)}"}
         )
     )
 
-    assert parent_read.exit_code != 0
-    assert parent_read.stdout == ""
+    assert result.exit_code != 0
+    assert result.stdout == "python-started\n"
 
 
 @pytest.mark.parametrize(
@@ -729,23 +676,27 @@ def test_bash_tool_kills_timed_out_process(tmp_path: Path) -> None:
     assert "time out after 0.01s" in result.stderr
 
 
-def test_bash_tool_confines_files_to_workspace(
+def test_bash_tool_allows_outside_reads_and_confines_writes_to_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path.parent))
     outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
     outside.write_text("private", encoding="utf-8")
     tool = BashTool(workspace=Workspace(tmp_path))
+    outside_path = shlex.quote(str(outside))
 
-    read = asyncio.run(tool.execute({"command": f"cat {outside}"}))
-    asyncio.run(tool.execute({"command": f"printf data > {outside}"}))
+    read = asyncio.run(tool.execute({"command": f"cat {outside_path}"}))
+    outside_write = asyncio.run(
+        tool.execute({"command": f"printf data > {outside_path}"})
+    )
     inside = asyncio.run(tool.execute({"command": "printf data > inside.txt"}))
 
-    assert read.exit_code != 0
-    assert "private" not in read.stdout
+    assert outside_write.exit_code != 0
     assert outside.read_text(encoding="utf-8") == "private"
     assert inside.exit_code == 0
     assert (tmp_path / "inside.txt").read_text(encoding="utf-8") == "data"
+    assert read.exit_code == 0, read.stderr
+    assert read.stdout == "private"
 
 
 def test_bash_tool_does_not_pass_api_key_to_command(
