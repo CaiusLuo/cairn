@@ -1005,28 +1005,39 @@ def test_bash_tool_kills_timed_out_process(tmp_path: Path) -> None:
 def test_bash_tool_allows_outside_reads_and_confines_writes_to_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Keep the effective writable temp root narrow so the outside path below is
-    # genuinely outside both the workspace and the host TMPDIR.
+    # The writable roots differ per sandbox: macOS confines writes to the
+    # workspace plus TMPDIR, while Linux bubblewrap also exposes a private /tmp
+    # tmpfs and only reaches the host through read-only system binds. Keep the
+    # effective TMPDIR narrow on macOS and probe a host path that bubblewrap does
+    # not mount on Linux.
     host_tmpdir = tmp_path / "host-tmp"
     host_tmpdir.mkdir()
     monkeypatch.setenv("TMPDIR", str(host_tmpdir))
-    outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
-    outside.write_text("private", encoding="utf-8")
+    if sys.platform == "linux":
+        readable = Path("/etc/os-release")
+        unwritable = Path.home() / ".cairn-sandbox-outside-probe"
+    else:
+        readable = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+        readable.write_text("private", encoding="utf-8")
+        unwritable = readable
     tool = BashTool(workspace=Workspace(tmp_path))
-    outside_path = shlex.quote(str(outside))
+    readable_path = shlex.quote(str(readable))
+    unwritable_path = shlex.quote(str(unwritable))
+    before = unwritable.read_text(encoding="utf-8") if unwritable.exists() else None
 
-    read = asyncio.run(tool.execute({"command": f"cat {outside_path}"}))
+    read = asyncio.run(tool.execute({"command": f"cat {readable_path}"}))
     outside_write = asyncio.run(
-        tool.execute({"command": f"printf data > {outside_path}"})
+        tool.execute({"command": f"printf data > {unwritable_path}"})
     )
     inside = asyncio.run(tool.execute({"command": "printf data > inside.txt"}))
 
-    assert outside_write.exit_code != 0
-    assert outside.read_text(encoding="utf-8") == "private"
-    assert inside.exit_code == 0
-    assert (tmp_path / "inside.txt").read_text(encoding="utf-8") == "data"
     assert read.exit_code == 0, read.stderr
-    assert read.stdout == "private"
+    assert read.stdout == readable.read_text(encoding="utf-8")
+    assert outside_write.exit_code != 0
+    after = unwritable.read_text(encoding="utf-8") if unwritable.exists() else None
+    assert after == before
+    assert inside.exit_code == 0, inside.stderr
+    assert (tmp_path / "inside.txt").read_text(encoding="utf-8") == "data"
 
 
 def test_bash_tool_does_not_pass_api_key_to_command(
