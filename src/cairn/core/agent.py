@@ -3,6 +3,7 @@ from cairn.core.permissions import PermissionHandler
 from cairn.core.state import AgentState
 from cairn.llm.base import LLMClient
 from cairn.observability.tracer import Tracer
+from cairn.repo.context import RepoContextProvider
 from cairn.tools.registry import ToolRegistry
 
 DEFAULT_SYSTEM_PROMPT = """You are Cairn, a software engineering agent.
@@ -37,6 +38,7 @@ class Agent:
         event_handler: EventHandler | None = None,
         permission_handler: PermissionHandler | None = None,
         tracer: Tracer | None = None,
+        repo_context_provider: RepoContextProvider | None = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -44,6 +46,7 @@ class Agent:
         self.event_handler = event_handler
         self.permission_handler = permission_handler
         self.tracer = tracer
+        self.repo_context_provider = repo_context_provider
         self.state = AgentState()
 
     def emit(self, event: Event) -> None:

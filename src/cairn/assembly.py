@@ -3,6 +3,7 @@ from cairn.core.events import EventHandler
 from cairn.core.permissions import PermissionHandler
 from cairn.llm.base import LLMClient
 from cairn.observability.tracer import Tracer
+from cairn.repo.context import RepoContextProvider
 from cairn.tools.bash import BashTool
 from cairn.tools.files import EditFileTool, ReadFileTool
 from cairn.tools.registry import ToolRegistry
@@ -29,4 +30,5 @@ def build_agent(
         permission_handler=permission_handler,
         event_handler=event_handler,
         tracer=tracer,
+        repo_context_provider=RepoContextProvider(workspace),
     )

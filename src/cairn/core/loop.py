@@ -111,10 +111,13 @@ async def run_turn(
                 )
             )
 
-            messages = [
-                Message(role="system", content=agent.system_prompt),
-                *agent.state.messages,
-            ]
+            messages = [Message(role="system", content=agent.system_prompt)]
+            if agent.repo_context_provider is not None:
+                repo_context = await agent.repo_context_provider.inspect()
+                messages.append(
+                    Message(role="system", content=repo_context.to_prompt())
+                )
+            messages.extend(agent.state.messages)
 
             llm_span = None
 

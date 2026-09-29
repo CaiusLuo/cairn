@@ -1,6 +1,7 @@
 import asyncio
 import builtins
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -9,8 +10,30 @@ from cairn.assembly import build_agent
 from cairn.core.loop import run_turn
 from cairn.core.models import LLMResponse, ToolCall
 from cairn.core.permissions import PermissionDecision, PermissionResult
+from cairn.repo.context import RepositoryContext
 from cairn.workspace.workspace import Workspace
 from tests.loop_support import TEST_BUDGET, SequenceLLM
+
+
+def _git(root: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(root), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
+
+
+def _initialize_repository(root: Path) -> Path:
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Cairn Tests")
+    _git(root, "config", "user.email", "cairn-tests@example.invalid")
+    tracked = root / "answer.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    _git(root, "add", "--", tracked.name)
+    _git(root, "commit", "-m", "initial")
+    return tracked
 
 
 def test_build_agent_runs_headless_tool_turn(
@@ -58,6 +81,22 @@ def test_build_agent_runs_headless_tool_turn(
     assert agent.event_handler is None
     assert agent.tracer is None
     assert len(llm.calls) == 2
+    workspace_prompt = RepositoryContext(
+        workspace_root=workspace.root,
+        repository_root=None,
+        branch=None,
+        dirty=None,
+    ).to_prompt()
+    assert [
+        [
+            message.content
+            for message in messages
+            if message.role == "system"
+            and message.content is not None
+            and message.content.startswith("Runtime workspace context:")
+        ]
+        for messages, _tools in llm.calls
+    ] == [[workspace_prompt], [workspace_prompt]]
     tool_message = llm.calls[1][0][-1]
     assert tool_message.role == "tool"
     assert tool_message.tool_call_id == tool_call.id
@@ -71,3 +110,75 @@ def test_build_agent_runs_headless_tool_turn(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == ""
+    assert all(message.role != "system" for message in agent.state.messages)
+    assert all(
+        "Runtime workspace context:" not in (message.content or "")
+        for message in agent.state.messages
+    )
+
+
+def test_build_agent_refreshes_repo_context_without_persisting_it(
+    tmp_path: Path,
+) -> None:
+    tracked = _initialize_repository(tmp_path)
+    workspace = Workspace(tmp_path)
+    tool_call = ToolCall(
+        id="edit-tracked",
+        name="edit_file",
+        arguments={
+            "path": tracked.name,
+            "old_text": "before\n",
+            "new_text": "after\n",
+        },
+    )
+    llm = SequenceLLM(
+        [LLMResponse(tool_calls=[tool_call]), LLMResponse(content="done")]
+    )
+    agent = build_agent(
+        workspace=workspace,
+        llm=llm,
+        permission_handler=None,
+        event_handler=None,
+        tracer=None,
+    )
+
+    result = asyncio.run(run_turn(agent, "Update answer.txt", budget=TEST_BUDGET))
+
+    assert result == "done"
+    assert tracked.read_text(encoding="utf-8") == "after\n"
+    clean_prompt = RepositoryContext(
+        workspace_root=workspace.root,
+        repository_root=workspace.root,
+        branch="main",
+        dirty=False,
+    ).to_prompt()
+    dirty_prompt = RepositoryContext(
+        workspace_root=workspace.root,
+        repository_root=workspace.root,
+        branch="main",
+        dirty=True,
+        changed_files=(tracked.name,),
+    ).to_prompt()
+    prompts_by_step = [
+        [
+            message.content
+            for message in messages
+            if message.role == "system"
+            and message.content is not None
+            and message.content.startswith("Runtime repository context:")
+        ]
+        for messages, _tools in llm.calls
+    ]
+    assert prompts_by_step == [[clean_prompt], [dirty_prompt]]
+    assert [message.role for message in agent.state.messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert all(message.role != "system" for message in agent.state.messages)
+    assert all(
+        "Runtime repository context:" not in (message.content or "")
+        and "Runtime workspace context:" not in (message.content or "")
+        for message in agent.state.messages
+    )
