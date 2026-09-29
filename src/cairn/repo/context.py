@@ -245,10 +245,16 @@ class RepoContextProvider:
         status_lines, truncated = await self._read_status()
         changed_files: list[str] = []
         untracked_files: list[str] = []
+        # Porcelain v1 paths are repository-root-relative, so normalize them
+        # into the coordinate system accepted by Workspace tools.
+        workspace_prefix = self.workspace.root.relative_to(repository_root).as_posix()
+        path_prefix = "" if workspace_prefix == "." else f"{workspace_prefix}/"
         for line in status_lines:
             if len(line) < 4:
                 continue
             path = line[3:]
+            if path_prefix:
+                path = path.removeprefix(path_prefix)
             if line.startswith("??"):
                 untracked_files.append(path)
             else:

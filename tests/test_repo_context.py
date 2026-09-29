@@ -80,6 +80,29 @@ def test_repo_context_separates_tracked_and_untracked_files(tmp_path: Path) -> N
     assert "untracked.txt" in prompt
 
 
+def test_repo_context_paths_are_relative_to_nested_workspace(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path
+    _initialize_repository(repo)
+    nested = repo / "services" / "api"
+    nested.mkdir(parents=True)
+    tracked = nested / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    _git(repo, "add", "--", "services/api/tracked.txt")
+    _git(repo, "commit", "-m", "add nested file")
+    tracked.write_text("after\n", encoding="utf-8")
+    (nested / "new.txt").write_text("new\n", encoding="utf-8")
+    workspace = Workspace(nested)
+
+    context = asyncio.run(RepoContextProvider(workspace).inspect())
+
+    assert context.repository_root == repo.resolve()
+    assert context.workspace_root == nested.resolve()
+    assert context.changed_files == ("tracked.txt",)
+    assert context.untracked_files == ("new.txt",)
+
+
 def test_repo_context_truncates_paths_at_max_paths(tmp_path: Path) -> None:
     _initialize_repository(tmp_path)
     for index in range(55):
