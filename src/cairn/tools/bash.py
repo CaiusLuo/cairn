@@ -58,11 +58,40 @@ def _decode_output(data: bytes, truncated: bool) -> str:
     return decoder.decode(data, final=not truncated)
 
 
-def _macos_sandbox_profile(cwd: Path) -> str:
-    root = json.dumps(str(cwd))
+def _resolve_tmpdir(env: Mapping[str, str]) -> Path | None:
+    """Resolve TMPDIR into a safe writable root for the macOS sandbox.
+
+    Returns ``None`` unless TMPDIR is an absolute path to an existing directory
+    that is not the filesystem root. A missing or malformed value can therefore
+    only narrow the sandbox, never broaden it.
+    """
+    raw_tmpdir = env.get("TMPDIR")
+    if not raw_tmpdir:
+        return None
+
+    candidate = Path(raw_tmpdir)
+    if not candidate.is_absolute():
+        return None
+
+    try:
+        resolved = candidate.resolve()
+        is_directory = resolved.is_dir()
+    except (OSError, RuntimeError):
+        return None
+
+    if not is_directory or resolved == Path(resolved.anchor):
+        return None
+    return resolved
+
+
+def _macos_sandbox_profile(cwd: Path, writable_tmpdir: Path | None) -> str:
+    writable_roots = [cwd]
+    if writable_tmpdir is not None:
+        writable_roots.append(writable_tmpdir)
+    allowed = " ".join(f"(subpath {json.dumps(str(root))})" for root in writable_roots)
     return (
         "(version 1) (allow default) "
-        f'(deny file-write*) (allow file-write* (literal "/dev/null") (subpath {root})) '
+        f'(deny file-write*) (allow file-write* (literal "/dev/null") {allowed}) '
         "(deny network*)"
     )
 
@@ -180,7 +209,7 @@ class BashTool:
         )
 
         if sys.platform == "darwin":
-            profile = _macos_sandbox_profile(cwd)
+            profile = _macos_sandbox_profile(cwd, _resolve_tmpdir(env))
             argv = ["/usr/bin/sandbox-exec", "-p", profile, *command_argv]
         elif sys.platform == "linux":
             bwrap = Path("/usr/bin/bwrap")

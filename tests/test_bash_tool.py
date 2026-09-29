@@ -1,8 +1,10 @@
 import asyncio
 import os
 import shlex
+import shutil
 import signal
 import sys
+import tempfile
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,7 @@ from cairn.tools.bash import (
     BashTool,
     _decode_output,
     _read_bounded,
+    _resolve_tmpdir,
     build_command_env,
 )
 from cairn.workspace.workspace import Workspace
@@ -280,6 +283,44 @@ def test_build_command_env_does_not_mutate_host_env(
     assert "CAIRN_LLM_API_KEY" in host_env
 
 
+@pytest.mark.parametrize("tmpdir", [None, "", "relative/tmp", "/", "//"])
+def test_resolve_tmpdir_rejects_unsafe_values(tmpdir: str | None) -> None:
+    env = {} if tmpdir is None else {"TMPDIR": tmpdir}
+
+    assert _resolve_tmpdir(env) is None
+
+
+def test_resolve_tmpdir_rejects_missing_directory(tmp_path: Path) -> None:
+    assert _resolve_tmpdir({"TMPDIR": str(tmp_path / "missing")}) is None
+
+
+def test_resolve_tmpdir_rejects_non_directory(tmp_path: Path) -> None:
+    file_path = tmp_path / "not-a-directory"
+    file_path.write_text("data", encoding="utf-8")
+
+    assert _resolve_tmpdir({"TMPDIR": str(file_path)}) is None
+
+
+def test_resolve_tmpdir_returns_resolved_absolute_directory(tmp_path: Path) -> None:
+    tmpdir = tmp_path / "tmp"
+    tmpdir.mkdir()
+
+    resolved = _resolve_tmpdir({"TMPDIR": str(tmpdir)})
+
+    assert resolved == tmpdir.resolve()
+    assert resolved is not None
+    assert resolved.is_absolute()
+
+
+def test_resolve_tmpdir_resolves_symlinks(tmp_path: Path) -> None:
+    real_tmpdir = tmp_path / "real-tmp"
+    real_tmpdir.mkdir()
+    linked_tmpdir = tmp_path / "linked-tmp"
+    linked_tmpdir.symlink_to(real_tmpdir, target_is_directory=True)
+
+    assert _resolve_tmpdir({"TMPDIR": str(linked_tmpdir)}) == real_tmpdir.resolve()
+
+
 def test_bash_tool_child_inherits_host_env_and_keeps_workspace_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -357,6 +398,76 @@ def test_macos_sandbox_denies_local_network_bind(tmp_path: Path) -> None:
 
     assert result.exit_code != 0
     assert result.stdout == "python-started\n"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS sandbox-exec")
+def test_macos_sandbox_allows_writes_to_workspace_and_host_tmpdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    host_tmpdir = tmp_path / "host-tmp"
+    host_tmpdir.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("private", encoding="utf-8")
+    monkeypatch.setenv("TMPDIR", str(host_tmpdir))
+    tool = BashTool(Workspace(workspace_root))
+    outside_path = shlex.quote(str(outside))
+    tmpdir_path = shlex.quote(str(host_tmpdir / "scratch.txt"))
+
+    read = asyncio.run(tool.execute({"command": f"cat {outside_path}"}))
+    outside_write = asyncio.run(
+        tool.execute({"command": f"printf data > {outside_path}"})
+    )
+    inside_write = asyncio.run(tool.execute({"command": "printf data > inside.txt"}))
+    tmpdir_write = asyncio.run(
+        tool.execute({"command": f"printf data > {tmpdir_path}"})
+    )
+
+    assert inside_write.exit_code == 0, inside_write.stderr
+    assert (workspace_root / "inside.txt").read_text(encoding="utf-8") == "data"
+    assert tmpdir_write.exit_code == 0, tmpdir_write.stderr
+    assert (host_tmpdir / "scratch.txt").read_text(encoding="utf-8") == "data"
+    assert outside_write.exit_code != 0
+    assert outside.read_text(encoding="utf-8") == "private"
+    assert read.exit_code == 0, read.stderr
+    assert read.stdout == "private"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS sandbox-exec")
+def test_macos_sandbox_lets_uv_use_host_tmpdir_without_workspace_locks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if shutil.which("uv") is None:
+        pytest.skip("uv is not installed")
+    host_tmpdir = os.environ.get("TMPDIR")
+    if not host_tmpdir or not Path(host_tmpdir).is_dir():
+        pytest.skip("host TMPDIR is not an available directory")
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    # uv's default cache lives under HOME, which this phase deliberately keeps
+    # read-only; point it at the host TMPDIR so the command exercises the
+    # TMPDIR writable root instead of failing on an unrelated policy.
+    cache_dir = Path(tempfile.mkdtemp(dir=host_tmpdir, prefix="uv-cache-"))
+    monkeypatch.setenv("TMPDIR", host_tmpdir)
+    try:
+        result = asyncio.run(
+            BashTool(Workspace(workspace_root), timeout=90.0).execute(
+                {
+                    "command": (
+                        f"UV_CACHE_DIR={shlex.quote(str(cache_dir))} "
+                        "uv run --no-sync python --version"
+                    )
+                }
+            )
+        )
+    finally:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+    assert result.exit_code == 0, result.stderr
+    assert "Python" in result.stdout
+    assert list(workspace_root.glob("uv-*.lock")) == []
 
 
 @pytest.mark.parametrize(
@@ -751,7 +862,11 @@ def test_bash_tool_kills_timed_out_process(tmp_path: Path) -> None:
 def test_bash_tool_allows_outside_reads_and_confines_writes_to_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path.parent))
+    # Keep the effective writable temp root narrow so the outside path below is
+    # genuinely outside both the workspace and the host TMPDIR.
+    host_tmpdir = tmp_path / "host-tmp"
+    host_tmpdir.mkdir()
+    monkeypatch.setenv("TMPDIR", str(host_tmpdir))
     outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
     outside.write_text("private", encoding="utf-8")
     tool = BashTool(workspace=Workspace(tmp_path))
