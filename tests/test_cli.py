@@ -1,10 +1,12 @@
 import asyncio
 import builtins
+import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
 
 import pytest
+from dotenv import dotenv_values
 from typer.testing import CliRunner
 
 import cairn.cli as cli_module
@@ -29,10 +31,7 @@ ENVIRONMENT: dict[str, str] = {
 
 
 def _disable_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
-    def load_nothing() -> bool:
-        return False
-
-    monkeypatch.setattr(cli_module, "load_dotenv", load_nothing)
+    monkeypatch.setattr(cli_module, "dotenv_values", lambda: {})
 
 
 def _set_environment(
@@ -44,6 +43,26 @@ def _set_environment(
         monkeypatch.delenv(name, raising=False)
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
+
+
+def _write_env_file(tmp_path: Path, contents: str) -> Path:
+    env_file = tmp_path / ".env"
+    env_file.write_text(contents, encoding="utf-8")
+    return env_file
+
+
+def _run_main_capturing_llm(monkeypatch: pytest.MonkeyPatch) -> Any:
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(builtins, "input", lambda _prompt: "/exit")
+    captured: dict[str, Any] = {}
+
+    def capture_agent(**kwargs: Any) -> Agent:
+        captured.update(kwargs)
+        return build_agent(**kwargs)
+
+    monkeypatch.setattr(cli_module, "build_agent", capture_agent)
+    asyncio.run(cli_module.main())
+    return captured["llm"]
 
 
 @pytest.mark.parametrize(
@@ -69,6 +88,68 @@ def test_main_requires_configuration(
 
     with pytest.raises(ValueError, match=message):
         asyncio.run(cli_module.main())
+
+
+def test_resolve_cairn_config_prefers_host_environment() -> None:
+    config = cli_module.resolve_cairn_config(
+        {"CAIRN_LLM_MODEL": "host/model"},
+        {
+            "CAIRN_LLM_MODEL": "file/model",
+            "CAIRN_LLM_API_KEY": "file-key",
+            "CAIRN_BASE_URL": "https://file.example/v1",
+        },
+    )
+
+    assert config == {
+        "CAIRN_LLM_MODEL": "host/model",
+        "CAIRN_LLM_API_KEY": "file-key",
+        "CAIRN_BASE_URL": "https://file.example/v1",
+    }
+
+
+def test_main_reads_env_file_without_injecting_project_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in (*ENVIRONMENT, "PROJECT_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+    env_file = _write_env_file(
+        tmp_path,
+        "CAIRN_LLM_MODEL=file/model\n"
+        "CAIRN_LLM_API_KEY=file-key\n"
+        "CAIRN_BASE_URL=https://file.example/v1\n"
+        "PROJECT_SECRET=should-not-be-injected\n",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_module, "dotenv_values", lambda: dotenv_values(env_file))
+
+    llm = _run_main_capturing_llm(monkeypatch)
+
+    assert llm.model == "file/model"
+    assert llm.api_key == "file-key"
+    assert llm.api_base == "https://file.example/v1"
+    assert "PROJECT_SECRET" not in os.environ
+
+
+def test_main_host_environment_overrides_env_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CAIRN_LLM_MODEL", "host/model")
+    monkeypatch.delenv("CAIRN_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("CAIRN_BASE_URL", raising=False)
+    env_file = _write_env_file(
+        tmp_path,
+        "CAIRN_LLM_MODEL=file/model\n"
+        "CAIRN_LLM_API_KEY=file-key\n"
+        "CAIRN_BASE_URL=https://file.example/v1\n",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_module, "dotenv_values", lambda: dotenv_values(env_file))
+
+    llm = _run_main_capturing_llm(monkeypatch)
+
+    assert llm.model == "host/model"
+    assert llm.api_key == "file-key"
+    assert llm.api_base == "https://file.example/v1"
 
 
 def test_cli_without_command_starts_and_exits(

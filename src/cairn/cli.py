@@ -1,9 +1,10 @@
 import asyncio
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 import typer
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 from cairn.assembly import build_agent
 from cairn.commands.context import CommandContext
@@ -29,6 +30,28 @@ app = typer.Typer(
 
 DEFAULT_CLI_RUN_BUDGET = RunBudget(max_steps=50)
 
+CAIRN_CONFIG_ENV_NAMES = ("CAIRN_LLM_MODEL", "CAIRN_LLM_API_KEY", "CAIRN_BASE_URL")
+
+
+def resolve_cairn_config(
+    host_env: Mapping[str, str],
+    env_file_values: Mapping[str, str | None],
+) -> dict[str, str]:
+    """Resolve Cairn configuration from the host environment and ``.env``.
+
+    Host environment values take precedence over the project's ``.env`` file,
+    matching the previous ``load_dotenv(override=False)`` behaviour. Unlike
+    ``load_dotenv``, this never writes to ``os.environ``, so arbitrary ``.env``
+    entries cannot leak into child command environments.
+    """
+    config: dict[str, str] = {}
+    for name in CAIRN_CONFIG_ENV_NAMES:
+        value = host_env.get(name, env_file_values.get(name))
+        if not value:
+            raise ValueError(f"{name} environment variable is not set.")
+        config[name] = value
+    return config
+
 
 @app.callback()
 def root(ctx: typer.Context) -> None:
@@ -37,19 +60,10 @@ def root(ctx: typer.Context) -> None:
 
 
 async def main() -> None:
-    load_dotenv()
-
-    model = os.getenv("CAIRN_LLM_MODEL")
-    if not model:
-        raise ValueError("CAIRN_LLM_MODEL environment variable is not set.")
-
-    api_key = os.getenv("CAIRN_LLM_API_KEY")
-    if not api_key:
-        raise ValueError("CAIRN_LLM_API_KEY environment variable is not set.")
-
-    base_url = os.getenv("CAIRN_BASE_URL")
-    if not base_url:
-        raise ValueError("CAIRN_BASE_URL environment variable is not set.")
+    config = resolve_cairn_config(os.environ, dotenv_values())
+    model = config["CAIRN_LLM_MODEL"]
+    api_key = config["CAIRN_LLM_API_KEY"]
+    base_url = config["CAIRN_BASE_URL"]
 
     from cairn.llm.litellm_client import LiteLLMClient
 
