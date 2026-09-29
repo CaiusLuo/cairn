@@ -1,5 +1,4 @@
 import asyncio
-import builtins
 import os
 from pathlib import Path
 from typing import Any
@@ -7,6 +6,8 @@ from unittest.mock import Mock
 
 import pytest
 from dotenv import dotenv_values
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
 from typer.testing import CliRunner
 
 import cairn.cli as cli_module
@@ -16,6 +17,7 @@ from cairn.core.agent import Agent
 from cairn.core.budget import RunBudget
 from cairn.core.events import Event
 from cairn.core.models import Message
+from cairn.input import CliInput
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.tracer import Tracer
 from cairn.tools.bash import BashTool
@@ -28,6 +30,31 @@ ENVIRONMENT: dict[str, str] = {
     "CAIRN_LLM_API_KEY": "secret",
     "CAIRN_BASE_URL": "https://example.test/v1",
 }
+
+
+class ScriptedCliInput(CliInput):
+    def __init__(self, *values: str | BaseException) -> None:
+        self._values = iter(values)
+        self.read_count = 0
+
+    async def read(self) -> str:
+        self.read_count += 1
+        try:
+            value = next(self._values)
+        except StopIteration as exc:
+            raise AssertionError("No scripted CLI input remains") from exc
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+
+def _set_cli_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+    *values: str | BaseException,
+) -> ScriptedCliInput:
+    reader = ScriptedCliInput(*values)
+    monkeypatch.setattr(cli_module, "CliInput", lambda: reader)
+    return reader
 
 
 def _disable_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -53,7 +80,7 @@ def _write_env_file(tmp_path: Path, contents: str) -> Path:
 
 def _run_main_capturing_llm(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
-    monkeypatch.setattr(builtins, "input", lambda _prompt: "/exit")
+    _set_cli_inputs(monkeypatch, "/exit")
     captured: dict[str, Any] = {}
 
     def capture_agent(**kwargs: Any) -> Agent:
@@ -157,7 +184,7 @@ def test_cli_without_command_starts_and_exits(
 ) -> None:
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
-    monkeypatch.setattr(builtins, "input", lambda _prompt: "/exit")
+    _set_cli_inputs(monkeypatch, "/exit")
 
     result = runner.invoke(app, [])
 
@@ -174,8 +201,18 @@ def test_cli_ignores_blank_input_and_runs_normal_turn(
     path_factory = Mock(wraps=Path)
     monkeypatch.setattr(cli_module, "Path", path_factory)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
-    inputs = iter(("", "", "   ", "\t", "hello", "", " \t ", "/quit"))
-    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+    submitted_prompt = "  hello\nworld  "
+    _set_cli_inputs(
+        monkeypatch,
+        "",
+        "",
+        "   ",
+        "\t",
+        submitted_prompt,
+        "",
+        " \t\n ",
+        "/quit",
+    )
     expected_history = [
         Message(role="user", content="previous"),
         Message(role="assistant", content="previous answer"),
@@ -221,17 +258,68 @@ def test_cli_ignores_blank_input_and_runs_normal_turn(
 
     assert result.exit_code == 0
     path_factory.cwd.assert_called_once_with()
-    assert turns == ["hello"]
-    assert responses == ["reply to hello"]
+    assert turns == [submitted_prompt]
+    assert responses == [f"reply to {submitted_prompt}"]
     assert len(created_agents) == 1
     assert created_agents[0].state.messages == expected_history
+
+
+def test_cli_bracketed_paste_starts_one_turn_only_after_explicit_submit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "print_assistant_response", lambda _text: None)
+    pasted = (
+        "你先查看当前 workspace。\n"
+        "然后阅读 README, 理解项目。\n"
+        "最后只告诉我项目的入口文件, 不要修改代码。"
+    )
+    turns: list[str] = []
+    turn_started: asyncio.Event | None = None
+
+    async def fake_run_turn(
+        agent: Agent,
+        user_input: str,
+        *,
+        budget: RunBudget,
+    ) -> str:
+        assert budget == cli_module.DEFAULT_CLI_RUN_BUDGET
+        turns.append(user_input)
+        assert turn_started is not None
+        turn_started.set()
+        return "done"
+
+    monkeypatch.setattr(cli_module, "run_turn", fake_run_turn)
+
+    async def scenario() -> None:
+        nonlocal turn_started
+        turn_started = asyncio.Event()
+        with create_pipe_input() as pipe_input:
+            cli_input = CliInput(input=pipe_input, output=DummyOutput())
+            main_task = asyncio.create_task(cli_module.main(cli_input))
+
+            pipe_input.send_text(f"\x1b[200~{pasted}\x1b[201~")
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(turn_started.wait(), timeout=0.05)
+            assert turns == []
+
+            pipe_input.send_text("\r")
+            await asyncio.wait_for(turn_started.wait(), timeout=1)
+            assert turns == [pasted]
+
+            pipe_input.send_text("/exit\r")
+            await asyncio.wait_for(main_task, timeout=1)
+
+    asyncio.run(scenario())
 
 
 def test_cli_continues_after_failed_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
-    inputs = iter(("first", "second", "/quit"))
-    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+    _set_cli_inputs(monkeypatch, "first", "second", "/quit")
     turns: list[str] = []
 
     async def fake_run_turn(
@@ -256,6 +344,44 @@ def test_cli_continues_after_failed_turn(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "second response" in result.stdout
 
 
+def test_ctrl_c_cancels_input_without_starting_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    reader = _set_cli_inputs(monkeypatch, KeyboardInterrupt(), "/exit")
+
+    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
+        pytest.fail("Cancelled input reached the model")
+
+    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert reader.read_count == 2
+    assert "Goodbye! see you next time." in result.stdout
+
+
+def test_eof_exits_gracefully_without_starting_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    reader = _set_cli_inputs(monkeypatch, EOFError())
+
+    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
+        pytest.fail("EOF reached the model")
+
+    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert reader.read_count == 1
+    assert "Goodbye! see you next time." in result.stdout
+
+
 @pytest.mark.parametrize(
     ("command", "expected"),
     [
@@ -270,8 +396,7 @@ def test_interactive_commands_do_not_call_model_or_mutate_state(
 ) -> None:
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
-    inputs = iter((command, "/QUIT"))
-    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+    _set_cli_inputs(monkeypatch, command, "/QUIT")
     created_agents: list[Agent] = []
 
     def capture_agent(**kwargs: Any) -> Agent:
@@ -299,8 +424,7 @@ def test_interactive_trace_uses_latest_completed_turn(
     monkeypatch.chdir(tmp_path)
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
-    inputs = iter(("hello", "/trace", "/quit"))
-    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+    _set_cli_inputs(monkeypatch, "hello", "/trace", "/quit")
 
     async def fake_run_turn(
         agent: Agent,
@@ -346,8 +470,7 @@ def test_interactive_trace_persistence_failure_is_not_saved_as_latest(
     monkeypatch.chdir(tmp_path)
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
-    inputs = iter(("hello", "/trace", "/quit"))
-    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+    _set_cli_inputs(monkeypatch, "hello", "/trace", "/quit")
 
     async def fake_run_turn(
         agent: Agent,
@@ -397,8 +520,7 @@ def test_interactive_trace_renders_requested_trace(
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     trace_id = _write_trace()
-    inputs = iter((f"/trace {trace_id[:8]}", "/quit"))
-    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+    _set_cli_inputs(monkeypatch, f"/trace {trace_id[:8]}", "/quit")
 
     async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
         pytest.fail("Interactive command reached the model")
@@ -420,8 +542,7 @@ def test_interactive_trace_list_does_not_call_model_or_mutate_state(
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     trace_id = _write_trace()
-    inputs = iter(("/trace list", "/quit"))
-    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+    _set_cli_inputs(monkeypatch, "/trace list", "/quit")
     created_agents: list[Agent] = []
 
     def capture_agent(**kwargs: Any) -> Agent:
@@ -455,8 +576,7 @@ def test_interactive_trace_reports_missing_trace(
     monkeypatch.chdir(tmp_path)
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
-    inputs = iter(("/trace deadbeef", "/quit"))
-    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+    _set_cli_inputs(monkeypatch, "/trace deadbeef", "/quit")
 
     async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
         pytest.fail("Interactive command reached the model")
@@ -502,8 +622,7 @@ def test_interactive_trace_read_errors_keep_session_available(
         trace_command = f"/trace {trace_id[:8]}"
         expected_error = "permission denied"
 
-    inputs = iter((trace_command, "/help", "/quit"))
-    monkeypatch.setattr(builtins, "input", lambda _prompt: next(inputs))
+    _set_cli_inputs(monkeypatch, trace_command, "/help", "/quit")
     created_agents: list[Agent] = []
 
     def capture_agent(**kwargs: Any) -> Agent:

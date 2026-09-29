@@ -12,6 +12,7 @@ from cairn.commands.router import CommandRouter
 from cairn.core.budget import RunBudget, RunBudgetExceeded
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
+from cairn.input import CliInput
 from cairn.observability.reader import JsonlTraceReader
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.tracer import Tracer
@@ -59,7 +60,7 @@ def root(ctx: typer.Context) -> None:
         asyncio.run(main())
 
 
-async def main() -> None:
+async def main(cli_input: CliInput | None = None) -> None:
     config = resolve_cairn_config(os.environ, dotenv_values())
     model = config["CAIRN_LLM_MODEL"]
     api_key = config["CAIRN_LLM_API_KEY"]
@@ -95,10 +96,17 @@ async def main() -> None:
     )
 
     router = CommandRouter()
+    input_reader = cli_input or CliInput()
 
     while True:
-        user_input = input("cairn> ").strip()
-        if not user_input:
+        try:
+            user_input = await input_reader.read()
+        except KeyboardInterrupt:
+            continue
+        except EOFError:
+            break
+
+        if not user_input.strip():
             continue
 
         command_result = router.handle(
@@ -108,7 +116,6 @@ async def main() -> None:
 
         if command_result.handled:
             if command_result.should_exit:
-                print("Goodbye! see you next time.")
                 break
             continue
 
@@ -128,6 +135,8 @@ async def main() -> None:
             if pending_trace_finish is not None:
                 console_event_handler(pending_trace_finish)
                 pending_trace_finish = None
+
+    print("Goodbye! see you next time.")
 
 
 if __name__ == "__main__":
