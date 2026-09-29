@@ -224,10 +224,15 @@ def test_bash_sandbox_wrapper_cleans_descendants(
 
 def test_bash_tool_schema_describes_required_command(tmp_path: Path) -> None:
     schema = BashTool(workspace=Workspace(tmp_path)).schema()
+    description = schema["function"]["description"].lower()
 
     assert schema["function"]["name"] == "bash"
     assert schema["function"]["parameters"]["required"] == ["command"]
     assert schema["function"]["parameters"]["additionalProperties"] is False
+    assert "workspace root" in description
+    assert "do not prepend `cd <workspace>`" in description
+    assert "workspace subdirectory" in description
+    assert "failure status" in description
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS sandbox-exec")

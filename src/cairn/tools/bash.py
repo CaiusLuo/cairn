@@ -51,7 +51,11 @@ def _macos_sandbox_profile(cwd: Path) -> str:
 
 class BashTool:
     name = "bash"
-    description = "Execute a shell command in the current workspace."
+    description = (
+        "Execute a shell command. Commands start at the workspace root; do not prepend "
+        "`cd <workspace>`. Only change directory when intentionally entering a workspace "
+        "subdirectory. Preserve command failure status when running verification commands."
+    )
 
     def __init__(
         self,
