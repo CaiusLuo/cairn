@@ -1,5 +1,7 @@
 import asyncio
+import json
 import os
+import shlex
 import signal
 import sys
 from contextlib import suppress
@@ -13,6 +15,7 @@ from cairn.tools.bash import (
     PIPE_READ_CHUNK_SIZE,
     BashTool,
     _decode_output,
+    _macos_sandbox_profile,
     _read_bounded,
 )
 from cairn.workspace.workspace import Workspace
@@ -76,8 +79,8 @@ def test_bash_cleanup_removes_only_owned_process_group(
             *args: str, **kwargs: Any
         ) -> asyncio.subprocess.Process:
             # Exercise real process ownership independently of sandbox wrappers.
-            assert args[-3:-1] == ("/bin/sh", "-c")
-            process = await create_process(*args[-3:], **kwargs)
+            assert args[-5:-1] == ("/bin/bash", "-o", "pipefail", "-c")
+            process = await create_process(*args[-5:], **kwargs)
             owned.append(process)
             return process
 
@@ -229,6 +232,114 @@ def test_bash_tool_schema_describes_required_command(tmp_path: Path) -> None:
     assert schema["function"]["parameters"]["additionalProperties"] is False
 
 
+def test_macos_sandbox_profile_allows_only_current_python_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    workspace = home / "projects" / "repo"
+    runtime_root = (
+        home
+        / ".local"
+        / "share"
+        / "uv"
+        / "python"
+        / "cpython-3.12.13-macos-aarch64-none"
+    )
+    runtime_alias = runtime_root.parent / "cpython-3.12-macos-aarch64-none"
+    workspace.mkdir(parents=True)
+    runtime_root.mkdir(parents=True)
+    runtime_alias.symlink_to(runtime_root)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("cairn.tools.bash.sys.base_prefix", str(runtime_root))
+    monkeypatch.setattr(
+        "cairn.tools.bash.sys.base_exec_prefix",
+        str(runtime_alias),
+    )
+    monkeypatch.setattr(
+        "cairn.tools.bash.sys.executable",
+        str(home / ".ssh" / "bin" / "python3.12"),
+    )
+
+    profile = _macos_sandbox_profile(workspace)
+
+    home_rule = f"(subpath {json.dumps(str(home))})"
+    workspace_parent_rule = f"(subpath {json.dumps(str(workspace.parent))})"
+    workspace_rule = f"(subpath {json.dumps(str(workspace))})"
+    runtime_rule = f"(subpath {json.dumps(str(runtime_root))})"
+    alias_rule = f"(literal {json.dumps(str(runtime_alias))})"
+    uv_store_rule = f"(subpath {json.dumps(str(runtime_root.parent))})"
+    assert f"(deny file-read* {home_rule} {workspace_parent_rule})" in profile
+    assert f"(allow file-read* {workspace_rule} {alias_rule} {runtime_rule})" in profile
+    assert f'(allow file-write* (literal "/dev/null") {workspace_rule})' in profile
+    assert uv_store_rule not in profile
+    assert profile.count(runtime_rule) == 1
+    assert ".ssh" not in profile
+
+
+@pytest.mark.parametrize("broad_runtime", ["home", "root"])
+def test_macos_sandbox_profile_refuses_broad_runtime_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    broad_runtime: str,
+) -> None:
+    home = tmp_path / "home"
+    workspace = home / "projects" / "repo"
+    workspace.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    runtime = home if broad_runtime == "home" else Path("/")
+    monkeypatch.setattr("cairn.tools.bash.sys.base_prefix", str(runtime))
+    monkeypatch.setattr("cairn.tools.bash.sys.base_exec_prefix", str(runtime))
+
+    with pytest.raises(RuntimeError, match="narrow Python runtime access"):
+        _macos_sandbox_profile(workspace)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS sandbox-exec")
+def test_macos_sandbox_runs_workspace_uv_managed_python(tmp_path: Path) -> None:
+    home = Path.home().resolve()
+    runtime_root = Path(sys.base_prefix).resolve()
+    runtime_alias = Path(sys.base_exec_prefix)
+    if (
+        not runtime_root.is_relative_to(home)
+        or not runtime_alias.is_relative_to(home)
+        or not runtime_alias.is_symlink()
+        or runtime_alias.resolve() != runtime_root
+    ):
+        pytest.skip("current Python runtime is not managed under the user home")
+
+    runtime = runtime_alias / "bin" / Path(sys.executable).resolve().name
+    if not runtime.is_file():
+        pytest.skip("current Python runtime has no executable under its uv alias")
+
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").symlink_to(runtime)
+
+    result = asyncio.run(
+        BashTool(Workspace(tmp_path)).execute(
+            {
+                "command": (
+                    ".venv/bin/python -c 'import ssl; print(\"sandbox-python-ok\")'"
+                )
+            }
+        )
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout == "sandbox-python-ok\n"
+    assert result.stderr == ""
+
+    parent_read = asyncio.run(
+        BashTool(Workspace(tmp_path)).execute(
+            {"command": (f"/bin/ls {shlex.quote(str(runtime_root.parent))} >/dev/null")}
+        )
+    )
+
+    assert parent_read.exit_code != 0
+    assert parent_read.stdout == ""
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
@@ -299,7 +410,13 @@ def test_bash_tool_preserves_command_text_and_decodes_output(
     )
 
     create_process.assert_awaited_once()
-    assert create_process.call_args.args[-3:] == ("/bin/sh", "-c", command)
+    assert create_process.call_args.args[-5:] == (
+        "/bin/bash",
+        "-o",
+        "pipefail",
+        "-c",
+        command,
+    )
     assert result.stdout == expected_stdout
     assert result.stderr == expected_stderr
     assert result.exit_code == exit_code
@@ -587,6 +704,18 @@ def test_bash_tool_returns_stderr_and_exit_code(tmp_path: Path) -> None:
     assert result.exit_code == 3
     assert result.stdout == ""
     assert result.stderr == "failure"
+
+
+def test_bash_pipeline_preserves_upstream_failure_exit_code(tmp_path: Path) -> None:
+    result = asyncio.run(
+        BashTool(workspace=Workspace(tmp_path)).execute(
+            {"command": "/bin/sh -c 'printf payload; exit 7' | tail"}
+        )
+    )
+
+    assert result.exit_code == 7
+    assert result.stdout == "payload"
+    assert result.stderr == ""
 
 
 def test_bash_tool_kills_timed_out_process(tmp_path: Path) -> None:

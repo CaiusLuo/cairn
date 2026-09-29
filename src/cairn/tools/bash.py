@@ -40,6 +40,67 @@ def _decode_output(data: bytes, truncated: bool) -> str:
     return decoder.decode(data, final=not truncated)
 
 
+def _macos_sandbox_profile(cwd: Path) -> str:
+    hidden_paths: list[Path] = []
+    for path in (Path.home().resolve(), cwd.parent):
+        if path != Path("/") and path not in hidden_paths:
+            hidden_paths.append(path)
+
+    readable = [f"(subpath {json.dumps(str(cwd))})"]
+    # These prefixes are fixed when Python starts. Do not derive permissions
+    # from sys.executable: a workspace venv symlink can be changed between runs.
+    runtime_literals: list[str] = []
+    runtime_subpaths: list[str] = []
+    for raw_value in (sys.base_prefix, sys.base_exec_prefix):
+        raw_prefix = Path(raw_value)
+        try:
+            resolved_prefix = raw_prefix.resolve(strict=True)
+        except OSError as exc:
+            raise RuntimeError("Unable to resolve the current Python runtime") from exc
+
+        unsafe_paths = (raw_prefix, resolved_prefix)
+        if (
+            not raw_prefix.is_absolute()
+            or not raw_prefix.is_dir()
+            or not resolved_prefix.is_dir()
+            or any(
+                candidate == Path("/")
+                or any(
+                    candidate == hidden or hidden.is_relative_to(candidate)
+                    for hidden in hidden_paths
+                )
+                for candidate in unsafe_paths
+            )
+        ):
+            raise RuntimeError("Unable to grant narrow Python runtime access")
+
+        raw_prefix_is_hidden = not raw_prefix.is_relative_to(cwd) and any(
+            raw_prefix.is_relative_to(path) for path in hidden_paths
+        )
+        if raw_prefix != resolved_prefix and raw_prefix_is_hidden:
+            if not raw_prefix.is_symlink():
+                raise RuntimeError("Unable to grant narrow Python runtime access")
+            runtime_literals.append(f"(literal {json.dumps(str(raw_prefix))})")
+
+        if not resolved_prefix.is_relative_to(cwd) and any(
+            resolved_prefix.is_relative_to(path) for path in hidden_paths
+        ):
+            runtime_subpaths.append(f"(subpath {json.dumps(str(resolved_prefix))})")
+
+    readable.extend(dict.fromkeys((*runtime_literals, *runtime_subpaths)))
+
+    hidden = " ".join(f"(subpath {json.dumps(str(path))})" for path in hidden_paths)
+    readable_rules = " ".join(readable)
+    root = json.dumps(str(cwd))
+    read_denial = f"(deny file-read* {hidden}) " if hidden else ""
+    return (
+        "(version 1) (allow default) "
+        f"{read_denial}(allow file-read* {readable_rules}) "
+        f'(deny file-write*) (allow file-write* (literal "/dev/null") (subpath {root})) '
+        "(deny network*)"
+    )
+
+
 class BashTool:
     name = "bash"
     description = "Execute a shell command in the current workspace."
@@ -150,22 +211,11 @@ class BashTool:
         command_argv = (
             [f"/bin/{command.strip()}"]
             if command.strip() in {"pwd", "ls"}
-            else ["/bin/sh", "-c", command]
+            else ["/bin/bash", "-o", "pipefail", "-c", command]
         )
 
         if sys.platform == "darwin":
-            root = json.dumps(str(cwd))
-            hidden = " ".join(
-                f"(subpath {json.dumps(str(path))})"
-                for path in {Path.home().resolve(), cwd.parent}
-                if path != Path("/")
-            )
-            profile = (
-                "(version 1) (allow default) "
-                f"(deny file-read* {hidden}) (allow file-read* (subpath {root})) "
-                f'(deny file-write*) (allow file-write* (literal "/dev/null") (subpath {root})) '
-                "(deny network*)"
-            )
+            profile = _macos_sandbox_profile(cwd)
             argv = ["/usr/bin/sandbox-exec", "-p", profile, *command_argv]
         elif sys.platform == "linux":
             bwrap = Path("/usr/bin/bwrap")
