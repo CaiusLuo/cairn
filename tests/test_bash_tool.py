@@ -4,7 +4,6 @@ import shlex
 import shutil
 import signal
 import sys
-import tempfile
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -18,6 +17,7 @@ from cairn.tools.bash import (
     _decode_output,
     _read_bounded,
     _resolve_tmpdir,
+    _resolve_uv_cache_dir,
     build_command_env,
 )
 from cairn.workspace.workspace import Workspace
@@ -321,6 +321,81 @@ def test_resolve_tmpdir_resolves_symlinks(tmp_path: Path) -> None:
     assert _resolve_tmpdir({"TMPDIR": str(linked_tmpdir)}) == real_tmpdir.resolve()
 
 
+def test_resolve_uv_cache_dir_prefers_explicit_uv_cache_dir(tmp_path: Path) -> None:
+    env = {
+        "UV_CACHE_DIR": str(tmp_path / "explicit"),
+        "XDG_CACHE_HOME": str(tmp_path / "xdg"),
+        "HOME": str(tmp_path / "home"),
+    }
+
+    assert _resolve_uv_cache_dir(env) == (tmp_path / "explicit").resolve()
+
+
+def test_resolve_uv_cache_dir_falls_back_to_xdg_cache_home(tmp_path: Path) -> None:
+    env = {
+        "XDG_CACHE_HOME": str(tmp_path / "xdg"),
+        "HOME": str(tmp_path / "home"),
+    }
+
+    assert _resolve_uv_cache_dir(env) == (tmp_path / "xdg" / "uv").resolve()
+
+
+def test_resolve_uv_cache_dir_falls_back_to_home_dot_cache_uv(tmp_path: Path) -> None:
+    assert (
+        _resolve_uv_cache_dir({"HOME": str(tmp_path / "home")})
+        == (tmp_path / "home" / ".cache" / "uv").resolve()
+    )
+
+
+def test_resolve_uv_cache_dir_ignores_unusable_xdg_cache_home(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    expected = (home / ".cache" / "uv").resolve()
+
+    assert _resolve_uv_cache_dir({"XDG_CACHE_HOME": "", "HOME": str(home)}) == expected
+    assert (
+        _resolve_uv_cache_dir({"XDG_CACHE_HOME": "relative-xdg", "HOME": str(home)})
+        == expected
+    )
+
+
+@pytest.mark.parametrize("cache_dir", ["", "   ", "relative/cache", "/", "//"])
+def test_resolve_uv_cache_dir_rejects_unsafe_explicit_values(cache_dir: str) -> None:
+    assert _resolve_uv_cache_dir({"UV_CACHE_DIR": cache_dir}) is None
+
+
+def test_resolve_uv_cache_dir_fails_closed_on_empty_explicit_value(
+    tmp_path: Path,
+) -> None:
+    env = {
+        "UV_CACHE_DIR": "",
+        "XDG_CACHE_HOME": str(tmp_path / "xdg"),
+        "HOME": str(tmp_path / "home"),
+    }
+
+    assert _resolve_uv_cache_dir(env) is None
+
+
+def test_resolve_uv_cache_dir_allows_missing_directory(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "missing" / "uv"
+    assert not cache_dir.exists()
+
+    assert (
+        _resolve_uv_cache_dir({"UV_CACHE_DIR": str(cache_dir)}) == cache_dir.resolve()
+    )
+
+
+def test_resolve_uv_cache_dir_resolves_symlinks(tmp_path: Path) -> None:
+    real_cache = tmp_path / "real-cache"
+    real_cache.mkdir()
+    linked_cache = tmp_path / "linked-cache"
+    linked_cache.symlink_to(real_cache, target_is_directory=True)
+
+    assert (
+        _resolve_uv_cache_dir({"UV_CACHE_DIR": str(linked_cache)})
+        == real_cache.resolve()
+    )
+
+
 def test_bash_tool_child_inherits_host_env_and_keeps_workspace_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -435,39 +510,107 @@ def test_macos_sandbox_allows_writes_to_workspace_and_host_tmpdir(
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS sandbox-exec")
-def test_macos_sandbox_lets_uv_use_host_tmpdir_without_workspace_locks(
+@pytest.mark.parametrize("cache_exists", [True, False], ids=["exists", "missing"])
+def test_macos_sandbox_allows_writes_to_effective_uv_cache_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cache_exists: bool,
+) -> None:
+    host_tmpdir = tmp_path / "host-tmp"
+    host_tmpdir.mkdir()
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    cache_dir = tmp_path / "uv-cache"
+    if cache_exists:
+        cache_dir.mkdir()
+    monkeypatch.setenv("TMPDIR", str(host_tmpdir))
+    monkeypatch.setenv("UV_CACHE_DIR", str(cache_dir))
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+
+    result = asyncio.run(
+        BashTool(Workspace(workspace_root)).execute(
+            {
+                "command": (
+                    'mkdir -p "$UV_CACHE_DIR/sdists-v9" && '
+                    'printf cached > "$UV_CACHE_DIR/sdists-v9/entry"'
+                )
+            }
+        )
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert (cache_dir / "sdists-v9" / "entry").read_text(encoding="utf-8") == "cached"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS sandbox-exec")
+def test_macos_sandbox_denies_home_writes_outside_uv_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    home = Path.home()
+    other_cache_file = home / ".cache" / "cairn-sandbox-denied" / "entry"
+    home_file = home / "cairn-sandbox-denied.txt"
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    tool = BashTool(Workspace(workspace_root))
+    other_cache_path = shlex.quote(str(other_cache_file))
+    home_path = shlex.quote(str(home_file))
+
+    try:
+        other_cache_write = asyncio.run(
+            tool.execute({"command": f"printf data > {other_cache_path}"})
+        )
+        home_write = asyncio.run(
+            tool.execute({"command": f"printf data > {home_path}"})
+        )
+    finally:
+        shutil.rmtree(home / ".cache" / "cairn-sandbox-denied", ignore_errors=True)
+        home_file.unlink(missing_ok=True)
+
+    assert other_cache_write.exit_code != 0
+    assert home_write.exit_code != 0
+    assert not other_cache_file.exists()
+    assert not home_file.exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS sandbox-exec")
+def test_macos_sandbox_runs_uv_with_real_host_environment(tmp_path: Path) -> None:
     if shutil.which("uv") is None:
         pytest.skip("uv is not installed")
-    host_tmpdir = os.environ.get("TMPDIR")
-    if not host_tmpdir or not Path(host_tmpdir).is_dir():
-        pytest.skip("host TMPDIR is not an available directory")
 
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
-    # uv's default cache lives under HOME, which this phase deliberately keeps
-    # read-only; point it at the host TMPDIR so the command exercises the
-    # TMPDIR writable root instead of failing on an unrelated policy.
-    cache_dir = Path(tempfile.mkdtemp(dir=host_tmpdir, prefix="uv-cache-"))
-    monkeypatch.setenv("TMPDIR", host_tmpdir)
-    try:
-        result = asyncio.run(
-            BashTool(Workspace(workspace_root), timeout=90.0).execute(
-                {
-                    "command": (
-                        f"UV_CACHE_DIR={shlex.quote(str(cache_dir))} "
-                        "uv run --no-sync python --version"
-                    )
-                }
-            )
+    # Deliberately no UV_CACHE_DIR/XDG_CACHE_HOME/HOME override: this must work
+    # with the user's real uv cache under the default host environment.
+    result = asyncio.run(
+        BashTool(Workspace(workspace_root), timeout=90.0).execute(
+            {"command": "uv run --no-sync python --version"}
         )
-    finally:
-        shutil.rmtree(cache_dir, ignore_errors=True)
+    )
 
     assert result.exit_code == 0, result.stderr
     assert "Python" in result.stdout
     assert list(workspace_root.glob("uv-*.lock")) == []
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS sandbox-exec")
+def test_macos_sandbox_runs_uv_pytest_with_real_host_environment() -> None:
+    if shutil.which("uv") is None:
+        pytest.skip("uv is not installed")
+    repo_root = Path(__file__).resolve().parents[1]
+    if not (repo_root / "tests" / "test_agent_emit.py").is_file():
+        pytest.skip("repository layout is not available")
+
+    result = asyncio.run(
+        BashTool(Workspace(repo_root), timeout=180.0).execute(
+            {"command": "uv run --no-sync pytest tests/test_agent_emit.py -v"}
+        )
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert "3 passed" in result.stdout
 
 
 @pytest.mark.parametrize(
