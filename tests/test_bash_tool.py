@@ -15,6 +15,7 @@ from cairn.tools.bash import (
     BashTool,
     _decode_output,
     _read_bounded,
+    build_command_env,
 )
 from cairn.workspace.workspace import Workspace
 
@@ -233,6 +234,72 @@ def test_bash_tool_schema_describes_required_command(tmp_path: Path) -> None:
     assert "do not prepend `cd <workspace>`" in description
     assert "workspace subdirectory" in description
     assert "failure status" in description
+
+
+def test_build_command_env_inherits_host_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PATH", "/host/path")
+    monkeypatch.setenv("HOME", "/host/home")
+    monkeypatch.setenv("TMPDIR", "/host/tmp")
+    monkeypatch.setenv("VIRTUAL_ENV", "/host/.venv")
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+    monkeypatch.setenv("MY_TOOL_VAR", "arbitrary-value")
+
+    env = build_command_env(os.environ)
+
+    assert env["PATH"] == "/host/path"
+    assert env["HOME"] == "/host/home"
+    assert env["TMPDIR"] == "/host/tmp"
+    assert env["VIRTUAL_ENV"] == "/host/.venv"
+    assert env["LANG"] == "en_US.UTF-8"
+    assert env["MY_TOOL_VAR"] == "arbitrary-value"
+
+
+def test_build_command_env_removes_cairn_secret_and_preserves_others(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CAIRN_LLM_API_KEY", "private-key")
+    monkeypatch.setenv("KEEP_ME", "kept")
+
+    env = build_command_env(os.environ)
+
+    assert "CAIRN_LLM_API_KEY" not in env
+    assert env["KEEP_ME"] == "kept"
+
+
+def test_build_command_env_does_not_mutate_host_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CAIRN_LLM_API_KEY", "private-key")
+
+    host_env = dict(os.environ)
+    env = build_command_env(host_env)
+
+    assert "CAIRN_LLM_API_KEY" not in env
+    assert "CAIRN_LLM_API_KEY" in host_env
+
+
+def test_bash_tool_child_inherits_host_env_and_keeps_workspace_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", "/host/home")
+    monkeypatch.setenv("TMPDIR", "/host/tmp")
+    monkeypatch.setenv("CAIRN_LLM_API_KEY", "private-key")
+
+    result = asyncio.run(
+        BashTool(workspace=Workspace(tmp_path)).execute(
+            {
+                "command": (
+                    'printf "%s|%s|%s|%s" "$PWD" "$HOME" "$TMPDIR" '
+                    '"${CAIRN_LLM_API_KEY:-}"'
+                )
+            }
+        )
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout == f"{tmp_path}|/host/home|/host/tmp|"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS sandbox-exec")

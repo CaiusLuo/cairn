@@ -4,6 +4,7 @@ import json
 import os
 import signal
 import sys
+from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,23 @@ from cairn.workspace.workspace import Workspace
 DEFAULT_STDOUT_CAPTURE_LIMIT = 64 * 1024
 DEFAULT_STDERR_CAPTURE_LIMIT = 64 * 1024
 PIPE_READ_CHUNK_SIZE = 16 * 1024
+
+# Cairn-owned credentials that must never reach a child command.
+CAIRN_SECRET_ENV_KEYS = frozenset({"CAIRN_LLM_API_KEY"})
+
+
+def build_command_env(host_env: Mapping[str, str]) -> dict[str, str]:
+    """Build the child-process environment from the host environment.
+
+    Local tooling must behave exactly like the user's terminal, so the child
+    inherits the full host environment (PATH, HOME, TMPDIR, VIRTUAL_ENV, LANG,
+    LC_*, TERM, USER, SHELL, ...). Cairn-owned credentials are then stripped so
+    they are never exposed to the command.
+    """
+    env = dict(host_env)
+    for key in CAIRN_SECRET_ENV_KEYS:
+        env.pop(key, None)
+    return env
 
 
 async def _read_bounded(stream: asyncio.StreamReader, limit: int) -> tuple[bytes, bool]:
@@ -154,12 +172,7 @@ class BashTool:
             raise ValueError("bash only accepts the 'command' argument")
 
         cwd = self.workspace.root
-        env = {
-            key: value
-            for key in ("PATH", "LANG", "LC_ALL", "TERM", "VIRTUAL_ENV")
-            if (value := os.environ.get(key)) is not None
-        }
-        env.update(HOME=str(cwd), TMPDIR=str(cwd))
+        env = build_command_env(os.environ)
         command_argv = (
             [f"/bin/{command.strip()}"]
             if command.strip() in {"pwd", "ls"}
