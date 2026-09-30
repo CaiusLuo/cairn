@@ -1,9 +1,12 @@
+import asyncio
 import stat
 from dataclasses import dataclass
 from pathlib import Path
 
 from cairn.evals.models import CheckResult
 from cairn.workspace.workspace import Workspace
+
+CHECK_READ_CHUNK_SIZE = 16 * 1024
 
 
 def _regular_file(workspace: Workspace, raw_path: str) -> tuple[Path, bool]:
@@ -15,11 +18,32 @@ def _regular_file(workspace: Workspace, raw_path: str) -> tuple[Path, bool]:
     return path, stat.S_ISREG(mode)
 
 
-def _read_text(workspace: Workspace, raw_path: str) -> tuple[Path, str | None]:
-    path, is_file = _regular_file(workspace, raw_path)
-    if not is_file:
-        return path, None
-    return path, path.read_text(encoding="utf-8")
+async def _content_equals(path: Path, expected: str) -> bool:
+    offset = 0
+    with path.open(encoding="utf-8") as stream:
+        while True:
+            chunk = stream.read(CHECK_READ_CHUNK_SIZE)
+            await asyncio.sleep(0)
+            if not chunk:
+                return offset == len(expected)
+            if chunk != expected[offset : offset + len(chunk)]:
+                return False
+            offset += len(chunk)
+
+
+async def _contains(path: Path, substring: str) -> bool:
+    overlap = ""
+    overlap_size = max(0, len(substring) - 1)
+    with path.open(encoding="utf-8") as stream:
+        while True:
+            chunk = stream.read(CHECK_READ_CHUNK_SIZE)
+            await asyncio.sleep(0)
+            window = overlap + chunk
+            if substring in window:
+                return True
+            if not chunk:
+                return False
+            overlap = window[-overlap_size:] if overlap_size else ""
 
 
 @dataclass(slots=True)
@@ -28,8 +52,8 @@ class FileExistsCheck:
     name: str = "file_exists"
 
     async def evaluate(self, workspace: Workspace) -> CheckResult:
-        resolved, exists = _regular_file(workspace, self.path)
-        message = None if exists else f"Expected a regular file at {resolved}"
+        _, exists = _regular_file(workspace, self.path)
+        message = None if exists else f"Expected a regular file at {self.path}"
         return CheckResult(name=self.name, passed=exists, message=message)
 
 
@@ -42,9 +66,9 @@ class FileContentEqualsCheck:
     async def evaluate(self, workspace: Workspace) -> CheckResult:
         if not isinstance(self.expected, str):
             raise ValueError("expected content must be a string")
-        resolved, content = _read_text(workspace, self.path)
-        passed = content is not None and content == self.expected
-        message = None if passed else f"Expected {resolved} to equal {self.expected!r}"
+        resolved, is_file = _regular_file(workspace, self.path)
+        passed = is_file and await _content_equals(resolved, self.expected)
+        message = None if passed else f"Expected {self.path} to equal {self.expected!r}"
         return CheckResult(name=self.name, passed=passed, message=message)
 
 
@@ -57,10 +81,10 @@ class FileContainsCheck:
     async def evaluate(self, workspace: Workspace) -> CheckResult:
         if not isinstance(self.substring, str):
             raise ValueError("substring must be a string")
-        resolved, content = _read_text(workspace, self.path)
-        passed = content is not None and self.substring in content
+        resolved, is_file = _regular_file(workspace, self.path)
+        passed = is_file and await _contains(resolved, self.substring)
         message = (
-            None if passed else f"Expected {resolved} to contain {self.substring!r}"
+            None if passed else f"Expected {self.path} to contain {self.substring!r}"
         )
         return CheckResult(name=self.name, passed=passed, message=message)
 
@@ -74,9 +98,11 @@ class FileNotContainsCheck:
     async def evaluate(self, workspace: Workspace) -> CheckResult:
         if not isinstance(self.substring, str):
             raise ValueError("substring must be a string")
-        resolved, content = _read_text(workspace, self.path)
-        passed = content is not None and self.substring not in content
+        resolved, is_file = _regular_file(workspace, self.path)
+        passed = is_file and not await _contains(resolved, self.substring)
         message = (
-            None if passed else f"Expected {resolved} not to contain {self.substring!r}"
+            None
+            if passed
+            else f"Expected {self.path} not to contain {self.substring!r}"
         )
         return CheckResult(name=self.name, passed=passed, message=message)

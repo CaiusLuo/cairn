@@ -1,12 +1,14 @@
 import asyncio
 from collections.abc import Callable
+from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO, cast
 
 import pytest
 
 from cairn.core.models import LLMResponse, Message, ToolCall
-from cairn.evals.models import CheckResult, EvalCase, EvalCheck, EvalStatus
+from cairn.evals.checks import CHECK_READ_CHUNK_SIZE, FileNotContainsCheck
+from cairn.evals.models import CheckResult, EvalCase, EvalCheck, EvalResult, EvalStatus
 from cairn.evals.runner import EvalRunner
 from cairn.llm.base import LLMClient
 from cairn.workspace.workspace import Workspace
@@ -494,5 +496,104 @@ def test_run_timeout_cancels_real_bash_and_waits_for_cleanup(
     assert case_roots[0].parent == root
     assert not case_roots[0].exists()
     assert list(root.glob("cairn-eval-*")) == []
+    assert sentinel.read_text(encoding="utf-8") == "parent-owned"
+    assert (sibling / "keep.txt").read_text(encoding="utf-8") == "sibling-owned"
+
+
+def test_builtin_check_timeout_closes_stream_and_runner_cleans_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = tmp_path / "eval-parent"
+    parent.mkdir()
+    sentinel = parent / "keep.txt"
+    sentinel.write_text("parent-owned", encoding="utf-8")
+    sibling = parent / "sibling"
+    sibling.mkdir()
+    (sibling / "keep.txt").write_text("sibling-owned", encoding="utf-8")
+
+    class InfiniteTextStream(StringIO):
+        def __init__(self) -> None:
+            super().__init__()
+            self.read_count = 0
+
+        def read(self, size: int | None = -1) -> str:
+            assert size is not None
+            assert size > 0
+            assert size == CHECK_READ_CHUNK_SIZE
+            self.read_count += 1
+            assert self.read_count <= 8, "check read guard exceeded"
+            advance_loop_clock()
+            return "x" * size
+
+    stream = InfiniteTextStream()
+    original_open = Path.open
+    check_timeout_seconds = 0.1
+    clock_offset = 0.0
+
+    def advance_loop_clock() -> None:
+        nonlocal clock_offset
+        clock_offset += check_timeout_seconds * 2
+
+    def controlled_open(
+        path: Path,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> TextIO:
+        if path.name == "answer.txt" and mode == "r":
+            return stream
+        return cast(
+            TextIO, original_open(path, mode, buffering, encoding, errors, newline)
+        )
+
+    monkeypatch.setattr(Path, "open", controlled_open)
+    workspace_roots: list[Path] = []
+
+    class CheckAfterTimeout:
+        name = "after-timeout"
+
+        async def evaluate(self, workspace: Workspace) -> CheckResult:
+            assert stream.closed
+            assert workspace.root.is_dir()
+            workspace_roots.append(workspace.root)
+            return CheckResult(name=self.name, passed=True)
+
+    async def run_case() -> EvalResult:
+        loop = asyncio.get_running_loop()
+        real_loop_time = loop.time
+
+        def advanced_loop_time() -> float:
+            return real_loop_time() + clock_offset
+
+        monkeypatch.setattr(loop, "time", advanced_loop_time)
+        return await make_runner(
+            SuccessfulLLM,
+            temp_root=parent,
+            run_timeout_seconds=10,
+            check_timeout_seconds=check_timeout_seconds,
+        ).run(
+            EvalCase(
+                name="builtin-timeout",
+                prompt="finish",
+                files={"answer.txt": "regular fixture file"},
+            ),
+            checks=[FileNotContainsCheck("answer.txt", "needle"), CheckAfterTimeout()],
+        )
+
+    result = asyncio.run(run_case())
+
+    assert result.status is EvalStatus.ERROR
+    assert result.error is None
+    assert result.checks[0].error is not None
+    assert result.checks[0].error.startswith("TimeoutError:")
+    assert result.checks[1].passed
+    assert stream.read_count <= 8
+    assert stream.closed
+    assert len(workspace_roots) == 1
+    assert workspace_roots[0].parent == parent
+    assert not workspace_roots[0].exists()
+    assert list(parent.glob("cairn-eval-*")) == []
     assert sentinel.read_text(encoding="utf-8") == "parent-owned"
     assert (sibling / "keep.txt").read_text(encoding="utf-8") == "sibling-owned"
