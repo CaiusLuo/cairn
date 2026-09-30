@@ -1,7 +1,9 @@
 import asyncio
 import json
 import shlex
+import socket
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
@@ -28,29 +30,45 @@ from tests.sandbox_support import (
 )
 
 
-def socket_command() -> str:
+def socket_command(port: int) -> str:
     python = shlex.quote(sandbox_python())
     script = (
         "import socket; print('started', flush=True); "
-        "s=socket.socket(); s.bind(('127.0.0.1', 0)); s.listen(); print('bound')"
+        f"s=socket.create_connection(('127.0.0.1', {port}), timeout=2); "
+        "s.close(); print('connected')"
     )
     return f"{python} -c {shlex.quote(script)}"
 
 
-@pytest.mark.parametrize("requested", [None, False, True])
-def test_arguments_cannot_grant_network(tmp_path: Path, requested: bool | None) -> None:
+@pytest.fixture
+def host_network_command(tmp_path: Path) -> Iterator[str]:
     require_working_sandbox(Workspace(tmp_path))
-    arguments: dict[str, object] = {"command": socket_command()}
+    # A Linux network namespace can bind its own loopback sockets. Connecting
+    # to a listener outside the sandbox proves access to the host's network.
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        # These tests open at most two connections; the listening backlog is
+        # sufficient without a background accept thread.
+        listener.listen(8)
+        yield socket_command(listener.getsockname()[1])
+
+
+@pytest.mark.parametrize("requested", [None, False, True])
+def test_arguments_cannot_grant_network(
+    tmp_path: Path, requested: bool | None, host_network_command: str
+) -> None:
+    arguments: dict[str, object] = {"command": host_network_command}
     if requested is not None:
-        arguments.update(network_access=requested, justification="local socket")
+        arguments.update(network_access=requested, justification="host TCP listener")
     result = asyncio.run(BashTool(Workspace(tmp_path)).execute(arguments))
     assert result.exit_code != 0
     assert result.stdout == "started\n"
 
 
 @pytest.mark.parametrize("choice", list(PermissionChoice))
-def test_network_end_to_end(tmp_path: Path, choice: PermissionChoice) -> None:
-    require_working_sandbox(Workspace(tmp_path))
+def test_network_end_to_end(
+    tmp_path: Path, choice: PermissionChoice, host_network_command: str
+) -> None:
     prompts: list[PermissionRequest] = []
 
     def prompt(request: PermissionRequest) -> PermissionChoice:
@@ -63,9 +81,9 @@ def test_network_end_to_end(tmp_path: Path, choice: PermissionChoice) -> None:
             id=str(index),
             name="bash",
             arguments={
-                "command": socket_command(),
+                "command": host_network_command,
                 "network_access": requested,
-                "justification": "local socket",
+                "justification": "host TCP listener",
             },
         )
         for index, requested in enumerate((True, True, False))
@@ -93,7 +111,7 @@ def test_network_end_to_end(tmp_path: Path, choice: PermissionChoice) -> None:
             }
         else:
             assert messages[index]["exit_code"] == 0
-            assert messages[index]["stdout"] == "started\nbound\n"
+            assert messages[index]["stdout"] == "started\nconnected\n"
         assert spans[index].attributes["policy_decision"] == "ask"
         assert spans[index].attributes["allowed"] is (not denied)
         assert spans[index].attributes["prompted"] is (
