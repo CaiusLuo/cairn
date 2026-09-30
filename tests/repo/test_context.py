@@ -46,38 +46,42 @@ def test_repo_context_reports_non_git_workspace(tmp_path: Path) -> None:
     )
 
 
-def test_repo_context_reports_clean_main_branch(tmp_path: Path) -> None:
+def test_repo_context_tracks_clean_dirty_and_truncated_states(tmp_path: Path) -> None:
     _initialize_repository(tmp_path)
     workspace = Workspace(tmp_path)
+    provider = RepoContextProvider(workspace, max_paths=50)
 
-    context = asyncio.run(RepoContextProvider(workspace).inspect())
+    clean = asyncio.run(provider.inspect())
 
-    assert context == RepositoryContext(
-        workspace_root=workspace.root,
-        repository_root=workspace.root,
-        branch="main",
-        dirty=False,
-    )
-    assert context.is_git_repository is True
+    assert clean.repository_root == workspace.root
+    assert clean.branch == "main"
+    assert clean.dirty is False
+    assert clean.is_git_repository is True
 
-
-def test_repo_context_separates_tracked_and_untracked_files(tmp_path: Path) -> None:
-    tracked = _initialize_repository(tmp_path)
+    tracked = tmp_path / "tracked.txt"
     tracked.write_text("after\n", encoding="utf-8")
     (tmp_path / "untracked.txt").write_text("new\n", encoding="utf-8")
-    workspace = Workspace(tmp_path)
 
-    context = asyncio.run(RepoContextProvider(workspace).inspect())
+    dirty = asyncio.run(provider.inspect())
 
-    assert context.repository_root == workspace.root
-    assert context.branch == "main"
-    assert context.dirty is True
-    assert context.changed_files == ("tracked.txt",)
-    assert context.untracked_files == ("untracked.txt",)
-    assert context.truncated is False
-    prompt = context.to_prompt()
+    assert dirty.dirty is True
+    assert dirty.changed_files == ("tracked.txt",)
+    assert dirty.untracked_files == ("untracked.txt",)
+    assert dirty.truncated is False
+    prompt = dirty.to_prompt()
     assert "tracked.txt" in prompt
     assert "untracked.txt" in prompt
+
+    for index in range(55):
+        (tmp_path / f"untracked-{index:02}.txt").write_text("new\n", encoding="utf-8")
+    truncated = asyncio.run(provider.inspect())
+
+    assert truncated.changed_files == ("tracked.txt",)
+    assert len(truncated.untracked_files) == 49
+    assert all(path.startswith("untracked-") for path in truncated.untracked_files)
+    assert truncated.truncated is True
+    assert len(truncated.changed_files) + len(truncated.untracked_files) == 50
+    assert "File list truncated: yes" in truncated.to_prompt()
 
 
 def test_repo_context_paths_are_relative_to_nested_workspace(
@@ -101,19 +105,3 @@ def test_repo_context_paths_are_relative_to_nested_workspace(
     assert context.workspace_root == nested.resolve()
     assert context.changed_files == ("tracked.txt",)
     assert context.untracked_files == ("new.txt",)
-
-
-def test_repo_context_truncates_paths_at_max_paths(tmp_path: Path) -> None:
-    _initialize_repository(tmp_path)
-    for index in range(55):
-        (tmp_path / f"untracked-{index:02}.txt").write_text("new\n", encoding="utf-8")
-    workspace = Workspace(tmp_path)
-
-    context = asyncio.run(RepoContextProvider(workspace, max_paths=50).inspect())
-
-    assert context.changed_files == ()
-    assert len(context.untracked_files) == 50
-    assert all(path.startswith("untracked-") for path in context.untracked_files)
-    assert context.truncated is True
-    assert len(context.changed_files) + len(context.untracked_files) <= 50
-    assert "File list truncated: yes" in context.to_prompt()

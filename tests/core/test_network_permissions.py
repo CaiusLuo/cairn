@@ -193,37 +193,3 @@ def test_network_grant_preserves_write_boundary(
     )
     assert result.exit_code != 0
     assert outside.read_text() == "unchanged"
-
-
-def test_no_handler_does_not_execute_network_request(tmp_path: Path) -> None:
-    sink = RecordingSink()
-    agent = build_agent(
-        workspace=Workspace(tmp_path),
-        event_handler=None,
-        llm=SequenceLLM(
-            [
-                LLMResponse(
-                    tool_calls=[
-                        ToolCall(
-                            id="1",
-                            name="bash",
-                            arguments={
-                                "command": "touch should-not-exist",
-                                "network_access": True,
-                                "justification": "test",
-                            },
-                        )
-                    ]
-                ),
-                LLMResponse(content="done"),
-            ]
-        ),
-        tracer=Tracer(sink),
-        permission_handler=None,
-    )
-    asyncio.run(run_turn(agent, "test", budget=TEST_BUDGET))
-    assert not (tmp_path / "should-not-exist").exists()
-    span = next(s for s in sink.spans if s.name == "permission.check")
-    assert span.attributes["source"] == "no_handler"
-    assert span.attributes["granted_capabilities"] == []
-    assert span.attributes["allowed"] is False

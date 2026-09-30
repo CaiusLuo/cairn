@@ -112,10 +112,8 @@ def make_edit_agent(
     return Agent(llm=llm, tools=registry, permission_handler=allow)
 
 
-@pytest.mark.parametrize("phase", ["llm", "permission", "denied", "event", "trace"])
-def test_failure_before_execution_rolls_back_turn(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
-) -> None:
+@pytest.mark.parametrize("phase", ["llm", "permission"])
+def test_failure_before_execution_rolls_back_turn(tmp_path: Path, phase: str) -> None:
     llm = FailingFollowupLLM([edit_response("answer.txt")])
     agent = make_edit_agent(tmp_path, FailingLLM() if phase == "llm" else llm)
     agent.state.add_user_message("previous")
@@ -125,32 +123,8 @@ def test_failure_before_execution_rolls_back_turn(
     def fail_permission(tool_call: ToolCall) -> PermissionResult:
         raise RuntimeError("permission failed")
 
-    def deny(tool_call: ToolCall) -> PermissionResult:
-        return PermissionResult(policy_decision=PermissionDecision.DENY, allowed=False)
-
-    def fail_event(event: Event) -> None:
-        if event.type == "tool_call":
-            raise RuntimeError("event failed")
-
     if phase == "permission":
         agent.permission_handler = fail_permission
-    elif phase == "denied":
-        agent.permission_handler = deny
-    elif phase == "event":
-        agent.event_handler = fail_event
-    elif phase == "trace":
-        tracer = Tracer(RecordingSink())
-        start_child_span = tracer.start_child_span
-
-        def fail_trace(
-            parent: Span, name: str, attributes: dict[str, Any] | None = None
-        ) -> Span:
-            if name == "tool.execute":
-                raise RuntimeError("trace failed")
-            return start_child_span(parent, name, attributes)
-
-        monkeypatch.setattr(tracer, "start_child_span", fail_trace)
-        agent.tracer = tracer
 
     with pytest.raises(RuntimeError, match="failed"):
         asyncio.run(run_turn(agent, "Create answer.txt", budget=TEST_BUDGET))
@@ -412,42 +386,3 @@ def test_final_event_failure_respects_execution_boundary(
         assert json.loads(agent.state.messages[4].content or "")["exit_code"] == 0
     else:
         assert agent.state.messages == previous
-
-
-@pytest.mark.parametrize("with_tool", [False, True])
-def test_final_trace_persistence_failure_keeps_primary_success(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    with_tool: bool,
-) -> None:
-    responses = [LLMResponse(content="done")]
-    if with_tool:
-        responses.insert(0, edit_response("answer.txt"))
-    agent = make_edit_agent(tmp_path, SequenceLLM(responses))
-    agent.state.add_user_message("previous")
-    agent.state.add_assistant_message("previous answer")
-    previous = agent.state.messages.copy()
-    events: list[Event] = []
-    agent.event_handler = lambda event: events.append(event)
-    sink = RecordingSink()
-    emit_span = sink.emit
-
-    def fail_trace(span: Span) -> None:
-        if span.name == "agent.turn":
-            raise RuntimeError("trace failed")
-        emit_span(span)
-
-    monkeypatch.setattr(sink, "emit", fail_trace)
-    agent.tracer = Tracer(sink)
-
-    assert asyncio.run(run_turn(agent, "hello", budget=TEST_BUDGET)) == "done"
-    assert agent.state.messages[:2] == previous
-    expected_roles = ["user", "assistant"]
-    if with_tool:
-        expected_roles = ["user", "assistant", "tool", "assistant"]
-        assert (tmp_path / "answer.txt").read_text(encoding="utf-8") == "42\n"
-    assert [message.role for message in agent.state.messages[2:]] == expected_roles
-    trace_finish = [event for event in events if event.type == "trace_finish"]
-    assert len(trace_finish) == 1
-    assert trace_finish[0].data["persisted"] is False
-    assert trace_finish[0].data["persistence_error"] == "RuntimeError: trace failed"

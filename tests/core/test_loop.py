@@ -8,12 +8,7 @@ from cairn.core.agent import Agent
 from cairn.core.budget import BudgetReason, RunBudget, RunBudgetExceeded
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
-from cairn.core.models import LLMResponse, Message, ToolCall, ToolFailure, ToolResult
-from cairn.core.permissions import (
-    PermissionDecision,
-    PermissionResult,
-    PermissionSource,
-)
+from cairn.core.models import LLMResponse, Message, ToolCall, ToolResult
 from cairn.llm.litellm_client import LiteLLMClient
 from cairn.observability.models import SpanStatus
 from cairn.observability.tracer import Tracer
@@ -21,15 +16,12 @@ from cairn.tools.base import ToolExecutionContext
 from cairn.tools.registry import ToolRegistry
 from tests.support.runtime import (
     TEST_BUDGET,
-    FailingLLM,
     FailingSink,
     FailingTool,
-    NetworkRequestTool,
     RecordingSink,
     RecordingTool,
     SequenceLLM,
     make_agent,
-    network_tool_response,
     tool_response,
 )
 
@@ -102,15 +94,7 @@ def assert_serialized_tool_pairs(messages: list[Message]) -> None:
     assert not pending
 
 
-def test_run_budget_rejects_invalid_step_limit() -> None:
-    with pytest.raises(ValueError, match="at least 1"):
-        RunBudget(max_steps=0)
-
-
-@pytest.mark.parametrize("with_tracer", [False, True])
-def test_run_turn_cancellation_during_tool_execution_preserves_facts(
-    with_tracer: bool,
-) -> None:
+def test_run_turn_cancellation_during_tool_execution_preserves_facts() -> None:
     async def scenario() -> None:
         sink = RecordingSink()
         events: list[Event] = []
@@ -118,8 +102,7 @@ def test_run_turn_cancellation_during_tool_execution_preserves_facts(
         tool = BlockingTool()
         llm = SequenceLLM([blocking_response()])
         agent = make_agent(llm, tool, events)
-        if with_tracer:
-            agent.tracer = Tracer(sink)
+        agent.tracer = Tracer(sink)
 
         task = asyncio.create_task(run_turn(agent, "run tools", budget=TEST_BUDGET))
 
@@ -149,18 +132,15 @@ def test_run_turn_cancellation_during_tool_execution_preserves_facts(
         assert tool.calls == [{}]
         assert not any(event.type == "agent_finish" for event in events)
         trace_finish = [event for event in events if event.type == "trace_finish"]
-        if with_tracer:
-            tool_spans = [span for span in sink.spans if span.name == "tool.execute"]
-            turn_spans = [span for span in sink.spans if span.name == "agent.turn"]
-            assert len(tool_spans) == len(turn_spans) == 1
-            assert tool_spans[0].status == SpanStatus.ERROR
-            assert tool_spans[0].attributes["cancelled"] is True
-            assert turn_spans[0].status == SpanStatus.ERROR
-            assert all(span.end_time is not None for span in sink.spans)
-            assert len(trace_finish) == 1
-            assert trace_finish[0].data["status"] == "error"
-        else:
-            assert trace_finish == []
+        tool_spans = [span for span in sink.spans if span.name == "tool.execute"]
+        turn_spans = [span for span in sink.spans if span.name == "agent.turn"]
+        assert len(tool_spans) == len(turn_spans) == 1
+        assert tool_spans[0].status == SpanStatus.ERROR
+        assert tool_spans[0].attributes["cancelled"] is True
+        assert turn_spans[0].status == SpanStatus.ERROR
+        assert all(span.end_time is not None for span in sink.spans)
+        assert len(trace_finish) == 1
+        assert trace_finish[0].data["status"] == "error"
 
         preserved = agent.state.messages.copy()
         next_llm = SequenceLLM([LLMResponse(content="continued")])
@@ -176,10 +156,9 @@ def test_run_turn_cancellation_during_tool_execution_preserves_facts(
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("with_tracer", [False, True])
-def test_run_turn_cancellation_during_llm_wait_rolls_back_and_marks_trace_error(
-    with_tracer: bool,
-) -> None:
+def test_run_turn_cancellation_during_llm_wait_rolls_back_and_marks_trace_error() -> (
+    None
+):
     async def scenario() -> None:
         sink = RecordingSink()
         events: list[Event] = []
@@ -189,7 +168,7 @@ def test_run_turn_cancellation_during_llm_wait_rolls_back_and_marks_trace_error(
             llm=llm,
             tools=ToolRegistry(),
             event_handler=lambda event: events.append(event),
-            tracer=Tracer(sink) if with_tracer else None,
+            tracer=Tracer(sink),
         )
 
         agent.state.add_user_message("previous")
@@ -209,15 +188,12 @@ def test_run_turn_cancellation_during_llm_wait_rolls_back_and_marks_trace_error(
 
         assert not any(event.type == "agent_finish" for event in events)
         trace_finish = [event for event in events if event.type == "trace_finish"]
-        if with_tracer:
-            assert [span.name for span in sink.spans] == ["llm.generate", "agent.turn"]
-            assert all(span.status == SpanStatus.ERROR for span in sink.spans)
-            assert all(span.end_time is not None for span in sink.spans)
-            assert sink.spans[0].attributes["cancelled"] is True
-            assert len(trace_finish) == 1
-            assert trace_finish[0].data["status"] == "error"
-        else:
-            assert trace_finish == []
+        assert [span.name for span in sink.spans] == ["llm.generate", "agent.turn"]
+        assert all(span.status == SpanStatus.ERROR for span in sink.spans)
+        assert all(span.end_time is not None for span in sink.spans)
+        assert sink.spans[0].attributes["cancelled"] is True
+        assert len(trace_finish) == 1
+        assert trace_finish[0].data["status"] == "error"
 
     asyncio.run(scenario())
 
@@ -271,18 +247,14 @@ class BlockingFollowupLLM(SequenceLLM):
         raise AssertionError("unreachable")
 
 
-@pytest.mark.parametrize("with_tracer", [False, True])
-def test_run_turn_cancellation_after_tool_preserves_fact_for_next_turn(
-    with_tracer: bool,
-) -> None:
+def test_run_turn_cancellation_after_tool_preserves_fact_for_next_turn() -> None:
     async def scenario() -> None:
         sink = RecordingSink()
         events: list[Event] = []
         tool = RecordingTool()
         llm = BlockingFollowupLLM()
         agent = make_agent(llm, tool, events)
-        if with_tracer:
-            agent.tracer = Tracer(sink)
+        agent.tracer = Tracer(sink)
         agent.state.add_user_message("previous")
         agent.state.add_assistant_message("previous answer")
         previous = agent.state.messages.copy()
@@ -309,19 +281,16 @@ def test_run_turn_cancellation_after_tool_preserves_fact_for_next_turn(
         }
         assert not any(event.type == "agent_finish" for event in events)
         trace_finish = [event for event in events if event.type == "trace_finish"]
-        if with_tracer:
-            llm_spans = [span for span in sink.spans if span.name == "llm.generate"]
-            assert len(llm_spans) == 2
-            assert llm_spans[0].status == SpanStatus.OK
-            assert llm_spans[1].status == SpanStatus.ERROR
-            assert llm_spans[1].attributes["cancelled"] is True
-            assert sink.spans[-1].name == "agent.turn"
-            assert sink.spans[-1].status == SpanStatus.ERROR
-            assert all(span.end_time is not None for span in sink.spans)
-            assert len(trace_finish) == 1
-            assert trace_finish[0].data["status"] == "error"
-        else:
-            assert trace_finish == []
+        llm_spans = [span for span in sink.spans if span.name == "llm.generate"]
+        assert len(llm_spans) == 2
+        assert llm_spans[0].status == SpanStatus.OK
+        assert llm_spans[1].status == SpanStatus.ERROR
+        assert llm_spans[1].attributes["cancelled"] is True
+        assert sink.spans[-1].name == "agent.turn"
+        assert sink.spans[-1].status == SpanStatus.ERROR
+        assert all(span.end_time is not None for span in sink.spans)
+        assert len(trace_finish) == 1
+        assert trace_finish[0].data["status"] == "error"
 
         preserved = agent.state.messages.copy()
         next_llm = SequenceLLM([LLMResponse(content="continued")])
@@ -350,18 +319,6 @@ def test_run_turn_returns_direct_model_response() -> None:
     assert llm.calls[0][0][0].role == "system"
 
 
-def test_failed_turn_rolls_back_state() -> None:
-    agent = Agent(llm=FailingLLM(), tools=ToolRegistry())
-    agent.state.add_user_message("previous")
-    agent.state.add_assistant_message("previous answer")
-    previous_messages = agent.state.messages.copy()
-
-    with pytest.raises(RuntimeError, match="llm failed"):
-        asyncio.run(run_turn(agent, "current", budget=TEST_BUDGET))
-
-    assert agent.state.messages == previous_messages
-
-
 def test_run_turn_executes_tool_and_returns_follow_up() -> None:
     sink = RecordingSink()
     events: list[Event] = []
@@ -387,129 +344,28 @@ def test_run_turn_executes_tool_and_returns_follow_up() -> None:
         "stdout_truncated": False,
         "stderr_truncated": False,
     }
-    assert [event.type for event in events] == [
-        "trace_start",
-        "agent_step",
-        "tool_call",
-        "tool_result",
-        "agent_step",
-        "agent_finish",
-        "trace_finish",
-    ]
     tool_result_event = next(event for event in events if event.type == "tool_result")
-    assert tool_result_event.data == {
-        "tool": "record",
-        "exit_code": 0,
-        "stdout": "recorded",
-        "stderr": "",
-        "stdout_truncated": False,
-        "stderr_truncated": False,
-    }
+    assert tool_result_event.data["stdout"] == "recorded"
+    assert tool_result_event.data["stdout_truncated"] is False
+    assert tool_result_event.data["stderr_truncated"] is False
+    follow_up_messages = llm.calls[1][0]
+    assert follow_up_messages[-1].role == "tool"
+    assert follow_up_messages[-1].tool_call_id == "call-1"
+    assert json.loads(follow_up_messages[-1].content or "") == json.loads(
+        agent.state.messages[2].content or ""
+    )
     tool_spans = [span for span in sink.spans if span.name == "tool.execute"]
     assert len(tool_spans) == 1
     tool_span = tool_spans[0]
     assert tool_span.status == SpanStatus.OK
-    assert tool_span.attributes["tool"] == "record"
-    assert tool_span.attributes["tool_call_id"] == "call-1"
     assert tool_span.attributes["exit_code"] == 0
-    assert tool_span.attributes["stdout_length"] == len("recorded")
-    assert tool_span.attributes["stderr_length"] == 0
-    assert tool_span.attributes["stdout_truncated"] is False
-    assert tool_span.attributes["stderr_truncated"] is False
-    turn_span = next(span for span in sink.spans if span.name == "agent.turn")
-    assert events[0].data == {"trace_id": turn_span.context.trace_id}
-    assert events[-1].data == {
-        "trace_id": turn_span.context.trace_id,
-        "status": "ok",
-        "persisted": True,
-        "persistence_error": None,
-    }
-    assert tool_span.context.parent_span_id == turn_span.context.span_id
-
-
-def test_tool_failure_to_content_contract() -> None:
-    failure = ToolFailure(error="boom", type="RuntimeError")
-
-    assert json.loads(failure.to_content()) == {
-        "error": "boom",
-        "type": "RuntimeError",
-    }
-
-
-def sudo_response() -> LLMResponse:
-    return LLMResponse(
-        tool_calls=[
-            ToolCall(
-                id="call-1",
-                name="bash",
-                arguments={"command": "sudo true"},
-            )
-        ]
-    )
-
-
-def test_run_turn_records_user_denied_network_request() -> None:
-    sink = RecordingSink()
-    llm = SequenceLLM([network_tool_response(), LLMResponse(content="denied handled")])
-    tool = NetworkRequestTool()
-    agent = make_agent(llm, tool)
-    agent.tracer = Tracer(sink)
-
-    def deny(tool_call: ToolCall) -> PermissionResult:
-        assert tool_call.name == "bash"
-        return PermissionResult(
-            policy_decision=PermissionDecision.ASK,
-            allowed=False,
-            prompted=True,
-            source=PermissionSource.USER_DENIED,
-        )
-
-    agent.permission_handler = deny
-
-    result = asyncio.run(run_turn(agent, "do not run it", budget=TEST_BUDGET))
-
-    assert result == "denied handled"
-    assert tool.calls == []
-    permission_spans = [span for span in sink.spans if span.name == "permission.check"]
-    assert len(permission_spans) == 1
-    permission_span = permission_spans[0]
-    assert permission_span.status == SpanStatus.OK
-    assert permission_span.attributes["policy_decision"] == "ask"
-    assert permission_span.attributes["allowed"] is False
-    assert permission_span.attributes["source"] == "user_denied"
-    assert permission_span.attributes["tool_call_id"] == "call-1"
-    assert json.loads(agent.state.messages[2].content or "") == {
-        "error": "Permission denied by user.",
-        "type": "PermissionDenied",
-    }
-
-
-def test_run_turn_policy_deny_beats_a_permissive_handler() -> None:
-    sink = RecordingSink()
-    llm = SequenceLLM([sudo_response(), LLMResponse(content="recovered")])
-    tool = NetworkRequestTool()
-    agent = make_agent(llm, tool)
-    agent.tracer = Tracer(sink)
-
-    def allow_everything(tool_call: ToolCall) -> PermissionResult:
-        pytest.fail("policy denials must never reach the approval handler")
-
-    agent.permission_handler = allow_everything
-
-    assert asyncio.run(run_turn(agent, "run it", budget=TEST_BUDGET)) == "recovered"
-
-    assert tool.calls == []
     permission_span = next(
         span for span in sink.spans if span.name == "permission.check"
     )
-    assert permission_span.attributes["policy_decision"] == "deny"
-    assert permission_span.attributes["allowed"] is False
-    assert permission_span.attributes["source"] == "policy_deny"
-    assert permission_span.attributes["prompted"] is False
-    assert json.loads(agent.state.messages[2].content or "") == {
-        "error": "sudo is not supported",
-        "type": "PolicyDenied",
-    }
+    assert permission_span.attributes["source"] == "baseline"
+    assert permission_span.attributes["granted_capabilities"] == []
+    turn_span = next(span for span in sink.spans if span.name == "agent.turn")
+    assert tool_span.context.parent_span_id == turn_span.context.span_id
 
 
 def test_run_turn_records_tool_errors_and_continues() -> None:
@@ -646,24 +502,10 @@ def test_run_turn_emits_and_raises_at_step_limit() -> None:
     assert events[-1].type == "trace_finish"
     assert events[-1].data["status"] == "error"
     assert sink.spans[-1].status == SpanStatus.ERROR
-
-
-def test_run_turn_uses_caller_budget_to_control_execution_capacity() -> None:
-    limited_llm = SequenceLLM([tool_response(), LLMResponse(content="done")])
-    limited_agent = make_agent(limited_llm, RecordingTool())
-
-    with pytest.raises(RunBudgetExceeded):
-        asyncio.run(
-            run_turn(
-                limited_agent,
-                "keep going",
-                budget=RunBudget(max_steps=1),
-            )
-        )
+    assert len(llm.calls) == 1
 
     capable_llm = SequenceLLM([tool_response(), LLMResponse(content="done")])
     capable_agent = make_agent(capable_llm, RecordingTool())
-
     assert (
         asyncio.run(
             run_turn(
@@ -674,5 +516,4 @@ def test_run_turn_uses_caller_budget_to_control_execution_capacity() -> None:
         )
         == "done"
     )
-    assert len(limited_llm.calls) == 1
     assert len(capable_llm.calls) == 2

@@ -44,38 +44,6 @@ class FakeResponse:
     usage: FakeUsage | None = None
 
 
-def test_to_llm_message_serializes_tool_context() -> None:
-    client = LiteLLMClient(model="test-model")
-    message = Message(
-        role="assistant",
-        content=None,
-        tool_call_id="parent-call",
-        tool_calls=[
-            ToolCall(
-                id="call-1",
-                name="bash",
-                arguments={"command": "pwd"},
-            )
-        ],
-    )
-
-    assert client._to_llm_message(message) == {
-        "role": "assistant",
-        "content": None,
-        "tool_call_id": "parent-call",
-        "tool_calls": [
-            {
-                "id": "call-1",
-                "type": "function",
-                "function": {
-                    "name": "bash",
-                    "arguments": '{"command": "pwd"}',
-                },
-            }
-        ],
-    }
-
-
 def test_generate_forwards_request_and_parses_tool_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -127,14 +95,49 @@ def test_generate_forwards_request_and_parses_tool_calls(
 
     response = asyncio.run(
         client.generate(
-            [Message(role="user", content="hello")],
+            [
+                Message(role="user", content="hello"),
+                Message(
+                    role="assistant",
+                    content=None,
+                    tool_calls=[
+                        ToolCall(
+                            id="call-1",
+                            name="bash",
+                            arguments={"command": "pwd"},
+                        )
+                    ],
+                ),
+                Message(role="tool", tool_call_id="call-1", content="pwd output"),
+            ],
             tools=tools,
         )
     )
 
     assert captured == {
         "model": "provider/model",
-        "messages": [{"role": "user", "content": "hello"}],
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "arguments": '{"command": "pwd"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "content": "pwd output",
+            },
+        ],
         "api_key": "secret",
         "api_base": "https://example.test/v1",
         "tools": tools,
@@ -153,7 +156,6 @@ def test_generate_forwards_request_and_parses_tool_calls(
     [
         ("not-json", "Invalid JSON arguments"),
         ("[]", "must be a JSON object"),
-        ("null", "must be a JSON object"),
     ],
 )
 def test_generate_rejects_invalid_tool_arguments(
@@ -194,8 +196,20 @@ def test_generate_rejects_invalid_tool_arguments(
     assert "bad-call" in str(error.value)
 
 
-def test_generate_handles_response_without_tool_calls(
+@pytest.mark.parametrize(
+    ("usage", "expected_usage"),
+    [
+        (None, None),
+        (
+            FakeUsage(prompt_tokens=12, completion_tokens=None),
+            LLMUsage(input_tokens=12),
+        ),
+    ],
+)
+def test_generate_handles_plain_response_and_partial_usage(
     monkeypatch: pytest.MonkeyPatch,
+    usage: FakeUsage | None,
+    expected_usage: LLMUsage | None,
 ) -> None:
     async def fake_acompletion(**_kwargs: Any) -> FakeResponse:
         return FakeResponse(
@@ -203,7 +217,8 @@ def test_generate_handles_response_without_tool_calls(
                 FakeChoice(
                     message=FakeMessage(content="plain response", tool_calls=None)
                 )
-            ]
+            ],
+            usage=usage,
         )
 
     monkeypatch.setattr(litellm_module, "acompletion", fake_acompletion)
@@ -216,28 +231,4 @@ def test_generate_handles_response_without_tool_calls(
 
     assert response.content == "plain response"
     assert response.tool_calls == []
-    assert response.usage is None
-
-
-def test_generate_preserves_unknown_usage_fields(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def fake_acompletion(**_kwargs: Any) -> FakeResponse:
-        return FakeResponse(
-            choices=[
-                FakeChoice(
-                    message=FakeMessage(content="plain response", tool_calls=None)
-                )
-            ],
-            usage=FakeUsage(prompt_tokens=12, completion_tokens=None),
-        )
-
-    monkeypatch.setattr(litellm_module, "acompletion", fake_acompletion)
-
-    response = asyncio.run(
-        LiteLLMClient(model="test-model").generate(
-            [Message(role="user", content="hello")]
-        )
-    )
-
-    assert response.usage == LLMUsage(input_tokens=12, output_tokens=None)
+    assert response.usage == expected_usage

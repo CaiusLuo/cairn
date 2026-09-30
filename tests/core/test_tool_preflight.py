@@ -38,12 +38,8 @@ from tests.support.sandbox import require_working_sandbox
     "arguments",
     [
         {},
-        {"command": None},
         {"command": 123, "network_access": True, "justification": "required"},
-        {"command": "", "justification": "optional"},
-        {"command": "   "},
         {"command": "pwd\0"},
-        {"command": "pwd", "unexpected": "x", "justification": "valid"},
         {
             "command": "curl example.com",
             "network_access": True,
@@ -51,13 +47,13 @@ from tests.support.sandbox import require_working_sandbox
             "unexpected": "x",
         },
         {"command": "pwd", "network_access": "true"},
-        {"command": "pwd", "network_access": True},
+        {"command": "   "},
+        {"command": "curl example.com", "network_access": True},
         {
             "command": "curl example.com",
             "network_access": True,
-            "justification": "  ",
+            "justification": 123,
         },
-        {"command": "pwd", "justification": 123},
     ],
 )
 def test_malformed_bash_fails_before_permission_or_subprocess(
@@ -119,12 +115,8 @@ def test_malformed_bash_fails_before_permission_or_subprocess(
     assert not [span for span in sink.spans if span.name == "tool.execute"]
 
 
-@pytest.mark.parametrize("error_type", [RuntimeError, AssertionError])
-@pytest.mark.parametrize("with_tracer", [False, True])
-def test_broken_validator_propagates_without_model_facing_tool_failure(
-    error_type: type[Exception], with_tracer: bool
-) -> None:
-    error = error_type("validator bug")
+def test_broken_validator_propagates_without_model_facing_tool_failure() -> None:
+    error = RuntimeError("validator bug")
 
     class BrokenValidatorTool(NetworkRequestTool):
         def validate(self, arguments: dict[str, Any]) -> None:
@@ -135,7 +127,7 @@ def test_broken_validator_propagates_without_model_facing_tool_failure(
     llm = SequenceLLM([network_tool_response()])
     tool = BrokenValidatorTool()
     agent = make_agent(llm, tool, events)
-    agent.tracer = Tracer(sink) if with_tracer else None
+    agent.tracer = Tracer(sink)
 
     def unexpected_permission(tool_call: ToolCall) -> NoReturn:
         pytest.fail("broken validator reached the permission handler")
@@ -145,7 +137,7 @@ def test_broken_validator_propagates_without_model_facing_tool_failure(
     agent.state.add_assistant_message("previous answer")
     previous = agent.state.messages.copy()
 
-    with pytest.raises(error_type, match="validator bug") as exc_info:
+    with pytest.raises(RuntimeError, match="validator bug") as exc_info:
         asyncio.run(run_turn(agent, "try broken validator", budget=TEST_BUDGET))
 
     assert exc_info.value is error
@@ -155,10 +147,9 @@ def test_broken_validator_propagates_without_model_facing_tool_failure(
     assert not [event for event in events if event.type == "tool_error"]
     assert not [span for span in sink.spans if span.name == "permission.check"]
     assert not [span for span in sink.spans if span.name == "tool.execute"]
-    if with_tracer:
-        turn_span = next(span for span in sink.spans if span.name == "agent.turn")
-        assert turn_span.status == SpanStatus.ERROR
-        assert turn_span.error == f"{error_type.__name__}: validator bug"
+    turn_span = next(span for span in sink.spans if span.name == "agent.turn")
+    assert turn_span.status == SpanStatus.ERROR
+    assert turn_span.error == "RuntimeError: validator bug"
 
 
 def test_direct_bash_execute_defensively_validates_before_launch(

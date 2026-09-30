@@ -20,24 +20,16 @@ def test_workspace_normalizes_root(
     assert workspace.resolve_path("new.txt") == root / "new.txt"
 
 
-def test_workspace_rejects_missing_directory_without_creating_it(
-    tmp_path: Path,
-) -> None:
+def test_workspace_rejects_invalid_roots_without_mutation(tmp_path: Path) -> None:
     missing = tmp_path / "missing" / "nested"
-
     with pytest.raises(ValueError, match="Workspace does not exist"):
         Workspace(missing)
-
     assert not missing.parent.exists()
 
-
-def test_workspace_rejects_file_root(tmp_path: Path) -> None:
     path = tmp_path / "file.txt"
     path.write_text("unchanged", encoding="utf-8")
-
     with pytest.raises(ValueError, match="Workspace does not exist"):
         Workspace(path)
-
     assert path.read_text(encoding="utf-8") == "unchanged"
 
 

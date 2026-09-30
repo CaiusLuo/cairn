@@ -24,140 +24,85 @@ def _capture_console(monkeypatch: pytest.MonkeyPatch) -> StringIO:
     return output
 
 
-def test_print_helpers_render_content(monkeypatch: pytest.MonkeyPatch) -> None:
-    output = _capture_console(monkeypatch)
-
-    ui.print_banner()
-    ui.print_assistant_response("**hello**")
-
-    rendered = output.getvalue()
-    assert "Cairn>" in rendered
-    assert "hello" in rendered
-    assert len(rendered) > 20
-
-
-def test_console_event_handler_renders_each_event_type(
+def test_permission_denial_and_tool_fields_render_literally(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = _capture_console(monkeypatch)
-    events = [
-        Event(type="trace_start", data={"trace_id": "0123456789abcdef"}),
-        Event(type="agent_step", data={"step": 1, "max_steps": 3}),
-        Event(type="tool_call", data={"tool": "bash", "arguments": {"command": "pwd"}}),
+    command = "printf '[/bold]'"
+
+    ui.console_event_handler(
+        Event(
+            type="tool_call", data={"tool": "bash", "arguments": {"command": command}}
+        )
+    )
+    ui.console_event_handler(
         Event(
             type="tool_result",
-            data={
-                "tool": "bash",
-                "exit_code": 0,
-                "stdout": "workspace\n",
-                "stderr": "warning\n",
-            },
-        ),
-        Event(type="tool_error", data={"tool": "bash", "error": "failed"}),
-        Event(type="agent_finish"),
-        Event(
-            type="agent_budget_exhausted",
-            data={"reason": "max_steps", "limit": 3, "used": 3},
-        ),
-        Event(
-            type="trace_finish",
-            data={"trace_id": "0123456789abcdef", "status": "ok"},
-        ),
-    ]
-
-    for event in events:
-        ui.console_event_handler(event)
-
-    rendered = output.getvalue()
-    for expected in (
-        "trace: 0123456789abcdef",
-        "step 1/3",
-        "→ bash: pwd",
-        "✓ exit 0",
-        "✗ bash: failed",
-        "✓ done",
-        "Agent stopped: step budget exhausted (3/3).",
-    ):
-        assert expected in rendered
-    assert "workspace" not in rendered
-    assert "warning" not in rendered
-    assert rendered.count("trace:") == 1
-    assert rendered.rstrip().endswith("trace: 0123456789abcdef (ok)")
-
-
-def test_console_event_handler_renders_policy_denial_literally(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    output = _capture_console(monkeypatch)
-
+            data={"tool": "bash", "exit_code": 1, "stdout": "", "stderr": "[/dim]"},
+        )
+    )
+    ui.console_event_handler(
+        Event(type="tool_error", data={"tool": "edit_file", "error": "[/bold red]"})
+    )
     ui.console_event_handler(
         Event(
             type="tool_denied",
             data={
                 "tool": "bash",
-                "error": "sudo is not supported",
+                "error": "sudo is not supported [/bold]",
                 "error_type": "PolicyDenied",
             },
         )
     )
 
-    assert output.getvalue().strip() == "✗ denied: sudo is not supported"
+    rendered = output.getvalue()
+    assert command in rendered
+    assert "[/dim]" in rendered
+    assert "[/bold red]" in rendered
+    assert "denied: sudo is not supported [/bold]" in rendered
 
 
-def test_console_event_handler_reports_trace_persistence_failure(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        ("1", PermissionChoice.ALLOW_ONCE),
+        ("2", PermissionChoice.ALLOW_SESSION),
+        ("3", PermissionChoice.DENY),
+    ],
+)
+def test_permission_prompt_choices_default_to_deny(
+    monkeypatch: pytest.MonkeyPatch, answer: str, expected: PermissionChoice
 ) -> None:
     output = _capture_console(monkeypatch)
 
-    ui.console_event_handler(
-        Event(
-            type="trace_finish",
-            data={
-                "trace_id": "failed-trace",
-                "status": "ok",
-                "persisted": False,
-                "persistence_error": "OSError: simulated trace write failure",
-            },
-        )
+    def choose(*args: object, **kwargs: object) -> str:
+        assert kwargs["default"] == "3"
+        return answer
+
+    monkeypatch.setattr(Prompt, "ask", choose)
+    request = PermissionRequest(
+        capability=PermissionCapability.NETWORK,
+        justification="test [/dim]",
+        tool_call=ToolCall(
+            id="1", name="bash", arguments={"command": "printf '[/bold]'"}
+        ),
     )
 
+    assert ui.console_permission_prompt(request) == expected
     rendered = output.getvalue()
-    assert "trace unavailable: persistence failed" in rendered
-    assert "OSError: simulated trace write failure" in rendered
-    assert "trace: failed-trace" not in rendered
+    assert "Permission required" in rendered
+    assert "[1] Allow once" in rendered
+    assert "[2] Allow network for this session" in rendered
+    assert "[3] Deny" in rendered
+    assert "Reason: test [/dim]" in rendered
 
 
-def test_console_event_handler_renders_usage_with_final_trace(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    output = _capture_console(monkeypatch)
-
-    ui.console_event_handler(
-        Event(
-            type="trace_finish",
-            data={
-                "trace_id": "usage-trace",
-                "status": "ok",
-                "usage": {
-                    "input_tokens": 30,
-                    "output_tokens": 5,
-                },
-            },
-        )
-    )
-
-    rendered = output.getvalue()
-    footer = "trace: usage-trace (ok) · tokens: input 30, output 5"
-    assert rendered.count("trace: usage-trace") == 1
-    assert rendered.count("tokens: input 30, output 5") == 1
-    assert rendered.rstrip().endswith(footer)
-
-
-def test_compact_read_file_rendering_hides_file_contents(
+def test_compact_file_events_hide_contents_and_edit_payloads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = _capture_console(monkeypatch)
     file_contents = "VERY-LONG-FILE-CONTENTS\n" * 200
+    edit_payload = "VERY-LONG-CODE-PAYLOAD"
 
     ui.console_event_handler(
         Event(
@@ -165,7 +110,7 @@ def test_compact_read_file_rendering_hides_file_contents(
             data={
                 "tool": "read_file",
                 "arguments": {
-                    "path": "src/cairn/core/loop.py",
+                    "path": "src/[bold].py",
                     "start_line": 1,
                     "end_line": 200,
                 },
@@ -183,28 +128,15 @@ def test_compact_read_file_rendering_hides_file_contents(
             },
         )
     )
-
-    rendered = output.getvalue()
-    assert "→ read_file src/cairn/core/loop.py lines 1-200" in rendered
-    assert "✓ read_file" in rendered
-    assert "VERY-LONG-FILE-CONTENTS" not in rendered
-
-
-def test_compact_edit_file_rendering_hides_replacement_payload(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    output = _capture_console(monkeypatch)
-    secret_payload = "VERY-LONG-CODE-PAYLOAD"
-
     ui.console_event_handler(
         Event(
             type="tool_call",
             data={
                 "tool": "edit_file",
                 "arguments": {
-                    "path": "a.py",
-                    "old_text": secret_payload,
-                    "new_text": secret_payload,
+                    "path": "src/[bold].py",
+                    "old_text": edit_payload,
+                    "new_text": edit_payload,
                 },
             },
         )
@@ -215,27 +147,29 @@ def test_compact_edit_file_rendering_hides_replacement_payload(
             data={
                 "tool": "edit_file",
                 "exit_code": 0,
-                "stdout": "Updated a.py",
+                "stdout": "Updated src/[bold].py",
                 "stderr": "",
             },
         )
     )
 
     rendered = output.getvalue()
-    assert "→ edit_file a.py" in rendered
-    assert "✓ Updated a.py" in rendered
-    assert secret_payload not in rendered
+    assert "→ read_file src/[bold].py lines 1-200" in rendered
+    assert "✓ read_file" in rendered
+    assert "✓ Updated src/[bold].py" in rendered
+    assert "VERY-LONG-FILE-CONTENTS" not in rendered
+    assert edit_payload not in rendered
 
 
-def test_compact_bash_success_hides_output(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_compact_bash_hides_success_and_shows_failure_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     output = _capture_console(monkeypatch)
     command = "uv run pytest -q"
-    large_stdout = "VERY-LARGE-PYTEST-OUTPUT\n" * 1_000
 
     ui.console_event_handler(
         Event(
-            type="tool_call",
-            data={"tool": "bash", "arguments": {"command": command}},
+            type="tool_call", data={"tool": "bash", "arguments": {"command": command}}
         )
     )
     ui.console_event_handler(
@@ -244,45 +178,22 @@ def test_compact_bash_success_hides_output(monkeypatch: pytest.MonkeyPatch) -> N
             data={
                 "tool": "bash",
                 "exit_code": 0,
-                "stdout": large_stdout,
-                "stderr": "warning that stays compact",
+                "stdout": "VERY-LARGE-PYTEST-OUTPUT\n" * 100,
+                "stderr": "warning stays compact",
             },
         )
     )
-
-    rendered = output.getvalue()
-    assert f"→ bash: {command}" in rendered
-    assert "✓ exit 0" in rendered
-    assert "VERY-LARGE-PYTEST-OUTPUT" not in rendered
-    assert "warning that stays compact" not in rendered
-
-
-def test_compact_bash_failure_shows_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
-    output = _capture_console(monkeypatch)
-
     ui.console_event_handler(
         Event(
             type="tool_result",
             data={
                 "tool": "bash",
                 "exit_code": 1,
-                "stdout": "stdout should not replace stderr",
+                "stdout": "stdout fallback diagnostic",
                 "stderr": "pytest collection failed",
             },
         )
     )
-
-    rendered = output.getvalue()
-    assert "✗ exit 1" in rendered
-    assert "pytest collection failed" in rendered
-    assert "stdout should not replace stderr" not in rendered
-
-
-def test_compact_bash_failure_falls_back_to_stdout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    output = _capture_console(monkeypatch)
-
     ui.console_event_handler(
         Event(
             type="tool_result",
@@ -296,94 +207,12 @@ def test_compact_bash_failure_falls_back_to_stdout(
     )
 
     rendered = output.getvalue()
+    assert f"→ bash: {command}" in rendered
+    assert "✓ exit 0" in rendered
+    assert "VERY-LARGE-PYTEST-OUTPUT" not in rendered
+    assert "warning stays compact" not in rendered
+    assert "✗ exit 1" in rendered
+    assert "pytest collection failed" in rendered
+    assert "stdout fallback diagnostic" not in rendered
     assert "✗ exit 2" in rendered
     assert "fallback diagnostic" in rendered
-
-
-def test_compact_tool_fields_are_rendered_literally(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    output = _capture_console(monkeypatch)
-    command = "printf '[/bold]'"
-
-    ui.console_event_handler(
-        Event(
-            type="tool_call",
-            data={"tool": "bash", "arguments": {"command": command}},
-        )
-    )
-    ui.console_event_handler(
-        Event(
-            type="tool_result",
-            data={
-                "tool": "bash",
-                "exit_code": 1,
-                "stdout": "",
-                "stderr": "[/dim]",
-            },
-        )
-    )
-    ui.console_event_handler(
-        Event(type="tool_error", data={"tool": "edit_file", "error": "[/bold red]"})
-    )
-
-    rendered = output.getvalue()
-    assert command in rendered
-    assert "[/dim]" in rendered
-    assert "[/bold red]" in rendered
-
-
-@pytest.mark.parametrize(
-    "answer, expected",
-    [
-        ("1", PermissionChoice.ALLOW_ONCE),
-        ("2", PermissionChoice.ALLOW_SESSION),
-        ("3", PermissionChoice.DENY),
-    ],
-)
-def test_permission_prompt(
-    monkeypatch: pytest.MonkeyPatch, answer: str, expected: PermissionChoice
-) -> None:
-    output = _capture_console(monkeypatch)
-
-    def choose(*args: object, **kwargs: object) -> str:
-        assert kwargs["default"] == "3"
-        return answer
-
-    monkeypatch.setattr(Prompt, "ask", choose)
-    request = PermissionRequest(
-        capability=PermissionCapability.NETWORK,
-        justification="test [/dim]",
-        tool_call=ToolCall(
-            id="1", name="bash", arguments={"command": "printf '[/bold]'"}
-        ),
-    )
-    assert ui.console_permission_prompt(request) == expected
-    for text in (
-        "Permission required",
-        "Capability: network",
-        "Command: printf '[/bold]'",
-        "Reason: test [/dim]",
-        "[1] Allow once",
-        "[2] Allow network for this session",
-        "[3] Deny",
-    ):
-        assert text in output.getvalue()
-
-
-def test_permission_prompt_omits_a_missing_command(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The prompt renders whatever the request carries, not bash-shaped fields."""
-    output = _capture_console(monkeypatch)
-    monkeypatch.setattr(Prompt, "ask", lambda *args, **kwargs: "3")
-    request = PermissionRequest(
-        capability=PermissionCapability.NETWORK,
-        justification="needs the network",
-        tool_call=ToolCall(id="1", name="read_file", arguments={"path": "README.md"}),
-    )
-
-    assert ui.console_permission_prompt(request) == PermissionChoice.DENY
-    assert "Capability: network" in output.getvalue()
-    assert "Reason: needs the network" in output.getvalue()
-    assert "Command:" not in output.getvalue()

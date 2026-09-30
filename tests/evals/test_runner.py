@@ -7,8 +7,6 @@ from typing import Any
 
 import pytest
 
-from cairn.assembly import build_agent as assemble_agent
-from cairn.core.agent import Agent
 from cairn.core.budget import RunBudget
 from cairn.core.models import LLMResponse, ToolCall
 from cairn.evals import (
@@ -24,7 +22,6 @@ from cairn.llm.base import LLMClient
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.tracer import Tracer
 from cairn.tools.bash import BashTool
-from cairn.tools.files import EditFileTool
 from cairn.workspace.workspace import Workspace
 from tests.support.runtime import RecordingSink, SequenceLLM
 
@@ -107,7 +104,7 @@ def test_model_claim_does_not_pass_when_workspace_is_unchanged() -> None:
 def test_real_edit_file_call_passes_content_check() -> None:
     llm = SequenceLLM(
         [
-            _edit_response("hello.txt", "hello\n", "hello cairn\n"),
+            _edit_response("docs/例/答え.txt", "こんにちは\n", "こんにちは 🌱\n"),
             LLMResponse(content="Done."),
         ]
     )
@@ -115,10 +112,10 @@ def test_real_edit_file_call_passes_content_check() -> None:
         _runner(lambda: llm).run(
             EvalCase(
                 name="edit",
-                prompt="Change hello to hello cairn.",
-                files={"hello.txt": "hello\n"},
+                prompt="Update the nested answer file.",
+                files={"docs/例/答え.txt": "こんにちは\n"},
             ),
-            checks=[FileContentEqualsCheck("hello.txt", "hello cairn\n")],
+            checks=[FileContentEqualsCheck("docs/例/答え.txt", "こんにちは 🌱\n")],
         )
     )
 
@@ -126,9 +123,7 @@ def test_real_edit_file_call_passes_content_check() -> None:
     assert result.checks[0].passed is True
 
 
-def test_runs_isolate_fixtures_llm_agent_state_and_workspace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_runs_isolate_fixtures_history_and_workspace(tmp_path: Path) -> None:
     parent = tmp_path / "cases"
     parent.mkdir()
     sentinel = parent / "caller-owned.txt"
@@ -140,19 +135,16 @@ def test_runs_isolate_fixtures_llm_agent_state_and_workspace(
             LLMResponse(content="case one done"),
         ]
     )
-    second_llm = SequenceLLM([LLMResponse(content="case two done")])
+    second_llm = SequenceLLM(
+        [
+            _edit_response("same.txt", "x", "changed by case two"),
+            LLMResponse(content="case two done"),
+        ]
+    )
     instances = iter([first_llm, second_llm])
     workspaces: list[Workspace] = []
-    agents: list[Agent] = []
-
-    def record_agent(*args: Any, **kwargs: Any) -> Any:
-        agent = assemble_agent(*args, **kwargs)
-        agents.append(agent)
-        return agent
-
-    monkeypatch.setattr(runner_module, "build_agent", record_agent)
     runner = _runner(lambda: next(instances), temp_root=parent)
-    first_prompt = "case one: mutate fixture and leave a private first-run marker"
+    first_prompt = "case one: change the fixture"
     second_prompt = "case two: inspect only the original fixture"
 
     async def check_first(workspace: Workspace) -> CheckResult:
@@ -163,19 +155,17 @@ def test_runs_isolate_fixtures_llm_agent_state_and_workspace(
         )
         return CheckResult(
             name="record_workspace",
-            passed=(
-                changed == "changed by case one"
-                and first_only == "private first history"
-            ),
+            passed=changed == "changed by case one"
+            and first_only == "private first history",
         )
 
     async def check_second(workspace: Workspace) -> CheckResult:
         workspaces.append(workspace)
-        original = workspace.resolve_path("same.txt").read_text(encoding="utf-8")
+        changed = workspace.resolve_path("same.txt").read_text(encoding="utf-8")
         first_only = workspace.resolve_path("first-only.txt")
         return CheckResult(
             name="record_workspace",
-            passed=original == "x" and not first_only.exists(),
+            passed=changed == "changed by case two" and not first_only.exists(),
         )
 
     first = asyncio.run(
@@ -203,61 +193,21 @@ def test_runs_isolate_fixtures_llm_agent_state_and_workspace(
     assert second.status is EvalStatus.PASS
     assert first_llm is not second_llm
     assert len(first_llm.calls) == 3
-    assert len(second_llm.calls) == 1
-    assert first_llm.calls[0][0][-1].content == first_prompt
+    assert len(second_llm.calls) == 2
     second_messages = second_llm.calls[0][0]
     assert second_messages[-1].content == second_prompt
     assert all(message.role != "tool" for message in second_messages)
     assert all(message.role != "assistant" for message in second_messages)
-    second_history = "\n".join(message.content or "" for message in second_messages)
-    assert first_prompt not in second_history
-    assert "case one done" not in second_history
-    assert "private first history" not in second_history
+    assert [
+        message.content for message in second_messages if message.role == "user"
+    ] == [second_prompt]
     assert len(workspaces) == 2
     assert workspaces[0] is not workspaces[1]
     assert workspaces[0].root != workspaces[1].root
-    assert len(agents) == 2
-    assert agents[0] is not agents[1]
-    assert agents[0].state is not agents[1].state
-    first_editor = agents[0].tools.get_tool("edit_file")
-    second_editor = agents[1].tools.get_tool("edit_file")
-    assert isinstance(first_editor, EditFileTool)
-    assert isinstance(second_editor, EditFileTool)
-    assert first_editor.workspace is workspaces[0]
-    assert second_editor.workspace is workspaces[1]
     assert all(not workspace.root.exists() for workspace in workspaces)
     assert parent.is_dir()
     assert sentinel.read_text(encoding="utf-8") == "keep"
     assert list(parent.iterdir()) == [sentinel]
-
-
-def test_nested_utf8_fixture_is_written_and_checked(tmp_path: Path) -> None:
-    llm = SequenceLLM([LLMResponse(content="No changes needed.")])
-    seen: list[Path] = []
-
-    async def check(workspace: Workspace) -> CheckResult:
-        path = workspace.resolve_path("docs/例/答え.txt")
-        seen.append(path)
-        return CheckResult(
-            name="utf8_fixture",
-            passed=path.read_text(encoding="utf-8") == "こんにちは 🌱",
-        )
-
-    result = asyncio.run(
-        _runner(lambda: llm, temp_root=tmp_path).run(
-            EvalCase(
-                name="nested-utf8",
-                prompt="Inspect the fixture.",
-                files={"docs/例/答え.txt": "こんにちは 🌱"},
-            ),
-            checks=[NamedCheck("utf8_fixture", check)],
-        )
-    )
-
-    assert result.status is EvalStatus.PASS
-    assert seen[0].parent.name == "例"
-    assert not seen[0].exists()
-    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize("unsafe_kind", ["parent", "absolute", "git"])

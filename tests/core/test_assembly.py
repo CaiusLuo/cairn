@@ -1,6 +1,5 @@
 import asyncio
 import builtins
-import json
 import subprocess
 from pathlib import Path
 
@@ -83,32 +82,9 @@ def test_build_agent_runs_headless_tool_turn(
     assert agent.event_handler is None
     assert agent.tracer is None
     assert len(llm.calls) == 2
-    workspace_prompt = RepositoryContext(
-        workspace_root=workspace.root,
-        repository_root=None,
-        branch=None,
-        dirty=None,
-    ).to_prompt()
-    assert [
-        [
-            message.content
-            for message in messages
-            if message.role == "system"
-            and message.content is not None
-            and message.content.startswith("Runtime workspace context:")
-        ]
-        for messages, _tools in llm.calls
-    ] == [[workspace_prompt], [workspace_prompt]]
     tool_message = llm.calls[1][0][-1]
     assert tool_message.role == "tool"
     assert tool_message.tool_call_id == tool_call.id
-    assert json.loads(tool_message.content or "") == {
-        "stdout": "Created answer.txt",
-        "stderr": "",
-        "exit_code": 0,
-        "stdout_truncated": False,
-        "stderr_truncated": False,
-    }
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == ""

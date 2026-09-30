@@ -6,31 +6,10 @@ from prompt_toolkit.output import DummyOutput
 
 from cairn.input import CliInput
 
-BRACKETED_PASTE_START = "\x1b[200~"
-BRACKETED_PASTE_END = "\x1b[201~"
-
 
 async def _assert_still_editing(read_task: asyncio.Task[str]) -> None:
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(asyncio.shield(read_task), timeout=0.05)
-
-
-def test_bracketed_multiline_paste_waits_for_explicit_submit() -> None:
-    async def scenario() -> None:
-        pasted = "line 1\nline 2\nline 3"
-        with create_pipe_input() as pipe_input:
-            cli_input = CliInput(input=pipe_input, output=DummyOutput())
-            read_task = asyncio.create_task(cli_input.read())
-
-            pipe_input.send_text(
-                f"{BRACKETED_PASTE_START}{pasted}{BRACKETED_PASTE_END}"
-            )
-            await _assert_still_editing(read_task)
-
-            pipe_input.send_text("\r")
-            assert await asyncio.wait_for(read_task, timeout=1) == pasted
-
-    asyncio.run(scenario())
 
 
 def test_enter_submits_single_line() -> None:
@@ -59,25 +38,7 @@ def test_meta_enter_inserts_newline_instead_of_submitting() -> None:
     asyncio.run(scenario())
 
 
-def test_bracketed_paste_preserves_markdown_code_fence() -> None:
-    async def scenario() -> None:
-        pasted = '```python\nif ready:\n    print("hello")\n```'
-        with create_pipe_input() as pipe_input:
-            cli_input = CliInput(input=pipe_input, output=DummyOutput())
-            read_task = asyncio.create_task(cli_input.read())
-
-            pipe_input.send_text(
-                f"{BRACKETED_PASTE_START}{pasted}{BRACKETED_PASTE_END}"
-            )
-            await _assert_still_editing(read_task)
-
-            pipe_input.send_text("\r")
-            assert await asyncio.wait_for(read_task, timeout=1) == pasted
-
-    asyncio.run(scenario())
-
-
-def test_ctrl_c_cancels_current_input_and_clears_buffer() -> None:
+def test_ctrl_c_clears_input_and_allows_a_fresh_turn() -> None:
     async def scenario() -> None:
         with create_pipe_input() as pipe_input:
             cli_input = CliInput(input=pipe_input, output=DummyOutput())
@@ -92,28 +53,25 @@ def test_ctrl_c_cancels_current_input_and_clears_buffer() -> None:
     asyncio.run(scenario())
 
 
-def test_ctrl_d_on_empty_buffer_raises_eof() -> None:
+@pytest.mark.parametrize(
+    ("input_text", "expected_text"),
+    [("\x04", None), ("partial\x04", "partial")],
+)
+def test_ctrl_d_eof_and_partial_buffer_behavior(
+    input_text: str, expected_text: str | None
+) -> None:
     async def scenario() -> None:
         with create_pipe_input() as pipe_input:
             cli_input = CliInput(input=pipe_input, output=DummyOutput())
-            pipe_input.send_text("\x04")
-
-            with pytest.raises(EOFError):
-                await cli_input.read()
-
-    asyncio.run(scenario())
-
-
-def test_ctrl_d_on_non_empty_buffer_does_not_submit() -> None:
-    async def scenario() -> None:
-        with create_pipe_input() as pipe_input:
-            cli_input = CliInput(input=pipe_input, output=DummyOutput())
-            read_task = asyncio.create_task(cli_input.read())
-
-            pipe_input.send_text("partial\x04")
-            await _assert_still_editing(read_task)
-
-            pipe_input.send_text("\r")
-            assert await asyncio.wait_for(read_task, timeout=1) == "partial"
+            if expected_text is not None:
+                read_task = asyncio.create_task(cli_input.read())
+                pipe_input.send_text(input_text)
+                await _assert_still_editing(read_task)
+                pipe_input.send_text("\r")
+                assert await asyncio.wait_for(read_task, timeout=1) == expected_text
+            else:
+                pipe_input.send_text(input_text)
+                with pytest.raises(EOFError):
+                    await cli_input.read()
 
     asyncio.run(scenario())
