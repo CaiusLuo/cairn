@@ -16,6 +16,7 @@ class CheckResult(BaseModel):
     name: str
     passed: bool
     message: str | None = None
+    error: str | None = None
 
 
 class EvalResult(BaseModel):
@@ -29,6 +30,7 @@ class EvalResult(BaseModel):
 class EvalCase(BaseModel):
     name: str
     prompt: str
+    files: dict[str, str] = Field(default_factory=dict)
 
 
 class EvalCheck(Protocol):

@@ -45,7 +45,7 @@ src/
     ├── llm/           # LLM protocol and LiteLLM adapter
     ├── tools/         # Tool protocol, registry, Bash and file tools
     ├── workspace/     # Shared filesystem root and path protection
-    ├── evals/         # Eval models and check protocol; no runner yet
+    ├── evals/         # Eval models, checks, and runner
     ├── observability/ # Trace models, recording, and reading
     ├── commands/      # Interactive slash commands
     ├── resources/     # Terminal banner
@@ -66,8 +66,8 @@ Directory ownership stays with the caller:
 - CLI cwd is only the source used to construct Workspace.
 - Workspace wraps an existing directory and normalizes its root; it does not
   create or clean up directories.
-- A future EvalRunner will create and clean up its temporary directories;
-  Workspace will only wrap them.
+- EvalRunner creates and cleans up per-case temporary directories;
+  Workspace wraps them without managing their lifecycle.
 - A future worktree provider will create and clean up worktrees; Workspace
   will still only wrap their directories.
 
