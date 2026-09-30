@@ -12,11 +12,100 @@ from cairn.core.events import Event
 from cairn.core.models import Message, ToolCall, ToolFailure
 from cairn.core.permissions import (
     PermissionCapability,
+    PermissionDecision,
     PermissionResult,
-    SessionPermissionHandler,
+    PermissionSource,
+    evaluate_permission_policy,
 )
 from cairn.observability.models import Span, SpanStatus
-from cairn.tools.base import ToolExecutionContext
+from cairn.tools.base import ToolExecutionContext, ToolNotFound
+
+
+def _ask_for_approval(agent: Agent, tool_call: ToolCall) -> PermissionResult:
+    """Ask the approval handler for the requested capability.
+
+    Without a handler the call fails closed: there is nobody who could grant the
+    authority the command asked for.
+    """
+    if agent.permission_handler is None:
+        return PermissionResult(
+            policy_decision=PermissionDecision.ASK,
+            allowed=False,
+            source=PermissionSource.NO_HANDLER,
+        )
+
+    return agent.permission_handler(tool_call)
+
+
+def _permission_failure(permission: PermissionResult) -> ToolFailure:
+    """Translate a non-allowed permission result into a model-facing failure.
+
+    The failure type tells the model what actually happened: a policy guardrail,
+    a missing approval handler, or a user denial. They must never be collapsed
+    into "the user denied it".
+    """
+    if permission.source == PermissionSource.POLICY_DENY:
+        return ToolFailure(
+            error=permission.reason or "Denied by the action policy.",
+            type="PolicyDenied",
+        )
+
+    if permission.source == PermissionSource.NO_HANDLER:
+        return ToolFailure(
+            error=(
+                "Capability approval is required, but no permission handler "
+                "is configured."
+            ),
+            type="PermissionRequired",
+        )
+
+    return ToolFailure(error="Permission denied by user.", type="PermissionDenied")
+
+
+def _record_tool_not_found(
+    agent: Agent,
+    tool_call: ToolCall,
+    turn_span: Span | None,
+    error: ToolNotFound,
+) -> None:
+    """Record an unresolved tool exactly like a tool execution error.
+
+    Existence is not permission, so an unknown tool is a tool failure: the model
+    gets a ToolNotFound fact and the trace keeps a failed tool span.
+    """
+    failure = ToolFailure(error=str(error), type=type(error).__name__)
+
+    agent.state.add_tool_message(
+        tool_call_id=tool_call.id,
+        content=failure.to_content(),
+    )
+
+    if agent.tracer is not None and turn_span is not None:
+        tool_span = agent.tracer.start_child_span(
+            turn_span,
+            "tool.execute",
+            attributes={
+                "tool": tool_call.name,
+                "tool_call_id": tool_call.id,
+            },
+        )
+        tool_span.attributes["error_type"] = failure.type
+        agent.tracer.end_span(
+            tool_span,
+            status=SpanStatus.ERROR,
+            error=f"{failure.type}: {failure.error}",
+        )
+
+    agent.emit(
+        Event(
+            type="tool_error",
+            data={
+                "tool": tool_call.name,
+                "error": failure.error,
+                "error_type": failure.type,
+            },
+        )
+    )
 
 
 def _check_tool_permission(
@@ -38,24 +127,19 @@ def _check_tool_permission(
         )
 
     try:
-        baseline = SessionPermissionHandler(registered_tools=agent.tools.tools)(
-            tool_call
-        )
-        if baseline.source == "hard_deny":
-            permission = baseline
-        elif agent.permission_handler is None:
-            permission = baseline
-            if permission.allowed:
-                permission.source = "no_handler"
-        else:
-            permission = agent.permission_handler(tool_call)
+        # Pure policy first. Baseline ALLOW and hard DENY never reach a handler,
+        # so a permissive handler can never re-authorize a policy denial.
+        permission = evaluate_permission_policy(tool_call)
+        if permission.policy_decision is PermissionDecision.ASK:
+            permission = _ask_for_approval(agent, tool_call)
+
         if permission_span is not None and agent.tracer is not None:
             permission_span.attributes.update(
                 {
                     "policy_decision": permission.policy_decision.value,
                     "allowed": permission.allowed,
                     "prompted": permission.prompted,
-                    "source": permission.source,
+                    "source": permission.source.value,
                     "granted_capabilities": sorted(permission.granted_capabilities),
                 }
             )
@@ -233,13 +317,19 @@ async def run_turn(
                     )
                 )
 
+                # Existence is not permission: resolve the tool first so an
+                # unknown name is a tool failure, never an approval request.
+                try:
+                    agent.tools.get_tool(tool_call.name)
+                except ToolNotFound as exc:
+                    _record_tool_not_found(agent, tool_call, turn_span, exc)
+                    pending_tool_calls.pop(0)
+                    continue
+
                 permission = _check_tool_permission(agent, tool_call, turn_span)
 
                 if not permission.allowed:
-                    tool_content = ToolFailure(
-                        error="Permission denied by user.",
-                        type="PermissionDenied",
-                    ).to_content()
+                    tool_content = _permission_failure(permission).to_content()
 
                     agent.state.add_tool_message(
                         tool_call_id=tool_call.id,
@@ -266,10 +356,11 @@ async def run_turn(
                     result = await agent.tools.execute(
                         name=tool_call.name,
                         arguments=tool_call.arguments,
+                        # Authority comes only from the approved capability, never
+                        # from the model-provided arguments.
                         context=ToolExecutionContext(
                             network_access=(
                                 tool_call.name == "bash"
-                                and tool_call.arguments.get("network_access") is True
                                 and PermissionCapability.NETWORK
                                 in permission.granted_capabilities
                             )

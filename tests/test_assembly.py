@@ -77,7 +77,9 @@ def test_build_agent_runs_headless_tool_turn(
     assert (tmp_path / "answer.txt").is_file()
     assert (tmp_path / "answer.txt").read_text(encoding="utf-8") == "42\n"
     assert agent.permission_handler is allow_handler
-    assert permission_calls == [tool_call]
+    # edit_file inside the sandbox is a baseline operation: the approval handler
+    # is wired but never consulted.
+    assert permission_calls == []
     assert agent.event_handler is None
     assert agent.tracer is None
     assert len(llm.calls) == 2

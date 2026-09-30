@@ -1,7 +1,7 @@
 from typing import Any
 
 from cairn.core.models import ToolResult
-from cairn.tools.base import Tool, ToolExecutionContext
+from cairn.tools.base import Tool, ToolExecutionContext, ToolNotFound
 
 
 class ToolRegistry:
@@ -17,7 +17,7 @@ class ToolRegistry:
         tool = self.tools.get(name)
 
         if tool is None:
-            raise ValueError(f"Tool not found: {name}")
+            raise ToolNotFound(f"Tool not found: {name}")
 
         return tool
 

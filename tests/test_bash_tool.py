@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from cairn.tools.base import InvalidArguments
 from cairn.tools.bash import (
     PIPE_READ_CHUNK_SIZE,
     BashTool,
@@ -232,14 +233,12 @@ def test_bash_tool_schema_describes_required_command(tmp_path: Path) -> None:
 
     assert schema["function"]["name"] == "bash"
     assert schema["function"]["parameters"]["required"] == ["command"]
-    assert schema["function"]["parameters"]["properties"]["network_access"] == {
-        "type": "boolean",
-        "default": False,
-    }
-    assert (
-        schema["function"]["parameters"]["properties"]["justification"]["type"]
-        == "string"
-    )
+    network_access = schema["function"]["parameters"]["properties"]["network_access"]
+    assert network_access["type"] == "boolean"
+    assert network_access["default"] is False
+    justification = schema["function"]["parameters"]["properties"]["justification"]
+    assert justification["type"] == "string"
+    assert "network_access is true" in justification["description"]
     assert schema["function"]["parameters"]["additionalProperties"] is False
     assert "workspace root" in description
     assert "do not prepend `cd <workspace>`" in description
@@ -644,10 +643,26 @@ def test_bash_tool_rejects_invalid_arguments_before_spawning(
     )
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
 
-    with pytest.raises(ValueError, match="command"):
+    with pytest.raises(InvalidArguments, match="command"):
         asyncio.run(BashTool(workspace=Workspace(tmp_path)).execute(arguments))
 
     create_process.assert_not_called()
+
+
+def test_bash_tool_leaves_shell_syntax_to_the_shell(tmp_path: Path) -> None:
+    """Argument validity is the tool's contract; shell syntax is the shell's.
+
+    An unterminated quote must reach the shell and come back as a normal command
+    failure, not as a fabricated permission denial.
+    """
+    result = asyncio.run(
+        BashTool(workspace=Workspace(tmp_path)).execute(
+            {"command": "printf 'unterminated"}
+        )
+    )
+
+    assert result.exit_code != 0
+    assert result.stderr != ""
 
 
 @pytest.mark.parametrize(

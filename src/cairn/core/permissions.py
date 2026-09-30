@@ -1,7 +1,21 @@
-import shlex
-from collections.abc import Callable, Collection
+"""Permission policy, capability approval, and session grants.
+
+Three questions are deliberately kept apart:
+
+* does this tool exist?      -> ``tools/registry.py`` (``ToolNotFound``)
+* are its arguments valid?   -> the tool that declares the schema
+                                (``InvalidArguments``)
+* may it exceed the sandbox? -> this module
+
+The policy below therefore never asks whether a tool is registered and never
+inspects whether arguments are well formed. It decides intent guardrails only;
+the sandbox enforces authority, and approval can expand authority by one
+capability at a time.
+"""
+
+from collections.abc import Callable
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Protocol
 
 from pydantic import BaseModel
 
@@ -14,14 +28,30 @@ class PermissionCapability(StrEnum):
 
 class PermissionDecision(StrEnum):
     ALLOW = "allow"
-    DENY = "deny"
     ASK = "ask"
+    DENY = "deny"
 
 
 class PermissionChoice(StrEnum):
     ALLOW_ONCE = "allow_once"
     ALLOW_SESSION = "allow_session"
     DENY = "deny"
+
+
+class PermissionSource(StrEnum):
+    """Where a decision's authority came from.
+
+    This is observability metadata. Control flow branches on
+    :class:`PermissionDecision`, never on this value.
+    """
+
+    BASELINE = "baseline"
+    POLICY_DENY = "policy_deny"
+    USER_ONCE = "user_once"
+    USER_SESSION = "user_session"
+    SESSION_GRANT = "session_grant"
+    USER_DENIED = "user_denied"
+    NO_HANDLER = "no_handler"
 
 
 class PermissionRequest(BaseModel):
@@ -34,92 +64,144 @@ class PermissionResult(BaseModel):
     policy_decision: PermissionDecision
     allowed: bool
     prompted: bool = False
-    source: str = "baseline"
+    source: PermissionSource = PermissionSource.BASELINE
     granted_capabilities: frozenset[PermissionCapability] = frozenset()
+    reason: str = ""
 
 
 class PermissionHandler(Protocol):
+    """Approval handler, consulted only for ASK decisions."""
+
     def __call__(self, tool_call: ToolCall) -> PermissionResult: ...
 
 
-def validate_bash_arguments(arguments: dict[str, Any]) -> str:
-    command = arguments.get("command")
-    if not isinstance(command, str) or not command.strip() or "\0" in command:
-        raise ValueError("command must be a non-empty string without NUL")
-    if arguments.keys() - {"command", "network_access", "justification"}:
-        raise ValueError("unexpected bash command argument")
-    if not isinstance(arguments.get("network_access", False), bool):
-        raise ValueError("network_access must be a boolean")
-    justification = arguments.get("justification", "")
-    if not isinstance(justification, str):
-        raise ValueError("justification must be a string")
-    if arguments.get("network_access", False) and not justification.strip():
-        raise ValueError("network_access requires a non-empty justification")
-    return command
+def _is_sudo_guardrail(tool_call: ToolCall) -> bool:
+    """Best-effort action guardrail for commands whose first token is ``sudo``.
 
-
-def check_permission(
-    tool_call: ToolCall,
-    registered_tools: Collection[str] = ("bash", "read_file", "edit_file"),
-) -> PermissionDecision:
-    if tool_call.name not in registered_tools:
-        return PermissionDecision.DENY
+    The sandbox, not command parsing, is the security boundary. This must stay
+    narrow, must never raise, and deliberately ignores shell indirection such as
+    ``/usr/bin/sudo``, ``sh -c 'sudo ...'`` or ``true; sudo ...``. Do not grow it
+    into a shell parser.
+    """
     if tool_call.name != "bash":
-        return PermissionDecision.ALLOW
-    try:
-        command = validate_bash_arguments(tool_call.arguments)
-        parts = shlex.split(command)
-    except ValueError:
-        return PermissionDecision.DENY
-    if not parts or parts[0] == "sudo":
-        return PermissionDecision.DENY
-    if tool_call.arguments.get("network_access", False):
-        return PermissionDecision.ASK
-    return PermissionDecision.ALLOW
+        return False
+
+    command = tool_call.arguments.get("command")
+    if not isinstance(command, str):
+        return False
+
+    stripped = command.strip()
+    return bool(stripped) and stripped.split(maxsplit=1)[0] == "sudo"
+
+
+def requested_capability(tool_call: ToolCall) -> PermissionCapability | None:
+    """Return the capability a well-formed tool call asks for, if any.
+
+    A malformed request is not a capability request: it falls through to the
+    baseline policy, and the tool reports an invalid-arguments failure. Only a
+    complete request can become an approval prompt.
+    """
+    if tool_call.name != "bash":
+        return None
+
+    if tool_call.arguments.get("network_access") is not True:
+        return None
+
+    justification = tool_call.arguments.get("justification")
+    if not isinstance(justification, str) or not justification.strip():
+        return None
+
+    return PermissionCapability.NETWORK
+
+
+def evaluate_permission_policy(tool_call: ToolCall) -> PermissionResult:
+    """Pure baseline policy: intent guardrails only.
+
+    * the sudo guardrail is hard denied before execution;
+    * a well-formed capability request asks for approval;
+    * every other call is a normal operation inside the fixed sandbox.
+    """
+    if _is_sudo_guardrail(tool_call):
+        return PermissionResult(
+            policy_decision=PermissionDecision.DENY,
+            allowed=False,
+            source=PermissionSource.POLICY_DENY,
+            reason="sudo is not supported",
+        )
+
+    if requested_capability(tool_call) is not None:
+        return PermissionResult(
+            policy_decision=PermissionDecision.ASK,
+            allowed=False,
+        )
+
+    return PermissionResult(
+        policy_decision=PermissionDecision.ALLOW,
+        allowed=True,
+    )
 
 
 class SessionPermissionHandler:
+    """Stateful capability approval for ASK decisions.
+
+    Session grants live here, in core permission state: never in the UI and
+    never on disk. A fresh instance (a fresh Cairn process) starts with no
+    grants. Baseline ALLOW and hard DENY never reach this handler.
+    """
+
     def __init__(
         self,
         prompt: Callable[[PermissionRequest], PermissionChoice] | None = None,
-        registered_tools: Collection[str] = ("bash", "read_file", "edit_file"),
     ) -> None:
         self.prompt = prompt
-        self.registered_tools = registered_tools
         self.grants: set[PermissionCapability] = set()
 
     def __call__(self, tool_call: ToolCall) -> PermissionResult:
-        decision = check_permission(tool_call, self.registered_tools)
-        result = PermissionResult(
-            policy_decision=decision,
-            allowed=decision == PermissionDecision.ALLOW,
-            source="hard_deny" if decision == PermissionDecision.DENY else "baseline",
-        )
-        if decision != PermissionDecision.ASK:
-            return result
-        capability = PermissionCapability.NETWORK
+        capability = requested_capability(tool_call)
+        if capability is None:
+            return evaluate_permission_policy(tool_call)
+
         if capability in self.grants:
-            result.source = "session_grant"
-        elif self.prompt is None:
-            result.source = "no_handler"
-            return result
-        else:
-            choice = self.prompt(
-                PermissionRequest(
-                    capability=capability,
-                    justification=tool_call.arguments["justification"],
-                    tool_call=tool_call,
-                )
+            return PermissionResult(
+                policy_decision=PermissionDecision.ASK,
+                allowed=True,
+                source=PermissionSource.SESSION_GRANT,
+                granted_capabilities=frozenset({capability}),
             )
-            result.prompted = True
-            if choice == PermissionChoice.DENY:
-                result.source = "user_denied"
-                return result
-            if choice == PermissionChoice.ALLOW_SESSION:
-                self.grants.add(capability)
-                result.source = "session_grant"
-            else:
-                result.source = "user_once"
-        result.allowed = True
-        result.granted_capabilities = frozenset({capability})
-        return result
+
+        if self.prompt is None:
+            return PermissionResult(
+                policy_decision=PermissionDecision.ASK,
+                allowed=False,
+                source=PermissionSource.NO_HANDLER,
+            )
+
+        choice = self.prompt(
+            PermissionRequest(
+                capability=capability,
+                justification=tool_call.arguments["justification"],
+                tool_call=tool_call,
+            )
+        )
+
+        if choice == PermissionChoice.DENY:
+            return PermissionResult(
+                policy_decision=PermissionDecision.ASK,
+                allowed=False,
+                prompted=True,
+                source=PermissionSource.USER_DENIED,
+            )
+
+        if choice == PermissionChoice.ALLOW_SESSION:
+            self.grants.add(capability)
+            source = PermissionSource.USER_SESSION
+        else:
+            source = PermissionSource.USER_ONCE
+
+        return PermissionResult(
+            policy_decision=PermissionDecision.ASK,
+            allowed=True,
+            prompted=True,
+            source=source,
+            granted_capabilities=frozenset({capability}),
+        )

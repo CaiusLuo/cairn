@@ -6,9 +6,23 @@ from cairn.core.permissions import (
     PermissionChoice,
     PermissionDecision,
     PermissionRequest,
+    PermissionSource,
     SessionPermissionHandler,
-    check_permission,
+    evaluate_permission_policy,
+    requested_capability,
 )
+
+
+def bash_call(command: str, **extra: object) -> ToolCall:
+    return ToolCall(id="1", name="bash", arguments={"command": command, **extra})
+
+
+def network_call(command: str = "curl example.com") -> ToolCall:
+    return bash_call(
+        command,
+        network_access=True,
+        justification="needed",
+    )
 
 
 @pytest.mark.parametrize(
@@ -32,15 +46,50 @@ from cairn.core.permissions import (
     ],
 )
 def test_baseline_without_prompt(name: str, arguments: dict[str, object]) -> None:
-    def unexpected(request: PermissionRequest) -> PermissionChoice:
-        pytest.fail("baseline prompted")
-
     call = ToolCall(id="1", name=name, arguments=arguments)
-    result = SessionPermissionHandler(unexpected)(call)
+
+    result = evaluate_permission_policy(call)
+
     assert result.policy_decision == PermissionDecision.ALLOW
     assert result.allowed and not result.prompted
-    assert result.source == "baseline"
+    assert result.source == PermissionSource.BASELINE
     assert not result.granted_capabilities
+
+    def unexpected(request: PermissionRequest) -> PermissionChoice:
+        pytest.fail("baseline operation asked for approval")
+
+    # The approval handler is never consulted for baseline ALLOW decisions.
+    prompt_only = SessionPermissionHandler(unexpected)(call)
+    assert prompt_only.allowed and not prompt_only.prompted
+
+
+def test_sudo_guardrail_denies_before_execution() -> None:
+    result = evaluate_permission_policy(bash_call("sudo true"))
+
+    assert result.policy_decision == PermissionDecision.DENY
+    assert not result.allowed and not result.prompted
+    assert result.source == PermissionSource.POLICY_DENY
+    assert result.reason == "sudo is not supported"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/usr/bin/sudo true",
+        "true; sudo rm -rf /tmp/x",
+        "bash -c 'sudo true'",
+    ],
+)
+def test_sudo_guardrail_is_best_effort_only(command: str) -> None:
+    """The sandbox is the security boundary; command parsing is not.
+
+    Only a literal leading ``sudo`` token is caught. Shell indirection is
+    deliberately out of scope and must not grow into a shell analyzer.
+    """
+    assert (
+        evaluate_permission_policy(bash_call(command)).policy_decision
+        == PermissionDecision.ALLOW
+    )
 
 
 @pytest.mark.parametrize(
@@ -53,7 +102,6 @@ def test_baseline_without_prompt(name: str, arguments: dict[str, object]) -> Non
         {"command": " "},
         {"command": "'unterminated"},
         {"command": "\0"},
-        {"command": "sudo true"},
         {"command": "pwd", "extra": True},
         {"command": "pwd", "network_access": "true"},
         {"command": "pwd", "network_access": True},
@@ -61,43 +109,76 @@ def test_baseline_without_prompt(name: str, arguments: dict[str, object]) -> Non
         {"command": "pwd", "justification": 123},
     ],
 )
-def test_denied_bash(arguments: dict[str, object]) -> None:
-    result = SessionPermissionHandler()(
-        ToolCall(id="1", name="bash", arguments=arguments)
-    )
-    assert result.policy_decision == PermissionDecision.DENY
-    assert not result.allowed and not result.prompted
-    assert result.source == "hard_deny"
+def test_invalid_arguments_are_not_permission_decisions(
+    arguments: dict[str, object],
+) -> None:
+    """Argument validity belongs to the tool contract, not to the policy.
+
+    Malformed calls are neither approved nor denied here: they fall through to
+    the baseline and the Bash tool reports an invalid-arguments failure. Shell
+    syntax errors are the shell's to report as well.
+    """
+    call = ToolCall(id="1", name="bash", arguments=arguments)
+
+    assert requested_capability(call) is None
+    assert evaluate_permission_policy(call).policy_decision == PermissionDecision.ALLOW
 
 
-def network_call(command: str = "curl example.com") -> ToolCall:
-    return ToolCall(
-        id="1",
-        name="bash",
-        arguments={
-            "command": command,
-            "network_access": True,
-            "justification": "needed",
-        },
-    )
+def test_policy_does_not_answer_tool_existence() -> None:
+    """Registration is the registry's truth; the policy stays silent about it.
+
+    The loop resolves the tool before consulting the policy, so an unknown name
+    becomes ToolNotFound rather than a fabricated permission decision.
+    """
+    call = ToolCall(id="1", name="unknown", arguments={})
+
+    assert evaluate_permission_policy(call).policy_decision == PermissionDecision.ALLOW
 
 
-def test_unknown_tool_denied() -> None:
+def test_requested_capability_requires_a_complete_request() -> None:
+    assert requested_capability(network_call()) == PermissionCapability.NETWORK
     assert (
-        check_permission(ToolCall(id="1", name="unknown", arguments={}))
-        == PermissionDecision.DENY
+        requested_capability(
+            ToolCall(
+                id="1",
+                name="read_file",
+                arguments={"network_access": True, "justification": "x"},
+            )
+        )
+        is None
+    )
+    assert requested_capability(bash_call("curl example.com")) is None
+    assert (
+        requested_capability(bash_call("curl example.com", network_access=True)) is None
+    )
+    assert (
+        requested_capability(
+            bash_call("curl example.com", network_access=True, justification="   ")
+        )
+        is None
     )
 
 
 @pytest.mark.parametrize(
-    "choice, source",
+    "choice, sources",
     [
-        (PermissionChoice.ALLOW_ONCE, "user_once"),
-        (PermissionChoice.ALLOW_SESSION, "session_grant"),
-        (PermissionChoice.DENY, "user_denied"),
+        (
+            PermissionChoice.ALLOW_ONCE,
+            (PermissionSource.USER_ONCE, PermissionSource.USER_ONCE),
+        ),
+        (
+            PermissionChoice.ALLOW_SESSION,
+            (PermissionSource.USER_SESSION, PermissionSource.SESSION_GRANT),
+        ),
+        (
+            PermissionChoice.DENY,
+            (PermissionSource.USER_DENIED, PermissionSource.USER_DENIED),
+        ),
     ],
 )
-def test_session_semantics(choice: PermissionChoice, source: str) -> None:
+def test_session_semantics(
+    choice: PermissionChoice, sources: tuple[PermissionSource, ...]
+) -> None:
     prompts: list[PermissionRequest] = []
 
     def prompt(request: PermissionRequest) -> PermissionChoice:
@@ -107,7 +188,8 @@ def test_session_semantics(choice: PermissionChoice, source: str) -> None:
     handler = SessionPermissionHandler(prompt)
     first = handler(network_call())
     second = handler(network_call("python other.py"))
-    assert first.source == second.source == source
+    assert first.source == sources[0]
+    assert second.source == sources[1]
     assert first.prompted
     assert second.prompted == (choice != PermissionChoice.ALLOW_SESSION)
     assert len(prompts) == (1 if choice == PermissionChoice.ALLOW_SESSION else 2)
@@ -117,6 +199,7 @@ def test_session_semantics(choice: PermissionChoice, source: str) -> None:
         if choice == PermissionChoice.DENY
         else frozenset({PermissionCapability.NETWORK})
     )
+
     local = handler(ToolCall(id="2", name="bash", arguments={"command": "pwd"}))
     assert local.allowed and not local.prompted and not local.granted_capabilities
     assert SessionPermissionHandler(prompt)(network_call()).prompted
@@ -124,6 +207,8 @@ def test_session_semantics(choice: PermissionChoice, source: str) -> None:
 
 def test_missing_handler_denies_capability() -> None:
     result = SessionPermissionHandler()(network_call())
+
+    assert result.policy_decision == PermissionDecision.ASK
     assert not result.allowed and not result.prompted
-    assert result.source == "no_handler"
+    assert result.source == PermissionSource.NO_HANDLER
     assert not result.granted_capabilities

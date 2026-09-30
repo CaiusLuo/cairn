@@ -45,13 +45,47 @@ class WriteThenFailTool(EditFileTool):
         raise RuntimeError("tool failed after writing")
 
 
+class ApprovalGatedEditTool:
+    """Edit tool double registered as ``bash``.
+
+    The registered name routes a well-formed network request through the
+    approval path, while the tool itself still edits files. That lets these
+    recovery tests exercise ASK/approval failures without a real sandbox.
+    """
+
+    name = "bash"
+    description = "Approval-gated edit tool double."
+
+    def __init__(
+        self, root: Path, tool_type: type[EditFileTool] = EditFileTool
+    ) -> None:
+        self._inner = tool_type(Workspace(root))
+
+    def schema(self) -> dict[str, Any]:
+        return {"name": self.name}
+
+    async def execute(
+        self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
+    ) -> ToolResult:
+        edit_arguments = {
+            key: arguments[key] for key in ("path", "old_text", "new_text")
+        }
+        return await self._inner.execute(edit_arguments)
+
+
 def edit_response(*names: str) -> LLMResponse:
     return LLMResponse(
         tool_calls=[
             ToolCall(
                 id=f"edit-{index}",
-                name="edit_file",
-                arguments={"path": name, "old_text": "", "new_text": "42\n"},
+                name="bash",
+                arguments={
+                    "path": name,
+                    "old_text": "",
+                    "new_text": "42\n",
+                    "network_access": True,
+                    "justification": "editing needs approval in this double",
+                },
             )
             for index, name in enumerate(names, start=1)
         ]
@@ -68,7 +102,7 @@ def make_edit_agent(
     tool_type: type[EditFileTool] = EditFileTool,
 ) -> Agent:
     registry = ToolRegistry()
-    registry.register_tool(tool_type(Workspace(root)))
+    registry.register_tool(ApprovalGatedEditTool(root, tool_type))
     return Agent(llm=llm, tools=registry, permission_handler=allow)
 
 

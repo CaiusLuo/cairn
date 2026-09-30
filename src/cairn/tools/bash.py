@@ -10,8 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from cairn.core.models import ToolResult
-from cairn.core.permissions import validate_bash_arguments
-from cairn.tools.base import ToolExecutionContext
+from cairn.tools.base import InvalidArguments, ToolExecutionContext
 from cairn.workspace.workspace import Workspace
 
 DEFAULT_STDOUT_CAPTURE_LIMIT = 64 * 1024
@@ -129,6 +128,38 @@ def _resolve_uv_cache_dir(env: Mapping[str, str]) -> Path | None:
     return None
 
 
+def validate_bash_arguments(arguments: dict[str, Any]) -> str:
+    """Validate the Bash tool input contract and return the command.
+
+    Argument validity is owned by the tool that declares the schema, so a
+    malformed call is an ``InvalidArguments`` tool failure and never an
+    authorization decision. Shell syntax is not validated here: an unterminated
+    quote is the shell's error to report.
+    """
+    command = arguments.get("command")
+    if not isinstance(command, str) or not command.strip() or "\0" in command:
+        raise InvalidArguments("command must be a non-empty string without NUL")
+
+    unexpected = arguments.keys() - {"command", "network_access", "justification"}
+    if unexpected:
+        raise InvalidArguments(
+            f"unexpected bash command argument: {sorted(unexpected)}"
+        )
+
+    network_access = arguments.get("network_access", False)
+    if not isinstance(network_access, bool):
+        raise InvalidArguments("network_access must be a boolean")
+
+    justification = arguments.get("justification", "")
+    if not isinstance(justification, str):
+        raise InvalidArguments("justification must be a string")
+
+    if network_access and not justification.strip():
+        raise InvalidArguments("network_access requires a non-empty justification")
+
+    return command
+
+
 def _macos_sandbox_profile(
     cwd: Path,
     writable_tmpdir: Path | None,
@@ -188,8 +219,22 @@ class BashTool:
                             "type": "string",
                             "description": "The shell command to execute.",
                         },
-                        "network_access": {"type": "boolean", "default": False},
-                        "justification": {"type": "string"},
+                        "network_access": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": (
+                                "Request the NETWORK capability for this command. "
+                                "Denied by default; requires user approval and a "
+                                "justification."
+                            ),
+                        },
+                        "justification": {
+                            "type": "string",
+                            "description": (
+                                "Why this command needs network access. Required "
+                                "when network_access is true; shown to the user."
+                            ),
+                        },
                     },
                     "required": ["command"],
                     "additionalProperties": False,

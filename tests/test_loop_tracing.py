@@ -15,10 +15,12 @@ from tests.loop_support import (
     TEST_BUDGET,
     FailingLLM,
     FailingSink,
+    NetworkRequestTool,
     RecordingSink,
     RecordingTool,
     SequenceLLM,
     make_agent,
+    network_tool_response,
     tool_response,
 )
 
@@ -238,11 +240,12 @@ def test_run_turn_ends_allowed_permission_span_once(with_handler: bool) -> None:
     tool = RecordingTool()
     agent = make_agent(llm, tool)
     agent.tracer = Tracer(sink)
+    handler_calls: list[ToolCall] = []
 
     if with_handler:
 
         def allow(tool_call: ToolCall) -> PermissionResult:
-            assert tool_call.name == "record"
+            handler_calls.append(tool_call)
             return PermissionResult(
                 policy_decision=PermissionDecision.ALLOW,
                 allowed=True,
@@ -254,6 +257,8 @@ def test_run_turn_ends_allowed_permission_span_once(with_handler: bool) -> None:
         asyncio.run(run_turn(agent, "use the tool", budget=TEST_BUDGET)) == "finished"
     )
     assert tool.calls == [{"value": 42}]
+    # A baseline operation inside the sandbox never asks for approval.
+    assert handler_calls == []
 
     permission_spans = [span for span in sink.spans if span.name == "permission.check"]
     assert len(permission_spans) == 1
@@ -262,19 +267,15 @@ def test_run_turn_ends_allowed_permission_span_once(with_handler: bool) -> None:
     assert permission_span.attributes["allowed"] is True
     assert permission_span.attributes["tool_call_id"] == "call-1"
     assert permission_span.attributes["handler_configured"] is with_handler
-
-    if with_handler:
-        assert permission_span.attributes["policy_decision"] == "allow"
-        assert permission_span.attributes["source"] == "baseline"
-        assert permission_span.attributes["granted_capabilities"] == []
-    else:
-        assert permission_span.attributes["source"] == "no_handler"
+    assert permission_span.attributes["policy_decision"] == "allow"
+    assert permission_span.attributes["source"] == "baseline"
+    assert permission_span.attributes["granted_capabilities"] == []
 
 
 def test_run_turn_ends_permission_span_once_when_handler_raises() -> None:
     sink = RecordingSink()
-    tool = RecordingTool()
-    agent = make_agent(SequenceLLM([tool_response()]), tool)
+    tool = NetworkRequestTool()
+    agent = make_agent(SequenceLLM([network_tool_response()]), tool)
     agent.tracer = Tracer(sink)
 
     def fail(tool_call: ToolCall) -> PermissionResult:

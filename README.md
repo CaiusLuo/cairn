@@ -17,18 +17,23 @@ autonomous coding agent.
 - In-process conversation state for user, assistant, and tool messages.
 - LiteLLM-backed model calls, including tool-call parsing.
 - A tool registry with Bash, bounded file reading, and guarded file editing.
-- Permission decisions that allow selected read-only commands, deny selected
-  commands, and ask before everything else.
+- Sandbox-first permissions: normal workspace operations run without approval,
+  a narrow `sudo` guardrail is denied before execution, and network access is
+  granted only by an explicit capability approval.
 - Runtime events for agent steps, tool calls, tool results, errors, completion,
   and step-limit termination.
 - JSONL traces for model, permission, tool, and turn spans, with interactive
   commands for inspecting recorded traces.
 - A Rich-powered interactive terminal interface.
 
-The Bash tool executes commands in an OS sandbox after the permission handler
-approves them. Its workspace is writable; commands cannot read other files in
-the user's home directory or use the network. Cairn does not currently provide
-persistent memory or background execution.
+The Bash tool executes every command inside an OS sandbox. The workspace is
+writable, and the host temp directory and the effective uv cache stay usable.
+Reads outside those roots are allowed, but writes are confined to them; commands
+cannot modify files elsewhere in the user's home directory. Network access is
+denied by default and is granted for a single execution only when the permission
+layer approves the NETWORK capability. The `sudo` check is a narrow UX action
+guardrail: the sandbox, not command parsing, is the security boundary. Cairn does
+not currently provide persistent memory or background execution.
 
 ## Architecture
 

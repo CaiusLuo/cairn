@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 
 from cairn.core.models import ToolResult
-from cairn.tools.base import ToolExecutionContext
+from cairn.tools.base import ToolExecutionContext, ToolNotFound
 from cairn.tools.registry import ToolRegistry
 
 
@@ -32,7 +32,7 @@ def test_duplicate_tool_raises() -> None:
 
 
 def test_get_missing_tool_raises() -> None:
-    with pytest.raises(ValueError, match="Tool not found: missing"):
+    with pytest.raises(ToolNotFound, match="Tool not found: missing"):
         ToolRegistry().get_tool("missing")
 
 

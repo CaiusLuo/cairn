@@ -58,6 +58,17 @@ class FailingTool(RecordingTool):
         raise RuntimeError("tool failed")
 
 
+class NetworkRequestTool(RecordingTool):
+    """Recording tool double registered as ``bash``.
+
+    A well-formed network request is the only ASK decision the baseline policy
+    makes today, so registering this double as ``bash`` lets loop tests drive the
+    approval path without a real sandbox.
+    """
+
+    name = "bash"
+
+
 class RecordingSink:
     def __init__(self) -> None:
         self.spans: list[Span] = []
@@ -102,6 +113,22 @@ def tool_response() -> LLMResponse:
                 id="call-1",
                 name="record",
                 arguments={"value": 42},
+            )
+        ]
+    )
+
+
+def network_tool_response() -> LLMResponse:
+    return LLMResponse(
+        tool_calls=[
+            ToolCall(
+                id="call-1",
+                name="bash",
+                arguments={
+                    "command": "curl example.com",
+                    "network_access": True,
+                    "justification": "fetch example.com",
+                },
             )
         ]
     )

@@ -155,10 +155,16 @@ def console_event_handler(event: Event) -> None:
 def console_permission_prompt(request: PermissionRequest) -> PermissionChoice:
     console.print("\n[bold yellow]Permission required[/bold yellow]\n")
     console.print(f"Capability: {request.capability.value}", markup=False)
-    console.print(f"Command: {request.tool_call.arguments['command']}", markup=False)
+
+    command = request.tool_call.arguments.get("command")
+    if isinstance(command, str):
+        console.print(f"Command: {command}", markup=False)
+
     console.print(f"Reason: {request.justification}\n", markup=False)
     console.print(
-        "[1] Allow once\n[2] Allow network for this session\n[3] Deny",
+        "[1] Allow once\n"
+        f"[2] Allow {request.capability.value} for this session\n"
+        "[3] Deny",
         markup=False,
     )
     choice = Prompt.ask("Choice", choices=["1", "2", "3"], default="3", console=console)

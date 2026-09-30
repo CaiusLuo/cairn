@@ -350,3 +350,21 @@ def test_permission_prompt(
         "[3] Deny",
     ):
         assert text in output.getvalue()
+
+
+def test_permission_prompt_omits_a_missing_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The prompt renders whatever the request carries, not bash-shaped fields."""
+    output = _capture_console(monkeypatch)
+    monkeypatch.setattr(Prompt, "ask", lambda *args, **kwargs: "3")
+    request = PermissionRequest(
+        capability=PermissionCapability.NETWORK,
+        justification="needs the network",
+        tool_call=ToolCall(id="1", name="read_file", arguments={"path": "README.md"}),
+    )
+
+    assert ui.console_permission_prompt(request) == PermissionChoice.DENY
+    assert "Capability: network" in output.getvalue()
+    assert "Reason: needs the network" in output.getvalue()
+    assert "Command:" not in output.getvalue()

@@ -9,7 +9,11 @@ from cairn.core.budget import BudgetReason, RunBudget, RunBudgetExceeded
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.core.models import LLMResponse, Message, ToolCall, ToolFailure, ToolResult
-from cairn.core.permissions import PermissionDecision, PermissionResult
+from cairn.core.permissions import (
+    PermissionDecision,
+    PermissionResult,
+    PermissionSource,
+)
 from cairn.llm.litellm_client import LiteLLMClient
 from cairn.observability.models import SpanStatus
 from cairn.observability.tracer import Tracer
@@ -20,10 +24,12 @@ from tests.loop_support import (
     FailingLLM,
     FailingSink,
     FailingTool,
+    NetworkRequestTool,
     RecordingSink,
     RecordingTool,
     SequenceLLM,
     make_agent,
+    network_tool_response,
     tool_response,
 )
 
@@ -427,18 +433,32 @@ def test_tool_failure_to_content_contract() -> None:
     }
 
 
-def test_run_turn_records_permission_denial_without_executing_tool() -> None:
+def sudo_response() -> LLMResponse:
+    return LLMResponse(
+        tool_calls=[
+            ToolCall(
+                id="call-1",
+                name="bash",
+                arguments={"command": "sudo true"},
+            )
+        ]
+    )
+
+
+def test_run_turn_records_user_denied_network_request() -> None:
     sink = RecordingSink()
-    llm = SequenceLLM([tool_response(), LLMResponse(content="denied handled")])
-    tool = RecordingTool()
+    llm = SequenceLLM([network_tool_response(), LLMResponse(content="denied handled")])
+    tool = NetworkRequestTool()
     agent = make_agent(llm, tool)
     agent.tracer = Tracer(sink)
 
     def deny(tool_call: ToolCall) -> PermissionResult:
-        assert tool_call.name == "record"
+        assert tool_call.name == "bash"
         return PermissionResult(
-            policy_decision=PermissionDecision.DENY,
+            policy_decision=PermissionDecision.ASK,
             allowed=False,
+            prompted=True,
+            source=PermissionSource.USER_DENIED,
         )
 
     agent.permission_handler = deny
@@ -451,11 +471,41 @@ def test_run_turn_records_permission_denial_without_executing_tool() -> None:
     assert len(permission_spans) == 1
     permission_span = permission_spans[0]
     assert permission_span.status == SpanStatus.OK
+    assert permission_span.attributes["policy_decision"] == "ask"
     assert permission_span.attributes["allowed"] is False
+    assert permission_span.attributes["source"] == "user_denied"
     assert permission_span.attributes["tool_call_id"] == "call-1"
     assert json.loads(agent.state.messages[2].content or "") == {
         "error": "Permission denied by user.",
         "type": "PermissionDenied",
+    }
+
+
+def test_run_turn_policy_deny_beats_a_permissive_handler() -> None:
+    sink = RecordingSink()
+    llm = SequenceLLM([sudo_response(), LLMResponse(content="recovered")])
+    tool = NetworkRequestTool()
+    agent = make_agent(llm, tool)
+    agent.tracer = Tracer(sink)
+
+    def allow_everything(tool_call: ToolCall) -> PermissionResult:
+        pytest.fail("policy denials must never reach the approval handler")
+
+    agent.permission_handler = allow_everything
+
+    assert asyncio.run(run_turn(agent, "run it", budget=TEST_BUDGET)) == "recovered"
+
+    assert tool.calls == []
+    permission_span = next(
+        span for span in sink.spans if span.name == "permission.check"
+    )
+    assert permission_span.attributes["policy_decision"] == "deny"
+    assert permission_span.attributes["allowed"] is False
+    assert permission_span.attributes["source"] == "policy_deny"
+    assert permission_span.attributes["prompted"] is False
+    assert json.loads(agent.state.messages[2].content or "") == {
+        "error": "sudo is not supported",
+        "type": "PolicyDenied",
     }
 
 
@@ -482,7 +532,7 @@ def test_run_turn_records_tool_errors_and_continues() -> None:
     assert turn_span.status == SpanStatus.OK
 
 
-def test_run_turn_denies_unknown_tool_before_execution() -> None:
+def test_run_turn_reports_unknown_tool_as_tool_failure() -> None:
     sink = RecordingSink()
     events: list[Event] = []
     llm = SequenceLLM([tool_response(), LLMResponse(content="recovered")])
@@ -493,12 +543,19 @@ def test_run_turn_denies_unknown_tool_before_execution() -> None:
 
     assert result == "recovered"
     assert json.loads(agent.state.messages[2].content or "") == {
-        "error": "Permission denied by user.",
-        "type": "PermissionDenied",
+        "error": "Tool not found: record",
+        "type": "ToolNotFound",
     }
-    assert not any(event.type == "tool_error" for event in events)
+    assert [event.type for event in events if event.type == "tool_error"] == [
+        "tool_error"
+    ]
     tool_spans = [span for span in sink.spans if span.name == "tool.execute"]
-    assert tool_spans == []
+    assert len(tool_spans) == 1
+    assert tool_spans[0].status == SpanStatus.ERROR
+    assert tool_spans[0].error == "ToolNotFound: Tool not found: record"
+    # Existence is not permission: a missing tool never produces an approval
+    # request, and the turn itself still succeeds.
+    assert not [span for span in sink.spans if span.name == "permission.check"]
     turn_span = next(span for span in sink.spans if span.name == "agent.turn")
     assert turn_span.status == SpanStatus.OK
 

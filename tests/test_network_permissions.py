@@ -13,6 +13,7 @@ from cairn.core.models import LLMResponse, ToolCall
 from cairn.core.permissions import (
     PermissionChoice,
     PermissionRequest,
+    PermissionSource,
     SessionPermissionHandler,
 )
 from cairn.observability.tracer import Tracer
@@ -20,12 +21,15 @@ from cairn.tools.base import ToolExecutionContext
 from cairn.tools.bash import BashTool
 from cairn.workspace.workspace import Workspace
 from tests.loop_support import TEST_BUDGET, RecordingSink, SequenceLLM
+from tests.sandbox_support import (
+    require_working_sandbox,
+    sandbox_python,
+    skip_without_sandbox,
+)
 
 
 def socket_command() -> str:
-    python = shlex.quote(
-        sys.executable if sys.platform == "darwin" else "/usr/bin/python3"
-    )
+    python = shlex.quote(sandbox_python())
     script = (
         "import socket; print('started', flush=True); "
         "s=socket.socket(); s.bind(('127.0.0.1', 0)); s.listen(); print('bound')"
@@ -35,6 +39,7 @@ def socket_command() -> str:
 
 @pytest.mark.parametrize("requested", [None, False, True])
 def test_arguments_cannot_grant_network(tmp_path: Path, requested: bool | None) -> None:
+    require_working_sandbox(Workspace(tmp_path))
     arguments: dict[str, object] = {"command": socket_command()}
     if requested is not None:
         arguments.update(network_access=requested, justification="local socket")
@@ -45,6 +50,7 @@ def test_arguments_cannot_grant_network(tmp_path: Path, requested: bool | None) 
 
 @pytest.mark.parametrize("choice", list(PermissionChoice))
 def test_network_end_to_end(tmp_path: Path, choice: PermissionChoice) -> None:
+    require_working_sandbox(Workspace(tmp_path))
     prompts: list[PermissionRequest] = []
 
     def prompt(request: PermissionRequest) -> PermissionChoice:
@@ -93,14 +99,16 @@ def test_network_end_to_end(tmp_path: Path, choice: PermissionChoice) -> None:
         assert spans[index].attributes["prompted"] is (
             index == 0 or choice != PermissionChoice.ALLOW_SESSION
         )
-        assert (
-            spans[index].attributes["source"]
-            == {
-                PermissionChoice.DENY: "user_denied",
-                PermissionChoice.ALLOW_ONCE: "user_once",
-                PermissionChoice.ALLOW_SESSION: "session_grant",
-            }[choice]
-        )
+        expected_source = {
+            PermissionChoice.DENY: PermissionSource.USER_DENIED,
+            PermissionChoice.ALLOW_ONCE: PermissionSource.USER_ONCE,
+            PermissionChoice.ALLOW_SESSION: (
+                PermissionSource.USER_SESSION
+                if index == 0
+                else PermissionSource.SESSION_GRANT
+            ),
+        }[choice]
+        assert spans[index].attributes["source"] == expected_source
         assert spans[index].attributes["granted_capabilities"] == (
             [] if denied else ["network"]
         )
@@ -117,6 +125,7 @@ def test_network_end_to_end(tmp_path: Path, choice: PermissionChoice) -> None:
 def test_network_context_changes_only_network_restriction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str
 ) -> None:
+    skip_without_sandbox()
     process = AsyncMock()
     process.pid = 12345
     process.wait.return_value = 0
@@ -154,6 +163,7 @@ def test_network_grant_preserves_write_boundary(
 ) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    require_working_sandbox(Workspace(workspace))
     monkeypatch.setenv("TMPDIR", str(workspace))
     outside = tmp_path / "outside"
     outside.write_text("unchanged")
