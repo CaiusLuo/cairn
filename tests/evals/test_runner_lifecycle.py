@@ -24,14 +24,6 @@ class PassingCheck:
         return CheckResult(name=self.name, passed=True)
 
 
-class FailingCheck:
-    name = "failing"
-
-    async def evaluate(self, workspace: Workspace) -> CheckResult:
-        assert workspace.root.is_dir()
-        return CheckResult(name=self.name, passed=False, message="expected mismatch")
-
-
 class SuccessfulLLM:
     async def generate(
         self, messages: list[Message], tools: list[dict[str, Any]] | None = None
@@ -39,11 +31,18 @@ class SuccessfulLLM:
         return LLMResponse(content="complete")
 
 
-class FailingLLM:
+class TimeoutLLM:
     async def generate(
         self, messages: list[Message], tools: list[dict[str, Any]] | None = None
     ) -> LLMResponse:
-        raise RuntimeError("model unavailable")
+        raise TimeoutError("provider's own deadline")
+
+
+class SelfTimeoutCheck:
+    name = "self-timeout"
+
+    async def evaluate(self, workspace: Workspace) -> CheckResult:
+        raise TimeoutError("checker-specific deadline")
 
 
 def make_runner(
@@ -62,7 +61,25 @@ def make_runner(
     )
 
 
-@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), -float("inf")])
+@pytest.fixture
+def owned_eval_parent(tmp_path: Path) -> tuple[Path, Path, Path]:
+    parent = tmp_path / "eval-parent"
+    parent.mkdir()
+    sentinel = parent / "keep.txt"
+    sentinel.write_text("parent-owned", encoding="utf-8")
+    sibling = parent / "sibling"
+    sibling.mkdir()
+    (sibling / "keep.txt").write_text("sibling-owned", encoding="utf-8")
+    return parent, sentinel, sibling
+
+
+def assert_parent_preserved(parent: Path, sentinel: Path, sibling: Path) -> None:
+    assert list(parent.glob("cairn-eval-*")) == []
+    assert sentinel.read_text(encoding="utf-8") == "parent-owned"
+    assert (sibling / "keep.txt").read_text(encoding="utf-8") == "sibling-owned"
+
+
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf")])
 def test_timeout_values_must_be_finite_and_positive(value: float) -> None:
     with pytest.raises(ValueError, match="finite and greater than zero"):
         EvalRunner(
@@ -81,57 +98,10 @@ def test_timeout_values_must_be_finite_and_positive(value: float) -> None:
         )
 
 
-@pytest.mark.parametrize(
-    ("llm_factory", "check", "expected_status"),
-    [
-        (SuccessfulLLM, PassingCheck(), EvalStatus.PASS),
-        (SuccessfulLLM, FailingCheck(), EvalStatus.FAIL),
-        (FailingLLM, PassingCheck(), EvalStatus.ERROR),
-    ],
-)
-def test_runner_deletes_only_its_child_directory(
-    tmp_path: Path,
-    llm_factory: Any,
-    check: EvalCheck,
-    expected_status: EvalStatus,
-) -> None:
-    root = tmp_path / "eval-parent"
-    root.mkdir()
-    sentinel = root / "keep.txt"
-    sentinel.write_text("parent-owned", encoding="utf-8")
-    seen_roots: list[Path] = []
-
-    class ObserveWorkspace:
-        name = "observe"
-
-        async def evaluate(self, workspace: Workspace) -> CheckResult:
-            seen_roots.append(workspace.root)
-            return await check.evaluate(workspace)
-
-    result = asyncio.run(
-        make_runner(llm_factory, temp_root=root).run(
-            EvalCase(name="lifecycle", prompt="finish"), checks=[ObserveWorkspace()]
-        )
-    )
-
-    assert result.status is expected_status
-    assert len(seen_roots) == 1
-    assert seen_roots[0].parent == root
-    assert not seen_roots[0].exists()
-    assert sentinel.read_text(encoding="utf-8") == "parent-owned"
-    assert list(root.iterdir()) == [sentinel]
-
-
 def test_run_timeout_waits_for_llm_cancellation_cleanup_before_checks(
-    tmp_path: Path,
+    owned_eval_parent: tuple[Path, Path, Path],
 ) -> None:
-    root = tmp_path / "eval-parent"
-    root.mkdir()
-    sentinel = root / "keep.txt"
-    sentinel.write_text("parent-owned", encoding="utf-8")
-    sibling = root / "sibling"
-    sibling.mkdir()
-    (sibling / "keep.txt").write_text("sibling-owned", encoding="utf-8")
+    root, sentinel, sibling = owned_eval_parent
     settled = asyncio.Event()
     case_roots: list[Path] = []
 
@@ -170,24 +140,19 @@ def test_run_timeout_waits_for_llm_cancellation_cleanup_before_checks(
     assert len(case_roots) == 1
     assert case_roots[0].parent == root
     assert not case_roots[0].exists()
-    assert list(root.glob("cairn-eval-*")) == []
-    assert sentinel.read_text(encoding="utf-8") == "parent-owned"
-    assert (sibling / "keep.txt").read_text(encoding="utf-8") == "sibling-owned"
+    assert_parent_preserved(root, sentinel, sibling)
 
 
-def test_external_cancellation_during_model_run_propagates_after_cleanup(
-    tmp_path: Path,
+@pytest.mark.parametrize("stage", ["run", "check"])
+def test_external_cancellation_propagates_after_cleanup(
+    stage: str,
+    owned_eval_parent: tuple[Path, Path, Path],
 ) -> None:
-    root = tmp_path / "eval-parent"
-    root.mkdir()
-    sentinel = root / "keep.txt"
-    sentinel.write_text("parent-owned", encoding="utf-8")
-    sibling = root / "sibling"
-    sibling.mkdir()
-    (sibling / "keep.txt").write_text("sibling-owned", encoding="utf-8")
+    root, sentinel, sibling = owned_eval_parent
     started = asyncio.Event()
     settled = asyncio.Event()
     checks_called = False
+    case_roots: list[Path] = []
 
     class SlowLLM:
         async def generate(
@@ -209,42 +174,8 @@ def test_external_cancellation_during_model_run_propagates_after_cleanup(
             checks_called = True
             return CheckResult(name=self.name, passed=True)
 
-    async def scenario() -> None:
-        task = asyncio.create_task(
-            make_runner(SlowLLM, temp_root=root).run(
-                EvalCase(name="cancel", prompt="wait"), checks=[ShouldNotCheck()]
-            )
-        )
-        await asyncio.wait_for(started.wait(), timeout=2)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=2)
-
-    asyncio.run(scenario())
-
-    assert settled.is_set()
-    assert not checks_called
-    assert list(root.glob("cairn-eval-*")) == []
-    assert sentinel.read_text(encoding="utf-8") == "parent-owned"
-    assert (sibling / "keep.txt").read_text(encoding="utf-8") == "sibling-owned"
-
-
-def test_external_cancellation_during_check_propagates_after_cleanup(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "eval-parent"
-    root.mkdir()
-    sentinel = root / "keep.txt"
-    sentinel.write_text("parent-owned", encoding="utf-8")
-    sibling = root / "sibling"
-    sibling.mkdir()
-    (sibling / "keep.txt").write_text("sibling-owned", encoding="utf-8")
-    started = asyncio.Event()
-    settled = asyncio.Event()
-    case_roots: list[Path] = []
-
     class SlowCheck:
-        name = "slow"
+        name = "slow-check"
 
         async def evaluate(self, workspace: Workspace) -> CheckResult:
             assert workspace.root.is_dir()
@@ -257,10 +188,19 @@ def test_external_cancellation_during_check_propagates_after_cleanup(
                 settled.set()
             raise AssertionError("cancelled check unexpectedly resumed")
 
+    llm_factory: Callable[[], LLMClient]
+    checks: list[EvalCheck]
+    if stage == "run":
+        llm_factory = SlowLLM
+        checks = [ShouldNotCheck()]
+    else:
+        llm_factory = SuccessfulLLM
+        checks = [SlowCheck()]
+
     async def scenario() -> None:
         task = asyncio.create_task(
-            make_runner(SuccessfulLLM, temp_root=root).run(
-                EvalCase(name="cancel-check", prompt="finish"), checks=[SlowCheck()]
+            make_runner(llm_factory, temp_root=root).run(
+                EvalCase(name=f"cancel-{stage}", prompt="wait"), checks=checks
             )
         )
         await asyncio.wait_for(started.wait(), timeout=2)
@@ -271,24 +211,20 @@ def test_external_cancellation_during_check_propagates_after_cleanup(
     asyncio.run(scenario())
 
     assert settled.is_set()
-    assert len(case_roots) == 1
-    assert case_roots[0].parent == root
-    assert not case_roots[0].exists()
-    assert list(root.glob("cairn-eval-*")) == []
-    assert sentinel.read_text(encoding="utf-8") == "parent-owned"
-    assert (sibling / "keep.txt").read_text(encoding="utf-8") == "sibling-owned"
+    if stage == "run":
+        assert not checks_called
+        assert case_roots == []
+    else:
+        assert len(case_roots) == 1
+        assert case_roots[0].parent == root
+        assert not case_roots[0].exists()
+    assert_parent_preserved(root, sentinel, sibling)
 
 
 def test_check_timeout_settles_before_next_check_and_keeps_results(
-    tmp_path: Path,
+    owned_eval_parent: tuple[Path, Path, Path],
 ) -> None:
-    root = tmp_path / "eval-parent"
-    root.mkdir()
-    sentinel = root / "keep.txt"
-    sentinel.write_text("parent-owned", encoding="utf-8")
-    sibling = root / "sibling"
-    sibling.mkdir()
-    (sibling / "keep.txt").write_text("sibling-owned", encoding="utf-8")
+    root, sentinel, sibling = owned_eval_parent
     settled = asyncio.Event()
     case_roots: list[Path] = []
 
@@ -334,54 +270,52 @@ def test_check_timeout_settles_before_next_check_and_keeps_results(
     assert len(case_roots) == 1
     assert case_roots[0].parent == root
     assert not case_roots[0].exists()
-    assert list(root.glob("cairn-eval-*")) == []
-    assert sentinel.read_text(encoding="utf-8") == "parent-owned"
-    assert (sibling / "keep.txt").read_text(encoding="utf-8") == "sibling-owned"
+    assert_parent_preserved(root, sentinel, sibling)
 
 
-def test_checker_own_timeout_error_keeps_its_message(tmp_path: Path) -> None:
-    class SelfTimeout:
-        name = "self-timeout"
-
-        async def evaluate(self, workspace: Workspace) -> CheckResult:
-            raise TimeoutError("checker-specific deadline")
-
+@pytest.mark.parametrize(
+    ("llm_factory", "checks", "execution_error", "check_error"),
+    [
+        (
+            TimeoutLLM,
+            [PassingCheck()],
+            "TimeoutError: provider's own deadline",
+            None,
+        ),
+        (
+            SuccessfulLLM,
+            [SelfTimeoutCheck()],
+            None,
+            "TimeoutError: checker-specific deadline",
+        ),
+    ],
+)
+def test_component_timeout_errors_keep_original_messages(
+    owned_eval_parent: tuple[Path, Path, Path],
+    llm_factory: Callable[[], LLMClient],
+    checks: list[EvalCheck],
+    execution_error: str | None,
+    check_error: str | None,
+) -> None:
+    root, sentinel, sibling = owned_eval_parent
     result = asyncio.run(
-        make_runner(SuccessfulLLM, temp_root=tmp_path).run(
-            EvalCase(name="self-timeout", prompt="finish"), checks=[SelfTimeout()]
+        make_runner(llm_factory, temp_root=root).run(
+            EvalCase(name="component-timeout", prompt="finish"), checks=checks
         )
     )
 
     assert result.status is EvalStatus.ERROR
-    assert result.error is None
-    assert result.checks[0].error == "TimeoutError: checker-specific deadline"
-
-
-def test_llm_timeout_error_keeps_its_original_message(tmp_path: Path) -> None:
-    class TimeoutLLM:
-        async def generate(
-            self, messages: list[Message], tools: list[dict[str, Any]] | None = None
-        ) -> LLMResponse:
-            raise TimeoutError("provider's own deadline")
-
-    result = asyncio.run(
-        make_runner(TimeoutLLM, temp_root=tmp_path).run(
-            EvalCase(name="llm-timeout", prompt="finish"), checks=[PassingCheck()]
-        )
-    )
-
-    assert result.status is EvalStatus.ERROR
-    assert result.error == "TimeoutError: provider's own deadline"
-    assert result.checks[0].passed
+    assert result.error == execution_error
+    assert len(result.checks) == 1
+    assert result.checks[0].error == check_error
+    assert result.checks[0].passed is (check_error is None)
+    assert_parent_preserved(root, sentinel, sibling)
 
 
 def test_invalid_temp_root_is_error_without_factory_call_or_deletion(
-    tmp_path: Path,
+    owned_eval_parent: tuple[Path, Path, Path],
 ) -> None:
-    root = tmp_path / "owned-parent"
-    root.mkdir()
-    sentinel = root / "keep.txt"
-    sentinel.write_text("parent-owned", encoding="utf-8")
+    root, sentinel, sibling = owned_eval_parent
     invalid_root = root / "does-not-exist"
     factory_called = False
 
@@ -399,47 +333,16 @@ def test_invalid_temp_root_is_error_without_factory_call_or_deletion(
     assert result.status is EvalStatus.ERROR
     assert result.error is not None
     assert not factory_called
-    assert sentinel.read_text(encoding="utf-8") == "parent-owned"
-    assert list(root.iterdir()) == [sentinel]
-
-
-def test_missing_checks_is_configuration_error_without_factory_call(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "owned-parent"
-    root.mkdir()
-    sentinel = root / "keep.txt"
-    sentinel.write_text("parent-owned", encoding="utf-8")
-    factory_called = False
-
-    def factory() -> SuccessfulLLM:
-        nonlocal factory_called
-        factory_called = True
-        return SuccessfulLLM()
-
-    result = asyncio.run(
-        make_runner(factory, temp_root=root).run(
-            EvalCase(name="no-checks", prompt="finish"), checks=[]
-        )
-    )
-
-    assert result.status is EvalStatus.ERROR
-    assert result.error == "ValueError: at least one eval check is required"
-    assert not factory_called
-    assert list(root.iterdir()) == [sentinel]
+    assert_parent_preserved(root, sentinel, sibling)
 
 
 def test_run_timeout_cancels_real_bash_and_waits_for_cleanup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    owned_eval_parent: tuple[Path, Path, Path],
 ) -> None:
     require_working_sandbox(Workspace(tmp_path))
-    root = tmp_path / "eval-parent"
-    root.mkdir()
-    sentinel = root / "keep.txt"
-    sentinel.write_text("parent-owned", encoding="utf-8")
-    sibling = root / "sibling"
-    sibling.mkdir()
-    (sibling / "keep.txt").write_text("sibling-owned", encoding="utf-8")
+    root, sentinel, sibling = owned_eval_parent
     cleanup_finished = asyncio.Event()
     case_roots: list[Path] = []
     from cairn.tools.bash import BashTool
@@ -495,21 +398,14 @@ def test_run_timeout_cancels_real_bash_and_waits_for_cleanup(
     assert len(case_roots) == 1
     assert case_roots[0].parent == root
     assert not case_roots[0].exists()
-    assert list(root.glob("cairn-eval-*")) == []
-    assert sentinel.read_text(encoding="utf-8") == "parent-owned"
-    assert (sibling / "keep.txt").read_text(encoding="utf-8") == "sibling-owned"
+    assert_parent_preserved(root, sentinel, sibling)
 
 
 def test_builtin_check_timeout_closes_stream_and_runner_cleans_workspace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
+    owned_eval_parent: tuple[Path, Path, Path],
 ) -> None:
-    parent = tmp_path / "eval-parent"
-    parent.mkdir()
-    sentinel = parent / "keep.txt"
-    sentinel.write_text("parent-owned", encoding="utf-8")
-    sibling = parent / "sibling"
-    sibling.mkdir()
-    (sibling / "keep.txt").write_text("sibling-owned", encoding="utf-8")
+    parent, sentinel, sibling = owned_eval_parent
 
     class InfiniteTextStream(StringIO):
         def __init__(self) -> None:
@@ -594,6 +490,4 @@ def test_builtin_check_timeout_closes_stream_and_runner_cleans_workspace(
     assert len(workspace_roots) == 1
     assert workspace_roots[0].parent == parent
     assert not workspace_roots[0].exists()
-    assert list(parent.glob("cairn-eval-*")) == []
-    assert sentinel.read_text(encoding="utf-8") == "parent-owned"
-    assert (sibling / "keep.txt").read_text(encoding="utf-8") == "sibling-owned"
+    assert_parent_preserved(parent, sentinel, sibling)

@@ -338,84 +338,44 @@ def test_malformed_check_path_becomes_check_error(check: Any) -> None:
     assert result.checks[0].passed is False
 
 
-def test_failed_check_does_not_prevent_later_checks() -> None:
-    llm = SequenceLLM([LLMResponse(content="done")])
-    later: list[bool] = []
-
-    async def passing(workspace: Workspace) -> CheckResult:
-        later.append(True)
-        return CheckResult(name="later", passed=True)
-
-    result = asyncio.run(
-        _runner(lambda: llm).run(
-            EvalCase(name="mixed", prompt="Inspect"),
-            checks=[
-                NamedCheck("ordinary_failure", _ordinary_failure),
-                NamedCheck("later", passing),
-            ],
-        )
-    )
-
-    assert result.status is EvalStatus.FAIL
-    assert [item.passed for item in result.checks] == [False, True]
-    assert later == [True]
-
-
-async def _ordinary_failure(workspace: Workspace) -> CheckResult:
-    return CheckResult(name="ordinary_failure", passed=False, message="not satisfied")
-
-
-def test_raised_check_is_error_and_later_checks_still_run() -> None:
-    llm = SequenceLLM([LLMResponse(content="done")])
-    later: list[bool] = []
-
-    async def raises(workspace: Workspace) -> CheckResult:
-        raise RuntimeError("check failed")
-
-    async def passes(workspace: Workspace) -> CheckResult:
-        later.append(True)
-        return CheckResult(name="later", passed=True)
-
-    result = asyncio.run(
-        _runner(lambda: llm).run(
-            EvalCase(name="check-errors", prompt="Inspect"),
-            checks=[NamedCheck("raises", raises), NamedCheck("later", passes)],
-        )
-    )
-
-    assert result.status is EvalStatus.ERROR
-    assert result.checks[0].error == "RuntimeError: check failed"
-    assert result.checks[1].passed is True
-    assert later == [True]
-
-
-def test_check_error_takes_precedence_over_failure_and_later_checks_run() -> None:
+@pytest.mark.parametrize("raise_check", [False, True])
+def test_failed_check_continues_and_error_takes_precedence(
+    raise_check: bool,
+) -> None:
     llm = SequenceLLM([LLMResponse(content="done")])
     later: list[bool] = []
 
     async def raises(workspace: Workspace) -> CheckResult:
         raise RuntimeError("checker broke")
 
-    async def passes(workspace: Workspace) -> CheckResult:
+    async def passing(workspace: Workspace) -> CheckResult:
         later.append(True)
         return CheckResult(name="later", passed=True)
 
+    checks = [NamedCheck("ordinary_failure", _ordinary_failure)]
+    if raise_check:
+        checks.append(NamedCheck("raises", raises))
+    checks.append(NamedCheck("later", passing))
+
     result = asyncio.run(
         _runner(lambda: llm).run(
-            EvalCase(name="error-precedence", prompt="Inspect"),
-            checks=[
-                NamedCheck("ordinary_failure", _ordinary_failure),
-                NamedCheck("raises", raises),
-                NamedCheck("later", passes),
-            ],
+            EvalCase(name="mixed", prompt="Inspect"),
+            checks=checks,
         )
     )
 
-    assert result.status is EvalStatus.ERROR
-    assert [check.passed for check in result.checks] == [False, False, True]
+    assert result.status is (EvalStatus.ERROR if raise_check else EvalStatus.FAIL)
+    assert [item.passed for item in result.checks] == (
+        [False, False, True] if raise_check else [False, True]
+    )
     assert result.checks[0].error is None
-    assert result.checks[1].error == "RuntimeError: checker broke"
+    if raise_check:
+        assert result.checks[1].error == "RuntimeError: checker broke"
     assert later == [True]
+
+
+async def _ordinary_failure(workspace: Workspace) -> CheckResult:
+    return CheckResult(name="ordinary_failure", passed=False, message="not satisfied")
 
 
 @pytest.mark.parametrize(
@@ -445,12 +405,17 @@ def test_invalid_check_name_or_return_is_error(
     assert expected_error in result.checks[0].error
 
 
-def test_budget_error_after_edit_keeps_passing_check_evidence() -> None:
+@pytest.mark.parametrize("failure", ["budget", "llm"])
+def test_execution_error_after_edit_keeps_final_state_evidence(
+    failure: str,
+) -> None:
     llm = SequenceLLM([_edit_response("answer.txt", "old", "new")])
+    budget = RunBudget(max_steps=1) if failure == "budget" else RunBudget(max_steps=20)
+    expected_error = "RunBudgetExceeded" if failure == "budget" else "IndexError"
     result = asyncio.run(
-        _runner(lambda: llm, budget=RunBudget(max_steps=1)).run(
+        _runner(lambda: llm, budget=budget).run(
             EvalCase(
-                name="budget-after-edit",
+                name=f"{failure}-after-edit",
                 prompt="Edit the answer",
                 files={"answer.txt": "old"},
             ),
@@ -460,26 +425,7 @@ def test_budget_error_after_edit_keeps_passing_check_evidence() -> None:
 
     assert result.status is EvalStatus.ERROR
     assert result.error is not None
-    assert "RunBudgetExceeded" in result.error
-    assert result.checks[0].passed is True
-
-
-def test_llm_error_after_edit_keeps_passing_check_evidence() -> None:
-    llm = SequenceLLM([_edit_response("answer.txt", "old", "new")])
-    result = asyncio.run(
-        _runner(lambda: llm).run(
-            EvalCase(
-                name="llm-after-edit",
-                prompt="Edit the answer",
-                files={"answer.txt": "old"},
-            ),
-            checks=[FileContentEqualsCheck("answer.txt", "new")],
-        )
-    )
-
-    assert result.status is EvalStatus.ERROR
-    assert result.error is not None
-    assert "IndexError" in result.error
+    assert expected_error in result.error
     assert result.checks[0].passed is True
 
 

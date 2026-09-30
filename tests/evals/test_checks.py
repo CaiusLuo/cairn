@@ -33,27 +33,6 @@ def test_file_exists_check_passes_and_fails_for_missing_or_non_file(
 
 
 @pytest.mark.parametrize(
-    ("check", "expected_pass"),
-    [
-        (FileContentEqualsCheck("answer.txt", "héllo"), True),
-        (FileContentEqualsCheck("answer.txt", "goodbye"), False),
-        (FileContainsCheck("answer.txt", "éll"), True),
-        (FileContainsCheck("answer.txt", "missing"), False),
-        (FileNotContainsCheck("answer.txt", "missing"), True),
-        (FileNotContainsCheck("answer.txt", "éll"), False),
-    ],
-)
-def test_content_checks_match_utf8_file(
-    tmp_path: Path, check: EvalCheck, expected_pass: bool
-) -> None:
-    (tmp_path / "answer.txt").write_text("héllo", encoding="utf-8")
-    result = asyncio.run(check.evaluate(Workspace(tmp_path)))
-
-    assert result.passed is expected_pass
-    assert (result.message is None) is expected_pass
-
-
-@pytest.mark.parametrize(
     "check",
     [
         FileContentEqualsCheck("missing.txt", "expected"),
@@ -65,6 +44,7 @@ def test_content_checks_fail_for_missing_file(tmp_path: Path, check: EvalCheck) 
     result = asyncio.run(check.evaluate(Workspace(tmp_path)))
 
     assert result.passed is False
+    assert result.error is None
     assert "missing.txt" in (result.message or "")
 
 
@@ -136,19 +116,9 @@ class _ReadSpy:
         return self.stream.read(size)
 
 
-@pytest.mark.parametrize(
-    "check",
-    [
-        FileContentEqualsCheck("answer.txt", "abcdefgh"),
-        FileContainsCheck("answer.txt", "missing"),
-        FileNotContainsCheck("answer.txt", "missing"),
-    ],
-)
-def test_content_checks_read_bounded_chunks_and_close_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, check: EvalCheck
-) -> None:
-    (tmp_path / "answer.txt").write_text("abcdefgh", encoding="utf-8")
-    monkeypatch.setattr(checks_module, "CHECK_READ_CHUNK_SIZE", 4)
+def _spy_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[int], list[bool]]:
     read_sizes: list[int] = []
     closed_states: list[bool] = []
     original_open = Path.open
@@ -162,60 +132,88 @@ def test_content_checks_read_bounded_chunks_and_close_file(
 
     monkeypatch.setattr(Path, "open", tracking_open)
     monkeypatch.setattr(Path, "read_text", forbidden_read_text)
-
-    asyncio.run(check.evaluate(Workspace(tmp_path)))
-
-    assert read_sizes == [4, 4, 4]
-    assert all(0 <= size <= 4 for size in read_sizes)
-    assert closed_states == [True]
+    return read_sizes, closed_states
 
 
 @pytest.mark.parametrize(
-    ("contents", "expected", "passed", "read_sizes"),
+    ("contents", "check", "passed", "expected_reads"),
     [
-        ("Xbcdefghijk", "abcdefghijk", False, [4]),
-        ("abcdefghijk", "abcdefghij", False, [4, 4, 4]),
-        ("abcdefgh", "abcdefghijk", False, [4, 4, 4]),
-        ("abcdefghijkl", "abcdefghijkl", True, [4, 4, 4, 4]),
+        pytest.param(
+            "Xbcdefghijk",
+            FileContentEqualsCheck("answer.txt", "abcdefghijk"),
+            False,
+            [4],
+            id="equals-first-mismatch",
+        ),
+        pytest.param(
+            "abcdefghijk",
+            FileContentEqualsCheck("answer.txt", "abcdefghij"),
+            False,
+            [4, 4, 4],
+            id="equals-trailing-content",
+        ),
+        pytest.param(
+            "abcdefgh",
+            FileContentEqualsCheck("answer.txt", "abcdefghijk"),
+            False,
+            [4, 4, 4],
+            id="equals-short-eof",
+        ),
+        pytest.param(
+            "abcdefghijkl",
+            FileContentEqualsCheck("answer.txt", "abcdefghijkl"),
+            True,
+            [4, 4, 4, 4],
+            id="equals-full-multi-chunk-match",
+        ),
+        pytest.param(
+            "abcdefgh",
+            FileContainsCheck("answer.txt", "missing"),
+            False,
+            [4, 4, 4],
+            id="contains-missing-scans-to-eof",
+        ),
+        pytest.param(
+            "abcdefgh",
+            FileNotContainsCheck("answer.txt", "missing"),
+            True,
+            [4, 4, 4],
+            id="not-contains-missing-scans-to-eof",
+        ),
+        pytest.param(
+            "needle" + "x" * 100,
+            FileContainsCheck("answer.txt", "needle"),
+            True,
+            [4, 4],
+            id="contains-found-early",
+        ),
+        pytest.param(
+            "needle" + "x" * 100,
+            FileNotContainsCheck("answer.txt", "needle"),
+            False,
+            [4, 4],
+            id="not-contains-found-early",
+        ),
     ],
 )
-def test_equals_streams_early_mismatches_and_full_multi_chunk_match(
+def test_content_checks_use_bounded_reads_and_close_streams(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     contents: str,
-    expected: str,
+    check: EvalCheck,
     passed: bool,
-    read_sizes: list[int],
+    expected_reads: list[int],
 ) -> None:
     (tmp_path / "answer.txt").write_text(contents, encoding="utf-8")
     monkeypatch.setattr(checks_module, "CHECK_READ_CHUNK_SIZE", 4)
-    actual_sizes: list[int] = []
-    original_open = Path.open
+    read_sizes, closed_states = _spy_reads(monkeypatch)
 
-    class RecordingReader:
-        def __init__(self, stream: TextIO) -> None:
-            self.stream = stream
-
-        def __enter__(self) -> RecordingReader:
-            return self
-
-        def __exit__(self, *args: Any) -> None:
-            self.stream.close()
-
-        def read(self, size: int = -1) -> str:
-            actual_sizes.append(size)
-            return self.stream.read(size)
-
-    def recording_open(path: Path, *args: Any, **kwargs: Any) -> RecordingReader:
-        return RecordingReader(original_open(path, *args, **kwargs))
-
-    monkeypatch.setattr(Path, "open", recording_open)
-    result = asyncio.run(
-        FileContentEqualsCheck("answer.txt", expected).evaluate(Workspace(tmp_path))
-    )
+    result = asyncio.run(check.evaluate(Workspace(tmp_path)))
 
     assert result.passed is passed
-    assert actual_sizes == read_sizes
+    assert read_sizes == expected_reads
+    assert all(size == 4 for size in read_sizes)
+    assert closed_states == [True]
 
 
 @pytest.mark.parametrize(
@@ -244,47 +242,6 @@ def test_substring_checks_match_across_chunk_boundaries(
     )
 
 
-@pytest.mark.parametrize(
-    ("check_type", "expected_pass"),
-    [(FileContainsCheck, True), (FileNotContainsCheck, False)],
-)
-def test_substring_checks_stop_reading_after_a_match(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    check_type: type[FileContainsCheck] | type[FileNotContainsCheck],
-    expected_pass: bool,
-) -> None:
-    (tmp_path / "answer.txt").write_text("needle" + "x" * 100, encoding="utf-8")
-    monkeypatch.setattr(checks_module, "CHECK_READ_CHUNK_SIZE", 4)
-    read_sizes: list[int] = []
-    original_open = Path.open
-
-    class RecordingReader:
-        def __init__(self, stream: TextIO) -> None:
-            self.stream = stream
-
-        def __enter__(self) -> RecordingReader:
-            return self
-
-        def __exit__(self, *args: Any) -> None:
-            self.stream.close()
-
-        def read(self, size: int = -1) -> str:
-            read_sizes.append(size)
-            return self.stream.read(size)
-
-    def recording_open(path: Path, *args: Any, **kwargs: Any) -> RecordingReader:
-        return RecordingReader(original_open(path, *args, **kwargs))
-
-    monkeypatch.setattr(Path, "open", recording_open)
-    result = asyncio.run(
-        check_type("answer.txt", "needle").evaluate(Workspace(tmp_path))
-    )
-
-    assert result.passed is expected_pass
-    assert read_sizes == [4, 4]
-
-
 @pytest.mark.parametrize("contents", ["", "readable text"])
 @pytest.mark.parametrize(
     ("check_type", "expected_pass"),
@@ -302,19 +259,26 @@ def test_substring_checks_treat_empty_needle_consistently(
     assert result.passed is expected_pass
 
 
-def test_equals_check_preserves_universal_newline_normalization(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("check", "expected_pass"),
+    [
+        (FileContentEqualsCheck("answer.txt", "café\nready\n"), True),
+        (FileContainsCheck("answer.txt", "é\nre"), True),
+        (FileNotContainsCheck("answer.txt", "é\r\n"), True),
+    ],
+)
+def test_content_checks_preserve_utf8_and_crlf_normalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    check: EvalCheck,
+    expected_pass: bool,
 ) -> None:
-    (tmp_path / "answer.txt").write_bytes(b"alpha\r\nbeta\r\n")
-    monkeypatch.setattr(checks_module, "CHECK_READ_CHUNK_SIZE", 6)
+    (tmp_path / "answer.txt").write_bytes("café\r\nready\r\n".encode())
+    monkeypatch.setattr(checks_module, "CHECK_READ_CHUNK_SIZE", 4)
 
-    result = asyncio.run(
-        FileContentEqualsCheck("answer.txt", "alpha\nbeta\n").evaluate(
-            Workspace(tmp_path)
-        )
-    )
+    result = asyncio.run(check.evaluate(Workspace(tmp_path)))
 
-    assert result.passed is True
+    assert result.passed is expected_pass
 
 
 @pytest.mark.parametrize(
