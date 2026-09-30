@@ -133,6 +133,29 @@ prefix, or the list of recent traces without calling the model:
 
 Use `/help` to list all interactive commands.
 
+## Coding smoke evals
+
+Run the five-case coding smoke eval from the repository root:
+
+```bash
+uv run python examples/evals/run_coding_smoke.py
+```
+
+It uses the same `CAIRN_LLM_MODEL`, `CAIRN_LLM_API_KEY`, and `CAIRN_BASE_URL`
+configuration as the CLI. Shell environment values take precedence over `.env`;
+`.env` values are not injected into child processes. The cases check single-file
+bug fixes, multi-file refactoring, helper extraction, minimal changes, and
+correct no-op behavior. Each run allows 20 steps and 120 seconds, with 2 seconds
+per check. The baseline is noninteractive and has no `NETWORK` grants; provider
+calls use the normal host credentials.
+
+Traces are saved under `.cairn/eval-traces`, outside temporary workspaces. FAIL
+and ERROR lines include a trace ID when available. Exit codes are 0 when all
+cases pass, 1 for any FAIL or ERROR, and 2 for missing configuration. This is a
+simple one-run signal, not a benchmark, and text checks do not establish general
+Python semantics. A no-op PASS means only that the file stayed unchanged; inspect
+its trace to confirm the agent examined the file.
+
 ## Development
 
 Run the complete local quality suite:
