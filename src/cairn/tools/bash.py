@@ -128,38 +128,6 @@ def _resolve_uv_cache_dir(env: Mapping[str, str]) -> Path | None:
     return None
 
 
-def validate_bash_arguments(arguments: dict[str, Any]) -> str:
-    """Validate the Bash tool input contract and return the command.
-
-    Argument validity is owned by the tool that declares the schema, so a
-    malformed call is an ``InvalidArguments`` tool failure and never an
-    authorization decision. Shell syntax is not validated here: an unterminated
-    quote is the shell's error to report.
-    """
-    command = arguments.get("command")
-    if not isinstance(command, str) or not command.strip() or "\0" in command:
-        raise InvalidArguments("command must be a non-empty string without NUL")
-
-    unexpected = arguments.keys() - {"command", "network_access", "justification"}
-    if unexpected:
-        raise InvalidArguments(
-            f"unexpected bash command argument: {sorted(unexpected)}"
-        )
-
-    network_access = arguments.get("network_access", False)
-    if not isinstance(network_access, bool):
-        raise InvalidArguments("network_access must be a boolean")
-
-    justification = arguments.get("justification", "")
-    if not isinstance(justification, str):
-        raise InvalidArguments("justification must be a string")
-
-    if network_access and not justification.strip():
-        raise InvalidArguments("network_access requires a non-empty justification")
-
-    return command
-
-
 def _macos_sandbox_profile(
     cwd: Path,
     writable_tmpdir: Path | None,
@@ -242,6 +210,35 @@ class BashTool:
             },
         }
 
+    def validate(self, arguments: dict[str, Any]) -> None:
+        """Validate the Bash tool input contract.
+
+        Argument validity is owned by the tool that declares the schema, so a
+        malformed call is an ``InvalidArguments`` tool failure and never an
+        authorization decision. Shell syntax is not validated here: an unterminated
+        quote is the shell's error to report.
+        """
+        command = arguments.get("command")
+        if not isinstance(command, str) or not command.strip() or "\0" in command:
+            raise InvalidArguments("command must be a non-empty string without NUL")
+
+        unexpected = arguments.keys() - {"command", "network_access", "justification"}
+        if unexpected:
+            raise InvalidArguments(
+                f"unexpected bash command argument: {sorted(unexpected)}"
+            )
+
+        network_access = arguments.get("network_access", False)
+        if not isinstance(network_access, bool):
+            raise InvalidArguments("network_access must be a boolean")
+
+        justification = arguments.get("justification", "")
+        if not isinstance(justification, str):
+            raise InvalidArguments("justification must be a string")
+
+        if network_access and not justification.strip():
+            raise InvalidArguments("network_access requires a non-empty justification")
+
     async def _collect_output(
         self, process: asyncio.subprocess.Process
     ) -> tuple[bytes, bool, bytes, bool, int]:
@@ -297,7 +294,8 @@ class BashTool:
         *,
         context: ToolExecutionContext | None = None,
     ) -> ToolResult:
-        command = validate_bash_arguments(arguments)
+        self.validate(arguments)
+        command = arguments["command"]
         network_access = context is not None and context.network_access
 
         cwd = self.workspace.root

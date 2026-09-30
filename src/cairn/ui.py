@@ -120,6 +120,11 @@ def console_event_handler(event: Event) -> None:
 
             console.print(f"✗ {tool}: {error}", style="bold red", markup=False)
 
+        case "tool_denied":
+            console.print(
+                f"✗ denied: {event.data['error']}", style="bold red", markup=False
+            )
+
         case "agent_finish":
             console.print("[dim]✓ done[/dim]")
 

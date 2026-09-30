@@ -17,23 +17,24 @@ autonomous coding agent.
 - In-process conversation state for user, assistant, and tool messages.
 - LiteLLM-backed model calls, including tool-call parsing.
 - A tool registry with Bash, bounded file reading, and guarded file editing.
-- Sandbox-first permissions: normal workspace operations run without approval,
-  a narrow `sudo` guardrail is denied before execution, and network access is
-  granted only by an explicit capability approval.
+- Sandbox-first permissions: normal local coding runs without approval, while
+  network access requires an explicit capability approval.
 - Runtime events for agent steps, tool calls, tool results, errors, completion,
   and step-limit termination.
 - JSONL traces for model, permission, tool, and turn spans, with interactive
   commands for inspecting recorded traces.
 - A Rich-powered interactive terminal interface.
 
-The Bash tool executes every command inside an OS sandbox. The workspace is
-writable, and the host temp directory and the effective uv cache stay usable.
-Reads outside those roots are allowed, but writes are confined to them; commands
-cannot modify files elsewhere in the user's home directory. Network access is
-denied by default and is granted for a single execution only when the permission
-layer approves the NETWORK capability. The `sudo` check is a narrow UX action
-guardrail: the sandbox, not command parsing, is the security boundary. Cairn does
-not currently provide persistent memory or background execution.
+The Bash tool executes every command inside an OS sandbox. On macOS, host reads
+are broadly available, while writes are confined to the workspace, a safe host
+`TMPDIR`, and the effective uv cache. On Linux, bubblewrap provides a narrower
+mounted filesystem view. Network access is isolated by default; it is enabled
+only for an execution with approved `NETWORK` capability. A session approval
+applies to later explicit `NETWORK` requests in that Cairn process; a new
+process starts without grants. A model-provided request flag is not approval.
+The `sudo` check is a narrow, best-effort UX guardrail; the sandbox enforces the
+filesystem and network boundary. Cairn does not currently provide persistent
+memory or background execution.
 
 ## Architecture
 
@@ -116,8 +117,9 @@ cairn> /exit
 Goodbye! see you next time.
 ```
 
-Use `/exit` or `/quit` to end the session. Cairn asks for confirmation before a
-command that is not covered by its automatic allow or deny rules.
+Use `/exit` or `/quit` to end the session. Normal local operations within the
+sandbox need no approval; an explicit request for extra `NETWORK` capability
+requires approval, which can apply to later network requests in that session.
 
 Each turn records trace spans under `.cairn/traces/`. These commands inspect the
 latest completed turn in the current session, a stored trace by ID or unique ID

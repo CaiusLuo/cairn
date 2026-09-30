@@ -85,6 +85,25 @@ def test_console_event_handler_renders_each_event_type(
     assert rendered.rstrip().endswith("trace: 0123456789abcdef (ok)")
 
 
+def test_console_event_handler_renders_policy_denial_literally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = _capture_console(monkeypatch)
+
+    ui.console_event_handler(
+        Event(
+            type="tool_denied",
+            data={
+                "tool": "bash",
+                "error": "sudo is not supported",
+                "error_type": "PolicyDenied",
+            },
+        )
+    )
+
+    assert output.getvalue().strip() == "✗ denied: sudo is not supported"
+
+
 def test_console_event_handler_reports_trace_persistence_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

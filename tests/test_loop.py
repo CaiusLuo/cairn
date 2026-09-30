@@ -59,6 +59,9 @@ class BlockingTool:
     def schema(self) -> dict[str, Any]:
         return {"name": self.name}
 
+    def validate(self, arguments: dict[str, Any]) -> None:
+        pass
+
     async def execute(
         self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
     ) -> ToolResult:

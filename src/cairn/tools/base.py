@@ -39,6 +39,10 @@ class Tool(Protocol):
 
     def schema(self) -> dict[str, Any]: ...
 
+    def validate(self, arguments: dict[str, Any]) -> None:
+        """Check the input contract without side effects; raise InvalidArguments."""
+        ...
+
     async def execute(
         self,
         arguments: dict[str, Any],

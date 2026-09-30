@@ -18,7 +18,7 @@ from cairn.core.permissions import (
     evaluate_permission_policy,
 )
 from cairn.observability.models import Span, SpanStatus
-from cairn.tools.base import ToolExecutionContext, ToolNotFound
+from cairn.tools.base import ToolExecutionContext
 
 
 def _ask_for_approval(agent: Agent, tool_call: ToolCall) -> PermissionResult:
@@ -62,17 +62,14 @@ def _permission_failure(permission: PermissionResult) -> ToolFailure:
     return ToolFailure(error="Permission denied by user.", type="PermissionDenied")
 
 
-def _record_tool_not_found(
+def _record_tool_error(
     agent: Agent,
     tool_call: ToolCall,
     turn_span: Span | None,
-    error: ToolNotFound,
+    error: Exception,
+    tool_span: Span | None = None,
 ) -> None:
-    """Record an unresolved tool exactly like a tool execution error.
-
-    Existence is not permission, so an unknown tool is a tool failure: the model
-    gets a ToolNotFound fact and the trace keeps a failed tool span.
-    """
+    """Record resolution, validation, or execution failure through one path."""
     failure = ToolFailure(error=str(error), type=type(error).__name__)
 
     agent.state.add_tool_message(
@@ -81,14 +78,15 @@ def _record_tool_not_found(
     )
 
     if agent.tracer is not None and turn_span is not None:
-        tool_span = agent.tracer.start_child_span(
-            turn_span,
-            "tool.execute",
-            attributes={
-                "tool": tool_call.name,
-                "tool_call_id": tool_call.id,
-            },
-        )
+        if tool_span is None:
+            tool_span = agent.tracer.start_child_span(
+                turn_span,
+                "tool.execute",
+                attributes={
+                    "tool": tool_call.name,
+                    "tool_call_id": tool_call.id,
+                },
+            )
         tool_span.attributes["error_type"] = failure.type
         agent.tracer.end_span(
             tool_span,
@@ -317,25 +315,39 @@ async def run_turn(
                     )
                 )
 
-                # Existence is not permission: resolve the tool first so an
-                # unknown name is a tool failure, never an approval request.
+                # Existence and validity must precede any authority approval.
                 try:
-                    agent.tools.get_tool(tool_call.name)
-                except ToolNotFound as exc:
-                    _record_tool_not_found(agent, tool_call, turn_span, exc)
+                    tool = agent.tools.get_tool(tool_call.name)
+                    tool.validate(tool_call.arguments)
+                except Exception as exc:
                     pending_tool_calls.pop(0)
+                    _record_tool_error(agent, tool_call, turn_span, exc)
                     continue
 
                 permission = _check_tool_permission(agent, tool_call, turn_span)
 
-                if not permission.allowed:
-                    tool_content = _permission_failure(permission).to_content()
+                if (
+                    permission.policy_decision is PermissionDecision.DENY
+                    or not permission.allowed
+                ):
+                    failure = _permission_failure(permission)
+                    tool_content = failure.to_content()
 
                     agent.state.add_tool_message(
                         tool_call_id=tool_call.id,
                         content=tool_content,
                     )
                     pending_tool_calls.pop(0)
+                    agent.emit(
+                        Event(
+                            type="tool_denied",
+                            data={
+                                "tool": tool_call.name,
+                                "error": failure.error,
+                                "error_type": failure.type,
+                            },
+                        )
+                    )
 
                     continue
 
@@ -353,8 +365,7 @@ async def run_turn(
 
                 try:
                     tool_execution_started = True
-                    result = await agent.tools.execute(
-                        name=tool_call.name,
+                    result = await tool.execute(
                         arguments=tool_call.arguments,
                         # Authority comes only from the approved capability, never
                         # from the model-provided arguments.
@@ -389,36 +400,8 @@ async def run_turn(
                     raise
 
                 except Exception as exc:
-                    tool_content = ToolFailure(
-                        error=str(exc),
-                        type=type(exc).__name__,
-                    ).to_content()
-
-                    agent.state.add_tool_message(
-                        tool_call_id=tool_call.id,
-                        content=tool_content,
-                    )
                     pending_tool_calls.pop(0)
-
-                    if tool_span is not None and agent.tracer is not None:
-                        tool_span.attributes["error_type"] = type(exc).__name__
-
-                        agent.tracer.end_span(
-                            tool_span,
-                            status=SpanStatus.ERROR,
-                            error=f"{type(exc).__name__}: {exc}",
-                        )
-
-                    agent.emit(
-                        Event(
-                            type="tool_error",
-                            data={
-                                "tool": tool_call.name,
-                                "error": str(exc),
-                                "error_type": type(exc).__name__,
-                            },
-                        )
-                    )
+                    _record_tool_error(agent, tool_call, turn_span, exc, tool_span)
 
                     continue
                 else:

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from cairn.core.models import ToolResult
-from cairn.tools.base import ToolExecutionContext
+from cairn.tools.base import InvalidArguments, ToolExecutionContext
 from cairn.workspace.workspace import Workspace
 
 READ_FILE_MAX_LINES = 200
@@ -123,6 +123,20 @@ def _decode_bounded_utf8(data: bytes, *, truncated: bool) -> str:
     return decoder.decode(data, final=not truncated)
 
 
+def _validate_file_path(
+    workspace: Workspace, arguments: dict[str, Any], accepted: set[str]
+) -> None:
+    if arguments.keys() - accepted:
+        raise InvalidArguments("unexpected file tool argument")
+    raw_path = arguments.get("path")
+    if isinstance(raw_path, str) and "\0" in raw_path:
+        raise InvalidArguments("path must not contain NUL")
+    try:
+        workspace.resolve_path(raw_path)
+    except ValueError as exc:
+        raise InvalidArguments(str(exc)) from exc
+
+
 class ReadFileTool:
     name = "read_file"
     description = "Read up to 200 lines of a UTF-8 workspace file."
@@ -152,13 +166,10 @@ class ReadFileTool:
             },
         }
 
-    async def execute(
-        self,
-        arguments: dict[str, Any],
-        *,
-        context: ToolExecutionContext | None = None,
-    ) -> ToolResult:
-        path = self.workspace.resolve_path(arguments.get("path"))
+    def validate(self, arguments: dict[str, Any]) -> None:
+        _validate_file_path(
+            self.workspace, arguments, {"path", "start_line", "end_line"}
+        )
         start = arguments.get("start_line", 1)
         end = arguments.get("end_line", start + 199 if isinstance(start, int) else 0)
         if (
@@ -168,7 +179,18 @@ class ReadFileTool:
             or end < start
             or end - start >= READ_FILE_MAX_LINES
         ):
-            raise ValueError("read_file requires a range of 1 to 200 lines")
+            raise InvalidArguments("read_file requires a range of 1 to 200 lines")
+
+    async def execute(
+        self,
+        arguments: dict[str, Any],
+        *,
+        context: ToolExecutionContext | None = None,
+    ) -> ToolResult:
+        self.validate(arguments)
+        path = self.workspace.resolve_path(arguments["path"])
+        start = arguments.get("start_line", 1)
+        end = arguments.get("end_line", start + 199)
         if not path.is_file():
             raise FileNotFoundError(f"File not found: {arguments['path']}")
 
@@ -231,17 +253,23 @@ class EditFileTool:
             },
         }
 
+    def validate(self, arguments: dict[str, Any]) -> None:
+        _validate_file_path(self.workspace, arguments, {"path", "old_text", "new_text"})
+        if not isinstance(arguments.get("old_text"), str) or not isinstance(
+            arguments.get("new_text"), str
+        ):
+            raise InvalidArguments("old_text and new_text must be strings")
+
     async def execute(
         self,
         arguments: dict[str, Any],
         *,
         context: ToolExecutionContext | None = None,
     ) -> ToolResult:
-        path = self.workspace.resolve_path(arguments.get("path"))
-        old_text = arguments.get("old_text")
-        new_text = arguments.get("new_text")
-        if not isinstance(old_text, str) or not isinstance(new_text, str):
-            raise ValueError("old_text and new_text must be strings")
+        self.validate(arguments)
+        path = self.workspace.resolve_path(arguments["path"])
+        old_text = arguments["old_text"]
+        new_text = arguments["new_text"]
 
         creating = old_text == ""
         if creating:

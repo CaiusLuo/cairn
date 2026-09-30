@@ -64,6 +64,12 @@ class ApprovalGatedEditTool:
     def schema(self) -> dict[str, Any]:
         return {"name": self.name}
 
+    def validate(self, arguments: dict[str, Any]) -> None:
+        edit_arguments = {
+            key: arguments.get(key) for key in ("path", "old_text", "new_text")
+        }
+        self._inner.validate(edit_arguments)
+
     async def execute(
         self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
     ) -> ToolResult:

@@ -39,10 +39,10 @@ class PermissionChoice(StrEnum):
 
 
 class PermissionSource(StrEnum):
-    """Where a decision's authority came from.
+    """Decision provenance for traces and model-facing denial semantics.
 
-    This is observability metadata. Control flow branches on
-    :class:`PermissionDecision`, never on this value.
+    Authority control branches on PermissionDecision and granted capabilities,
+    never on this value.
     """
 
     BASELINE = "baseline"
@@ -95,20 +95,11 @@ def _is_sudo_guardrail(tool_call: ToolCall) -> bool:
 
 
 def requested_capability(tool_call: ToolCall) -> PermissionCapability | None:
-    """Return the capability a well-formed tool call asks for, if any.
-
-    A malformed request is not a capability request: it falls through to the
-    baseline policy, and the tool reports an invalid-arguments failure. Only a
-    complete request can become an approval prompt.
-    """
+    """Return the capability requested by a tool call already validated by its tool."""
     if tool_call.name != "bash":
         return None
 
     if tool_call.arguments.get("network_access") is not True:
-        return None
-
-    justification = tool_call.arguments.get("justification")
-    if not isinstance(justification, str) or not justification.strip():
         return None
 
     return PermissionCapability.NETWORK
@@ -118,7 +109,7 @@ def evaluate_permission_policy(tool_call: ToolCall) -> PermissionResult:
     """Pure baseline policy: intent guardrails only.
 
     * the sudo guardrail is hard denied before execution;
-    * a well-formed capability request asks for approval;
+    * a validated capability request asks for approval;
     * every other call is a normal operation inside the fixed sandbox.
     """
     if _is_sudo_guardrail(tool_call):

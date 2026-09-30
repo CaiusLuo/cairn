@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 
 from cairn.core.models import ToolResult
-from cairn.tools.base import ToolExecutionContext, ToolNotFound
+from cairn.tools.base import InvalidArguments, ToolExecutionContext, ToolNotFound
 from cairn.tools.registry import ToolRegistry
 
 
@@ -14,6 +14,10 @@ class EchoTool:
 
     def schema(self) -> dict[str, Any]:
         return {"name": self.name}
+
+    def validate(self, arguments: dict[str, Any]) -> None:
+        if "value" not in arguments:
+            raise InvalidArguments("echo requires a value")
 
     async def execute(
         self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None

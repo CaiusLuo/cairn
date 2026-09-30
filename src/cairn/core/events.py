@@ -7,6 +7,7 @@ EventType = Literal[
     "tool_call",
     "tool_result",
     "tool_error",
+    "tool_denied",
     "agent_finish",
     "agent_budget_exhausted",
     "trace_start",

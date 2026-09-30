@@ -92,38 +92,6 @@ def test_sudo_guardrail_is_best_effort_only(command: str) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    "arguments",
-    [
-        {},
-        {"command": None},
-        {"command": 1},
-        {"command": ""},
-        {"command": " "},
-        {"command": "'unterminated"},
-        {"command": "\0"},
-        {"command": "pwd", "extra": True},
-        {"command": "pwd", "network_access": "true"},
-        {"command": "pwd", "network_access": True},
-        {"command": "pwd", "network_access": True, "justification": " "},
-        {"command": "pwd", "justification": 123},
-    ],
-)
-def test_invalid_arguments_are_not_permission_decisions(
-    arguments: dict[str, object],
-) -> None:
-    """Argument validity belongs to the tool contract, not to the policy.
-
-    Malformed calls are neither approved nor denied here: they fall through to
-    the baseline and the Bash tool reports an invalid-arguments failure. Shell
-    syntax errors are the shell's to report as well.
-    """
-    call = ToolCall(id="1", name="bash", arguments=arguments)
-
-    assert requested_capability(call) is None
-    assert evaluate_permission_policy(call).policy_decision == PermissionDecision.ALLOW
-
-
 def test_policy_does_not_answer_tool_existence() -> None:
     """Registration is the registry's truth; the policy stays silent about it.
 
@@ -135,28 +103,18 @@ def test_policy_does_not_answer_tool_existence() -> None:
     assert evaluate_permission_policy(call).policy_decision == PermissionDecision.ALLOW
 
 
-def test_requested_capability_requires_a_complete_request() -> None:
+def test_requested_capability_for_validated_calls() -> None:
     assert requested_capability(network_call()) == PermissionCapability.NETWORK
+    assert evaluate_permission_policy(network_call()).policy_decision == (
+        PermissionDecision.ASK
+    )
     assert (
         requested_capability(
-            ToolCall(
-                id="1",
-                name="read_file",
-                arguments={"network_access": True, "justification": "x"},
-            )
+            ToolCall(id="1", name="read_file", arguments={"path": "README.md"})
         )
         is None
     )
     assert requested_capability(bash_call("curl example.com")) is None
-    assert (
-        requested_capability(bash_call("curl example.com", network_access=True)) is None
-    )
-    assert (
-        requested_capability(
-            bash_call("curl example.com", network_access=True, justification="   ")
-        )
-        is None
-    )
 
 
 @pytest.mark.parametrize(
