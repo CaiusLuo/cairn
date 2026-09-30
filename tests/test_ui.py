@@ -2,12 +2,16 @@ from io import StringIO
 
 import pytest
 from rich.console import Console
-from rich.prompt import Confirm
+from rich.prompt import Prompt
 
 import cairn.ui as ui
 from cairn.core.events import Event
 from cairn.core.models import ToolCall
-from cairn.core.permissions import PermissionDecision, PermissionResult
+from cairn.core.permissions import (
+    PermissionCapability,
+    PermissionChoice,
+    PermissionRequest,
+)
 
 
 def _capture_console(monkeypatch: pytest.MonkeyPatch) -> StringIO:
@@ -310,68 +314,39 @@ def test_compact_tool_fields_are_rendered_literally(
     assert "[/bold red]" in rendered
 
 
-def test_console_permission_handler_returns_automatic_decision(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _capture_console(monkeypatch)
-    tool_call = ToolCall(
-        id="call-1",
-        name="bash",
-        arguments={"command": "pwd"},
-    )
-
-    assert ui.console_permission_handler(tool_call) == PermissionResult(
-        policy_decision=PermissionDecision.ALLOW,
-        allowed=True,
-    )
-
-
-def test_console_permission_handler_prompts_for_bash(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    output = _capture_console(monkeypatch)
-    confirm_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-
-    def confirm_yes(*args: object, **kwargs: object) -> bool:
-        confirm_calls.append((args, kwargs))
-        return True
-
-    monkeypatch.setattr(Confirm, "ask", confirm_yes)
-    command = "printf '[/bold]'"
-    tool_call = ToolCall(
-        id="call-1",
-        name="bash",
-        arguments={"command": command},
-    )
-
-    assert ui.console_permission_handler(tool_call) == PermissionResult(
-        policy_decision=PermissionDecision.ASK,
-        allowed=True,
-        prompted=True,
-    )
-    assert "Command: printf '[/bold]'" in output.getvalue()
-    assert confirm_calls == [(("Allow this action?",), {"default": False})]
-
-
-def test_console_permission_handler_can_deny_other_tools(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "answer, expected",
+    [
+        ("1", PermissionChoice.ALLOW_ONCE),
+        ("2", PermissionChoice.ALLOW_SESSION),
+        ("3", PermissionChoice.DENY),
+    ],
+)
+def test_permission_prompt(
+    monkeypatch: pytest.MonkeyPatch, answer: str, expected: PermissionChoice
 ) -> None:
     output = _capture_console(monkeypatch)
 
-    def confirm_no(*_args: object, **_kwargs: object) -> bool:
-        return False
+    def choose(*args: object, **kwargs: object) -> str:
+        assert kwargs["default"] == "3"
+        return answer
 
-    monkeypatch.setattr(Confirm, "ask", confirm_no)
-    tool_call = ToolCall(
-        id="call-1",
-        name="other[/bold]",
-        arguments={"value": 1},
+    monkeypatch.setattr(Prompt, "ask", choose)
+    request = PermissionRequest(
+        capability=PermissionCapability.NETWORK,
+        justification="test [/dim]",
+        tool_call=ToolCall(
+            id="1", name="bash", arguments={"command": "printf '[/bold]'"}
+        ),
     )
-
-    assert ui.console_permission_handler(tool_call) == PermissionResult(
-        policy_decision=PermissionDecision.ASK,
-        allowed=False,
-        prompted=True,
-    )
-    assert "Tool: other[/bold]" in output.getvalue()
-    assert "Arguments: {'value': 1}" in output.getvalue()
+    assert ui.console_permission_prompt(request) == expected
+    for text in (
+        "Permission required",
+        "Capability: network",
+        "Command: printf '[/bold]'",
+        "Reason: test [/dim]",
+        "[1] Allow once",
+        "[2] Allow network for this session",
+        "[3] Deny",
+    ):
+        assert text in output.getvalue()

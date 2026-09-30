@@ -12,13 +12,14 @@ from cairn.commands.router import CommandRouter
 from cairn.core.budget import RunBudget, RunBudgetExceeded
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
+from cairn.core.permissions import SessionPermissionHandler
 from cairn.input import CliInput
 from cairn.observability.reader import JsonlTraceReader
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.tracer import Tracer
 from cairn.ui import (
     console_event_handler,
-    console_permission_handler,
+    console_permission_prompt,
     print_assistant_response,
     print_banner,
     print_runtime_error,
@@ -91,7 +92,7 @@ async def main(cli_input: CliInput | None = None) -> None:
         workspace=workspace,
         llm=LiteLLMClient(model=model, api_key=api_key, api_base=base_url),
         event_handler=handle_event,
-        permission_handler=console_permission_handler,
+        permission_handler=SessionPermissionHandler(prompt=console_permission_prompt),
         tracer=tracer,
     )
 

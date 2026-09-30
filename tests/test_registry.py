@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 
 from cairn.core.models import ToolResult
+from cairn.tools.base import ToolExecutionContext
 from cairn.tools.registry import ToolRegistry
 
 
@@ -14,7 +15,9 @@ class EchoTool:
     def schema(self) -> dict[str, Any]:
         return {"name": self.name}
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(
+        self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
+    ) -> ToolResult:
         return ToolResult(stdout=str(arguments["value"]), exit_code=0)
 
 

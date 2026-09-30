@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from cairn.core.models import ToolResult
+from cairn.core.permissions import validate_bash_arguments
+from cairn.tools.base import ToolExecutionContext
 from cairn.workspace.workspace import Workspace
 
 DEFAULT_STDOUT_CAPTURE_LIMIT = 64 * 1024
@@ -131,6 +133,7 @@ def _macos_sandbox_profile(
     cwd: Path,
     writable_tmpdir: Path | None,
     writable_uv_cache: Path | None,
+    network_access: bool = False,
 ) -> str:
     writable_roots = [cwd]
     for root in (writable_tmpdir, writable_uv_cache):
@@ -140,7 +143,7 @@ def _macos_sandbox_profile(
     return (
         "(version 1) (allow default) "
         f'(deny file-write*) (allow file-write* (literal "/dev/null") {allowed}) '
-        "(deny network*)"
+        + ("" if network_access else "(deny network*)")
     )
 
 
@@ -149,7 +152,10 @@ class BashTool:
     description = (
         "Execute a shell command. Commands start at the workspace root; do not prepend "
         "`cd <workspace>`. Only change directory when intentionally entering a workspace "
-        "subdirectory. Preserve command failure status when running verification commands."
+        "subdirectory. Preserve command failure status when running verification commands. "
+        "Network is denied by default. Set network_access=true only when the command "
+        "requires network and provide a concise justification; do not request network "
+        "preemptively for local commands."
     )
 
     def __init__(
@@ -181,7 +187,9 @@ class BashTool:
                         "command": {
                             "type": "string",
                             "description": "The shell command to execute.",
-                        }
+                        },
+                        "network_access": {"type": "boolean", "default": False},
+                        "justification": {"type": "string"},
                     },
                     "required": ["command"],
                     "additionalProperties": False,
@@ -241,12 +249,11 @@ class BashTool:
     async def execute(
         self,
         arguments: dict[str, Any],
+        *,
+        context: ToolExecutionContext | None = None,
     ) -> ToolResult:
-        command = arguments.get("command")
-        if not isinstance(command, str) or not command.strip():
-            raise ValueError("command must be a non-empty string")
-        if arguments.keys() - {"command"}:
-            raise ValueError("bash only accepts the 'command' argument")
+        command = validate_bash_arguments(arguments)
+        network_access = context is not None and context.network_access
 
         cwd = self.workspace.root
         env = build_command_env(os.environ)
@@ -261,6 +268,7 @@ class BashTool:
                 cwd,
                 _resolve_tmpdir(env),
                 _resolve_uv_cache_dir(env),
+                network_access=network_access,
             )
             argv = ["/usr/bin/sandbox-exec", "-p", profile, *command_argv]
         elif sys.platform == "linux":
@@ -270,7 +278,7 @@ class BashTool:
             argv = [
                 str(bwrap),
                 "--die-with-parent",
-                "--unshare-net",
+                *([] if network_access else ["--unshare-net"]),
                 "--unshare-pid",
                 "--dev",
                 "/dev",

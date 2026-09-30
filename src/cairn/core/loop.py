@@ -10,14 +10,20 @@ from cairn.core.budget import (
 )
 from cairn.core.events import Event
 from cairn.core.models import Message, ToolCall, ToolFailure
+from cairn.core.permissions import (
+    PermissionCapability,
+    PermissionResult,
+    SessionPermissionHandler,
+)
 from cairn.observability.models import Span, SpanStatus
+from cairn.tools.base import ToolExecutionContext
 
 
 def _check_tool_permission(
     agent: Agent,
     tool_call: ToolCall,
     turn_span: Span | None,
-) -> bool:
+) -> PermissionResult:
     permission_span = None
 
     if agent.tracer is not None and turn_span is not None:
@@ -31,28 +37,28 @@ def _check_tool_permission(
             },
         )
 
-    if agent.permission_handler is None:
-        if permission_span is not None and agent.tracer is not None:
-            permission_span.attributes.update(
-                {
-                    "allowed": True,
-                    "source": "no_handler",
-                }
-            )
-            agent.tracer.end_span(permission_span, status=SpanStatus.OK)
-        return True
-
     try:
-        permission = agent.permission_handler(tool_call)
+        baseline = SessionPermissionHandler(registered_tools=agent.tools.tools)(
+            tool_call
+        )
+        if baseline.source == "hard_deny":
+            permission = baseline
+        elif agent.permission_handler is None:
+            permission = baseline
+            if permission.allowed:
+                permission.source = "no_handler"
+        else:
+            permission = agent.permission_handler(tool_call)
         if permission_span is not None and agent.tracer is not None:
             permission_span.attributes.update(
                 {
                     "policy_decision": permission.policy_decision.value,
                     "allowed": permission.allowed,
                     "prompted": permission.prompted,
+                    "source": permission.source,
+                    "granted_capabilities": sorted(permission.granted_capabilities),
                 }
             )
-        allowed = permission.allowed
     except Exception as exc:
         if permission_span is not None and agent.tracer is not None:
             agent.tracer.end_span(
@@ -65,7 +71,7 @@ def _check_tool_permission(
         if permission_span is not None and agent.tracer is not None:
             agent.tracer.end_span(permission_span, status=SpanStatus.OK)
 
-    return allowed
+    return permission
 
 
 async def run_turn(
@@ -227,9 +233,9 @@ async def run_turn(
                     )
                 )
 
-                allowed = _check_tool_permission(agent, tool_call, turn_span)
+                permission = _check_tool_permission(agent, tool_call, turn_span)
 
-                if not allowed:
+                if not permission.allowed:
                     tool_content = ToolFailure(
                         error="Permission denied by user.",
                         type="PermissionDenied",
@@ -260,6 +266,14 @@ async def run_turn(
                     result = await agent.tools.execute(
                         name=tool_call.name,
                         arguments=tool_call.arguments,
+                        context=ToolExecutionContext(
+                            network_access=(
+                                tool_call.name == "bash"
+                                and tool_call.arguments.get("network_access") is True
+                                and PermissionCapability.NETWORK
+                                in permission.granted_capabilities
+                            )
+                        ),
                     )
 
                 except asyncio.CancelledError:

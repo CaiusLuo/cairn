@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from cairn.core.models import ToolResult
+from cairn.tools.base import ToolExecutionContext
 from cairn.workspace.workspace import Workspace
 
 READ_FILE_MAX_LINES = 200
@@ -151,7 +152,12 @@ class ReadFileTool:
             },
         }
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(
+        self,
+        arguments: dict[str, Any],
+        *,
+        context: ToolExecutionContext | None = None,
+    ) -> ToolResult:
         path = self.workspace.resolve_path(arguments.get("path"))
         start = arguments.get("start_line", 1)
         end = arguments.get("end_line", start + 199 if isinstance(start, int) else 0)
@@ -225,7 +231,12 @@ class EditFileTool:
             },
         }
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(
+        self,
+        arguments: dict[str, Any],
+        *,
+        context: ToolExecutionContext | None = None,
+    ) -> ToolResult:
         path = self.workspace.resolve_path(arguments.get("path"))
         old_text = arguments.get("old_text")
         new_text = arguments.get("new_text")

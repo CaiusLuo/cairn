@@ -13,6 +13,7 @@ from cairn.core.permissions import PermissionDecision, PermissionResult
 from cairn.llm.litellm_client import LiteLLMClient
 from cairn.observability.models import SpanStatus
 from cairn.observability.tracer import Tracer
+from cairn.tools.base import ToolExecutionContext
 from cairn.tools.registry import ToolRegistry
 from tests.loop_support import (
     TEST_BUDGET,
@@ -52,7 +53,9 @@ class BlockingTool:
     def schema(self) -> dict[str, Any]:
         return {"name": self.name}
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(
+        self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
+    ) -> ToolResult:
         self.calls.append(arguments)
         self.started.set()
         await asyncio.Event().wait()
@@ -479,7 +482,7 @@ def test_run_turn_records_tool_errors_and_continues() -> None:
     assert turn_span.status == SpanStatus.OK
 
 
-def test_run_turn_records_unknown_tool_with_same_error_fields() -> None:
+def test_run_turn_denies_unknown_tool_before_execution() -> None:
     sink = RecordingSink()
     events: list[Event] = []
     llm = SequenceLLM([tool_response(), LLMResponse(content="recovered")])
@@ -490,13 +493,12 @@ def test_run_turn_records_unknown_tool_with_same_error_fields() -> None:
 
     assert result == "recovered"
     assert json.loads(agent.state.messages[2].content or "") == {
-        "error": "Tool not found: record",
-        "type": "ValueError",
+        "error": "Permission denied by user.",
+        "type": "PermissionDenied",
     }
-    assert any(event.type == "tool_error" for event in events)
+    assert not any(event.type == "tool_error" for event in events)
     tool_spans = [span for span in sink.spans if span.name == "tool.execute"]
-    assert len(tool_spans) == 1
-    assert tool_spans[0].status == SpanStatus.ERROR
+    assert tool_spans == []
     turn_span = next(span for span in sink.spans if span.name == "agent.turn")
     assert turn_span.status == SpanStatus.OK
 
@@ -506,7 +508,9 @@ class ExitCodeTool(RecordingTool):
         super().__init__()
         self.exit_code = exit_code
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(
+        self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
+    ) -> ToolResult:
         self.calls.append(arguments)
         return ToolResult(
             stdout="out",

@@ -1,83 +1,129 @@
 import pytest
 
 from cairn.core.models import ToolCall
-from cairn.core.permissions import PermissionDecision, check_permission
-
-PERMISSION_CASES: tuple[tuple[ToolCall, PermissionDecision], ...] = (
-    (
-        ToolCall(id="1", name="other", arguments={}),
-        PermissionDecision.ASK,
-    ),
-    (
-        ToolCall(id="2", name="bash", arguments={}),
-        PermissionDecision.DENY,
-    ),
-    (
-        ToolCall(id="3", name="bash", arguments={"command": "pwd | cat"}),
-        PermissionDecision.ASK,
-    ),
-    (
-        ToolCall(id="4", name="bash", arguments={"command": "'unterminated"}),
-        PermissionDecision.DENY,
-    ),
-    (
-        ToolCall(id="5", name="bash", arguments={"command": "   "}),
-        PermissionDecision.DENY,
-    ),
-    (
-        ToolCall(id="6", name="bash", arguments={"command": "pwd"}),
-        PermissionDecision.ALLOW,
-    ),
-    (
-        ToolCall(id="7", name="bash", arguments={"command": "sudo true"}),
-        PermissionDecision.DENY,
-    ),
-    (
-        ToolCall(id="8", name="bash", arguments={"command": "git status --short"}),
-        PermissionDecision.ASK,
-    ),
-    (
-        ToolCall(id="9", name="bash", arguments={"command": "git branch"}),
-        PermissionDecision.ASK,
-    ),
-    (
-        ToolCall(id="10", name="bash", arguments={"command": "python -V"}),
-        PermissionDecision.ASK,
-    ),
-    (
-        ToolCall(id="11", name="bash", arguments={"command": "ls"}),
-        PermissionDecision.ALLOW,
-    ),
-    (
-        ToolCall(id="12", name="bash", arguments={"command": "pwd\nprintf unsafe"}),
-        PermissionDecision.ASK,
-    ),
-    (
-        ToolCall(id="13", name="bash", arguments={"command": "cat .env"}),
-        PermissionDecision.ASK,
-    ),
-    (
-        ToolCall(id="14", name="bash", arguments={"command": "rg --pre=sh pattern"}),
-        PermissionDecision.ASK,
-    ),
-    (
-        ToolCall(id="15", name="bash", arguments={"command": "ls ../"}),
-        PermissionDecision.ASK,
-    ),
-    (
-        ToolCall(id="16", name="read_file", arguments={"path": "README.md"}),
-        PermissionDecision.ASK,
-    ),
-    (
-        ToolCall(id="17", name="edit_file", arguments={"path": "README.md"}),
-        PermissionDecision.ASK,
-    ),
+from cairn.core.permissions import (
+    PermissionCapability,
+    PermissionChoice,
+    PermissionDecision,
+    PermissionRequest,
+    SessionPermissionHandler,
+    check_permission,
 )
 
 
-@pytest.mark.parametrize(("tool_call", "expected"), PERMISSION_CASES)
-def test_check_permission(
-    tool_call: ToolCall,
-    expected: PermissionDecision,
-) -> None:
-    assert check_permission(tool_call) == expected
+@pytest.mark.parametrize(
+    "name, arguments",
+    [
+        ("read_file", {"path": "README.md"}),
+        ("edit_file", {"path": "README.md"}),
+        *[
+            ("bash", {"command": command})
+            for command in (
+                "pwd",
+                "ls",
+                "git status --short",
+                "uv run pytest",
+                "python script.py",
+                "printf x > README.md",
+                'printf x > "$HOME/outside.txt"',
+                "curl example.com",
+            )
+        ],
+    ],
+)
+def test_baseline_without_prompt(name: str, arguments: dict[str, object]) -> None:
+    def unexpected(request: PermissionRequest) -> PermissionChoice:
+        pytest.fail("baseline prompted")
+
+    call = ToolCall(id="1", name=name, arguments=arguments)
+    result = SessionPermissionHandler(unexpected)(call)
+    assert result.policy_decision == PermissionDecision.ALLOW
+    assert result.allowed and not result.prompted
+    assert result.source == "baseline"
+    assert not result.granted_capabilities
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"command": None},
+        {"command": 1},
+        {"command": ""},
+        {"command": " "},
+        {"command": "'unterminated"},
+        {"command": "\0"},
+        {"command": "sudo true"},
+        {"command": "pwd", "extra": True},
+        {"command": "pwd", "network_access": "true"},
+        {"command": "pwd", "network_access": True},
+        {"command": "pwd", "network_access": True, "justification": " "},
+        {"command": "pwd", "justification": 123},
+    ],
+)
+def test_denied_bash(arguments: dict[str, object]) -> None:
+    result = SessionPermissionHandler()(
+        ToolCall(id="1", name="bash", arguments=arguments)
+    )
+    assert result.policy_decision == PermissionDecision.DENY
+    assert not result.allowed and not result.prompted
+    assert result.source == "hard_deny"
+
+
+def network_call(command: str = "curl example.com") -> ToolCall:
+    return ToolCall(
+        id="1",
+        name="bash",
+        arguments={
+            "command": command,
+            "network_access": True,
+            "justification": "needed",
+        },
+    )
+
+
+def test_unknown_tool_denied() -> None:
+    assert (
+        check_permission(ToolCall(id="1", name="unknown", arguments={}))
+        == PermissionDecision.DENY
+    )
+
+
+@pytest.mark.parametrize(
+    "choice, source",
+    [
+        (PermissionChoice.ALLOW_ONCE, "user_once"),
+        (PermissionChoice.ALLOW_SESSION, "session_grant"),
+        (PermissionChoice.DENY, "user_denied"),
+    ],
+)
+def test_session_semantics(choice: PermissionChoice, source: str) -> None:
+    prompts: list[PermissionRequest] = []
+
+    def prompt(request: PermissionRequest) -> PermissionChoice:
+        prompts.append(request)
+        return choice
+
+    handler = SessionPermissionHandler(prompt)
+    first = handler(network_call())
+    second = handler(network_call("python other.py"))
+    assert first.source == second.source == source
+    assert first.prompted
+    assert second.prompted == (choice != PermissionChoice.ALLOW_SESSION)
+    assert len(prompts) == (1 if choice == PermissionChoice.ALLOW_SESSION else 2)
+    assert first.allowed == (choice != PermissionChoice.DENY)
+    assert first.granted_capabilities == (
+        frozenset()
+        if choice == PermissionChoice.DENY
+        else frozenset({PermissionCapability.NETWORK})
+    )
+    local = handler(ToolCall(id="2", name="bash", arguments={"command": "pwd"}))
+    assert local.allowed and not local.prompted and not local.granted_capabilities
+    assert SessionPermissionHandler(prompt)(network_call()).prompted
+
+
+def test_missing_handler_denies_capability() -> None:
+    result = SessionPermissionHandler()(network_call())
+    assert not result.allowed and not result.prompted
+    assert result.source == "no_handler"
+    assert not result.granted_capabilities

@@ -265,7 +265,8 @@ def test_run_turn_ends_allowed_permission_span_once(with_handler: bool) -> None:
 
     if with_handler:
         assert permission_span.attributes["policy_decision"] == "allow"
-        assert "source" not in permission_span.attributes
+        assert permission_span.attributes["source"] == "baseline"
+        assert permission_span.attributes["granted_capabilities"] == []
     else:
         assert permission_span.attributes["source"] == "no_handler"
 

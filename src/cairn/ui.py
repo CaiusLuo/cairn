@@ -2,16 +2,11 @@ from importlib.resources import files
 
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.prompt import Confirm
+from rich.prompt import Prompt
 from rich.text import Text
 
 from cairn.core.events import Event
-from cairn.core.models import ToolCall
-from cairn.core.permissions import (
-    PermissionDecision,
-    PermissionResult,
-    check_permission,
-)
+from cairn.core.permissions import PermissionChoice, PermissionRequest
 
 console = Console()
 
@@ -157,45 +152,21 @@ def console_event_handler(event: Event) -> None:
                 )
 
 
-def console_permission_handler(tool_call: ToolCall) -> PermissionResult:
-
-    decision = check_permission(tool_call)
-
-    if decision == PermissionDecision.ALLOW:
-        return PermissionResult(
-            policy_decision=decision,
-            allowed=True,
-        )
-
-    if decision == PermissionDecision.DENY:
-        return PermissionResult(
-            policy_decision=decision,
-            allowed=False,
-        )
-
-    console.print("\n[bold yellow]Permission required[/bold yellow]")
-    tool_label = Text("Tool:", style="bold")
-    tool_label.append(f" {tool_call.name}")
-    console.print(tool_label)
-
-    if tool_call.name == "bash":
-        command = tool_call.arguments.get("command")
-        command_label = Text("Command:", style="bold")
-        command_label.append(f" {command}")
-        console.print(command_label)
-    else:
-        console.print(f"Arguments: {tool_call.arguments}", markup=False)
-
-    allowed = Confirm.ask(
-        "Allow this action?",
-        default=False,
+def console_permission_prompt(request: PermissionRequest) -> PermissionChoice:
+    console.print("\n[bold yellow]Permission required[/bold yellow]\n")
+    console.print(f"Capability: {request.capability.value}", markup=False)
+    console.print(f"Command: {request.tool_call.arguments['command']}", markup=False)
+    console.print(f"Reason: {request.justification}\n", markup=False)
+    console.print(
+        "[1] Allow once\n[2] Allow network for this session\n[3] Deny",
+        markup=False,
     )
-
-    return PermissionResult(
-        policy_decision=PermissionDecision.ASK,
-        allowed=allowed,
-        prompted=True,
-    )
+    choice = Prompt.ask("Choice", choices=["1", "2", "3"], default="3", console=console)
+    return {
+        "1": PermissionChoice.ALLOW_ONCE,
+        "2": PermissionChoice.ALLOW_SESSION,
+        "3": PermissionChoice.DENY,
+    }[choice]
 
 
 def print_runtime_error(exc: Exception) -> None:

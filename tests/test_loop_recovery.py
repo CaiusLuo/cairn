@@ -14,6 +14,7 @@ from cairn.core.permissions import PermissionDecision, PermissionResult
 from cairn.llm.base import LLMClient
 from cairn.observability.models import Span
 from cairn.observability.tracer import Tracer
+from cairn.tools.base import ToolExecutionContext
 from cairn.tools.files import EditFileTool
 from cairn.tools.registry import ToolRegistry
 from cairn.workspace.workspace import Workspace
@@ -37,7 +38,9 @@ class FailingFollowupLLM(SequenceLLM):
 
 
 class WriteThenFailTool(EditFileTool):
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(
+        self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
+    ) -> ToolResult:
         await super().execute(arguments)
         raise RuntimeError("tool failed after writing")
 

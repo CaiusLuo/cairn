@@ -5,7 +5,7 @@ from cairn.core.budget import RunBudget
 from cairn.core.events import Event
 from cairn.core.models import LLMResponse, Message, ToolCall, ToolResult
 from cairn.observability.models import Span
-from cairn.tools.base import Tool
+from cairn.tools.base import Tool, ToolExecutionContext
 from cairn.tools.registry import ToolRegistry
 
 TEST_BUDGET = RunBudget(max_steps=20)
@@ -44,13 +44,17 @@ class RecordingTool:
     def schema(self) -> dict[str, Any]:
         return {"name": self.name}
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(
+        self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
+    ) -> ToolResult:
         self.calls.append(arguments)
         return ToolResult(stdout="recorded", exit_code=0)
 
 
 class FailingTool(RecordingTool):
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(
+        self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
+    ) -> ToolResult:
         raise RuntimeError("tool failed")
 
 

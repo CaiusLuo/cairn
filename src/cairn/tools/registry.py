@@ -1,7 +1,7 @@
 from typing import Any
 
 from cairn.core.models import ToolResult
-from cairn.tools.base import Tool
+from cairn.tools.base import Tool, ToolExecutionContext
 
 
 class ToolRegistry:
@@ -24,7 +24,13 @@ class ToolRegistry:
     def schemas(self) -> list[dict[str, Any]]:
         return [tool.schema() for tool in self.tools.values()]
 
-    async def execute(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        context: ToolExecutionContext | None = None,
+    ) -> ToolResult:
         tool = self.get_tool(name)
 
-        return await tool.execute(arguments)
+        return await tool.execute(arguments, context=context)

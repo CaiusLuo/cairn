@@ -232,6 +232,14 @@ def test_bash_tool_schema_describes_required_command(tmp_path: Path) -> None:
 
     assert schema["function"]["name"] == "bash"
     assert schema["function"]["parameters"]["required"] == ["command"]
+    assert schema["function"]["parameters"]["properties"]["network_access"] == {
+        "type": "boolean",
+        "default": False,
+    }
+    assert (
+        schema["function"]["parameters"]["properties"]["justification"]["type"]
+        == "string"
+    )
     assert schema["function"]["parameters"]["additionalProperties"] is False
     assert "workspace root" in description
     assert "do not prepend `cd <workspace>`" in description
@@ -951,7 +959,7 @@ def test_bash_tool_executes_in_configured_directory(
     assert result.stderr == ""
 
 
-def test_auto_allowed_command_does_not_use_shell_path(
+def test_bare_ls_uses_system_binary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_ls = tmp_path / "ls"
