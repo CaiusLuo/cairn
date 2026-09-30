@@ -18,7 +18,7 @@ from cairn.tools.base import ToolExecutionContext
 from cairn.tools.files import EditFileTool
 from cairn.tools.registry import ToolRegistry
 from cairn.workspace.workspace import Workspace
-from tests.loop_support import (
+from tests.support.runtime import (
     TEST_BUDGET,
     FailingLLM,
     RecordingSink,

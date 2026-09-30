@@ -10,8 +10,8 @@ from cairn.evals.models import CheckResult, EvalCase, EvalCheck, EvalStatus
 from cairn.evals.runner import EvalRunner
 from cairn.llm.base import LLMClient
 from cairn.workspace.workspace import Workspace
-from tests.loop_support import TEST_BUDGET, SequenceLLM
-from tests.sandbox_support import require_working_sandbox
+from tests.support.runtime import TEST_BUDGET, SequenceLLM
+from tests.support.sandbox import require_working_sandbox
 
 
 class PassingCheck:

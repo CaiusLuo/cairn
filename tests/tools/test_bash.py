@@ -606,13 +606,13 @@ def test_macos_sandbox_runs_uv_with_real_host_environment(tmp_path: Path) -> Non
 def test_macos_sandbox_runs_uv_pytest_with_real_host_environment() -> None:
     if shutil.which("uv") is None:
         pytest.skip("uv is not installed")
-    repo_root = Path(__file__).resolve().parents[1]
-    if not (repo_root / "tests" / "test_agent_emit.py").is_file():
+    repo_root = Path(__file__).resolve().parents[2]
+    if not (repo_root / "tests" / "core" / "test_agent.py").is_file():
         pytest.skip("repository layout is not available")
 
     result = asyncio.run(
         BashTool(Workspace(repo_root), timeout=180.0).execute(
-            {"command": "uv run --no-sync pytest tests/test_agent_emit.py -v"}
+            {"command": "uv run --no-sync pytest tests/core/test_agent.py -v"}
         )
     )
 

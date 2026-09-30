@@ -22,8 +22,8 @@ from cairn.observability.tracer import Tracer
 from cairn.tools.base import ToolExecutionContext
 from cairn.tools.bash import BashTool
 from cairn.workspace.workspace import Workspace
-from tests.loop_support import TEST_BUDGET, RecordingSink, SequenceLLM
-from tests.sandbox_support import (
+from tests.support.runtime import TEST_BUDGET, RecordingSink, SequenceLLM
+from tests.support.sandbox import (
     require_working_sandbox,
     sandbox_python,
     skip_without_sandbox,

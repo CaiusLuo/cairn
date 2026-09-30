@@ -12,7 +12,7 @@ from cairn.core.models import LLMResponse, ToolCall
 from cairn.core.permissions import PermissionDecision, PermissionResult
 from cairn.repo.context import RepositoryContext
 from cairn.workspace.workspace import Workspace
-from tests.loop_support import TEST_BUDGET, SequenceLLM
+from tests.support.runtime import TEST_BUDGET, SequenceLLM
 
 
 def _git(root: Path, *args: str) -> str:

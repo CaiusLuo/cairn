@@ -26,7 +26,7 @@ from cairn.observability.tracer import Tracer
 from cairn.tools.bash import BashTool
 from cairn.tools.files import EditFileTool
 from cairn.workspace.workspace import Workspace
-from tests.loop_support import RecordingSink, SequenceLLM
+from tests.support.runtime import RecordingSink, SequenceLLM
 
 
 def _edit_response(

@@ -11,7 +11,7 @@ from cairn.core.permissions import PermissionDecision, PermissionResult
 from cairn.observability.models import SpanStatus
 from cairn.observability.tracer import Tracer
 from cairn.tools.registry import ToolRegistry
-from tests.loop_support import (
+from tests.support.runtime import (
     TEST_BUDGET,
     FailingLLM,
     FailingSink,

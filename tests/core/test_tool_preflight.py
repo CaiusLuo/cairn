@@ -23,7 +23,7 @@ from cairn.tools.base import InvalidArguments
 from cairn.tools.bash import BashTool
 from cairn.tools.files import EditFileTool, ReadFileTool
 from cairn.workspace.workspace import Workspace
-from tests.loop_support import (
+from tests.support.runtime import (
     TEST_BUDGET,
     NetworkRequestTool,
     RecordingSink,
@@ -31,7 +31,7 @@ from tests.loop_support import (
     make_agent,
     network_tool_response,
 )
-from tests.sandbox_support import require_working_sandbox
+from tests.support.sandbox import require_working_sandbox
 
 
 @pytest.mark.parametrize(
