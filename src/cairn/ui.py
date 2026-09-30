@@ -84,6 +84,27 @@ def _render_tool_result(event: Event) -> None:
     console.print(summary, style="green", markup=False)
 
 
+def _usage_suffix(event: Event) -> str:
+    usage = event.data.get("usage")
+    if not isinstance(usage, dict):
+        return ""
+
+    raw_input_tokens = usage.get("input_tokens")
+    raw_output_tokens = usage.get("output_tokens")
+    input_tokens = (
+        str(raw_input_tokens)
+        if isinstance(raw_input_tokens, int) and not isinstance(raw_input_tokens, bool)
+        else "?"
+    )
+    output_tokens = (
+        str(raw_output_tokens)
+        if isinstance(raw_output_tokens, int)
+        and not isinstance(raw_output_tokens, bool)
+        else "?"
+    )
+    return f" · tokens: input {input_tokens}, output {output_tokens}"
+
+
 def console_event_handler(event: Event) -> None:
     match event.type:
         case "agent_step":
@@ -124,13 +145,15 @@ def console_event_handler(event: Event) -> None:
             trace_id = event.data["trace_id"]
             status = event.data["status"]
             persisted = event.data.get("persisted", True)
+            usage_suffix = _usage_suffix(event)
 
             if persisted:
-                console.print(f"[dim]trace: {trace_id} ({status})[/dim]")
+                console.print(f"[dim]trace: {trace_id} ({status}){usage_suffix}[/dim]")
             else:
                 error = event.data.get("persistence_error")
                 console.print(
-                    f"[yellow]trace unavailable: persistence failed ({error})[/yellow]"
+                    f"[yellow]trace unavailable: persistence failed ({error})"
+                    f"{usage_suffix}[/yellow]"
                 )
 
 

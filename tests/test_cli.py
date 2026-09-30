@@ -447,7 +447,14 @@ def test_interactive_trace_uses_latest_completed_turn(
         agent.emit(
             Event(
                 type="trace_finish",
-                data={"trace_id": span.context.trace_id, "status": "ok"},
+                data={
+                    "trace_id": span.context.trace_id,
+                    "status": "ok",
+                    "usage": {
+                        "input_tokens": 30,
+                        "output_tokens": 5,
+                    },
+                },
             )
         )
         return "done"
@@ -461,6 +468,7 @@ def test_interactive_trace_uses_latest_completed_turn(
     assert "step 1/1" in result.stdout
     assert result.stdout.index("done") < result.stdout.index("trace:")
     assert result.stdout.count("trace:") == 1
+    assert result.stdout.count("tokens: input 30, output 5") == 1
 
 
 def test_interactive_trace_persistence_failure_is_not_saved_as_latest(

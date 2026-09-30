@@ -1,5 +1,6 @@
 import asyncio
 import json
+from typing import Any
 
 from cairn.core.agent import Agent
 from cairn.core.budget import (
@@ -76,6 +77,9 @@ async def run_turn(
     trace_error: str | None = None
     tool_execution_started = False
     pending_tool_calls: list[ToolCall] = []
+    llm_response_count = 0
+    input_tokens: int | None = 0
+    output_tokens: int | None = 0
 
     try:
         turn_span = None
@@ -141,6 +145,8 @@ async def run_turn(
                 )
 
             except asyncio.CancelledError:
+                input_tokens = None
+                output_tokens = None
                 if llm_span is not None and agent.tracer is not None:
                     llm_span.attributes["cancelled"] = True
                     agent.tracer.end_span(
@@ -151,6 +157,8 @@ async def run_turn(
                 raise
 
             except Exception as exc:
+                input_tokens = None
+                output_tokens = None
                 if llm_span is not None and agent.tracer is not None:
                     agent.tracer.end_span(
                         llm_span,
@@ -160,9 +168,30 @@ async def run_turn(
                 raise
 
             else:
+                llm_response_count += 1
+                if input_tokens is not None:
+                    if response.usage is None or response.usage.input_tokens is None:
+                        input_tokens = None
+                    else:
+                        input_tokens += response.usage.input_tokens
+                if output_tokens is not None:
+                    if response.usage is None or response.usage.output_tokens is None:
+                        output_tokens = None
+                    else:
+                        output_tokens += response.usage.output_tokens
+
                 if llm_span is not None and agent.tracer is not None:
                     llm_span.attributes["tool_call_count"] = len(response.tool_calls)
                     llm_span.attributes["has_content"] = response.content is not None
+                    if response.usage is not None:
+                        if response.usage.input_tokens is not None:
+                            llm_span.attributes["input_tokens"] = (
+                                response.usage.input_tokens
+                            )
+                        if response.usage.output_tokens is not None:
+                            llm_span.attributes["output_tokens"] = (
+                                response.usage.output_tokens
+                            )
                     agent.tracer.end_span(
                         llm_span,
                         status=SpanStatus.OK,
@@ -385,6 +414,12 @@ async def run_turn(
     finally:
         if turn_span is not None and agent.tracer is not None:
             status = SpanStatus.OK if trace_error is None else SpanStatus.ERROR
+            turn_input_tokens = input_tokens if llm_response_count else None
+            turn_output_tokens = output_tokens if llm_response_count else None
+            if turn_input_tokens is not None:
+                turn_span.attributes["input_tokens"] = turn_input_tokens
+            if turn_output_tokens is not None:
+                turn_span.attributes["output_tokens"] = turn_output_tokens
             try:
                 agent.tracer.end_span(
                     turn_span,
@@ -396,15 +431,24 @@ async def run_turn(
                     turn_span.context.trace_id
                 )
 
+                trace_finish_data: dict[str, Any] = {
+                    "trace_id": turn_span.context.trace_id,
+                    "status": status.value,
+                    "persisted": persistence_error is None,
+                    "persistence_error": persistence_error,
+                }
+                usage: dict[str, int] = {}
+                if turn_input_tokens is not None:
+                    usage["input_tokens"] = turn_input_tokens
+                if turn_output_tokens is not None:
+                    usage["output_tokens"] = turn_output_tokens
+                if usage:
+                    trace_finish_data["usage"] = usage
+
                 agent.emit(
                     Event(
                         type="trace_finish",
-                        data={
-                            "trace_id": turn_span.context.trace_id,
-                            "status": status.value,
-                            "persisted": persistence_error is None,
-                            "persistence_error": persistence_error,
-                        },
+                        data=trace_finish_data,
                     )
                 )
             except Exception:

@@ -104,6 +104,32 @@ def test_console_event_handler_reports_trace_persistence_failure(
     assert "trace: failed-trace" not in rendered
 
 
+def test_console_event_handler_renders_usage_with_final_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = _capture_console(monkeypatch)
+
+    ui.console_event_handler(
+        Event(
+            type="trace_finish",
+            data={
+                "trace_id": "usage-trace",
+                "status": "ok",
+                "usage": {
+                    "input_tokens": 30,
+                    "output_tokens": 5,
+                },
+            },
+        )
+    )
+
+    rendered = output.getvalue()
+    footer = "trace: usage-trace (ok) · tokens: input 30, output 5"
+    assert rendered.count("trace: usage-trace") == 1
+    assert rendered.count("tokens: input 30, output 5") == 1
+    assert rendered.rstrip().endswith(footer)
+
+
 def test_compact_read_file_rendering_hides_file_contents(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

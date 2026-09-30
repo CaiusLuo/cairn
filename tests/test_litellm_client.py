@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 import cairn.llm.litellm_client as litellm_module
-from cairn.core.models import Message, ToolCall
+from cairn.core.models import LLMUsage, Message, ToolCall
 from cairn.llm.litellm_client import LiteLLMClient
 
 
@@ -33,8 +33,15 @@ class FakeChoice:
 
 
 @dataclass
+class FakeUsage:
+    prompt_tokens: int | None
+    completion_tokens: int | None
+
+
+@dataclass
 class FakeResponse:
     choices: list[FakeChoice]
+    usage: FakeUsage | None = None
 
 
 def test_to_llm_message_serializes_tool_context() -> None:
@@ -106,7 +113,8 @@ def test_generate_forwards_request_and_parses_tool_calls(
                         ],
                     )
                 )
-            ]
+            ],
+            usage=FakeUsage(prompt_tokens=18, completion_tokens=4),
         )
 
     monkeypatch.setattr(litellm_module, "acompletion", fake_acompletion)
@@ -137,6 +145,7 @@ def test_generate_forwards_request_and_parses_tool_calls(
         ToolCall(id="empty", name="bash", arguments={}),
         ToolCall(id="none", name="bash", arguments={}),
     ]
+    assert response.usage == LLMUsage(input_tokens=18, output_tokens=4)
 
 
 @pytest.mark.parametrize(
@@ -207,3 +216,28 @@ def test_generate_handles_response_without_tool_calls(
 
     assert response.content == "plain response"
     assert response.tool_calls == []
+    assert response.usage is None
+
+
+def test_generate_preserves_unknown_usage_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_acompletion(**_kwargs: Any) -> FakeResponse:
+        return FakeResponse(
+            choices=[
+                FakeChoice(
+                    message=FakeMessage(content="plain response", tool_calls=None)
+                )
+            ],
+            usage=FakeUsage(prompt_tokens=12, completion_tokens=None),
+        )
+
+    monkeypatch.setattr(litellm_module, "acompletion", fake_acompletion)
+
+    response = asyncio.run(
+        LiteLLMClient(model="test-model").generate(
+            [Message(role="user", content="hello")]
+        )
+    )
+
+    assert response.usage == LLMUsage(input_tokens=12, output_tokens=None)

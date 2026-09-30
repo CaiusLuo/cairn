@@ -23,10 +23,16 @@ class Message(BaseModel):
     tool_calls: list[ToolCall] = Field(default_factory=list)
 
 
+class LLMUsage(BaseModel):
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+
+
 class LLMResponse(BaseModel):
     content: str | None = None
 
     tool_calls: list[ToolCall] = Field(default_factory=list)
+    usage: LLMUsage | None = None
 
 
 class ToolResult(BaseModel):

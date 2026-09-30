@@ -3,7 +3,7 @@ from typing import Any
 
 from litellm import acompletion
 
-from cairn.core.models import LLMResponse, Message, ToolCall
+from cairn.core.models import LLMResponse, LLMUsage, Message, ToolCall
 
 
 def _parse_tool_arguments(
@@ -28,6 +28,22 @@ def _parse_tool_arguments(
         )
 
     return parsed
+
+
+def _parse_usage(response: object) -> LLMUsage | None:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+
+    input_tokens = getattr(usage, "prompt_tokens", None)
+    output_tokens = getattr(usage, "completion_tokens", None)
+    if input_tokens is None and output_tokens is None:
+        return None
+
+    return LLMUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
 
 
 class LiteLLMClient:
@@ -107,4 +123,5 @@ class LiteLLMClient:
         return LLMResponse(
             content=message.content,
             tool_calls=tool_calls,
+            usage=_parse_usage(response),
         )
