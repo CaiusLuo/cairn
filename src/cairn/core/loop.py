@@ -18,7 +18,7 @@ from cairn.core.permissions import (
     evaluate_permission_policy,
 )
 from cairn.observability.models import Span, SpanStatus
-from cairn.tools.base import ToolExecutionContext
+from cairn.tools.base import InvalidArguments, ToolExecutionContext, ToolNotFound
 
 
 def _ask_for_approval(agent: Agent, tool_call: ToolCall) -> PermissionResult:
@@ -69,7 +69,7 @@ def _record_tool_error(
     error: Exception,
     tool_span: Span | None = None,
 ) -> None:
-    """Record resolution, validation, or execution failure through one path."""
+    """Record an expected preflight or execution failure through one path."""
     failure = ToolFailure(error=str(error), type=type(error).__name__)
 
     agent.state.add_tool_message(
@@ -79,9 +79,10 @@ def _record_tool_error(
 
     if agent.tracer is not None and turn_span is not None:
         if tool_span is None:
+            # Execution failures already have a span opened before the call.
             tool_span = agent.tracer.start_child_span(
                 turn_span,
-                "tool.execute",
+                "tool.preflight",
                 attributes={
                     "tool": tool_call.name,
                     "tool_call_id": tool_call.id,
@@ -319,7 +320,7 @@ async def run_turn(
                 try:
                     tool = agent.tools.get_tool(tool_call.name)
                     tool.validate(tool_call.arguments)
-                except Exception as exc:
+                except (ToolNotFound, InvalidArguments) as exc:
                     pending_tool_calls.pop(0)
                     _record_tool_error(agent, tool_call, turn_span, exc)
                     continue

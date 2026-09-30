@@ -3,7 +3,7 @@
 import asyncio
 import json
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 from unittest.mock import AsyncMock
 
 import pytest
@@ -29,6 +29,7 @@ from tests.loop_support import (
     RecordingSink,
     SequenceLLM,
     make_agent,
+    network_tool_response,
 )
 from tests.sandbox_support import require_working_sandbox
 
@@ -106,10 +107,58 @@ def test_malformed_bash_fails_before_permission_or_subprocess(
         == "InvalidArguments"
     )
     assert not [span for span in sink.spans if span.name == "permission.check"]
-    tool_spans = [span for span in sink.spans if span.name == "tool.execute"]
-    assert len(tool_spans) == 1
-    assert tool_spans[0].status == SpanStatus.ERROR
-    assert tool_spans[0].attributes["error_type"] == "InvalidArguments"
+    preflight_spans = [span for span in sink.spans if span.name == "tool.preflight"]
+    assert len(preflight_spans) == 1
+    assert preflight_spans[0].status == SpanStatus.ERROR
+    assert preflight_spans[0].attributes["error_type"] == "InvalidArguments"
+    assert preflight_spans[0].attributes["tool"] == "bash"
+    assert preflight_spans[0].attributes["tool_call_id"] == "call-invalid"
+    turn_span = next(span for span in sink.spans if span.name == "agent.turn")
+    assert preflight_spans[0].context.parent_span_id == turn_span.context.span_id
+    assert turn_span.status == SpanStatus.OK
+    assert not [span for span in sink.spans if span.name == "tool.execute"]
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, AssertionError])
+@pytest.mark.parametrize("with_tracer", [False, True])
+def test_broken_validator_propagates_without_model_facing_tool_failure(
+    error_type: type[Exception], with_tracer: bool
+) -> None:
+    error = error_type("validator bug")
+
+    class BrokenValidatorTool(NetworkRequestTool):
+        def validate(self, arguments: dict[str, Any]) -> None:
+            raise error
+
+    events: list[Event] = []
+    sink = RecordingSink()
+    llm = SequenceLLM([network_tool_response()])
+    tool = BrokenValidatorTool()
+    agent = make_agent(llm, tool, events)
+    agent.tracer = Tracer(sink) if with_tracer else None
+
+    def unexpected_permission(tool_call: ToolCall) -> NoReturn:
+        pytest.fail("broken validator reached the permission handler")
+
+    agent.permission_handler = unexpected_permission
+    agent.state.add_user_message("previous")
+    agent.state.add_assistant_message("previous answer")
+    previous = agent.state.messages.copy()
+
+    with pytest.raises(error_type, match="validator bug") as exc_info:
+        asyncio.run(run_turn(agent, "try broken validator", budget=TEST_BUDGET))
+
+    assert exc_info.value is error
+    assert len(llm.calls) == 1
+    assert tool.calls == []
+    assert agent.state.messages == previous
+    assert not [event for event in events if event.type == "tool_error"]
+    assert not [span for span in sink.spans if span.name == "permission.check"]
+    assert not [span for span in sink.spans if span.name == "tool.execute"]
+    if with_tracer:
+        turn_span = next(span for span in sink.spans if span.name == "agent.turn")
+        assert turn_span.status == SpanStatus.ERROR
+        assert turn_span.error == f"{error_type.__name__}: validator bug"
 
 
 def test_direct_bash_execute_defensively_validates_before_launch(
