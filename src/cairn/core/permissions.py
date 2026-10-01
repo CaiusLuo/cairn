@@ -175,19 +175,21 @@ class SessionPermissionHandler:
             )
         )
 
-        if choice == PermissionChoice.DENY:
+        # StrEnum equality also accepts strings; only enum members authorize.
+        if choice is PermissionChoice.DENY:
             return PermissionResult(
                 policy_decision=PermissionDecision.ASK,
                 allowed=False,
                 prompted=True,
                 source=PermissionSource.USER_DENIED,
             )
-
-        if choice == PermissionChoice.ALLOW_SESSION:
+        elif choice is PermissionChoice.ALLOW_SESSION:
             self.grants.add(capability)
             source = PermissionSource.USER_SESSION
-        else:
+        elif choice is PermissionChoice.ALLOW_ONCE:
             source = PermissionSource.USER_ONCE
+        else:
+            raise ValueError(f"Invalid permission choice: {choice!r}")
 
         return PermissionResult(
             policy_decision=PermissionDecision.ASK,

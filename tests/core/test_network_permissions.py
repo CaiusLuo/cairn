@@ -4,6 +4,7 @@ import shlex
 import socket
 import sys
 from collections.abc import Iterator
+from enum import StrEnum
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
@@ -18,16 +19,27 @@ from cairn.core.permissions import (
     PermissionSource,
     SessionPermissionHandler,
 )
+from cairn.observability.models import SpanStatus
 from cairn.observability.tracer import Tracer
 from cairn.tools.base import ToolExecutionContext
 from cairn.tools.bash import BashTool
 from cairn.workspace.workspace import Workspace
-from tests.support.runtime import TEST_BUDGET, RecordingSink, SequenceLLM
+from tests.support.runtime import (
+    TEST_BUDGET,
+    RecordingSink,
+    SequenceLLM,
+    network_tool_response,
+)
 from tests.support.sandbox import (
     require_working_sandbox,
     sandbox_python,
     skip_without_sandbox,
 )
+
+
+class AlternatePermissionChoice(StrEnum):
+    ALLOW_ONCE = "allow_once"
+    ALLOW_SESSION = "allow_session"
 
 
 def socket_command(port: int) -> str:
@@ -137,6 +149,51 @@ def test_network_end_to_end(
     assert not spans[2].attributes["prompted"]
     if choice == PermissionChoice.DENY:
         assert len([s for s in sink.spans if s.name == "tool.execute"]) == 1
+
+
+@pytest.mark.parametrize(
+    "choice",
+    [
+        None,
+        "3",
+        "allow_once",
+        "allow_session",
+        AlternatePermissionChoice.ALLOW_ONCE,
+        AlternatePermissionChoice.ALLOW_SESSION,
+    ],
+)
+def test_run_turn_rejects_invalid_prompt_choices_without_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, choice: object
+) -> None:
+    prompt = Mock(return_value=choice)
+    handler = SessionPermissionHandler(prompt)
+    llm = SequenceLLM([network_tool_response()])
+    sink = RecordingSink()
+    execute = AsyncMock()
+    monkeypatch.setattr(BashTool, "execute", execute)
+    agent = build_agent(
+        workspace=Workspace(tmp_path),
+        event_handler=None,
+        llm=llm,
+        permission_handler=handler,
+        tracer=Tracer(sink),
+    )
+
+    with pytest.raises(ValueError, match="Invalid permission choice"):
+        asyncio.run(run_turn(agent, "test", budget=TEST_BUDGET))
+
+    assert prompt.call_count == 1
+    assert handler.grants == set()
+    assert execute.await_count == 0
+    assert not any(span.name == "tool.execute" for span in sink.spans)
+    permission_span = next(
+        span for span in sink.spans if span.name == "permission.check"
+    )
+    turn_span = next(span for span in sink.spans if span.name == "agent.turn")
+    assert permission_span.status is SpanStatus.ERROR
+    assert turn_span.status is SpanStatus.ERROR
+    assert turn_span.error is not None
+    assert "Invalid permission choice" in turn_span.error
 
 
 @pytest.mark.parametrize("platform", ["darwin", "linux"])

@@ -1,3 +1,6 @@
+from enum import StrEnum
+from unittest.mock import Mock
+
 import pytest
 
 from cairn.core.models import ToolCall
@@ -74,3 +77,64 @@ def test_session_grant_is_scoped_and_resets_for_new_handler() -> None:
     local = handler(bash_call("curl example.com", network_access=False))
     assert local.allowed and not local.prompted and not local.granted_capabilities
     assert SessionPermissionHandler(prompt)(network_call()).prompted
+
+
+def test_allow_once_grants_only_the_current_execution() -> None:
+    prompts: list[PermissionRequest] = []
+
+    def prompt(request: PermissionRequest) -> PermissionChoice:
+        prompts.append(request)
+        return PermissionChoice.ALLOW_ONCE
+
+    handler = SessionPermissionHandler(prompt)
+
+    first = handler(network_call())
+    second = handler(network_call("python other.py"))
+
+    assert first.allowed and first.prompted
+    assert first.source == PermissionSource.USER_ONCE
+    assert first.granted_capabilities == frozenset({PermissionCapability.NETWORK})
+    assert second.allowed and second.prompted
+    assert second.source == PermissionSource.USER_ONCE
+    assert len(prompts) == 2
+    assert handler.grants == set()
+
+
+def test_deny_does_not_grant_capability() -> None:
+    handler = SessionPermissionHandler(lambda request: PermissionChoice.DENY)
+
+    result = handler(network_call())
+
+    assert not result.allowed
+    assert result.prompted
+    assert result.source == PermissionSource.USER_DENIED
+    assert result.granted_capabilities == frozenset()
+    assert handler.grants == set()
+
+
+class _AlternatePermissionChoice(StrEnum):
+    """A foreign StrEnum whose values match PermissionChoice exactly."""
+
+    ALLOW_ONCE = "allow_once"
+    ALLOW_SESSION = "allow_session"
+
+
+@pytest.mark.parametrize(
+    "choice",
+    [
+        None,
+        "allow_once",
+        "allow_session",
+        "deny",
+        _AlternatePermissionChoice.ALLOW_ONCE,
+        _AlternatePermissionChoice.ALLOW_SESSION,
+    ],
+)
+def test_invalid_choice_fails_closed(choice: object) -> None:
+    """Anything outside PermissionChoice must never grant NETWORK authority."""
+    handler = SessionPermissionHandler(Mock(return_value=choice))
+
+    with pytest.raises(ValueError, match="Invalid permission choice"):
+        handler(network_call())
+
+    assert handler.grants == set()
