@@ -2,11 +2,15 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from examples.evals.coding_smoke_cases import coding_smoke_cases
+from examples.evals.coding_smoke_cases import (
+    FileImportFromCheck,
+    coding_smoke_cases,
+)
 
 from cairn.core.budget import RunBudget
 from cairn.core.models import LLMResponse, ToolCall
 from cairn.evals import (
+    CheckResult,
     EvalCase,
     EvalCheck,
     EvalRunner,
@@ -26,6 +30,7 @@ FILE_CHECK_TYPES = (
     FileContainsCheck,
     FileExistsCheck,
     FileNotContainsCheck,
+    FileImportFromCheck,
 )
 EXPECTED_NAMES = (
     "single-file-bug-fix",
@@ -36,7 +41,7 @@ EXPECTED_NAMES = (
 )
 
 
-def test_corpus_has_small_safe_builtin_file_checks(tmp_path: Path) -> None:
+def test_corpus_has_small_safe_file_checks(tmp_path: Path) -> None:
     assert len(CASES) == 5
     assert NAMES == EXPECTED_NAMES
     assert len(set(NAMES)) == 5
@@ -57,6 +62,57 @@ def test_corpus_has_small_safe_builtin_file_checks(tmp_path: Path) -> None:
     assert noop.name == "no-op-correct-code"
     assert isinstance(noop_checks[0], FileContentEqualsCheck)
     assert noop_checks[0].expected == noop.files["src/slug.py"]
+
+
+@pytest.mark.parametrize(
+    ("case_name", "import_name", "wrong_module"),
+    [
+        (
+            "multi-file-retry-refactor",
+            "DEFAULT_RETRY_LIMIT",
+            "wrong_settings",
+        ),
+        (
+            "create-and-wire-helper",
+            "normalize_username",
+            "fake_text_utils",
+        ),
+    ],
+)
+def test_import_from_check_accepts_import_forms_and_rejects_wrong_module(
+    tmp_path: Path,
+    case_name: str,
+    import_name: str,
+    wrong_module: str,
+) -> None:
+    case, checks = next(
+        case_checks for case_checks in CASES if case_checks[0].name == case_name
+    )
+    check = next(check for check in checks if isinstance(check, FileImportFromCheck))
+    expected_files = _expected_files(case, checks)
+    workspace = Workspace(tmp_path)
+    for raw_path, contents in expected_files.items():
+        file_path = workspace.resolve_path(raw_path)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(contents, encoding="utf-8")
+    import_path = workspace.resolve_path(check.path)
+    body = expected_files[check.path].split("\n\n", 1)[1]
+
+    async def evaluate_with(import_text: str) -> list[CheckResult]:
+        import_path.write_text(import_text + "\n\n" + body, encoding="utf-8")
+        return [await item.evaluate(workspace) for item in checks]
+
+    for import_text in (
+        f"from .{check.module} import (\n    {import_name},\n)",
+        f"from src.{check.module} import {import_name}",
+        f"from {check.module} import {import_name}",
+    ):
+        results = asyncio.run(evaluate_with(import_text))
+        assert all(result.passed for result in results)
+
+    results = asyncio.run(evaluate_with(f"from {wrong_module} import {import_name}"))
+    assert [result.name for result in results if not result.passed] == [check.name]
+    assert all(result.error is None for result in results)
 
 
 def _expected_files(case: EvalCase, checks: tuple[EvalCheck, ...]) -> dict[str, str]:

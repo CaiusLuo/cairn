@@ -1,4 +1,7 @@
+from dataclasses import dataclass
+
 from cairn.evals import (
+    CheckResult,
     EvalCase,
     EvalCheck,
     FileContainsCheck,
@@ -6,8 +9,30 @@ from cairn.evals import (
     FileExistsCheck,
     FileNotContainsCheck,
 )
+from cairn.workspace.workspace import Workspace
 
 SmokeCase = tuple[EvalCase, tuple[EvalCheck, ...]]
+
+
+@dataclass(slots=True)
+class FileImportFromCheck:
+    """Match complete import prefixes using the existing streaming text check."""
+
+    path: str
+    module: str
+    name: str = "file_import_from"
+
+    async def evaluate(self, workspace: Workspace) -> CheckResult:
+        for module in (f".{self.module}", f"src.{self.module}", self.module):
+            check = FileContainsCheck(self.path, f"from {module} import")
+            if (await check.evaluate(workspace)).passed:
+                return CheckResult(name=self.name, passed=True)
+        return CheckResult(
+            name=self.name,
+            passed=False,
+            message=f"Expected {self.path} to import from {self.module}, "
+            f".{self.module}, or src.{self.module}",
+        )
 
 
 def coding_smoke_cases() -> tuple[SmokeCase, ...]:
@@ -87,7 +112,7 @@ def coding_smoke_cases() -> tuple[SmokeCase, ...]:
             (
                 FileContainsCheck("src/settings.py", "DEFAULT_RETRY_LIMIT = 3"),
                 FileContainsCheck("src/settings.py", "DEFAULT_TIMEOUT_SECONDS = 5"),
-                FileContainsCheck("src/retry.py", "settings import"),
+                FileImportFromCheck("src/retry.py", "settings"),
                 FileContainsCheck("src/retry.py", "range(DEFAULT_RETRY_LIMIT)"),
                 FileNotContainsCheck("src/retry.py", "range(3)"),
             ),
@@ -110,7 +135,7 @@ def coding_smoke_cases() -> tuple[SmokeCase, ...]:
                 FileContainsCheck("src/text_utils.py", "def normalize_username("),
                 FileContainsCheck("src/text_utils.py", ".strip()"),
                 FileContainsCheck("src/text_utils.py", ".lower()"),
-                FileContainsCheck("src/user_service.py", "text_utils import"),
+                FileImportFromCheck("src/user_service.py", "text_utils"),
                 FileContainsCheck("src/user_service.py", "normalize_username(raw)"),
                 FileContainsCheck("src/user_service.py", "def username_for_lookup("),
                 FileContainsCheck("src/user_service.py", "def username_for_storage("),
