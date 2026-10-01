@@ -1,5 +1,7 @@
 import asyncio
 import os
+import re
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,8 @@ from cairn.core.agent import Agent
 from cairn.core.budget import RunBudget
 from cairn.core.events import Event
 from cairn.input import CliInput
+from cairn.observability.models import Span, SpanStatus, TraceContext, TraceListResult
+from cairn.observability.reader import JsonlTraceReader
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.tracer import Tracer
 
@@ -405,6 +409,65 @@ def _write_trace() -> str:
     return root.context.trace_id
 
 
+def _write_completed_trace(trace_root: Path, index: int) -> str:
+    trace_id = f"{100 - index:08x}" + "0" * 24
+    start_time = datetime(2026, 9, 1, tzinfo=UTC) + timedelta(minutes=index)
+    span = Span(
+        context=TraceContext(trace_id=trace_id, span_id=f"{index + 1:016x}"),
+        name="agent.turn",
+        start_time=start_time,
+        end_time=start_time + timedelta(milliseconds=1250),
+        status=SpanStatus.OK if index % 2 == 0 else SpanStatus.ERROR,
+    )
+    JsonlTraceSink(trace_root).emit(span)
+    return trace_id
+
+
+def test_interactive_trace_list_shows_ten_recent_summaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    trace_root = tmp_path / ".cairn" / "traces"
+    trace_ids = [_write_completed_trace(trace_root, index) for index in range(12)]
+    _set_cli_inputs(monkeypatch, "/trace list", "/help trace", "/quit")
+    requested_limits: list[int] = []
+    original_list_traces = JsonlTraceReader.list_traces
+
+    def capture_limit(reader: JsonlTraceReader, limit: int = 20) -> TraceListResult:
+        requested_limits.append(limit)
+        return original_list_traces(reader, limit=limit)
+
+    monkeypatch.setattr(JsonlTraceReader, "list_traces", capture_limit)
+
+    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
+        pytest.fail("Trace list command reached the model")
+
+    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert requested_limits == [10]
+    assert "Recent traces:" in result.stdout
+    listed_ids = re.findall(r"^[✓✗] ([0-9a-f]{8}) ", result.stdout, flags=re.M)
+    expected_ids = [trace_id[:8] for trace_id in reversed(trace_ids[2:])]
+    assert listed_ids == expected_ids
+    assert all(trace_id not in result.stdout for trace_id in trace_ids)
+    assert trace_ids[0][:8] not in listed_ids
+    assert trace_ids[1][:8] not in listed_ids
+    newest_time = (
+        datetime(2026, 9, 1, 0, 11, tzinfo=UTC).astimezone().strftime("%m-%d %H:%M:%S")
+    )
+    assert newest_time in result.stdout
+    assert "1.25s" in result.stdout
+    assert "✓" in result.stdout and "✗" in result.stdout
+    assert "│" not in result.stdout and "─" not in result.stdout
+    assert "/trace | /trace TRACE_ID | /trace list" in result.stdout
+    assert "10 most recent completed traces" in result.stdout
+    assert "Goodbye! see you next time." in result.stdout
+
+
 @pytest.mark.parametrize("action", ["show", "list", "missing"])
 def test_interactive_trace_commands_route_without_model(
     tmp_path: Path,
@@ -474,7 +537,7 @@ def test_interactive_trace_read_errors_keep_session_available(
         trace_root.mkdir(parents=True)
         (trace_root / "corrupt.jsonl").write_text("{invalid json\n", encoding="utf-8")
         trace_command = "/trace list"
-        expected_error = "json"
+        expected_error = "warning: skipped corrupt trace corrupt (validationerror)"
     else:
         trace_id = _write_trace()
         trace_path = Path(".cairn/traces") / f"{trace_id}.jsonl"

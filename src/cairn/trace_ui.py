@@ -1,16 +1,15 @@
 from collections import defaultdict
 
 from rich.console import Console
-from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
 
-from cairn.observability.models import Span, SpanStatus
+from cairn.observability.models import Span, SpanStatus, TraceListResult, TraceSummary
 
 console = Console()
 
 
-def _duration(span: Span) -> str:
+def _duration(span: Span | TraceSummary) -> str:
     if span.end_time is None:
         return "running"
 
@@ -31,7 +30,15 @@ def _label(span: Span) -> Text:
         else "•"
     )
 
-    return Text(f"{icon} {span.name} [{_duration(span)}]")
+    return Text(f"{icon} {_display_name(span)} [{_duration(span)}]")
+
+
+def _display_name(span: Span) -> str:
+    if span.name == "tool.execute":
+        tool = span.attributes.get("tool")
+        if isinstance(tool, str) and tool:
+            return tool
+    return span.name
 
 
 def print_trace(spans: list[Span]) -> None:
@@ -66,24 +73,15 @@ def print_trace(spans: list[Span]) -> None:
         console.print(tree)
 
 
-def print_trace_list(spans: list[Span]) -> None:
-    if not spans:
+def print_trace_list(result: TraceListResult) -> None:
+    console.print("Recent traces:")
+    if not result.traces:
         console.print("[dim]No traces found.[/dim]")
-        return
 
-    table = Table()
+    for trace in result.traces:
+        icon = "✓" if trace.status == SpanStatus.OK else "✗"
+        time = trace.start_time.astimezone().strftime("%m-%d %H:%M:%S")
+        console.print(Text(f"{icon} {trace.trace_id[:8]} {time} {_duration(trace)}"))
 
-    table.add_column("TIME")
-    table.add_column("TRACE")
-    table.add_column("STATUS")
-    table.add_column("DURATION")
-
-    for span in spans:
-        table.add_row(
-            span.start_time.astimezone().strftime("%H:%M:%S"),
-            span.context.trace_id[:8],
-            str(span.status),
-            _duration(span),
-        )
-
-    console.print(table)
+    for diagnostic in result.diagnostics:
+        console.print(Text("warning: " + diagnostic))

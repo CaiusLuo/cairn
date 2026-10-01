@@ -1,13 +1,15 @@
 from cairn.commands.context import CommandContext
 from cairn.trace_ui import print_trace, print_trace_list
 
+TRACE_LIST_LIMIT = 10
+
 
 def handle_trace(context: CommandContext, args: list[str]) -> None:
     list_traces = bool(args and args[0] == "list")
 
     try:
         if list_traces:
-            spans = context.trace_reader.list_traces()
+            result = context.trace_reader.list_traces(limit=TRACE_LIST_LIMIT)
         else:
             trace_id = args[0] if args else context.last_trace_id
             if trace_id is None:
@@ -19,6 +21,6 @@ def handle_trace(context: CommandContext, args: list[str]) -> None:
         return
 
     if list_traces:
-        print_trace_list(spans)
+        print_trace_list(result)
     else:
         print_trace(spans)

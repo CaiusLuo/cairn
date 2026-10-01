@@ -1,9 +1,9 @@
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class SpanStatus(StrEnum):
@@ -31,6 +31,39 @@ class Span(BaseModel):
     )
 
     error: str | None = None
+
+
+class TraceSummary(BaseModel):
+    trace_id: str
+    name: str
+    start_time: datetime
+    end_time: datetime
+    status: Literal[SpanStatus.OK, SpanStatus.ERROR]
+
+    @model_validator(mode="after")
+    def validate_timezones(self) -> "TraceSummary":
+        if (self.start_time.utcoffset() is None) != (self.end_time.utcoffset() is None):
+            raise ValueError("Summary timestamps must use consistent timezones")
+        return self
+
+    @classmethod
+    def from_root(cls, span: Span) -> "TraceSummary":
+        if span.context.parent_span_id is not None or span.end_time is None:
+            raise ValueError("Expected a completed root span")
+        return cls.model_validate(
+            {
+                "trace_id": span.context.trace_id,
+                "name": span.name,
+                "start_time": span.start_time,
+                "end_time": span.end_time,
+                "status": span.status,
+            }
+        )
+
+
+class TraceListResult(BaseModel):
+    traces: list[TraceSummary] = Field(default_factory=list)
+    diagnostics: list[str] = Field(default_factory=list)
 
 
 def new_trace_context() -> TraceContext:
