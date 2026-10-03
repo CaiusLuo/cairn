@@ -1,4 +1,17 @@
-# Cairn
+<!-- banner:start -->
+<div align="center">
+
+```text
+   ██████╗ █████╗ ██╗██████╗ ███╗   ██╗
+  ██╔════╝██╔══██╗██║██╔══██╗████╗  ██║
+  ██║     ███████║██║██████╔╝██╔██╗ ██║
+  ██║     ██╔══██║██║██╔══██╗██║╚██╗██║
+  ╚██████╗██║  ██║██║██║  ██║██║ ╚████║
+   ╚═════╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝
+```
+
+</div>
+<!-- banner:end -->
 
 > A cairn marks the path for whoever comes next. So does a harness.
 
@@ -148,7 +161,19 @@ uv run cairn
 
 A simple session looks like this:
 
+<!-- cli-banner:start -->
+
 ```text
+   ██████╗ █████╗ ██╗██████╗ ███╗   ██╗
+  ██╔════╝██╔══██╗██║██╔══██╗████╗  ██║
+  ██║     ███████║██║██████╔╝██╔██╗ ██║
+  ██║     ██╔══██║██║██╔══██╗██║╚██╗██║
+  ╚██████╗██║  ██║██║██║  ██║██║ ╚████║
+   ╚═════╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝
+
+A cairn marks the path for whoever comes next.
+So does a harness. ✨
+
 cairn> Inspect the files in this directory.
 ...agent and tool events appear here...
 Cairn>
@@ -156,6 +181,8 @@ Cairn>
 cairn> /exit
 Goodbye! see you next time.
 ```
+
+<!-- cli-banner:end -->
 
 Use `/exit` or `/quit` to end the session. Normal local operations within the
 sandbox need no approval; an explicit request for extra `NETWORK` capability
