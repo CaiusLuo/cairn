@@ -14,6 +14,8 @@ autonomous coding agent.
 ## Current capabilities
 
 - An asynchronous agent loop with a configurable step limit.
+- A configurable request context budget that omits complete older turns while
+  retaining the full in-process history and current tool-call groups.
 - In-process conversation state for user, assistant, and tool messages.
 - LiteLLM-backed model calls, including tool-call parsing.
 - A tool registry with Bash, bounded file reading, and guarded file editing.
@@ -98,7 +100,32 @@ Set these values in `.env` for your provider:
 CAIRN_LLM_MODEL=openai/your-model
 CAIRN_LLM_API_KEY=your-api-key
 CAIRN_BASE_URL=https://api.example.com/v1
+CAIRN_CONTEXT_MAX_TOKENS=32768
+CAIRN_RESPONSE_MAX_TOKENS=4096
 ```
+
+The context limit includes system and repository context, conversation messages,
+tool schemas, and the reserved response allowance. The CLI defaults to 32,768
+counted tokens with 4,096 reserved for the response, and sends that response limit
+to LiteLLM as `max_tokens`. Set both values for your model; the response allowance
+must be positive and smaller than the context limit. Shell values take precedence
+over `.env` without being copied into child-process environments.
+
+The default counter uses serialized UTF-8 byte lengths plus framing overhead as
+an estimate, rather than claiming the provider's exact tokenization. Headless
+callers can inject a `ContextBuilder` with a `ContextBudget` and a `TokenCounter`
+into `Agent` or `build_agent()`; custom counters label their result as exact or
+estimated using `TokenCount`. When using a custom model client, configure its
+output limit to match the reserved response allowance. Budget checks apply to the
+counter's result; an estimate cannot guarantee the provider's actual token count.
+
+Older turns are omitted only from the request view, including whole assistant
+tool-call/result groups, and Cairn reports the omission. The current turn is never
+trimmed. If its required content cannot fit, Cairn raises `ContextBudgetExceeded`
+before another model request. Trace attributes record counted input before and
+after trimming, omission counts, the budget and reserve, and whether the count is
+estimated; provider usage remains separate. A model failure or cancellation
+without provider usage displays `tokens: input unknown, output unknown`.
 
 Start the CLI:
 

@@ -10,6 +10,7 @@ from cairn.assembly import build_agent
 from cairn.commands.context import CommandContext
 from cairn.commands.router import CommandRouter
 from cairn.core.budget import RunBudget, RunBudgetExceeded
+from cairn.core.context import ContextBudget, ContextBuilder
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.core.permissions import SessionPermissionHandler
@@ -55,6 +56,29 @@ def resolve_cairn_config(
     return config
 
 
+def resolve_context_budget(
+    host_env: Mapping[str, str],
+    env_file_values: Mapping[str, str | None],
+) -> ContextBudget:
+    defaults = ContextBudget()
+
+    def integer_setting(name: str, default: int) -> int:
+        value = host_env.get(name, env_file_values.get(name))
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except ValueError:
+            raise ValueError(f"{name} must be an integer.") from None
+
+    return ContextBudget(
+        max_tokens=integer_setting("CAIRN_CONTEXT_MAX_TOKENS", defaults.max_tokens),
+        response_tokens=integer_setting(
+            "CAIRN_RESPONSE_MAX_TOKENS", defaults.response_tokens
+        ),
+    )
+
+
 @app.callback()
 def root(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is None:
@@ -62,7 +86,9 @@ def root(ctx: typer.Context) -> None:
 
 
 async def main(cli_input: CliInput | None = None) -> None:
-    config = resolve_cairn_config(os.environ, dotenv_values())
+    env_file_values = dotenv_values()
+    config = resolve_cairn_config(os.environ, env_file_values)
+    context_budget = resolve_context_budget(os.environ, env_file_values)
     model = config["CAIRN_LLM_MODEL"]
     api_key = config["CAIRN_LLM_API_KEY"]
     base_url = config["CAIRN_BASE_URL"]
@@ -90,10 +116,16 @@ async def main(cli_input: CliInput | None = None) -> None:
 
     agent = build_agent(
         workspace=workspace,
-        llm=LiteLLMClient(model=model, api_key=api_key, api_base=base_url),
+        llm=LiteLLMClient(
+            model=model,
+            api_key=api_key,
+            api_base=base_url,
+            max_output_tokens=context_budget.response_tokens,
+        ),
         event_handler=handle_event,
         permission_handler=SessionPermissionHandler(prompt=console_permission_prompt),
         tracer=tracer,
+        context_builder=ContextBuilder(budget=context_budget),
     )
 
     router = CommandRouter()

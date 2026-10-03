@@ -167,6 +167,7 @@ async def run_turn(
     tool_execution_started = False
     pending_tool_calls: list[ToolCall] = []
     llm_response_count = 0
+    reported_omitted_turns = 0
     input_tokens: int | None = 0
     output_tokens: int | None = 0
 
@@ -181,6 +182,8 @@ async def run_turn(
                 "agent.turn",
                 attributes={
                     "max_steps": budget.max_steps,
+                    "context_max_tokens": agent.context_builder.budget.max_tokens,
+                    "context_response_tokens": agent.context_builder.budget.response_tokens,
                 },
             )
 
@@ -204,17 +207,36 @@ async def run_turn(
                 )
             )
 
-            messages = [Message(role="system", content=agent.system_prompt)]
+            system_messages = [Message(role="system", content=agent.system_prompt)]
             if agent.repo_context_provider is not None:
                 repo_context = await agent.repo_context_provider.inspect()
-                messages.append(
+                system_messages.append(
                     Message(role="system", content=repo_context.to_prompt())
                 )
-            messages.extend(agent.state.messages)
-
             llm_span = None
 
             tool_schemas = agent.tools.schemas()
+            request = agent.context_builder.build(
+                system_messages=system_messages,
+                history=agent.state.messages,
+                current_turn_start=turn_start,
+                tools=tool_schemas,
+            )
+            messages = request.messages
+            if (
+                request.omitted_turns
+                and request.omitted_turns != reported_omitted_turns
+            ):
+                agent.emit(
+                    Event(
+                        type="context_trimmed",
+                        data={
+                            "omitted_turns": request.omitted_turns,
+                            "omitted_messages": request.omitted_messages,
+                        },
+                    )
+                )
+            reported_omitted_turns = request.omitted_turns
 
             if agent.tracer is not None and turn_span is not None:
                 llm_span = agent.tracer.start_child_span(
@@ -224,6 +246,15 @@ async def run_turn(
                         "step": step + 1,
                         "message_count": len(messages),
                         "tool_schema_count": len(tool_schemas),
+                        "message_count_before": len(system_messages)
+                        + len(agent.state.messages),
+                        "context_tokens_before": request.tokens_before.tokens,
+                        "context_tokens_after": request.tokens_after.tokens,
+                        "context_count_is_estimate": request.tokens_after.is_estimate,
+                        "context_max_tokens": agent.context_builder.budget.max_tokens,
+                        "context_response_tokens": agent.context_builder.budget.response_tokens,
+                        "context_omitted_turns": request.omitted_turns,
+                        "context_omitted_messages": request.omitted_messages,
                     },
                 )
 

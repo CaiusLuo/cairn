@@ -1,7 +1,11 @@
 import asyncio
+from io import StringIO
+from typing import Any
 
 import pytest
+from rich.console import Console
 
+import cairn.ui as ui
 from cairn.core.agent import Agent
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
@@ -89,9 +93,17 @@ def test_run_turn_aggregates_usage_across_llm_calls() -> None:
     }
 
 
-def test_run_turn_marks_usage_unknown_when_later_llm_call_fails() -> None:
+def test_run_turn_marks_usage_unknown_when_later_llm_call_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     sink = RecordingSink()
     events: list[Event] = []
+    output = StringIO()
+    monkeypatch.setattr(
+        ui,
+        "console",
+        Console(file=output, color_system=None, force_terminal=False, width=200),
+    )
     first_response = tool_response()
     first_response.usage = LLMUsage(input_tokens=10, output_tokens=2)
     agent = make_agent(
@@ -101,6 +113,12 @@ def test_run_turn_marks_usage_unknown_when_later_llm_call_fails() -> None:
     )
     agent.tracer = Tracer(sink)
 
+    def handle_event(event: Event) -> None:
+        events.append(event)
+        ui.console_event_handler(event)
+
+    agent.event_handler = handle_event
+
     with pytest.raises(IndexError):
         asyncio.run(run_turn(agent, "hello", budget=TEST_BUDGET))
 
@@ -108,6 +126,90 @@ def test_run_turn_marks_usage_unknown_when_later_llm_call_fails() -> None:
     assert "input_tokens" not in turn_span.attributes
     assert "output_tokens" not in turn_span.attributes
     assert "usage" not in events[-1].data
+    assert (
+        output.getvalue()
+        .strip()
+        .endswith(
+            f"trace: {turn_span.context.trace_id} (error) "
+            "· tokens: input unknown, output unknown"
+        )
+    )
+    assert output.getvalue().count("tokens:") == 1
+
+
+@pytest.mark.parametrize("completed_first_call", [False, True])
+def test_run_turn_cancelled_llm_shows_unknown_usage_footer(
+    monkeypatch: pytest.MonkeyPatch, completed_first_call: bool
+) -> None:
+    output = StringIO()
+    monkeypatch.setattr(
+        ui,
+        "console",
+        Console(file=output, color_system=None, force_terminal=False, width=200),
+    )
+
+    class BlockingLLM(SequenceLLM):
+        def __init__(self, responses: list[LLMResponse]) -> None:
+            super().__init__(responses)
+            self.started = asyncio.Event()
+
+        async def generate(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> LLMResponse:
+            if self.responses:
+                return await super().generate(messages, tools)
+            self.calls.append((messages, tools))
+            self.started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    async def scenario() -> None:
+        sink = RecordingSink()
+        events: list[Event] = []
+        response = tool_response()
+        response.usage = LLMUsage(input_tokens=10, output_tokens=2)
+        llm = BlockingLLM([response] if completed_first_call else [])
+        agent = make_agent(llm, RecordingTool())
+        agent.tracer = Tracer(sink)
+
+        def handle_event(event: Event) -> None:
+            events.append(event)
+            ui.console_event_handler(event)
+
+        agent.event_handler = handle_event
+        task = asyncio.create_task(run_turn(agent, "hello", budget=TEST_BUDGET))
+        await asyncio.wait_for(llm.started.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1)
+
+        turn_span = sink.spans[-1]
+        assert turn_span.name == "agent.turn"
+        assert turn_span.status == SpanStatus.ERROR
+        assert "input_tokens" not in turn_span.attributes
+        assert "output_tokens" not in turn_span.attributes
+        llm_spans = [span for span in sink.spans if span.name == "llm.generate"]
+        assert len(llm_spans) == (2 if completed_first_call else 1)
+        assert llm_spans[-1].attributes["cancelled"] is True
+        if completed_first_call:
+            assert llm_spans[0].attributes["input_tokens"] == 10
+            assert llm_spans[0].attributes["output_tokens"] == 2
+        assert events[-1].type == "trace_finish"
+        assert events[-1].data["status"] == "error"
+        assert "usage" not in events[-1].data
+        assert (
+            output.getvalue()
+            .strip()
+            .endswith(
+                f"trace: {turn_span.context.trace_id} (error) "
+                "· tokens: input unknown, output unknown"
+            )
+        )
+        assert output.getvalue().count("tokens:") == 1
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("llm_fails", [False, True])

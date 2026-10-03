@@ -44,8 +44,10 @@ class FakeResponse:
     usage: FakeUsage | None = None
 
 
+@pytest.mark.parametrize("max_output_tokens", [None, 256])
 def test_generate_forwards_request_and_parses_tool_calls(
     monkeypatch: pytest.MonkeyPatch,
+    max_output_tokens: int | None,
 ) -> None:
     captured: dict[str, Any] = {}
 
@@ -91,6 +93,7 @@ def test_generate_forwards_request_and_parses_tool_calls(
         model="provider/model",
         api_key="secret",
         api_base="https://example.test/v1",
+        max_output_tokens=max_output_tokens,
     )
 
     response = asyncio.run(
@@ -114,6 +117,10 @@ def test_generate_forwards_request_and_parses_tool_calls(
         )
     )
 
+    if max_output_tokens is None:
+        assert "max_tokens" not in captured
+    else:
+        assert captured.pop("max_tokens") == max_output_tokens
     assert captured == {
         "model": "provider/model",
         "messages": [

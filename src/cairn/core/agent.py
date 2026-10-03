@@ -1,3 +1,4 @@
+from cairn.core.context import ContextBuilder
 from cairn.core.events import Event, EventHandler
 from cairn.core.permissions import PermissionHandler
 from cairn.core.state import AgentState
@@ -40,6 +41,7 @@ class Agent:
         permission_handler: PermissionHandler | None = None,
         tracer: Tracer | None = None,
         repo_context_provider: RepoContextProvider | None = None,
+        context_builder: ContextBuilder | None = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -48,6 +50,9 @@ class Agent:
         self.permission_handler = permission_handler
         self.tracer = tracer
         self.repo_context_provider = repo_context_provider
+        self.context_builder = (
+            context_builder if context_builder is not None else ContextBuilder()
+        )
         self.state = AgentState()
 
     def emit(self, event: Event) -> None:

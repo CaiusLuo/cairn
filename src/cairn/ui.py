@@ -82,20 +82,23 @@ def _render_tool_result(event: Event) -> None:
 def _usage_suffix(event: Event) -> str:
     usage = event.data.get("usage")
     if not isinstance(usage, dict):
-        return ""
+        usage = {}
 
     raw_input_tokens = usage.get("input_tokens")
     raw_output_tokens = usage.get("output_tokens")
     input_tokens = (
         str(raw_input_tokens)
-        if isinstance(raw_input_tokens, int) and not isinstance(raw_input_tokens, bool)
-        else "?"
+        if isinstance(raw_input_tokens, int)
+        and not isinstance(raw_input_tokens, bool)
+        and raw_input_tokens >= 0
+        else "unknown"
     )
     output_tokens = (
         str(raw_output_tokens)
         if isinstance(raw_output_tokens, int)
         and not isinstance(raw_output_tokens, bool)
-        else "?"
+        and raw_output_tokens >= 0
+        else "unknown"
     )
     return f" · tokens: input {input_tokens}, output {output_tokens}"
 
@@ -107,6 +110,16 @@ def console_event_handler(event: Event) -> None:
             max_steps = event.data.get("max_steps")
 
             console.print(f"[dim]step {step}/{max_steps}[/dim]")
+
+        case "context_trimmed":
+            omitted_turns = event.data["omitted_turns"]
+            omitted_messages = event.data["omitted_messages"]
+            console.print(
+                f"context: omitted {omitted_turns} older turns "
+                f"({omitted_messages} messages); full history retained.",
+                style="dim",
+                markup=False,
+            )
 
         case "tool_call":
             _render_tool_call(event)

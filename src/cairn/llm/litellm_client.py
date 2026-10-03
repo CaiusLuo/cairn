@@ -52,10 +52,12 @@ class LiteLLMClient:
         model: str,
         api_key: str | None = None,
         api_base: str | None = None,
+        max_output_tokens: int | None = None,
     ) -> None:
         self.model = model
         self.api_key = api_key
         self.api_base = api_base
+        self.max_output_tokens = max_output_tokens
 
     def _to_llm_message(
         self,
@@ -93,6 +95,9 @@ class LiteLLMClient:
         tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
         lite_messages = [self._to_llm_message(message) for message in messages]
+        completion_options: dict[str, Any] = {}
+        if self.max_output_tokens is not None:
+            completion_options["max_tokens"] = self.max_output_tokens
 
         response = await acompletion(
             model=self.model,
@@ -100,6 +105,7 @@ class LiteLLMClient:
             api_key=self.api_key,
             api_base=self.api_base,
             tools=tools,
+            **completion_options,
         )
 
         message = response.choices[0].message

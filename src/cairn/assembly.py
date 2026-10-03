@@ -1,4 +1,5 @@
 from cairn.core.agent import Agent
+from cairn.core.context import ContextBuilder
 from cairn.core.events import EventHandler
 from cairn.core.permissions import PermissionHandler
 from cairn.llm.base import LLMClient
@@ -17,6 +18,7 @@ def build_agent(
     permission_handler: PermissionHandler | None,
     event_handler: EventHandler | None,
     tracer: Tracer | None,
+    context_builder: ContextBuilder | None = None,
 ) -> Agent:
     registry = ToolRegistry()
 
@@ -31,4 +33,5 @@ def build_agent(
         event_handler=event_handler,
         tracer=tracer,
         repo_context_provider=RepoContextProvider(workspace),
+        context_builder=context_builder,
     )
