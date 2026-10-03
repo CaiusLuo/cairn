@@ -105,8 +105,11 @@ CAIRN_RESPONSE_MAX_TOKENS=8192
 ```
 
 The context limit includes system and repository context, conversation messages,
-tool schemas, and the reserved response allowance. The `.env.example` values above
-target a 128k-token window; when both settings are unset the CLI falls back to the
+tool schemas, and the reserved response allowance; a request is sent only while
+counted input plus the response reserve fits within `CAIRN_CONTEXT_MAX_TOKENS`.
+The `.env.example` values above are an intentionally conservative 98,304-token
+total budget with 8,192 reserved for the response, leaving headroom below a
+128k-model context window. When both settings are unset the CLI falls back to the
 built-in defaults, 32,768 counted tokens with 4,096 reserved for the response. The
 response limit is also sent to LiteLLM as `max_tokens`, which LiteLLM maps to the
 provider's own parameter, so the model cannot generate past its share of the
