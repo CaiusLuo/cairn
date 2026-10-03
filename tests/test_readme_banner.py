@@ -6,11 +6,16 @@ ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 CLI_BANNER = ROOT / "src" / "cairn" / "resources" / "banner.txt"
 
-WORDMARK_LINES = 6
-
 
 def _banner_lines() -> list[str]:
     return CLI_BANNER.read_text(encoding="utf-8").splitlines()
+
+
+def _wordmark_lines() -> list[str]:
+    """The art above the blank separator; the tagline below it is CLI-only."""
+    lines = _banner_lines()
+    separator = lines.index("") if "" in lines else len(lines)
+    return lines[:separator]
 
 
 def _marked_block(marker: str) -> list[str]:
@@ -35,7 +40,7 @@ def _fenced_lines(block: list[str]) -> list[str]:
 def test_readme_title_matches_the_cli_banner_wordmark() -> None:
     wordmark = _fenced_lines(_marked_block("banner"))
 
-    assert wordmark == _banner_lines()[:WORDMARK_LINES]
+    assert wordmark == _wordmark_lines()
 
 
 def test_readme_session_example_starts_with_the_cli_banner() -> None:
