@@ -100,32 +100,42 @@ Set these values in `.env` for your provider:
 CAIRN_LLM_MODEL=openai/your-model
 CAIRN_LLM_API_KEY=your-api-key
 CAIRN_BASE_URL=https://api.example.com/v1
-CAIRN_CONTEXT_MAX_TOKENS=32768
-CAIRN_RESPONSE_MAX_TOKENS=4096
+CAIRN_CONTEXT_MAX_TOKENS=98304
+CAIRN_RESPONSE_MAX_TOKENS=8192
 ```
 
 The context limit includes system and repository context, conversation messages,
-tool schemas, and the reserved response allowance. The CLI defaults to 32,768
-counted tokens with 4,096 reserved for the response, and sends that response limit
-to LiteLLM as `max_tokens`. Set both values for your model; the response allowance
-must be positive and smaller than the context limit. Shell values take precedence
-over `.env` without being copied into child-process environments.
+tool schemas, and the reserved response allowance. The `.env.example` values above
+target a 128k-token window; when both settings are unset the CLI falls back to the
+built-in defaults, 32,768 counted tokens with 4,096 reserved for the response. The
+response limit is also sent to LiteLLM as `max_tokens`, which LiteLLM maps to the
+provider's own parameter, so the model cannot generate past its share of the
+budget. Set both values for your model; the response allowance must be positive
+and smaller than the context limit. Shell values take precedence over `.env`
+without being copied into child-process environments.
 
-The default counter uses serialized UTF-8 byte lengths plus framing overhead as
-an estimate, rather than claiming the provider's exact tokenization. Headless
-callers can inject a `ContextBuilder` with a `ContextBudget` and a `TokenCounter`
-into `Agent` or `build_agent()`; custom counters label their result as exact or
-estimated using `TokenCount`. When using a custom model client, configure its
-output limit to match the reserved response allowance. Budget checks apply to the
-counter's result; an estimate cannot guarantee the provider's actual token count.
+The CLI counts requests with a `LiteLLMTokenCounter`, which uses the tokenizer
+LiteLLM resolves for `CAIRN_LLM_MODEL` and labels the result exact. When LiteLLM
+cannot count, it falls back to an offline estimate of serialized UTF-8 byte
+lengths plus framing overhead, labelled as an estimate, so an approximation is
+never presented as provider usage. That estimate overestimates prose but can
+underestimate code, hexadecimal and base64-like content, so prefer the
+tokenizer-backed count and treat an estimate as a signal, not a guarantee.
+Headless callers can inject a `ContextBuilder` with a `ContextBudget` and a
+`TokenCounter` into `Agent` or `build_agent()`; custom counters label their
+result as exact or estimated using `TokenCount`. When using a custom model
+client, configure its output limit to match the reserved response allowance.
 
 Older turns are omitted only from the request view, including whole assistant
 tool-call/result groups, and Cairn reports the omission. The current turn is never
 trimmed. If its required content cannot fit, Cairn raises `ContextBudgetExceeded`
-before another model request. Trace attributes record counted input before and
-after trimming, omission counts, the budget and reserve, and whether the count is
-estimated; provider usage remains separate. A model failure or cancellation
-without provider usage displays `tokens: input unknown, output unknown`.
+before another model request, naming the never-trimmed components in the error. A
+malformed older tool-call group is omitted the same way instead of failing every
+later turn; a malformed current turn raises `ConversationHistoryError`. Trace
+attributes record counted input before and after trimming, omission counts, the
+budget and reserve, and whether the count is estimated; provider usage remains
+separate. A model failure or cancellation without provider usage displays
+`tokens: input unknown, output unknown`.
 
 Start the CLI:
 

@@ -64,7 +64,7 @@ def resolve_context_budget(
 
     def integer_setting(name: str, default: int) -> int:
         value = host_env.get(name, env_file_values.get(name))
-        if value is None:
+        if not value:
             return default
         try:
             return int(value)
@@ -94,6 +94,7 @@ async def main(cli_input: CliInput | None = None) -> None:
     base_url = config["CAIRN_BASE_URL"]
 
     from cairn.llm.litellm_client import LiteLLMClient
+    from cairn.llm.token_counter import LiteLLMTokenCounter
 
     print_banner()
 
@@ -125,7 +126,13 @@ async def main(cli_input: CliInput | None = None) -> None:
         event_handler=handle_event,
         permission_handler=SessionPermissionHandler(prompt=console_permission_prompt),
         tracer=tracer,
-        context_builder=ContextBuilder(budget=context_budget),
+        context_builder=ContextBuilder(
+            budget=context_budget,
+            # Count with LiteLLM's tokenizer for the configured model so the
+            # budget reflects the request that is actually sent, not a byte-size
+            # heuristic that underestimates code, hashes and base64 output.
+            counter=LiteLLMTokenCounter(model),
+        ),
     )
 
     router = CommandRouter()

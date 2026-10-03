@@ -7,7 +7,9 @@ from typing import Any
 
 import pytest
 
+from cairn.assembly import build_agent as real_build_agent
 from cairn.core.budget import RunBudget
+from cairn.core.context import ContextBudget, ContextBuilder
 from cairn.core.models import LLMResponse, ToolCall
 from cairn.evals import (
     CheckResult,
@@ -500,3 +502,60 @@ def test_network_permission_request_fails_closed_without_prompt_or_execution(
     assert failure["type"] == "PermissionRequired"
     assert "no permission handler" in failure["error"]
     assert list(case_root.iterdir()) == []
+
+
+def _capturing_runner(
+    monkeypatch: pytest.MonkeyPatch,
+    llm: SequenceLLM,
+    tmp_path: Path,
+    captured: list[dict[str, Any]],
+    *,
+    context_budget: ContextBudget | None = None,
+) -> EvalRunner:
+    original = real_build_agent
+
+    def capture(**kwargs: Any) -> Any:
+        captured.append(kwargs)
+        return original(**kwargs)
+
+    monkeypatch.setattr(runner_module, "build_agent", capture)
+    return EvalRunner(
+        lambda: llm,
+        budget=RunBudget(max_steps=2),
+        run_timeout_seconds=5,
+        check_timeout_seconds=5,
+        context_budget=context_budget,
+        temp_root=tmp_path,
+    )
+
+
+@pytest.mark.parametrize("configured", [True, False])
+def test_runner_passes_an_explicit_request_context_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    configured: bool,
+) -> None:
+    captured: list[dict[str, Any]] = []
+    llm = SequenceLLM([LLMResponse(content="done")])
+    context_budget = ContextBudget(max_tokens=2048, response_tokens=256)
+    runner = _capturing_runner(
+        monkeypatch,
+        llm,
+        tmp_path,
+        captured,
+        context_budget=context_budget if configured else None,
+    )
+
+    result = asyncio.run(
+        runner.run(
+            EvalCase(name="budget", prompt="Say done.", files={"note.txt": "x"}),
+            checks=[FileExistsCheck("note.txt")],
+        )
+    )
+
+    assert result.status is EvalStatus.PASS
+    builder = captured[0]["context_builder"]
+    assert isinstance(builder, ContextBuilder)
+    expected = context_budget if configured else ContextBudget()
+    assert runner.context_budget == expected
+    assert builder.budget is runner.context_budget

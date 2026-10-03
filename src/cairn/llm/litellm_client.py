@@ -30,6 +30,39 @@ def _parse_tool_arguments(
     return parsed
 
 
+def to_llm_message(message: Message) -> dict[str, Any]:
+    """Serialize one message exactly as it is sent to the provider.
+
+    Shared with the token counter so a counted request and a sent request are
+    the same payload.
+    """
+    result: dict[str, Any] = {
+        "role": message.role,
+        "content": message.content,
+    }
+
+    if message.tool_call_id is not None:
+        result["tool_call_id"] = message.tool_call_id
+
+    if message.tool_calls:
+        result["tool_calls"] = [
+            {
+                "id": tool_call.id,
+                "type": "function",
+                "function": {
+                    "name": tool_call.name,
+                    "arguments": json.dumps(
+                        tool_call.arguments,
+                        ensure_ascii=False,
+                    ),
+                },
+            }
+            for tool_call in message.tool_calls
+        ]
+
+    return result
+
+
 def _parse_usage(response: object) -> LLMUsage | None:
     usage = getattr(response, "usage", None)
     if usage is None:
@@ -59,42 +92,12 @@ class LiteLLMClient:
         self.api_base = api_base
         self.max_output_tokens = max_output_tokens
 
-    def _to_llm_message(
-        self,
-        message: Message,
-    ) -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "role": message.role,
-            "content": message.content,
-        }
-
-        if message.tool_call_id is not None:
-            result["tool_call_id"] = message.tool_call_id
-
-        if message.tool_calls:
-            result["tool_calls"] = [
-                {
-                    "id": tool_call.id,
-                    "type": "function",
-                    "function": {
-                        "name": tool_call.name,
-                        "arguments": json.dumps(
-                            tool_call.arguments,
-                            ensure_ascii=False,
-                        ),
-                    },
-                }
-                for tool_call in message.tool_calls
-            ]
-
-        return result
-
     async def generate(
         self,
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
-        lite_messages = [self._to_llm_message(message) for message in messages]
+        lite_messages = [to_llm_message(message) for message in messages]
         completion_options: dict[str, Any] = {}
         if self.max_output_tokens is not None:
             completion_options["max_tokens"] = self.max_output_tokens

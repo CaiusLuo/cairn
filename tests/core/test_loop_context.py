@@ -11,6 +11,7 @@ from cairn.core.context import (
     ContextBudget,
     ContextBudgetExceeded,
     ContextBuilder,
+    ConversationHistoryError,
     TokenCount,
 )
 from cairn.core.events import Event
@@ -506,3 +507,47 @@ def test_refreshed_repository_context_is_rebudgeted_before_each_generation(
         llm_spans[1].attributes["context_tokens_after"]
         == counter.count(sent_second_request, [tool.schema()]).tokens
     )
+
+
+def test_malformed_provider_tool_ids_do_not_poison_later_turns() -> None:
+    counter = SerializedCounter()
+    tool = RecordingTool()
+    duplicate_ids = LLMResponse(
+        tool_calls=[
+            ToolCall(id="same", name="record", arguments={"value": 1}),
+            ToolCall(id="same", name="record", arguments={"value": 2}),
+        ]
+    )
+    llm = SequenceLLM([duplicate_ids, LLMResponse(content="recovered")])
+    events: list[Event] = []
+    agent = make_context_agent(
+        llm,
+        ContextBudget(max_tokens=10_000, response_tokens=RESPONSE_RESERVE),
+        counter,
+        tool=tool,
+        events=events,
+    )
+
+    # The malformed group belongs to the current turn, so it cannot be sent...
+    with pytest.raises(ConversationHistoryError) as raised:
+        asyncio.run(run_turn(agent, "run duplicate ids", budget=TEST_BUDGET))
+
+    assert "duplicate call ids" in str(raised.value)
+    assert len(llm.calls) == 1
+    # ...but the executed facts survive and the session is not stuck.
+    assert tool.calls == [{"value": 1}, {"value": 2}]
+    assert [message.role for message in agent.state.messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "tool",
+    ]
+
+    assert asyncio.run(run_turn(agent, "continue", budget=TEST_BUDGET)) == "recovered"
+    request, schemas = llm.calls[1]
+    assert schemas == [tool.schema()]
+    assert request[0] == SYSTEM
+    assert_trim_notice(request[1])
+    assert request[2:] == [Message(role="user", content="continue")]
+    trimmed = [event for event in events if event.type == "context_trimmed"]
+    assert [event.data["omitted_turns"] for event in trimmed] == [1]

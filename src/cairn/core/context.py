@@ -6,6 +6,9 @@ from typing import Any, Protocol
 
 from cairn.core.models import Message
 
+#: Marker used by tests and callers to recognise the omission notice.
+OMISSION_NOTICE_PREFIX = "Context notice:"
+
 
 @dataclass(frozen=True, slots=True)
 class ContextBudget:
@@ -38,15 +41,26 @@ class TokenCounter(Protocol):
         self,
         messages: list[Message],
         tools: list[dict[str, Any]],
-    ) -> TokenCount: ...
+    ) -> TokenCount:
+        """Count what this request would cost.
+
+        ``is_estimate`` must be True unless the result comes from a real
+        tokenizer. Implementations must be monotone: appending messages or tools
+        never lowers the count. ContextBuilder relies on that contract to probe
+        omission candidates with a logarithmic number of counts, and it only
+        returns a view whose fit it has measured.
+        """
+        ...
 
 
 class EstimatedTokenCounter:
     """Offline size estimate; this is not a model tokenizer or provider usage.
 
     Include serialized fields, JSON arguments, schemas and framing overhead.
-    Tokenization varies by model, so callers needing an exact bound should inject
-    a model-aware counter instead.
+    Tokenization varies by model, so callers needing a provider bound should
+    inject a model-aware counter instead. Measured against a tokenizer this
+    heuristic overestimates prose but underestimates code, hexadecimal and
+    base64-like content, which is common in tool output.
     """
 
     def count(
@@ -76,22 +90,58 @@ class ContextRequest:
     omitted_messages: int
 
 
+class ConversationHistoryError(ValueError):
+    """History cannot form a provider-valid request even after trimming.
+
+    Raised when the current turn itself holds an orphan tool result, an
+    incomplete tool-call group or duplicate call ids. Broken *older* turns are
+    omitted from the request view instead, so one malformed provider response
+    cannot make every later turn fail.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(
+            f"Conversation history cannot form a valid request: {reason}. "
+            "The current turn is never trimmed, so the request cannot be "
+            "repaired; start a new session."
+        )
+
+
 class ContextBudgetExceeded(Exception):
-    def __init__(self, *, tokens: TokenCount, budget: ContextBudget) -> None:
+    def __init__(
+        self,
+        *,
+        tokens: TokenCount,
+        budget: ContextBudget,
+        components: dict[str, int] | None = None,
+    ) -> None:
         self.input_tokens = tokens.tokens
         self.response_tokens = budget.response_tokens
         self.max_tokens = budget.max_tokens
         self.is_estimate = tokens.is_estimate
+        self.components = dict(components or {})
         mode = "estimated" if self.is_estimate else "exact"
+        detail = ""
+        if self.components:
+            breakdown = ", ".join(
+                f"{name} {count}" for name, count in self.components.items()
+            )
+            detail = f" Never-trimmed content: {breakdown}."
         super().__init__(
             "Required context exceeds the context budget: "
             f"{mode} input {self.input_tokens} + response reserve "
-            f"{self.response_tokens} > limit {self.max_tokens}. "
-            "The current turn and tool results cannot be trimmed."
+            f"{self.response_tokens} > limit {self.max_tokens}.{detail} "
+            "The current turn and tool results cannot be trimmed; raise "
+            "CAIRN_CONTEXT_MAX_TOKENS or lower CAIRN_RESPONSE_MAX_TOKENS."
         )
 
 
-def _validate_history(history: list[Message], current_turn_start: int) -> None:
+def _validate_turn_boundaries(history: list[Message], current_turn_start: int) -> None:
+    """Check the structure trimming depends on.
+
+    These are internal-invariant failures: without user-message turn boundaries
+    the builder cannot describe which whole turns it omitted.
+    """
     if (
         type(current_turn_start) is not int
         or not 0 <= current_turn_start < len(history)
@@ -103,25 +153,43 @@ def _validate_history(history: list[Message], current_turn_start: int) -> None:
     if any(message.role == "user" for message in history[current_turn_start + 1 :]):
         raise ValueError("The current turn cannot contain another user message")
 
+
+def _tool_group_error(messages: list[Message]) -> str | None:
+    """Return why a provider would reject these tool calls/results, if any."""
     pending: set[str] = set()
-    for message in history:
+
+    for message in messages:
         if message.role == "tool":
             if message.tool_call_id not in pending:
-                raise ValueError("Conversation history contains an orphan tool result")
+                return "a tool result has no matching assistant tool call"
             pending.remove(message.tool_call_id)
-        else:
-            if pending:
-                raise ValueError(
-                    "Conversation history contains an incomplete tool group"
-                )
-            if message.tool_calls:
-                if message.role != "assistant":
-                    raise ValueError("Only assistant messages may contain tool calls")
-                pending = {call.id for call in message.tool_calls}
-                if len(pending) != len(message.tool_calls):
-                    raise ValueError("A tool-call group contains duplicate call IDs")
+            continue
+
+        if pending:
+            return "an assistant tool call has no matching tool result"
+        if message.tool_calls:
+            if message.role != "assistant":
+                return "only assistant messages may contain tool calls"
+            call_ids = {call.id for call in message.tool_calls}
+            if len(call_ids) != len(message.tool_calls):
+                return "a tool-call group contains duplicate call ids"
+            pending = call_ids
+
     if pending:
-        raise ValueError("Conversation history contains an incomplete tool group")
+        return "an assistant tool call has no matching tool result"
+    return None
+
+
+def _omission_notice(omitted_turns: int, omitted_messages: int) -> Message:
+    return Message(
+        role="system",
+        content=(
+            f"{OMISSION_NOTICE_PREFIX} omitted {omitted_turns} earlier complete "
+            f"turn(s) ({omitted_messages} messages) from this request. The current "
+            "turn is preserved. Omitted history is unavailable in this request; "
+            "do not assume earlier tool actions did not happen."
+        ),
+    )
 
 
 class ContextBuilder:
@@ -149,6 +217,27 @@ class ContextBuilder:
     def _fits(self, count: TokenCount) -> bool:
         return count.tokens + self.budget.response_tokens <= self.budget.max_tokens
 
+    def _components(
+        self,
+        system_messages: list[Message],
+        history: list[Message],
+        current_turn_start: int,
+        tools: list[dict[str, Any]],
+    ) -> dict[str, int]:
+        """Describe the never-trimmed content for an overflow error."""
+        components: dict[str, int] = {}
+        if system_messages:
+            components["system/repository context"] = self._count(
+                system_messages, []
+            ).tokens
+        if tools:
+            components["tool schemas"] = self._count([], tools).tokens
+        # Turn boundaries are validated, so the current turn is never empty.
+        components["current turn"] = self._count(
+            history[current_turn_start:], []
+        ).tokens
+        return components
+
     def build(
         self,
         *,
@@ -157,11 +246,13 @@ class ContextBuilder:
         current_turn_start: int,
         tools: list[dict[str, Any]],
     ) -> ContextRequest:
-        _validate_history(history, current_turn_start)
-        messages = [*system_messages, *history]
-        tokens_before = self._count(messages, tools)
-        if self._fits(tokens_before):
-            return ContextRequest(messages, tokens_before, tokens_before, 0, 0)
+        _validate_turn_boundaries(history, current_turn_start)
+
+        full_view = [*system_messages, *history]
+        tokens_before = self._count(full_view, tools)
+        full_history_error = _tool_group_error(history)
+        if full_history_error is None and self._fits(tokens_before):
+            return ContextRequest(full_view, tokens_before, tokens_before, 0, 0)
 
         # Each next user message closes the preceding complete old turn. This
         # also includes recovered turns ending in tool results rather than text.
@@ -170,26 +261,79 @@ class ContextBuilder:
             for index in range(1, current_turn_start + 1)
             if history[index].role == "user"
         ]
-        tokens_after = tokens_before
-        for omitted_turns, omitted_messages in enumerate(old_turn_ends, start=1):
-            notice = Message(
-                role="system",
-                content=(
-                    f"Context budget: omitted {omitted_turns} earlier complete "
-                    f"turn(s) ({omitted_messages} messages). The current turn is "
-                    "preserved. Omitted history is unavailable in this request; "
-                    "do not assume earlier tool actions did not happen."
+        if not old_turn_ends:
+            if full_history_error is not None:
+                raise ConversationHistoryError(full_history_error)
+            raise ContextBudgetExceeded(
+                tokens=tokens_before,
+                budget=self.budget,
+                components=self._components(
+                    system_messages, history, current_turn_start, tools
                 ),
             )
-            messages = [*system_messages, notice, *history[omitted_messages:]]
-            tokens_after = self._count(messages, tools)
-            if self._fits(tokens_after):
-                return ContextRequest(
-                    messages,
-                    tokens_before,
-                    tokens_after,
-                    omitted_turns,
-                    omitted_messages,
-                )
 
-        raise ContextBudgetExceeded(tokens=tokens_after, budget=self.budget)
+        views: dict[int, tuple[list[Message], TokenCount]] = {}
+
+        def retained_for(omitted_turns: int) -> list[Message]:
+            return history[old_turn_ends[omitted_turns - 1] :]
+
+        def view_for(omitted_turns: int) -> tuple[list[Message], TokenCount]:
+            cached = views.get(omitted_turns)
+            if cached is None:
+                omitted_messages = old_turn_ends[omitted_turns - 1]
+                view = [
+                    *system_messages,
+                    _omission_notice(omitted_turns, omitted_messages),
+                    *history[omitted_messages:],
+                ]
+                cached = (view, self._count(view, tools))
+                views[omitted_turns] = cached
+            return cached
+
+        def acceptable(omitted_turns: int) -> bool:
+            # Counting is skipped for structurally invalid views: dropping whole
+            # turns keeps every retained tool-call/tool-result group intact.
+            if _tool_group_error(retained_for(omitted_turns)) is not None:
+                return False
+            return self._fits(view_for(omitted_turns)[1])
+
+        max_omitted = len(old_turn_ends)
+
+        # The current turn is never trimmed, so a broken group inside it is not
+        # repairable here.
+        current_turn_error = _tool_group_error(retained_for(max_omitted))
+        if current_turn_error is not None:
+            raise ConversationHistoryError(current_turn_error)
+
+        minimal_tokens = view_for(max_omitted)[1]
+        if not self._fits(minimal_tokens):
+            raise ContextBudgetExceeded(
+                tokens=minimal_tokens,
+                budget=self.budget,
+                components=self._components(
+                    system_messages, history, current_turn_start, tools
+                ),
+            )
+
+        # acceptable() only becomes true as turns are dropped: dropping a whole
+        # old turn cannot break a retained group nor raise the count for a
+        # counter honouring the TokenCounter contract. The search therefore
+        # finds the smallest omission set that both fits the budget and keeps
+        # the retained tool groups valid, and it only moves `high` onto a
+        # candidate whose fit was measured, so the returned view is verified.
+        low, high = 1, max_omitted
+        while low < high:
+            middle = (low + high) // 2
+            if acceptable(middle):
+                high = middle
+            else:
+                low = middle + 1
+
+        view, tokens_after = view_for(low)
+        return ContextRequest(
+            view,
+            tokens_before,
+            tokens_after,
+            low,
+            old_turn_ends[low - 1],
+        )

@@ -1,12 +1,15 @@
 import json
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
 
 from cairn.core.context import (
+    OMISSION_NOTICE_PREFIX,
     ContextBudget,
     ContextBudgetExceeded,
     ContextBuilder,
+    ConversationHistoryError,
     EstimatedTokenCounter,
     TokenCount,
 )
@@ -24,7 +27,7 @@ class SizeCounter:
         self.calls.append((messages.copy(), tools.copy()))
         tokens = sum(
             self.notice_tokens
-            if (message.content or "").startswith("Context budget:")
+            if (message.content or "").startswith(OMISSION_NOTICE_PREFIX)
             else len(message.content or "")
             for message in messages
         )
@@ -287,6 +290,64 @@ def test_invalid_token_counts_are_rejected(tokens: int) -> None:
         TokenCount(tokens, False)
 
 
+@pytest.mark.parametrize("is_estimate", [1, "yes", None])
+def test_invalid_estimate_markers_are_rejected(is_estimate: Any) -> None:
+    with pytest.raises(ValueError):
+        TokenCount(1, is_estimate)
+
+
+@dataclass
+class FakeCount:
+    """Token-shaped result that is not a TokenCount."""
+
+    tokens: int
+    is_estimate: bool
+
+
+def raw_token_count(tokens: Any, is_estimate: Any) -> TokenCount:
+    """Build a TokenCount without its validation, to exercise the builder."""
+    count = object.__new__(TokenCount)
+    object.__setattr__(count, "tokens", tokens)
+    object.__setattr__(count, "is_estimate", is_estimate)
+    return count
+
+
+@pytest.mark.parametrize(
+    "returned",
+    [
+        None,
+        "12",
+        FakeCount(tokens=-1, is_estimate=False),
+        raw_token_count(-1, False),
+        raw_token_count(1, "yes"),
+    ],
+)
+def test_invalid_counter_results_are_rejected(returned: Any) -> None:
+    class BadCounter:
+        def count(self, messages: list[Message], tools: list[dict[str, Any]]) -> Any:
+            return returned
+
+    with pytest.raises(ValueError, match="Token counter"):
+        ContextBuilder(counter=BadCounter()).build(
+            system_messages=[],
+            history=[user("now")],
+            current_turn_start=0,
+            tools=[],
+        )
+
+
+def test_budget_error_without_components_still_reads_clearly() -> None:
+    error = ContextBudgetExceeded(
+        tokens=TokenCount(tokens=11, is_estimate=True),
+        budget=ContextBudget(max_tokens=10, response_tokens=2),
+    )
+
+    assert error.components == {}
+    assert "estimated input 11 + response reserve 2 > limit 10" in str(error)
+    assert "Never-trimmed content" not in str(error)
+    assert "The current turn and tool results cannot be trimmed" in str(error)
+
+
 @pytest.mark.parametrize(
     "history,current_turn_start",
     [
@@ -304,7 +365,17 @@ def test_invalid_token_counts_are_rejected(tokens: int) -> None:
             0,
         ),
         (tool_turn()[:-1], 0),
-        ([*tool_turn()[:-1], user("current")], 3),
+        (
+            [
+                user("now"),
+                Message(
+                    role="system",
+                    content="not an assistant",
+                    tool_calls=[ToolCall(id="x", name="tool", arguments={})],
+                ),
+            ],
+            0,
+        ),
         (
             [
                 user("now"),
@@ -320,7 +391,7 @@ def test_invalid_token_counts_are_rejected(tokens: int) -> None:
         ),
     ],
 )
-def test_invalid_boundaries_and_tool_groups_fail_safely(
+def test_invalid_boundaries_and_unrepairable_tool_groups_fail_safely(
     history: list[Message], current_turn_start: int
 ) -> None:
     with pytest.raises(ValueError):
@@ -330,3 +401,120 @@ def test_invalid_boundaries_and_tool_groups_fail_safely(
             current_turn_start=current_turn_start,
             tools=[],
         )
+
+
+def test_broken_old_tool_group_is_omitted_instead_of_failing_every_turn() -> None:
+    # A provider that returns an incomplete group must not make the session
+    # unusable: the broken *old* turn leaves the request view like any other.
+    history = [*tool_turn()[:-1], user("current")]
+    original = [message.model_copy(deep=True) for message in history]
+    builder = ContextBuilder(counter=SizeCounter())
+    system = [Message(role="system", content="system")]
+
+    request = builder.build(
+        system_messages=system, history=history, current_turn_start=3, tools=[]
+    )
+
+    assert request.omitted_turns == 1
+    assert request.omitted_messages == 3
+    assert request.messages[:1] == system
+    assert (request.messages[1].content or "").startswith(OMISSION_NOTICE_PREFIX)
+    assert request.messages[2:] == [history[3]]
+    assert history == original
+
+
+def test_broken_old_tool_group_under_budget_pressure_is_skipped_by_the_search() -> None:
+    # A broken group that a budget-fitting candidate would still retain must be
+    # passed over, so the search predicate has to reject structurally invalid
+    # views before it accepts them on size alone.
+    history = [
+        user("aaaa"),
+        assistant("bbbb"),
+        user("cccc"),
+        Message(
+            role="assistant",
+            tool_calls=[ToolCall(id="one", name="tool", arguments={})],
+        ),
+        user("now"),
+    ]
+    counter = SizeCounter(notice_tokens=10)
+    builder = ContextBuilder(ContextBudget(14, 1), counter)
+
+    request = builder.build(
+        system_messages=[], history=history, current_turn_start=4, tools=[]
+    )
+
+    assert request.omitted_turns == 2
+    assert request.omitted_messages == 4
+    assert request.messages[1:] == [history[4]]
+    assert request.tokens_after.tokens + 1 <= 14
+
+
+def test_broken_current_turn_is_a_clear_unrepairable_history_error() -> None:
+    history = [
+        user("old"),
+        assistant("answer"),
+        user("now"),
+        Message(role="tool", tool_call_id="orphan", content="result"),
+    ]
+
+    with pytest.raises(ConversationHistoryError) as raised:
+        ContextBuilder(counter=SizeCounter()).build(
+            system_messages=[],
+            history=history,
+            current_turn_start=2,
+            tools=[],
+        )
+
+    message = str(raised.value)
+    assert "no matching assistant tool call" in message
+    assert "start a new session" in message
+    assert isinstance(raised.value, ValueError)
+
+
+def test_trimming_probes_a_logarithmic_number_of_view_candidates() -> None:
+    history: list[Message] = []
+    for index in range(200):
+        history.append(user(f"question-{index} " + "x" * 200))
+        history.append(assistant(f"answer-{index} " + "y" * 200))
+    history.append(user("current"))
+    counter = SizeCounter()
+    builder = ContextBuilder(ContextBudget(400, 50), counter)
+
+    request = builder.build(
+        system_messages=[Message(role="system", content="system")],
+        history=history,
+        current_turn_start=len(history) - 1,
+        tools=[],
+    )
+
+    assert request.omitted_turns == 200
+    assert request.messages[-1] is history[-1]
+    assert request.tokens_after.tokens + 50 <= 400
+    # One full count, one minimal-view count and one probe per binary-search
+    # step: a per-candidate linear scan would need 200 counts here.
+    assert len(counter.calls) <= 12
+
+
+def test_overflow_error_names_the_never_trimmed_components() -> None:
+    system = [Message(role="system", content="s" * 400)]
+    tools = [{"type": "function", "function": {"name": "t", "description": "d" * 40}}]
+    history = [user("i" * 400)]
+    builder = ContextBuilder(ContextBudget(50, 10), SizeCounter())
+
+    with pytest.raises(ContextBudgetExceeded) as raised:
+        builder.build(
+            system_messages=system, history=history, current_turn_start=0, tools=tools
+        )
+
+    error = raised.value
+    assert error.components == {
+        "system/repository context": 400,
+        "tool schemas": len(json.dumps(tools[0])),
+        "current turn": 400,
+    }
+    message = str(error)
+    assert "Never-trimmed content: system/repository context 400" in message
+    assert "current turn 400" in message
+    assert "CAIRN_CONTEXT_MAX_TOKENS" in message
+    assert "CAIRN_RESPONSE_MAX_TOKENS" in message

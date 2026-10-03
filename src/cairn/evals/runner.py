@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 
 from cairn.assembly import build_agent
 from cairn.core.budget import RunBudget
+from cairn.core.context import ContextBudget, ContextBuilder
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.evals.models import CheckResult, EvalCase, EvalCheck, EvalResult, EvalStatus
@@ -33,6 +34,7 @@ class EvalRunner:
         budget: RunBudget,
         run_timeout_seconds: float,
         check_timeout_seconds: float,
+        context_budget: ContextBudget | None = None,
         tracer: Tracer | None = None,
         temp_root: Path | None = None,
     ) -> None:
@@ -44,6 +46,11 @@ class EvalRunner:
                 raise ValueError(f"{name} must be finite and greater than zero")
         self.llm_factory = llm_factory
         self.budget = budget
+        # Own the request budget explicitly rather than inheriting whatever the
+        # Agent default happens to be, so eval verdicts stay reproducible.
+        self.context_budget = (
+            context_budget if context_budget is not None else ContextBudget()
+        )
         self.run_timeout_seconds = run_timeout_seconds
         self.check_timeout_seconds = check_timeout_seconds
         self.tracer = tracer
@@ -82,6 +89,7 @@ class EvalRunner:
                             permission_handler=None,
                             event_handler=capture_trace,
                             tracer=self.tracer,
+                            context_builder=ContextBuilder(budget=self.context_budget),
                         )
                         async with deadline:
                             await run_turn(agent, case.prompt, budget=self.budget)

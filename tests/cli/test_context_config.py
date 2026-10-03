@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ from cairn.core.agent import Agent
 from cairn.core.context import ContextBudget
 from cairn.input import CliInput
 from cairn.llm.litellm_client import LiteLLMClient
+from cairn.llm.token_counter import LiteLLMTokenCounter
 
 CONTEXT_SETTINGS = ("CAIRN_CONTEXT_MAX_TOKENS", "CAIRN_RESPONSE_MAX_TOKENS")
 
@@ -79,10 +81,12 @@ def test_cli_injects_context_budget_and_matching_provider_response_limit(
     assert result.exit_code == 0
     assert len(agents) == 1
     assert agents[0].context_builder.budget == expected
+    assert isinstance(agents[0].context_builder.counter, LiteLLMTokenCounter)
+    assert agents[0].context_builder.counter.model == "provider/model"
     assert isinstance(agents[0].llm, LiteLLMClient)
     assert agents[0].llm.max_output_tokens == expected.response_tokens
     for name in CONTEXT_SETTINGS:
-        assert cli_module.os.environ.get(name) == host_values.get(name)
+        assert os.environ.get(name) == host_values.get(name)
 
 
 @pytest.mark.parametrize(
@@ -107,3 +111,25 @@ def test_cli_rejects_invalid_context_configuration_before_agent_initialization(
     assert result.exit_code != 0
     assert isinstance(result.exception, ValueError)
     assert agents == []
+
+
+@pytest.mark.parametrize(
+    ("host_values", "file_values"),
+    [
+        ({"CAIRN_CONTEXT_MAX_TOKENS": ""}, {}),
+        ({"CAIRN_RESPONSE_MAX_TOKENS": ""}, {}),
+        ({}, {"CAIRN_CONTEXT_MAX_TOKENS": "", "CAIRN_RESPONSE_MAX_TOKENS": ""}),
+    ],
+)
+def test_cli_treats_blank_context_settings_as_unset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    host_values: dict[str, str],
+    file_values: dict[str, str],
+) -> None:
+    agents = _configure_cli(tmp_path, monkeypatch, host_values, file_values)
+
+    result = CliRunner().invoke(cli_module.app, [])
+
+    assert result.exit_code == 0
+    assert agents[0].context_builder.budget == ContextBudget()

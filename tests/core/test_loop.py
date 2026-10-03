@@ -9,7 +9,7 @@ from cairn.core.budget import BudgetReason, RunBudget, RunBudgetExceeded
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.core.models import LLMResponse, Message, ToolCall, ToolResult
-from cairn.llm.litellm_client import LiteLLMClient
+from cairn.llm.litellm_client import to_llm_message
 from cairn.observability.models import SpanStatus
 from cairn.observability.tracer import Tracer
 from cairn.tools.base import ToolExecutionContext
@@ -81,10 +81,9 @@ def blocking_response() -> LLMResponse:
 
 
 def assert_serialized_tool_pairs(messages: list[Message]) -> None:
-    client = LiteLLMClient(model="test")
     pending: list[str] = []
     for message in messages:
-        serialized = client._to_llm_message(message)
+        serialized = to_llm_message(message)
         if serialized["role"] == "tool":
             assert pending
             assert serialized["tool_call_id"] == pending.pop(0)
