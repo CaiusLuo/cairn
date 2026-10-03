@@ -5,7 +5,12 @@ import pytest
 from rich.console import Console
 
 import cairn.trace_ui as trace_ui
-from cairn.observability.models import Span, SpanStatus, TraceContext
+from cairn.observability.models import (
+    Span,
+    SpanStatus,
+    TraceContext,
+    TraceListResult,
+)
 
 
 @pytest.mark.parametrize(
@@ -54,3 +59,23 @@ def test_print_trace_renders_tool_display_name_safely(
     if display_name != "tool.execute":
         assert "tool.execute" not in rendered
     assert child.name == "tool.execute"
+
+
+def test_print_trace_list_caps_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = StringIO()
+    monkeypatch.setattr(
+        trace_ui,
+        "console",
+        Console(file=output, force_terminal=False, color_system=None),
+    )
+    result = TraceListResult(
+        diagnostics=[f"skipped corrupt trace {index:08x}" for index in range(9)]
+    )
+
+    trace_ui.print_trace_list(result)
+    rendered = output.getvalue()
+
+    assert rendered.count("warning: skipped corrupt trace") == trace_ui.MAX_DIAGNOSTICS
+    assert "warning: ... and 4 more" in rendered

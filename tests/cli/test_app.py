@@ -19,8 +19,8 @@ from cairn.core.budget import RunBudget
 from cairn.core.events import Event
 from cairn.input import CliInput
 from cairn.observability.models import Span, SpanStatus, TraceContext, TraceListResult
-from cairn.observability.reader import JsonlTraceReader
 from cairn.observability.sinks import JsonlTraceSink
+from cairn.observability.storage import TraceStore
 from cairn.observability.tracer import Tracer
 
 runner = CliRunner()
@@ -449,13 +449,13 @@ def test_interactive_trace_list_shows_requested_recent_summaries(
     ]
     _set_cli_inputs(monkeypatch, command, "/help trace", "/quit")
     requested_limits: list[int] = []
-    original_list_traces = JsonlTraceReader.list_traces
+    original_list_traces = TraceStore.list_traces
 
-    def capture_limit(reader: JsonlTraceReader, limit: int = 20) -> TraceListResult:
+    def capture_limit(store: TraceStore, limit: int = 20) -> TraceListResult:
         requested_limits.append(limit)
-        return original_list_traces(reader, limit=limit)
+        return original_list_traces(store, limit=limit)
 
-    monkeypatch.setattr(JsonlTraceReader, "list_traces", capture_limit)
+    monkeypatch.setattr(TraceStore, "list_traces", capture_limit)
 
     async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
         pytest.fail("Trace list command reached the model")
@@ -512,7 +512,7 @@ def test_interactive_trace_list_invalid_count_keeps_session_available(
     async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
         pytest.fail("Invalid trace count reached the model")
 
-    monkeypatch.setattr(JsonlTraceReader, "list_traces", unexpected_list_traces)
+    monkeypatch.setattr(TraceStore, "list_traces", unexpected_list_traces)
     monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
 
     result = runner.invoke(app, [])
@@ -521,6 +521,152 @@ def test_interactive_trace_list_invalid_count_keeps_session_available(
     assert "Usage: /trace list [N] (1 <= N <= 100)" in result.stdout.splitlines()
     assert "Available commands:" in result.stdout
     assert "Goodbye! see you next time." in result.stdout
+
+
+def test_interactive_trace_count_reports_stored_traces(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    trace_root = tmp_path / ".cairn" / "traces"
+    for index in range(3):
+        _write_completed_trace(trace_root, index)
+    _set_cli_inputs(monkeypatch, "/trace count", "/quit")
+
+    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
+        pytest.fail("Trace count command reached the model")
+
+    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert "traces: 3" in result.stdout
+
+
+def test_interactive_trace_del_tail_removes_oldest_and_echoes_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    trace_root = tmp_path / ".cairn" / "traces"
+    trace_ids = [_write_completed_trace(trace_root, index) for index in range(3)]
+    _set_cli_inputs(monkeypatch, "/trace del --tail 2", "/trace count", "/quit")
+
+    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
+        pytest.fail("Trace delete command reached the model")
+
+    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    oldest_two = ", ".join(trace_id[:8] for trace_id in trace_ids[:2])
+    assert f"deleted 2 trace(s): {oldest_two}" in result.stdout
+    assert "traces: 1" in result.stdout
+
+
+def test_interactive_trace_delete_clears_the_session_latest_trace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    trace_root = tmp_path / ".cairn" / "traces"
+    trace_id = _write_completed_trace(trace_root, 0)
+    _set_cli_inputs(
+        monkeypatch, "hello", f"/trace del {trace_id[:8]}", "/trace", "/quit"
+    )
+
+    async def fake_run_turn(
+        agent: Agent,
+        user_input: str,
+        *,
+        budget: RunBudget,
+    ) -> str:
+        agent.emit(
+            Event(
+                type="trace_finish",
+                data={"trace_id": trace_id, "status": "ok", "persisted": True},
+            )
+        )
+        return "done"
+
+    monkeypatch.setattr(cli_module, "run_turn", fake_run_turn)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert f"deleted 1 trace(s): {trace_id[:8]}" in result.stdout
+    assert "No trace available yet." in result.stdout
+    assert "Trace not found" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/trace del",
+        "/trace del --tail",
+        "/trace del --tail 0",
+        "/trace del --tail many",
+        "/trace del --tail 1 2",
+        "/trace del --other",
+        "/trace count 1",
+    ],
+)
+def test_interactive_trace_storage_usage_errors_keep_session_available(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    _write_completed_trace(tmp_path / ".cairn" / "traces", 0)
+    _set_cli_inputs(monkeypatch, command, "/help", "/quit")
+
+    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
+        pytest.fail("Invalid storage command reached the model")
+
+    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert "Usage: /trace" in result.stdout
+    assert "Available commands:" in result.stdout
+    assert len(list((tmp_path / ".cairn" / "traces").glob("*.jsonl"))) == 1
+
+
+def test_interactive_trace_del_tail_reports_unreadable_traces(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    trace_root = tmp_path / ".cairn" / "traces"
+    trace_root.mkdir(parents=True)
+    corrupt = trace_root / "corrupt.jsonl"
+    corrupt.write_text("{invalid json\n", encoding="utf-8")
+    _set_cli_inputs(monkeypatch, "/trace del --tail 1", "/quit")
+
+    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
+        pytest.fail("Trace delete command reached the model")
+
+    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert "warning: skipped corrupt trace corrupt" in result.stdout
+    assert "No trace deleted." in result.stdout
+    assert corrupt.exists()
 
 
 @pytest.mark.parametrize("action", ["show", "list", "missing"])
@@ -592,7 +738,7 @@ def test_interactive_trace_read_errors_keep_session_available(
         trace_root.mkdir(parents=True)
         (trace_root / "corrupt.jsonl").write_text("{invalid json\n", encoding="utf-8")
         trace_command = "/trace list"
-        expected_error = "warning: skipped corrupt trace corrupt (validationerror)"
+        expected_error = "warning: skipped corrupt trace corrupt"
     else:
         trace_id = _write_trace()
         trace_path = Path(".cairn/traces") / f"{trace_id}.jsonl"

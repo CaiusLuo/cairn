@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 
-from cairn.observability.reader import JsonlTraceReader
+from cairn.observability.storage import TraceStore
 
 
 @dataclass
 class CommandContext:
-    trace_reader: JsonlTraceReader
+    trace_store: TraceStore
     last_trace_id: str | None = None

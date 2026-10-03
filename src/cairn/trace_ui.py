@@ -8,6 +8,9 @@ from cairn.observability.models import Span, SpanStatus, TraceListResult, TraceS
 
 console = Console()
 
+#: Cap diagnostics so one burst of unreadable traces cannot flood the list.
+MAX_DIAGNOSTICS = 5
+
 
 def _duration(span: Span | TraceSummary) -> str:
     if span.end_time is None:
@@ -86,5 +89,9 @@ def print_trace_list(result: TraceListResult) -> None:
             Text(f"{icon} {trace.trace_id[:8]} {time} {_duration(trace)}", style=style)
         )
 
-    for diagnostic in result.diagnostics:
+    for diagnostic in result.diagnostics[:MAX_DIAGNOSTICS]:
         console.print(Text("warning: " + diagnostic))
+
+    hidden = len(result.diagnostics) - MAX_DIAGNOSTICS
+    if hidden > 0:
+        console.print(Text(f"warning: ... and {hidden} more"))

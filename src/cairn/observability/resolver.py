@@ -19,6 +19,11 @@ class TraceResolver:
             raise FileNotFoundError(f"Trace not found: {trace_id}")
 
         if len(files) > 1:
-            raise ValueError(f"Ambiguous trace prefix: {trace_id}")
+            preview = ", ".join(sorted(stem[:8] for stem in files)[:5])
+            more = f", +{len(files) - 5} more" if len(files) > 5 else ""
+            raise ValueError(
+                f"Ambiguous trace prefix: {trace_id} "
+                f"({len(files)} matches: {preview}{more})"
+            )
 
         return files[0]

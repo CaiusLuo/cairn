@@ -15,8 +15,8 @@ from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.core.permissions import SessionPermissionHandler
 from cairn.input import CliInput
-from cairn.observability.reader import JsonlTraceReader
 from cairn.observability.sinks import JsonlTraceSink
+from cairn.observability.storage import TraceStore
 from cairn.observability.tracer import Tracer
 from cairn.ui import (
     console_event_handler,
@@ -101,7 +101,7 @@ async def main(cli_input: CliInput | None = None) -> None:
     workspace = Workspace(Path.cwd())
     trace_root = Path(".cairn/traces")
     tracer = Tracer(JsonlTraceSink(trace_root))
-    command_context = CommandContext(trace_reader=JsonlTraceReader(trace_root))
+    command_context = CommandContext(trace_store=TraceStore(trace_root))
     pending_trace_finish: Event | None = None
 
     def handle_event(event: Event) -> None:

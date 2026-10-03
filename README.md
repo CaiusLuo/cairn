@@ -161,19 +161,31 @@ Use `/exit` or `/quit` to end the session. Normal local operations within the
 sandbox need no approval; an explicit request for extra `NETWORK` capability
 requires approval, which can apply to later network requests in that session.
 
-Each turn records trace spans under `.cairn/traces/`. These commands inspect the
-latest completed turn in the current session, a stored trace by ID or unique ID
-prefix, or the list of recent traces without calling the model:
+Each turn records trace spans under `.cairn/traces/`. A trace is one append-only
+JSONL file, named by its trace ID, and that file is the only persistent record:
+listing metadata is read from the final root span at the tail of the file instead
+of being cached in a second file. These commands inspect or manage stored traces
+without calling the model:
 
 ```text
 /trace
 /trace TRACE_ID
 /trace list
 /trace list N
+/trace count
+/trace del TRACE_ID
+/trace del --tail N
 ```
 
-`/trace list` shows the latest 10 completed traces. Use `/trace list N` to choose
-the number of traces to show, where `1 <= N <= 100`.
+`/trace list` shows the latest 10 completed traces, newest first. Use
+`/trace list N` to choose the number of traces to show, where `1 <= N <= 100`.
+`/trace count` prints how many trace files are stored, without parsing them.
+`/trace del TRACE_ID` deletes one trace and echoes the deleted IDs and count;
+`/trace del --tail N` deletes the N oldest traces, i.e. the end of `/trace list`.
+A trace ID may be a full ID or a unique prefix; an ambiguous prefix reports the
+matching candidates and deletes nothing. Batch deletion skips traces whose final
+root span cannot be read, warns about each one, and never aborts the whole batch.
+Deleting is permanent and never asks for confirmation.
 
 Use `/help` to list all interactive commands.
 
