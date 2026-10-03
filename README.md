@@ -129,7 +129,11 @@ prefix, or the list of recent traces without calling the model:
 /trace
 /trace TRACE_ID
 /trace list
+/trace list N
 ```
+
+`/trace list` shows the latest 10 completed traces. Use `/trace list N` to choose
+the number of traces to show, where `1 <= N <= 100`.
 
 Use `/help` to list all interactive commands.
 

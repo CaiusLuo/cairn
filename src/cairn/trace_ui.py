@@ -81,7 +81,10 @@ def print_trace_list(result: TraceListResult) -> None:
     for trace in result.traces:
         icon = "✓" if trace.status == SpanStatus.OK else "✗"
         time = trace.start_time.astimezone().strftime("%m-%d %H:%M:%S")
-        console.print(Text(f"{icon} {trace.trace_id[:8]} {time} {_duration(trace)}"))
+        style = "green" if trace.status == SpanStatus.OK else "red"
+        console.print(
+            Text(f"{icon} {trace.trace_id[:8]} {time} {_duration(trace)}", style=style)
+        )
 
     for diagnostic in result.diagnostics:
         console.print(Text("warning: " + diagnostic))

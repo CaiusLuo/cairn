@@ -423,15 +423,31 @@ def _write_completed_trace(trace_root: Path, index: int) -> str:
     return trace_id
 
 
-def test_interactive_trace_list_shows_ten_recent_summaries(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("command", "expected_limit"),
+    [
+        pytest.param("/trace list", 10, id="default-ten"),
+        pytest.param("/trace list 1", 1, id="minimum-one"),
+        pytest.param("/trace list 10", 10, id="explicit-ten"),
+        pytest.param("/trace list 20", 20, id="twenty"),
+        pytest.param("/trace list 100", 100, id="maximum-hundred"),
+    ],
+)
+def test_interactive_trace_list_shows_requested_recent_summaries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    expected_limit: int,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     trace_root = tmp_path / ".cairn" / "traces"
-    trace_ids = [_write_completed_trace(trace_root, index) for index in range(12)]
-    _set_cli_inputs(monkeypatch, "/trace list", "/help trace", "/quit")
+    trace_count = max(12, expected_limit + 1)
+    trace_ids = [
+        _write_completed_trace(trace_root, index) for index in range(trace_count)
+    ]
+    _set_cli_inputs(monkeypatch, command, "/help trace", "/quit")
     requested_limits: list[int] = []
     original_list_traces = JsonlTraceReader.list_traces
 
@@ -448,23 +464,62 @@ def test_interactive_trace_list_shows_ten_recent_summaries(
     result = runner.invoke(app, [])
 
     assert result.exit_code == 0
-    assert requested_limits == [10]
+    assert requested_limits == [expected_limit]
     assert "Recent traces:" in result.stdout
     listed_ids = re.findall(r"^[✓✗] ([0-9a-f]{8}) ", result.stdout, flags=re.M)
-    expected_ids = [trace_id[:8] for trace_id in reversed(trace_ids[2:])]
+    expected_ids = [trace_id[:8] for trace_id in reversed(trace_ids[-expected_limit:])]
     assert listed_ids == expected_ids
     assert all(trace_id not in result.stdout for trace_id in trace_ids)
-    assert trace_ids[0][:8] not in listed_ids
-    assert trace_ids[1][:8] not in listed_ids
+    assert all(
+        trace_id[:8] not in listed_ids for trace_id in trace_ids[:-expected_limit]
+    )
     newest_time = (
-        datetime(2026, 9, 1, 0, 11, tzinfo=UTC).astimezone().strftime("%m-%d %H:%M:%S")
+        (datetime(2026, 9, 1, tzinfo=UTC) + timedelta(minutes=trace_count - 1))
+        .astimezone()
+        .strftime("%m-%d %H:%M:%S")
     )
     assert newest_time in result.stdout
     assert "1.25s" in result.stdout
-    assert "✓" in result.stdout and "✗" in result.stdout
+    listed_statuses = re.findall(r"^([✓✗]) [0-9a-f]{8} ", result.stdout, flags=re.M)
+    assert listed_statuses == [
+        "✓" if index % 2 == 0 else "✗"
+        for index in reversed(range(trace_count - expected_limit, trace_count))
+    ]
     assert "│" not in result.stdout and "─" not in result.stdout
-    assert "/trace | /trace TRACE_ID | /trace list" in result.stdout
+    assert "/trace | /trace TRACE_ID | /trace list [N]" in result.stdout
+    assert "1 <= N <= 100" in result.stdout
     assert "10 most recent completed traces" in result.stdout
+    assert "Goodbye! see you next time." in result.stdout
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    ["0", "-1", "101", "many", "1.5", "3 4", "1 extra"],
+)
+def test_interactive_trace_list_invalid_count_keeps_session_available(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    _set_cli_inputs(monkeypatch, f"/trace list {arguments}", "/help", "/quit")
+
+    def unexpected_list_traces(*_args: object, **_kwargs: object) -> TraceListResult:
+        pytest.fail("Invalid trace count reached the trace reader")
+
+    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
+        pytest.fail("Invalid trace count reached the model")
+
+    monkeypatch.setattr(JsonlTraceReader, "list_traces", unexpected_list_traces)
+    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert "Usage: /trace list [N] (1 <= N <= 100)" in result.stdout.splitlines()
+    assert "Available commands:" in result.stdout
     assert "Goodbye! see you next time." in result.stdout
 
 
