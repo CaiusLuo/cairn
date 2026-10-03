@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 from cairn.commands.context import CommandContext
-from cairn.commands.help import handle_help
+from cairn.commands.help import handle_help, print_available_commands
 from cairn.commands.trace import handle_trace
 
 
@@ -36,4 +36,5 @@ class CommandRouter:
             return CommandResult(handled=True)
 
         print(f"Unknown command: {parts[0]}")
+        print_available_commands()
         return CommandResult(handled=True)

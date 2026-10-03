@@ -1,4 +1,5 @@
 from cairn.commands.context import CommandContext
+from cairn.commands.help import handle_help
 from cairn.observability.storage import TraceDeleteResult
 from cairn.trace_ui import print_trace, print_trace_list
 
@@ -43,18 +44,31 @@ def _list_traces(context: CommandContext, args: list[str]) -> None:
 
 
 def _show_trace(context: CommandContext, trace_id: str | None) -> None:
-    resolved = trace_id if trace_id is not None else context.last_trace_id
-    if resolved is None:
-        print("No trace available yet.")
+    if trace_id is None:
+        trace_id = context.last_trace_id
+        if trace_id is None:
+            print("No trace available yet.")
+            return
+    elif not _is_trace_id_prefix(trace_id):
+        # A mistyped subcommand is not a trace ID; answer with the usage instead
+        # of a misleading "Trace not found".
+        print(f"Unknown trace command: {trace_id}")
+        handle_help(["trace"])
         return
 
     try:
-        spans = context.trace_store.read(resolved)
+        spans = context.trace_store.read(trace_id)
     except (OSError, ValueError) as exc:
         print(exc)
         return
 
     print_trace(spans)
+
+
+def _is_trace_id_prefix(value: str) -> bool:
+    return bool(value) and all(
+        character in "0123456789abcdef" for character in value.lower()
+    )
 
 
 def _delete_traces(context: CommandContext, args: list[str]) -> None:

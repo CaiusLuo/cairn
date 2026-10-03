@@ -315,6 +315,71 @@ def test_interactive_commands_do_not_call_model(
     assert expected in result.stdout
 
 
+def test_interactive_unknown_command_lists_commands_with_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    _set_cli_inputs(monkeypatch, "/unknown", "/quit")
+
+    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
+        pytest.fail("Unknown command reached the model")
+
+    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    output = result.stdout
+    assert output.index("Unknown command: /unknown") < output.index(
+        "Available commands:"
+    )
+    for name in ("/trace", "/help", "/exit", "/quit"):
+        assert name in output
+    assert "usage: /trace | /trace TRACE_ID" in output
+    assert "usage: /help [COMMAND]" in output
+    assert "Run /help COMMAND for details" in output
+
+
+def test_interactive_unknown_trace_subcommand_shows_trace_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    _set_cli_inputs(monkeypatch, "/trace lsit", "/quit")
+
+    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
+        pytest.fail("Unknown trace command reached the model")
+
+    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert "Unknown trace command: lsit" in result.stdout
+    assert "Usage: /trace | /trace TRACE_ID" in result.stdout
+    assert "Trace not found" not in result.stdout
+
+
+def test_interactive_help_for_unknown_command_lists_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    _set_cli_inputs(monkeypatch, "/help nope", "/quit")
+
+    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
+        pytest.fail("Help command reached the model")
+
+    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert "No help available for command: nope" in result.stdout
+    assert "Available commands:" in result.stdout
+
+
 def test_interactive_trace_uses_latest_completed_turn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

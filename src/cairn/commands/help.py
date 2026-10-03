@@ -29,11 +29,19 @@ HELP_TEXT: dict[str, dict[str, str]] = {
 }
 
 
+def print_available_commands() -> None:
+    print("Available commands:")
+    for name, info in HELP_TEXT.items():
+        print(f"  /{name:<5}  {info['description']}")
+        # Skip a usage line that only repeats the command name.
+        if info["usage"] != f"/{name}":
+            print(f"{'':<10}usage: {info['usage']}")
+    print("Run /help COMMAND for details, e.g. /help trace.")
+
+
 def handle_help(args: list[str] | None = None) -> None:
     if not args:
-        print("Available commands:")
-        for name, summary in HELP_TEXT.items():
-            print(f"  /{name:<5}  {summary['description']}")
+        print_available_commands()
         return
 
     for name in args:
@@ -43,3 +51,4 @@ def handle_help(args: list[str] | None = None) -> None:
             print(info.get("detail", info["description"]))
         else:
             print(f"No help available for command: {name}")
+            print_available_commands()
