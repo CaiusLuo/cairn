@@ -1,6 +1,4 @@
 <!-- banner:start -->
-<div align="center">
-
 ```text
       ___           ___                        ___           ___
      /  /\         /  /\           ___        /  /\         /  /\
@@ -14,8 +12,6 @@
     \  \:\         /__/:/       \__\/        |__|:|~        /__/:/
      \__\/         \__\/                      \__\|         \__\/
 ```
-
-</div>
 <!-- banner:end -->
 
 > A cairn marks the path for whoever comes next. So does a harness.
