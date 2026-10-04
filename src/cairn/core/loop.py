@@ -1,5 +1,6 @@
 import asyncio
 import json
+from collections import deque
 from typing import Any
 
 from cairn.core.agent import Agent
@@ -165,7 +166,7 @@ async def run_turn(
 ) -> str:
     trace_error: str | None = None
     tool_execution_started = False
-    pending_tool_calls: list[ToolCall] = []
+    pending_tool_calls: deque[ToolCall] = deque()
     llm_response_count = 0
     reported_omitted_turns = 0
     input_tokens: int | None = 0
@@ -321,7 +322,7 @@ async def run_turn(
                 response.content,
                 tool_calls=response.tool_calls,
             )
-            pending_tool_calls = response.tool_calls.copy()
+            pending_tool_calls = deque(response.tool_calls)
 
             if not response.tool_calls:
                 agent.emit(
@@ -352,7 +353,7 @@ async def run_turn(
                     tool = agent.tools.get_tool(tool_call.name)
                     tool.validate(tool_call.arguments)
                 except (ToolNotFound, InvalidArguments) as exc:
-                    pending_tool_calls.pop(0)
+                    pending_tool_calls.popleft()
                     _record_tool_error(agent, tool_call, turn_span, exc)
                     continue
 
@@ -369,7 +370,7 @@ async def run_turn(
                         tool_call_id=tool_call.id,
                         content=tool_content,
                     )
-                    pending_tool_calls.pop(0)
+                    pending_tool_calls.popleft()
                     agent.emit(
                         Event(
                             type="tool_denied",
@@ -420,7 +421,7 @@ async def run_turn(
                         tool_call_id=tool_call.id,
                         content=tool_content,
                     )
-                    pending_tool_calls.pop(0)
+                    pending_tool_calls.popleft()
 
                     if tool_span is not None and agent.tracer is not None:
                         tool_span.attributes["cancelled"] = True
@@ -432,7 +433,7 @@ async def run_turn(
                     raise
 
                 except Exception as exc:
-                    pending_tool_calls.pop(0)
+                    pending_tool_calls.popleft()
                     _record_tool_error(agent, tool_call, turn_span, exc, tool_span)
 
                     continue
@@ -446,7 +447,7 @@ async def run_turn(
                         tool_call_id=tool_call.id,
                         content=tool_content,
                     )
-                    pending_tool_calls.pop(0)
+                    pending_tool_calls.popleft()
 
                     if tool_span is not None and agent.tracer is not None:
                         tool_span.attributes.update(

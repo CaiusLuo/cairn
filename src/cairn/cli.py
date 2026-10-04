@@ -146,7 +146,7 @@ async def main(cli_input: CliInput | None = None) -> None:
         except EOFError:
             break
 
-        if not user_input.strip():
+        if not user_input or user_input.isspace():
             continue
 
         command_result = router.handle(

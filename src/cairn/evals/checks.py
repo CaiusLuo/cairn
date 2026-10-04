@@ -26,7 +26,7 @@ async def _content_equals(path: Path, expected: str) -> bool:
             await asyncio.sleep(0)
             if not chunk:
                 return offset == len(expected)
-            if chunk != expected[offset : offset + len(chunk)]:
+            if not expected.startswith(chunk, offset):
                 return False
             offset += len(chunk)
 
