@@ -44,6 +44,13 @@ def _iter_bounded_line_fragments(
             pending_carriage_return = False
 
         fragment_start = index
+        # Binary readline leaves any LF at the end; only CR needs scanning.
+        if chunk.find(b"\r", index) < 0:
+            if index < len(chunk):
+                fragment = chunk[index:]
+                yield fragment, fragment.endswith(b"\n")
+            continue
+
         while index < len(chunk):
             byte = chunk[index]
             if byte == ord("\r"):

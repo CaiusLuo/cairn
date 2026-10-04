@@ -6,6 +6,7 @@ to be written or kept in sync. Legacy ``summaries/`` entries are derived data
 and are removed as they are encountered.
 """
 
+import heapq
 import json
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -57,8 +58,18 @@ class TraceStore:
             result.traces.append(summary)
 
         self._discard_legacy_summaries(readable)
-        result.traces.sort(key=lambda item: item.start_time.timestamp(), reverse=True)
-        result.traces = result.traces[:limit]
+        if type(limit) is int and limit > 0 and limit * 10 < len(result.traces):
+            # Select only a small requested prefix instead of sorting every trace.
+            result.traces = heapq.nlargest(
+                limit,
+                result.traces,
+                key=lambda item: item.start_time.timestamp(),
+            )
+        else:
+            result.traces.sort(
+                key=lambda item: item.start_time.timestamp(), reverse=True
+            )
+            result.traces = result.traces[:limit]
         return result
 
     def delete(self, trace_id: str) -> TraceDeleteResult:
@@ -86,8 +97,12 @@ class TraceStore:
             else:
                 dated.append((summary.start_time.timestamp(), path.stem))
 
-        dated.sort()
-        for _, stem in dated[:count]:
+        if count * 10 < len(dated):
+            oldest = heapq.nsmallest(count, dated)
+        else:
+            dated.sort()
+            oldest = dated[:count]
+        for _, stem in oldest:
             try:
                 self._remove(stem)
             except OSError as exc:
@@ -108,10 +123,24 @@ class TraceStore:
             raise FileNotFoundError(f"Trace not found: {stem}")
 
         spans: list[Span] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                spans.append(Span.model_validate_json(line))
-        return spans
+        try:
+            with path.open(encoding="utf-8") as trace_file:
+                for raw_line in trace_file:
+                    for line in raw_line.splitlines():
+                        if line.strip():
+                            spans.append(Span.model_validate_json(line))
+        except ValueError:
+            spans.clear()
+        else:
+            return spans
+
+        # Preserve eager UTF-8 decoding before validation without chaining the
+        # streaming failure into any exception raised by the fallback.
+        return [
+            Span.model_validate_json(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
 
     def _summarize(self, path: Path) -> tuple[TraceSummary | None, str | None]:
         """Derive listing metadata from the trace's final root record."""
@@ -176,8 +205,7 @@ class TraceStore:
         """Drop sidecars: readable traces and orphans are both redundant now."""
         summary_root = self.root / "summaries"
         for path in summary_root.glob("*.json"):
-            is_orphan = not (self.root / f"{path.stem}.jsonl").exists()
-            if path.stem in readable or is_orphan:
+            if path.stem in readable or not (self.root / f"{path.stem}.jsonl").exists():
                 with suppress(OSError):
                     path.unlink()
         with suppress(OSError):

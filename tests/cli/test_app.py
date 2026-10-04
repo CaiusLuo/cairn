@@ -778,18 +778,14 @@ def test_interactive_trace_read_errors_keep_session_available(
     else:
         trace_id = _write_trace()
         trace_path = Path(".cairn/traces") / f"{trace_id}.jsonl"
-        original_read_text = Path.read_text
+        original_open = Path.open
 
-        def fail_trace_read(
-            path: Path,
-            encoding: str | None = None,
-            errors: str | None = None,
-        ) -> str:
+        def fail_trace_open(path: Path, *args: Any, **kwargs: Any) -> Any:
             if path == trace_path:
                 raise PermissionError("permission denied")
-            return original_read_text(path, encoding=encoding, errors=errors)
+            return original_open(path, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "read_text", fail_trace_read)
+        monkeypatch.setattr(Path, "open", fail_trace_open)
         trace_command = f"/trace {trace_id[:8]}"
         expected_error = "permission denied"
 

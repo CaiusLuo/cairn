@@ -150,7 +150,10 @@ def _validate_turn_boundaries(history: list[Message], current_turn_start: int) -
         raise ValueError("current_turn_start must identify the current user message")
     if history[0].role != "user":
         raise ValueError("Conversation history must start with a user message")
-    if any(message.role == "user" for message in history[current_turn_start + 1 :]):
+    if any(
+        history[index].role == "user"
+        for index in range(current_turn_start + 1, len(history))
+    ):
         raise ValueError("The current turn cannot contain another user message")
 
 
@@ -291,9 +294,12 @@ class ContextBuilder:
             return cached
 
         def acceptable(omitted_turns: int) -> bool:
-            # Counting is skipped for structurally invalid views: dropping whole
-            # turns keeps every retained tool-call/tool-result group intact.
-            if _tool_group_error(retained_for(omitted_turns)) is not None:
+            # Valid full history guarantees that each whole-turn suffix is valid.
+            # Recheck only when trimming must repair malformed history.
+            if (
+                full_history_error is not None
+                and _tool_group_error(retained_for(omitted_turns)) is not None
+            ):
                 return False
             return self._fits(view_for(omitted_turns)[1])
 
@@ -301,9 +307,10 @@ class ContextBuilder:
 
         # The current turn is never trimmed, so a broken group inside it is not
         # repairable here.
-        current_turn_error = _tool_group_error(retained_for(max_omitted))
-        if current_turn_error is not None:
-            raise ConversationHistoryError(current_turn_error)
+        if full_history_error is not None:
+            current_turn_error = _tool_group_error(retained_for(max_omitted))
+            if current_turn_error is not None:
+                raise ConversationHistoryError(current_turn_error)
 
         minimal_tokens = view_for(max_omitted)[1]
         if not self._fits(minimal_tokens):

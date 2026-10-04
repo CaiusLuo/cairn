@@ -114,6 +114,20 @@ def test_read_file_preserves_cr_and_crlf_line_boundaries(tmp_path: Path) -> None
     )
     assert split_result.stdout == "TARGET\r\n"
 
+    terminal_split_crlf = tmp_path / "terminal-split-crlf.txt"
+    terminal_line = b"a" * (READ_FILE_CHUNK_SIZE - 1) + b"\r\n"
+    terminal_split_crlf.write_bytes(terminal_line)
+    terminal_result = asyncio.run(
+        ReadFileTool(Workspace(tmp_path)).execute(
+            {
+                "path": "terminal-split-crlf.txt",
+                "start_line": 1,
+                "end_line": 1,
+            }
+        )
+    )
+    assert terminal_result.stdout == terminal_line.decode("utf-8")
+
 
 def test_read_file_rejects_invalid_utf8(tmp_path: Path) -> None:
     path = tmp_path / "invalid.txt"

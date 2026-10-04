@@ -1,7 +1,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import pytest
 
@@ -217,6 +217,119 @@ def test_read_skips_blank_lines_and_reports_a_vanished_trace(
         store.read(root.context.trace_id)
 
 
+def test_read_streams_valid_detail_without_eager_file_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _root(datetime.now(UTC))
+    child = _child(root)
+    _write_detail(tmp_path, [child, root])
+    detail = tmp_path / f"{root.context.trace_id}.jsonl"
+    real_open = Path.open
+
+    class GuardedReader:
+        def __init__(self, stream: TextIO) -> None:
+            self.stream = stream
+
+        def __enter__(self) -> "GuardedReader":
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            self.stream.close()
+
+        def __iter__(self) -> "GuardedReader":
+            return self
+
+        def __next__(self) -> str:
+            return next(self.stream)
+
+        def read(self, size: int = -1) -> str:
+            raise AssertionError(f"detail reader called read({size})")
+
+    def guarded_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        stream = real_open(self, *args, **kwargs)
+        return GuardedReader(stream) if self == detail else stream
+
+    def unexpected_read_text(self: Path, *args: Any, **kwargs: Any) -> str:
+        raise AssertionError("valid detail used read_text()")
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    monkeypatch.setattr(Path, "read_text", unexpected_read_text)
+
+    assert TraceStore(tmp_path).read(root.context.trace_id) == [child, root]
+
+
+@pytest.mark.parametrize(
+    "separator",
+    [
+        "\n",
+        "\r",
+        "\r\n",
+        "\v",
+        "\f",
+        "\x1c",
+        "\x1d",
+        "\x1e",
+        "\x85",
+        "\u2028",
+        "\u2029",
+    ],
+)
+def test_read_preserves_splitlines_separators(tmp_path: Path, separator: str) -> None:
+    root = _root(datetime.now(UTC))
+    child = _child(root)
+    detail = tmp_path / f"{root.context.trace_id}.jsonl"
+    detail.write_text(
+        f"{child.model_dump_json()}{separator}{root.model_dump_json()}",
+        encoding="utf-8",
+    )
+
+    assert TraceStore(tmp_path).read(root.context.trace_id) == [child, root]
+
+
+@pytest.mark.parametrize("early_bad_json", [False, True])
+def test_read_preserves_decode_before_validation_error_priority(
+    tmp_path: Path, early_bad_json: bool
+) -> None:
+    root = _root(datetime.now(UTC))
+    prefix = b"not-json\n" if early_bad_json else f"{root.model_dump_json()}\n".encode()
+    payload = prefix + b"\n" * 9000 + b"\xff"
+    detail = tmp_path / f"{root.context.trace_id}.jsonl"
+    detail.write_bytes(payload)
+    assert payload.index(b"\xff") > 8192
+
+    with pytest.raises(UnicodeDecodeError) as expected:
+        detail.read_text(encoding="utf-8")
+    with pytest.raises(UnicodeDecodeError) as actual:
+        TraceStore(tmp_path).read(root.context.trace_id)
+
+    assert type(actual.value) is type(expected.value)
+    assert str(actual.value) == str(expected.value)
+    assert (actual.value.start, actual.value.end, actual.value.reason) == (
+        expected.value.start,
+        expected.value.end,
+        expected.value.reason,
+    )
+    assert actual.value.object == expected.value.object
+    assert actual.value.__context__ is expected.value.__context__ is None
+
+
+def test_read_preserves_json_validation_error_type_and_message(tmp_path: Path) -> None:
+    detail = tmp_path / "badtrace.jsonl"
+    detail.write_text("{}\n", encoding="utf-8")
+    text = detail.read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError) as expected:
+        for line in text.splitlines():
+            if line.strip():
+                Span.model_validate_json(line)
+    with pytest.raises(ValueError) as actual:
+        TraceStore(tmp_path).read("badtrace")
+
+    assert type(actual.value) is type(expected.value)
+    assert str(actual.value) == str(expected.value)
+    assert actual.value.__context__ is expected.value.__context__ is None
+
+
 def test_listing_reports_an_identity_mismatch_as_corrupt(tmp_path: Path) -> None:
     mismatched = _root(datetime.now(UTC), trace_id="cafebabe")
     (tmp_path / "deadbeef.jsonl").write_text(f"{mismatched.model_dump_json()}\n")
@@ -241,7 +354,9 @@ def test_summary_requires_a_completed_root_span_and_consistent_timezones() -> No
         )
 
 
-def test_legacy_summary_sidecars_are_discarded_on_listing(tmp_path: Path) -> None:
+def test_legacy_summary_sidecars_are_discarded_on_listing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     start = datetime(2026, 2, 1, tzinfo=UTC)
     roots = [_root(start + timedelta(minutes=index)) for index in range(3)]
     for item in roots:
@@ -254,6 +369,16 @@ def test_legacy_summary_sidecars_are_discarded_on_listing(tmp_path: Path) -> Non
         )
     (summary_dir / "orphan-left-behind.json").write_text("{}")
 
+    readable_sources = {tmp_path / f"{item.context.trace_id}.jsonl" for item in roots}
+    real_exists = Path.exists
+
+    def forbid_readable_source_stat(path: Path) -> bool:
+        if path in readable_sources:
+            raise AssertionError("readable trace source was checked for existence")
+        return real_exists(path)
+
+    monkeypatch.setattr(Path, "exists", forbid_readable_source_stat)
+
     result = TraceStore(tmp_path).list_traces()
 
     assert [item.trace_id for item in result.traces] == [
@@ -262,6 +387,78 @@ def test_legacy_summary_sidecars_are_discarded_on_listing(tmp_path: Path) -> Non
     assert result.diagnostics == []
     # Sidecars are derived data now: they are removed, and so is the empty dir.
     assert not summary_dir.exists()
+
+
+def test_listing_preserves_stable_ties_and_slice_limit_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    start = datetime(2026, 2, 1, tzinfo=UTC)
+    roots = [_root(start, trace_id=f"{index:032x}") for index in range(31)]
+    for item in roots:
+        _write_detail(tmp_path, [item])
+
+    class RecordingTimestamp:
+        def __init__(self, trace_id: str, calls: list[str]) -> None:
+            self.trace_id = trace_id
+            self.calls = calls
+
+        def timestamp(self) -> float:
+            self.calls.append(self.trace_id)
+            return 1.0
+
+    calls: list[str] = []
+    store = TraceStore(tmp_path)
+    real_summarize = store._summarize
+
+    def summarize(path: Path) -> tuple[TraceSummary | None, str | None]:
+        summary, diagnostic = real_summarize(path)
+        if summary is not None:
+            object.__setattr__(
+                summary, "start_time", RecordingTimestamp(path.stem, calls)
+            )
+        return summary, diagnostic
+
+    class IntLimit(int):
+        pass
+
+    class IndexLimit:
+        def __init__(self, value: int) -> None:
+            self.value = value
+            self.calls = 0
+
+        def __index__(self) -> int:
+            self.calls += 1
+            return self.value
+
+    index_limit = IndexLimit(2)
+    limits_and_lengths = [
+        (2, 2),  # heap selection
+        (4, 4),  # full-sort fallback
+        (0, 0),
+        (-2, len(roots) - 2),
+        (True, 1),
+        (False, 0),
+        (IntLimit(2), 2),
+        (index_limit, 2),
+        (None, len(roots)),
+    ]
+    monkeypatch.setattr(store, "_summarize", summarize)
+
+    for limit, expected_length in limits_and_lengths:
+        calls.clear()
+        result = store.list_traces(limit=limit)  # type: ignore[arg-type]
+
+        assert [trace.trace_id for trace in result.traces] == [
+            root.context.trace_id for root in roots[:expected_length]
+        ]
+        assert len(calls) == len(roots)
+
+    assert index_limit.calls == 1
+
+    calls.clear()
+    with pytest.raises(TypeError):
+        store.list_traces(limit="invalid")  # type: ignore[arg-type]
+    assert len(calls) == len(roots)
 
 
 def test_legacy_sidecar_of_an_unreadable_trace_is_kept(tmp_path: Path) -> None:
@@ -435,17 +632,36 @@ def test_delete_oldest_removes_the_tail_of_the_listing_and_skips_unreadable(
     }
 
 
+@pytest.mark.parametrize(
+    ("count", "expected_count"),
+    [(1, 1), (2, 2), (20, 20), (24, 20)],
+)
+def test_delete_oldest_preserves_timestamp_and_stem_ties(
+    tmp_path: Path, count: int, expected_count: int
+) -> None:
+    start = datetime(2026, 5, 2, tzinfo=UTC)
+    traces = [_root(start, trace_id=f"same-time-{index:02d}") for index in range(20)]
+    for item in traces:
+        _write_detail(tmp_path, [item])
+
+    result = TraceStore(tmp_path).delete_oldest(count)
+
+    assert result.deleted == [item.context.trace_id for item in traces[:expected_count]]
+    assert result.skipped == []
+
+
 @pytest.mark.parametrize("count", [0, -1])
 def test_delete_oldest_rejects_non_positive_counts(tmp_path: Path, count: int) -> None:
     with pytest.raises(ValueError, match="positive integer"):
         TraceStore(tmp_path).delete_oldest(count)
 
 
-def test_delete_oldest_keeps_going_when_one_delete_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("trace_count", [3, 21], ids=["sort-fallback", "heap"])
+def test_delete_oldest_keeps_going_when_a_delete_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trace_count: int
 ) -> None:
     start = datetime(2026, 6, 1, tzinfo=UTC)
-    traces = [_root(start + timedelta(minutes=index)) for index in range(3)]
+    traces = [_root(start + timedelta(minutes=index)) for index in range(trace_count)]
     for item in traces:
         _write_detail(tmp_path, [item])
     locked = f"{traces[0].context.trace_id}.jsonl"

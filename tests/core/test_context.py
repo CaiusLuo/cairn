@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+from cairn.core import context as context_module
 from cairn.core.context import (
     OMISSION_NOTICE_PREFIX,
     ContextBudget,
@@ -472,7 +473,9 @@ def test_broken_current_turn_is_a_clear_unrepairable_history_error() -> None:
     assert isinstance(raised.value, ValueError)
 
 
-def test_trimming_probes_a_logarithmic_number_of_view_candidates() -> None:
+def test_trimming_probes_a_logarithmic_number_of_view_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     history: list[Message] = []
     for index in range(200):
         history.append(user(f"question-{index} " + "x" * 200))
@@ -480,6 +483,15 @@ def test_trimming_probes_a_logarithmic_number_of_view_candidates() -> None:
     history.append(user("current"))
     counter = SizeCounter()
     builder = ContextBuilder(ContextBudget(400, 50), counter)
+    original_tool_group_error = context_module._tool_group_error
+    scanned_messages = 0
+
+    def count_tool_group_scan(messages: list[Message]) -> str | None:
+        nonlocal scanned_messages
+        scanned_messages += len(messages)
+        return original_tool_group_error(messages)
+
+    monkeypatch.setattr(context_module, "_tool_group_error", count_tool_group_scan)
 
     request = builder.build(
         system_messages=[Message(role="system", content="system")],
@@ -494,6 +506,7 @@ def test_trimming_probes_a_logarithmic_number_of_view_candidates() -> None:
     # One full count, one minimal-view count and one probe per binary-search
     # step: a per-candidate linear scan would need 200 counts here.
     assert len(counter.calls) <= 12
+    assert scanned_messages == len(history)
 
 
 def test_overflow_error_names_the_never_trimmed_components() -> None:
