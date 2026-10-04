@@ -42,7 +42,7 @@ class TraceStore:
         return self._read_detail(self.resolver.resolve(trace_id))
 
     def count(self) -> int:
-        return len(list(self.root.glob("*.jsonl")))
+        return sum(1 for _ in self.root.glob("*.jsonl"))
 
     def list_traces(self, limit: int = DEFAULT_LIST_LIMIT) -> TraceListResult:
         result = TraceListResult()

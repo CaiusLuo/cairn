@@ -79,6 +79,12 @@ def _render_tool_result(event: Event) -> None:
     console.print(summary, style="green", markup=False)
 
 
+def _format_token_count(value: object) -> str:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return str(value)
+    return "unknown"
+
+
 def _usage_suffix(event: Event) -> str:
     usage = event.data.get("usage")
     if not isinstance(usage, dict):
@@ -86,20 +92,8 @@ def _usage_suffix(event: Event) -> str:
 
     raw_input_tokens = usage.get("input_tokens")
     raw_output_tokens = usage.get("output_tokens")
-    input_tokens = (
-        str(raw_input_tokens)
-        if isinstance(raw_input_tokens, int)
-        and not isinstance(raw_input_tokens, bool)
-        and raw_input_tokens >= 0
-        else "unknown"
-    )
-    output_tokens = (
-        str(raw_output_tokens)
-        if isinstance(raw_output_tokens, int)
-        and not isinstance(raw_output_tokens, bool)
-        and raw_output_tokens >= 0
-        else "unknown"
-    )
+    input_tokens = _format_token_count(raw_input_tokens)
+    output_tokens = _format_token_count(raw_output_tokens)
     return f" · tokens: input {input_tokens}, output {output_tokens}"
 
 
