@@ -113,21 +113,18 @@ class LiteLLMClient:
 
         message = response.choices[0].message
 
-        tool_calls = []
-
-        if message.tool_calls:
-            for call in message.tool_calls:
-                tool_calls.append(
-                    ToolCall(
-                        id=call.id,
-                        name=call.function.name,
-                        arguments=_parse_tool_arguments(
-                            call.function.arguments,
-                            call.function.name,
-                            call.id,
-                        ),
-                    )
-                )
+        tool_calls = [
+            ToolCall(
+                id=call.id,
+                name=call.function.name,
+                arguments=_parse_tool_arguments(
+                    call.function.arguments,
+                    call.function.name,
+                    call.id,
+                ),
+            )
+            for call in message.tool_calls or ()
+        ]
 
         return LLMResponse(
             content=message.content,

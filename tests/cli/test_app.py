@@ -57,6 +57,13 @@ def _set_cli_inputs(
     return reader
 
 
+def _forbid_model_calls(monkeypatch: pytest.MonkeyPatch, message: str) -> None:
+    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
+        pytest.fail(message)
+
+    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+
+
 def _disable_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_module, "dotenv_values", lambda: {})
 
@@ -276,10 +283,7 @@ def test_cli_ctrl_c_and_eof_never_start_a_turn(
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     reader = _set_cli_inputs(monkeypatch, *input_values)
 
-    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
-        pytest.fail("Cancelled input reached the model")
-
-    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+    _forbid_model_calls(monkeypatch, "Cancelled input reached the model")
 
     result = runner.invoke(app, [])
 
@@ -304,10 +308,7 @@ def test_interactive_commands_do_not_call_model(
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     _set_cli_inputs(monkeypatch, command, "/QUIT")
 
-    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
-        pytest.fail("Interactive command reached the model")
-
-    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+    _forbid_model_calls(monkeypatch, "Interactive command reached the model")
 
     result = runner.invoke(app, [])
 
@@ -322,10 +323,7 @@ def test_interactive_unknown_command_lists_commands_with_usage(
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     _set_cli_inputs(monkeypatch, "/unknown", "/quit")
 
-    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
-        pytest.fail("Unknown command reached the model")
-
-    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+    _forbid_model_calls(monkeypatch, "Unknown command reached the model")
 
     result = runner.invoke(app, [])
 
@@ -348,10 +346,7 @@ def test_interactive_unknown_trace_subcommand_shows_trace_usage(
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     _set_cli_inputs(monkeypatch, "/trace lsit", "/quit")
 
-    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
-        pytest.fail("Unknown trace command reached the model")
-
-    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+    _forbid_model_calls(monkeypatch, "Unknown trace command reached the model")
 
     result = runner.invoke(app, [])
 
@@ -368,10 +363,7 @@ def test_interactive_help_for_unknown_command_lists_commands(
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     _set_cli_inputs(monkeypatch, "/help nope", "/quit")
 
-    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
-        pytest.fail("Help command reached the model")
-
-    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+    _forbid_model_calls(monkeypatch, "Help command reached the model")
 
     result = runner.invoke(app, [])
 
@@ -522,10 +514,7 @@ def test_interactive_trace_list_shows_requested_recent_summaries(
 
     monkeypatch.setattr(TraceStore, "list_traces", capture_limit)
 
-    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
-        pytest.fail("Trace list command reached the model")
-
-    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+    _forbid_model_calls(monkeypatch, "Trace list command reached the model")
     result = runner.invoke(app, [])
 
     assert result.exit_code == 0
@@ -574,11 +563,8 @@ def test_interactive_trace_list_invalid_count_keeps_session_available(
     def unexpected_list_traces(*_args: object, **_kwargs: object) -> TraceListResult:
         pytest.fail("Invalid trace count reached the trace reader")
 
-    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
-        pytest.fail("Invalid trace count reached the model")
-
     monkeypatch.setattr(TraceStore, "list_traces", unexpected_list_traces)
-    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+    _forbid_model_calls(monkeypatch, "Invalid trace count reached the model")
 
     result = runner.invoke(app, [])
 
@@ -600,10 +586,7 @@ def test_interactive_trace_count_reports_stored_traces(
         _write_completed_trace(trace_root, index)
     _set_cli_inputs(monkeypatch, "/trace count", "/quit")
 
-    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
-        pytest.fail("Trace count command reached the model")
-
-    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+    _forbid_model_calls(monkeypatch, "Trace count command reached the model")
 
     result = runner.invoke(app, [])
 
@@ -622,10 +605,7 @@ def test_interactive_trace_del_tail_removes_oldest_and_echoes_ids(
     trace_ids = [_write_completed_trace(trace_root, index) for index in range(3)]
     _set_cli_inputs(monkeypatch, "/trace del --tail 2", "/trace count", "/quit")
 
-    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
-        pytest.fail("Trace delete command reached the model")
-
-    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+    _forbid_model_calls(monkeypatch, "Trace delete command reached the model")
 
     result = runner.invoke(app, [])
 
@@ -695,10 +675,7 @@ def test_interactive_trace_storage_usage_errors_keep_session_available(
     _write_completed_trace(tmp_path / ".cairn" / "traces", 0)
     _set_cli_inputs(monkeypatch, command, "/help", "/quit")
 
-    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
-        pytest.fail("Invalid storage command reached the model")
-
-    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+    _forbid_model_calls(monkeypatch, "Invalid storage command reached the model")
 
     result = runner.invoke(app, [])
 
@@ -721,10 +698,7 @@ def test_interactive_trace_del_tail_reports_unreadable_traces(
     corrupt.write_text("{invalid json\n", encoding="utf-8")
     _set_cli_inputs(monkeypatch, "/trace del --tail 1", "/quit")
 
-    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
-        pytest.fail("Trace delete command reached the model")
-
-    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+    _forbid_model_calls(monkeypatch, "Trace delete command reached the model")
 
     result = runner.invoke(app, [])
 
@@ -766,10 +740,7 @@ def test_interactive_trace_commands_route_without_model(
         command = "/trace list"
     _set_cli_inputs(monkeypatch, command, "/quit")
 
-    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
-        pytest.fail("Trace command reached the model")
-
-    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+    _forbid_model_calls(monkeypatch, "Trace command reached the model")
 
     result = runner.invoke(app, [])
 
@@ -824,10 +795,7 @@ def test_interactive_trace_read_errors_keep_session_available(
 
     _set_cli_inputs(monkeypatch, trace_command, "/help", "/quit")
 
-    async def unexpected_run_turn(*_args: object, **_kwargs: object) -> str:
-        pytest.fail("Trace command reached the model")
-
-    monkeypatch.setattr(cli_module, "run_turn", unexpected_run_turn)
+    _forbid_model_calls(monkeypatch, "Trace command reached the model")
 
     result = runner.invoke(app, [])
 

@@ -66,7 +66,7 @@ def print_trace(spans: list[Span]) -> None:
     roots.sort(key=lambda span: span.start_time)
 
     def add_children(tree: Tree, parent: Span) -> None:
-        for child in children.get(parent.context.span_id, []):
+        for child in children.get(parent.context.span_id, ()):
             node = tree.add(_label(child))
             add_children(node, child)
 
