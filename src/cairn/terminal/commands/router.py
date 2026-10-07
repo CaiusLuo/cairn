@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 
-from cairn.commands.context import CommandContext
-from cairn.commands.help import handle_help, print_available_commands
-from cairn.commands.trace import handle_trace
+from cairn.terminal.commands.context import CommandContext
+from cairn.terminal.commands.help import handle_help, print_available_commands
+from cairn.terminal.commands.trace import handle_trace
 
 
 @dataclass

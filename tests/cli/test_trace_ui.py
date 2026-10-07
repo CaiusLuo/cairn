@@ -4,7 +4,7 @@ from io import StringIO
 import pytest
 from rich.console import Console
 
-import cairn.trace_ui as trace_ui
+import cairn.terminal.trace_output as trace_ui
 from cairn.observability.models import (
     Span,
     SpanStatus,

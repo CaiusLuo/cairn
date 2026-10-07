@@ -9,7 +9,7 @@ from cairn.assembly import build_agent
 from cairn.core.loop import run_turn
 from cairn.core.models import LLMResponse, ToolCall
 from cairn.core.permissions import PermissionDecision, PermissionResult
-from cairn.repo.context import RepositoryContext
+from cairn.repository import RepositoryContext
 from cairn.workspace.workspace import Workspace
 from tests.support.runtime import TEST_BUDGET, SequenceLLM
 

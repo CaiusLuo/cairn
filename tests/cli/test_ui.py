@@ -4,7 +4,7 @@ import pytest
 from rich.console import Console
 from rich.prompt import Prompt
 
-import cairn.ui as ui
+import cairn.terminal.output as ui
 from cairn.core.events import Event
 from cairn.core.models import ToolCall
 from cairn.core.permissions import (

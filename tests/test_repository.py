@@ -2,7 +2,7 @@ import asyncio
 import subprocess
 from pathlib import Path
 
-from cairn.repo.context import RepoContextProvider, RepositoryContext
+from cairn.repository import RepoContextProvider, RepositoryContext
 from cairn.workspace.workspace import Workspace
 
 

@@ -475,7 +475,9 @@ def test_network_permission_request_fails_closed_without_prompt_or_execution(
         raise AssertionError("eval must not show a UI permission prompt")
 
     monkeypatch.setattr(builtins, "input", forbidden_input)
-    monkeypatch.setattr("cairn.ui.console_permission_prompt", forbidden_ui_prompt)
+    monkeypatch.setattr(
+        "cairn.terminal.output.console_permission_prompt", forbidden_ui_prompt
+    )
     monkeypatch.setattr(BashTool, "execute", forbidden_execute)
     case_root = tmp_path / "cases"
     case_root.mkdir()

@@ -19,7 +19,7 @@ from cairn.core.loop import run_turn
 from cairn.core.models import LLMResponse, Message, ToolCall, ToolResult
 from cairn.observability.models import SpanStatus
 from cairn.observability.tracer import Tracer
-from cairn.repo.context import RepoContextProvider, RepositoryContext
+from cairn.repository import RepoContextProvider, RepositoryContext
 from cairn.tools.base import ToolExecutionContext
 from cairn.tools.registry import ToolRegistry
 from cairn.workspace.workspace import Workspace

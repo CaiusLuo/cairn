@@ -1,7 +1,7 @@
-from cairn.commands.context import CommandContext
-from cairn.commands.help import handle_help
 from cairn.observability.storage import TraceDeleteResult
-from cairn.trace_ui import print_trace, print_trace_list
+from cairn.terminal.commands.context import CommandContext
+from cairn.terminal.commands.help import handle_help
+from cairn.terminal.trace_output import print_trace, print_trace_list
 
 TRACE_LIST_LIMIT = 10
 TRACE_LIST_USAGE = "Usage: /trace list [N] (1 <= N <= 100)"

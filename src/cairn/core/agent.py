@@ -4,7 +4,7 @@ from cairn.core.permissions import PermissionHandler
 from cairn.core.state import AgentState
 from cairn.llm.base import LLMClient
 from cairn.observability.tracer import Tracer
-from cairn.repo.context import RepoContextProvider
+from cairn.repository import RepoContextProvider
 from cairn.tools.registry import ToolRegistry
 
 DEFAULT_SYSTEM_PROMPT = """You are Cairn, a software engineering agent.

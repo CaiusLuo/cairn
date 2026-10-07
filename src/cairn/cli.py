@@ -1,24 +1,26 @@
 import asyncio
 import os
-from collections.abc import Mapping
 from pathlib import Path
 
 import typer
 from dotenv import dotenv_values
 
 from cairn.assembly import build_agent
-from cairn.commands.context import CommandContext
-from cairn.commands.router import CommandRouter
+from cairn.config import CAIRN_CONFIG_ENV_NAMES as CAIRN_CONFIG_ENV_NAMES
+from cairn.config import resolve_cairn_config as resolve_cairn_config
+from cairn.config import resolve_context_budget as resolve_context_budget
 from cairn.core.budget import RunBudget, RunBudgetExceeded
-from cairn.core.context import ContextBudget, ContextBuilder
+from cairn.core.context import ContextBuilder
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.core.permissions import SessionPermissionHandler
-from cairn.input import CliInput
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.storage import TraceStore
 from cairn.observability.tracer import Tracer
-from cairn.ui import (
+from cairn.terminal.commands.context import CommandContext
+from cairn.terminal.commands.router import CommandRouter
+from cairn.terminal.input import CliInput
+from cairn.terminal.output import (
     console_event_handler,
     console_permission_prompt,
     print_assistant_response,
@@ -32,50 +34,6 @@ app = typer.Typer(
 )
 
 DEFAULT_CLI_RUN_BUDGET = RunBudget(max_steps=50)
-
-CAIRN_CONFIG_ENV_NAMES = ("CAIRN_LLM_MODEL", "CAIRN_LLM_API_KEY", "CAIRN_BASE_URL")
-
-
-def resolve_cairn_config(
-    host_env: Mapping[str, str],
-    env_file_values: Mapping[str, str | None],
-) -> dict[str, str]:
-    """Resolve Cairn configuration from the host environment and ``.env``.
-
-    Host environment values take precedence over values from the project's
-    ``.env`` file. This function returns only the Cairn configuration keys and
-    does not modify ``os.environ``.
-    """
-    config: dict[str, str] = {}
-    for name in CAIRN_CONFIG_ENV_NAMES:
-        value = host_env.get(name, env_file_values.get(name))
-        if not value:
-            raise ValueError(f"{name} environment variable is not set.")
-        config[name] = value
-    return config
-
-
-def resolve_context_budget(
-    host_env: Mapping[str, str],
-    env_file_values: Mapping[str, str | None],
-) -> ContextBudget:
-    defaults = ContextBudget()
-
-    def integer_setting(name: str, default: int) -> int:
-        value = host_env.get(name, env_file_values.get(name))
-        if not value:
-            return default
-        try:
-            return int(value)
-        except ValueError:
-            raise ValueError(f"{name} must be an integer.") from None
-
-    return ContextBudget(
-        max_tokens=integer_setting("CAIRN_CONTEXT_MAX_TOKENS", defaults.max_tokens),
-        response_tokens=integer_setting(
-            "CAIRN_RESPONSE_MAX_TOKENS", defaults.response_tokens
-        ),
-    )
 
 
 @app.callback()

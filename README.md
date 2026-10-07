@@ -59,28 +59,34 @@ memory or background execution.
 ```text
 src/
 └── cairn/
-    ├── core/          # Agent, loop, state, events, models, permissions
+    ├── core/          # Agent runtime, context, budgets, state and permissions
     ├── llm/           # LLM protocol and LiteLLM adapter
     ├── tools/         # Tool protocol, registry, Bash and file tools
     ├── workspace/     # Shared filesystem root and path protection
-    ├── repo/          # Git repository context
+    ├── repository.py  # Git repository context
     ├── evals/         # Eval models, checks, and runner
     ├── observability/ # Trace models, recording, and reading
-    ├── commands/      # Interactive slash commands
+    ├── terminal/      # Terminal input, output and permission prompts
+    │   ├── commands/  # Interactive slash-command routing and handlers
+    │   ├── input.py
+    │   ├── output.py
+    │   └── trace_output.py
     ├── resources/     # Terminal banner
-    ├── input.py       # Multiline terminal input
-    ├── trace_ui.py    # Trace display
     ├── assembly.py    # Reusable agent and tool assembly
-    ├── cli.py         # Interactive application wiring
-    └── ui.py          # Rich output and permission prompts
+    ├── config.py      # Environment configuration resolution and validation
+    └── cli.py         # CLI entrypoint and interactive application wiring
 tests/                 # Unit and behavior tests
 ```
 
 Small protocols define the model-client, tool, event-handler, and
 permission-handler boundaries. `build_agent()` takes a Workspace, model client,
 and explicit permission, event, and trace dependencies, then wires the tools
-to the same Workspace. The CLI supplies environment configuration and terminal
-handlers; callers can also run an agent without a terminal.
+to the same Workspace. The CLI reads environment configuration, resolves it
+through `config.py`, and supplies terminal handlers; headless callers can reuse
+configuration resolution and agent assembly without importing terminal code.
+`repository.py` inspects Git state while `workspace/` owns filesystem path
+boundaries. Trace recording and storage stay in `observability/`; their terminal
+presentation lives in `terminal/trace_output.py`.
 
 Directory ownership stays with the caller:
 

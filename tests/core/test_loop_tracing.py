@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from rich.console import Console
 
-import cairn.ui as ui
+import cairn.terminal.output as ui
 from cairn.core.agent import Agent
 from cairn.core.events import Event
 from cairn.core.loop import run_turn

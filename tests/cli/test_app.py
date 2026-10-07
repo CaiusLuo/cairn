@@ -17,11 +17,11 @@ from cairn.cli import app
 from cairn.core.agent import Agent
 from cairn.core.budget import RunBudget
 from cairn.core.events import Event
-from cairn.input import CliInput
 from cairn.observability.models import Span, SpanStatus, TraceContext, TraceListResult
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.storage import TraceStore
 from cairn.observability.tracer import Tracer
+from cairn.terminal.input import CliInput
 
 runner = CliRunner()
 

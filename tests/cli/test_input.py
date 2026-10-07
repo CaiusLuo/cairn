@@ -4,7 +4,7 @@ import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from cairn.input import CliInput
+from cairn.terminal.input import CliInput
 
 
 async def _assert_still_editing(read_task: asyncio.Task[str]) -> None:

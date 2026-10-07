@@ -9,9 +9,9 @@ import cairn.cli as cli_module
 from cairn.assembly import build_agent
 from cairn.core.agent import Agent
 from cairn.core.context import ContextBudget
-from cairn.input import CliInput
 from cairn.llm.litellm_client import LiteLLMClient
 from cairn.llm.token_counter import LiteLLMTokenCounter
+from cairn.terminal.input import CliInput
 
 CONTEXT_SETTINGS = ("CAIRN_CONTEXT_MAX_TOKENS", "CAIRN_RESPONSE_MAX_TOKENS")
 

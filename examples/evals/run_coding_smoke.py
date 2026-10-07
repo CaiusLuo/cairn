@@ -8,7 +8,7 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
-from cairn.cli import resolve_cairn_config
+from cairn.config import resolve_cairn_config
 from cairn.core.budget import RunBudget
 from cairn.evals import EvalResult, EvalRunner, EvalStatus
 from cairn.llm.litellm_client import LiteLLMClient
