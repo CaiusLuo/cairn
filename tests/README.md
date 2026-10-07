@@ -4,13 +4,13 @@ Tests are grouped by the runtime component whose contract they verify:
 
 | Package | Coverage |
 | --- | --- |
-| `core/` | Agent assembly, turn execution/recovery/tracing, tool preflight, permissions and capability flow |
-| `tools/` | Bash execution and sandbox enforcement, file operations, tool registry |
+| `core/` | Agent assembly, context budgets and tool-call groups, turn execution/recovery/tracing, tool preflight, permissions and capability flow |
+| `tools/` | Bash execution and sandbox enforcement, bounded file reads, guarded edits, path boundaries and tool registry |
 | `cli/` | CLI configuration and interaction, input, permission choices and compact event rendering |
-| `evals/` | Final-state checks, runner behavior and lifecycle |
-| `llm/` | LiteLLM request/response adaptation |
-| `observability/` | Trace storage round-trip, listing and safe lookup |
-| `repo/` | Git repository context |
+| `evals/` | Bounded file and content checks, coding-smoke cases, runner behavior and lifecycle |
+| `llm/` | LiteLLM request/response adaptation, model-aware token counting and labelled fallback estimates |
+| `observability/` | JSONL trace storage, listing/deletion, bounded prefix resolution, diagnostics and failure handling |
+| `repo/` | Fresh Git repository context and bounded status output |
 | `workspace/` | Workspace roots and directory ownership |
 | `support/` | Shared deterministic runtime doubles and native sandbox readiness helpers |
 
@@ -30,15 +30,21 @@ Shared helpers use explicit imports from `tests.support.runtime` or
 `tests.support.sandbox`. Package markers keep imports unambiguous for pytest
 and mypy.
 
-Run the full suite or select a package/module from the repository root:
+Run the repository quality checks from the root:
 
 ```sh
-uv run pytest
-uv run pytest tests/evals
-uv run pytest tests/core/test_tool_preflight.py
+uv run ruff check .
+uv run ruff format --check .
 uv run mypy src tests
-uv run ruff check src tests
-uv run ruff format --check src tests
+uv run pytest --cov=cairn --cov-report=term-missing
+```
+
+For focused tests, run a package or module from the repository root:
+
+```sh
+uv run pytest tests/observability
+uv run pytest tests/core/test_context.py
+uv run pytest tests/evals
 ```
 
 Native Bash tests require a usable platform sandbox. On macOS, the outer

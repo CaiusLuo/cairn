@@ -30,6 +30,8 @@ autonomous coding agent.
 - An asynchronous agent loop with a configurable step limit.
 - A configurable request context budget that omits complete older turns while
   retaining the full in-process history and current tool-call groups.
+- A headless `EvalRunner` that runs one case per call, plus a five-case coding
+  smoke example.
 - In-process conversation state for user, assistant, and tool messages.
 - LiteLLM-backed model calls, including tool-call parsing.
 - A tool registry with Bash, bounded file reading, and guarded file editing.
@@ -61,10 +63,13 @@ src/
     ├── llm/           # LLM protocol and LiteLLM adapter
     ├── tools/         # Tool protocol, registry, Bash and file tools
     ├── workspace/     # Shared filesystem root and path protection
+    ├── repo/          # Git repository context
     ├── evals/         # Eval models, checks, and runner
     ├── observability/ # Trace models, recording, and reading
     ├── commands/      # Interactive slash commands
     ├── resources/     # Terminal banner
+    ├── input.py       # Multiline terminal input
+    ├── trace_ui.py    # Trace display
     ├── assembly.py    # Reusable agent and tool assembly
     ├── cli.py         # Interactive application wiring
     └── ui.py          # Rich output and permission prompts
@@ -84,8 +89,6 @@ Directory ownership stays with the caller:
   create or clean up directories.
 - EvalRunner creates and cleans up per-case temporary directories;
   Workspace wraps them without managing their lifecycle.
-- A future worktree provider will create and clean up worktrees; Workspace
-  will still only wrap their directories.
 
 ## Quick Start
 
@@ -125,11 +128,11 @@ The `.env.example` values above are an intentionally conservative 98,304-token
 total budget with 8,192 reserved for the response, leaving headroom below a
 128k-model context window. When both settings are unset the CLI falls back to the
 built-in defaults, 32,768 counted tokens with 4,096 reserved for the response. The
-response limit is also sent to LiteLLM as `max_tokens`, which LiteLLM maps to the
-provider's own parameter, so the model cannot generate past its share of the
-budget. Set both values for your model; the response allowance must be positive
-and smaller than the context limit. Shell values take precedence over `.env`
-without being copied into child-process environments.
+response limit is also sent to LiteLLM as `max_tokens`. How that limit is
+enforced depends on the selected model and provider. Set both values for your
+model; the response allowance must be positive and smaller than the context
+limit. Shell values take precedence over `.env` without being copied into
+child-process environments.
 
 The CLI counts requests with a `LiteLLMTokenCounter`, which uses the tokenizer
 LiteLLM resolves for `CAIRN_LLM_MODEL` and labels the result exact. When LiteLLM
@@ -194,9 +197,8 @@ sandbox need no approval; an explicit request for extra `NETWORK` capability
 requires approval, which can apply to later network requests in that session.
 
 Each turn records trace spans under `.cairn/traces/`. A trace is one append-only
-JSONL file, named by its trace ID, and that file is the only persistent record:
-listing metadata is read from the final root span at the tail of the file instead
-of being cached in a second file. These commands inspect or manage stored traces
+JSONL file named by its trace ID. Listing metadata is read from the final root
+span at the tail of that file. These commands inspect or manage stored traces
 without calling the model:
 
 ```text
@@ -271,15 +273,12 @@ To build the source distribution and wheel locally:
 uv build
 ```
 
-## Current Status / Roadmap
+## Current limits
 
-Cairn currently demonstrates a single-agent, single-process runtime with Bash,
-file-reading and file-editing tools, and interactive permission checks.
-Near-term work can deepen the runtime with more robust tool contracts,
-provider-backed integration tests, permission policies, and end-to-end CLI
-validation.
+Cairn runs in a single process and keeps conversation state in memory. Its
+`EvalRunner` runs one case per call; the coding smoke example runs five fixed
+cases.
 
-Possible future work includes persistent memory, richer sandboxing, additional
-tools, GitHub-oriented agent workflows, worktree isolation, multi-agent
-coordination, and optional integrations such as LangGraph or LangSmith. These
-capabilities are roadmap ideas and are **not implemented today**.
+Cairn does not provide worktree management, task orchestration, GitHub
+publishing, reviewer workflows, a RepoGraph, persistent memory, background
+execution, or automatic merging.

@@ -202,7 +202,7 @@ class TraceStore:
         (self.root / f"{stem}.jsonl").unlink()
 
     def _discard_legacy_summaries(self, readable: set[str]) -> None:
-        """Drop sidecars: readable traces and orphans are both redundant now."""
+        """Remove legacy sidecars for readable traces and missing trace files."""
         summary_root = self.root / "summaries"
         for path in summary_root.glob("*.json"):
             if path.stem in readable or not (self.root / f"{path.stem}.jsonl").exists():

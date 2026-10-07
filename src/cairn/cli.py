@@ -42,10 +42,9 @@ def resolve_cairn_config(
 ) -> dict[str, str]:
     """Resolve Cairn configuration from the host environment and ``.env``.
 
-    Host environment values take precedence over the project's ``.env`` file,
-    matching the previous ``load_dotenv(override=False)`` behaviour. Unlike
-    ``load_dotenv``, this never writes to ``os.environ``, so arbitrary ``.env``
-    entries cannot leak into child command environments.
+    Host environment values take precedence over values from the project's
+    ``.env`` file. This function returns only the Cairn configuration keys and
+    does not modify ``os.environ``.
     """
     config: dict[str, str] = {}
     for name in CAIRN_CONFIG_ENV_NAMES:

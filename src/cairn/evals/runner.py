@@ -46,8 +46,7 @@ class EvalRunner:
                 raise ValueError(f"{name} must be finite and greater than zero")
         self.llm_factory = llm_factory
         self.budget = budget
-        # Own the request budget explicitly rather than inheriting whatever the
-        # Agent default happens to be, so eval verdicts stay reproducible.
+        # Use the runner's explicit request allowance for every case.
         self.context_budget = (
             context_budget if context_budget is not None else ContextBudget()
         )
