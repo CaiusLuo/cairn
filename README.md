@@ -73,7 +73,7 @@ src/
     │   └── trace_output.py
     ├── resources/     # Terminal banner
     ├── assembly.py    # Reusable agent and tool assembly
-    ├── config.py      # Environment configuration resolution and validation
+    ├── config.py      # Environment settings and model TOML loading
     └── cli.py         # CLI entrypoint and interactive application wiring
 tests/                 # Unit and behavior tests
 ```
@@ -228,6 +228,49 @@ root span cannot be read, warns about each one, and never aborts the whole batch
 Deleting is permanent and never asks for confirmation.
 
 Use `/help` to list all interactive commands.
+
+## Model configuration loading
+
+`load_model_config()` reads `.cairn/models.toml` relative to the current working
+directory, or accepts an explicit `Path`. The file describes one provider and
+an ordered list of models:
+
+```toml
+base_url = "https://example.com/v1"
+api_key_env = "BAILIAN_API_KEY"
+
+[[models]]
+name = "flash"
+model_id = "openai/qwen-flash"
+
+[[models]]
+name = "plus"
+model_id = "openai/qwen-plus"
+
+[[models]]
+name = "max"
+model_id = "openai/qwen-max"
+```
+
+```python
+from cairn.config import load_model_config
+from cairn.llm.model_manager import ModelManager
+
+manager = ModelManager(load_model_config())
+manager.select_model("plus")
+assert [model.name for model in manager.candidates()] == ["plus", "max"]
+```
+
+The loader returns `ProviderConfig`, mapping `[[models]]` to its `model_config`
+tuple in file order. Required strings must be nonblank, and model names must be
+unique in a nonempty list. Missing files, invalid TOML, and invalid values raise
+errors. `api_key_env` remains an environment variable name; loading does not read
+credentials or call a provider.
+
+This loader is available for explicit use. The CLI still uses its existing
+environment configuration; automatic model fallback is not connected. A future
+fallback client must keep the token counter, context budget, and provider output
+limit consistent with the model used for each attempt.
 
 ## Coding smoke evals
 

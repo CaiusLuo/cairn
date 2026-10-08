@@ -10,6 +10,7 @@ Tests are grouped by the runtime component whose contract they verify:
 | `evals/` | Bounded file and content checks, coding-smoke cases, runner behavior and lifecycle |
 | `llm/` | LiteLLM request/response adaptation, model-aware token counting and labelled fallback estimates |
 | `observability/` | JSONL trace storage, listing/deletion, bounded prefix resolution, diagnostics and failure handling |
+| `test_config.py` | Model TOML loading, ordered model selection, and configuration validation |
 | `test_repository.py` | Fresh Git repository context and bounded status output |
 | `workspace/` | Workspace roots and directory ownership |
 | `support/` | Shared deterministic runtime doubles and native sandbox readiness helpers |

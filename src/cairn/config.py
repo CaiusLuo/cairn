@@ -1,8 +1,51 @@
+import tomllib
 from collections.abc import Mapping
+from pathlib import Path
 
 from cairn.core.context import ContextBudget
+from cairn.llm.model_manager import ModelConfig, ProviderConfig
 
 CAIRN_CONFIG_ENV_NAMES = ("CAIRN_LLM_MODEL", "CAIRN_LLM_API_KEY", "CAIRN_BASE_URL")
+
+
+def load_model_config(path: Path = Path(".cairn/models.toml")) -> ProviderConfig:
+    """Load a provider and its ordered models without resolving API credentials.
+
+    Relative paths are resolved from the caller's working directory. File and
+    TOML parsing errors propagate; invalid configuration values raise ValueError.
+    """
+    with path.open("rb") as source:
+        values = tomllib.load(source)
+
+    base_url = _required_string(values.get("base_url"), "base_url")
+    api_key_env = _required_string(values.get("api_key_env"), "api_key_env")
+    model_values = values.get("models")
+    if not isinstance(model_values, list) or not model_values:
+        raise ValueError("models must be a non-empty array of tables.")
+
+    models: list[ModelConfig] = []
+    names: set[str] = set()
+    for index, model in enumerate(model_values):
+        if not isinstance(model, dict):
+            raise ValueError(f"models[{index}] must be a table.")
+        name = _required_string(model.get("name"), f"models[{index}].name")
+        model_id = _required_string(model.get("model_id"), f"models[{index}].model_id")
+        if name in names:
+            raise ValueError(f"Duplicate model name: {name!r}.")
+        names.add(name)
+        models.append(ModelConfig(name=name, model_id=model_id))
+
+    return ProviderConfig(
+        base_url=base_url,
+        api_key_env=api_key_env,
+        model_config=tuple(models),
+    )
+
+
+def _required_string(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a non-empty string.")
+    return value
 
 
 def resolve_cairn_config(
