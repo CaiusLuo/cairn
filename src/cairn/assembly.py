@@ -3,6 +3,7 @@ from cairn.core.context import ContextBuilder
 from cairn.core.events import EventHandler
 from cairn.core.permissions import PermissionHandler
 from cairn.llm.base import LLMClient
+from cairn.llm.model_executor import ModelExecuter
 from cairn.observability.tracer import Tracer
 from cairn.repository import RepoContextProvider
 from cairn.tools.bash import BashTool
@@ -20,6 +21,7 @@ def build_agent(
     tracer: Tracer | None,
     context_builder: ContextBuilder | None = None,
     secret_env_keys: frozenset[str] = frozenset(),
+    model_executor: ModelExecuter | None = None,
 ) -> Agent:
     registry = ToolRegistry()
 
@@ -35,4 +37,5 @@ def build_agent(
         tracer=tracer,
         repo_context_provider=RepoContextProvider(workspace),
         context_builder=context_builder,
+        model_executor=model_executor,
     )

@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from litellm.exceptions import RateLimitError, ServiceUnavailableError, Timeout
 from typer.testing import CliRunner
 
 import cairn.cli as cli_module
@@ -449,3 +450,177 @@ def test_provider_error_echoing_key_is_redacted_before_trace_and_terminal(
     )
     assert "credential-bearing details were omitted" in traces
     assert API_KEY not in traces + result.output + caplog.text
+
+
+def test_fallback_uses_distinct_models_and_counters_without_changing_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agents, requests, token_models = _configure_cli(
+        tmp_path, monkeypatch, "first", "/model", "second", "/model use plus", "third"
+    )
+
+    def count(**kwargs: Any) -> int:
+        token_models.append(kwargs["model"])
+        return 10 if kwargs["model"] == "openai/qwen-flash" else 30
+
+    async def completion(**kwargs: Any) -> SimpleNamespace:
+        requests.append(kwargs)
+        if kwargs["model"] == "openai/qwen-flash":
+            raise RateLimitError(
+                message="model throttled", model=kwargs["model"], llm_provider="openai"
+            )
+        response = _response("answer")
+        response.usage = SimpleNamespace(prompt_tokens=20, completion_tokens=3)
+        return response
+
+    monkeypatch.setattr(counter_module, "token_counter", count)
+    monkeypatch.setattr(llm_module, "acompletion", completion)
+    result = CliRunner().invoke(cli_module.app, [])
+
+    assert result.exit_code == 0, result.output
+    expected = [
+        "openai/qwen-flash",
+        "openai/qwen-plus",
+        "openai/qwen-flash",
+        "openai/qwen-plus",
+        "openai/qwen-plus",
+    ]
+    assert [request["model"] for request in requests] == expected
+    assert token_models == expected
+    assert "Current model: flash (openai/qwen-flash)" in result.output
+    assert len(agents) == 1
+    assert [m.content for m in agents[0].state.messages] == [
+        "first",
+        "answer",
+        "second",
+        "answer",
+        "third",
+        "answer",
+    ]
+    assert requests[0]["messages"] == requests[1]["messages"]
+    assert requests[2]["messages"] == requests[3]["messages"]
+    assert (tmp_path / ".cairn/models.toml").read_text() == TOML
+    for request in requests:
+        assert request["api_key"] == API_KEY
+        assert request["api_base"] == "https://example.test/v1"
+        assert request["max_tokens"] == 20
+
+    traces = [
+        [json.loads(line) for line in path.read_text().splitlines()]
+        for path in (tmp_path / ".cairn/traces").glob("*.jsonl")
+    ]
+    assert len(traces) == 3
+    for spans in traces:
+        attempts, root = spans[:-1], spans[-1]
+        assert root["name"] == "agent.turn"
+        assert root["status"] == "ok"
+        assert all(span["name"] == "llm.generate" for span in attempts)
+        assert all(span["end_time"] is not None for span in spans)
+        assert all(
+            span["context"]["parent_span_id"] == root["context"]["span_id"]
+            for span in attempts
+        )
+        assert attempts[-1]["attributes"]["model"] == "openai/qwen-plus"
+        assert attempts[-1]["attributes"]["context_tokens_after"] == 30
+        assert attempts[-1]["attributes"]["context_response_tokens"] == 20
+        assert attempts[-1]["attributes"]["input_tokens"] == 20
+        assert attempts[-1]["attributes"]["output_tokens"] == 3
+        if len(attempts) == 2:
+            assert [s["attributes"]["model_name"] for s in attempts] == [
+                "flash",
+                "plus",
+            ]
+            assert [s["attributes"]["attempt"] for s in attempts] == [1, 2]
+            assert [s["status"] for s in attempts] == ["error", "ok"]
+            assert attempts[0]["attributes"]["context_tokens_after"] == 10
+            assert "input_tokens" not in root["attributes"]
+            assert "output_tokens" not in root["attributes"]
+        else:
+            assert len(attempts) == 1
+            assert root["attributes"]["input_tokens"] == 20
+            assert root["attributes"]["output_tokens"] == 3
+    assert (
+        " ".join(result.output.split()).count("tokens: input unknown, output unknown")
+        == 2
+    )
+    assert API_KEY not in repr(traces) + result.output
+
+
+def test_fallback_rebudgets_before_calling_the_next_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agents, requests, token_models = _configure_cli(tmp_path, monkeypatch, "question")
+
+    def count(**kwargs: Any) -> int:
+        token_models.append(kwargs["model"])
+        return 10 if kwargs["model"] == "openai/qwen-flash" else 90
+
+    async def completion(**kwargs: Any) -> SimpleNamespace:
+        requests.append(kwargs)
+        raise RateLimitError(
+            message="model throttled", model=kwargs["model"], llm_provider="openai"
+        )
+
+    monkeypatch.setattr(counter_module, "token_counter", count)
+    monkeypatch.setattr(llm_module, "acompletion", completion)
+    result = CliRunner().invoke(cli_module.app, [])
+
+    assert result.exit_code == 0
+    assert "Required context exceeds the context budget" in result.output
+    assert token_models[0] == "openai/qwen-flash"
+    assert set(token_models[1:]) == {"openai/qwen-plus"}
+    assert [request["model"] for request in requests] == ["openai/qwen-flash"]
+    assert agents[0].state.messages == []
+    spans = [
+        json.loads(line)
+        for path in (tmp_path / ".cairn/traces").glob("*.jsonl")
+        for line in path.read_text().splitlines()
+    ]
+    assert [span["name"] for span in spans] == ["llm.generate", "agent.turn"]
+    assert "ContextBudgetExceeded" in spans[-1]["error"]
+
+
+def test_exhausted_fallback_records_each_model_error_and_rolls_back_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agents, requests, token_models = _configure_cli(tmp_path, monkeypatch, "question")
+
+    async def completion(**kwargs: Any) -> SimpleNamespace:
+        requests.append(kwargs)
+        error_type = (
+            Timeout
+            if kwargs["model"] == "openai/qwen-flash"
+            else ServiceUnavailableError
+        )
+        raise error_type(
+            message="provider unavailable", model=kwargs["model"], llm_provider="openai"
+        )
+
+    monkeypatch.setattr(llm_module, "acompletion", completion)
+    result = CliRunner().invoke(cli_module.app, [])
+
+    assert result.exit_code == 0
+    assert (
+        [request["model"] for request in requests]
+        == token_models
+        == ["openai/qwen-flash", "openai/qwen-plus"]
+    )
+    assert "All candidate models are unavailable" in result.output
+    assert "flash" in result.output and "plus" in result.output
+    assert agents[0].state.messages == []
+    spans = [
+        json.loads(line)
+        for path in (tmp_path / ".cairn/traces").glob("*.jsonl")
+        for line in path.read_text().splitlines()
+    ]
+    assert [span["name"] for span in spans] == [
+        "llm.generate",
+        "llm.generate",
+        "agent.turn",
+    ]
+    assert all(
+        span["status"] == "error" and span["end_time"] is not None for span in spans
+    )
+    assert "Timeout" in spans[0]["error"]
+    assert "ServiceUnavailableError" in spans[1]["error"]
+    assert "AllModelsUnavailable" in spans[2]["error"]

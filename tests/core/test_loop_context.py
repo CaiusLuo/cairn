@@ -151,6 +151,62 @@ def test_request_budget_includes_schema_and_reserve_and_records_trim(
     assert trimmed[0].data["omitted_messages"] == 2
 
 
+@pytest.mark.parametrize(
+    "failure", [RuntimeError("provider failed"), asyncio.CancelledError()]
+)
+def test_trim_is_reported_before_failed_generation_and_trace_keeps_request_metadata(
+    failure: BaseException,
+) -> None:
+    events: list[Event] = []
+    sink = RecordingSink()
+    counter = SerializedCounter()
+    current = Message(role="user", content="question")
+    required = counter.count([SYSTEM, current], []).tokens
+
+    class InspectingLLM(SequenceLLM):
+        async def generate(
+            self, messages: list[Message], tools: list[dict[str, Any]] | None = None
+        ) -> LLMResponse:
+            self.calls.append((messages, tools))
+            assert any(event.type == "context_trimmed" for event in events)
+            raise failure
+
+    llm = InspectingLLM([])
+    agent = make_context_agent(
+        llm,
+        ContextBudget(
+            max_tokens=required + RESPONSE_RESERVE + TRIM_NOTICE_ALLOWANCE,
+            response_tokens=RESPONSE_RESERVE,
+        ),
+        counter,
+        events=events,
+        sink=sink,
+    )
+    agent.state.add_user_message("old question " + "x" * 1000)
+    agent.state.add_assistant_message("old answer " + "x" * 1000)
+    previous = list(agent.state.messages)
+
+    with pytest.raises(type(failure)) as raised:
+        asyncio.run(run_turn(agent, "question", budget=TEST_BUDGET))
+
+    assert raised.value is failure
+    assert agent.state.messages == previous
+    assert [span.name for span in sink.spans] == ["llm.generate", "agent.turn"]
+    assert all(
+        span.status == SpanStatus.ERROR and span.end_time is not None
+        for span in sink.spans
+    )
+    attempt = sink.spans[0]
+    assert attempt.attributes["context_omitted_turns"] == 1
+    assert attempt.attributes["context_omitted_messages"] == 2
+    assert (
+        attempt.attributes["context_tokens_after"]
+        == counter.count(llm.calls[0][0], []).tokens
+    )
+    assert attempt.attributes["context_response_tokens"] == RESPONSE_RESERVE
+    assert "usage" not in events[-1].data
+
+
 def test_one_hundred_turns_keep_requests_bounded_and_full_history_intact() -> None:
     counter = SerializedCounter()
     users = [

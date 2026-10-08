@@ -3,6 +3,7 @@ from cairn.core.events import Event, EventHandler
 from cairn.core.permissions import PermissionHandler
 from cairn.core.state import AgentState
 from cairn.llm.base import LLMClient
+from cairn.llm.model_executor import ModelExecuter
 from cairn.observability.tracer import Tracer
 from cairn.repository import RepoContextProvider
 from cairn.tools.registry import ToolRegistry
@@ -42,6 +43,7 @@ class Agent:
         tracer: Tracer | None = None,
         repo_context_provider: RepoContextProvider | None = None,
         context_builder: ContextBuilder | None = None,
+        model_executor: ModelExecuter | None = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -54,6 +56,9 @@ class Agent:
             context_builder if context_builder is not None else ContextBuilder()
         )
         self.state = AgentState()
+        self.model_executor = (
+            model_executor if model_executor is not None else ModelExecuter()
+        )
 
     def emit(self, event: Event) -> None:
         if self.event_handler is not None:

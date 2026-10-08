@@ -9,8 +9,9 @@ from cairn.core.budget import (
     RunBudget,
     RunBudgetExceeded,
 )
+from cairn.core.context import ContextBudget, ContextRequest
 from cairn.core.events import Event
-from cairn.core.models import Message, ToolCall, ToolFailure
+from cairn.core.models import LLMResponse, Message, ToolCall, ToolFailure
 from cairn.core.permissions import (
     PermissionCapability,
     PermissionDecision,
@@ -18,6 +19,7 @@ from cairn.core.permissions import (
     PermissionSource,
     evaluate_permission_policy,
 )
+from cairn.llm.model_manager import ModelConfig
 from cairn.observability.models import Span, SpanStatus
 from cairn.tools.base import InvalidArguments, ToolExecutionContext, ToolNotFound
 
@@ -171,6 +173,104 @@ async def run_turn(
     reported_omitted_turns = 0
     input_tokens: int | None = 0
     output_tokens: int | None = 0
+    llm_span: Span | None = None
+    pending_request: ContextRequest | None = None
+    request_budget = agent.context_builder.budget
+
+    def record_request(request: ContextRequest) -> None:
+        if llm_span is not None:
+            llm_span.attributes.update(
+                {
+                    "message_count": len(request.messages),
+                    "message_count_before": len(system_messages)
+                    + len(agent.state.messages),
+                    "context_tokens_before": request.tokens_before.tokens,
+                    "context_tokens_after": request.tokens_after.tokens,
+                    "context_count_is_estimate": request.tokens_after.is_estimate,
+                    "context_max_tokens": request_budget.max_tokens,
+                    "context_response_tokens": request_budget.response_tokens,
+                    "context_omitted_turns": request.omitted_turns,
+                    "context_omitted_messages": request.omitted_messages,
+                }
+            )
+
+    def start_attempt(
+        request: ContextRequest,
+        context_budget: ContextBudget,
+        model: ModelConfig | None,
+        attempt: int,
+    ) -> None:
+        nonlocal llm_span, pending_request, request_budget, reported_omitted_turns
+        if request.omitted_turns and request.omitted_turns != reported_omitted_turns:
+            agent.emit(
+                Event(
+                    type="context_trimmed",
+                    data={
+                        "omitted_turns": request.omitted_turns,
+                        "omitted_messages": request.omitted_messages,
+                    },
+                )
+            )
+        reported_omitted_turns = request.omitted_turns
+        request_budget = context_budget
+        if agent.tracer is not None and turn_span is not None:
+            attributes: dict[str, Any] = {
+                "step": step + 1,
+                "tool_schema_count": len(tool_schemas),
+            }
+            if model is not None:
+                attributes.update(
+                    model=model.model_id, model_name=model.name, attempt=attempt
+                )
+            llm_span = agent.tracer.start_child_span(
+                turn_span, "llm.generate", attributes=attributes
+            )
+        pending_request = request
+
+    def fail_attempt(exc: BaseException) -> None:
+        nonlocal llm_span, pending_request, input_tokens, output_tokens
+        # No request means admission failed before calling a provider.
+        if pending_request is None:
+            return
+        input_tokens = None
+        output_tokens = None
+        record_request(pending_request)
+        if llm_span is not None and agent.tracer is not None:
+            if isinstance(exc, asyncio.CancelledError):
+                llm_span.attributes["cancelled"] = True
+                error = "LLM generation was cancelled."
+            else:
+                error = f"{type(exc).__name__}: {exc}"
+            agent.tracer.end_span(llm_span, status=SpanStatus.ERROR, error=error)
+        # A fallback closes this attempt before the next one starts.
+        llm_span = None
+        pending_request = None
+
+    def finish_attempt(request: ContextRequest, response: LLMResponse) -> None:
+        nonlocal llm_response_count, input_tokens, output_tokens, pending_request
+        record_request(request)
+        llm_response_count += 1
+        if input_tokens is not None:
+            if response.usage is None or response.usage.input_tokens is None:
+                input_tokens = None
+            else:
+                input_tokens += response.usage.input_tokens
+        if output_tokens is not None:
+            if response.usage is None or response.usage.output_tokens is None:
+                output_tokens = None
+            else:
+                output_tokens += response.usage.output_tokens
+
+        if llm_span is not None and agent.tracer is not None:
+            llm_span.attributes["tool_call_count"] = len(response.tool_calls)
+            llm_span.attributes["has_content"] = response.content is not None
+            if response.usage is not None:
+                if response.usage.input_tokens is not None:
+                    llm_span.attributes["input_tokens"] = response.usage.input_tokens
+                if response.usage.output_tokens is not None:
+                    llm_span.attributes["output_tokens"] = response.usage.output_tokens
+            agent.tracer.end_span(llm_span, status=SpanStatus.OK)
+        pending_request = None
 
     try:
         turn_span = None
@@ -214,109 +314,29 @@ async def run_turn(
                 system_messages.append(
                     Message(role="system", content=repo_context.to_prompt())
                 )
-            llm_span = None
-
             tool_schemas = agent.tools.schemas()
-            request = agent.context_builder.build(
-                system_messages=system_messages,
-                history=agent.state.messages,
-                current_turn_start=turn_start,
-                tools=tool_schemas,
-            )
-            messages = request.messages
-            if (
-                request.omitted_turns
-                and request.omitted_turns != reported_omitted_turns
-            ):
-                agent.emit(
-                    Event(
-                        type="context_trimmed",
-                        data={
-                            "omitted_turns": request.omitted_turns,
-                            "omitted_messages": request.omitted_messages,
-                        },
-                    )
-                )
-            reported_omitted_turns = request.omitted_turns
-
-            if agent.tracer is not None and turn_span is not None:
-                llm_span = agent.tracer.start_child_span(
-                    turn_span,
-                    "llm.generate",
-                    attributes={
-                        "step": step + 1,
-                        "message_count": len(messages),
-                        "tool_schema_count": len(tool_schemas),
-                        "message_count_before": len(system_messages)
-                        + len(agent.state.messages),
-                        "context_tokens_before": request.tokens_before.tokens,
-                        "context_tokens_after": request.tokens_after.tokens,
-                        "context_count_is_estimate": request.tokens_after.is_estimate,
-                        "context_max_tokens": agent.context_builder.budget.max_tokens,
-                        "context_response_tokens": agent.context_builder.budget.response_tokens,
-                        "context_omitted_turns": request.omitted_turns,
-                        "context_omitted_messages": request.omitted_messages,
-                    },
-                )
+            llm_span = None
+            pending_request = None
+            request_budget = agent.context_builder.budget
 
             try:
-                response = await agent.llm.generate(
-                    messages,
+                request, response = await agent.model_executor.execute(
+                    agent=agent,
+                    system_messages=system_messages,
+                    history=agent.state.messages,
+                    current_turn_start=turn_start,
                     tools=tool_schemas,
+                    on_request=start_attempt,
+                    on_fallback=fail_attempt,
                 )
-
-            except asyncio.CancelledError:
-                input_tokens = None
-                output_tokens = None
-                if llm_span is not None and agent.tracer is not None:
-                    llm_span.attributes["cancelled"] = True
-                    agent.tracer.end_span(
-                        llm_span,
-                        status=SpanStatus.ERROR,
-                        error="LLM generation was cancelled.",
-                    )
+            except asyncio.CancelledError as exc:
+                fail_attempt(exc)
                 raise
-
             except Exception as exc:
-                input_tokens = None
-                output_tokens = None
-                if llm_span is not None and agent.tracer is not None:
-                    agent.tracer.end_span(
-                        llm_span,
-                        status=SpanStatus.ERROR,
-                        error=f"{type(exc).__name__}: {exc}",
-                    )
+                fail_attempt(exc)
                 raise
-
             else:
-                llm_response_count += 1
-                if input_tokens is not None:
-                    if response.usage is None or response.usage.input_tokens is None:
-                        input_tokens = None
-                    else:
-                        input_tokens += response.usage.input_tokens
-                if output_tokens is not None:
-                    if response.usage is None or response.usage.output_tokens is None:
-                        output_tokens = None
-                    else:
-                        output_tokens += response.usage.output_tokens
-
-                if llm_span is not None and agent.tracer is not None:
-                    llm_span.attributes["tool_call_count"] = len(response.tool_calls)
-                    llm_span.attributes["has_content"] = response.content is not None
-                    if response.usage is not None:
-                        if response.usage.input_tokens is not None:
-                            llm_span.attributes["input_tokens"] = (
-                                response.usage.input_tokens
-                            )
-                        if response.usage.output_tokens is not None:
-                            llm_span.attributes["output_tokens"] = (
-                                response.usage.output_tokens
-                            )
-                    agent.tracer.end_span(
-                        llm_span,
-                        status=SpanStatus.OK,
-                    )
+                finish_attempt(request, response)
 
             agent.state.add_assistant_message(
                 response.content,

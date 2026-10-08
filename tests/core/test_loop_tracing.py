@@ -7,6 +7,12 @@ from rich.console import Console
 
 import cairn.terminal.output as ui
 from cairn.core.agent import Agent
+from cairn.core.context import (
+    ContextBudget,
+    ContextBudgetExceeded,
+    ContextBuilder,
+    TokenCount,
+)
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.core.models import LLMResponse, LLMUsage, Message, ToolCall
@@ -296,3 +302,37 @@ def test_run_turn_ends_permission_span_once_when_handler_raises() -> None:
     assert len(permission_spans) == 1
     assert permission_spans[0].status == SpanStatus.ERROR
     assert permission_spans[0].error == "RuntimeError: permission failed"
+
+
+def test_admission_failure_after_tool_preserves_known_completed_call_usage() -> None:
+    class ToolOverflowCounter:
+        def count(
+            self, messages: list[Message], tools: list[dict[str, Any]]
+        ) -> TokenCount:
+            return TokenCount(
+                tokens=100 if any(m.role == "tool" for m in messages) else 10,
+                is_estimate=False,
+            )
+
+    response = tool_response()
+    response.usage = LLMUsage(input_tokens=10, output_tokens=2)
+    llm = SequenceLLM([response])
+    events: list[Event] = []
+    tool = RecordingTool()
+    agent = make_agent(llm, tool, events)
+    agent.context_builder = ContextBuilder(
+        budget=ContextBudget(max_tokens=100, response_tokens=20),
+        counter=ToolOverflowCounter(),
+    )
+    sink = RecordingSink()
+    agent.tracer = Tracer(sink)
+
+    with pytest.raises(ContextBudgetExceeded):
+        asyncio.run(run_turn(agent, "question", budget=TEST_BUDGET))
+
+    assert len(llm.calls) == 1
+    assert tool.calls == [{"value": 42}]
+    assert [m.role for m in agent.state.messages] == ["user", "assistant", "tool"]
+    assert len([s for s in sink.spans if s.name == "llm.generate"]) == 1
+    assert events[-1].data["status"] == "error"
+    assert events[-1].data["usage"] == {"input_tokens": 10, "output_tokens": 2}
