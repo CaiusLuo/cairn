@@ -5,7 +5,8 @@ HELP_TEXT: dict[str, dict[str, str]] = {
         "detail": (
             "Show the current model, list configured models (* marks the current one),\n"
             "or select a model by name for subsequent requests.\n"
-            "Selection preserves conversation history and does not modify configuration."
+            "Selection preserves conversation history and does not modify configuration.\n"
+            "A listed model that failed recently shows its most recent failure."
         ),
     },
     "trace": {

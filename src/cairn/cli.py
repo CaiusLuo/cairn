@@ -19,7 +19,7 @@ from cairn.core.context import ContextBuilder
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.core.permissions import SessionPermissionHandler
-from cairn.llm.model_executor import ModelExecuter
+from cairn.llm.model_executor import ModelExecutor
 from cairn.llm.model_manager import ModelConfig, ModelManager, ProviderConfig
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.storage import TraceStore
@@ -118,6 +118,7 @@ async def main(cli_input: CliInput | None = None) -> None:
             return
         console_event_handler(event)
 
+    model_executor = ModelExecutor(model_manager, create_model_runtime)
     agent = build_agent(
         workspace=workspace,
         llm=llm,
@@ -126,7 +127,7 @@ async def main(cli_input: CliInput | None = None) -> None:
         tracer=tracer,
         context_builder=context_builder,
         secret_env_keys=frozenset({provider.api_key_env}),
-        model_executor=ModelExecuter(model_manager, create_model_runtime),
+        model_executor=model_executor,
     )
 
     def select_model(name: str) -> ModelConfig:
@@ -143,6 +144,7 @@ async def main(cli_input: CliInput | None = None) -> None:
         return selected
 
     command_context.model_manager = model_manager
+    command_context.model_executor = model_executor
     command_context.select_model = select_model
     router = CommandRouter()
     input_reader = cli_input or CliInput()

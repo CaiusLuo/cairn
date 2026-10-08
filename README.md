@@ -81,7 +81,8 @@ loopback HTTP services. Review the endpoint and model IDs before approving.
 
 Use `/model use plus` to switch for the current session without losing history
 or rewriting TOML. Token counting follows the selected model; budget settings
-remain shared. Transient provider errors try the remaining models in order.
+remain shared. A model-level rate or quota rejection tries the remaining models
+in order; `/model list` notes each model's most recent failure.
 
 ## CLI commands
 

@@ -1,5 +1,6 @@
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -587,13 +588,8 @@ def test_exhausted_fallback_records_each_model_error_and_rolls_back_turn(
 
     async def completion(**kwargs: Any) -> SimpleNamespace:
         requests.append(kwargs)
-        error_type = (
-            Timeout
-            if kwargs["model"] == "openai/qwen-flash"
-            else ServiceUnavailableError
-        )
-        raise error_type(
-            message="provider unavailable", model=kwargs["model"], llm_provider="openai"
+        raise RateLimitError(
+            message="free tier exhausted", model=kwargs["model"], llm_provider="openai"
         )
 
     monkeypatch.setattr(llm_module, "acompletion", completion)
@@ -621,6 +617,114 @@ def test_exhausted_fallback_records_each_model_error_and_rolls_back_turn(
     assert all(
         span["status"] == "error" and span["end_time"] is not None for span in spans
     )
-    assert "Timeout" in spans[0]["error"]
-    assert "ServiceUnavailableError" in spans[1]["error"]
+    assert "RateLimitError" in spans[0]["error"]
+    assert "RateLimitError" in spans[1]["error"]
     assert "AllModelsUnavailable" in spans[2]["error"]
+
+
+@pytest.mark.parametrize("error_type", [ServiceUnavailableError, Timeout])
+def test_shared_and_transient_provider_failures_never_try_another_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: Callable[..., Exception],
+) -> None:
+    agents, requests, token_models = _configure_cli(tmp_path, monkeypatch, "question")
+
+    async def completion(**kwargs: Any) -> SimpleNamespace:
+        requests.append(kwargs)
+        raise error_type(
+            message="provider unavailable", model=kwargs["model"], llm_provider="openai"
+        )
+
+    monkeypatch.setattr(llm_module, "acompletion", completion)
+    result = CliRunner().invoke(cli_module.app, [])
+
+    assert result.exit_code == 0
+    assert [request["model"] for request in requests] == ["openai/qwen-flash"]
+    assert token_models == ["openai/qwen-flash"]
+    assert "all candidate models" not in result.output.lower()
+    assert agents[0].state.messages == []
+    spans = [
+        json.loads(line)
+        for path in (tmp_path / ".cairn/traces").glob("*.jsonl")
+        for line in path.read_text().splitlines()
+    ]
+    assert [span["name"] for span in spans] == ["llm.generate", "agent.turn"]
+    assert all(span["status"] == "error" for span in spans)
+
+
+def test_model_list_annotates_the_last_failure_and_the_next_request_restarts_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agents, requests, token_models = _configure_cli(
+        tmp_path, monkeypatch, "first", "/model list", "second", "/model list"
+    )
+    throttled = False
+
+    async def completion(**kwargs: Any) -> SimpleNamespace:
+        nonlocal throttled
+        requests.append(kwargs)
+        if kwargs["model"] == "openai/qwen-flash" and not throttled:
+            throttled = True
+            raise RateLimitError(
+                message="free tier exhausted",
+                model=kwargs["model"],
+                llm_provider="openai",
+            )
+        return _response("answer")
+
+    monkeypatch.setattr(llm_module, "acompletion", completion)
+    result = CliRunner().invoke(cli_module.app, [])
+
+    assert result.exit_code == 0, result.output
+    # The retry for the second request starts again from the first configured
+    # model, so the failing model is never skipped or removed.
+    assert [request["model"] for request in requests] == [
+        "openai/qwen-flash",
+        "openai/qwen-plus",
+        "openai/qwen-flash",
+    ]
+    assert token_models == [request["model"] for request in requests]
+    assert [m.content for m in agents[0].state.messages] == [
+        "first",
+        "answer",
+        "second",
+        "answer",
+    ]
+
+    listings = [
+        line
+        for line in result.output.splitlines()
+        if "qwen-flash" in line or "qwen-plus" in line
+    ]
+    flash = [line for line in listings if "qwen-flash" in line]
+    assert len(flash) == 2
+    assert "last failure: RateLimitError: " in flash[0]
+    assert "free tier exhausted" in flash[0]
+    assert "last failure" not in flash[1]
+    assert all("last failure" not in line for line in listings if "qwen-plus" in line)
+
+
+def test_selected_model_runtime_is_built_once_and_reused_for_every_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agents, requests, _ = _configure_cli(tmp_path, monkeypatch, "first", "second")
+    original_client = llm_module.LiteLLMClient
+    built: list[str] = []
+
+    def make_client(*args: Any, **kwargs: Any) -> llm_module.LiteLLMClient:
+        built.append(kwargs["model"])
+        return original_client(*args, **kwargs)
+
+    monkeypatch.setattr(llm_module, "LiteLLMClient", make_client)
+    result = CliRunner().invoke(cli_module.app, [])
+
+    assert result.exit_code == 0, result.output
+    # One runtime for the selected model at startup; both turns reuse it instead
+    # of building a second client for the same model in the executor.
+    assert built == ["openai/qwen-flash"]
+    assert [request["model"] for request in requests] == [
+        "openai/qwen-flash",
+        "openai/qwen-flash",
+    ]
+    assert agents[0].state.messages[-1].content == "reply 2"

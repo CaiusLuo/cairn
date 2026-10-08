@@ -174,25 +174,7 @@ async def run_turn(
     input_tokens: int | None = 0
     output_tokens: int | None = 0
     llm_span: Span | None = None
-    pending_request: ContextRequest | None = None
-    request_budget = agent.context_builder.budget
-
-    def record_request(request: ContextRequest) -> None:
-        if llm_span is not None:
-            llm_span.attributes.update(
-                {
-                    "message_count": len(request.messages),
-                    "message_count_before": len(system_messages)
-                    + len(agent.state.messages),
-                    "context_tokens_before": request.tokens_before.tokens,
-                    "context_tokens_after": request.tokens_after.tokens,
-                    "context_count_is_estimate": request.tokens_after.is_estimate,
-                    "context_max_tokens": request_budget.max_tokens,
-                    "context_response_tokens": request_budget.response_tokens,
-                    "context_omitted_turns": request.omitted_turns,
-                    "context_omitted_messages": request.omitted_messages,
-                }
-            )
+    llm_attempt_started = False
 
     def start_attempt(
         request: ContextRequest,
@@ -200,7 +182,9 @@ async def run_turn(
         model: ModelConfig | None,
         attempt: int,
     ) -> None:
-        nonlocal llm_span, pending_request, request_budget, reported_omitted_turns
+        """Open a span and record admission metadata for one provider call."""
+        nonlocal llm_span, llm_attempt_started, reported_omitted_turns
+        llm_attempt_started = True
         if request.omitted_turns and request.omitted_turns != reported_omitted_turns:
             agent.emit(
                 Event(
@@ -212,29 +196,40 @@ async def run_turn(
                 )
             )
         reported_omitted_turns = request.omitted_turns
-        request_budget = context_budget
-        if agent.tracer is not None and turn_span is not None:
-            attributes: dict[str, Any] = {
-                "step": step + 1,
-                "tool_schema_count": len(tool_schemas),
-            }
-            if model is not None:
-                attributes.update(
-                    model=model.model_id, model_name=model.name, attempt=attempt
-                )
-            llm_span = agent.tracer.start_child_span(
-                turn_span, "llm.generate", attributes=attributes
+
+        if agent.tracer is None or turn_span is None:
+            return
+        attributes: dict[str, Any] = {
+            "step": step + 1,
+            "tool_schema_count": len(tool_schemas),
+            "message_count": len(request.messages),
+            "message_count_before": len(system_messages) + len(agent.state.messages),
+            "context_tokens_before": request.tokens_before.tokens,
+            "context_tokens_after": request.tokens_after.tokens,
+            "context_count_is_estimate": request.tokens_after.is_estimate,
+            "context_max_tokens": context_budget.max_tokens,
+            "context_response_tokens": context_budget.response_tokens,
+            "context_omitted_turns": request.omitted_turns,
+            "context_omitted_messages": request.omitted_messages,
+        }
+        if model is not None:
+            attributes.update(
+                model=model.model_id, model_name=model.name, attempt=attempt
             )
-        pending_request = request
+        llm_span = agent.tracer.start_child_span(
+            turn_span, "llm.generate", attributes=attributes
+        )
 
     def fail_attempt(exc: BaseException) -> None:
-        nonlocal llm_span, pending_request, input_tokens, output_tokens
-        # No request means admission failed before calling a provider.
-        if pending_request is None:
+        """Close the attempt span after a provider call produced no response."""
+        nonlocal llm_span, llm_attempt_started, input_tokens, output_tokens
+        # No attempt means admission failed before any provider call, so usage
+        # already accounted for by earlier steps must survive.
+        if not llm_attempt_started:
             return
+        llm_attempt_started = False
         input_tokens = None
         output_tokens = None
-        record_request(pending_request)
         if llm_span is not None and agent.tracer is not None:
             if isinstance(exc, asyncio.CancelledError):
                 llm_span.attributes["cancelled"] = True
@@ -244,11 +239,9 @@ async def run_turn(
             agent.tracer.end_span(llm_span, status=SpanStatus.ERROR, error=error)
         # A fallback closes this attempt before the next one starts.
         llm_span = None
-        pending_request = None
 
-    def finish_attempt(request: ContextRequest, response: LLMResponse) -> None:
-        nonlocal llm_response_count, input_tokens, output_tokens, pending_request
-        record_request(request)
+    def finish_attempt(response: LLMResponse) -> None:
+        nonlocal llm_response_count, input_tokens, output_tokens
         llm_response_count += 1
         if input_tokens is not None:
             if response.usage is None or response.usage.input_tokens is None:
@@ -270,7 +263,6 @@ async def run_turn(
                 if response.usage.output_tokens is not None:
                     llm_span.attributes["output_tokens"] = response.usage.output_tokens
             agent.tracer.end_span(llm_span, status=SpanStatus.OK)
-        pending_request = None
 
     try:
         turn_span = None
@@ -316,11 +308,10 @@ async def run_turn(
                 )
             tool_schemas = agent.tools.schemas()
             llm_span = None
-            pending_request = None
-            request_budget = agent.context_builder.budget
+            llm_attempt_started = False
 
             try:
-                request, response = await agent.model_executor.execute(
+                _, response = await agent.model_executor.execute(
                     agent=agent,
                     system_messages=system_messages,
                     history=agent.state.messages,
@@ -329,14 +320,12 @@ async def run_turn(
                     on_request=start_attempt,
                     on_fallback=fail_attempt,
                 )
-            except asyncio.CancelledError as exc:
-                fail_attempt(exc)
-                raise
-            except Exception as exc:
+            except (asyncio.CancelledError, Exception) as exc:
+                # Cancellation and provider failures both finalize the attempt.
                 fail_attempt(exc)
                 raise
             else:
-                finish_attempt(request, response)
+                finish_attempt(response)
 
             agent.state.add_assistant_message(
                 response.content,
