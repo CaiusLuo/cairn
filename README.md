@@ -16,108 +16,26 @@
 
 > A cairn marks the path for whoever comes next. So does a harness.
 
-Cairn is a lightweight Agent Harness and runtime built from first principles.
-The project is intentionally small: its purpose is to make the mechanics of an
-agent loop—messages, model calls, tool execution, permissions, state, and
-events—easy to read, test, and evolve without hiding them behind a large
-framework.
+Cairn is a lightweight agent harness built from first principles. It keeps model
+calls, tool execution, permissions, and conversation state small enough to read,
+test, and extend. This is an early-stage learning and engineering project.
 
-Cairn is an early-stage learning and engineering project, not a production-ready
-autonomous coding agent.
+- Asynchronous agent loop with context and step budgets.
+- LiteLLM integration with session model selection.
+- Sandboxed Bash, bounded file reading, and guarded file editing.
+- Interactive CLI, JSONL traces, and headless coding evaluations.
 
-## Current capabilities
+## Quick start
 
-- An asynchronous agent loop with a configurable step limit.
-- A configurable request context budget that omits complete older turns while
-  retaining the full in-process history and current tool-call groups.
-- A headless `EvalRunner` that runs one case per call, plus a five-case coding
-  smoke example.
-- In-process conversation state for user, assistant, and tool messages.
-- LiteLLM-backed model calls, including tool-call parsing.
-- A tool registry with Bash, bounded file reading, and guarded file editing.
-- Sandbox-first permissions: normal local coding runs without approval, while
-  network access requires an explicit capability approval.
-- Runtime events for agent steps, tool calls, tool results, errors, completion,
-  and step-limit termination.
-- JSONL traces for model, permission, tool, and turn spans, with interactive
-  commands for inspecting recorded traces.
-- A Rich-powered interactive terminal interface.
-
-The Bash tool executes every command inside an OS sandbox. On macOS, host reads
-are broadly available, while writes are confined to the workspace, a safe host
-`TMPDIR`, and the effective uv cache. On Linux, bubblewrap provides a narrower
-mounted filesystem view. Network access is isolated by default; it is enabled
-only for an execution with approved `NETWORK` capability. A session approval
-applies to later explicit `NETWORK` requests in that Cairn process; a new
-process starts without grants. A model-provided request flag is not approval.
-The `sudo` check is a narrow, best-effort UX guardrail; the sandbox enforces the
-filesystem and network boundary. Cairn does not currently provide persistent
-memory or background execution.
-
-## Architecture
-
-```text
-src/
-└── cairn/
-    ├── core/          # Agent runtime, context, budgets, state and permissions
-    ├── llm/           # LLM protocol and LiteLLM adapter
-    ├── tools/         # Tool protocol, registry, Bash and file tools
-    ├── workspace/     # Shared filesystem root and path protection
-    ├── repository.py  # Git repository context
-    ├── evals/         # Eval models, checks, and runner
-    ├── observability/ # Trace models, recording, and reading
-    ├── terminal/      # Terminal input, output and permission prompts
-    │   ├── commands/  # Interactive slash-command routing and handlers
-    │   ├── input.py
-    │   ├── output.py
-    │   └── trace_output.py
-    ├── resources/     # Terminal banner
-    ├── assembly.py    # Reusable agent and tool assembly
-    ├── config.py      # Environment settings and model TOML loading
-    └── cli.py         # CLI entrypoint and interactive application wiring
-tests/                 # Unit and behavior tests
-```
-
-Small protocols define the model-client, tool, event-handler, and
-permission-handler boundaries. `build_agent()` takes a Workspace, model client,
-and explicit permission, event, and trace dependencies, then wires the tools
-to the same Workspace. The CLI reads environment configuration, resolves it
-through `config.py`, and supplies terminal handlers; headless callers can reuse
-configuration resolution and agent assembly without importing terminal code.
-`repository.py` inspects Git state while `workspace/` owns filesystem path
-boundaries. Trace recording and storage stay in `observability/`; their terminal
-presentation lives in `terminal/trace_output.py`.
-
-Directory ownership stays with the caller:
-
-- CLI cwd is only the source used to construct Workspace.
-- Workspace wraps an existing directory and normalizes its root; it does not
-  create or clean up directories.
-- EvalRunner creates and cleans up per-case temporary directories;
-  Workspace wraps them without managing their lifecycle.
-
-## Quick Start
-
-Prerequisites:
-
-- Python 3.12 or newer
-- [uv](https://docs.astral.sh/uv/)
-- macOS `sandbox-exec` or Linux `bubblewrap`
-- An API endpoint supported by LiteLLM
-
-Install the project and development dependencies from the lock file:
+Requires Python 3.12+, [uv](https://docs.astral.sh/uv/), and macOS `sandbox-exec`
+or Linux `bubblewrap`.
 
 ```bash
 uv sync --locked --all-groups
-```
-
-Create a local environment file:
-
-```bash
 cp .env.example .env
 ```
 
-Set these values in `.env` for your provider:
+Set your provider and budget in `.env`:
 
 ```dotenv
 CAIRN_LLM_MODEL=openai/your-model
@@ -127,113 +45,18 @@ CAIRN_CONTEXT_MAX_TOKENS=98304
 CAIRN_RESPONSE_MAX_TOKENS=8192
 ```
 
-The context limit includes system and repository context, conversation messages,
-tool schemas, and the reserved response allowance; a request is sent only while
-counted input plus the response reserve fits within `CAIRN_CONTEXT_MAX_TOKENS`.
-The `.env.example` values above are an intentionally conservative 98,304-token
-total budget with 8,192 reserved for the response, leaving headroom below a
-128k-model context window. When both settings are unset the CLI falls back to the
-built-in defaults, 32,768 counted tokens with 4,096 reserved for the response. The
-response limit is also sent to LiteLLM as `max_tokens`. How that limit is
-enforced depends on the selected model and provider. Set both values for your
-model; the response allowance must be positive and smaller than the context
-limit. Shell values take precedence over `.env` without being copied into
-child-process environments.
-
-The CLI counts requests with a `LiteLLMTokenCounter`, which uses the tokenizer
-LiteLLM resolves for the currently selected model and labels the result exact.
-When LiteLLM cannot count, it falls back to an offline estimate of serialized UTF-8 byte
-lengths plus framing overhead, labelled as an estimate, so an approximation is
-never presented as provider usage. That estimate overestimates prose but can
-underestimate code, hexadecimal and base64-like content, so prefer the
-tokenizer-backed count and treat an estimate as a signal, not a guarantee.
-Headless callers can inject a `ContextBuilder` with a `ContextBudget` and a
-`TokenCounter` into `Agent` or `build_agent()`; custom counters label their
-result as exact or estimated using `TokenCount`. When using a custom model
-client, configure its output limit to match the reserved response allowance.
-
-Older turns are omitted only from the request view, including whole assistant
-tool-call/result groups, and Cairn reports the omission. The current turn is never
-trimmed. If its required content cannot fit, Cairn raises `ContextBudgetExceeded`
-before another model request, naming the never-trimmed components in the error. A
-malformed older tool-call group is omitted the same way instead of failing every
-later turn; a malformed current turn raises `ConversationHistoryError`. Trace
-attributes record counted input before and after trimming, omission counts, the
-budget and reserve, and whether the count is estimated; provider usage remains
-separate. A model failure or cancellation without provider usage displays
-`tokens: input unknown, output unknown`.
-
-Start the CLI:
+Shell values take precedence over `.env`. The context budget includes the
+response reserve, which is also sent as the provider's output-token limit.
+Choose values that fit every model you intend to use. Older turns may be omitted
+from requests while the full conversation stays in memory.
 
 ```bash
 uv run cairn
 ```
 
-A simple session looks like this:
+## Model configuration
 
-<!-- cli-banner:start -->
-```text
-      ___           ___                        ___           ___
-     /  /\         /  /\           ___        /  /\         /  /\
-    /  /::\       /  /::\         /__/\      /  /::\       /  /::|
-   /  /:/\:\     /  /:/\:\        \__\:\    /  /:/\:\     /  /:|:|
-  /  /:/  \:\   /  /::\ \:\       /  /::\  /  /::\ \:\   /  /:/|:|__
- /__/:/ \  \:\ /__/:/\:\_\:\   __/  /:/\/ /__/:/\:\_\:\ /__/:/ |:| /\
- \  \:\  \__\/ \__\/  \:\/:/  /__/\/:/~~  \__\/~|::\/:/ \__\/  |:|/:/
-  \  \:\            \__\::/   \  \::/        |  |:|::/      |  |:/:/
-   \  \:\           /  /:/     \  \:\        |  |:|\/       |__|::/
-    \  \:\         /__/:/       \__\/        |__|:|~        /__/:/
-     \__\/         \__\/                      \__\|         \__\/
-
-
-A cairn marks the path for whoever comes next.
-So does a harness. ✨
-
-cairn> Inspect the files in this directory.
-...agent and tool events appear here...
-Cairn>
-...model response appears here...
-cairn> /exit
-Goodbye! see you next time.
-```
-<!-- cli-banner:end -->
-
-Use `/exit` or `/quit` to end the session. Normal local operations within the
-sandbox need no approval; an explicit request for extra `NETWORK` capability
-requires approval, which can apply to later network requests in that session.
-
-Each turn records trace spans under `.cairn/traces/`. A trace is one append-only
-JSONL file named by its trace ID. Listing metadata is read from the final root
-span at the tail of that file. These commands inspect or manage stored traces
-without calling the model:
-
-```text
-/trace
-/trace TRACE_ID
-/trace list
-/trace list N
-/trace count
-/trace del TRACE_ID
-/trace del --tail N
-```
-
-`/trace list` shows the latest 10 completed traces, newest first. Use
-`/trace list N` to choose the number of traces to show, where `1 <= N <= 100`.
-`/trace count` prints how many trace files are stored, without parsing them.
-`/trace del TRACE_ID` deletes one trace and echoes the deleted IDs and count;
-`/trace del --tail N` deletes the N oldest traces, i.e. the end of `/trace list`.
-A trace ID may be a full ID or a unique prefix; an ambiguous prefix reports the
-matching candidates and deletes nothing. Batch deletion skips traces whose final
-root span cannot be read, warns about each one, and never aborts the whole batch.
-Deleting is permanent and never asks for confirmation.
-
-Use `/help` to list all interactive commands.
-
-## Model configuration and session selection
-
-`load_model_config()` reads `.cairn/models.toml` relative to the current working
-directory, or accepts an explicit `Path`. The file describes one provider and
-an ordered list of models:
+For multiple models, create `.cairn/models.toml` in your working directory:
 
 ```toml
 base_url = "https://example.com/v1"
@@ -246,99 +69,57 @@ model_id = "openai/qwen-flash"
 [[models]]
 name = "plus"
 model_id = "openai/qwen-plus"
-
-[[models]]
-name = "max"
-model_id = "openai/qwen-max"
 ```
 
-```python
-from cairn.config import load_model_config
-from cairn.llm.model_manager import ModelManager
+Set `BAILIAN_API_KEY` in your shell or `.env`; keep the key out of TOML. Cairn
+uses the first configured model by default. Without TOML it uses the single-model
+settings above; invalid TOML stops startup.
 
-manager = ModelManager(load_model_config())
-manager.select_model("plus")
-assert [model.name for model in manager.candidates()] == ["plus", "max"]
-```
+Each TOML-based startup requires explicit terminal approval of the provider and
+credential variable, defaulting to no. Endpoints require HTTPS except for
+loopback HTTP services. Review the endpoint and model IDs before approving.
 
-The loader returns `ProviderConfig`, mapping `[[models]]` to its `model_config`
-tuple in file order. Required strings must be nonblank, and model names must be
-unique in a nonempty list. Missing files, invalid TOML, and invalid values raise
-errors. `api_key_env` remains an environment variable name; loading does not read
-credentials or call a provider.
+Use `/model use plus` to switch for the current session without losing history
+or rewriting TOML. Token counting follows the selected model; budget settings
+remain shared. Automatic model fallback is not implemented.
 
-At startup the CLI loads `.cairn/models.toml` from the current working directory
-and defaults to its first model. If the file is absent, the existing
-`CAIRN_LLM_MODEL`, `CAIRN_LLM_API_KEY`, and `CAIRN_BASE_URL` settings still apply.
-An existing but invalid or unreadable TOML file stops startup; it never silently
-falls back to the legacy provider.
+## CLI commands
 
-Project configuration cannot authorize access to credentials by itself. On every
-TOML-based startup, Cairn displays the endpoint, credential variable name, and
-model IDs and asks whether to trust that provider for this session. Approval
-requires an interactive terminal, defaults to **no**, and is never persisted.
-Review both the endpoint and LiteLLM model/provider IDs before approving: the
-selected provider receives the credential and conversation. Runtime endpoints
-must use HTTPS, except for loopback HTTP services, and cannot contain embedded
-credentials, query parameters, or fragments. Model names must be printable and
-contain no whitespace so they can be selected by command.
+| Command | Purpose |
+| --- | --- |
+| `/model`, `/model list`, `/model use <name>` | Inspect or switch models |
+| `/trace`, `/trace <ID>`, `/trace list [N]` | Inspect saved traces |
+| `/help [COMMAND]` | Full command usage, including trace management |
+| `/exit`, `/quit` | End the session |
 
-After approval, `api_key_env` is resolved from the host environment, then `.env`;
-an explicitly empty host value or missing key is an error. No secret is written
-to TOML or copied into `os.environ`. Bash child environments exclude both
-`CAIRN_LLM_API_KEY` and the configured credential variable. This filters process
-environment inheritance; it does not prevent existing filesystem tools from
-reading a credential stored in an accessible file. Keep keys outside project
-files when that distinction matters.
+Traces are saved under `.cairn/traces/`. Conversation state and approvals last
+only for the current process.
+
+Bash commands run inside an OS sandbox with network access denied by default;
+extra network access requires explicit approval. Filesystem boundaries differ
+by platform, and host reads are broadly available on macOS. Configured API keys
+are removed from Bash child environments, but accessible credential files can
+still be read by tools.
+
+## Source layout
 
 ```text
-/model
-/model list
-/model use plus
+src/cairn/
+├── core/          # Agent loop, state, context budgets, permissions
+├── llm/           # Model configuration, selection, clients, token counting
+├── tools/         # Bash and file tools
+├── workspace/     # Filesystem roots and path boundaries
+├── observability/ # Trace recording and storage
+├── terminal/      # CLI input, output, and slash commands
+├── evals/         # Evaluation cases, checks, and runner
+├── resources/     # Terminal banner
+├── repository.py  # Git repository context
+├── assembly.py    # Agent and tool assembly
+├── config.py      # Environment and TOML loading
+└── cli.py         # CLI runtime wiring
 ```
-
-`/model` shows the current name and model ID. `/model list` shows every configured
-model with `*` marking the current selection. `/model use <name>` switches the
-client and token counter together for the next request, preserving the Agent,
-conversation history, tool registry, permissions, and tracing. The next request
-is counted again with the newly selected model. Selection only affects this
-session: no TOML writeback occurs, configuration is not reloaded mid-session,
-and the next startup selects the first model again. `/help model` shows usage.
-The legacy configuration exposes its single model using the model ID as its name.
-
-All models share the existing `CAIRN_CONTEXT_MAX_TOKENS` and
-`CAIRN_RESPONSE_MAX_TOKENS` settings. The response reserve remains the provider's
-`max_tokens` limit. Cairn does not discover per-model context windows; choose a
-budget that fits every configured model you intend to use. Automatic fallback,
-quota classification, model health tracking, and configuration editing remain
-future work.
-
-## Coding smoke evals
-
-Run the five-case coding smoke eval from the repository root:
-
-```bash
-uv run python examples/evals/run_coding_smoke.py
-```
-
-It uses the same `CAIRN_LLM_MODEL`, `CAIRN_LLM_API_KEY`, and `CAIRN_BASE_URL`
-configuration as the CLI. Shell environment values take precedence over `.env`;
-`.env` values are not injected into child processes. The cases check single-file
-bug fixes, multi-file refactoring, helper extraction, minimal changes, and
-correct no-op behavior. Each run allows 20 steps and 120 seconds, with 2 seconds
-per check. The baseline is noninteractive and has no `NETWORK` grants; provider
-calls use the normal host credentials.
-
-Traces are saved under `.cairn/eval-traces`, outside temporary workspaces. FAIL
-and ERROR lines include a trace ID when available. Exit codes are 0 when all
-cases pass, 1 for any FAIL or ERROR, and 2 for missing configuration. This is a
-simple one-run signal, not a benchmark, and text checks do not establish general
-Python semantics. A no-op PASS means only that the file stayed unchanged; inspect
-its trace to confirm the agent examined the file.
 
 ## Development
-
-Run the complete local quality suite:
 
 ```bash
 uv run ruff check .
@@ -347,28 +128,10 @@ uv run mypy src tests
 uv run pytest --cov=cairn --cov-report=term-missing
 ```
 
-The coverage command runs the complete pytest suite, measures branch coverage,
-and enforces the 80% project gate. For a faster local test run without coverage,
-use `uv run pytest`. GitHub Actions runs the quality suite from a clean checkout.
-
-To apply the repository formatter locally:
+See [tests/README.md](tests/README.md) for test organization. To run the
+[five-case coding smoke eval](examples/evals/run_coding_smoke.py) with a real
+provider, configure the `CAIRN_LLM_*` and `CAIRN_BASE_URL` settings above, then run:
 
 ```bash
-uv run ruff format .
+uv run python examples/evals/run_coding_smoke.py
 ```
-
-To build the source distribution and wheel locally:
-
-```bash
-uv build
-```
-
-## Current limits
-
-Cairn runs in a single process and keeps conversation state in memory. Its
-`EvalRunner` runs one case per call; the coding smoke example runs five fixed
-cases.
-
-Cairn does not provide worktree management, task orchestration, GitHub
-publishing, reviewer workflows, a RepoGraph, persistent memory, background
-execution, or automatic merging.

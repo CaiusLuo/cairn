@@ -43,19 +43,7 @@ def test_readme_title_matches_the_cli_banner_wordmark() -> None:
     assert wordmark == _wordmark_lines()
 
 
-def test_readme_session_example_starts_with_the_cli_banner() -> None:
-    transcript = _fenced_lines(_marked_block("cli-banner"))
-    banner = _banner_lines()
-
-    assert transcript[: len(banner)] == banner
-    assert transcript[len(banner)] == ""
-    assert transcript[len(banner) + 1] == "cairn> Inspect the files in this directory."
-
-
 def test_readme_banner_has_no_control_characters() -> None:
     # Escapes or control bytes would render as garbage on GitHub.
-    for marker in ("banner", "cli-banner"):
-        for line in _marked_block(marker):
-            assert all(
-                character.isprintable() or character == "\t" for character in line
-            )
+    for line in _marked_block("banner"):
+        assert all(character.isprintable() or character == "\t" for character in line)
