@@ -7,6 +7,11 @@ from dotenv import dotenv_values
 
 from cairn.assembly import build_agent
 from cairn.config import CAIRN_CONFIG_ENV_NAMES as CAIRN_CONFIG_ENV_NAMES
+from cairn.config import (
+    load_model_config,
+    resolve_provider_api_key,
+    validate_runtime_provider,
+)
 from cairn.config import resolve_cairn_config as resolve_cairn_config
 from cairn.config import resolve_context_budget as resolve_context_budget
 from cairn.core.budget import RunBudget, RunBudgetExceeded
@@ -14,6 +19,7 @@ from cairn.core.context import ContextBuilder
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.core.permissions import SessionPermissionHandler
+from cairn.llm.model_manager import ModelConfig, ModelManager, ProviderConfig
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.storage import TraceStore
 from cairn.observability.tracer import Tracer
@@ -21,6 +27,7 @@ from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.router import CommandRouter
 from cairn.terminal.input import CliInput
 from cairn.terminal.output import (
+    confirm_model_provider,
     console_event_handler,
     console_permission_prompt,
     print_assistant_response,
@@ -31,6 +38,7 @@ from cairn.workspace.workspace import Workspace
 
 app = typer.Typer(
     invoke_without_command=True,
+    pretty_exceptions_show_locals=False,
 )
 
 DEFAULT_CLI_RUN_BUDGET = RunBudget(max_steps=50)
@@ -44,15 +52,52 @@ def root(ctx: typer.Context) -> None:
 
 async def main(cli_input: CliInput | None = None) -> None:
     env_file_values = dotenv_values()
-    config = resolve_cairn_config(os.environ, env_file_values)
+    model_path = Path(".cairn/models.toml")
+    try:
+        model_path.lstat()
+    except FileNotFoundError:
+        config = resolve_cairn_config(os.environ, env_file_values)
+        provider = ProviderConfig(
+            base_url=config["CAIRN_BASE_URL"],
+            api_key_env="CAIRN_LLM_API_KEY",
+            model_config=(
+                ModelConfig(config["CAIRN_LLM_MODEL"], config["CAIRN_LLM_MODEL"]),
+            ),
+        )
+    else:
+        # Existing but unreadable/invalid files (including dangling symlinks)
+        # must not silently select a different provider or credential.
+        provider = load_model_config(model_path)
+        validate_runtime_provider(provider)
+        if confirm_model_provider(provider) is not True:
+            raise ValueError(
+                "Project model provider was not approved for this session."
+            )
+
+    api_key = resolve_provider_api_key(provider, os.environ, env_file_values)
+    model_manager = ModelManager(provider)
     context_budget = resolve_context_budget(os.environ, env_file_values)
-    model = config["CAIRN_LLM_MODEL"]
-    api_key = config["CAIRN_LLM_API_KEY"]
-    base_url = config["CAIRN_BASE_URL"]
 
     from cairn.llm.litellm_client import LiteLLMClient
     from cairn.llm.token_counter import LiteLLMTokenCounter
 
+    def create_model_runtime(
+        model: ModelConfig,
+    ) -> tuple[LiteLLMClient, ContextBuilder]:
+        return (
+            LiteLLMClient(
+                model=model.model_id,
+                api_key=api_key,
+                api_base=provider.base_url,
+                max_output_tokens=context_budget.response_tokens,
+            ),
+            ContextBuilder(
+                budget=context_budget,
+                counter=LiteLLMTokenCounter(model.model_id),
+            ),
+        )
+
+    llm, context_builder = create_model_runtime(model_manager.current_model())
     print_banner()
 
     workspace = Workspace(Path.cwd())
@@ -74,24 +119,29 @@ async def main(cli_input: CliInput | None = None) -> None:
 
     agent = build_agent(
         workspace=workspace,
-        llm=LiteLLMClient(
-            model=model,
-            api_key=api_key,
-            api_base=base_url,
-            max_output_tokens=context_budget.response_tokens,
-        ),
+        llm=llm,
         event_handler=handle_event,
         permission_handler=SessionPermissionHandler(prompt=console_permission_prompt),
         tracer=tracer,
-        context_builder=ContextBuilder(
-            budget=context_budget,
-            # Count with LiteLLM's tokenizer for the configured model so the
-            # budget reflects the request that is actually sent, not a byte-size
-            # heuristic that underestimates code, hashes and base64 output.
-            counter=LiteLLMTokenCounter(model),
-        ),
+        context_builder=context_builder,
+        secret_env_keys=frozenset({provider.api_key_env}),
     )
 
+    def select_model(name: str) -> ModelConfig:
+        previous = model_manager.current_model()
+        selected = model_manager.select_model(name)
+        try:
+            next_llm, next_context = create_model_runtime(selected)
+        except Exception:
+            model_manager.select_model(previous.name)
+            raise
+        # The CLI handles commands between turns. No await separates the pair,
+        # and the existing Agent (state, tools, permissions and tracer) is kept.
+        agent.llm, agent.context_builder = next_llm, next_context
+        return selected
+
+    command_context.model_manager = model_manager
+    command_context.select_model = select_model
     router = CommandRouter()
     input_reader = cli_input or CliInput()
 

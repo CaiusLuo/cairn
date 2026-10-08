@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.help import handle_help, print_available_commands
+from cairn.terminal.commands.model import handle_model
 from cairn.terminal.commands.trace import handle_trace
 
 
@@ -29,6 +30,10 @@ class CommandRouter:
 
         if command == "/trace":
             handle_trace(context, args)
+            return CommandResult(handled=True)
+
+        if command == "/model":
+            handle_model(context, args)
             return CommandResult(handled=True)
 
         if command == "/help":

@@ -21,7 +21,10 @@ PIPE_READ_CHUNK_SIZE = 16 * 1024
 CAIRN_SECRET_ENV_KEYS = frozenset({"CAIRN_LLM_API_KEY"})
 
 
-def build_command_env(host_env: Mapping[str, str]) -> dict[str, str]:
+def build_command_env(
+    host_env: Mapping[str, str],
+    secret_env_keys: frozenset[str] = frozenset(),
+) -> dict[str, str]:
     """Build the child-process environment from the host environment.
 
     Local tooling must behave exactly like the user's terminal, so the child
@@ -30,7 +33,7 @@ def build_command_env(host_env: Mapping[str, str]) -> dict[str, str]:
     they are never exposed to the command.
     """
     env = dict(host_env)
-    for key in CAIRN_SECRET_ENV_KEYS:
+    for key in CAIRN_SECRET_ENV_KEYS | secret_env_keys:
         env.pop(key, None)
     return env
 
@@ -164,6 +167,8 @@ class BashTool:
         cleanup_timeout: float = 2.0,
         stdout_limit: int = DEFAULT_STDOUT_CAPTURE_LIMIT,
         stderr_limit: int = DEFAULT_STDERR_CAPTURE_LIMIT,
+        *,
+        secret_env_keys: frozenset[str] = frozenset(),
     ) -> None:
         if stdout_limit < 0 or stderr_limit < 0:
             raise ValueError("output capture limits must be non-negative")
@@ -173,6 +178,7 @@ class BashTool:
         self.cleanup_timeout = cleanup_timeout
         self.stdout_limit = stdout_limit
         self.stderr_limit = stderr_limit
+        self.secret_env_keys = secret_env_keys
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -299,7 +305,7 @@ class BashTool:
         network_access = context is not None and context.network_access
 
         cwd = self.workspace.root
-        env = build_command_env(os.environ)
+        env = build_command_env(os.environ, self.secret_env_keys)
         command_argv = (
             [f"/bin/{command.strip()}"]
             if command.strip() in {"pwd", "ls"}

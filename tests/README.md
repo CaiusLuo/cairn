@@ -6,7 +6,7 @@ Tests are grouped by the runtime component whose contract they verify:
 | --- | --- |
 | `core/` | Agent assembly, context budgets and tool-call groups, turn execution/recovery/tracing, tool preflight, permissions and capability flow |
 | `tools/` | Bash execution and sandbox enforcement, bounded file reads, guarded edits, path boundaries and tool registry |
-| `cli/` | CLI configuration and interaction, input, permission choices and compact event rendering |
+| `cli/` | CLI configuration, TOML provider trust and session model switching through real turns, credential isolation, input, permission choices and compact event rendering |
 | `evals/` | Bounded file and content checks, coding-smoke cases, runner behavior and lifecycle |
 | `llm/` | LiteLLM request/response adaptation, model-aware token counting and labelled fallback estimates |
 | `observability/` | JSONL trace storage, listing/deletion, bounded prefix resolution, diagnostics and failure handling |

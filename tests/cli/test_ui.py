@@ -1,3 +1,4 @@
+import sys
 from io import StringIO
 
 import pytest
@@ -12,6 +13,7 @@ from cairn.core.permissions import (
     PermissionChoice,
     PermissionRequest,
 )
+from cairn.llm.model_manager import ModelConfig, ProviderConfig
 
 
 def _capture_console(monkeypatch: pytest.MonkeyPatch) -> StringIO:
@@ -22,6 +24,53 @@ def _capture_console(monkeypatch: pytest.MonkeyPatch) -> StringIO:
         Console(file=output, color_system=None, force_terminal=False, width=200),
     )
     return output
+
+
+@pytest.mark.parametrize(
+    ("answer", "approved"), [("y\n", True), ("n\n", False), ("\n", False), ("", False)]
+)
+def test_model_provider_approval_is_explicit_and_displays_routing(
+    monkeypatch: pytest.MonkeyPatch, answer: str, approved: bool
+) -> None:
+    output = _capture_console(monkeypatch)
+    terminal = StringIO(answer)
+    monkeypatch.setattr(terminal, "isatty", lambda: True)
+    monkeypatch.setattr(sys, "stdin", terminal)
+    monkeypatch.setenv("BAILIAN_API_KEY", "test-only-secret-never-shown")
+    provider = ProviderConfig(
+        base_url="https://example.test/v1",
+        api_key_env="BAILIAN_API_KEY",
+        model_config=(
+            ModelConfig("flash", "openai/qwen-flash"),
+            ModelConfig("plus", "openai/qwen-plus"),
+        ),
+    )
+
+    assert ui.confirm_model_provider(provider) is approved
+
+    rendered = output.getvalue()
+    for expected in (
+        provider.base_url,
+        provider.api_key_env,
+        "openai/qwen-flash",
+        "openai/qwen-plus",
+    ):
+        assert expected in rendered
+    assert "test-only-secret-never-shown" not in rendered
+
+
+def test_model_provider_approval_rejects_noninteractive_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "stdin", StringIO("y\n"))
+    provider = ProviderConfig(
+        base_url="https://example.test/v1",
+        api_key_env="KEY",
+        model_config=(ModelConfig("flash", "openai/qwen-flash"),),
+    )
+
+    with pytest.raises(ValueError, match="interactive terminal"):
+        ui.confirm_model_provider(provider)
 
 
 @pytest.mark.parametrize("status", ["ok", "error"])

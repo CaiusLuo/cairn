@@ -1,4 +1,13 @@
 HELP_TEXT: dict[str, dict[str, str]] = {
+    "model": {
+        "usage": "/model | /model list | /model use <name>",
+        "description": "Show or select the session model.",
+        "detail": (
+            "Show the current model, list configured models (* marks the current one),\n"
+            "or select a model by name for subsequent requests.\n"
+            "Selection preserves conversation history and does not modify configuration."
+        ),
+    },
     "trace": {
         "usage": (
             "/trace | /trace TRACE_ID | /trace list [N] | /trace count "

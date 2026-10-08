@@ -1,6 +1,10 @@
+import ipaddress
+import re
 import tomllib
 from collections.abc import Mapping
+from contextlib import suppress
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from cairn.core.context import ContextBudget
 from cairn.llm.model_manager import ModelConfig, ProviderConfig
@@ -45,6 +49,50 @@ def load_model_config(path: Path = Path(".cairn/models.toml")) -> ProviderConfig
 def _required_string(value: object, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be a non-empty string.")
+    return value
+
+
+def validate_runtime_provider(config: ProviderConfig) -> None:
+    """Validate project-controlled routing before asking for session approval."""
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", config.api_key_env):
+        raise ValueError("api_key_env must be an environment variable name.")
+    if any(character.isspace() for character in config.base_url):
+        raise ValueError("base_url must not contain whitespace.")
+    url = urlsplit(config.base_url)
+    if (
+        not config.base_url.isprintable()
+        or not url.hostname
+        or url.username is not None
+        or url.password is not None
+        or url.query
+        or url.fragment
+    ):
+        raise ValueError(
+            "base_url must be an endpoint without credentials, query or fragment."
+        )
+    # Accessing port also rejects malformed port numbers before any credential use.
+    _ = url.port
+    loopback = url.hostname == "localhost"
+    with suppress(ValueError):
+        loopback = loopback or ipaddress.ip_address(url.hostname).is_loopback
+    if url.scheme != "https" and not (url.scheme == "http" and loopback):
+        raise ValueError("base_url requires HTTPS, except for loopback HTTP endpoints.")
+    for model in config.model_config:
+        if not model.name.isprintable() or any(c.isspace() for c in model.name):
+            raise ValueError("Model names must be printable and contain no whitespace.")
+        if not model.model_id.isprintable():
+            raise ValueError("Model IDs must be printable.")
+
+
+def resolve_provider_api_key(
+    config: ProviderConfig,
+    host_env: Mapping[str, str],
+    env_file_values: Mapping[str, str | None],
+) -> str:
+    """Resolve the selected credential without modifying the host environment."""
+    value = host_env.get(config.api_key_env, env_file_values.get(config.api_key_env))
+    if not value:
+        raise ValueError(f"{config.api_key_env} environment variable is not set.")
     return value
 
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from cairn.config import load_model_config
+from cairn.config import load_model_config, validate_runtime_provider
 from cairn.llm.model_manager import ModelConfig, ModelManager, ProviderConfig
 
 PROVIDER_TOML = """\
@@ -107,3 +107,81 @@ def test_load_model_config_reports_invalid_toml(tmp_path: Path) -> None:
 
     with pytest.raises(tomllib.TOMLDecodeError):
         load_model_config(path)
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://example.test/v1",
+        "http://localhost:8000/v1",
+        "http://127.0.0.1:8000/v1",
+        "http://[::1]:8000/v1",
+    ],
+)
+def test_runtime_provider_accepts_https_and_loopback_http(endpoint: str) -> None:
+    validate_runtime_provider(
+        ProviderConfig(
+            base_url=endpoint,
+            api_key_env="BAILIAN_API_KEY",
+            model_config=(ModelConfig("flash", "openai/qwen-flash"),),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "env_name", "name", "model_id", "error"),
+    [
+        ("http://remote.test/v1", "KEY", "flash", "openai/qwen-flash", "HTTPS"),
+        ("file:///tmp/key", "KEY", "flash", "openai/qwen-flash", "endpoint"),
+        (
+            "https://user:pass@example.test",
+            "KEY",
+            "flash",
+            "openai/qwen-flash",
+            "credentials",
+        ),
+        (
+            "https://example.test/?key=value",
+            "KEY",
+            "flash",
+            "openai/qwen-flash",
+            "query",
+        ),
+        (
+            "https://example.test/#fragment",
+            "KEY",
+            "flash",
+            "openai/qwen-flash",
+            "fragment",
+        ),
+        ("https://example.test:bad", "KEY", "flash", "openai/qwen-flash", "Port"),
+        ("https://example.test/\n", "KEY", "flash", "openai/qwen-flash", "whitespace"),
+        ("https://example.test/\x1b", "KEY", "flash", "openai/qwen-flash", "endpoint"),
+        (
+            "https://example.test",
+            "KEY NAME",
+            "flash",
+            "openai/qwen-flash",
+            "environment variable name",
+        ),
+        (
+            "https://example.test",
+            "KEY",
+            "two words",
+            "openai/qwen-flash",
+            "Model names",
+        ),
+        ("https://example.test", "KEY", "flash", "model\x1b", "Model IDs"),
+    ],
+)
+def test_runtime_provider_rejects_unsafe_or_unusable_routing(
+    endpoint: str, env_name: str, name: str, model_id: str, error: str
+) -> None:
+    with pytest.raises(ValueError, match=error):
+        validate_runtime_provider(
+            ProviderConfig(
+                base_url=endpoint,
+                api_key_env=env_name,
+                model_config=(ModelConfig(name, model_id),),
+            )
+        )

@@ -19,10 +19,11 @@ def build_agent(
     event_handler: EventHandler | None,
     tracer: Tracer | None,
     context_builder: ContextBuilder | None = None,
+    secret_env_keys: frozenset[str] = frozenset(),
 ) -> Agent:
     registry = ToolRegistry()
 
-    registry.register_tool(BashTool(workspace))
+    registry.register_tool(BashTool(workspace, secret_env_keys=secret_env_keys))
     registry.register_tool(ReadFileTool(workspace))
     registry.register_tool(EditFileTool(workspace))
 

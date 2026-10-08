@@ -102,14 +102,23 @@ class LiteLLMClient:
         if self.max_output_tokens is not None:
             completion_options["max_tokens"] = self.max_output_tokens
 
-        response = await acompletion(
-            model=self.model,
-            messages=lite_messages,
-            api_key=self.api_key,
-            api_base=self.api_base,
-            tools=tools,
-            **completion_options,
-        )
+        try:
+            response = await acompletion(
+                model=self.model,
+                messages=lite_messages,
+                api_key=self.api_key,
+                api_base=self.api_base,
+                tools=tools,
+                **completion_options,
+            )
+        except Exception as exc:
+            # Provider errors reach both trace spans and terminal diagnostics.
+            # Never propagate an error that echoes the selected credential.
+            if self.api_key and self.api_key in str(exc):
+                raise RuntimeError(
+                    "LLM request failed; credential-bearing details were omitted."
+                ) from None
+            raise
 
         message = response.choices[0].message
 

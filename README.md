@@ -141,8 +141,8 @@ limit. Shell values take precedence over `.env` without being copied into
 child-process environments.
 
 The CLI counts requests with a `LiteLLMTokenCounter`, which uses the tokenizer
-LiteLLM resolves for `CAIRN_LLM_MODEL` and labels the result exact. When LiteLLM
-cannot count, it falls back to an offline estimate of serialized UTF-8 byte
+LiteLLM resolves for the currently selected model and labels the result exact.
+When LiteLLM cannot count, it falls back to an offline estimate of serialized UTF-8 byte
 lengths plus framing overhead, labelled as an estimate, so an approximation is
 never presented as provider usage. That estimate overestimates prose but can
 underestimate code, hexadecimal and base64-like content, so prefer the
@@ -229,7 +229,7 @@ Deleting is permanent and never asks for confirmation.
 
 Use `/help` to list all interactive commands.
 
-## Model configuration loading
+## Model configuration and session selection
 
 `load_model_config()` reads `.cairn/models.toml` relative to the current working
 directory, or accepts an explicit `Path`. The file describes one provider and
@@ -267,10 +267,51 @@ unique in a nonempty list. Missing files, invalid TOML, and invalid values raise
 errors. `api_key_env` remains an environment variable name; loading does not read
 credentials or call a provider.
 
-This loader is available for explicit use. The CLI still uses its existing
-environment configuration; automatic model fallback is not connected. A future
-fallback client must keep the token counter, context budget, and provider output
-limit consistent with the model used for each attempt.
+At startup the CLI loads `.cairn/models.toml` from the current working directory
+and defaults to its first model. If the file is absent, the existing
+`CAIRN_LLM_MODEL`, `CAIRN_LLM_API_KEY`, and `CAIRN_BASE_URL` settings still apply.
+An existing but invalid or unreadable TOML file stops startup; it never silently
+falls back to the legacy provider.
+
+Project configuration cannot authorize access to credentials by itself. On every
+TOML-based startup, Cairn displays the endpoint, credential variable name, and
+model IDs and asks whether to trust that provider for this session. Approval
+requires an interactive terminal, defaults to **no**, and is never persisted.
+Review both the endpoint and LiteLLM model/provider IDs before approving: the
+selected provider receives the credential and conversation. Runtime endpoints
+must use HTTPS, except for loopback HTTP services, and cannot contain embedded
+credentials, query parameters, or fragments. Model names must be printable and
+contain no whitespace so they can be selected by command.
+
+After approval, `api_key_env` is resolved from the host environment, then `.env`;
+an explicitly empty host value or missing key is an error. No secret is written
+to TOML or copied into `os.environ`. Bash child environments exclude both
+`CAIRN_LLM_API_KEY` and the configured credential variable. This filters process
+environment inheritance; it does not prevent existing filesystem tools from
+reading a credential stored in an accessible file. Keep keys outside project
+files when that distinction matters.
+
+```text
+/model
+/model list
+/model use plus
+```
+
+`/model` shows the current name and model ID. `/model list` shows every configured
+model with `*` marking the current selection. `/model use <name>` switches the
+client and token counter together for the next request, preserving the Agent,
+conversation history, tool registry, permissions, and tracing. The next request
+is counted again with the newly selected model. Selection only affects this
+session: no TOML writeback occurs, configuration is not reloaded mid-session,
+and the next startup selects the first model again. `/help model` shows usage.
+The legacy configuration exposes its single model using the model ID as its name.
+
+All models share the existing `CAIRN_CONTEXT_MAX_TOKENS` and
+`CAIRN_RESPONSE_MAX_TOKENS` settings. The response reserve remains the provider's
+`max_tokens` limit. Cairn does not discover per-model context windows; choose a
+budget that fits every configured model you intend to use. Automatic fallback,
+quota classification, model health tracking, and configuration editing remain
+future work.
 
 ## Coding smoke evals
 

@@ -1,14 +1,36 @@
+import sys
 from importlib.resources import files
 
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.prompt import Prompt
+from rich.prompt import Confirm, Prompt
 from rich.text import Text
 
 from cairn.core.events import Event
 from cairn.core.permissions import PermissionChoice, PermissionRequest
+from cairn.llm.model_manager import ProviderConfig
 
 console = Console()
+
+
+def confirm_model_provider(config: ProviderConfig) -> bool:
+    """Approve one in-memory project configuration for this session only."""
+    if not sys.stdin.isatty():
+        raise ValueError("TOML provider approval requires an interactive terminal.")
+    console.print("Project model configuration requests access to a credential.")
+    console.print(f"Endpoint: {config.base_url!a}", markup=False)
+    console.print(f"Credential variable: {config.api_key_env!a}", markup=False)
+    for model in config.model_config:
+        console.print(f"  {model.name!a}: {model.model_id!a}", markup=False)
+    console.print(
+        "The selected API key and conversation will be sent to this provider."
+    )
+    try:
+        return Confirm.ask(
+            "Trust this provider for this session?", default=False, console=console
+        )
+    except EOFError:
+        return False
 
 
 def print_assistant_response(content: str) -> None:
