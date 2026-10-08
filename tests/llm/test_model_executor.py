@@ -122,6 +122,82 @@ def rate_limit_with_provider_payload(body: dict[str, Any]) -> RateLimitError:
     return error
 
 
+FREE_TIER_MESSAGE = (
+    "OpenAIException - Free quota exhausted. To continue accessing the model on "
+    'a paid basis, please add funds or disable the "use free tier only" mode '
+    "in the management console."
+)
+
+
+def free_tier_api_error(message: str = FREE_TIER_MESSAGE) -> APIError:
+    """The error LiteLLM builds for Model Studio's documented free-tier 403."""
+    return APIError(
+        status_code=403,
+        message=message,
+        llm_provider="openai",
+        model="openai/flash",
+    )
+
+
+def test_fallback_accepts_the_documented_free_tier_403_signature() -> None:
+    error = free_tier_api_error()
+
+    # LiteLLM's openai mapper has no 403 branch, so this arrives as a bare
+    # APIError with the provider payload dropped.
+    assert isinstance(error, APIError)
+    assert error.status_code == 403
+    assert error.body is None
+    assert is_fallback_error(error)
+
+
+def test_fallback_accepts_the_free_tier_code_when_the_message_is_generic() -> None:
+    error = free_tier_api_error("OpenAIException - Forbidden")
+    error.__context__ = ProviderPayloadError(
+        {"error": {"code": "AllocationQuota.FreeTierOnly"}}
+    )
+
+    assert is_fallback_error(error)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        APIError(
+            status_code=403,
+            message="OpenAIException - Forbidden",
+            model="openai/flash",
+            llm_provider="openai",
+        ),
+        APIError(
+            status_code=403,
+            message="OpenAIException - Invalid API key provided",
+            model="openai/flash",
+            llm_provider="openai",
+        ),
+        APIError(
+            status_code=500,
+            message=FREE_TIER_MESSAGE,
+            model="openai/flash",
+            llm_provider="openai",
+        ),
+        free_tier_api_error("OpenAIException - Free quota exhausted."),
+        free_tier_api_error('OpenAIException - disable the "use free tier only" mode'),
+        free_tier_api_error("OpenAIException - quota exceeded on free tier use"),
+    ],
+)
+def test_fallback_rejects_generic_403_and_partial_free_tier_signatures(
+    error: BaseException,
+) -> None:
+    assert not is_fallback_error(error)
+
+
+def test_shared_billing_payload_beats_the_free_tier_signature() -> None:
+    error = free_tier_api_error()
+    error.__context__ = ProviderPayloadError({"error": {"code": "insufficient_quota"}})
+
+    assert not is_fallback_error(error)
+
+
 def test_fallback_accepts_an_unclassified_vendor_rate_limit() -> None:
     error = rate_limit()
 
@@ -354,6 +430,46 @@ def test_executor_never_builds_a_runtime_for_the_selected_model() -> None:
     )
 
     assert actual is response
+
+
+def test_executor_moves_to_the_next_model_after_free_tier_exhaustion() -> None:
+    paid = LLMResponse(content="paid answer")
+    selected_llm = ScriptedLLM(free_tier_api_error())
+    fallback_llm = ScriptedLLM(paid)
+    fallback_counter = RecordingCounter(tokens=10)
+    agent = make_agent(selected_llm, RecordingCounter(tokens=10))
+    executor = ModelExecutor(
+        make_manager(),
+        lambda _model: (
+            fallback_llm,
+            ContextBuilder(
+                budget=ContextBudget(max_tokens=100, response_tokens=20),
+                counter=fallback_counter,
+            ),
+        ),
+    )
+
+    request, response = asyncio.run(
+        executor.execute(
+            agent=agent,
+            system_messages=[],
+            history=agent.state.messages,
+            current_turn_start=0,
+            tools=[],
+        )
+    )
+
+    assert response is paid
+    assert len(selected_llm.calls) == 1
+    assert len(fallback_llm.calls) == 1
+    # Model B received the next request, built from the same conversation view.
+    assert fallback_llm.calls[0][0] == selected_llm.calls[0][0] == request.messages
+    assert fallback_counter.calls == fallback_llm.calls
+    assert [m.content for m in agent.state.messages] == ["hello"]
+    failure = executor.failure_for("flash")
+    assert failure is not None
+    assert failure.category == "APIError"
+    assert executor.failure_for("plus") is None
 
 
 def test_executor_records_the_failure_and_clears_it_after_a_success() -> None:

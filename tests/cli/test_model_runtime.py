@@ -7,7 +7,12 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from litellm.exceptions import RateLimitError, ServiceUnavailableError, Timeout
+from litellm.exceptions import (
+    APIError,
+    RateLimitError,
+    ServiceUnavailableError,
+    Timeout,
+)
 from typer.testing import CliRunner
 
 import cairn.cli as cli_module
@@ -43,6 +48,13 @@ def _response(content: str) -> SimpleNamespace:
             SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=[]))
         ]
     )
+
+
+FREE_TIER_MESSAGE = (
+    "OpenAIException - Free quota exhausted. To continue accessing the model on "
+    'a paid basis, please add funds or disable the "use free tier only" mode '
+    "in the management console."
+)
 
 
 def _configure_cli(
@@ -579,6 +591,52 @@ def test_fallback_rebudgets_before_calling_the_next_model(
     ]
     assert [span["name"] for span in spans] == ["llm.generate", "agent.turn"]
     assert "ContextBudgetExceeded" in spans[-1]["error"]
+
+
+def test_free_tier_403_moves_the_next_request_to_the_next_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agents, requests, token_models = _configure_cli(tmp_path, monkeypatch, "question")
+
+    async def completion(**kwargs: Any) -> SimpleNamespace:
+        requests.append(kwargs)
+        if kwargs["model"] == "openai/qwen-flash":
+            # Model Studio's documented 403, rebuilt by LiteLLM as a bare APIError.
+            raise APIError(
+                status_code=403,
+                message=FREE_TIER_MESSAGE,
+                llm_provider="openai",
+                model=kwargs["model"],
+            )
+        return _response("paid answer")
+
+    monkeypatch.setattr(llm_module, "acompletion", completion)
+    result = CliRunner().invoke(cli_module.app, [])
+
+    assert result.exit_code == 0, result.output
+    # Model A raised the free-tier error; model B received the next request.
+    assert [request["model"] for request in requests] == [
+        "openai/qwen-flash",
+        "openai/qwen-plus",
+    ]
+    assert token_models == [request["model"] for request in requests]
+    assert requests[0]["messages"] == requests[1]["messages"]
+    assert [m.content for m in agents[0].state.messages] == ["question", "paid answer"]
+    assert "All candidate models are unavailable" not in result.output
+
+    spans = [
+        json.loads(line)
+        for path in (tmp_path / ".cairn/traces").glob("*.jsonl")
+        for line in path.read_text().splitlines()
+    ]
+    assert [span["name"] for span in spans] == [
+        "llm.generate",
+        "llm.generate",
+        "agent.turn",
+    ]
+    assert [span["status"] for span in spans] == ["error", "ok", "ok"]
+    assert "APIError" in spans[0]["error"]
+    assert spans[1]["attributes"]["model"] == "openai/qwen-plus"
 
 
 def test_exhausted_fallback_records_each_model_error_and_rolls_back_turn(
