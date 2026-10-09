@@ -157,12 +157,15 @@ async def main(cli_input: CliInput | None = None) -> None:
         runtime = active_runtime
         manager = runtime.model_manager
         previous = manager.current_model()
-        selected = manager.select_model(name)
-        try:
-            next_llm, next_context = runtime.runtime_factory(selected.model_ids[0])
-        except Exception:
-            manager.select_model(previous.name)
-            raise
+        if name == previous.name:
+            return previous
+        selected = next(
+            (model for model in manager.list_models() if model.name == name), None
+        )
+        if selected is None:
+            raise ValueError(f"Model {name!r} not found in the configuration.")
+        next_llm, next_context = runtime.runtime_factory(selected.model_ids[0])
+        manager.select_model(name)
         # The CLI handles commands between turns. No await separates the pair,
         # and the existing Agent (state, tools, permissions and tracer) is kept.
         activate(replace(runtime, llm=next_llm, context_builder=next_context))
@@ -208,6 +211,9 @@ async def main(cli_input: CliInput | None = None) -> None:
 
     router = CommandRouter()
     input_reader = cli_input or CliInput()
+    command_context.choose_model = lambda provider, models, current: (
+        input_reader.choose_model(provider, models, current)
+    )
 
     while True:
         try:
@@ -226,6 +232,8 @@ async def main(cli_input: CliInput | None = None) -> None:
         )
 
         if command_result.handled:
+            if command_result.interaction is not None:
+                await command_result.interaction()
             if command_result.should_exit:
                 break
             continue

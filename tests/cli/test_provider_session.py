@@ -992,7 +992,7 @@ def test_catalog_model_edits_only_touch_the_active_provider(
     assert 'model_ids = ["openai/qwen-flash", "openai/new"]' in text
     assert 'model_ids = ["openai/local-model", "openai/local-new"]' in text
     # Edits persist to disk only; the running session keeps its loaded groups.
-    assert "* default\n    1. openai/local-model\n" in result.output
+    assert "* default\n    1. openai/local-model — primary\n" in result.output
     assert state.requests == []
 
 

@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from cairn.llm.model_executor import ModelExecutor
@@ -14,6 +14,9 @@ class CommandContext:
     model_manager: ModelManager | None = None
     model_executor: ModelExecutor | None = None
     select_model: Callable[[str], ModelConfig] | None = None
+    choose_model: (
+        Callable[[str, tuple[ModelConfig, ...], str], Awaitable[str | None]] | None
+    ) = None
     provider_catalog: ProviderCatalog | None = None
     active_provider_name: str | None = None
     select_provider: Callable[[str], None] | None = None

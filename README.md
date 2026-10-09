@@ -114,7 +114,10 @@ to that endpoint. Credentials are resolved only after approval, and only for the
 selected provider.
 
 The first group is selected by default; multi-provider startup also offers an
-explicit group choice. `/model use plus` switches groups without losing history.
+explicit group choice. `/model` opens an inline group selector in a terminal:
+use Up/Down and Enter to select, or Escape/Ctrl+C to cancel. Without a terminal,
+it prints the current group and candidate summary. `/model use plus` switches
+groups directly without losing history.
 Each completion starts at the selected group's first ID and, on eligible
 failures, tries the remaining IDs followed by subsequent groups. The example
 order is `model-a → model-b → model-c`; selecting `plus` starts at `model-c`.

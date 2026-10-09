@@ -1,3 +1,4 @@
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from cairn.terminal.commands.context import CommandContext
@@ -11,6 +12,8 @@ from cairn.terminal.commands.trace import handle_trace
 class CommandResult:
     handled: bool
     should_exit: bool = False
+    # Input interactions are awaited by the CLI; ordinary commands stay synchronous.
+    interaction: Callable[[], Awaitable[None]] | None = None
 
 
 class CommandRouter:
@@ -34,8 +37,7 @@ class CommandRouter:
             return CommandResult(handled=True)
 
         if command == "/model":
-            handle_model(context, args)
-            return CommandResult(handled=True)
+            return CommandResult(handled=True, interaction=handle_model(context, args))
 
         if command == "/provider":
             handle_provider(context, args)

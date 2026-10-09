@@ -7,8 +7,11 @@ HELP_TEXT: dict[str, dict[str, str]] = {
         ),
         "description": "Show or select a session model, or edit local model IDs.",
         "detail": (
-            "Show the current model, list configured models (* marks the current one),\n"
-            "or select a model by name for subsequent requests.\n"
+            "In a terminal, /model opens an inline model-group selector.\n"
+            "Use Up/Down and Enter to select; Esc or Ctrl+C cancels.\n"
+            "Without a terminal, /model prints the current group and candidate IDs.\n"
+            "/model list shows primary/fallback IDs (* marks the current group).\n"
+            "/model use selects a group by name for subsequent requests.\n"
             "Selection preserves conversation history and does not modify configuration.\n"
             "A listed model that failed recently shows its most recent failure.\n"
             "Models and groups belong to the active provider; /provider switches it.\n"

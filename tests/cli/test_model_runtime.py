@@ -140,8 +140,8 @@ def test_toml_default_and_session_switch_use_real_loop_and_preserve_state(
     result = CliRunner().invoke(cli_module.app, [])
 
     assert result.exit_code == 0, result.output
-    assert "Current model: flash (openai/qwen-flash)" in result.output
-    assert "Current model: plus (openai/qwen-plus)" in result.output
+    assert "Current group: flash (primary: openai/qwen-flash)" in result.output
+    assert "Current group: plus (primary: openai/qwen-plus)" in result.output
     assert "* flash\n    1. openai/qwen-flash" in result.output
     assert "* plus\n    1. openai/qwen-plus" in result.output
     assert len(agents) == 1
@@ -248,7 +248,7 @@ def test_model_commands_validate_input_without_calling_model(
     assert "/model remove <group> <model-id>" in result.output
     assert "/model move <group> <model-id> <position>" in result.output
     assert "Restart and normal provider approval" in result.output
-    assert "Current model: flash" in result.output
+    assert "Current group: flash" in result.output
     assert requests == []
     assert token_models == []
     assert agents[0].state.messages == []
@@ -272,8 +272,9 @@ def test_failed_switch_keeps_previous_client_counter_and_selection(
     result = CliRunner().invoke(cli_module.app, [])
 
     assert result.exit_code == 0
-    assert "Cannot initialize selected tokenizer" in result.output
-    assert "Current model: flash" in result.output
+    assert "Could not switch model group" in result.output
+    assert "Cannot initialize selected tokenizer" not in result.output
+    assert "Current group: flash" in result.output
     assert requests[0]["model"] == "openai/qwen-flash"
     assert token_models == ["openai/qwen-flash"]
 
@@ -543,7 +544,7 @@ def test_fallback_uses_distinct_models_and_counters_without_changing_selection(
     ]
     assert [request["model"] for request in requests] == expected
     assert token_models == expected
-    assert "Current model: flash (openai/qwen-flash)" in result.output
+    assert "Current group: flash (primary: openai/qwen-flash)" in result.output
     assert len(agents) == 1
     assert [m.content for m in agents[0].state.messages] == [
         "first",
@@ -665,7 +666,7 @@ def test_model_edit_only_persists_and_restart_requires_normal_approval(
     ) in result.output
     assert "Restart required; the current session is unchanged." in result.output
     assert ("2. openai/new" in result.output) == (operation != "add")
-    assert "Current model: plus (openai/qwen-plus" in result.output
+    assert "Current group: plus (primary: openai/qwen-plus" in result.output
     assert len(identities) == 2
     assert all(before is after for before, after in zip(*identities, strict=True))
     assert (
@@ -746,7 +747,7 @@ def test_model_edit_validation_error_keeps_session_available(
 
     assert result.exit_code == 0, result.output
     assert error in result.output
-    assert "Current model: flash" in result.output
+    assert "Current group: flash" in result.output
     assert len(requests) == 1
     assert (tmp_path / ".cairn/models.toml").read_text() == TOML
 
@@ -1140,7 +1141,7 @@ def test_group_fallback_order_runtimes_diagnostics_and_attempt_spans(
     assert (tmp_path / ".cairn/models.toml").read_text() == GROUPS_TOML
 
     # Each ID gets its own line and diagnostic, in group and ID order.
-    listing = result.output.split("* flash\n", 1)[1].split("Current model:", 1)[0]
+    listing = result.output.split("* flash\n", 1)[1].split("Current group:", 1)[0]
     lines_by_id = {
         line.split(". ", 1)[1].split(" —", 1)[0]: line
         for line in listing.splitlines()
@@ -1204,7 +1205,8 @@ def test_remove_active_id_keeps_using_it_until_restart(
     manager = agents[0].model_executor.manager
     assert manager is not None
     assert manager.current_model().model_ids[0] == "openai/qwen-flash"
-    assert "Current model: flash (openai/qwen-flash ->" in result.output
+    assert "Current group: flash (primary: openai/qwen-flash)" in result.output
+    assert "Fallbacks: openai/qwen-flash-backup" in result.output
 
     _, requests, _ = _configure_cli(tmp_path, monkeypatch, "question", toml=None)
     result = CliRunner().invoke(cli_module.app, [])
