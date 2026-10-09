@@ -3,6 +3,7 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ from typing import Any
 import pytest
 
 from cairn.git import WorktreeError, WorktreeHandle, WorktreeProvider
-from cairn.git.environment import build_git_env
+from cairn.git.environment import GIT_CONFIG_ENV, build_git_env
 from cairn.workspace.workspace import Workspace
 from tests.git.helpers import assert_removed, git
 
@@ -97,7 +98,11 @@ def test_environment_allowlist_and_credential_precedence() -> None:
     }
     before = dict(host)
     env = build_git_env(host, frozenset({"ODD_SESSION", "LANG", "HOME", "PATH"}))
-    assert env == {"XDG_CONFIG_HOME": "/tmp/config", "GIT_TERMINAL_PROMPT": "0"}
+    assert env == {
+        **GIT_CONFIG_ENV,
+        "XDG_CONFIG_HOME": "/tmp/config",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
     assert host == before
     assert "GIT_TERMINAL_PROMPT" not in build_git_env(
         host, frozenset({"GIT_TERMINAL_PROMPT"})
@@ -171,8 +176,10 @@ def test_real_git_environment_for_entire_lifecycle(
             assert not [
                 key
                 for key in env
-                if key.startswith("GIT_") and key != "GIT_TERMINAL_PROMPT"
+                if key.startswith("GIT_")
+                and key not in {*GIT_CONFIG_ENV, "GIT_TERMINAL_PROMPT"}
             ]
+            assert all(env[key] == value for key, value in GIT_CONFIG_ENV.items())
         assert_no_secrets(log.read_text())
         assert "fake-programmatic-credential" not in log.read_text()
     assert not list(provider.parent.iterdir())
@@ -234,15 +241,50 @@ def test_external_filters_rejected_before_resources(
         else:
             git(source.root, "config", "extensions.worktreeConfig", "true")
             (source.root / ".git" / "config.worktree").write_text(config_text)
+        # Verify the intended configuration in ordinary Git, with only the
+        # relevant test scope enabled. Never let an ambient filter mask a miss.
+        if scope in {"global", "xdg"}:
+            context.delenv("GIT_CONFIG_GLOBAL")
+        if scope == "system":
+            context.setenv("GIT_CONFIG_NOSYSTEM", "0")
+        assert (
+            git(
+                source.root,
+                "config",
+                "--includes",
+                "--name-only",
+                "--get-regexp",
+                r"^filter\..*\.(clean|smudge|process)$",
+            )
+            == f"filter.malicious.{driver}"
+        )
         context.setenv("CAIRN_LLM_API_KEY", FAKE_SECRETS["CAIRN_LLM_API_KEY"])
         provider = WorktreeProvider(source, tmp_path / "worktrees")
-        with pytest.raises(WorktreeError, match=r"V1 rejects.*filters") as error:
+        with pytest.raises(
+            WorktreeError,
+            match=(
+                r"V1 rejects.*filters"
+                if scope in {"local", "include", "worktree"}
+                else "filter attributes"
+            ),
+        ) as error:
             asyncio.run(provider.create("HEAD", "task"))
         assert_no_secrets(
             str(error.value) + repr(getattr(error.value, "__notes__", ()))
         )
         assert not provider.parent.exists()
         assert not marker.exists()
+        # Positive control: the exact configured script really can run under
+        # ordinary Git; lifecycle rejection above prevented that execution.
+        try:
+            if driver == "clean":
+                git(source.root, "hash-object", "--path=file.txt", "file.txt")
+            else:
+                git(source.root, "cat-file", "--filters", "HEAD:file.txt")
+        except subprocess.CalledProcessError:
+            pass
+        assert marker.exists()
+        marker.unlink()
     assert git(source.root, "branch", "--list", "task") == ""
     assert len(git(source.root, "worktree", "list").splitlines()) == 1
     assert not (source.root / ".git" / "worktrees").exists()
@@ -259,6 +301,185 @@ def test_unused_filter_configuration_is_still_rejected(
     with pytest.raises(WorktreeError, match="V1 rejects"):
         asyncio.run(provider.create("base", None))
     assert not provider.parent.exists()
+
+
+@pytest.mark.parametrize("scope", ["global", "xdg", "system"])
+def test_unused_host_filters_do_not_block_normal_worktrees(
+    source: Workspace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scope: str,
+) -> None:
+    # Model Ubuntu runner Git LFS installation, as well as arbitrary host
+    # filters. This repository has no filter attributes and needs neither.
+    marker = tmp_path / "host-filter-executed"
+    command = f"touch {shlex.quote(str(marker))}"
+    config_text = '[filter "lfs"]\n' + "".join(
+        f"    {driver} = {command}\n" for driver in ("clean", "smudge", "process")
+    )
+    if scope == "global":
+        config = Path(os.environ["HOME"]) / ".gitconfig"
+    elif scope == "xdg":
+        config = Path(os.environ["XDG_CONFIG_HOME"]) / "git" / "config"
+        config.parent.mkdir(parents=True)
+    else:
+        config = tmp_path / "system-config"
+    config.write_text(config_text)
+    log = install_git_recorder(
+        tmp_path, monkeypatch, system_config=config if scope == "system" else None
+    )
+    if scope == "system":
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "0")
+    else:
+        monkeypatch.delenv("GIT_CONFIG_GLOBAL")
+    assert set(
+        git(
+            source.root,
+            "config",
+            "--includes",
+            "--name-only",
+            "--get-regexp",
+            r"^filter\..*\.(clean|smudge|process)$",
+        ).splitlines()
+    ) == {"filter.lfs.clean", "filter.lfs.smudge", "filter.lfs.process"}
+    before = dict(os.environ)
+    provider = WorktreeProvider(source, tmp_path / "worktrees")
+
+    async def scenario() -> None:
+        async with provider.managed("base", "task") as handle:
+            assert (handle.path / "file.txt").read_text() == "initial\n"
+            handle.retain()
+        assert handle.path.exists()
+        assert len(git(source.root, "worktree", "list").splitlines()) == 2
+        await handle.release()
+        assert_removed(handle, source)
+        async with provider.managed("HEAD", None) as detached:
+            assert (detached.path / "file.txt").read_text() == "latest\n"
+        assert_removed(detached, source)
+
+    asyncio.run(scenario())
+    assert dict(os.environ) == before
+    assert not marker.exists()
+    assert not list(provider.parent.iterdir())
+    lifecycle = [
+        item for item in records(log) if "core.fsmonitor=false" in item["args"]
+    ]
+    assert lifecycle
+    assert all(
+        all(item["env"][name] == value for name, value in GIT_CONFIG_ENV.items())
+        for item in lifecycle
+    )
+
+
+@pytest.mark.parametrize("attributes", ["tracked", "info", "nested"])
+@pytest.mark.parametrize("driver", ["lfs", "unconfigured"])
+def test_filter_attributes_fail_closed_without_configured_driver(
+    provider: WorktreeProvider,
+    source: Workspace,
+    attributes: str,
+    driver: str,
+) -> None:
+    # Isolating host LFS config must never silently deliver pointer files.
+    pattern = "file.txt"
+    if attributes == "info":
+        target = source.root / ".git" / "info" / "attributes"
+    elif attributes == "nested":
+        nested = source.root / "nested"
+        nested.mkdir()
+        (nested / "file.txt").write_text("LFS pointer\n")
+        target = nested / ".gitattributes"
+    else:
+        target = source.root / ".gitattributes"
+    target.write_text(f"{pattern} filter={driver}\n")
+    git(source.root, "add", ".")
+    git(source.root, "commit", "--allow-empty", "-m", "attributes")
+    # Dirty source changes must not hide attributes in the requested revision.
+    if attributes != "info":
+        target.write_text("* -filter\n")
+    message = "Git LFS.*pointer files" if driver == "lfs" else "filter attributes"
+    with pytest.raises(WorktreeError, match=message):
+        asyncio.run(provider.create("HEAD", "task"))
+    assert not provider.parent.exists()
+    assert git(source.root, "branch", "--list", "task") == ""
+    assert len(git(source.root, "worktree", "list").splitlines()) == 1
+
+
+def test_unset_filter_attribute_allows_checkout(
+    provider: WorktreeProvider, source: Workspace
+) -> None:
+    (source.root / ".gitattributes").write_text(
+        "* filter=lfs\nfile.txt -filter\n.gitattributes !filter\n.gitignore !filter\n"
+    )
+    git(source.root, "add", ".gitattributes")
+    git(source.root, "commit", "-m", "unset filters")
+
+    async def scenario() -> None:
+        handle = await provider.create("HEAD", None)
+        assert (handle.path / "file.txt").read_text() == "latest\n"
+        await handle.release()
+        assert_removed(handle, source)
+
+    asyncio.run(scenario())
+
+
+def test_policy_environment_cannot_be_a_credential_name(
+    provider: WorktreeProvider, source: Workspace
+) -> None:
+    provider.secret_env_keys = frozenset({"GIT_CONFIG_GLOBAL"})
+    with pytest.raises(WorktreeError, match="Credential names conflict"):
+        asyncio.run(provider.create("base", None))
+    assert not provider.parent.exists()
+
+
+def test_local_lfs_configuration_has_explicit_error(
+    provider: WorktreeProvider, source: Workspace
+) -> None:
+    git(source.root, "config", "filter.lfs.process", "git-lfs filter-process")
+    with pytest.raises(WorktreeError, match=r"Git LFS.*pointer files"):
+        asyncio.run(provider.create("base", None))
+    assert not provider.parent.exists()
+
+
+def test_filter_attribute_scan_checks_later_path_batches(
+    provider: WorktreeProvider, source: Workspace
+) -> None:
+    for index in range(70):
+        (source.root / f"path-{index:02}").write_text("ordinary content\n")
+    unusual = "--last file\nwith newline"
+    (source.root / unusual).write_text("ordinary content\n")
+    (source.root / ".gitattributes").write_text(
+        f"path-69 filter=lfs\n{json.dumps(unusual)} -filter\n"
+    )
+    git(source.root, "add", ".")
+    git(source.root, "commit", "-m", "multiple attribute batches")
+    with pytest.raises(WorktreeError, match=r"Git LFS.*pointer files"):
+        asyncio.run(provider.create("HEAD", None))
+    assert not provider.parent.exists()
+
+
+def test_target_conditional_lfs_attributes_rejected_before_materialization(
+    provider: WorktreeProvider,
+    source: Workspace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attributes = tmp_path / "attributes"
+    attributes.write_text("file.txt filter=lfs\n")
+    config = tmp_path / "attributes-config"
+    config.write_text(f"[core]\n    attributesFile = {attributes}\n")
+    git(source.root, "config", "includeIf.onbranch:task.path", str(config))
+    log = install_git_recorder(tmp_path, monkeypatch)
+    with pytest.raises(WorktreeError, match=r"Git LFS.*pointer files") as error:
+        asyncio.run(provider.create("base", "task"))
+    assert not getattr(error.value, "__notes__", ())
+    assert not list(provider.parent.iterdir())
+    assert git(source.root, "branch", "--list", "task") == ""
+    assert len(git(source.root, "worktree", "list").splitlines()) == 1
+    observed = records(log)
+    assert any(
+        "add" in item["args"] and "--no-checkout" in item["args"] for item in observed
+    )
+    assert not any("read-tree" in item["args"] for item in observed)
 
 
 def test_hooks_and_fsmonitor_do_not_execute(
@@ -331,6 +552,7 @@ def test_target_conditional_filters_rejected_before_checkout(
     provider: WorktreeProvider,
     source: Workspace,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     driver: str,
     condition: str,
 ) -> None:
@@ -338,9 +560,6 @@ def test_target_conditional_filters_rejected_before_checkout(
     script = tmp_path / "filter"
     script.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(marker))}\nexit 1\n")
     script.chmod(0o755)
-    (source.root / ".gitattributes").write_text("file.txt filter=malicious\n")
-    git(source.root, "add", ".gitattributes")
-    git(source.root, "commit", "-m", "filter attributes")
     config = tmp_path / "conditional-config"
     config.write_text(f'[filter "malicious"]\n{driver} = {shlex.quote(str(script))}\n')
     key = (
@@ -353,6 +572,7 @@ def test_target_conditional_filters_rejected_before_checkout(
     assert git(source.root, "config", "--get", "includeIf." + key + ".path") == str(
         config
     )
+    log = install_git_recorder(tmp_path, monkeypatch)
     with pytest.raises(WorktreeError, match="V1 rejects") as error:
         asyncio.run(provider.create("HEAD", "task"))
     assert not getattr(error.value, "__notes__", ())
@@ -361,6 +581,12 @@ def test_target_conditional_filters_rejected_before_checkout(
     assert git(source.root, "branch", "--list", "task") == ""
     assert len(git(source.root, "worktree", "list").splitlines()) == 1
     assert not list((source.root / ".git" / "worktrees").glob("*"))
+
+    observed = records(log)
+    assert any(
+        "add" in item["args"] and "--no-checkout" in item["args"] for item in observed
+    )
+    assert not any("read-tree" in item["args"] for item in observed)
 
 
 def test_empty_commit_tree_can_be_created_and_released(

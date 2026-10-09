@@ -162,11 +162,14 @@ class _WorktreeGit:
         declared = frozenset(
             provider.config.api_key_env for provider in providers.providers
         )
-        self.env = build_git_env(os.environ, secret_env_keys | declared)
+        try:
+            self.env = build_git_env(os.environ, secret_env_keys | declared)
+        except ValueError as exc:
+            raise WorktreeError(str(exc)) from None
 
     async def check_filters(self, root: Path) -> None:
         try:
-            await _git(
+            output = await _git(
                 root,
                 "config",
                 "--includes",
@@ -179,12 +182,52 @@ class _WorktreeGit:
             if exc.code != 1:  # No matching config variables is the sole safe miss.
                 raise
             return
-        # Never expose driver names/commands; reject even unused or empty
-        # configured drivers rather than silently bypassing content conversion.
+        if any(
+            key in {b"filter.lfs.clean", b"filter.lfs.smudge", b"filter.lfs.process"}
+            for key in output.splitlines()
+        ):
+            raise WorktreeError(
+                "Git LFS worktrees are not supported: LFS content requires "
+                "an external filter; refusing to materialize pointer files"
+            )
+        # System/global config is isolated. Never expose commands from retained
+        # local/worktree config, including conditional and explicit includes.
         raise WorktreeError(
             "Worktree V1 rejects repositories configured with Clean, Smudge or "
             "Process filters; external filter execution is not supported"
         )
+
+    async def check_attributes(self, root: Path, revision: str) -> None:
+        # Inspect the requested tree, not the source's possibly dirty checkout.
+        # check-attr resolves nested rules, info/attributes and config paths
+        # without executing filters. Fail closed on unsupported Git versions.
+        paths = (
+            await _git(
+                root, "ls-tree", "-r", "--name-only", "-z", revision, env=self.env
+            )
+        ).split(b"\0")[:-1]
+        for start in range(0, len(paths), 64):
+            output = await _git(
+                root,
+                "check-attr",
+                f"--source={revision}",
+                "-z",
+                "filter",
+                "--",
+                *(os.fsdecode(path) for path in paths[start : start + 64]),
+                env=self.env,
+            )
+            values = output.split(b"\0")[2::3]
+            if b"lfs" in values:
+                raise WorktreeError(
+                    "Git LFS worktrees are not supported: LFS content requires "
+                    "an external filter; refusing to materialize pointer files"
+                )
+            if any(value not in {b"unspecified", b"unset"} for value in values):
+                raise WorktreeError(
+                    "Worktree rejects files with filter attributes; external "
+                    "filter content conversion is not supported"
+                )
 
     async def __call__(self, root: Path, *args: str) -> bytes:
         if (
@@ -195,6 +238,8 @@ class _WorktreeGit:
             # Recheck commands that can convert files, including release after
             # a caller has changed config. Explicit forced removal skips status.
             await self.check_filters(root)
+        if args[0] == "read-tree":
+            await self.check_attributes(root, "HEAD")
         return await _git(root, *args, env=self.env)
 
 
@@ -462,6 +507,7 @@ class WorktreeProvider:
                 raise WorktreeError(
                     f"Branch already exists as a symbolic ref: {branch}"
                 )
+        await git.check_attributes(root, revision)
         token = f"cairn-worktree-{uuid4().hex}"
         common = Path(
             os.fsdecode(
