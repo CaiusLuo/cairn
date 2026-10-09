@@ -4,13 +4,15 @@ import asyncio
 import os
 import shutil
 import signal
-from collections.abc import AsyncIterator, Coroutine
+from collections.abc import AsyncIterator, Coroutine, Mapping
 from contextlib import asynccontextmanager, suppress
 from enum import Enum
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from cairn.config import load_project_providers
+from cairn.git.environment import build_git_env
 from cairn.workspace.workspace import Workspace
 
 GIT_TIMEOUT = 30.0
@@ -74,13 +76,7 @@ async def _read(stream: asyncio.StreamReader) -> tuple[bytes, bool]:
     return bytes(captured), truncated
 
 
-async def _git(root: Path, *args: str) -> bytes:
-    # Inherited Git routing variables must not redirect an operation to another
-    # repository/index. Disable hooks for lifecycle commands, not agent tools.
-    env = {
-        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
-    }
-    env["GIT_TERMINAL_PROMPT"] = "0"
+async def _git(root: Path, *args: str, env: Mapping[str, str] | None = None) -> bytes:
     spawn = asyncio.create_task(
         asyncio.create_subprocess_exec(
             "git",
@@ -88,8 +84,10 @@ async def _git(root: Path, *args: str) -> bytes:
             str(root),
             "-c",
             f"core.hooksPath={os.devnull}",
+            "-c",
+            "core.fsmonitor=false",
             *args,
-            env=env,
+            env=build_git_env(os.environ) if env is None else env,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -150,9 +148,59 @@ async def _git(root: Path, *args: str) -> bytes:
     return stdout[0]
 
 
-async def _is_symbolic(root: Path, ref: str) -> bool:
+class _WorktreeGit:
+    """One operation's environment, shared by creation and handle cleanup."""
+
+    def __init__(self, source: Workspace, secret_env_keys: frozenset[str]) -> None:
+        try:
+            providers = load_project_providers(source.root / ".cairn" / "models.toml")
+        except (OSError, ValueError):
+            # Fail closed without echoing config contents or credential values.
+            raise WorktreeError(
+                "Cannot load worktree provider credential names"
+            ) from None
+        declared = frozenset(
+            provider.config.api_key_env for provider in providers.providers
+        )
+        self.env = build_git_env(os.environ, secret_env_keys | declared)
+
+    async def check_filters(self, root: Path) -> None:
+        try:
+            await _git(
+                root,
+                "config",
+                "--includes",
+                "--name-only",
+                "--get-regexp",
+                r"^filter\..*\.(clean|smudge|process)$",
+                env=self.env,
+            )
+        except _GitError as exc:
+            if exc.code != 1:  # No matching config variables is the sole safe miss.
+                raise
+            return
+        # Never expose driver names/commands; reject even unused or empty
+        # configured drivers rather than silently bypassing content conversion.
+        raise WorktreeError(
+            "Worktree V1 rejects repositories configured with Clean, Smudge or "
+            "Process filters; external filter execution is not supported"
+        )
+
+    async def __call__(self, root: Path, *args: str) -> bytes:
+        if (
+            args[0] in {"status", "read-tree"}
+            or args[:2] == ("worktree", "add")
+            or (args[:2] == ("worktree", "remove") and "--force" not in args)
+        ):
+            # Recheck commands that can convert files, including release after
+            # a caller has changed config. Explicit forced removal skips status.
+            await self.check_filters(root)
+        return await _git(root, *args, env=self.env)
+
+
+async def _is_symbolic(root: Path, ref: str, git: _WorktreeGit) -> bool:
     try:
-        await _git(root, "symbolic-ref", "--quiet", ref)
+        await git(root, "symbolic-ref", "--quiet", ref)
     except _GitError as exc:
         if exc.code != 1:
             raise
@@ -167,8 +215,10 @@ def _identity(path: Path) -> tuple[int, int]:
     return stat.st_dev, stat.st_ino
 
 
-async def _registrations(root: Path) -> dict[Path, dict[bytes, bytes]]:
-    output = await _git(root, "worktree", "list", "--porcelain", "-z")
+async def _registrations(
+    root: Path, git: _WorktreeGit
+) -> dict[Path, dict[bytes, bytes]]:
+    output = await git(root, "worktree", "list", "--porcelain", "-z")
     result: dict[Path, dict[bytes, bytes]] = {}
     for record in output.split(b"\0\0"):
         fields = dict(
@@ -195,6 +245,7 @@ class WorktreeHandle:
         revision: str,
         token: str,
         admin_path: Path,
+        git: _WorktreeGit,
     ) -> None:
         self.path = path
         self.branch = branch
@@ -202,6 +253,7 @@ class WorktreeHandle:
         self.state = WorktreeState.ACTIVE
         self.remaining_branch: str | None = None
         self._root = root
+        self._git = git
         self._token = token
         self._identity = _identity(path)
         self._gitfile: bytes | None = None
@@ -222,22 +274,22 @@ class WorktreeHandle:
         if self.branch is None:
             return
         ref = f"refs/heads/{self.branch}"
-        if await _is_symbolic(self._root, ref):
+        if await _is_symbolic(self._root, ref, self._git):
             self.remaining_branch = self.branch
             return
-        refs = await _git(self._root, "for-each-ref", "--format=%(refname)", ref)
+        refs = await self._git(self._root, "for-each-ref", "--format=%(refname)", ref)
         if ref.encode() not in refs.splitlines():
             return
-        log = await _git(self._root, "reflog", "show", "--format=%H %gs", ref)
+        log = await self._git(self._root, "reflog", "show", "--format=%H %gs", ref)
         expected = f"{self.base_revision} {self._token}\n".encode()
-        registrations = await _registrations(self._root)
+        registrations = await _registrations(self._root, self._git)
         if log != expected or any(
             entry.get(b"branch") == ref.encode() for entry in registrations.values()
         ):
             self.remaining_branch = self.branch
             return
         # Compare-and-delete refuses a branch that moved since inspection.
-        await _git(
+        await self._git(
             self._root, "update-ref", "-d", "--no-deref", ref, self.base_revision
         )
 
@@ -246,7 +298,7 @@ class WorktreeHandle:
             exists = os.path.lexists(self.path)
             if exists and _identity(self.path) != self._identity:
                 raise WorktreeError(f"Owned directory was replaced: {self.path}")
-            entries = await _registrations(self._root)
+            entries = await _registrations(self._root, self._git)
             if (
                 self._gitfile is None
                 and os.path.lexists(self._admin_path)
@@ -273,7 +325,7 @@ class WorktreeHandle:
                 ):
                     raise WorktreeError(f"Worktree registration changed: {self.path}")
                 if not discard_changes:
-                    status = await _git(
+                    status = await self._git(
                         self.path,
                         "status",
                         "--porcelain=v1",
@@ -289,7 +341,7 @@ class WorktreeHandle:
                 args = ["worktree", "remove"]
                 if discard_changes:
                     args.append("--force")
-                await _git(self._root, *args, "--", str(self.path))
+                await self._git(self._root, *args, "--", str(self.path))
             elif exists:
                 # During failed creation this is our reserved directory. After
                 # creation, loss of registration is ambiguous: preserve it.
@@ -301,7 +353,7 @@ class WorktreeHandle:
             if (
                 os.path.lexists(self.path)
                 or os.path.lexists(self._admin_path)
-                or self.path in await _registrations(self._root)
+                or self.path in await _registrations(self._root, self._git)
             ):
                 raise WorktreeError(f"Worktree removal incomplete: {self.path}")
             self._removed = True
@@ -344,20 +396,33 @@ class WorktreeProvider:
     Parent directories are shared caller infrastructure, never removed. Managed
     scopes discard ephemeral edits on exit unless retained. Explicit release
     defaults to preserving dirty files (including ignored files).
+
+    Credential names come from source's .cairn/models.toml (all providers).
+    Pass secret_env_keys for provider configurations supplied outside that file.
+    The controlled environment is shared with the returned handle's cleanup.
     """
 
-    def __init__(self, source: Workspace, parent: Path) -> None:
+    def __init__(
+        self,
+        source: Workspace,
+        parent: Path,
+        *,
+        secret_env_keys: frozenset[str] = frozenset(),
+    ) -> None:
         self.source = source
         self.parent = parent.resolve()
+        self.secret_env_keys = secret_env_keys
 
     async def create(self, base_ref: str, branch: str | None) -> WorktreeHandle:
+        git = _WorktreeGit(self.source, self.secret_env_keys)
+        await git.check_filters(self.source.root)
         bare = (
-            await _git(self.source.root, "rev-parse", "--is-bare-repository")
+            await git(self.source.root, "rev-parse", "--is-bare-repository")
         ).strip() == b"true"
         root = Path(
             os.fsdecode(
                 (
-                    await _git(
+                    await git(
                         self.source.root,
                         "rev-parse",
                         "--absolute-git-dir" if bare else "--show-toplevel",
@@ -373,7 +438,7 @@ class WorktreeProvider:
             raise WorktreeError("Invalid base revision")
         revision = (
             (
-                await _git(
+                await git(
                     root,
                     "rev-parse",
                     "--verify",
@@ -392,8 +457,8 @@ class WorktreeProvider:
                 or branch == "HEAD"
             ):
                 raise WorktreeError("Invalid branch name")
-            await _git(root, "check-ref-format", f"refs/heads/{branch}")
-            if await _is_symbolic(root, f"refs/heads/{branch}"):
+            await git(root, "check-ref-format", f"refs/heads/{branch}")
+            if await _is_symbolic(root, f"refs/heads/{branch}", git):
                 raise WorktreeError(
                     f"Branch already exists as a symbolic ref: {branch}"
                 )
@@ -401,7 +466,7 @@ class WorktreeProvider:
         common = Path(
             os.fsdecode(
                 (
-                    await _git(
+                    await git(
                         root, "rev-parse", "--path-format=absolute", "--git-common-dir"
                     )
                 ).rstrip(b"\n")
@@ -415,12 +480,12 @@ class WorktreeProvider:
         self.parent.mkdir(parents=True, exist_ok=True)
         path = self.parent / token
         path.mkdir()  # Atomic reservation: never reuse a directory, even empty.
-        handle = WorktreeHandle(root, path, branch, revision, token, admin_path)
+        handle = WorktreeHandle(root, path, branch, revision, token, admin_path, git)
         try:
             if branch is not None:
                 # An absent-old-value CAS creates exactly one new ref. The
                 # unique reflog entry also identifies interrupted creations.
-                await _git(
+                await git(
                     root,
                     "update-ref",
                     "--create-reflog",
@@ -431,12 +496,21 @@ class WorktreeProvider:
                     revision,
                     "0" * len(revision),
                 )
-                await _git(root, "worktree", "add", "--", str(path), branch)
-            else:
-                await _git(
-                    root, "worktree", "add", "--detach", "--", str(path), revision
+                await git(
+                    root, "worktree", "add", "--no-checkout", "--", str(path), branch
                 )
-            entry = (await _registrations(root)).get(path)
+            else:
+                await git(
+                    root,
+                    "worktree",
+                    "add",
+                    "--no-checkout",
+                    "--detach",
+                    "--",
+                    str(path),
+                    revision,
+                )
+            entry = (await _registrations(root, git)).get(path)
             expected_branch = (
                 None if branch is None else f"refs/heads/{branch}".encode()
             )
@@ -459,7 +533,12 @@ class WorktreeProvider:
                     "Created worktree is not registered in the source repository"
                 )
             handle._admin = admin, _identity(admin)
-            if (await _git(path, "rev-parse", "HEAD")).decode().strip() != revision:
+            # Conditional includes may become active only at the new gitdir or
+            # branch. Validate that context before materializing any files.
+            # Populate the new index and working tree without changing HEAD or
+            # resetting any branch. read-tree also handles empty commit trees.
+            await git(path, "read-tree", "--reset", "-u", "HEAD")
+            if (await git(path, "rev-parse", "HEAD")).decode().strip() != revision:
                 raise WorktreeError(
                     "Created worktree HEAD does not match requested revision"
                 )

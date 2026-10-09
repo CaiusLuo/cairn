@@ -184,6 +184,11 @@ Local Git worktrees provide isolated workspaces for coding tasks, with automatic
 cleanup and an option to retain work for later. The interactive CLI continues to
 use your original workspace.
 
+Git lifecycle commands use a restricted environment to keep configured Harness
+credentials out of child processes. This does not provide a process sandbox or
+prevent access to local credential files. Repositories configured with external
+Git filters are not supported.
+
 ## Source layout
 
 ```text

@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Mapping
 from pathlib import Path
 from uuid import uuid4
 
@@ -278,14 +279,16 @@ def test_partial_failure_rolls_back(
     original = module._git
     failure = RuntimeError("injected creation failure")
 
-    async def fail(root: Path, *args: str) -> bytes:
+    async def fail(
+        root: Path, *args: str, env: Mapping[str, str] | None = None
+    ) -> bytes:
         if (
             stage == "validate"
             and root.parent == provider.parent
             and args == ("rev-parse", "HEAD")
         ):
             raise failure
-        result = await original(root, *args)
+        result = await original(root, *args, env=env)
         if (stage == "branch" and args[:2] == ("update-ref", "--create-reflog")) or (
             stage == "add" and args[:2] == ("worktree", "add")
         ):
@@ -311,10 +314,12 @@ def test_cleanup_failure_observable(
     original = module._git
     primary = ValueError("primary")
 
-    async def fail(root: Path, *args: str) -> bytes:
+    async def fail(
+        root: Path, *args: str, env: Mapping[str, str] | None = None
+    ) -> bytes:
         if args[:2] == ("worktree", "remove"):
             raise OSError("cleanup injection")
-        result = await original(root, *args)
+        result = await original(root, *args, env=env)
         if primary_kind == "create" and args[:2] == ("worktree", "add"):
             raise primary
         return result
@@ -448,14 +453,16 @@ def test_partial_registration_before_head_is_rolled_back(
     original = module._git
     primary = OSError("interrupted registration")
 
-    async def fail(root: Path, *args: str) -> bytes:
+    async def fail(
+        root: Path, *args: str, env: Mapping[str, str] | None = None
+    ) -> bytes:
         if args[:2] == ("worktree", "add"):
             path = Path(args[-2])
             admin = source.root / ".git" / "worktrees" / path.name
             admin.mkdir(parents=True)
             (admin / "gitdir").write_text(str(path / ".git") + "\n")
             raise primary
-        return await original(root, *args)
+        return await original(root, *args, env=env)
 
     monkeypatch.setattr(module, "_git", fail)
     with pytest.raises(OSError) as error:

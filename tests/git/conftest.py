@@ -13,6 +13,10 @@ def source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Workspace:
     for key in os.environ:
         if key.startswith("GIT_"):
             monkeypatch.delenv(key)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     root = tmp_path / "source"

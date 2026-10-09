@@ -2,6 +2,7 @@ import asyncio
 import os
 import signal
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -126,13 +127,15 @@ def test_cancel_during_release_finishes_observed_cleanup(
     entered = asyncio.Event()
     resume = asyncio.Event()
 
-    async def pause(root: Path, *args: str) -> bytes:
+    async def pause(
+        root: Path, *args: str, env: Mapping[str, str] | None = None
+    ) -> bytes:
         if args[:2] == ("worktree", "remove"):
             entered.set()
             await resume.wait()
             if cleanup_fails:
                 raise OSError("cleanup failed during cancellation")
-        return await original(root, *args)
+        return await original(root, *args, env=env)
 
     async def scenario() -> None:
         handle = await provider.create("base", "task")
@@ -169,10 +172,12 @@ def test_branch_cleanup_failure_can_be_retried(
 ) -> None:
     original = module._git
 
-    async def fail(root: Path, *args: str) -> bytes:
+    async def fail(
+        root: Path, *args: str, env: Mapping[str, str] | None = None
+    ) -> bytes:
         if args[:2] == ("update-ref", "-d"):
             raise OSError("ref cleanup failed")
-        return await original(root, *args)
+        return await original(root, *args, env=env)
 
     async def scenario() -> None:
         handle = await provider.create("base", "task")
