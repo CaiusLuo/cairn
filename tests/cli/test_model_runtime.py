@@ -23,6 +23,7 @@ from cairn.core.agent import Agent
 from cairn.core.budget import RunBudget
 from cairn.core.context import ContextBudget
 from cairn.core.loop import run_turn
+from cairn.core.models import Message
 from cairn.llm.model_manager import ModelConfig, ProviderConfig
 from cairn.workspace.workspace import Workspace
 from tests.support.sandbox import require_working_sandbox
@@ -223,6 +224,12 @@ def test_model_commands_validate_input_without_calling_model(
         "/model use",
         "/model list extra",
         "/model use plus extra",
+        "/model add",
+        "/model add flash",
+        "/model add flash openai/new extra",
+        "/model remove",
+        "/model remove flash",
+        "/model remove flash openai/new extra",
         "/help model",
         "/model",
     )
@@ -231,6 +238,9 @@ def test_model_commands_validate_input_without_calling_model(
     assert result.exit_code == 0
     assert "Model 'absent' not found" in result.output
     assert "Usage: /model | /model list | /model use <name>" in result.output
+    assert "/model add <group> <model-id>" in result.output
+    assert "/model remove <group> <model-id>" in result.output
+    assert "Restart and normal provider approval" in result.output
     assert "Current model: flash" in result.output
     assert requests == []
     assert token_models == []
@@ -576,6 +586,188 @@ def test_fallback_uses_distinct_models_and_counters_without_changing_selection(
         == 2
     )
     assert API_KEY not in repr(traces) + result.output
+
+
+@pytest.mark.parametrize("operation", ["add", "remove"])
+@pytest.mark.parametrize("restart_approved", [True, False])
+def test_model_edit_only_persists_and_restart_requires_normal_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    restart_approved: bool,
+    operation: str,
+) -> None:
+    amended = TOML.replace('["openai/qwen-plus"]', '["openai/qwen-plus", "openai/new"]')
+    agents, requests, token_models = _configure_cli(
+        tmp_path,
+        monkeypatch,
+        "/model use plus",
+        "first",
+        f"/model {operation} plus openai/new",
+        "/model list",
+        "/model",
+        "second",
+        toml=TOML if operation == "add" else amended,
+    )
+    env_file = tmp_path / ".env"
+    env_file.write_text("BAILIAN_API_KEY=fake-file-key\n")
+    approval = Mock(return_value=True)
+    monkeypatch.setattr(cli_module, "confirm_model_provider", approval)
+    identities: list[tuple[object, ...]] = []
+    previous_messages: list[Message] = []
+
+    async def observe_turn(agent: Agent, user_input: str, *, budget: RunBudget) -> str:
+        manager = agent.model_executor.manager
+        assert manager is not None
+        identities.append(
+            (
+                manager,
+                manager.config,
+                manager.current_model(),
+                agent.model_executor,
+                agent.llm,
+                agent.context_builder,
+                agent.state,
+                agent.tools,
+                agent.permission_handler,
+                agent.tracer,
+            )
+        )
+        if user_input == "second":
+            assert agent.state.messages == previous_messages
+        response = await run_turn(agent, user_input, budget=budget)
+        previous_messages[:] = agent.state.messages
+        return response
+
+    monkeypatch.setattr(cli_module, "run_turn", observe_turn)
+    result = CliRunner().invoke(cli_module.app, [])
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "Added openai/new to group plus"
+        if operation == "add"
+        else "Removed openai/new from group plus"
+    ) in result.output
+    assert "Restart required; the current session is unchanged." in result.output
+    assert ("2. openai/new" in result.output) == (operation == "remove")
+    assert "Current model: plus (openai/qwen-plus" in result.output
+    assert len(identities) == 2
+    assert all(before is after for before, after in zip(*identities, strict=True))
+    assert (
+        [request["model"] for request in requests]
+        == token_models
+        == ["openai/qwen-plus"] * 2
+    )
+    assert len(agents) == 1
+    approval.assert_called_once()
+    path = tmp_path / ".cairn/models.toml"
+    assert path.read_text() == (amended if operation == "add" else TOML)
+    assert API_KEY not in path.read_text() + result.output
+    assert env_file.read_text() == "BAILIAN_API_KEY=fake-file-key\n"
+
+    restarted, requests, _ = _configure_cli(
+        tmp_path, monkeypatch, "/model list", toml=None
+    )
+    approval = Mock(return_value=restart_approved)
+    monkeypatch.setattr(cli_module, "confirm_model_provider", approval)
+    result = CliRunner().invoke(cli_module.app, [])
+
+    approval.assert_called_once()
+    approved_config = approval.call_args.args[0]
+    assert approved_config.model_config[1].model_ids == (
+        ("openai/qwen-plus", "openai/new")
+        if operation == "add"
+        else ("openai/qwen-plus",)
+    )
+    assert requests == []
+    if restart_approved:
+        assert result.exit_code == 0, result.output
+        assert ("2. openai/new" in result.output) == (operation == "add")
+        assert len(restarted) == 1
+    else:
+        assert result.exit_code != 0
+        assert "not approved" in str(result.exception)
+        assert restarted == []
+    assert API_KEY not in result.output
+
+
+@pytest.mark.parametrize(
+    ("command", "error"),
+    [
+        ("/model add flash openai/qwen-flash", "already exists"),
+        ("/model add absent openai/new", "does not exist"),
+        ("/model remove flash openai/qwen-flash", "final model ID"),
+        ("/model remove flash openai/absent", "ID does not exist"),
+        ("/model remove absent openai/new", "group does not exist"),
+    ],
+)
+def test_model_edit_validation_error_keeps_session_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, error: str
+) -> None:
+    _, requests, _ = _configure_cli(
+        tmp_path, monkeypatch, command, "/model", "question"
+    )
+
+    result = CliRunner().invoke(cli_module.app, [])
+
+    assert result.exit_code == 0, result.output
+    assert error in result.output
+    assert "Current model: flash" in result.output
+    assert len(requests) == 1
+    assert (tmp_path / ".cairn/models.toml").read_text() == TOML
+
+
+@pytest.mark.parametrize("operation", ["add", "remove"])
+def test_model_edit_in_legacy_session_requires_toml_without_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    _, requests, _ = _configure_cli(
+        tmp_path,
+        monkeypatch,
+        f"/model {operation} flash openai/new",
+        "question",
+        toml=None,
+    )
+
+    result = CliRunner().invoke(cli_module.app, [])
+
+    assert result.exit_code == 0, result.output
+    assert "Create .cairn/models.toml first" in result.output
+    assert "legacy .env settings are not migrated" in result.output
+    assert requests[0]["model"] == "openai/legacy-model"
+    assert not (tmp_path / ".cairn/models.toml").exists()
+
+
+@pytest.mark.parametrize("operation", ["add", "remove"])
+def test_model_edit_write_error_omits_credentials_and_keeps_original(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    _, requests, _ = _configure_cli(
+        tmp_path,
+        monkeypatch,
+        f"/model {operation} flash openai/new",
+        "/model",
+        toml=TOML.replace(
+            '["openai/qwen-flash"]', '["openai/qwen-flash", "openai/new"]'
+        )
+        if operation == "remove"
+        else TOML,
+    )
+    monkeypatch.setattr(os, "replace", Mock(side_effect=OSError(API_KEY)))
+
+    result = CliRunner().invoke(cli_module.app, [])
+
+    assert result.exit_code == 0, result.output
+    assert "Cannot update .cairn/models.toml (OSError)." in result.output
+    assert API_KEY not in result.output
+    assert "Restart required" not in result.output
+    assert requests == []
+    path = tmp_path / ".cairn/models.toml"
+    assert path.read_text() == (
+        TOML.replace('["openai/qwen-flash"]', '["openai/qwen-flash", "openai/new"]')
+        if operation == "remove"
+        else TOML
+    )
+    assert list(path.parent.iterdir()) == [path]
 
 
 @pytest.mark.parametrize("toml", [TOML, GROUPS_TOML])
@@ -958,3 +1150,28 @@ def test_group_fallback_order_runtimes_diagnostics_and_attempt_spans(
         assert attempts[-1]["attributes"]["output_tokens"] == 3
     assert sorted(actual_orders) == sorted([flash_attempts, flash_attempts, ids[2:]])
     assert API_KEY not in repr(traces) + result.output
+
+
+def test_remove_active_id_keeps_using_it_until_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agents, requests, _ = _configure_cli(
+        tmp_path,
+        monkeypatch,
+        "/model remove flash openai/qwen-flash",
+        "question",
+        "/model",
+        toml=GROUPS_TOML,
+    )
+    result = CliRunner().invoke(cli_module.app, [])
+    assert result.exit_code == 0, result.output
+    assert requests[0]["model"] == "openai/qwen-flash"
+    manager = agents[0].model_executor.manager
+    assert manager is not None
+    assert manager.current_model().model_ids[0] == "openai/qwen-flash"
+    assert "Current model: flash (openai/qwen-flash ->" in result.output
+
+    _, requests, _ = _configure_cli(tmp_path, monkeypatch, "question", toml=None)
+    result = CliRunner().invoke(cli_module.app, [])
+    assert result.exit_code == 0, result.output
+    assert requests[0]["model"] == "openai/qwen-flash-backup"

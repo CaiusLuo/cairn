@@ -1,6 +1,10 @@
+from cairn.config import add_model_id, remove_model_id
 from cairn.terminal.commands.context import CommandContext
 
-MODEL_USAGE = "Usage: /model | /model list | /model use <name>"
+MODEL_USAGE = (
+    "Usage: /model | /model list | /model use <name> | /model add <group> <model-id>"
+    " | /model remove <group> <model-id>"
+)
 
 
 def _failure_note(context: CommandContext, model_id: str) -> str:
@@ -34,5 +38,20 @@ def handle_model(context: CommandContext, args: list[str]) -> None:
             print(exc)
             return
         print(f"Current model: {model.name} ({' -> '.join(model.model_ids)})")
+    elif len(args) == 3 and args[0] in {"add", "remove"}:
+        try:
+            edit = add_model_id if args[0] == "add" else remove_model_id
+            edit(args[1], args[2])
+        except ValueError as exc:
+            print(f"Cannot {args[0]} model: {exc}")
+        except OSError as exc:
+            print(f"Cannot update .cairn/models.toml ({type(exc).__name__}).")
+        else:
+            print(
+                f"{'Added' if args[0] == 'add' else 'Removed'} {args[2]} "
+                f"{'to' if args[0] == 'add' else 'from'} group {args[1]} "
+                "in .cairn/models.toml. "
+                "Restart required; the current session is unchanged."
+            )
     else:
         print(MODEL_USAGE)

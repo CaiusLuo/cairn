@@ -1,12 +1,20 @@
 HELP_TEXT: dict[str, dict[str, str]] = {
     "model": {
-        "usage": "/model | /model list | /model use <name>",
-        "description": "Show or select the session model.",
+        "usage": (
+            "/model | /model list | /model use <name> | /model add <group> <model-id>"
+            " | /model remove <group> <model-id>"
+        ),
+        "description": "Show or select a session model, or edit local model IDs.",
         "detail": (
             "Show the current model, list configured models (* marks the current one),\n"
             "or select a model by name for subsequent requests.\n"
             "Selection preserves conversation history and does not modify configuration.\n"
-            "A listed model that failed recently shows its most recent failure."
+            "A listed model that failed recently shows its most recent failure.\n"
+            "/model add appends an ID to an existing group in .cairn/models.toml.\n"
+            "/model remove deletes an existing ID, but cannot remove a group's final ID.\n"
+            "Both preserve comments and ordering. Restart and normal provider approval\n"
+            "are required to load changes; the current session is not reloaded.\n"
+            "Create TOML first if using legacy .env configuration."
         ),
     },
     "trace": {

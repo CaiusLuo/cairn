@@ -72,36 +72,30 @@ name = "plus"
 model_ids = ["openai/model-c"]
 ```
 
-Set `BAILIAN_API_KEY` in your shell or `.env`; keep the key out of TOML. Cairn
-uses the first configured group by default. Group names must be unique, and each
-`model_ids` array must contain one or more nonblank strings without duplicates.
-The old `model_id` field is rejected; replace it with a `model_ids` array.
-Without TOML, Cairn uses the single-model settings above as a one-ID group;
-invalid TOML stops startup. Cairn does not generate, migrate or rewrite TOML.
+Set `BAILIAN_API_KEY` in your shell or `.env`, never in TOML. Cairn asks for
+provider approval at startup. Without TOML, it uses the single-model `.env`
+settings; invalid TOML stops startup. Both files are gitignored.
 
-Each TOML-based startup requires explicit terminal approval of the provider and
-credential variable, defaulting to no. Endpoints require HTTPS except for
-loopback HTTP services. Review the endpoint and model IDs before approving.
+The first group is selected by default. `/model use plus` switches groups without
+losing history. Each completion starts at the selected group's first ID and,
+on eligible failures, tries the remaining IDs followed by subsequent groups.
+The example order is `model-a → model-b → model-c`; selecting `plus` starts at
+`model-c`. Other errors stop immediately. Fallback does not change selection.
+`/model list` shows the loaded groups and recent failures.
 
-Use `/model use plus` to select a group for the current session without losing
-history. Each completion starts at that group's first ID. An eligible fallback
-error tries the next ID in the same group, then the next group only after all
-IDs in the current group fail. The example order is `model-a -> model-b ->
-model-c`; selecting `plus` starts directly at `model-c`. Other errors stop
-immediately. Fallback success does not change the selected group.
-
-Each attempt uses its concrete model's client and token counter and checks the
-context budget before sending a request. Budget settings, endpoint and API key
-remain shared. `/model list` shows groups, ordered IDs and the most recent
-failure per ID. Failures are session diagnostics only and never skip candidates.
-Provider selection, cross-provider fallback and persistent config editing are
-not supported. Keep `.env` and `.cairn/models.toml` local; both are gitignored.
+`/model add flash openai/model-d` appends an ID; `/model remove flash openai/model-d`
+removes it. Both preserve comments and remaining order, change only local TOML,
+and require a restart and provider approval to take effect. Groups must already
+exist; duplicate IDs and removing a group's final ID are rejected. Cairn does
+not migrate `.env`, reload configuration or support multiple providers.
 
 ## CLI commands
 
 | Command | Purpose |
 | --- | --- |
 | `/model`, `/model list`, `/model use <name>` | Inspect or switch model groups |
+| `/model add <group> <model-id>` | Append a local model ID; restart required |
+| `/model remove <group> <model-id>` | Remove a local model ID; restart required |
 | `/trace`, `/trace <ID>`, `/trace list [N]` | Inspect saved traces |
 | `/help [COMMAND]` | Full command usage, including trace management |
 | `/exit`, `/quit` | End the session |
