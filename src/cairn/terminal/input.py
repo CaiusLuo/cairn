@@ -4,6 +4,7 @@ from prompt_toolkit.input import Input
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.output import Output
 from prompt_toolkit.shortcuts.choice_input import ChoiceInput
+from prompt_toolkit.styles import Style
 
 from cairn.llm.model_manager import ModelConfig
 
@@ -66,13 +67,15 @@ class CliInput:
                     model.name,
                     f"{model.name}{' (current)' if model.name == current else ''}\n"
                     f"  Primary: {model.model_ids[0]}\n"
-                    f"  Fallbacks: {' -> '.join(model.model_ids[1:]) or 'none'}",
+                    f"  Fallbacks: {' -> '.join(model.model_ids[1:]) or 'none'}"
+                    + ("\n" if index < len(models) - 1 else ""),
                 )
-                for model in models
+                for index, model in enumerate(models)
             ],
             default=current,
             show_numbers=False,
             key_bindings=bindings,
+            style=Style.from_dict({"selected-option": "fg:#87cefa bold"}),
         )
         # Reuse even explicitly injected pipe/PTY input. No second stdin reader
         # or blocking prompt is introduced inside the CLI's asyncio loop.
