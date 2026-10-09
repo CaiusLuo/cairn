@@ -440,21 +440,43 @@ def test_local_lfs_configuration_has_explicit_error(
     assert not provider.parent.exists()
 
 
-def test_filter_attribute_scan_checks_later_path_batches(
-    provider: WorktreeProvider, source: Workspace
+@pytest.mark.parametrize("filtered", [False, True])
+def test_large_tree_attribute_scan(
+    provider: WorktreeProvider, source: Workspace, filtered: bool
 ) -> None:
-    for index in range(70):
-        (source.root / f"path-{index:02}").write_text("ordinary content\n")
+    for index in range(2100):
+        (source.root / f"source_module_{index:04}_ordinary_source.py").write_text(
+            "ordinary content\n"
+        )
     unusual = "--last file\nwith newline"
     (source.root / unusual).write_text("ordinary content\n")
     (source.root / ".gitattributes").write_text(
-        f"path-69 filter=lfs\n{json.dumps(unusual)} -filter\n"
+        ("source_module_2099_ordinary_source.py filter=lfs\n" if filtered else "")
+        + f"{json.dumps(unusual)} -filter\n"
     )
     git(source.root, "add", ".")
     git(source.root, "commit", "-m", "multiple attribute batches")
-    with pytest.raises(WorktreeError, match=r"Git LFS.*pointer files"):
-        asyncio.run(provider.create("HEAD", None))
-    assert not provider.parent.exists()
+    # Reproduce the old limit using actual Git, not mocked subprocess output.
+    paths = git(source.root, "ls-tree", "-r", "--name-only", "-z", "HEAD")
+    assert len(os.fsencode(paths)) > 64 * 1024
+
+    async def scenario() -> None:
+        if filtered:
+            with pytest.raises(WorktreeError, match=r"Git LFS.*pointer files"):
+                await provider.create("HEAD", "large-task")
+            assert not provider.parent.exists()
+        else:
+            handle = await provider.create("HEAD", "large-task")
+            assert (
+                handle.path / "source_module_2099_ordinary_source.py"
+            ).read_text() == "ordinary content\n"
+            assert (handle.path / unusual).read_text() == "ordinary content\n"
+            await handle.release()
+            assert_removed(handle, source)
+        assert git(source.root, "branch", "--list", "large-task") == ""
+        assert len(git(source.root, "worktree", "list").splitlines()) == 1
+
+    asyncio.run(scenario())
 
 
 def test_target_conditional_lfs_attributes_rejected_before_materialization(

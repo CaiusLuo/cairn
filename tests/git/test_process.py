@@ -116,6 +116,221 @@ def test_reader_capture_bound() -> None:
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("target", [False, True])
+@pytest.mark.parametrize("mode", ["timeout", "cancel"])
+def test_streaming_tree_scan_stops_child_and_rolls_back(
+    provider: WorktreeProvider,
+    source: Workspace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: bool,
+    mode: str,
+) -> None:
+    original = asyncio.create_subprocess_exec
+    ready = tmp_path / "scan-ready"
+    processes: list[asyncio.subprocess.Process] = []
+    scans = 0
+    # Enumerate the real tree, then hold its pipe open while ignoring SIGTERM.
+    script = (
+        "import pathlib, signal, subprocess, sys, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "subprocess.run(sys.argv[2:], check=True); "
+        "pathlib.Path(sys.argv[1]).touch(); time.sleep(60)"
+    )
+
+    async def spawn(*args: Any, **kwargs: Any) -> asyncio.subprocess.Process:
+        nonlocal scans
+        if "ls-tree" in args:
+            scans += 1
+            if scans == (2 if target else 1):
+                process = await original(
+                    sys.executable, "-c", script, str(ready), *args, **kwargs
+                )
+                processes.append(process)
+                return process
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(module, "TERMINATE_TIMEOUT", 0.03)
+    if mode == "timeout":
+        monkeypatch.setattr(module, "GIT_TIMEOUT", 0.5)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(provider.create("base", "task"))
+        async with asyncio.timeout(5):
+            while not ready.exists():
+                await asyncio.sleep(0.01)
+        if mode == "cancel":
+            task.cancel("external scan cancellation")
+            await asyncio.sleep(0.01)
+            task.cancel("again")
+        with pytest.raises(
+            TimeoutError if mode == "timeout" else asyncio.CancelledError
+        ):
+            await task
+        assert processes[0].returncode == -signal.SIGKILL
+        with pytest.raises(ProcessLookupError):
+            os.kill(processes[0].pid, 0)
+        if target:
+            assert not list(provider.parent.iterdir())
+        else:
+            assert not provider.parent.exists()
+        assert git(source.root, "branch", "--list", "task") == ""
+        assert len(git(source.root, "worktree", "list").splitlines()) == 1
+        assert not [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+
+    asyncio.run(scenario())
+
+
+def test_filter_rejection_reaps_blocked_tree_producer(
+    provider: WorktreeProvider,
+    source: Workspace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (source.root / ".gitattributes").write_text("file.txt filter=lfs\n")
+    git(source.root, "add", ".gitattributes")
+    git(source.root, "commit", "-m", "filter attributes")
+    original = asyncio.create_subprocess_exec
+    processes: list[asyncio.subprocess.Process] = []
+    # More data than the pipe/StreamReader can buffer. The first batch rejects
+    # while this producer remains blocked writing, with no reader left to drain.
+    script = (
+        "import signal, sys, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "sys.stdout.buffer.write(b'file.txt\\0' * 30000); "
+        "sys.stdout.flush(); time.sleep(60)"
+    )
+
+    async def spawn(*args: Any, **kwargs: Any) -> asyncio.subprocess.Process:
+        if "ls-tree" in args:
+            process = await original(sys.executable, "-c", script, **kwargs)
+            processes.append(process)
+            return process
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(module, "TERMINATE_TIMEOUT", 0.03)
+
+    async def scenario() -> None:
+        async with asyncio.timeout(5):
+            with pytest.raises(WorktreeError, match=r"Git LFS.*pointer files") as error:
+                await provider.create("HEAD", "task")
+        assert not getattr(error.value, "__notes__", ())
+        assert processes[0].returncode == -signal.SIGKILL
+        with pytest.raises(ProcessLookupError):
+            os.kill(processes[0].pid, 0)
+        assert not provider.parent.exists()
+        assert git(source.root, "branch", "--list", "task") == ""
+        assert not [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("mode", ["timeout", "cancel"])
+def test_streaming_scan_stops_producer_and_attribute_child(
+    provider: WorktreeProvider,
+    source: Workspace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    original = asyncio.create_subprocess_exec
+    ready = tmp_path / "attributes-ready"
+    processes: list[asyncio.subprocess.Process] = []
+    producer = (
+        "import signal, sys, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "sys.stdout.buffer.write(b'file.txt\\0' * 30000); "
+        "sys.stdout.flush(); time.sleep(60)"
+    )
+    consumer = (
+        "import pathlib, signal, sys, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "pathlib.Path(sys.argv[1]).touch(); time.sleep(60)"
+    )
+
+    async def spawn(*args: Any, **kwargs: Any) -> asyncio.subprocess.Process:
+        # Source preflight succeeds; inject failure in the registered target so
+        # both process groups and owned worktree/branch must be cleaned up.
+        if args[2] != str(source.root):
+            if "ls-tree" in args:
+                process = await original(sys.executable, "-c", producer, **kwargs)
+                processes.append(process)
+                return process
+            if "check-attr" in args:
+                process = await original(
+                    sys.executable, "-c", consumer, str(ready), **kwargs
+                )
+                processes.append(process)
+                return process
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(module, "TERMINATE_TIMEOUT", 0.03)
+    if mode == "timeout":
+        monkeypatch.setattr(module, "GIT_TIMEOUT", 0.5)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(provider.create("base", "task"))
+        async with asyncio.timeout(5):
+            while not ready.exists():
+                await asyncio.sleep(0.01)
+        if mode == "cancel":
+            task.cancel("external batch cancellation")
+            await asyncio.sleep(0.01)
+            task.cancel("again")
+        with pytest.raises(
+            TimeoutError if mode == "timeout" else asyncio.CancelledError
+        ):
+            await task
+        assert len(processes) == 2
+        for process in processes:
+            assert process.returncode == -signal.SIGKILL
+            with pytest.raises(ProcessLookupError):
+                os.kill(process.pid, 0)
+        assert not list(provider.parent.iterdir())
+        assert git(source.root, "branch", "--list", "task") == ""
+        assert len(git(source.root, "worktree", "list").splitlines()) == 1
+        assert not [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("output", ["long-path", "partial-path", "stderr"])
+def test_streaming_scan_retains_record_and_diagnostic_bounds(
+    provider: WorktreeProvider,
+    monkeypatch: pytest.MonkeyPatch,
+    output: str,
+) -> None:
+    original = asyncio.create_subprocess_exec
+    processes: list[asyncio.subprocess.Process] = []
+    script = {
+        "long-path": "import os; os.write(1, b'x' * 200000)",
+        "partial-path": "import os; os.write(1, b'file.txt')",
+        "stderr": "import os; os.write(1, b'file.txt\\0'); os.write(2, b'x' * 200000)",
+    }[output]
+
+    async def spawn(*args: Any, **kwargs: Any) -> asyncio.subprocess.Process:
+        if "ls-tree" in args:
+            process = await original(sys.executable, "-c", script, **kwargs)
+            processes.append(process)
+            return process
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+
+    async def scenario() -> None:
+        message = "unterminated path" if output == "partial-path" else "capture limit"
+        async with asyncio.timeout(5):
+            with pytest.raises(WorktreeError, match=message):
+                await provider.create("base", None)
+        assert processes[0].returncode is not None
+        assert not provider.parent.exists()
+        assert not [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("cleanup_fails", [False, True])
 def test_cancel_during_release_finishes_observed_cleanup(
     provider: WorktreeProvider,

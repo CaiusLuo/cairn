@@ -4,7 +4,7 @@ import asyncio
 import os
 import shutil
 import signal
-from collections.abc import AsyncIterator, Coroutine, Mapping
+from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
 from contextlib import asynccontextmanager, suppress
 from enum import Enum
 from pathlib import Path
@@ -77,6 +77,18 @@ async def _read(stream: asyncio.StreamReader) -> tuple[bytes, bool]:
 
 
 async def _git(root: Path, *args: str, env: Mapping[str, str] | None = None) -> bytes:
+    return await _run_git(root, *args, env=env)
+
+
+async def _run_git(
+    root: Path,
+    *args: str,
+    env: Mapping[str, str] | None = None,
+    stdout_reader: Callable[
+        [asyncio.StreamReader], Coroutine[Any, Any, tuple[bytes, bool]]
+    ]
+    | None = None,
+) -> bytes:
     spawn = asyncio.create_task(
         asyncio.create_subprocess_exec(
             "git",
@@ -91,22 +103,30 @@ async def _git(root: Path, *args: str, env: Mapping[str, str] | None = None) -> 
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=OUTPUT_LIMIT,
             start_new_session=True,
         )
     )
     readers: list[asyncio.Task[tuple[bytes, bool]]] = []
+    waiter: asyncio.Task[int] | None = None
 
     async def stop() -> None:
         try:
             process = await spawn
-            if not readers:
-                assert process.stdout is not None and process.stderr is not None
-                readers.extend(
-                    [
-                        asyncio.create_task(_read(process.stdout)),
-                        asyncio.create_task(_read(process.stderr)),
-                    ]
-                )
+            # A failed/cancelled streaming consumer may leave a paused full
+            # pipe. Stop it (including any nested check-attr), then drain both
+            # pipes so waiting for the terminated producer cannot deadlock.
+            for reader in readers:
+                reader.cancel()
+            await asyncio.gather(*readers, return_exceptions=True)
+            readers.clear()
+            assert process.stdout is not None and process.stderr is not None
+            readers.extend(
+                [
+                    asyncio.create_task(_read(process.stdout)),
+                    asyncio.create_task(_read(process.stderr)),
+                ]
+            )
             # Kill the owned group too: filters may still hold pipe descriptors
             # after the Git parent has exited.
             with suppress(ProcessLookupError):
@@ -122,18 +142,24 @@ async def _git(root: Path, *args: str, env: Mapping[str, str] | None = None) -> 
         finally:
             for reader in readers:
                 reader.cancel()
-            await asyncio.gather(*readers, return_exceptions=True)
+            pending: list[asyncio.Task[Any]] = list(readers)
+            if waiter is not None:
+                waiter.cancel()
+                pending.append(waiter)
+            await asyncio.gather(*pending, return_exceptions=True)
 
     try:
         async with asyncio.timeout(GIT_TIMEOUT):
             process = await asyncio.shield(spawn)
             assert process.stdout is not None and process.stderr is not None
             readers = [
-                asyncio.create_task(_read(process.stdout)),
+                asyncio.create_task((stdout_reader or _read)(process.stdout)),
                 asyncio.create_task(_read(process.stderr)),
             ]
-            code = await process.wait()
-            stdout, stderr = await asyncio.gather(*readers)
+            waiter = asyncio.create_task(process.wait())
+            # Observe reader failures immediately, even if the producer is
+            # blocked on a full pipe after an attribute check rejects a batch.
+            code, stdout, stderr = await asyncio.gather(waiter, readers[0], readers[1])
     except BaseException as exc:
         await _preserve(exc, stop())
         raise
@@ -201,12 +227,7 @@ class _WorktreeGit:
         # Inspect the requested tree, not the source's possibly dirty checkout.
         # check-attr resolves nested rules, info/attributes and config paths
         # without executing filters. Fail closed on unsupported Git versions.
-        paths = (
-            await _git(
-                root, "ls-tree", "-r", "--name-only", "-z", revision, env=self.env
-            )
-        ).split(b"\0")[:-1]
-        for start in range(0, len(paths), 64):
+        async def check_batch(paths: list[bytes]) -> None:
             output = await _git(
                 root,
                 "check-attr",
@@ -214,7 +235,7 @@ class _WorktreeGit:
                 "-z",
                 "filter",
                 "--",
-                *(os.fsdecode(path) for path in paths[start : start + 64]),
+                *(os.fsdecode(path) for path in paths),
                 env=self.env,
             )
             values = output.split(b"\0")[2::3]
@@ -228,6 +249,49 @@ class _WorktreeGit:
                     "Worktree rejects files with filter attributes; external "
                     "filter content conversion is not supported"
                 )
+
+        async def scan(stream: asyncio.StreamReader) -> tuple[bytes, bool]:
+            paths: list[bytes] = []
+            size = 0
+            while True:
+                try:
+                    record = await stream.readuntil(b"\0")
+                except asyncio.IncompleteReadError as exc:
+                    if exc.partial:
+                        raise WorktreeError(
+                            "Git tree returned an unterminated path"
+                        ) from None
+                    break
+                except asyncio.LimitOverrunError:
+                    raise WorktreeError(
+                        "Git tree path exceeded capture limit"
+                    ) from None
+                # Bound both argv size and per-batch output, independently of
+                # tree size. One path must fit too; never split a NUL record.
+                if len(record) > OUTPUT_LIMIT // 2:
+                    raise WorktreeError("Git tree path exceeded batch limit")
+                if paths and (
+                    len(paths) == 64 or size + len(record) > OUTPUT_LIMIT // 2
+                ):
+                    await check_batch(paths)
+                    paths.clear()
+                    size = 0
+                paths.append(record[:-1])
+                size += len(record)
+            if paths:
+                await check_batch(paths)
+            return b"", False  # Enumeration is consumed, never accumulated.
+
+        await _run_git(
+            root,
+            "ls-tree",
+            "-r",
+            "--name-only",
+            "-z",
+            revision,
+            env=self.env,
+            stdout_reader=scan,
+        )
 
     async def __call__(self, root: Path, *args: str) -> bytes:
         if (
