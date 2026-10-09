@@ -23,7 +23,7 @@ from cairn.core.agent import Agent
 from cairn.core.budget import RunBudget
 from cairn.core.context import ContextBudget
 from cairn.core.loop import run_turn
-from cairn.llm.model_manager import ProviderConfig
+from cairn.llm.model_manager import ModelConfig, ProviderConfig
 from cairn.workspace.workspace import Workspace
 from tests.support.sandbox import require_working_sandbox
 
@@ -34,12 +34,16 @@ api_key_env = "BAILIAN_API_KEY"
 
 [[models]]
 name = "flash"
-model_id = "openai/qwen-flash"
+model_ids = ["openai/qwen-flash"]
 
 [[models]]
 name = "plus"
-model_id = "openai/qwen-plus"
+model_ids = ["openai/qwen-plus"]
 """
+
+GROUPS_TOML = TOML.replace(
+    '["openai/qwen-flash"]', '["openai/qwen-flash", "openai/qwen-flash-backup"]'
+).replace('["openai/qwen-plus"]', '["openai/qwen-plus", "openai/qwen-plus-backup"]')
 
 
 def _response(content: str) -> SimpleNamespace:
@@ -134,8 +138,8 @@ def test_toml_default_and_session_switch_use_real_loop_and_preserve_state(
     assert result.exit_code == 0, result.output
     assert "Current model: flash (openai/qwen-flash)" in result.output
     assert "Current model: plus (openai/qwen-plus)" in result.output
-    assert "* flash (openai/qwen-flash)" in result.output
-    assert "* plus (openai/qwen-plus)" in result.output
+    assert "* flash\n    1. openai/qwen-flash" in result.output
+    assert "* plus\n    1. openai/qwen-plus" in result.output
     assert len(agents) == 1
     assert all(before is after for before, after in zip(*identities, strict=True))
     assert [request["model"] for request in requests] == [
@@ -260,7 +264,7 @@ def test_failed_switch_keeps_previous_client_counter_and_selection(
 def test_missing_toml_keeps_legacy_environment_request_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _, requests, token_models = _configure_cli(
+    agents, requests, token_models = _configure_cli(
         tmp_path, monkeypatch, "question", toml=None
     )
     approval = Mock(
@@ -274,6 +278,12 @@ def test_missing_toml_keeps_legacy_environment_request_path(
     assert requests[0]["api_key"] == "test-only-legacy-key"
     assert requests[0]["api_base"] == "https://legacy.test/v1"
     assert token_models == ["openai/legacy-model"]
+    assert not (tmp_path / ".cairn/models.toml").exists()
+    manager = agents[0].model_executor.manager
+    assert manager is not None
+    assert manager.list_models() == (
+        ModelConfig("openai/legacy-model", ("openai/legacy-model",)),
+    )
     approval.assert_not_called()
 
 
@@ -295,7 +305,16 @@ def test_toml_requires_explicit_approval_before_resolving_credential(
 
 
 @pytest.mark.parametrize(
-    "contents", ["", "base_url = [", TOML.replace("https://", "http://")]
+    "contents",
+    [
+        "",
+        "base_url = [",
+        TOML.replace("https://", "http://"),
+        TOML.replace(
+            'model_ids = ["openai/qwen-flash"]', 'model_id = "openai/qwen-flash"'
+        ),
+        TOML.replace('["openai/qwen-flash"]', "[]"),
+    ],
 )
 def test_invalid_existing_toml_never_falls_back_to_valid_legacy_settings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, contents: str
@@ -559,10 +578,13 @@ def test_fallback_uses_distinct_models_and_counters_without_changing_selection(
     assert API_KEY not in repr(traces) + result.output
 
 
+@pytest.mark.parametrize("toml", [TOML, GROUPS_TOML])
 def test_fallback_rebudgets_before_calling_the_next_model(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, toml: str
 ) -> None:
-    agents, requests, token_models = _configure_cli(tmp_path, monkeypatch, "question")
+    agents, requests, token_models = _configure_cli(
+        tmp_path, monkeypatch, "question", toml=toml
+    )
 
     def count(**kwargs: Any) -> int:
         token_models.append(kwargs["model"])
@@ -581,7 +603,9 @@ def test_fallback_rebudgets_before_calling_the_next_model(
     assert result.exit_code == 0
     assert "Required context exceeds the context budget" in result.output
     assert token_models[0] == "openai/qwen-flash"
-    assert set(token_models[1:]) == {"openai/qwen-plus"}
+    assert set(token_models[1:]) == {
+        "openai/qwen-flash-backup" if toml == GROUPS_TOML else "openai/qwen-plus"
+    }
     assert [request["model"] for request in requests] == ["openai/qwen-flash"]
     assert agents[0].state.messages == []
     spans = [
@@ -639,10 +663,13 @@ def test_free_tier_403_moves_the_next_request_to_the_next_model(
     assert spans[1]["attributes"]["model"] == "openai/qwen-plus"
 
 
+@pytest.mark.parametrize("toml", [TOML, GROUPS_TOML])
 def test_exhausted_fallback_records_each_model_error_and_rolls_back_turn(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, toml: str
 ) -> None:
-    agents, requests, token_models = _configure_cli(tmp_path, monkeypatch, "question")
+    agents, requests, token_models = _configure_cli(
+        tmp_path, monkeypatch, "question", toml=toml
+    )
 
     async def completion(**kwargs: Any) -> SimpleNamespace:
         requests.append(kwargs)
@@ -654,11 +681,17 @@ def test_exhausted_fallback_records_each_model_error_and_rolls_back_turn(
     result = CliRunner().invoke(cli_module.app, [])
 
     assert result.exit_code == 0
-    assert (
-        [request["model"] for request in requests]
-        == token_models
-        == ["openai/qwen-flash", "openai/qwen-plus"]
+    expected = (
+        [
+            "openai/qwen-flash",
+            "openai/qwen-flash-backup",
+            "openai/qwen-plus",
+            "openai/qwen-plus-backup",
+        ]
+        if toml == GROUPS_TOML
+        else ["openai/qwen-flash", "openai/qwen-plus"]
     )
+    assert [request["model"] for request in requests] == token_models == expected
     assert "All candidate models are unavailable" in result.output
     assert "flash" in result.output and "plus" in result.output
     assert agents[0].state.messages == []
@@ -667,17 +700,14 @@ def test_exhausted_fallback_records_each_model_error_and_rolls_back_turn(
         for path in (tmp_path / ".cairn/traces").glob("*.jsonl")
         for line in path.read_text().splitlines()
     ]
-    assert [span["name"] for span in spans] == [
-        "llm.generate",
-        "llm.generate",
-        "agent.turn",
+    assert [span["name"] for span in spans] == ["llm.generate"] * len(expected) + [
+        "agent.turn"
     ]
     assert all(
         span["status"] == "error" and span["end_time"] is not None for span in spans
     )
-    assert "RateLimitError" in spans[0]["error"]
-    assert "RateLimitError" in spans[1]["error"]
-    assert "AllModelsUnavailable" in spans[2]["error"]
+    assert all("RateLimitError" in span["error"] for span in spans[:-1])
+    assert "AllModelsUnavailable" in spans[-1]["error"]
 
 
 @pytest.mark.parametrize("error_type", [ServiceUnavailableError, Timeout])
@@ -786,3 +816,145 @@ def test_selected_model_runtime_is_built_once_and_reused_for_every_attempt(
         "openai/qwen-flash",
     ]
     assert agents[0].state.messages[-1].content == "reply 2"
+
+
+@pytest.mark.parametrize("succeed_in_flash", [True, False])
+def test_group_fallback_order_runtimes_diagnostics_and_attempt_spans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, succeed_in_flash: bool
+) -> None:
+    agents, requests, token_models = _configure_cli(
+        tmp_path,
+        monkeypatch,
+        "first",
+        "/model list",
+        "second",
+        "/model use plus",
+        "third",
+        toml=GROUPS_TOML,
+    )
+    ids = [
+        "openai/qwen-flash",
+        "openai/qwen-flash-backup",
+        "openai/qwen-plus",
+        "openai/qwen-plus-backup",
+    ]
+    tokens = dict(zip(ids, [10, 20, 30, 40], strict=True))
+    successes = {ids[1], ids[3]} if succeed_in_flash else {ids[3]}
+    original_client = llm_module.LiteLLMClient
+    built: list[llm_module.LiteLLMClient] = []
+    selected_runtimes: list[tuple[object, object]] = []
+
+    def make_client(**kwargs: Any) -> llm_module.LiteLLMClient:
+        client = original_client(**kwargs)
+        built.append(client)
+        return client
+
+    def count(**kwargs: Any) -> int:
+        token_models.append(kwargs["model"])
+        return tokens[kwargs["model"]]
+
+    async def completion(**kwargs: Any) -> SimpleNamespace:
+        requests.append(kwargs)
+        if kwargs["model"] not in successes:
+            raise RateLimitError(
+                message=f"throttled {kwargs['model']}",
+                model=kwargs["model"],
+                llm_provider="openai",
+            )
+        response = _response("answer")
+        response.usage = SimpleNamespace(prompt_tokens=25, completion_tokens=3)
+        return response
+
+    async def observe_turn(agent: Agent, user_input: str, *, budget: RunBudget) -> str:
+        selected_runtimes.append((agent.llm, agent.context_builder))
+        answer = await run_turn(agent, user_input, budget=budget)
+        assert agent.llm is selected_runtimes[-1][0]
+        assert agent.context_builder is selected_runtimes[-1][1]
+        manager = agent.model_executor.manager
+        assert manager is not None
+        assert manager.current_model().name == (
+            "plus" if user_input == "third" else "flash"
+        )
+        return answer
+
+    monkeypatch.setattr(llm_module, "LiteLLMClient", make_client)
+    monkeypatch.setattr(counter_module, "token_counter", count)
+    monkeypatch.setattr(llm_module, "acompletion", completion)
+    monkeypatch.setattr(cli_module, "run_turn", observe_turn)
+    result = CliRunner().invoke(cli_module.app, [])
+
+    assert result.exit_code == 0, result.output
+    flash_attempts = ids[:2] if succeed_in_flash else ids
+    expected = flash_attempts * 2 + ids[2:]
+    assert [request["model"] for request in requests] == token_models == expected
+    assert [client.model for client in built] == [
+        ids[0],
+        *flash_attempts[1:],
+        *flash_attempts[1:],
+        *ids[2:],
+    ]
+    assert selected_runtimes[0][0] is selected_runtimes[1][0] is built[0]
+    assert selected_runtimes[0][1] is selected_runtimes[1][1]
+    assert selected_runtimes[2][0] is built[-2]
+    assert selected_runtimes[2][1] is not selected_runtimes[0][1]
+    assert len(agents) == 1
+    assert [m.content for m in agents[0].state.messages] == [
+        "first",
+        "answer",
+        "second",
+        "answer",
+        "third",
+        "answer",
+    ]
+    for request in requests:
+        assert request["api_key"] == API_KEY
+        assert request["api_base"] == "https://example.test/v1"
+        assert request["max_tokens"] == 20
+    assert (tmp_path / ".cairn/models.toml").read_text() == GROUPS_TOML
+
+    # Each ID gets its own line and diagnostic, in group and ID order.
+    listing = result.output.split("* flash\n", 1)[1].split("Current model:", 1)[0]
+    lines_by_id = {
+        line.split(". ", 1)[1].split(" —", 1)[0]: line
+        for line in listing.splitlines()
+        if line.startswith("    ")
+    }
+    assert list(lines_by_id) == ids
+    for model_id in ids:
+        line = lines_by_id[model_id]
+        failed = model_id in flash_attempts and model_id not in successes
+        assert ("last failure" in line) is failed
+        if failed:
+            assert f"throttled {model_id}" in line
+
+    traces = [
+        [json.loads(line) for line in path.read_text().splitlines()]
+        for path in (tmp_path / ".cairn/traces").glob("*.jsonl")
+    ]
+    assert len(traces) == 3
+    actual_orders = []
+    for spans in traces:
+        attempts, root = spans[:-1], spans[-1]
+        actual_orders.append([s["attributes"]["model"] for s in attempts])
+        assert root["name"] == "agent.turn" and root["status"] == "ok"
+        assert "input_tokens" not in root["attributes"]
+        assert "output_tokens" not in root["attributes"]
+        assert [s["attributes"]["attempt"] for s in attempts] == list(
+            range(1, len(attempts) + 1)
+        )
+        assert [s["status"] for s in attempts] == ["error"] * (len(attempts) - 1) + [
+            "ok"
+        ]
+        for span in attempts:
+            attrs = span["attributes"]
+            assert span["name"] == "llm.generate" and span["end_time"] is not None
+            assert span["context"]["parent_span_id"] == root["context"]["span_id"]
+            assert attrs["model_name"] == (
+                "flash" if attrs["model"] in ids[:2] else "plus"
+            )
+            assert attrs["context_tokens_after"] == tokens[attrs["model"]]
+            assert attrs["context_response_tokens"] == 20
+        assert attempts[-1]["attributes"]["input_tokens"] == 25
+        assert attempts[-1]["attributes"]["output_tokens"] == 3
+    assert sorted(actual_orders) == sorted([flash_attempts, flash_attempts, ids[2:]])
+    assert API_KEY not in repr(traces) + result.output

@@ -41,8 +41,8 @@ def test_model_provider_approval_is_explicit_and_displays_routing(
         base_url="https://example.test/v1",
         api_key_env="BAILIAN_API_KEY",
         model_config=(
-            ModelConfig("flash", "openai/qwen-flash"),
-            ModelConfig("plus", "openai/qwen-plus"),
+            ModelConfig("flash", ("openai/qwen-flash", "openai/qwen-flash-backup")),
+            ModelConfig("plus", ("openai/qwen-plus",)),
         ),
     )
 
@@ -53,6 +53,7 @@ def test_model_provider_approval_is_explicit_and_displays_routing(
         provider.base_url,
         provider.api_key_env,
         "openai/qwen-flash",
+        "openai/qwen-flash-backup",
         "openai/qwen-plus",
     ):
         assert expected in rendered
@@ -66,7 +67,7 @@ def test_model_provider_approval_rejects_noninteractive_input(
     provider = ProviderConfig(
         base_url="https://example.test/v1",
         api_key_env="KEY",
-        model_config=(ModelConfig("flash", "openai/qwen-flash"),),
+        model_config=(ModelConfig("flash", ("openai/qwen-flash",)),),
     )
 
     with pytest.raises(ValueError, match="interactive terminal"):

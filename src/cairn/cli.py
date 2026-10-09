@@ -62,7 +62,10 @@ async def main(cli_input: CliInput | None = None) -> None:
             base_url=config["CAIRN_BASE_URL"],
             api_key_env="CAIRN_LLM_API_KEY",
             model_config=(
-                ModelConfig(config["CAIRN_LLM_MODEL"], config["CAIRN_LLM_MODEL"]),
+                ModelConfig(
+                    name=config["CAIRN_LLM_MODEL"],
+                    model_ids=(config["CAIRN_LLM_MODEL"],),
+                ),
             ),
         )
     else:
@@ -83,22 +86,24 @@ async def main(cli_input: CliInput | None = None) -> None:
     from cairn.llm.token_counter import LiteLLMTokenCounter
 
     def create_model_runtime(
-        model: ModelConfig,
+        model_id: str,
     ) -> tuple[LiteLLMClient, ContextBuilder]:
         return (
             LiteLLMClient(
-                model=model.model_id,
+                model=model_id,
                 api_key=api_key,
                 api_base=provider.base_url,
                 max_output_tokens=context_budget.response_tokens,
             ),
             ContextBuilder(
                 budget=context_budget,
-                counter=LiteLLMTokenCounter(model.model_id),
+                counter=LiteLLMTokenCounter(model_id),
             ),
         )
 
-    llm, context_builder = create_model_runtime(model_manager.current_model())
+    llm, context_builder = create_model_runtime(
+        model_manager.current_model().model_ids[0]
+    )
     print_banner()
 
     workspace = Workspace(Path.cwd())
@@ -134,7 +139,7 @@ async def main(cli_input: CliInput | None = None) -> None:
         previous = model_manager.current_model()
         selected = model_manager.select_model(name)
         try:
-            next_llm, next_context = create_model_runtime(selected)
+            next_llm, next_context = create_model_runtime(selected.model_ids[0])
         except Exception:
             model_manager.select_model(previous.name)
             raise

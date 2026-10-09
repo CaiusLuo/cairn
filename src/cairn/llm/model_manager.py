@@ -4,7 +4,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class ModelConfig:
     name: str
-    model_id: str
+    model_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True)

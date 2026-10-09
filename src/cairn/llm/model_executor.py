@@ -164,20 +164,19 @@ class AllModelsUnavailable(RuntimeError):
 
 
 class ModelExecutor:
-    """Run one request per candidate, in ``ModelManager.candidates()`` order.
+    """Try each group's IDs in order, then the next group in ``candidates()``.
 
     The caller keeps ``Agent.llm`` and ``Agent.context_builder`` bound to
-    ``ModelManager.current_model()`` (``cli.py`` rebinds both together on
-    ``/model use``). Those two objects are the selected model's runtime, so the
-    selected candidate reuses them and only fallback candidates build a runtime
-    through ``runtime_factory``. Every attempt therefore keeps its own client,
-    tokenizer, context budget admission and output limit.
+    the first ID of ``ModelManager.current_model()`` (``cli.py`` rebinds both
+    together on ``/model use``). Only that candidate reuses them; all other IDs
+    build a runtime through ``runtime_factory``. Every attempt therefore keeps
+    its own client, tokenizer, context budget admission and output limit.
     """
 
     def __init__(
         self,
         manager: ModelManager | None = None,
-        runtime_factory: Callable[[ModelConfig], tuple[LLMClient, ContextBuilder]]
+        runtime_factory: Callable[[str], tuple[LLMClient, ContextBuilder]]
         | None = None,
     ) -> None:
         if (manager is None) != (runtime_factory is None):
@@ -188,25 +187,27 @@ class ModelExecutor:
         self.runtime_factory = runtime_factory
         self._last_failures: dict[str, ModelFailure] = {}
 
-    def failure_for(self, model_name: str) -> ModelFailure | None:
-        """Most recent provider failure recorded for ``model_name``, if any."""
-        return self._last_failures.get(model_name)
+    def failure_for(self, model_id: str) -> ModelFailure | None:
+        """Most recent provider failure recorded for this concrete ID, if any."""
+        return self._last_failures.get(model_id)
 
     def _runtime_for(
         self,
         agent: "Agent",
         model: ModelConfig | None,
+        model_id: str | None,
     ) -> tuple[LLMClient, ContextBuilder]:
         selected = self.manager.current_model() if self.manager is not None else None
-        if model is None or model == selected:
+        if model is None or (model == selected and model_id == model.model_ids[0]):
             return agent.llm, agent.context_builder
         assert self.runtime_factory is not None
-        return self.runtime_factory(model)
+        assert model_id is not None
+        return self.runtime_factory(model_id)
 
-    def _note_failure(self, model: ModelConfig | None, error: Exception) -> None:
-        if model is None:
+    def _note_failure(self, model_id: str | None, error: Exception) -> None:
+        if model_id is None:
             return
-        self._last_failures[model.name] = ModelFailure(
+        self._last_failures[model_id] = ModelFailure(
             category=type(error).__name__,
             detail=_short_diagnostic(error),
         )
@@ -220,7 +221,7 @@ class ModelExecutor:
         current_turn_start: int,
         tools: list[dict[str, Any]],
         on_request: Callable[
-            [ContextRequest, ContextBudget, ModelConfig | None, int], None
+            [ContextRequest, ContextBudget, ModelConfig | None, str | None, int], None
         ]
         | None = None,
         on_fallback: Callable[[Exception], None] | None = None,
@@ -230,36 +231,42 @@ class ModelExecutor:
         candidates: Sequence[ModelConfig | None] = (
             self.manager.candidates() if self.manager is not None else (None,)
         )
-        for attempt, model in enumerate(candidates, start=1):
-            llm, builder = self._runtime_for(agent, model)
-            # Admission failures are not provider failures and must not retry.
-            request = builder.build(
-                system_messages=system_messages,
-                history=history,
-                current_turn_start=current_turn_start,
-                tools=tools,
+        attempt = 0
+        for model in candidates:
+            model_ids: Sequence[str | None] = (
+                model.model_ids if model is not None else (None,)
             )
-            if on_request is not None:
-                on_request(request, builder.budget, model, attempt)
-            try:
-                response = await llm.generate(
-                    messages=request.messages,
+            for model_id in model_ids:
+                llm, builder = self._runtime_for(agent, model, model_id)
+                # Admission failures are not provider failures and must not retry.
+                request = builder.build(
+                    system_messages=system_messages,
+                    history=history,
+                    current_turn_start=current_turn_start,
                     tools=tools,
                 )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self._note_failure(model, exc)
-                if model is None or not is_fallback_error(exc):
+                attempt += 1
+                if on_request is not None:
+                    on_request(request, builder.budget, model, model_id, attempt)
+                try:
+                    response = await llm.generate(
+                        messages=request.messages,
+                        tools=tools,
+                    )
+                except asyncio.CancelledError:
                     raise
+                except Exception as exc:
+                    self._note_failure(model_id, exc)
+                    if model_id is None or not is_fallback_error(exc):
+                        raise
 
-                errors.append((model.name, exc))
-                if on_fallback is not None:
-                    on_fallback(exc)
-                continue
+                    errors.append((model_id, exc))
+                    if on_fallback is not None:
+                        on_fallback(exc)
+                    continue
 
-            if model is not None:
-                self._last_failures.pop(model.name, None)
-            return request, response
+                if model_id is not None:
+                    self._last_failures.pop(model_id, None)
+                return request, response
 
         raise AllModelsUnavailable(errors) from None

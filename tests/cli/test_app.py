@@ -32,6 +32,12 @@ ENVIRONMENT: dict[str, str] = {
 }
 
 
+@pytest.fixture(autouse=True)
+def isolated_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Legacy CLI tests must not load a developer's local models.toml or traces.
+    monkeypatch.chdir(tmp_path)
+
+
 class ScriptedCliInput(CliInput):
     def __init__(self, *values: str | BaseException) -> None:
         self._values = iter(values)

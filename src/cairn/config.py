@@ -13,7 +13,7 @@ CAIRN_CONFIG_ENV_NAMES = ("CAIRN_LLM_MODEL", "CAIRN_LLM_API_KEY", "CAIRN_BASE_UR
 
 
 def load_model_config(path: Path = Path(".cairn/models.toml")) -> ProviderConfig:
-    """Load a provider and its ordered models without resolving API credentials.
+    """Load a provider and its ordered model groups without resolving credentials.
 
     Relative paths are resolved from the caller's working directory. File and
     TOML parsing errors propagate; invalid configuration values raise ValueError.
@@ -33,11 +33,24 @@ def load_model_config(path: Path = Path(".cairn/models.toml")) -> ProviderConfig
         if not isinstance(model, dict):
             raise ValueError(f"models[{index}] must be a table.")
         name = _required_string(model.get("name"), f"models[{index}].name")
-        model_id = _required_string(model.get("model_id"), f"models[{index}].model_id")
+        if "model_id" in model:
+            raise ValueError(
+                f"models[{index}].model_id is no longer supported; remove it and "
+                'use model_ids = ["provider/model"] instead.'
+            )
+        model_ids = model.get("model_ids")
+        if not isinstance(model_ids, list) or not model_ids:
+            raise ValueError(f"models[{index}].model_ids must be a non-empty array.")
+        ids = tuple(
+            _required_string(value, f"models[{index}].model_ids[{position}]")
+            for position, value in enumerate(model_ids)
+        )
+        if len(set(ids)) != len(ids):
+            raise ValueError(f"Duplicate model IDs in models[{index}].model_ids.")
         if name in names:
             raise ValueError(f"Duplicate model name: {name!r}.")
         names.add(name)
-        models.append(ModelConfig(name=name, model_id=model_id))
+        models.append(ModelConfig(name=name, model_ids=ids))
 
     return ProviderConfig(
         base_url=base_url,
@@ -80,7 +93,7 @@ def validate_runtime_provider(config: ProviderConfig) -> None:
     for model in config.model_config:
         if not model.name.isprintable() or any(c.isspace() for c in model.name):
             raise ValueError("Model names must be printable and contain no whitespace.")
-        if not model.model_id.isprintable():
+        if any(not model_id.isprintable() for model_id in model.model_ids):
             raise ValueError("Model IDs must be printable.")
 
 

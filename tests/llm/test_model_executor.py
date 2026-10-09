@@ -16,12 +16,14 @@ from litellm.exceptions import (
 )
 
 from cairn.core.agent import Agent
+from cairn.core.budget import RunBudget
 from cairn.core.context import (
     ContextBudget,
     ContextBudgetExceeded,
     ContextBuilder,
     TokenCount,
 )
+from cairn.core.loop import run_turn
 from cairn.core.models import LLMResponse, LLMUsage, Message
 from cairn.llm.base import LLMClient
 from cairn.llm.model_executor import (
@@ -30,7 +32,10 @@ from cairn.llm.model_executor import (
     is_fallback_error,
 )
 from cairn.llm.model_manager import ModelConfig, ModelManager, ProviderConfig
+from cairn.observability.models import SpanStatus
+from cairn.observability.tracer import Tracer
 from cairn.tools.registry import ToolRegistry
+from tests.support.runtime import RecordingSink, RecordingTool, tool_response
 
 
 class ScriptedLLM:
@@ -60,14 +65,15 @@ class RecordingCounter:
         return TokenCount(tokens=self.tokens, is_estimate=False)
 
 
-def make_manager() -> ModelManager:
+def make_manager(*models: ModelConfig) -> ModelManager:
     return ModelManager(
         ProviderConfig(
             base_url="https://example.test/v1",
             api_key_env="TEST_KEY",
-            model_config=(
-                ModelConfig("flash", "openai/flash"),
-                ModelConfig("plus", "openai/plus"),
+            model_config=models
+            or (
+                ModelConfig("flash", ("openai/flash",)),
+                ModelConfig("plus", ("openai/plus",)),
             ),
         )
     )
@@ -375,17 +381,22 @@ def test_executor_returns_built_request_and_response_without_mutating_history(
     assert manager.current_model().name == "flash"
 
 
-def test_executor_reuses_the_selected_runtime_and_builds_only_fallback_runtimes() -> (
-    None
-):
+@pytest.mark.parametrize("same_group", [False, True])
+def test_executor_reuses_the_selected_runtime_and_builds_only_fallback_runtimes(
+    same_group: bool,
+) -> None:
     selected_llm = ScriptedLLM(rate_limit())
     fallback_llm = ScriptedLLM(LLMResponse(content="answer"))
     fallback_counter = RecordingCounter(tokens=30)
-    built: list[tuple[ModelConfig, LLMClient]] = []
+    built: list[tuple[str, LLMClient]] = []
     agent = make_agent(selected_llm, RecordingCounter(tokens=10))
-    manager = make_manager()
+    manager = (
+        make_manager(ModelConfig("flash", ("openai/flash", "openai/plus")))
+        if same_group
+        else make_manager()
+    )
 
-    def runtime_factory(model: ModelConfig) -> tuple[LLMClient, ContextBuilder]:
+    def runtime_factory(model: str) -> tuple[LLMClient, ContextBuilder]:
         built.append((model, fallback_llm))
         return fallback_llm, ContextBuilder(
             budget=ContextBudget(max_tokens=100, response_tokens=20),
@@ -404,7 +415,7 @@ def test_executor_reuses_the_selected_runtime_and_builds_only_fallback_runtimes(
     )
 
     assert response.content == "answer"
-    assert [model.name for model, _ in built] == ["plus"]
+    assert [model for model, _ in built] == ["openai/plus"]
     assert len(selected_llm.calls) == 1
     assert len(fallback_llm.calls) == 1
     # The fallback attempt was admitted with, and sent through, its own runtime.
@@ -416,8 +427,8 @@ def test_executor_never_builds_a_runtime_for_the_selected_model() -> None:
     agent = make_agent(ScriptedLLM(response), RecordingCounter())
     manager = make_manager()
 
-    def unexpected_runtime(model: ModelConfig) -> tuple[LLMClient, ContextBuilder]:
-        raise AssertionError(f"selected model {model.name} rebuilt its runtime")
+    def unexpected_runtime(model: str) -> tuple[LLMClient, ContextBuilder]:
+        raise AssertionError(f"selected model {model} rebuilt its runtime")
 
     _, actual = asyncio.run(
         ModelExecutor(manager, unexpected_runtime).execute(
@@ -466,10 +477,10 @@ def test_executor_moves_to_the_next_model_after_free_tier_exhaustion() -> None:
     assert fallback_llm.calls[0][0] == selected_llm.calls[0][0] == request.messages
     assert fallback_counter.calls == fallback_llm.calls
     assert [m.content for m in agent.state.messages] == ["hello"]
-    failure = executor.failure_for("flash")
+    failure = executor.failure_for("openai/flash")
     assert failure is not None
     assert failure.category == "APIError"
-    assert executor.failure_for("plus") is None
+    assert executor.failure_for("openai/plus") is None
 
 
 def test_executor_records_the_failure_and_clears_it_after_a_success() -> None:
@@ -493,11 +504,11 @@ def test_executor_records_the_failure_and_clears_it_after_a_success() -> None:
     )
 
     assert first.content == "plus answered"
-    flash_failure = executor.failure_for("flash")
+    flash_failure = executor.failure_for("openai/flash")
     assert flash_failure is not None
     assert flash_failure.category == "RateLimitError"
     assert "model request limit" in flash_failure.detail
-    assert executor.failure_for("plus") is None
+    assert executor.failure_for("openai/plus") is None
 
     _, second = asyncio.run(
         executor.execute(
@@ -510,7 +521,7 @@ def test_executor_records_the_failure_and_clears_it_after_a_success() -> None:
     )
 
     assert second.content == "flash answered"
-    assert executor.failure_for("flash") is None
+    assert executor.failure_for("openai/flash") is None
 
 
 def test_executor_failure_detail_stays_short_and_single_line() -> None:
@@ -529,7 +540,7 @@ def test_executor_failure_detail_stays_short_and_single_line() -> None:
             )
         )
 
-    failure = executor.failure_for("flash")
+    failure = executor.failure_for("openai/flash")
     assert failure is not None
     assert failure.category == "RuntimeError"
     assert len(failure.detail) <= 80
@@ -539,11 +550,14 @@ def test_executor_failure_detail_stays_short_and_single_line() -> None:
 def test_executor_aggregates_attempts_and_restarts_the_order_for_a_new_request() -> (
     None
 ):
-    failures = [rate_limit(), rate_limit()]
+    ids = ["openai/flash", "openai/flash-backup", "openai/plus"]
+    failures = [rate_limit() for _ in ids]
     response = LLMResponse(content="next request works")
     llm = ScriptedLLM(*failures, response)
     agent = make_agent(llm, RecordingCounter())
-    manager = make_manager()
+    manager = make_manager(
+        ModelConfig("flash", tuple(ids[:2])), ModelConfig("plus", (ids[2],))
+    )
     executor = make_executor(agent, manager)
 
     async def scenario() -> None:
@@ -555,12 +569,14 @@ def test_executor_aggregates_attempts_and_restarts_the_order_for_a_new_request()
                 current_turn_start=0,
                 tools=[],
             )
-        assert raised.value.errors == (("flash", failures[0]), ("plus", failures[1]))
+        assert raised.value.errors == tuple(zip(ids, failures, strict=True))
         assert raised.value.__cause__ is None
         assert manager.current_model().name == "flash"
         assert [m.content for m in agent.state.messages] == ["hello"]
-        assert executor.failure_for("flash") is not None
-        assert executor.failure_for("plus") is not None
+        assert executor.failure_for("openai/flash") is not None
+        backup_failure = executor.failure_for("openai/flash-backup")
+        assert backup_failure is not None
+        assert executor.failure_for("openai/plus") is not None
 
         _, actual = await executor.execute(
             agent=agent,
@@ -570,9 +586,11 @@ def test_executor_aggregates_attempts_and_restarts_the_order_for_a_new_request()
             tools=[],
         )
         assert actual is response
+        assert executor.failure_for("openai/flash") is None
+        assert executor.failure_for("openai/flash-backup") is backup_failure
 
     asyncio.run(scenario())
-    assert len(llm.calls) == 3
+    assert len(llm.calls) == 4
 
 
 def test_executor_only_attempts_candidates_at_or_after_manual_selection() -> None:
@@ -593,7 +611,7 @@ def test_executor_only_attempts_candidates_at_or_after_manual_selection() -> Non
             )
         )
 
-    assert raised.value.errors == (("plus", failure),)
+    assert raised.value.errors == (("openai/plus", failure),)
     assert len(llm.calls) == 1
     assert manager.current_model().name == "plus"
 
@@ -612,15 +630,24 @@ def test_executor_only_attempts_candidates_at_or_after_manual_selection() -> Non
         asyncio.CancelledError(),
     ],
 )
+@pytest.mark.parametrize("prior_fallback", [False, True])
 def test_executor_propagates_non_fallback_and_cancellation_without_retry(
     failure: BaseException,
+    prior_fallback: bool,
 ) -> None:
-    llm = ScriptedLLM(failure, LLMResponse(content="must not run"))
+    outcomes = [rate_limit(), failure] if prior_fallback else [failure]
+    llm = ScriptedLLM(*outcomes, LLMResponse(content="must not run"))
     agent = make_agent(llm, RecordingCounter())
+    manager = make_manager(
+        ModelConfig(
+            "flash", ("openai/flash", "openai/flash-backup", "openai/flash-third")
+        ),
+        ModelConfig("plus", ("openai/plus",)),
+    )
 
     with pytest.raises(type(failure)) as raised:
         asyncio.run(
-            make_executor(agent, make_manager()).execute(
+            make_executor(agent, manager).execute(
                 agent=agent,
                 system_messages=[],
                 history=agent.state.messages,
@@ -630,7 +657,7 @@ def test_executor_propagates_non_fallback_and_cancellation_without_retry(
         )
 
     assert raised.value is failure
-    assert len(llm.calls) == 1
+    assert len(llm.calls) == len(outcomes)
     assert [m.content for m in agent.state.messages] == ["hello"]
 
 
@@ -654,13 +681,23 @@ def test_executor_context_admission_failure_never_calls_provider() -> None:
     assert [m.content for m in agent.state.messages] == ["hello"]
 
 
-def test_executor_admission_failure_on_a_fallback_never_calls_that_provider() -> None:
+@pytest.mark.parametrize("same_group", [False, True])
+def test_executor_admission_failure_on_a_fallback_never_calls_that_provider(
+    same_group: bool,
+) -> None:
     selected_llm = ScriptedLLM(rate_limit())
     fallback_llm = ScriptedLLM(LLMResponse(content="must not run"))
     agent = make_agent(selected_llm, RecordingCounter(tokens=10))
-    manager = make_manager()
+    manager = (
+        make_manager(
+            ModelConfig("flash", ("openai/flash", "openai/flash-backup")),
+            ModelConfig("plus", ("openai/plus",)),
+        )
+        if same_group
+        else make_manager()
+    )
 
-    def runtime_factory(model: ModelConfig) -> tuple[LLMClient, ContextBuilder]:
+    def runtime_factory(model: str) -> tuple[LLMClient, ContextBuilder]:
         return fallback_llm, ContextBuilder(
             budget=ContextBudget(max_tokens=100, response_tokens=20),
             counter=RecordingCounter(tokens=90),
@@ -679,3 +716,80 @@ def test_executor_admission_failure_on_a_fallback_never_calls_that_provider() ->
 
     assert len(selected_llm.calls) == 1
     assert fallback_llm.calls == []
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        LLMResponse(content="done"),
+        RuntimeError("request failed"),
+        asyncio.CancelledError(),
+    ],
+)
+def test_group_fallback_restarts_after_tools_and_preserves_loop_recovery(
+    outcome: LLMResponse | BaseException,
+) -> None:
+    selected_llm = ScriptedLLM(rate_limit(), rate_limit())
+    fallback_llm = ScriptedLLM(tool_response(), outcome)
+    agent = make_agent(selected_llm, RecordingCounter())
+    agent.state.add_assistant_message("previous answer")
+    previous = list(agent.state.messages)
+    tool = RecordingTool()
+    agent.tools.register_tool(tool)
+    sink = RecordingSink()
+    agent.tracer = Tracer(sink)
+    manager = make_manager(
+        ModelConfig("flash", ("openai/flash", "openai/flash-backup")),
+        ModelConfig("plus", ("openai/plus",)),
+    )
+
+    def runtime_factory(model_id: str) -> tuple[LLMClient, ContextBuilder]:
+        assert model_id == "openai/flash-backup"
+        return fallback_llm, ContextBuilder(
+            budget=ContextBudget(max_tokens=100, response_tokens=20),
+            counter=RecordingCounter(),
+        )
+
+    agent.model_executor = ModelExecutor(manager, runtime_factory)
+    if isinstance(outcome, BaseException):
+        with pytest.raises(type(outcome)) as raised:
+            asyncio.run(run_turn(agent, "record", budget=RunBudget(max_steps=2)))
+        assert raised.value is outcome
+    else:
+        assert (
+            asyncio.run(run_turn(agent, "record", budget=RunBudget(max_steps=2)))
+            == "done"
+        )
+
+    assert len(selected_llm.calls) == len(fallback_llm.calls) == 2
+    assert selected_llm.calls[1][0] == fallback_llm.calls[1][0]
+    assert selected_llm.calls[1][0][-1].role == "tool"
+    assert tool.calls == [{"value": 42}]
+    assert agent.state.messages[:2] == previous
+    assert [message.role for message in agent.state.messages[2:5]] == [
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert agent.state.messages[4].tool_call_id == "call-1"
+    assert len(agent.state.messages) == (5 if isinstance(outcome, BaseException) else 6)
+    assert manager.current_model().name == "flash"
+    assert agent.llm is selected_llm
+
+    attempts = [span for span in sink.spans if span.name == "llm.generate"]
+    assert [
+        (span.attributes["step"], span.attributes["attempt"]) for span in attempts
+    ] == [(1, 1), (1, 2), (2, 1), (2, 2)]
+    assert [span.attributes["model"] for span in attempts] == [
+        "openai/flash",
+        "openai/flash-backup",
+    ] * 2
+    assert all(span.attributes["model_name"] == "flash" for span in attempts)
+    assert all(span.end_time is not None for span in sink.spans)
+    assert sink.spans[-1].status == (
+        SpanStatus.ERROR if isinstance(outcome, BaseException) else SpanStatus.OK
+    )
+    if isinstance(outcome, asyncio.CancelledError):
+        assert attempts[-1].attributes["cancelled"] is True
+    assert "input_tokens" not in sink.spans[-1].attributes
+    assert "output_tokens" not in sink.spans[-1].attributes

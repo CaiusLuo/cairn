@@ -15,15 +15,15 @@ api_key_env = "BAILIAN_API_KEY"
 MODELS_TOML = """\
 [[models]]
 name = "flash"
-model_id = "openai/qwen-flash"
+model_ids = ["openai/qwen-flash", "openai/qwen-flash-backup"]
 
 [[models]]
 name = "plus"
-model_id = "openai/qwen-plus"
+model_ids = ["openai/qwen-plus"]
 
 [[models]]
 name = "max"
-model_id = "openai/qwen-max"
+model_ids = ["openai/qwen-max"]
 """
 
 
@@ -43,9 +43,9 @@ def test_load_model_config_preserves_order_and_supports_model_selection(
         base_url="https://example.com/v1",
         api_key_env="BAILIAN_API_KEY",
         model_config=(
-            ModelConfig("flash", "openai/qwen-flash"),
-            ModelConfig("plus", "openai/qwen-plus"),
-            ModelConfig("max", "openai/qwen-max"),
+            ModelConfig("flash", ("openai/qwen-flash", "openai/qwen-flash-backup")),
+            ModelConfig("plus", ("openai/qwen-plus",)),
+            ModelConfig("max", ("openai/qwen-max",)),
         ),
     )
     manager = ModelManager(config)
@@ -66,19 +66,20 @@ def test_load_model_config_preserves_order_and_supports_model_selection(
         (PROVIDER_TOML, "models"),
         (PROVIDER_TOML + "models = []", "models"),
         (PROVIDER_TOML + 'models = "flash"', "models"),
+        (PROVIDER_TOML + '[models]\nname = "flash"', "models"),
         (PROVIDER_TOML + "models = [1]", "models[0]"),
         (
             PROVIDER_TOML + '[[models]]\nmodel_id = "openai/qwen-flash"',
             "models[0].name",
         ),
-        (PROVIDER_TOML + '[[models]]\nname = "flash"', "models[0].model_id"),
+        (PROVIDER_TOML + '[[models]]\nname = "flash"', "models[0].model_ids"),
         (
             PROVIDER_TOML + MODELS_TOML.replace('name = "flash"', "name = []"),
             "models[0].name",
         ),
         (
             PROVIDER_TOML + MODELS_TOML.replace('"openai/qwen-flash"', '" "'),
-            "models[0].model_id",
+            "models[0].model_ids",
         ),
         (
             PROVIDER_TOML + MODELS_TOML.replace('name = "plus"', 'name = "flash"'),
@@ -94,6 +95,70 @@ def test_load_model_config_rejects_invalid_values(
 
     with pytest.raises(ValueError, match=re.escape(field)):
         load_model_config(path)
+
+
+@pytest.mark.parametrize(
+    "ids",
+    [
+        "[]",
+        '"openai/a"',
+        "42",
+        "{}",
+        "[1]",
+        "[true]",
+        '[""]',
+        '["  "]',
+        '["openai/a", ""]',
+        '["openai/a", ["openai/b"]]',
+        '[{id = "openai/a"}]',
+    ],
+)
+def test_load_model_config_rejects_invalid_ids(tmp_path: Path, ids: str) -> None:
+    path = tmp_path / "models.toml"
+    path.write_text(PROVIDER_TOML + f'[[models]]\nname = "flash"\nmodel_ids = {ids}')
+
+    with pytest.raises(ValueError, match=r"models\[0\].model_ids"):
+        load_model_config(path)
+
+
+def test_load_model_config_rejects_duplicate_ids_within_a_group(tmp_path: Path) -> None:
+    path = tmp_path / "models.toml"
+    path.write_text(
+        PROVIDER_TOML + MODELS_TOML.replace("qwen-flash-backup", "qwen-flash")
+    )
+
+    with pytest.raises(ValueError, match="Duplicate model IDs"):
+        load_model_config(path)
+
+
+@pytest.mark.parametrize("new_field", ["", '\nmodel_ids = ["openai/b"]'])
+def test_load_model_config_rejects_old_field_with_replacement_hint(
+    tmp_path: Path, new_field: str
+) -> None:
+    path = tmp_path / "models.toml"
+    path.write_text(
+        PROVIDER_TOML + '[[models]]\nname = "flash"\nmodel_id = "openai/a"' + new_field
+    )
+
+    with pytest.raises(
+        ValueError, match=r"model_id is no longer supported;.*model_ids = \["
+    ):
+        load_model_config(path)
+
+
+def test_load_model_config_allows_the_same_id_in_different_groups(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "models.toml"
+    path.write_text(PROVIDER_TOML + MODELS_TOML.replace("qwen-plus", "qwen-flash"))
+
+    config = load_model_config(path)
+
+    assert config.model_config[0].model_ids == (
+        "openai/qwen-flash",
+        "openai/qwen-flash-backup",
+    )
+    assert config.model_config[1].model_ids == ("openai/qwen-flash",)
 
 
 def test_load_model_config_reports_missing_file(tmp_path: Path) -> None:
@@ -123,7 +188,7 @@ def test_runtime_provider_accepts_https_and_loopback_http(endpoint: str) -> None
         ProviderConfig(
             base_url=endpoint,
             api_key_env="BAILIAN_API_KEY",
-            model_config=(ModelConfig("flash", "openai/qwen-flash"),),
+            model_config=(ModelConfig("flash", ("openai/qwen-flash",)),),
         )
     )
 
@@ -182,6 +247,6 @@ def test_runtime_provider_rejects_unsafe_or_unusable_routing(
             ProviderConfig(
                 base_url=endpoint,
                 api_key_env=env_name,
-                model_config=(ModelConfig(name, model_id),),
+                model_config=(ModelConfig(name, ("openai/valid", model_id)),),
             )
         )

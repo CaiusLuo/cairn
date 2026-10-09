@@ -21,7 +21,7 @@ def confirm_model_provider(config: ProviderConfig) -> bool:
     console.print(f"Endpoint: {config.base_url!a}", markup=False)
     console.print(f"Credential variable: {config.api_key_env!a}", markup=False)
     for model in config.model_config:
-        console.print(f"  {model.name!a}: {model.model_id!a}", markup=False)
+        console.print(f"  {model.name!a}: {model.model_ids!a}", markup=False)
     console.print(
         "The selected API key and conversation will be sent to this provider."
     )

@@ -56,7 +56,8 @@ uv run cairn
 
 ## Model configuration
 
-For multiple models, create `.cairn/models.toml` in your working directory:
+For ordered model groups under one provider, create `.cairn/models.toml` in your
+working directory:
 
 ```toml
 base_url = "https://example.com/v1"
@@ -64,31 +65,43 @@ api_key_env = "BAILIAN_API_KEY"
 
 [[models]]
 name = "flash"
-model_id = "openai/qwen-flash"
+model_ids = ["openai/model-a", "openai/model-b"]
 
 [[models]]
 name = "plus"
-model_id = "openai/qwen-plus"
+model_ids = ["openai/model-c"]
 ```
 
 Set `BAILIAN_API_KEY` in your shell or `.env`; keep the key out of TOML. Cairn
-uses the first configured model by default. Without TOML it uses the single-model
-settings above; invalid TOML stops startup.
+uses the first configured group by default. Group names must be unique, and each
+`model_ids` array must contain one or more nonblank strings without duplicates.
+The old `model_id` field is rejected; replace it with a `model_ids` array.
+Without TOML, Cairn uses the single-model settings above as a one-ID group;
+invalid TOML stops startup. Cairn does not generate, migrate or rewrite TOML.
 
 Each TOML-based startup requires explicit terminal approval of the provider and
 credential variable, defaulting to no. Endpoints require HTTPS except for
 loopback HTTP services. Review the endpoint and model IDs before approving.
 
-Use `/model use plus` to switch for the current session without losing history
-or rewriting TOML. Token counting follows the selected model; budget settings
-remain shared. A model-level rate or quota rejection tries the remaining models
-in order; `/model list` notes each model's most recent failure.
+Use `/model use plus` to select a group for the current session without losing
+history. Each completion starts at that group's first ID. An eligible fallback
+error tries the next ID in the same group, then the next group only after all
+IDs in the current group fail. The example order is `model-a -> model-b ->
+model-c`; selecting `plus` starts directly at `model-c`. Other errors stop
+immediately. Fallback success does not change the selected group.
+
+Each attempt uses its concrete model's client and token counter and checks the
+context budget before sending a request. Budget settings, endpoint and API key
+remain shared. `/model list` shows groups, ordered IDs and the most recent
+failure per ID. Failures are session diagnostics only and never skip candidates.
+Provider selection, cross-provider fallback and persistent config editing are
+not supported. Keep `.env` and `.cairn/models.toml` local; both are gitignored.
 
 ## CLI commands
 
 | Command | Purpose |
 | --- | --- |
-| `/model`, `/model list`, `/model use <name>` | Inspect or switch models |
+| `/model`, `/model list`, `/model use <name>` | Inspect or switch model groups |
 | `/trace`, `/trace <ID>`, `/trace list [N]` | Inspect saved traces |
 | `/help [COMMAND]` | Full command usage, including trace management |
 | `/exit`, `/quit` | End the session |

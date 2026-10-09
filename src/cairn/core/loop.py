@@ -180,6 +180,7 @@ async def run_turn(
         request: ContextRequest,
         context_budget: ContextBudget,
         model: ModelConfig | None,
+        model_id: str | None,
         attempt: int,
     ) -> None:
         """Open a span and record admission metadata for one provider call."""
@@ -213,9 +214,7 @@ async def run_turn(
             "context_omitted_messages": request.omitted_messages,
         }
         if model is not None:
-            attributes.update(
-                model=model.model_id, model_name=model.name, attempt=attempt
-            )
+            attributes.update(model=model_id, model_name=model.name, attempt=attempt)
         llm_span = agent.tracer.start_child_span(
             turn_span, "llm.generate", attributes=attributes
         )
