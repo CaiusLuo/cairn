@@ -14,6 +14,7 @@ from tomlkit.items import Array, Null, Whitespace
 
 from cairn.core.context import ContextBudget
 from cairn.llm.model_manager import ModelConfig, ProviderConfig
+from cairn.llm.provider_catalog import NamedProvider, ProviderCatalog
 from cairn.workspace.paths import resolve_workspace_path
 
 CAIRN_CONFIG_ENV_NAMES = ("CAIRN_LLM_MODEL", "CAIRN_LLM_API_KEY", "CAIRN_BASE_URL")
@@ -31,43 +32,114 @@ def load_model_config(path: Path = Path(".cairn/models.toml")) -> ProviderConfig
     return _parse_model_config(values)
 
 
+def load_provider_catalog(path: Path = Path(".cairn/models.toml")) -> ProviderCatalog:
+    """Load every named provider without resolving credentials.
+
+    This reads the multi-provider ``[[providers]]`` layout and is separate from
+    :func:`load_model_config`, which keeps loading the legacy single-provider
+    layout. Relative paths are resolved from the caller's working directory.
+    File and TOML parsing errors propagate; invalid configuration values raise
+    ValueError.
+    """
+    with path.open("rb") as source:
+        values = tomllib.load(source)
+
+    return _parse_provider_catalog(values)
+
+
+def _parse_provider_catalog(values: Mapping[str, object]) -> ProviderCatalog:
+    legacy_keys = [
+        key for key in ("base_url", "api_key_env", "models") if key in values
+    ]
+    if legacy_keys:
+        fields = ", ".join(legacy_keys)
+        if "providers" in values:
+            raise ValueError(
+                "Configuration mixes the legacy single-provider layout "
+                f"({fields}) with [[providers]]; keep only one layout."
+            )
+        raise ValueError(
+            "Configuration uses the legacy single-provider layout "
+            f"({fields}); load it with load_model_config() or migrate it to "
+            "[[providers]]."
+        )
+
+    provider_values = values.get("providers")
+    if not isinstance(provider_values, list) or not provider_values:
+        raise ValueError("providers must be a non-empty array of tables.")
+
+    providers: list[NamedProvider] = []
+    names: set[str] = set()
+    for index, provider in enumerate(provider_values):
+        field = f"providers[{index}]"
+        if not isinstance(provider, dict):
+            raise ValueError(f"{field} must be a table.")
+        name = _required_string(provider.get("name"), f"{field}.name")
+        if not name.isprintable() or any(character.isspace() for character in name):
+            raise ValueError(
+                f"{field}.name must be printable and contain no whitespace."
+            )
+        if name in names:
+            raise ValueError(f"Duplicate provider name: {name!r}.")
+        names.add(name)
+        config = ProviderConfig(
+            base_url=_required_string(provider.get("base_url"), f"{field}.base_url"),
+            api_key_env=_required_string(
+                provider.get("api_key_env"), f"{field}.api_key_env"
+            ),
+            model_config=_parse_model_groups(provider.get("models"), f"{field}.models"),
+        )
+        try:
+            validate_runtime_provider(config)
+        except ValueError as error:
+            raise ValueError(f"{field}: {error}") from None
+        providers.append(NamedProvider(name=name, config=config))
+
+    return ProviderCatalog(providers=tuple(providers))
+
+
 def _parse_model_config(values: Mapping[str, object]) -> ProviderConfig:
     base_url = _required_string(values.get("base_url"), "base_url")
     api_key_env = _required_string(values.get("api_key_env"), "api_key_env")
-    model_values = values.get("models")
+
+    return ProviderConfig(
+        base_url=base_url,
+        api_key_env=api_key_env,
+        model_config=_parse_model_groups(values.get("models"), "models"),
+    )
+
+
+def _parse_model_groups(model_values: object, field: str) -> tuple[ModelConfig, ...]:
     if not isinstance(model_values, list) or not model_values:
-        raise ValueError("models must be a non-empty array of tables.")
+        raise ValueError(f"{field} must be a non-empty array of tables.")
 
     models: list[ModelConfig] = []
     names: set[str] = set()
     for index, model in enumerate(model_values):
+        group = f"{field}[{index}]"
         if not isinstance(model, dict):
-            raise ValueError(f"models[{index}] must be a table.")
-        name = _required_string(model.get("name"), f"models[{index}].name")
+            raise ValueError(f"{group} must be a table.")
+        name = _required_string(model.get("name"), f"{group}.name")
         if "model_id" in model:
             raise ValueError(
-                f"models[{index}].model_id is no longer supported; remove it and "
+                f"{group}.model_id is no longer supported; remove it and "
                 'use model_ids = ["provider/model"] instead.'
             )
         model_ids = model.get("model_ids")
         if not isinstance(model_ids, list) or not model_ids:
-            raise ValueError(f"models[{index}].model_ids must be a non-empty array.")
+            raise ValueError(f"{group}.model_ids must be a non-empty array.")
         ids = tuple(
-            _required_string(value, f"models[{index}].model_ids[{position}]")
+            _required_string(value, f"{group}.model_ids[{position}]")
             for position, value in enumerate(model_ids)
         )
         if len(set(ids)) != len(ids):
-            raise ValueError(f"Duplicate model IDs in models[{index}].model_ids.")
+            raise ValueError(f"Duplicate model IDs in {group}.model_ids.")
         if name in names:
             raise ValueError(f"Duplicate model name: {name!r}.")
         names.add(name)
         models.append(ModelConfig(name=name, model_ids=ids))
 
-    return ProviderConfig(
-        base_url=base_url,
-        api_key_env=api_key_env,
-        model_config=tuple(models),
-    )
+    return tuple(models)
 
 
 def add_model_id(group: str, model_id: str) -> None:
