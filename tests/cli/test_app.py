@@ -805,3 +805,25 @@ def test_interactive_trace_read_errors_keep_session_available(
     assert expected_error in result.stdout.lower()
     assert "Available commands:" in result.stdout
     assert "Goodbye! see you next time." in result.stdout
+
+
+def test_default_cli_keeps_original_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_environment(monkeypatch, ENVIRONMENT)
+    _set_cli_inputs(monkeypatch, "/quit")
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    captured: list[Path] = []
+
+    def capture_agent(**kwargs: Any) -> Agent:
+        captured.append(kwargs["workspace"].root)
+        return build_agent(**kwargs)
+
+    monkeypatch.setattr(cli_module, "build_agent", capture_agent)
+    _forbid_model_calls(monkeypatch, "Quitting should not call a model")
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert captured == [tmp_path.resolve()]
+    assert not (tmp_path / ".git").exists()

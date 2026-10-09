@@ -178,6 +178,12 @@ just the active one; credential values never appear in prompts, traces or CLI
 output. Accessible credential files can still be read by tools, so this is not
 complete secret-file isolation.
 
+## Isolated workspaces
+
+Local Git worktrees provide isolated workspaces for coding tasks, with automatic
+cleanup and an option to retain work for later. The interactive CLI continues to
+use your original workspace.
+
 ## Source layout
 
 ```text
@@ -186,6 +192,7 @@ src/cairn/
 ├── llm/           # Model configuration, selection, clients, token counting
 ├── tools/         # Bash and file tools
 ├── workspace/     # Filesystem roots and path boundaries
+├── git/           # Local worktree creation, retention, and cleanup
 ├── observability/ # Trace recording and storage
 ├── terminal/      # CLI input, output, and slash commands
 ├── evals/         # Evaluation cases, checks, and runner

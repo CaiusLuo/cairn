@@ -16,6 +16,7 @@ Tests are grouped by the runtime component whose contract they verify:
 | `test_provider_session.py` | Multi-provider startup selection, approval, switching, rollback, history and credential scoping |
 | `test_repository.py` | Fresh Git repository context and bounded status output |
 | `workspace/` | Workspace roots and directory ownership |
+| `git/` | Real local worktrees, ownership, retain/release, partial rollback, bounded subprocesses and cancellation |
 | `support/` | Shared deterministic runtime doubles and native sandbox readiness helpers |
 
 Name test modules after the behavior or component within their package. Keep
