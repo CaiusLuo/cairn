@@ -4,6 +4,8 @@ from cairn.evals import (
     CheckResult,
     EvalCase,
     EvalCheck,
+    EvalSuite,
+    EvalSuiteCase,
     FileContainsCheck,
     FileContentEqualsCheck,
     FileExistsCheck,
@@ -176,5 +178,15 @@ def coding_smoke_cases() -> tuple[SmokeCase, ...]:
                 files={"src/slug.py": slug},
             ),
             (FileContentEqualsCheck("src/slug.py", slug),),
+        ),
+    )
+
+
+def coding_smoke_suite() -> EvalSuite:
+    """The original five prompts, fixtures and checks in their original order."""
+    return EvalSuite(
+        name="coding-smoke",
+        cases=tuple(
+            EvalSuiteCase(case, checks) for case, checks in coding_smoke_cases()
         ),
     )

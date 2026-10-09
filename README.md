@@ -227,5 +227,5 @@ See [tests/README.md](tests/README.md) for test organization. To run the
 provider, configure the `CAIRN_LLM_*` and `CAIRN_BASE_URL` settings above, then run:
 
 ```bash
-uv run python examples/evals/run_coding_smoke.py
+uv run python examples/evals/run_coding_smoke.py --report .cairn/eval-reports/coding-smoke.json
 ```

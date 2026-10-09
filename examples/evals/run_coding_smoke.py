@@ -1,16 +1,16 @@
 """Run the small coding corpus using the normal Cairn model configuration."""
 
+import argparse
 import asyncio
 import os
 import sys
-from collections import Counter
 from pathlib import Path
 
 from dotenv import dotenv_values
 
 from cairn.config import resolve_cairn_config
 from cairn.core.budget import RunBudget
-from cairn.evals import EvalResult, EvalRunner, EvalStatus
+from cairn.evals import EvalResult, EvalRunner, EvalStatus, EvalSuiteRunner
 from cairn.llm.litellm_client import LiteLLMClient
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.tracer import Tracer
@@ -19,7 +19,7 @@ if not __package__:
     # Support the documented file invocation as well as package imports.
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from examples.evals.coding_smoke_cases import coding_smoke_cases
+from examples.evals.coding_smoke_cases import coding_smoke_suite
 
 
 def print_result(result: EvalResult) -> None:
@@ -39,7 +39,7 @@ def print_result(result: EvalResult) -> None:
             print(f"  - {check.name}: {detail}", flush=True)
 
 
-async def main() -> int:
+async def main(destination: Path) -> int:
     try:
         config = resolve_cairn_config(os.environ, dotenv_values())
     except ValueError as exc:
@@ -59,19 +59,26 @@ async def main() -> int:
     )
 
     print("coding smoke evals\n", flush=True)
-    counts: Counter[EvalStatus] = Counter()
-    for case, checks in coding_smoke_cases():
-        result = await runner.run(case, checks=checks)
-        print_result(result)
-        counts[result.status] += 1
+    try:
+        report = await EvalSuiteRunner(runner).run(
+            coding_smoke_suite(), destination=destination, on_result=print_result
+        )
+    except OSError:
+        print("Could not persist the suite report.", file=sys.stderr)
+        return 2
 
     print(
-        f"\n{counts[EvalStatus.PASS]} passed, "
-        f"{counts[EvalStatus.FAIL]} failed, {counts[EvalStatus.ERROR]} errors",
+        f"\n{report.counts.passed} passed, "
+        f"{report.counts.failed} failed, {report.counts.errors} errors",
         flush=True,
     )
-    return 1 if counts[EvalStatus.FAIL] or counts[EvalStatus.ERROR] else 0
+    print(f"Report: {destination}", flush=True)
+    return 1 if report.counts.failed or report.counts.errors else 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--report", type=Path, required=True, help="JSON report destination"
+    )
+    raise SystemExit(asyncio.run(main(parser.parse_args().report)))
