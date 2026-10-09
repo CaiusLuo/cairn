@@ -138,3 +138,36 @@ def test_invalid_choice_fails_closed(choice: object) -> None:
         handler(network_call())
 
     assert handler.grants == set()
+
+
+def test_reset_grants_drops_session_grants_and_prompts_again() -> None:
+    prompts: list[PermissionRequest] = []
+
+    def prompt(request: PermissionRequest) -> PermissionChoice:
+        prompts.append(request)
+        return PermissionChoice.ALLOW_SESSION
+
+    handler = SessionPermissionHandler(prompt)
+    assert handler(network_call()).source == PermissionSource.USER_SESSION
+    assert handler.grants == {PermissionCapability.NETWORK}
+
+    handler.reset_grants()
+
+    assert handler.grants == set()
+    # The next ASK decision is prompted again instead of reusing the grant.
+    after_reset = handler(network_call())
+    assert after_reset.source == PermissionSource.USER_SESSION
+    assert after_reset.prompted
+    assert len(prompts) == 2
+
+
+def test_reset_grants_keeps_the_global_policy_unchanged() -> None:
+    handler = SessionPermissionHandler()
+    handler.reset_grants()
+
+    denied = handler(bash_call("sudo rm -rf /"))
+    assert not denied.allowed
+    assert denied.source == PermissionSource.POLICY_DENY
+    allowed = handler(bash_call("git status --short"))
+    assert allowed.allowed
+    assert allowed.source == PermissionSource.BASELINE

@@ -1,5 +1,7 @@
 import asyncio
 import os
+from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import typer
@@ -8,19 +10,20 @@ from dotenv import dotenv_values
 from cairn.assembly import build_agent
 from cairn.config import CAIRN_CONFIG_ENV_NAMES as CAIRN_CONFIG_ENV_NAMES
 from cairn.config import (
-    load_model_config,
+    ConfigLayout,
+    environment_provider,
+    load_project_providers,
     resolve_provider_api_key,
-    validate_runtime_provider,
 )
 from cairn.config import resolve_cairn_config as resolve_cairn_config
 from cairn.config import resolve_context_budget as resolve_context_budget
 from cairn.core.budget import RunBudget, RunBudgetExceeded
-from cairn.core.context import ContextBuilder
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.core.permissions import SessionPermissionHandler
-from cairn.llm.model_executor import ModelExecutor
-from cairn.llm.model_manager import ModelConfig, ModelManager, ProviderConfig
+from cairn.llm.model_manager import ModelConfig
+from cairn.llm.provider_catalog import NamedProvider, ProviderCatalog
+from cairn.llm.provider_runtime import ProviderRuntime, build_provider_runtime
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.storage import TraceStore
 from cairn.observability.tracer import Tracer
@@ -28,11 +31,14 @@ from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.router import CommandRouter
 from cairn.terminal.input import CliInput
 from cairn.terminal.output import (
-    confirm_model_provider,
+    choose_model_group,
+    choose_provider,
+    confirm_provider_access,
     console_event_handler,
     console_permission_prompt,
     print_assistant_response,
     print_banner,
+    print_provider_selection,
     print_runtime_error,
 )
 from cairn.workspace.workspace import Workspace
@@ -51,65 +57,66 @@ def root(ctx: typer.Context) -> None:
         asyncio.run(main())
 
 
+def select_startup_provider(
+    providers: Sequence[NamedProvider],
+) -> tuple[NamedProvider, ModelConfig]:
+    """Choose the session's first provider and model group from TOML.
+
+    One provider is selected automatically; several require an explicit choice
+    before any runtime exists. A model group is offered only for multi-provider
+    startup; the first configured group is the default otherwise.
+    """
+    if len(providers) == 1:
+        provider = providers[0]
+        return provider, provider.config.model_config[0]
+
+    provider = choose_provider(providers)
+    if len(provider.config.model_config) == 1:
+        return provider, provider.config.model_config[0]
+    return provider, choose_model_group(provider)
+
+
 async def main(cli_input: CliInput | None = None) -> None:
     env_file_values = dotenv_values()
     model_path = Path(".cairn/models.toml")
-    try:
-        model_path.lstat()
-    except FileNotFoundError:
-        config = resolve_cairn_config(os.environ, env_file_values)
-        provider = ProviderConfig(
-            base_url=config["CAIRN_BASE_URL"],
-            api_key_env="CAIRN_LLM_API_KEY",
-            model_config=(
-                ModelConfig(
-                    name=config["CAIRN_LLM_MODEL"],
-                    model_ids=(config["CAIRN_LLM_MODEL"],),
-                ),
-            ),
-        )
+    project = load_project_providers(model_path)
+
+    if project.layout is ConfigLayout.ENV:
+        # No TOML exists: the existing single-model .env contract is unchanged.
+        provider = environment_provider(os.environ, env_file_values)
+        selected_group = provider.config.model_config[0]
     else:
-        # Existing but unreadable/invalid files (including dangling symlinks)
-        # must not silently select a different provider or credential.
-        provider = load_model_config(model_path)
-        validate_runtime_provider(provider)
-        if confirm_model_provider(provider) is not True:
+        provider, selected_group = select_startup_provider(project.providers)
+        if (
+            confirm_provider_access(provider, selected_group, switching=False)
+            is not True
+        ):
             raise ValueError(
                 "Project model provider was not approved for this session."
             )
+        print_provider_selection(provider, selected_group)
 
-    api_key = resolve_provider_api_key(provider, os.environ, env_file_values)
-    model_manager = ModelManager(provider)
+    # Only the selected provider's credential is resolved, and only after its
+    # configuration was validated and approved.
+    api_key = resolve_provider_api_key(provider.config, os.environ, env_file_values)
     context_budget = resolve_context_budget(os.environ, env_file_values)
-
-    from cairn.llm.litellm_client import LiteLLMClient
-    from cairn.llm.token_counter import LiteLLMTokenCounter
-
-    def create_model_runtime(
-        model_id: str,
-    ) -> tuple[LiteLLMClient, ContextBuilder]:
-        return (
-            LiteLLMClient(
-                model=model_id,
-                api_key=api_key,
-                api_base=provider.base_url,
-                max_output_tokens=context_budget.response_tokens,
-            ),
-            ContextBuilder(
-                budget=context_budget,
-                counter=LiteLLMTokenCounter(model_id),
-            ),
-        )
-
-    llm, context_builder = create_model_runtime(
-        model_manager.current_model().model_ids[0]
+    active_runtime = build_provider_runtime(
+        provider, api_key, context_budget, group=selected_group.name
     )
+
     print_banner()
 
     workspace = Workspace(Path.cwd())
     trace_root = Path(".cairn/traces")
     tracer = Tracer(JsonlTraceSink(trace_root))
     command_context = CommandContext(trace_store=TraceStore(trace_root))
+    permission_handler = SessionPermissionHandler(prompt=console_permission_prompt)
+    # The .env layout declares no catalog; its implicit provider is the only one.
+    catalog = ProviderCatalog(providers=project.providers or (provider,))
+    # Every configured credential variable is withheld from Bash children,
+    # including providers this session has not selected.
+    secret_env_keys = frozenset(named.config.api_key_env for named in catalog.providers)
+
     pending_trace_finish: Event | None = None
 
     def handle_event(event: Event) -> None:
@@ -123,34 +130,82 @@ async def main(cli_input: CliInput | None = None) -> None:
             return
         console_event_handler(event)
 
-    model_executor = ModelExecutor(model_manager, create_model_runtime)
     agent = build_agent(
         workspace=workspace,
-        llm=llm,
+        llm=active_runtime.llm,
         event_handler=handle_event,
-        permission_handler=SessionPermissionHandler(prompt=console_permission_prompt),
+        permission_handler=permission_handler,
         tracer=tracer,
-        context_builder=context_builder,
-        secret_env_keys=frozenset({provider.api_key_env}),
-        model_executor=model_executor,
+        context_builder=active_runtime.context_builder,
+        secret_env_keys=secret_env_keys,
+        model_executor=active_runtime.model_executor,
     )
 
+    def activate(runtime: ProviderRuntime) -> None:
+        """Commit one fully built provider runtime to every session holder."""
+        nonlocal active_runtime
+        active_runtime = runtime
+        agent.llm = runtime.llm
+        agent.context_builder = runtime.context_builder
+        agent.model_executor = runtime.model_executor
+        agent.provider_name = runtime.provider.name
+        command_context.model_manager = runtime.model_manager
+        command_context.model_executor = runtime.model_executor
+        command_context.active_provider_name = runtime.provider.name
+
     def select_model(name: str) -> ModelConfig:
-        previous = model_manager.current_model()
-        selected = model_manager.select_model(name)
+        runtime = active_runtime
+        manager = runtime.model_manager
+        previous = manager.current_model()
+        selected = manager.select_model(name)
         try:
-            next_llm, next_context = create_model_runtime(selected.model_ids[0])
+            next_llm, next_context = runtime.runtime_factory(selected.model_ids[0])
         except Exception:
-            model_manager.select_model(previous.name)
+            manager.select_model(previous.name)
             raise
         # The CLI handles commands between turns. No await separates the pair,
         # and the existing Agent (state, tools, permissions and tracer) is kept.
-        agent.llm, agent.context_builder = next_llm, next_context
+        activate(replace(runtime, llm=next_llm, context_builder=next_context))
         return selected
 
-    command_context.model_manager = model_manager
-    command_context.model_executor = model_executor
+    def select_provider(name: str) -> None:
+        runtime = active_runtime
+        target = next(
+            (named for named in catalog.providers if named.name == name), None
+        )
+        if target is None:
+            raise ValueError(f"Provider {name!r} is not configured in this session.")
+        if target.name == runtime.provider.name:
+            # Already active: keep the runtime, selection and grants untouched.
+            return
+
+        group = target.config.model_config[0]
+        if confirm_provider_access(target, group, switching=True) is not True:
+            raise ValueError(f"Provider {name!r} was not approved for this session.")
+        credential = resolve_provider_api_key(
+            target.config, os.environ, env_file_values
+        )
+        # Build the target completely before committing anything: a construction
+        # failure leaves the active provider, its selection and its grants usable.
+        try:
+            candidate = build_provider_runtime(
+                target, credential, context_budget, group=group.name
+            )
+        except Exception as exc:
+            # Never echo a construction diagnostic that may embed a credential.
+            raise ValueError(
+                f"Provider {name!r} could not be activated "
+                f"({type(exc).__name__}); the current provider is unchanged."
+            ) from None
+        activate(candidate)
+        permission_handler.reset_grants()
+
     command_context.select_model = select_model
+    command_context.select_provider = select_provider
+    command_context.provider_catalog = catalog
+    # Commands run between turns only, so a switch can never race a turn.
+    activate(active_runtime)
+
     router = CommandRouter()
     input_reader = cli_input or CliInput()
 

@@ -8,10 +8,12 @@ Tests are grouped by the runtime component whose contract they verify:
 | `tools/` | Bash execution and sandbox enforcement, bounded file reads, guarded edits, path boundaries and tool registry |
 | `cli/` | CLI configuration, TOML provider trust and session model switching through real turns, credential isolation, input, permission choices and compact event rendering |
 | `evals/` | Bounded file and content checks, coding-smoke cases, runner behavior and lifecycle |
-| `llm/` | LiteLLM request/response adaptation, model-aware token counting and labelled fallback estimates |
+| `llm/` | LiteLLM request/response adaptation, model-aware token counting, provider runtime binding and labelled fallback estimates |
 | `observability/` | JSONL trace storage, listing/deletion, bounded prefix resolution, diagnostics and failure handling |
 | `test_config.py` | Model TOML loading, ordered model selection, and configuration validation |
 | `test_provider_catalog.py` | Multi-provider catalog TOML loading, layout validation and legacy contract preservation |
+| `test_project_config.py` | Provider layout detection across .env, legacy TOML and catalog TOML |
+| `test_provider_session.py` | Multi-provider startup selection, approval, switching, rollback, history and credential scoping |
 | `test_repository.py` | Fresh Git repository context and bounded status output |
 | `workspace/` | Workspace roots and directory ownership |
 | `support/` | Shared deterministic runtime doubles and native sandbox readiness helpers |

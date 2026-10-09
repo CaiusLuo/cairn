@@ -56,38 +56,93 @@ uv run cairn
 
 ## Model configuration
 
-For ordered model groups under one provider, create `.cairn/models.toml` in your
-working directory:
+Cairn reads model configuration from one of three sources:
 
-```toml
-base_url = "https://example.com/v1"
-api_key_env = "BAILIAN_API_KEY"
+- **`.cairn/models.toml`, legacy layout** — a single provider:
 
-[[models]]
-name = "flash"
-model_ids = ["openai/model-a", "openai/model-b"]
+  ```toml
+  base_url = "https://example.com/v1"
+  api_key_env = "BAILIAN_API_KEY"
 
-[[models]]
-name = "plus"
-model_ids = ["openai/model-c"]
-```
+  [[models]]
+  name = "flash"
+  model_ids = ["openai/model-a", "openai/model-b"]
 
-Set `BAILIAN_API_KEY` in your shell or `.env`, never in TOML. Cairn asks for
-provider approval at startup. Without TOML, it uses the single-model `.env`
-settings; invalid TOML stops startup. Both files are gitignored.
+  [[models]]
+  name = "plus"
+  model_ids = ["openai/model-c"]
+  ```
 
-The first group is selected by default. `/model use plus` switches groups without
-losing history. Each completion starts at the selected group's first ID and,
-on eligible failures, tries the remaining IDs followed by subsequent groups.
-The example order is `model-a → model-b → model-c`; selecting `plus` starts at
-`model-c`. Other errors stop immediately. Fallback does not change selection.
-`/model list` shows the loaded groups and recent failures.
+- **`.cairn/models.toml`, catalog layout** — several named providers:
+
+  ```toml
+  [[providers]]
+  name = "bailian"
+  base_url = "https://example.com/v1"
+  api_key_env = "BAILIAN_API_KEY"
+
+  [[providers.models]]
+  name = "flash"
+  model_ids = ["openai/model-a"]
+
+  [[providers]]
+  name = "local"
+  base_url = "http://localhost:8000/v1"
+  api_key_env = "LOCAL_API_KEY"
+
+  [[providers.models]]
+  name = "default"
+  model_ids = ["openai/local-model"]
+  ```
+
+- **`.env` only** (no TOML) — the single-model `CAIRN_*` settings above.
+
+The layout is detected from the file: a file that declares `providers` uses the
+catalog layout, and every other existing file must satisfy the legacy contract.
+Mixed layouts, duplicate provider or group names, empty provider/group/model
+lists and invalid endpoints or key variable names are rejected. A file that
+exists but is invalid stops startup rather than falling back to `.env`; `.env`
+settings are never migrated into TOML. Credential values are not resolved while
+parsing, and no credential is read for a provider the session does not use.
+
+Set each provider's key variable in your shell or `.env`, never in TOML. With
+one provider Cairn selects it automatically; with several it asks which one to
+use before any runtime exists. Startup then displays the selected provider, model
+group and model IDs, and asks for approval showing the provider name, endpoint,
+credential variable and a notice that prompts and conversation content are sent
+to that endpoint. Credentials are resolved only after approval, and only for the
+selected provider.
+
+The first group is selected by default; multi-provider startup also offers an
+explicit group choice. `/model use plus` switches groups without losing history.
+Each completion starts at the selected group's first ID and, on eligible
+failures, tries the remaining IDs followed by subsequent groups. The example
+order is `model-a → model-b → model-c`; selecting `plus` starts at `model-c`.
+Other errors stop immediately. Fallback never leaves the active provider and
+does not change selection. `/model list` shows the loaded groups and recent
+failures.
+
+### Providers
+
+`/provider` shows the active provider, its endpoint, credential variable and
+current group. `/provider list` lists configured providers. `/provider use local`
+switches provider after displaying the target endpoint, credential variable,
+models and a warning that the conversation history is transferred, then asks for
+approval. Only the target credential is resolved, and the switch commits only
+after the target runtime is fully built, so denied approval, a missing credential
+or a failed construction leaves the previous provider usable with its selection
+and permission grants. A successful switch starts at the target's first model
+group and resets session tool-permission grants; conversation history, workspace,
+tools and traces are preserved. Commands run between turns only, so a provider
+can never change mid-turn and model output is never executed as a command.
 
 `/model add flash openai/model-d` appends an ID; `/model remove flash openai/model-d`
 removes it. Both preserve comments and remaining order, change only local TOML,
 and require a restart and provider approval to take effect. Groups must already
-exist; duplicate IDs and removing a group's final ID are rejected. Cairn does
-not migrate `.env`, reload configuration or support multiple providers.
+exist; duplicate IDs and removing a group's final ID are rejected. In the catalog
+layout these edits apply to the active provider's group only, and every other
+provider keeps its groups, order and formatting. Cairn does not migrate `.env` or
+hot-reload configuration.
 
 `/model move flash openai/model-b 1` moves an existing ID to the specified
 1-based position within its group, consistent with `/model list`. Other IDs keep
@@ -106,6 +161,8 @@ approval are required; the running session keeps its loaded order.
 | `/model add <group> <model-id>` | Append a local model ID; restart required |
 | `/model remove <group> <model-id>` | Remove a local model ID; restart required |
 | `/model move <group> <model-id> <position>` | Reorder an ID within its group (1-based); restart required |
+| `/provider`, `/provider list` | Inspect providers and the active one |
+| `/provider use <name>` | Switch provider after approval; resets session grants |
 | `/trace`, `/trace <ID>`, `/trace list [N]` | Inspect saved traces |
 | `/help [COMMAND]` | Full command usage, including trace management |
 | `/exit`, `/quit` | End the session |
@@ -116,8 +173,10 @@ only for the current process.
 Bash commands run inside an OS sandbox with network access denied by default;
 extra network access requires explicit approval. Filesystem boundaries differ
 by platform, and host reads are broadly available on macOS. Configured API keys
-are removed from Bash child environments, but accessible credential files can
-still be read by tools.
+are removed from Bash child environments, for every configured provider and not
+just the active one; credential values never appear in prompts, traces or CLI
+output. Accessible credential files can still be read by tools, so this is not
+complete secret-file isolation.
 
 ## Source layout
 

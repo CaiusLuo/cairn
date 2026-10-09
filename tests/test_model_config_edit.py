@@ -9,7 +9,13 @@ import pytest
 import tomlkit
 
 import cairn.config as config_module
-from cairn.config import add_model_id, load_model_config, move_model_id, remove_model_id
+from cairn.config import (
+    add_model_id,
+    load_model_config,
+    load_provider_catalog,
+    move_model_id,
+    remove_model_id,
+)
 
 move_to_first = partial(move_model_id, position=1)
 
@@ -551,4 +557,185 @@ def test_move_preserves_unrelated_nan_value(
     move_model_id("flash", "openai/b", 1)
     assert path.read_text() == original.replace(
         '["openai/a", "openai/b"]', '["openai/b", "openai/a"]'
+    )
+
+
+CATALOG_TOML = """\
+# two providers
+[[providers]]
+name = "bailian"
+base_url = 'https://example.test/v1' # endpoint
+api_key_env = "BAILIAN_API_KEY"
+
+[[providers.models]]
+name = "flash" # fast group
+model_ids = ["openai/a", "openai/b"] # ordered
+
+[[providers.models]]
+name = "plus"
+model_ids = ["openai/c"]
+
+[[providers]]
+name = "local"
+base_url = "http://localhost:8000/v1"
+api_key_env = "LOCAL_API_KEY"
+
+[[providers.models]]
+name = "default"
+model_ids = ["openai/z", "openai/y"] # local order
+"""
+
+
+def write_catalog_config(tmp_path: Path, contents: str = CATALOG_TOML) -> Path:
+    path = tmp_path / ".cairn/models.toml"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(contents.encode("utf-8"))
+    return path
+
+
+def test_catalog_add_changes_only_the_active_providers_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    path = write_catalog_config(tmp_path)
+
+    add_model_id("flash", "openai/new", provider="bailian")
+
+    assert path.read_text() == CATALOG_TOML.replace(
+        '["openai/a", "openai/b"] # ordered',
+        '["openai/a", "openai/b", "openai/new"] # ordered',
+    )
+    catalog = load_provider_catalog(path)
+    assert catalog.providers[0].config.model_config[0].model_ids == (
+        "openai/a",
+        "openai/b",
+        "openai/new",
+    )
+    assert catalog.providers[1].config.model_config[0].model_ids == (
+        "openai/z",
+        "openai/y",
+    )
+
+
+def test_catalog_remove_and_move_change_only_the_active_providers_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    path = write_catalog_config(tmp_path)
+
+    remove_model_id("flash", "openai/a", provider="bailian")
+    move_model_id("default", "openai/y", 1, provider="local")
+
+    catalog = load_provider_catalog(path)
+    assert catalog.providers[0].config.model_config[0].model_ids == ("openai/b",)
+    assert catalog.providers[1].config.model_config[0].model_ids == (
+        "openai/y",
+        "openai/z",
+    )
+    assert "# two providers" in path.read_text()
+    assert 'name = "flash" # fast group' in path.read_text()
+
+
+@pytest.mark.parametrize(
+    ("group", "model_id", "provider", "error"),
+    [
+        ("flash", "openai/new", None, "requires the active provider name"),
+        ("flash", "openai/new", "absent", "provider does not exist"),
+        ("default", "openai/new", "bailian", "group does not exist"),
+        ("flash", "openai/a", "bailian", "already exists"),
+    ],
+)
+def test_catalog_edit_rejects_an_unknown_target_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    group: str,
+    model_id: str,
+    provider: str | None,
+    error: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    path = write_catalog_config(tmp_path)
+
+    with pytest.raises(ValueError, match=error):
+        add_model_id(group, model_id, provider=provider)
+
+    assert path.read_text() == CATALOG_TOML
+
+
+def test_catalog_remove_rejects_a_missing_id_without_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    path = write_catalog_config(tmp_path)
+
+    with pytest.raises(ValueError, match="ID does not exist"):
+        remove_model_id("flash", "openai/absent", provider="bailian")
+
+    assert path.read_text() == CATALOG_TOML
+
+
+def test_catalog_noop_move_never_rewrites_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    path = write_catalog_config(tmp_path)
+    before = path.stat()
+    opened = Mock(side_effect=AssertionError("No-op must not open a write"))
+    monkeypatch.setattr(os, "open", opened)
+
+    move_model_id("default", "openai/y", 2, provider="local")
+
+    after = path.stat()
+    assert (before.st_ino, before.st_mtime_ns) == (after.st_ino, after.st_mtime_ns)
+    opened.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        CATALOG_TOML.replace("https://", "http://"),
+        CATALOG_TOML.replace('name = "local"', 'name = "bailian"'),
+        CATALOG_TOML.replace("openai/z", "openai/y"),
+        "base_url = [",
+    ],
+)
+def test_catalog_edit_rejects_an_invalid_document_without_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, contents: str
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    path = write_catalog_config(tmp_path, contents)
+
+    with pytest.raises(ValueError, match=r"Invalid \.cairn/models\.toml"):
+        add_model_id("flash", "openai/new", provider="bailian")
+
+    assert path.read_text() == contents
+
+
+def test_catalog_edit_does_not_resolve_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BAILIAN_API_KEY", "fake-secret-never-written")
+    credential = Mock(side_effect=AssertionError("Must not resolve credentials"))
+    monkeypatch.setattr(config_module, "resolve_provider_api_key", credential)
+    path = write_catalog_config(tmp_path)
+
+    add_model_id("flash", "openai/new", provider="bailian")
+
+    credential.assert_not_called()
+    assert "fake-secret-never-written" not in path.read_text()
+
+
+def test_legacy_edit_ignores_a_provider_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    path = write_config(tmp_path)
+
+    add_model_id("flash", "openai/new", provider="default")
+
+    assert load_model_config(path).model_config[0].model_ids == (
+        "openai/a",
+        "openai/b",
+        "openai/new",
     )

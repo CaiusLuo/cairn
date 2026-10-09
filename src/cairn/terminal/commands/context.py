@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from cairn.llm.model_executor import ModelExecutor
 from cairn.llm.model_manager import ModelConfig, ModelManager
+from cairn.llm.provider_catalog import ProviderCatalog
 from cairn.observability.storage import TraceStore
 
 
@@ -13,3 +14,6 @@ class CommandContext:
     model_manager: ModelManager | None = None
     model_executor: ModelExecutor | None = None
     select_model: Callable[[str], ModelConfig] | None = None
+    provider_catalog: ProviderCatalog | None = None
+    active_provider_name: str | None = None
+    select_provider: Callable[[str], None] | None = None

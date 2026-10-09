@@ -11,14 +11,31 @@ HELP_TEXT: dict[str, dict[str, str]] = {
             "or select a model by name for subsequent requests.\n"
             "Selection preserves conversation history and does not modify configuration.\n"
             "A listed model that failed recently shows its most recent failure.\n"
+            "Models and groups belong to the active provider; /provider switches it.\n"
             "/model add appends an ID to an existing group in .cairn/models.toml.\n"
             "/model remove deletes an existing ID, but cannot remove a group's final ID.\n"
             "/model move reorders an ID within its group at a 1-based position.\n"
             "Other IDs keep their relative order; a no-op does not rewrite the file.\n"
+            "In a [[providers]] catalog only the active provider's group is edited.\n"
             "Edits preserve comments; unsupported move formatting is rejected.\n"
             "Restart and normal provider approval\n"
             "are required to load changes; the current session is not reloaded.\n"
             "Create TOML first if using legacy .env configuration."
+        ),
+    },
+    "provider": {
+        "usage": "/provider | /provider list | /provider use <name>",
+        "description": "Show or switch the active provider.",
+        "detail": (
+            "Show the active provider, its endpoint, credential variable and\n"
+            "current model group.\n"
+            "/provider list lists configured providers (* marks the active one).\n"
+            "/provider use displays the target endpoint, credential variable and\n"
+            "models, then requires explicit approval before resolving its credential.\n"
+            "Switching transfers the conversation history to the new provider,\n"
+            "starts at its first model group and resets session tool-permission\n"
+            "grants; history, workspace and traces are preserved.\n"
+            "A denied, unavailable or failed switch keeps the current provider."
         ),
     },
     "trace": {

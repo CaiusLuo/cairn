@@ -14,6 +14,7 @@ from cairn.core.permissions import (
     PermissionRequest,
 )
 from cairn.llm.model_manager import ModelConfig, ProviderConfig
+from cairn.llm.provider_catalog import NamedProvider
 
 
 def _capture_console(monkeypatch: pytest.MonkeyPatch) -> StringIO:
@@ -26,52 +27,173 @@ def _capture_console(monkeypatch: pytest.MonkeyPatch) -> StringIO:
     return output
 
 
-@pytest.mark.parametrize(
-    ("answer", "approved"), [("y\n", True), ("n\n", False), ("\n", False), ("", False)]
-)
-def test_model_provider_approval_is_explicit_and_displays_routing(
-    monkeypatch: pytest.MonkeyPatch, answer: str, approved: bool
-) -> None:
-    output = _capture_console(monkeypatch)
-    terminal = StringIO(answer)
-    monkeypatch.setattr(terminal, "isatty", lambda: True)
-    monkeypatch.setattr(sys, "stdin", terminal)
-    monkeypatch.setenv("BAILIAN_API_KEY", "test-only-secret-never-shown")
-    provider = ProviderConfig(
-        base_url="https://example.test/v1",
-        api_key_env="BAILIAN_API_KEY",
-        model_config=(
-            ModelConfig("flash", ("openai/qwen-flash", "openai/qwen-flash-backup")),
-            ModelConfig("plus", ("openai/qwen-plus",)),
+def _provider(
+    name: str = "bailian",
+    *,
+    base_url: str = "https://example.test/v1",
+    api_key_env: str = "BAILIAN_API_KEY",
+) -> NamedProvider:
+    return NamedProvider(
+        name=name,
+        config=ProviderConfig(
+            base_url=base_url,
+            api_key_env=api_key_env,
+            model_config=(
+                ModelConfig("flash", ("openai/qwen-flash", "openai/qwen-flash-backup")),
+                ModelConfig("plus", ("openai/qwen-plus",)),
+            ),
         ),
     )
 
-    assert ui.confirm_model_provider(provider) is approved
+
+def _interactive_stdin(monkeypatch: pytest.MonkeyPatch, answer: str) -> None:
+    terminal = StringIO(answer)
+    monkeypatch.setattr(terminal, "isatty", lambda: True)
+    monkeypatch.setattr(sys, "stdin", terminal)
+
+
+@pytest.mark.parametrize(
+    ("answer", "approved"), [("y\n", True), ("n\n", False), ("\n", False), ("", False)]
+)
+def test_provider_approval_is_explicit_and_displays_routing(
+    monkeypatch: pytest.MonkeyPatch, answer: str, approved: bool
+) -> None:
+    output = _capture_console(monkeypatch)
+    _interactive_stdin(monkeypatch, answer)
+    monkeypatch.setenv("BAILIAN_API_KEY", "test-only-secret-never-shown")
+    provider = _provider()
+    group = provider.config.model_config[0]
+
+    assert ui.confirm_provider_access(provider, group, switching=False) is approved
 
     rendered = output.getvalue()
     for expected in (
-        provider.base_url,
-        provider.api_key_env,
+        provider.name,
+        provider.config.base_url,
+        provider.config.api_key_env,
+        group.name,
         "openai/qwen-flash",
         "openai/qwen-flash-backup",
-        "openai/qwen-plus",
     ):
         assert expected in rendered
+    # Only the group being approved is displayed, and never the credential value.
+    assert "openai/qwen-plus" not in rendered
     assert "test-only-secret-never-shown" not in rendered
+    assert "resets session tool-permission grants" not in rendered
 
 
-def test_model_provider_approval_rejects_noninteractive_input(
+def test_provider_switch_approval_warns_about_history_and_grants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = _capture_console(monkeypatch)
+    _interactive_stdin(monkeypatch, "y\n")
+    provider = _provider("local", base_url="http://localhost:8000/v1")
+    group = provider.config.model_config[1]
+
+    assert ui.confirm_provider_access(provider, group, switching=True) is True
+
+    rendered = output.getvalue()
+    assert provider.name in rendered
+    assert provider.config.base_url in rendered
+    assert "openai/qwen-plus" in rendered
+    assert "conversation history" in rendered
+    assert "resets session tool-permission grants" in rendered
+
+
+def test_provider_approval_rejects_noninteractive_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "stdin", StringIO("y\n"))
-    provider = ProviderConfig(
-        base_url="https://example.test/v1",
-        api_key_env="KEY",
-        model_config=(ModelConfig("flash", ("openai/qwen-flash",)),),
-    )
+    provider = _provider()
 
     with pytest.raises(ValueError, match="interactive terminal"):
-        ui.confirm_model_provider(provider)
+        ui.confirm_provider_access(
+            provider, provider.config.model_config[0], switching=False
+        )
+
+
+def test_choose_provider_lists_candidates_and_requires_a_valid_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = _capture_console(monkeypatch)
+    # An unknown name is re-prompted instead of selecting anything.
+    _interactive_stdin(monkeypatch, "unknown\nlocal\n")
+    providers = (
+        _provider("bailian"),
+        _provider(
+            "local", base_url="http://localhost:8000/v1", api_key_env="LOCAL_KEY"
+        ),
+    )
+
+    assert ui.choose_provider(providers) is providers[1]
+
+    rendered = output.getvalue()
+    for expected in (
+        providers[0].name,
+        providers[1].name,
+        providers[0].config.base_url,
+        providers[1].config.base_url,
+        providers[0].config.api_key_env,
+        providers[1].config.api_key_env,
+    ):
+        assert expected in rendered
+
+
+def test_choose_provider_rejects_noninteractive_and_eof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider()
+
+    monkeypatch.setattr(sys, "stdin", StringIO("bailian\n"))
+    with pytest.raises(ValueError, match="interactive terminal"):
+        ui.choose_provider((provider,))
+
+    _interactive_stdin(monkeypatch, "")
+    with pytest.raises(ValueError, match="cancelled"):
+        ui.choose_provider((provider,))
+
+
+def test_choose_model_group_selects_one_configured_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = _capture_console(monkeypatch)
+    _interactive_stdin(monkeypatch, "plus\n")
+    provider = _provider()
+
+    group = ui.choose_model_group(provider)
+
+    assert group.name == "plus"
+    assert group.model_ids == ("openai/qwen-plus",)
+    assert "openai/qwen-flash" in output.getvalue()
+
+
+def test_choose_model_group_rejects_noninteractive_and_eof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider()
+
+    monkeypatch.setattr(sys, "stdin", StringIO("flash\n"))
+    with pytest.raises(ValueError, match="interactive terminal"):
+        ui.choose_model_group(provider)
+
+    _interactive_stdin(monkeypatch, "")
+    with pytest.raises(ValueError, match="cancelled"):
+        ui.choose_model_group(provider)
+
+
+def test_print_provider_selection_shows_provider_group_and_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = _capture_console(monkeypatch)
+    provider = _provider()
+    group = provider.config.model_config[1]
+
+    ui.print_provider_selection(provider, group)
+
+    rendered = output.getvalue()
+    assert provider.name in rendered
+    assert group.name in rendered
+    assert "openai/qwen-plus" in rendered
 
 
 @pytest.mark.parametrize("status", ["ok", "error"])

@@ -1,4 +1,5 @@
 import sys
+from collections.abc import Sequence
 from importlib.resources import files
 
 from rich.console import Console
@@ -8,29 +9,100 @@ from rich.text import Text
 
 from cairn.core.events import Event
 from cairn.core.permissions import PermissionChoice, PermissionRequest
-from cairn.llm.model_manager import ProviderConfig
+from cairn.llm.model_manager import ModelConfig
+from cairn.llm.provider_catalog import NamedProvider
 
 console = Console()
 
 
-def confirm_model_provider(config: ProviderConfig) -> bool:
-    """Approve one in-memory project configuration for this session only."""
+def confirm_provider_access(
+    provider: NamedProvider,
+    group: ModelConfig,
+    *,
+    switching: bool,
+) -> bool:
+    """Approve one provider and model group for this session only.
+
+    All routing, the credential variable name and the transfer notice are shown
+    before any credential is resolved. Without an interactive terminal, or on
+    end of input, approval fails closed.
+    """
     if not sys.stdin.isatty():
-        raise ValueError("TOML provider approval requires an interactive terminal.")
+        raise ValueError("Provider approval requires an interactive terminal.")
     console.print("Project model configuration requests access to a credential.")
-    console.print(f"Endpoint: {config.base_url!a}", markup=False)
-    console.print(f"Credential variable: {config.api_key_env!a}", markup=False)
-    for model in config.model_config:
-        console.print(f"  {model.name!a}: {model.model_ids!a}", markup=False)
+    console.print(f"Provider: {provider.name!a}", markup=False)
+    console.print(f"Endpoint: {provider.config.base_url!a}", markup=False)
+    console.print(f"Credential variable: {provider.config.api_key_env!a}", markup=False)
+    console.print(f"Model group: {group.name!a}", markup=False)
+    for position, model_id in enumerate(group.model_ids, start=1):
+        console.print(f"  {position}. {model_id!a}", markup=False)
     console.print(
-        "The selected API key and conversation will be sent to this provider."
+        "The selected API key and conversation content will be sent to this endpoint."
     )
+    if switching:
+        console.print(
+            "Switching providers transfers the full conversation history to that "
+            "endpoint and resets session tool-permission grants."
+        )
     try:
         return Confirm.ask(
             "Trust this provider for this session?", default=False, console=console
         )
     except EOFError:
         return False
+
+
+def choose_provider(providers: Sequence[NamedProvider]) -> NamedProvider:
+    """Ask which configured provider this session should use.
+
+    Selection is explicit: there is no default, so the user must name one of the
+    configured providers. Without an interactive terminal this fails closed.
+    """
+    if not sys.stdin.isatty():
+        raise ValueError("Provider selection requires an interactive terminal.")
+    console.print("Several providers are configured; select one for this session:")
+    for provider in providers:
+        console.print(
+            f"  {provider.name}: {provider.config.base_url!a} "
+            f"(credential {provider.config.api_key_env!a})",
+            markup=False,
+        )
+    try:
+        name = Prompt.ask(
+            "Provider",
+            choices=[provider.name for provider in providers],
+            console=console,
+        )
+    except EOFError:
+        raise ValueError("Provider selection was cancelled.") from None
+    return next(provider for provider in providers if provider.name == name)
+
+
+def choose_model_group(provider: NamedProvider) -> ModelConfig:
+    """Ask which of a provider's model groups this session should start on."""
+    if not sys.stdin.isatty():
+        raise ValueError("Model group selection requires an interactive terminal.")
+    groups = provider.config.model_config
+    console.print(f"Provider {provider.name!a} configures several model groups:")
+    for group in groups:
+        console.print(f"  {group.name}: {', '.join(group.model_ids)}", markup=False)
+    try:
+        name = Prompt.ask(
+            "Model group",
+            choices=[group.name for group in groups],
+            console=console,
+        )
+    except EOFError:
+        raise ValueError("Model group selection was cancelled.") from None
+    return next(group for group in groups if group.name == name)
+
+
+def print_provider_selection(provider: NamedProvider, group: ModelConfig) -> None:
+    """Show the provider and model group this session starts with."""
+    console.print(f"Provider: {provider.name!a}", markup=False)
+    console.print(
+        f"Model group: {group.name!a} ({' -> '.join(group.model_ids)})", markup=False
+    )
 
 
 def print_assistant_response(content: str) -> None:

@@ -24,7 +24,8 @@ from cairn.core.budget import RunBudget
 from cairn.core.context import ContextBudget
 from cairn.core.loop import run_turn
 from cairn.core.models import Message
-from cairn.llm.model_manager import ModelConfig, ProviderConfig
+from cairn.llm.model_manager import ModelConfig
+from cairn.llm.provider_catalog import NamedProvider
 from cairn.workspace.workspace import Workspace
 from tests.support.sandbox import require_working_sandbox
 
@@ -83,7 +84,9 @@ def _configure_cli(
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(cli_module, "dotenv_values", lambda: {})
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
-    monkeypatch.setattr(cli_module, "confirm_model_provider", lambda _: True)
+    monkeypatch.setattr(
+        cli_module, "confirm_provider_access", lambda *_args, **_kwargs: True
+    )
     monkeypatch.setattr(
         cli_module,
         "CliInput",
@@ -284,7 +287,7 @@ def test_missing_toml_keeps_legacy_environment_request_path(
     approval = Mock(
         side_effect=AssertionError("Legacy configuration requires no TOML approval")
     )
-    monkeypatch.setattr(cli_module, "confirm_model_provider", approval)
+    monkeypatch.setattr(cli_module, "confirm_provider_access", approval)
     result = CliRunner().invoke(cli_module.app, [])
 
     assert result.exit_code == 0
@@ -306,7 +309,9 @@ def test_toml_requires_explicit_approval_before_resolving_credential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, approval: object
 ) -> None:
     agents, requests, _ = _configure_cli(tmp_path, monkeypatch, "question")
-    monkeypatch.setattr(cli_module, "confirm_model_provider", lambda _: approval)
+    monkeypatch.setattr(
+        cli_module, "confirm_provider_access", lambda *_args, **_kwargs: approval
+    )
     resolve_key = Mock(side_effect=AssertionError("Credential must not be resolved"))
     monkeypatch.setattr(cli_module, "resolve_provider_api_key", resolve_key)
     result = CliRunner().invoke(cli_module.app, [])
@@ -337,7 +342,7 @@ def test_invalid_existing_toml_never_falls_back_to_valid_legacy_settings(
         tmp_path, monkeypatch, "question", toml=contents
     )
     approval = Mock()
-    monkeypatch.setattr(cli_module, "confirm_model_provider", approval)
+    monkeypatch.setattr(cli_module, "confirm_provider_access", approval)
     result = CliRunner().invoke(cli_module.app, [])
 
     assert result.exit_code != 0
@@ -369,7 +374,12 @@ def test_approval_uses_loaded_snapshot_even_if_file_changes(
         tmp_path, monkeypatch, "/model use plus", "question"
     )
 
-    def approve(config: ProviderConfig) -> bool:
+    def approve(
+        provider: NamedProvider, group: ModelConfig, *, switching: bool
+    ) -> bool:
+        assert switching is False
+        assert group.name == "flash"
+        config = provider.config
         assert config.base_url == "https://example.test/v1"
         (tmp_path / ".cairn/models.toml").write_text(
             TOML.replace("example.test", "unapproved.test").replace(
@@ -378,7 +388,7 @@ def test_approval_uses_loaded_snapshot_even_if_file_changes(
         )
         return True
 
-    monkeypatch.setattr(cli_module, "confirm_model_provider", approve)
+    monkeypatch.setattr(cli_module, "confirm_provider_access", approve)
     result = CliRunner().invoke(cli_module.app, [])
 
     assert result.exit_code == 0
@@ -615,7 +625,7 @@ def test_model_edit_only_persists_and_restart_requires_normal_approval(
     env_file = tmp_path / ".env"
     env_file.write_text("BAILIAN_API_KEY=fake-file-key\n")
     approval = Mock(return_value=True)
-    monkeypatch.setattr(cli_module, "confirm_model_provider", approval)
+    monkeypatch.setattr(cli_module, "confirm_provider_access", approval)
     identities: list[tuple[object, ...]] = []
     previous_messages: list[Message] = []
 
@@ -683,11 +693,13 @@ def test_model_edit_only_persists_and_restart_requires_normal_approval(
         tmp_path, monkeypatch, "/model list", toml=None
     )
     approval = Mock(return_value=restart_approved)
-    monkeypatch.setattr(cli_module, "confirm_model_provider", approval)
+    monkeypatch.setattr(cli_module, "confirm_provider_access", approval)
     result = CliRunner().invoke(cli_module.app, [])
 
     approval.assert_called_once()
-    approved_config = approval.call_args.args[0]
+    approved_provider = approval.call_args.args[0]
+    approved_config = approved_provider.config
+    assert approval.call_args.kwargs["switching"] is False
     assert approved_config.model_config[1].model_ids == (
         ("openai/qwen-plus", "openai/new")
         if operation == "add"
@@ -998,7 +1010,7 @@ def test_model_list_annotates_the_last_failure_and_the_next_request_restarts_ord
     listings = [
         line
         for line in result.output.splitlines()
-        if "qwen-flash" in line or "qwen-plus" in line
+        if line.startswith(("*", " ")) and ("qwen-flash" in line or "qwen-plus" in line)
     ]
     flash = [line for line in listings if "qwen-flash" in line]
     assert len(flash) == 2

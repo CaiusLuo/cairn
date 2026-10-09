@@ -24,6 +24,13 @@ from cairn.observability.models import Span, SpanStatus
 from cairn.tools.base import InvalidArguments, ToolExecutionContext, ToolNotFound
 
 
+def _provider_attributes(agent: Agent) -> dict[str, str]:
+    """Trace-only provider identity, empty for provider-neutral agents."""
+    if agent.provider_name is None:
+        return {}
+    return {"provider": agent.provider_name}
+
+
 def _ask_for_approval(agent: Agent, tool_call: ToolCall) -> PermissionResult:
     """Ask the approval handler for the requested capability.
 
@@ -212,6 +219,7 @@ async def run_turn(
             "context_response_tokens": context_budget.response_tokens,
             "context_omitted_turns": request.omitted_turns,
             "context_omitted_messages": request.omitted_messages,
+            **_provider_attributes(agent),
         }
         if model is not None:
             attributes.update(model=model_id, model_name=model.name, attempt=attempt)
@@ -276,6 +284,7 @@ async def run_turn(
                     "max_steps": budget.max_steps,
                     "context_max_tokens": agent.context_builder.budget.max_tokens,
                     "context_response_tokens": agent.context_builder.budget.response_tokens,
+                    **_provider_attributes(agent),
                 },
             )
 

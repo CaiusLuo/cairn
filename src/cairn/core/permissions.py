@@ -147,6 +147,14 @@ class SessionPermissionHandler:
         self.prompt = prompt
         self.grants: set[PermissionCapability] = set()
 
+    def reset_grants(self) -> None:
+        """Drop every session-scoped grant, e.g. after switching providers.
+
+        The global permission policy is untouched: the next ASK decision is
+        prompted again instead of reusing a grant made for another provider.
+        """
+        self.grants.clear()
+
     def __call__(self, tool_call: ToolCall) -> PermissionResult:
         capability = requested_capability(tool_call)
         if capability is None:

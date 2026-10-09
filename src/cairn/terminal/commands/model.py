@@ -42,7 +42,7 @@ def handle_model(context: CommandContext, args: list[str]) -> None:
     elif len(args) == 3 and args[0] in {"add", "remove"}:
         try:
             edit = add_model_id if args[0] == "add" else remove_model_id
-            edit(args[1], args[2])
+            edit(args[1], args[2], provider=context.active_provider_name)
         except ValueError as exc:
             print(f"Cannot {args[0]} model: {exc}")
         except OSError as exc:
@@ -60,7 +60,9 @@ def handle_model(context: CommandContext, args: list[str]) -> None:
                 position = int(args[3])
             except ValueError:
                 raise ValueError("Position must be an integer.") from None
-            move_model_id(args[1], args[2], position)
+            move_model_id(
+                args[1], args[2], position, provider=context.active_provider_name
+            )
         except ValueError as exc:
             print(f"Cannot move model: {exc}")
         except OSError as exc:

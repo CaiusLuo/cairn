@@ -44,6 +44,7 @@ class Agent:
         repo_context_provider: RepoContextProvider | None = None,
         context_builder: ContextBuilder | None = None,
         model_executor: ModelExecutor | None = None,
+        provider_name: str | None = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -59,6 +60,9 @@ class Agent:
         self.model_executor = (
             model_executor if model_executor is not None else ModelExecutor()
         )
+        # Trace-only provider identity. Provider-neutral agents (evals, core
+        # tests) leave it unset and record no provider attribute.
+        self.provider_name = provider_name
 
     def emit(self, event: Event) -> None:
         if self.event_handler is not None:

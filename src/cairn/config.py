@@ -5,6 +5,8 @@ import stat
 import tomllib
 from collections.abc import Mapping
 from contextlib import suppress
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -18,6 +20,85 @@ from cairn.llm.provider_catalog import NamedProvider, ProviderCatalog
 from cairn.workspace.paths import resolve_workspace_path
 
 CAIRN_CONFIG_ENV_NAMES = ("CAIRN_LLM_MODEL", "CAIRN_LLM_API_KEY", "CAIRN_BASE_URL")
+
+#: Name of the implicit provider in the .env and legacy single-provider layouts.
+DEFAULT_PROVIDER_NAME = "default"
+
+
+class ConfigLayout(StrEnum):
+    """Where a project's provider configuration comes from."""
+
+    ENV = "env"
+    LEGACY = "legacy"
+    CATALOG = "catalog"
+
+
+@dataclass(frozen=True)
+class ProjectProviders:
+    """Detected layout and the named providers it declares, in file order.
+
+    ``providers`` is empty only for the ``env`` layout, whose single provider is
+    built from ``CAIRN_*`` environment values.
+    """
+
+    layout: ConfigLayout
+    providers: tuple[NamedProvider, ...]
+
+
+def load_project_providers(
+    path: Path = Path(".cairn/models.toml"),
+) -> ProjectProviders:
+    """Detect and load the project's provider configuration.
+
+    A missing ``.cairn/models.toml`` selects the ``.env`` layout. An existing
+    file uses the catalog layout when it declares ``providers``; every other
+    existing file must satisfy the legacy single-provider contract. A file that
+    exists but cannot be read or validated always raises, so the caller never
+    silently falls back to environment settings.
+    """
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return ProjectProviders(layout=ConfigLayout.ENV, providers=())
+
+    with path.open("rb") as source:
+        values = tomllib.load(source)
+
+    if "providers" in values:
+        catalog = _parse_provider_catalog(values)
+        return ProjectProviders(
+            layout=ConfigLayout.CATALOG,
+            providers=catalog.providers,
+        )
+
+    provider = _parse_model_config(values)
+    validate_runtime_provider(provider)
+    return ProjectProviders(
+        layout=ConfigLayout.LEGACY,
+        providers=(NamedProvider(name=DEFAULT_PROVIDER_NAME, config=provider),),
+    )
+
+
+def environment_provider(
+    host_env: Mapping[str, str],
+    env_file_values: Mapping[str, str | None],
+) -> NamedProvider:
+    """Build the single provider described by ``CAIRN_*`` settings.
+
+    This is the ``.env`` layout, used only when no ``.cairn/models.toml``
+    exists. It keeps the existing environment contract, including host
+    precedence over ``.env``.
+    """
+    values = resolve_cairn_config(host_env, env_file_values)
+    model_id = values["CAIRN_LLM_MODEL"]
+    return NamedProvider(
+        name=DEFAULT_PROVIDER_NAME,
+        config=ProviderConfig(
+            base_url=values["CAIRN_BASE_URL"],
+            api_key_env="CAIRN_LLM_API_KEY",
+            model_config=(ModelConfig(name=model_id, model_ids=(model_id,)),),
+        ),
+    )
 
 
 def load_model_config(path: Path = Path(".cairn/models.toml")) -> ProviderConfig:
@@ -142,21 +223,27 @@ def _parse_model_groups(model_values: object, field: str) -> tuple[ModelConfig, 
     return tuple(models)
 
 
-def add_model_id(group: str, model_id: str) -> None:
-    """Append one ID to local TOML; the approved session snapshot is untouched."""
-    _edit_model_id(group, model_id, remove=False)
+def add_model_id(group: str, model_id: str, *, provider: str | None = None) -> None:
+    """Append one ID to local TOML; the approved session snapshot is untouched.
+
+    ``provider`` names the active provider in the catalog layout and is ignored
+    by the legacy single-provider layout.
+    """
+    _edit_model_id(group, model_id, remove=False, provider=provider)
 
 
-def remove_model_id(group: str, model_id: str) -> None:
+def remove_model_id(group: str, model_id: str, *, provider: str | None = None) -> None:
     """Remove one ID from local TOML without changing the approved session."""
-    _edit_model_id(group, model_id, remove=True)
+    _edit_model_id(group, model_id, remove=True, provider=provider)
 
 
-def move_model_id(group: str, model_id: str, position: int) -> None:
+def move_model_id(
+    group: str, model_id: str, position: int, *, provider: str | None = None
+) -> None:
     """Move an ID to a 1-based position in local TOML, without reloading it."""
     if type(position) is not int:
         raise ValueError("Position must be an integer.")
-    _edit_model_id(group, model_id, remove=False, position=position)
+    _edit_model_id(group, model_id, remove=False, position=position, provider=provider)
 
 
 def _move_array_id(array: Array, source: int, destination: int) -> None:
@@ -185,8 +272,112 @@ def _remove_array_id(array: Array, position: int) -> None:
     array._reindex()
 
 
+@dataclass(frozen=True)
+class _EditDocument:
+    """A validated ``models.toml`` document in one of the two TOML layouts."""
+
+    catalog: bool
+    providers: tuple[NamedProvider, ...]
+
+
+def _parse_edit_document(values: Mapping[str, object]) -> _EditDocument:
+    """Validate a whole ``models.toml`` document before editing one group."""
+    if "providers" in values:
+        catalog = _parse_provider_catalog(values)
+        return _EditDocument(catalog=True, providers=catalog.providers)
+
+    config = _parse_model_config(values)
+    validate_runtime_provider(config)
+    return _EditDocument(
+        catalog=False,
+        providers=(NamedProvider(name=DEFAULT_PROVIDER_NAME, config=config),),
+    )
+
+
+@dataclass(frozen=True)
+class _EditTarget:
+    """The provider and group an edit may change, with its document paths."""
+
+    catalog: bool
+    provider_index: int
+    group_index: int
+    group: ModelConfig
+
+    def model_ids_array(self, document: tomlkit.TOMLDocument) -> Array:
+        """Return the live ``model_ids`` array of this group's document node."""
+        # The document was validated above, so both paths hold a table array.
+        if self.catalog:
+            array: object = document["providers"][self.provider_index]["models"][
+                self.group_index
+            ]["model_ids"]
+        else:
+            array = document["models"][self.group_index]["model_ids"]
+        if not isinstance(array, Array):
+            raise ValueError("model_ids must be an array.")
+        return array
+
+    def revalidate(self, values: Mapping[str, object]) -> ProviderConfig:
+        """Validate an edited document and return the edited provider's config."""
+        if self.catalog:
+            catalog = _parse_provider_catalog(values)
+            return catalog.providers[self.provider_index].config
+        config = _parse_model_config(values)
+        validate_runtime_provider(config)
+        return config
+
+
+def _edit_target(
+    document: _EditDocument, group: str, provider: str | None
+) -> _EditTarget:
+    """Locate the group to edit, rejecting a missing provider or group.
+
+    In the catalog layout only the named provider is searched, so an edit can
+    never touch another provider's model groups.
+    """
+    provider_index = 0
+    if document.catalog:
+        if provider is None:
+            raise ValueError(
+                "Editing a provider catalog requires the active provider name."
+            )
+        match = next(
+            (
+                index
+                for index, named in enumerate(document.providers)
+                if named.name == provider
+            ),
+            None,
+        )
+        if match is None:
+            raise ValueError("That provider does not exist in .cairn/models.toml.")
+        provider_index = match
+
+    config = document.providers[provider_index].config
+    group_index = next(
+        (
+            index
+            for index, model in enumerate(config.model_config)
+            if model.name == group
+        ),
+        None,
+    )
+    if group_index is None:
+        raise ValueError("Model group does not exist in .cairn/models.toml.")
+    return _EditTarget(
+        catalog=document.catalog,
+        provider_index=provider_index,
+        group_index=group_index,
+        group=config.model_config[group_index],
+    )
+
+
 def _edit_model_id(
-    group: str, model_id: str, *, remove: bool, position: int | None = None
+    group: str,
+    model_id: str,
+    *,
+    remove: bool,
+    position: int | None = None,
+    provider: str | None = None,
 ) -> None:
     _required_string(model_id, "model_id")
     root = Path.cwd()
@@ -203,25 +394,15 @@ def _edit_model_id(
     original = path.read_bytes()
     try:
         text = original.decode("utf-8")
-        config = _parse_model_config(tomllib.loads(text))
-        validate_runtime_provider(config)
+        document_layout = _parse_edit_document(tomllib.loads(text))
     except ValueError:
         # Parser diagnostics may contain local values; never echo the file.
         raise ValueError(
             "Invalid .cairn/models.toml; fix its configuration before editing models."
         ) from None
 
-    index = next(
-        (
-            index
-            for index, model in enumerate(config.model_config)
-            if model.name == group
-        ),
-        None,
-    )
-    if index is None:
-        raise ValueError("Model group does not exist in .cairn/models.toml.")
-    ids = config.model_config[index].model_ids
+    edit_target = _edit_target(document_layout, group, provider)
+    ids = edit_target.group.model_ids
     if remove or position is not None:
         if model_id not in ids:
             raise ValueError("Model ID does not exist in that group.")
@@ -239,15 +420,14 @@ def _edit_model_id(
     document = tomlkit.parse(text)
     if position is not None and tomlkit.dumps(document) != text:
         raise ValueError("Unsupported TOML formatting; cannot safely move model IDs.")
-    array = document["models"][index]["model_ids"]
+    array = edit_target.model_ids_array(document)
     if position is not None:
         _move_array_id(array, ids.index(model_id), position - 1)
     elif remove:
         _remove_array_id(array, ids.index(model_id))
     else:
         array.append(model_id)
-    edited_config = _parse_model_config(document.unwrap())
-    validate_runtime_provider(edited_config)
+    edited_config = edit_target.revalidate(document.unwrap())
     updated = tomlkit.dumps(document)
     if position is not None:
         try:
@@ -255,11 +435,11 @@ def _edit_model_id(
             old_comments = [
                 item.comment.as_string() for item in array._value if item.comment
             ]
-            new_array = reparsed["models"][index]["model_ids"]
+            new_array = edit_target.model_ids_array(reparsed)
             new_comments = [
                 item.comment.as_string() for item in new_array._value if item.comment
             ]
-            if _parse_model_config(reparsed.unwrap()) != edited_config or sorted(
+            if edit_target.revalidate(reparsed.unwrap()) != edited_config or sorted(
                 old_comments
             ) != sorted(new_comments):
                 raise ValueError
@@ -267,7 +447,7 @@ def _edit_model_id(
             raise ValueError(
                 "Unsupported TOML formatting; cannot safely move model IDs."
             ) from None
-    validate_runtime_provider(_parse_model_config(tomllib.loads(updated)))
+    edit_target.revalidate(tomllib.loads(updated))
 
     # Anchor all writes to the checked directory, even if its pathname changes.
     directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)

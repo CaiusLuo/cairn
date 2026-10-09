@@ -336,3 +336,30 @@ def test_admission_failure_after_tool_preserves_known_completed_call_usage() -> 
     assert len([s for s in sink.spans if s.name == "llm.generate"]) == 1
     assert events[-1].data["status"] == "error"
     assert events[-1].data["usage"] == {"input_tokens": 10, "output_tokens": 2}
+
+
+def test_run_turn_records_provider_identity_when_configured() -> None:
+    sink = RecordingSink()
+    agent = Agent(
+        llm=SequenceLLM([LLMResponse(content="done")]),
+        tools=ToolRegistry(),
+        tracer=Tracer(sink),
+        provider_name="bailian",
+    )
+
+    assert asyncio.run(run_turn(agent, "hello", budget=TEST_BUDGET)) == "done"
+
+    llm_span, turn_span = sink.spans
+    assert llm_span.name == "llm.generate"
+    assert llm_span.attributes["provider"] == "bailian"
+    assert turn_span.name == "agent.turn"
+    assert turn_span.attributes["provider"] == "bailian"
+
+
+def test_run_turn_records_no_provider_for_provider_neutral_agents() -> None:
+    sink = RecordingSink()
+    agent = make_agent(SequenceLLM([LLMResponse(content="done")]))
+
+    asyncio.run(run_turn(agent, "hello", budget=TEST_BUDGET))
+
+    assert all("provider" not in span.attributes for span in sink.spans)
