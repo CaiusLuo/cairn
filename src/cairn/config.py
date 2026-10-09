@@ -80,6 +80,24 @@ def remove_model_id(group: str, model_id: str) -> None:
     _edit_model_id(group, model_id, remove=True)
 
 
+def move_model_id(group: str, model_id: str, position: int) -> None:
+    """Move an ID to a 1-based position in local TOML, without reloading it."""
+    if type(position) is not int:
+        raise ValueError("Position must be an integer.")
+    _edit_model_id(group, model_id, remove=False, position=position)
+
+
+def _move_array_id(array: Array, source: int, destination: int) -> None:
+    # Keep separators/indentation in their slots, but move each original string
+    # and its inline comment together. Standalone comments stay in place.
+    items = [array._value[array._index_map[index]] for index in range(len(array))]
+    values = [(item.value, item.comment) for item in items]
+    values.insert(destination, values.pop(source))
+    for index, (value, comment) in enumerate(values):
+        array[index] = value
+        items[index].comment = comment
+
+
 def _remove_array_id(array: Array, position: int) -> None:
     # tomlkit deletion drops an element's inline comment. Keep that comment as a
     # standalone array entry instead. These internals have no public equivalent.
@@ -95,7 +113,9 @@ def _remove_array_id(array: Array, position: int) -> None:
     array._reindex()
 
 
-def _edit_model_id(group: str, model_id: str, *, remove: bool) -> None:
+def _edit_model_id(
+    group: str, model_id: str, *, remove: bool, position: int | None = None
+) -> None:
     _required_string(model_id, "model_id")
     root = Path.cwd()
     relative = ".cairn/models.toml"
@@ -130,22 +150,51 @@ def _edit_model_id(group: str, model_id: str, *, remove: bool) -> None:
     if index is None:
         raise ValueError("Model group does not exist in .cairn/models.toml.")
     ids = config.model_config[index].model_ids
-    if remove:
+    if remove or position is not None:
         if model_id not in ids:
             raise ValueError("Model ID does not exist in that group.")
-        if len(ids) == 1:
+        if remove and len(ids) == 1:
             raise ValueError("Cannot remove the final model ID of a group.")
     elif model_id in ids:
         raise ValueError("Model ID already exists in that group.")
 
+    if position is not None:
+        if not 1 <= position <= len(ids):
+            raise ValueError(f"Position must be between 1 and {len(ids)}.")
+        if ids.index(model_id) == position - 1:
+            return
+
     document = tomlkit.parse(text)
+    if position is not None and tomlkit.dumps(document) != text:
+        raise ValueError("Unsupported TOML formatting; cannot safely move model IDs.")
     array = document["models"][index]["model_ids"]
-    if remove:
+    if position is not None:
+        _move_array_id(array, ids.index(model_id), position - 1)
+    elif remove:
         _remove_array_id(array, ids.index(model_id))
     else:
         array.append(model_id)
-    validate_runtime_provider(_parse_model_config(document.unwrap()))
+    edited_config = _parse_model_config(document.unwrap())
+    validate_runtime_provider(edited_config)
     updated = tomlkit.dumps(document)
+    if position is not None:
+        try:
+            reparsed = tomlkit.parse(updated)
+            old_comments = [
+                item.comment.as_string() for item in array._value if item.comment
+            ]
+            new_array = reparsed["models"][index]["model_ids"]
+            new_comments = [
+                item.comment.as_string() for item in new_array._value if item.comment
+            ]
+            if _parse_model_config(reparsed.unwrap()) != edited_config or sorted(
+                old_comments
+            ) != sorted(new_comments):
+                raise ValueError
+        except ValueError:
+            raise ValueError(
+                "Unsupported TOML formatting; cannot safely move model IDs."
+            ) from None
     validate_runtime_provider(_parse_model_config(tomllib.loads(updated)))
 
     # Anchor all writes to the checked directory, even if its pathname changes.

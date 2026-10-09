@@ -1,6 +1,7 @@
 import os
 import stat
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -8,7 +9,9 @@ import pytest
 import tomlkit
 
 import cairn.config as config_module
-from cairn.config import add_model_id, load_model_config, remove_model_id
+from cairn.config import add_model_id, load_model_config, move_model_id, remove_model_id
+
+move_to_first = partial(move_model_id, position=1)
 
 TOML = """\
 # Local provider
@@ -120,7 +123,7 @@ def test_invalid_add_never_modifies_config(
     assert list(path.parent.iterdir()) == [path]
 
 
-@pytest.mark.parametrize("edit", [add_model_id, remove_model_id])
+@pytest.mark.parametrize("edit", [add_model_id, remove_model_id, move_to_first])
 def test_missing_toml_does_not_migrate_dotenv(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, edit: Callable[[str, str], None]
 ) -> None:
@@ -129,7 +132,7 @@ def test_missing_toml_does_not_migrate_dotenv(
     env_file.write_text("CAIRN_LLM_API_KEY=fake-secret\n")
 
     with pytest.raises(ValueError, match=r"Create .cairn/models.toml first"):
-        edit("flash", "openai/b" if edit is remove_model_id else "openai/new")
+        edit("flash", "openai/new" if edit is add_model_id else "openai/b")
 
     assert env_file.read_text() == "CAIRN_LLM_API_KEY=fake-secret\n"
     assert not (tmp_path / ".cairn").exists()
@@ -146,7 +149,7 @@ def test_missing_toml_does_not_migrate_dotenv(
         TOML.replace('name = "plus"', "name = 'flash'").encode(),
     ],
 )
-@pytest.mark.parametrize("edit", [add_model_id, remove_model_id])
+@pytest.mark.parametrize("edit", [add_model_id, remove_model_id, move_to_first])
 def test_invalid_original_toml_is_unchanged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -158,7 +161,7 @@ def test_invalid_original_toml_is_unchanged(
     path.write_bytes(contents)
 
     with pytest.raises(ValueError, match=r"Invalid \.cairn/models\.toml") as raised:
-        edit("flash", "openai/b" if edit is remove_model_id else "openai/new")
+        edit("flash", "openai/new" if edit is add_model_id else "openai/b")
 
     assert "fake-credential" not in str(raised.value)
     assert path.read_bytes() == contents
@@ -166,7 +169,7 @@ def test_invalid_original_toml_is_unchanged(
 
 
 @pytest.mark.parametrize("operation", ["fsync", "fchmod", "replace"])
-@pytest.mark.parametrize("edit", [add_model_id, remove_model_id])
+@pytest.mark.parametrize("edit", [add_model_id, remove_model_id, move_to_first])
 def test_persistence_failure_keeps_original_and_cleans_temporary_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -178,13 +181,13 @@ def test_persistence_failure_keeps_original_and_cleans_temporary_file(
     monkeypatch.setattr(os, operation, Mock(side_effect=OSError("fake failure")))
 
     with pytest.raises(OSError, match="fake failure"):
-        edit("flash", "openai/b" if edit is remove_model_id else "openai/new")
+        edit("flash", "openai/new" if edit is add_model_id else "openai/b")
 
     assert path.read_text() == TOML
     assert list(path.parent.iterdir()) == [path]
 
 
-@pytest.mark.parametrize("edit", [add_model_id, remove_model_id])
+@pytest.mark.parametrize("edit", [add_model_id, remove_model_id, move_to_first])
 def test_result_is_validated_before_persistence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, edit: Callable[[str, str], None]
 ) -> None:
@@ -192,15 +195,18 @@ def test_result_is_validated_before_persistence(
     path = write_config(tmp_path)
     monkeypatch.setattr(tomlkit, "dumps", lambda _: TOML.replace("https://", "http://"))
 
-    with pytest.raises(ValueError, match="HTTPS"):
-        edit("flash", "openai/b" if edit is remove_model_id else "openai/new")
+    with pytest.raises(
+        ValueError,
+        match="Unsupported TOML formatting" if edit is move_to_first else "HTTPS",
+    ):
+        edit("flash", "openai/new" if edit is add_model_id else "openai/b")
 
     assert path.read_text() == TOML
     assert list(path.parent.iterdir()) == [path]
 
 
 @pytest.mark.parametrize("destination", ["file", "dangling", "parent"])
-@pytest.mark.parametrize("edit", [add_model_id, remove_model_id])
+@pytest.mark.parametrize("edit", [add_model_id, remove_model_id, move_to_first])
 def test_edits_reject_symlink_destinations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -218,14 +224,14 @@ def test_edits_reject_symlink_destinations(
         path.symlink_to(target if destination == "file" else outside / "missing.toml")
 
     with pytest.raises(ValueError, match="symlink"):
-        edit("flash", "openai/b" if edit is remove_model_id else "openai/new")
+        edit("flash", "openai/new" if edit is add_model_id else "openai/b")
 
     assert target.read_text() == TOML
     assert not list(tmp_path.rglob(".cairn-models-*"))
 
 
 @pytest.mark.parametrize("symlink", [False, True])
-@pytest.mark.parametrize("edit", [add_model_id, remove_model_id])
+@pytest.mark.parametrize("edit", [add_model_id, remove_model_id, move_to_first])
 def test_destination_changes_before_replacement_are_not_overwritten(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -250,7 +256,7 @@ def test_destination_changes_before_replacement_are_not_overwritten(
     monkeypatch.setattr(os, "fsync", change_destination)
 
     with pytest.raises(ValueError, match="symlink" if symlink else "changed during"):
-        edit("flash", "openai/b" if edit is remove_model_id else "openai/new")
+        edit("flash", "openai/new" if edit is add_model_id else "openai/b")
 
     assert external.read_text() == TOML
     assert path.read_text() == (TOML if symlink else changed)
@@ -348,7 +354,7 @@ def test_remove_rejects_non_regular_destination(
     assert path.is_dir()
 
 
-@pytest.mark.parametrize("edit", [add_model_id, remove_model_id])
+@pytest.mark.parametrize("edit", [add_model_id, remove_model_id, move_to_first])
 def test_parent_swap_at_replace_cannot_write_outside_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, edit: Callable[[str, str], None]
 ) -> None:
@@ -367,12 +373,14 @@ def test_parent_swap_at_replace_cannot_write_outside_workspace(
         replace(source, destination, **kwargs)
 
     monkeypatch.setattr(os, "replace", swap_parent)
-    edit("flash", "openai/b" if edit is remove_model_id else "openai/new")
+    edit("flash", "openai/new" if edit is add_model_id else "openai/b")
     assert external.read_text() == TOML
     assert not list(saved.glob(".cairn-models-*"))
     assert load_model_config(saved / "models.toml").model_config[0].model_ids == (
         ("openai/a",)
         if edit is remove_model_id
+        else ("openai/b", "openai/a")
+        if edit is move_to_first
         else ("openai/a", "openai/b", "openai/new")
     )
 
@@ -388,3 +396,159 @@ def test_remove_only_changes_the_named_group(
         '["openai/a", "openai/b"]', '["openai/b"]'
     )
     assert load_model_config(path).model_config[1].model_ids == ("openai/a",)
+
+
+@pytest.mark.parametrize("source", [0, 1, 2])
+@pytest.mark.parametrize("position", [1, 2, 3])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_move_preserves_other_ids_groups_and_unrelated_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: int,
+    position: int,
+    newline: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    tokens = ["'openai/a'", '"openai/b"', '"openai/\\u0063"']
+    array = "[" + ",  ".join(tokens) + ",]"
+    original = TOML.replace('["openai/a", "openai/b"]', array).replace("\n", newline)
+    path = write_config(tmp_path, original)
+    path.chmod(0o640)
+    env_file = tmp_path / ".env"
+    env_file.write_text("TEST_API_KEY=fake-secret\n")
+    credential = Mock(side_effect=AssertionError("Must not resolve credentials"))
+    monkeypatch.setattr(config_module, "resolve_provider_api_key", credential)
+    ids = ["openai/a", "openai/b", "openai/c"]
+
+    move_model_id("flash", ids[source], position)
+
+    tokens.insert(position - 1, tokens.pop(source))
+    ids.insert(position - 1, ids.pop(source))
+    assert (
+        path.read_bytes()
+        == original.replace(array, "[" + ",  ".join(tokens) + ",]").encode()
+    )
+    assert load_model_config(path).model_config[0].model_ids == tuple(ids)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert env_file.read_text() == "TEST_API_KEY=fake-secret\n"
+    credential.assert_not_called()
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.parametrize("trailing_comma", ["", ","])
+def test_move_keeps_inline_comments_with_ids_and_standalone_comments_in_place(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    newline: str,
+    trailing_comma: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    array = (
+        '[\n# before\n  "openai/a", # first\n# between\n'
+        f"  'openai/b'{trailing_comma} # second\n# after\n]"
+    )
+    original = TOML.replace('["openai/a", "openai/b"]', array).replace("\n", newline)
+    path = write_config(tmp_path, original)
+
+    move_model_id("flash", "openai/b", 1)
+
+    expected = original.replace('"openai/a", # first', "'openai/b', # second").replace(
+        f"'openai/b'{trailing_comma} # second{newline}# after",
+        f'"openai/a"{trailing_comma} # first{newline}# after',
+    )
+    assert path.read_bytes() == expected.encode()
+
+
+@pytest.mark.parametrize(
+    "group,model_id,position,error",
+    [
+        ("absent", "openai/a", 1, "group does not exist"),
+        ("flash", "openai/c", 1, "ID does not exist"),
+        ("flash", "openai/a", 0, "between 1 and 2"),
+        ("flash", "openai/a", -1, "between 1 and 2"),
+        ("flash", "openai/a", 3, "between 1 and 2"),
+        ("flash", "", 1, "non-empty"),
+    ],
+)
+def test_move_rejects_invalid_target_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    group: str,
+    model_id: str,
+    position: int,
+    error: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    path = write_config(tmp_path)
+    with pytest.raises(ValueError, match=error):
+        move_model_id(group, model_id, position)
+    assert path.read_text() == TOML
+
+
+@pytest.mark.parametrize(
+    "group,model_id,position",
+    [
+        ("flash", "openai/a", 1),
+        ("flash", "openai/b", 2),
+        ("plus", "openai/c", 1),
+    ],
+)
+def test_noop_move_never_opens_a_write_or_replaces_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    group: str,
+    model_id: str,
+    position: int,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    path = write_config(tmp_path)
+    before = path.stat()
+    opened = Mock(side_effect=AssertionError("No-op must not open a write"))
+    monkeypatch.setattr(os, "open", opened)
+    move_model_id(group, model_id, position)
+    after = path.stat()
+    assert (before.st_ino, before.st_mtime_ns) == (after.st_ino, after.st_mtime_ns)
+    assert path.read_text() == TOML
+    opened.assert_not_called()
+
+
+def test_move_rejects_comment_that_would_swallow_a_same_line_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    original = TOML.replace(
+        '["openai/a", "openai/b"]',
+        '["openai/a", "openai/b", # second\n "openai/d"]',
+    )
+    path = write_config(tmp_path, original)
+    with pytest.raises(ValueError, match="Unsupported TOML formatting"):
+        move_model_id("flash", "openai/b", 1)
+    assert path.read_text() == original
+
+
+def test_move_rejects_lossy_toml_roundtrip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    path = write_config(tmp_path)
+    dumps = tomlkit.dumps
+    monkeypatch.setattr(
+        tomlkit, "dumps", lambda doc: dumps(doc).replace("# ordered", "")
+    )
+    with pytest.raises(ValueError, match="Unsupported TOML formatting"):
+        move_model_id("flash", "openai/b", 1)
+    assert path.read_text() == TOML
+
+
+def test_move_preserves_unrelated_nan_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    original = TOML + "value = nan # valid unrelated TOML\n"
+    path = write_config(tmp_path, original)
+    move_model_id("flash", "openai/b", 1)
+    assert path.read_text() == original.replace(
+        '["openai/a", "openai/b"]', '["openai/b", "openai/a"]'
+    )

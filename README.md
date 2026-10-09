@@ -89,6 +89,15 @@ and require a restart and provider approval to take effect. Groups must already
 exist; duplicate IDs and removing a group's final ID are rejected. Cairn does
 not migrate `.env`, reload configuration or support multiple providers.
 
+`/model move flash openai/model-b 1` moves an existing ID to the specified
+1-based position within its group, consistent with `/model list`. Other IDs keep
+their relative order. Unknown groups/IDs and invalid or out-of-range positions
+are rejected; moving an ID to its current position does not rewrite the file.
+The edit preserves string quoting, inline comments with their IDs, standalone
+comments in place, and existing layout wherever supported. Unsupported formatting
+is reported without writing. As with add/remove, restart and normal provider
+approval are required; the running session keeps its loaded order.
+
 ## CLI commands
 
 | Command | Purpose |
@@ -96,6 +105,7 @@ not migrate `.env`, reload configuration or support multiple providers.
 | `/model`, `/model list`, `/model use <name>` | Inspect or switch model groups |
 | `/model add <group> <model-id>` | Append a local model ID; restart required |
 | `/model remove <group> <model-id>` | Remove a local model ID; restart required |
+| `/model move <group> <model-id> <position>` | Reorder an ID within its group (1-based); restart required |
 | `/trace`, `/trace <ID>`, `/trace list [N]` | Inspect saved traces |
 | `/help [COMMAND]` | Full command usage, including trace management |
 | `/exit`, `/quit` | End the session |

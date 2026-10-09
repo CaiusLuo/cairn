@@ -3,6 +3,7 @@ HELP_TEXT: dict[str, dict[str, str]] = {
         "usage": (
             "/model | /model list | /model use <name> | /model add <group> <model-id>"
             " | /model remove <group> <model-id>"
+            " | /model move <group> <model-id> <position>"
         ),
         "description": "Show or select a session model, or edit local model IDs.",
         "detail": (
@@ -12,7 +13,10 @@ HELP_TEXT: dict[str, dict[str, str]] = {
             "A listed model that failed recently shows its most recent failure.\n"
             "/model add appends an ID to an existing group in .cairn/models.toml.\n"
             "/model remove deletes an existing ID, but cannot remove a group's final ID.\n"
-            "Both preserve comments and ordering. Restart and normal provider approval\n"
+            "/model move reorders an ID within its group at a 1-based position.\n"
+            "Other IDs keep their relative order; a no-op does not rewrite the file.\n"
+            "Edits preserve comments; unsupported move formatting is rejected.\n"
+            "Restart and normal provider approval\n"
             "are required to load changes; the current session is not reloaded.\n"
             "Create TOML first if using legacy .env configuration."
         ),

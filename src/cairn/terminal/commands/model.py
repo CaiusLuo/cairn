@@ -1,9 +1,10 @@
-from cairn.config import add_model_id, remove_model_id
+from cairn.config import add_model_id, move_model_id, remove_model_id
 from cairn.terminal.commands.context import CommandContext
 
 MODEL_USAGE = (
     "Usage: /model | /model list | /model use <name> | /model add <group> <model-id>"
     " | /model remove <group> <model-id>"
+    " | /model move <group> <model-id> <position>"
 )
 
 
@@ -50,6 +51,23 @@ def handle_model(context: CommandContext, args: list[str]) -> None:
             print(
                 f"{'Added' if args[0] == 'add' else 'Removed'} {args[2]} "
                 f"{'to' if args[0] == 'add' else 'from'} group {args[1]} "
+                "in .cairn/models.toml. "
+                "Restart required; the current session is unchanged."
+            )
+    elif len(args) == 4 and args[0] == "move":
+        try:
+            try:
+                position = int(args[3])
+            except ValueError:
+                raise ValueError("Position must be an integer.") from None
+            move_model_id(args[1], args[2], position)
+        except ValueError as exc:
+            print(f"Cannot move model: {exc}")
+        except OSError as exc:
+            print(f"Cannot update .cairn/models.toml ({type(exc).__name__}).")
+        else:
+            print(
+                f"{args[2]} is at position {position} in group {args[1]} "
                 "in .cairn/models.toml. "
                 "Restart required; the current session is unchanged."
             )

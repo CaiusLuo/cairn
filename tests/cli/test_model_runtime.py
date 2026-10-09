@@ -230,6 +230,9 @@ def test_model_commands_validate_input_without_calling_model(
         "/model remove",
         "/model remove flash",
         "/model remove flash openai/new extra",
+        "/model move",
+        "/model move flash openai/new",
+        "/model move flash openai/new 1 extra",
         "/help model",
         "/model",
     )
@@ -240,6 +243,7 @@ def test_model_commands_validate_input_without_calling_model(
     assert "Usage: /model | /model list | /model use <name>" in result.output
     assert "/model add <group> <model-id>" in result.output
     assert "/model remove <group> <model-id>" in result.output
+    assert "/model move <group> <model-id> <position>" in result.output
     assert "Restart and normal provider approval" in result.output
     assert "Current model: flash" in result.output
     assert requests == []
@@ -588,7 +592,7 @@ def test_fallback_uses_distinct_models_and_counters_without_changing_selection(
     assert API_KEY not in repr(traces) + result.output
 
 
-@pytest.mark.parametrize("operation", ["add", "remove"])
+@pytest.mark.parametrize("operation", ["add", "remove", "move"])
 @pytest.mark.parametrize("restart_approved", [True, False])
 def test_model_edit_only_persists_and_restart_requires_normal_approval(
     tmp_path: Path,
@@ -602,7 +606,7 @@ def test_model_edit_only_persists_and_restart_requires_normal_approval(
         monkeypatch,
         "/model use plus",
         "first",
-        f"/model {operation} plus openai/new",
+        f"/model {operation} plus openai/new" + (" 1" if operation == "move" else ""),
         "/model list",
         "/model",
         "second",
@@ -645,10 +649,12 @@ def test_model_edit_only_persists_and_restart_requires_normal_approval(
     assert (
         "Added openai/new to group plus"
         if operation == "add"
+        else "openai/new is at position 1 in group plus"
+        if operation == "move"
         else "Removed openai/new from group plus"
     ) in result.output
     assert "Restart required; the current session is unchanged." in result.output
-    assert ("2. openai/new" in result.output) == (operation == "remove")
+    assert ("2. openai/new" in result.output) == (operation != "add")
     assert "Current model: plus (openai/qwen-plus" in result.output
     assert len(identities) == 2
     assert all(before is after for before, after in zip(*identities, strict=True))
@@ -660,7 +666,16 @@ def test_model_edit_only_persists_and_restart_requires_normal_approval(
     assert len(agents) == 1
     approval.assert_called_once()
     path = tmp_path / ".cairn/models.toml"
-    assert path.read_text() == (amended if operation == "add" else TOML)
+    expected = (
+        amended
+        if operation == "add"
+        else amended.replace(
+            '["openai/qwen-plus", "openai/new"]', '["openai/new", "openai/qwen-plus"]'
+        )
+        if operation == "move"
+        else TOML
+    )
+    assert path.read_text() == expected
     assert API_KEY not in path.read_text() + result.output
     assert env_file.read_text() == "BAILIAN_API_KEY=fake-file-key\n"
 
@@ -676,6 +691,8 @@ def test_model_edit_only_persists_and_restart_requires_normal_approval(
     assert approved_config.model_config[1].model_ids == (
         ("openai/qwen-plus", "openai/new")
         if operation == "add"
+        else ("openai/new", "openai/qwen-plus")
+        if operation == "move"
         else ("openai/qwen-plus",)
     )
     assert requests == []
@@ -695,6 +712,12 @@ def test_model_edit_only_persists_and_restart_requires_normal_approval(
     [
         ("/model add flash openai/qwen-flash", "already exists"),
         ("/model add absent openai/new", "does not exist"),
+        ("/model move absent openai/new 1", "group does not exist"),
+        ("/model move flash openai/new 1", "ID does not exist"),
+        ("/model move flash openai/qwen-flash 0", "between 1 and 1"),
+        ("/model move flash openai/qwen-flash 2", "between 1 and 1"),
+        ("/model move flash openai/qwen-flash 1.5", "must be an integer"),
+        ("/model move flash openai/qwen-flash nope", "must be an integer"),
         ("/model remove flash openai/qwen-flash", "final model ID"),
         ("/model remove flash openai/absent", "ID does not exist"),
         ("/model remove absent openai/new", "group does not exist"),
@@ -716,14 +739,14 @@ def test_model_edit_validation_error_keeps_session_available(
     assert (tmp_path / ".cairn/models.toml").read_text() == TOML
 
 
-@pytest.mark.parametrize("operation", ["add", "remove"])
+@pytest.mark.parametrize("operation", ["add", "remove", "move"])
 def test_model_edit_in_legacy_session_requires_toml_without_migration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
     _, requests, _ = _configure_cli(
         tmp_path,
         monkeypatch,
-        f"/model {operation} flash openai/new",
+        f"/model {operation} flash openai/new" + (" 1" if operation == "move" else ""),
         "question",
         toml=None,
     )
@@ -737,19 +760,19 @@ def test_model_edit_in_legacy_session_requires_toml_without_migration(
     assert not (tmp_path / ".cairn/models.toml").exists()
 
 
-@pytest.mark.parametrize("operation", ["add", "remove"])
+@pytest.mark.parametrize("operation", ["add", "remove", "move"])
 def test_model_edit_write_error_omits_credentials_and_keeps_original(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
     _, requests, _ = _configure_cli(
         tmp_path,
         monkeypatch,
-        f"/model {operation} flash openai/new",
+        f"/model {operation} flash openai/new" + (" 1" if operation == "move" else ""),
         "/model",
         toml=TOML.replace(
             '["openai/qwen-flash"]', '["openai/qwen-flash", "openai/new"]'
         )
-        if operation == "remove"
+        if operation != "add"
         else TOML,
     )
     monkeypatch.setattr(os, "replace", Mock(side_effect=OSError(API_KEY)))
@@ -764,7 +787,7 @@ def test_model_edit_write_error_omits_credentials_and_keeps_original(
     path = tmp_path / ".cairn/models.toml"
     assert path.read_text() == (
         TOML.replace('["openai/qwen-flash"]', '["openai/qwen-flash", "openai/new"]')
-        if operation == "remove"
+        if operation != "add"
         else TOML
     )
     assert list(path.parent.iterdir()) == [path]
