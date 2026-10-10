@@ -207,6 +207,18 @@ class RepoGraphBuilder:
             self.snapshot = graph
         return graph
 
+    def refresh(self) -> RepoGraph:
+        """Return a newly inspected candidate using a complete bounded rebuild.
+
+        Check the returned report: an incomplete candidate does not replace the
+        last complete ``snapshot``. Existing snapshots never change in place.
+        """
+        return self.rebuild()
+
+    def rebuild(self) -> RepoGraph:
+        """Discard transient facts and rescan; there is no persistent cache."""
+        return self.build()
+
     def _reset_inventory(self) -> None:
         self._files: dict[str, FileRecord] = {}
         self._directories = {".": DirectoryRecord(".")}

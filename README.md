@@ -197,6 +197,9 @@ credential files.
 Explicit [GitHub Issue workflows](docs/github-workflow.md) use retained Worktrees
 and deterministic verification before approved Draft PR publication.
 
+[RepoGraph](docs/repo-graph.md) provides bounded repository inventory and Python
+structure queries through explicit, read-only snapshots.
+
 ## Source layout
 
 ```text
@@ -205,6 +208,7 @@ src/cairn/
 ├── llm/           # Model configuration, selection, clients, token counting
 ├── tools/         # Bash and file tools
 ├── workspace/     # Filesystem roots and path boundaries
+├── repo_graph/    # Bounded inventory, Python structure, and snapshot queries
 ├── git/           # Local worktree creation, retention, and cleanup
 ├── github/        # Explicit Issue source and Draft PR transport
 ├── workflow/      # Retained coding tasks and exact-tree verification
