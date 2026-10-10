@@ -31,12 +31,23 @@ def print_result(result: EvalResult) -> None:
     print(line, flush=True)
 
     if result.error:
-        print(f"  - execution: {result.error}", flush=True)
+        category = (
+            f" [{result.failure_category.value}]" if result.failure_category else ""
+        )
+        print(f"  - execution{category}: {result.error}", flush=True)
 
     for check in result.checks:
-        if check.error or not check.passed:
+        if check.error is not None or not check.passed:
             detail = check.error or check.message or "check failed"
-            print(f"  - {check.name}: {detail}", flush=True)
+            identity = f"check #{check.check_index} " if check.check_index else ""
+            identity += check.name
+            if check.check_type:
+                identity += f" ({check.check_type})"
+            if check.target_path is not None:
+                identity += f" target={check.target_path!r}"
+            if check.failure_category:
+                identity += f" [{check.failure_category.value}]"
+            print(f"  - {identity}: {detail}", flush=True)
 
 
 async def main(destination: Path) -> int:

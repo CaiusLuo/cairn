@@ -7,6 +7,7 @@ from tempfile import NamedTemporaryFile
 
 from cairn.evals.models import (
     CheckResult,
+    EvalFailureCategory,
     EvalMetrics,
     EvalResult,
     EvalStatus,
@@ -49,11 +50,15 @@ def write_suite_report(report: EvalSuiteResult, destination: Path) -> None:
 
 def _report_result(result: EvalResult) -> EvalResult:
     # Arbitrary LLM/check exception messages can contain credentials or request
-    # payloads. Keep verdicts, names and trace refs; detail stays in existing
-    # per-case observability rather than free text in the suite artifact.
+    # payloads. Keep structured categories, check identities and trace refs;
+    # never copy arbitrary failure text or expected file contents.
     return result.model_copy(
         update={
             "error": "Case execution failed." if result.error is not None else None,
+            "failure_category": result.failure_category
+            or (
+                EvalFailureCategory.RUNTIME_ERROR if result.error is not None else None
+            ),
             "checks": [
                 CheckResult(
                     name=check.name,
@@ -66,6 +71,10 @@ def _report_result(result: EvalResult) -> EvalResult:
                     error="Check evaluation failed."
                     if check.error is not None
                     else None,
+                    check_index=check.check_index,
+                    check_type=check.check_type,
+                    target_path=check.target_path,
+                    failure_category=check.failure_category,
                 )
                 for check in result.checks
             ],
@@ -157,6 +166,7 @@ class EvalSuiteRunner:
                     status=EvalStatus.ERROR,
                     error="Case execution failed.",
                     metrics=metrics,
+                    failure_category=EvalFailureCategory.RUNTIME_ERROR,
                 )
             report.results.append(_report_result(result))
             report.active_case_name = None

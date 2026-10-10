@@ -19,6 +19,7 @@ from cairn.evals import (
     CheckResult,
     EvalCase,
     EvalCheck,
+    EvalFailureCategory,
     EvalMetrics,
     EvalResult,
     EvalRunner,
@@ -27,8 +28,10 @@ from cairn.evals import (
     EvalSuiteCase,
     EvalSuiteResult,
     EvalSuiteRunner,
+    FileContainsCheck,
     FileContentEqualsCheck,
     FileExistsCheck,
+    FileNotContainsCheck,
     write_suite_report,
 )
 from cairn.evals import runner as runner_module
@@ -643,7 +646,14 @@ def test_report_contains_no_provider_errors_or_conversation_payloads(
 
         async def evaluate(self, workspace: Workspace) -> CheckResult:
             return CheckResult(
-                name=self.name, passed=False, message=payload, error=secret
+                name=self.name,
+                passed=False,
+                message=payload,
+                error=secret,
+                check_index=99,
+                check_type=secret,
+                target_path=payload,
+                failure_category=EvalFailureCategory.RUN_TIMEOUT,
             )
 
     path = tmp_path / "safe.json"
@@ -660,6 +670,228 @@ def test_report_contains_no_provider_errors_or_conversation_payloads(
     assert secret not in path.read_text()
     assert payload not in path.read_text()
     assert report.results[0].checks[0].error == "Check evaluation failed."
+    assert report.results[0].checks[0].check_index == 1
+    assert report.results[0].checks[0].check_type == "LeakyCheck"
+    assert report.results[0].checks[0].target_path is None
+    assert (
+        report.results[0].checks[0].failure_category is EvalFailureCategory.CHECK_ERROR
+    )
+
+
+@pytest.mark.parametrize(
+    "checks",
+    [
+        (
+            FileExistsCheck("src/./first.txt", name="same-name"),
+            FileExistsCheck("src/second.txt", name="same-name"),
+        ),
+        (
+            FileContentEqualsCheck("src/./first.txt", "PRIVATE_EXPECTED", "same-name"),
+            FileContentEqualsCheck("src/second.txt", "PRIVATE_EXPECTED", "same-name"),
+        ),
+        (
+            FileContainsCheck("src/./first.txt", "PRIVATE_EXPECTED", "same-name"),
+            FileContainsCheck("src/second.txt", "PRIVATE_EXPECTED", "same-name"),
+        ),
+        (
+            FileNotContainsCheck("src/./first.txt", "PRIVATE_EXPECTED", "same-name"),
+            FileNotContainsCheck("src/second.txt", "PRIVATE_EXPECTED", "same-name"),
+        ),
+    ],
+)
+def test_duplicate_check_names_keep_identity_in_json_and_summary(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    checks: tuple[EvalCheck, EvalCheck],
+) -> None:
+    from examples.evals.run_coding_smoke import print_result
+
+    path = tmp_path / "checks.json"
+    report = asyncio.run(
+        EvalSuiteRunner(runner(lambda: SequenceLLM([LLMResponse(content="done")]))).run(
+            EvalSuite(
+                "identity",
+                (EvalSuiteCase(EvalCase(name="files", prompt="fix"), checks),),
+            ),
+            destination=path,
+            on_result=print_result,
+        )
+    )
+    assert report.results[0].status is EvalStatus.FAIL
+    saved = json.loads(path.read_text())["results"][0]["checks"]
+    assert [check["name"] for check in saved] == ["same-name", "same-name"]
+    assert [check["check_index"] for check in saved] == [1, 2]
+    check_type = type(checks[0]).__name__
+    assert [check["check_type"] for check in saved] == [check_type, check_type]
+    assert [check["target_path"] for check in saved] == [
+        "src/first.txt",
+        "src/second.txt",
+    ]
+    assert all(check["failure_category"] == "check_failed" for check in saved)
+    assert load(path) == report
+    output = capsys.readouterr().out
+    assert f"check #1 same-name ({check_type}) target='src/first.txt'" in output
+    assert f"check #2 same-name ({check_type}) target='src/second.txt'" in output
+    assert "PRIVATE_EXPECTED" not in path.read_text() + output
+
+
+@pytest.mark.parametrize(
+    ("failure", "category"),
+    [
+        ("timeout", EvalFailureCategory.RUN_TIMEOUT),
+        ("runtime", EvalFailureCategory.RUNTIME_ERROR),
+        ("provider-timeout", EvalFailureCategory.RUNTIME_ERROR),
+        ("budget", EvalFailureCategory.BUDGET_EXHAUSTED),
+        ("context-budget", EvalFailureCategory.BUDGET_EXHAUSTED),
+    ],
+)
+def test_execution_failure_categories_survive_report_sanitizing(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
+    category: EvalFailureCategory,
+) -> None:
+    from examples.evals.run_coding_smoke import print_result
+
+    class FailingLLM:
+        calls = 0
+
+        async def generate(
+            self, messages: list[Message], tools: list[dict[str, Any]] | None = None
+        ) -> LLMResponse:
+            self.calls += 1
+            if failure == "timeout":
+                await asyncio.Event().wait()
+            if failure == "provider-timeout":
+                raise TimeoutError("FAKE_SECRET PRIVATE_CONVERSATION")
+            if failure == "budget":
+                return LLMResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="read",
+                            name="read_file",
+                            arguments={"path": "answer.txt"},
+                        )
+                    ]
+                )
+            raise RuntimeError("FAKE_SECRET PRIVATE_CONVERSATION")
+
+    class OversizedCounter:
+        def count(
+            self, messages: list[Message], tools: list[dict[str, Any]]
+        ) -> TokenCount:
+            return TokenCount(tokens=2000, is_estimate=False)
+
+    parent = tmp_path / "workspaces"
+    parent.mkdir()
+    path = tmp_path / "failure.json"
+    llm = FailingLLM()
+    case_runner = EvalRunner(
+        lambda: llm,
+        budget=RunBudget(max_steps=1),
+        run_timeout_seconds=0.02 if failure == "timeout" else 5,
+        check_timeout_seconds=2,
+        context_budget=ContextBudget(max_tokens=512, response_tokens=32)
+        if failure == "context-budget"
+        else None,
+        token_counter=OversizedCounter() if failure == "context-budget" else None,
+        temp_root=parent,
+    )
+    report = asyncio.run(
+        EvalSuiteRunner(case_runner).run(
+            EvalSuite("failures", (case("one"),)),
+            destination=path,
+            on_result=print_result,
+        )
+    )
+    result = load(path).results[0]
+    assert result == report.results[0]
+    assert result.status is EvalStatus.ERROR
+    assert result.failure_category is category
+    assert result.error == "Case execution failed."
+    assert result.checks[0].passed
+    assert llm.calls == (0 if failure == "context-budget" else 1)
+    assert list(parent.iterdir()) == []
+    output = capsys.readouterr().out
+    assert f"execution [{category.value}]" in output
+    assert "FAKE_SECRET" not in path.read_text() + output
+    assert "PRIVATE_CONVERSATION" not in path.read_text() + output
+
+
+@pytest.mark.parametrize("failure", ["timeout", "exception", "returned-error"])
+def test_check_failure_categories_and_identity_survive_errors(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
+) -> None:
+    from examples.evals.run_coding_smoke import print_result
+
+    class ErrorCheck:
+        name = "same-name"
+        path = "FAKE_SECRET"  # Custom check attributes are not report targets.
+
+        async def evaluate(self, workspace: Workspace) -> CheckResult:
+            if failure == "timeout":
+                await asyncio.Event().wait()
+            if failure == "exception":
+                raise RuntimeError("FAKE_SECRET PRIVATE_OUTPUT")
+            return CheckResult(
+                name=self.name, passed=False, error="FAKE_SECRET PRIVATE_OUTPUT"
+            )
+
+    case_runner = runner(lambda: SequenceLLM([LLMResponse(content="done")]))
+    case_runner.check_timeout_seconds = 0.02
+    path = tmp_path / "check-error.json"
+    report = asyncio.run(
+        EvalSuiteRunner(case_runner).run(
+            EvalSuite("errors", (EvalSuiteCase(case("one").case, (ErrorCheck(),)),)),
+            destination=path,
+            on_result=print_result,
+        )
+    )
+    result = load(path).results[0]
+    category = (
+        EvalFailureCategory.CHECK_TIMEOUT
+        if failure == "timeout"
+        else EvalFailureCategory.CHECK_ERROR
+    )
+    assert result == report.results[0]
+    assert result.status is EvalStatus.ERROR
+    assert result.failure_category is category
+    check = result.checks[0]
+    assert check.check_index == 1 and check.check_type == "ErrorCheck"
+    assert check.target_path is None and check.failure_category is category
+    output = capsys.readouterr().out
+    assert f"check #1 same-name (ErrorCheck) [{category.value}]" in output
+    assert "FAKE_SECRET" not in path.read_text() + output
+    assert "PRIVATE_OUTPUT" not in path.read_text() + output
+
+
+@pytest.mark.parametrize(
+    "target", ["../PRIVATE_PATH", "/tmp/PRIVATE_PATH", ".git/PRIVATE_PATH"]
+)
+def test_unsafe_builtin_check_target_is_not_persisted_or_printed(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    target: str,
+) -> None:
+    from examples.evals.run_coding_smoke import print_result
+
+    path = tmp_path / "unsafe.json"
+    report = asyncio.run(
+        EvalSuiteRunner(runner(lambda: SequenceLLM([LLMResponse(content="done")]))).run(
+            EvalSuite(
+                "unsafe", (EvalSuiteCase(case("one").case, (FileExistsCheck(target),)),)
+            ),
+            destination=path,
+            on_result=print_result,
+        )
+    )
+    check = load(path).results[0].checks[0]
+    assert check == report.results[0].checks[0]
+    assert check.target_path is None
+    assert check.failure_category is EvalFailureCategory.CHECK_ERROR
+    assert "PRIVATE_PATH" not in path.read_text() + capsys.readouterr().out
 
 
 @pytest.mark.parametrize("success", [True, False])

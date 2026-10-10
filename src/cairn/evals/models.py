@@ -15,11 +15,25 @@ class EvalStatus(StrEnum):
     ERROR = "error"
 
 
+class EvalFailureCategory(StrEnum):
+    RUN_TIMEOUT = "run_timeout"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    RUNTIME_ERROR = "runtime_error"
+    CHECK_FAILED = "check_failed"
+    CHECK_TIMEOUT = "check_timeout"
+    CHECK_ERROR = "check_error"
+
+
 class CheckResult(BaseModel):
     name: str
     passed: bool
     message: str | None = None
     error: str | None = None
+    # One-based position within the case, independent of duplicate check names.
+    check_index: int | None = Field(default=None, ge=1)
+    check_type: str | None = None
+    target_path: str | None = None
+    failure_category: EvalFailureCategory | None = None
 
 
 class EvalMetrics(BaseModel):
@@ -49,6 +63,7 @@ class EvalResult(BaseModel):
     trace_id: str | None = None
     error: str | None = None
     metrics: EvalMetrics | None = None
+    failure_category: EvalFailureCategory | None = None
 
 
 class EvalCase(BaseModel):

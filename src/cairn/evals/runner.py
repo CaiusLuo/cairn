@@ -7,9 +7,10 @@ from time import perf_counter
 from typing import Any
 
 from cairn.assembly import build_agent
-from cairn.core.budget import RunBudget
+from cairn.core.budget import RunBudget, RunBudgetExceeded
 from cairn.core.context import (
     ContextBudget,
+    ContextBudgetExceeded,
     ContextBuilder,
     ContextRequest,
     TokenCounter,
@@ -17,10 +18,17 @@ from cairn.core.context import (
 from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.core.models import Message
+from cairn.evals.checks import (
+    FileContainsCheck,
+    FileContentEqualsCheck,
+    FileExistsCheck,
+    FileNotContainsCheck,
+)
 from cairn.evals.models import (
     CheckResult,
     EvalCase,
     EvalCheck,
+    EvalFailureCategory,
     EvalMetrics,
     EvalResult,
     EvalStatus,
@@ -32,6 +40,24 @@ from cairn.workspace.workspace import Workspace
 
 def _error_message(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"
+
+
+def _check_target_path(check: EvalCheck, workspace: Workspace) -> str | None:
+    if not isinstance(
+        check,
+        (
+            FileExistsCheck,
+            FileContentEqualsCheck,
+            FileContainsCheck,
+            FileNotContainsCheck,
+        ),
+    ):
+        return None
+    try:
+        return workspace.resolve_path(check.path).relative_to(workspace.root).as_posix()
+    except (ValueError, OSError):
+        # Never expose absolute, escaping or otherwise invalid targets.
+        return None
 
 
 class _MeasuredContextBuilder(ContextBuilder):
@@ -133,6 +159,7 @@ class EvalRunner:
         checks = tuple(checks)
         results: list[CheckResult] = []
         execution_error: str | None = None
+        failure_category: EvalFailureCategory | None = None
         trace_id: str | None = None
 
         def capture_trace(event: Event) -> None:
@@ -149,6 +176,7 @@ class EvalRunner:
 
         if not checks:
             execution_error = "ValueError: at least one eval check is required"
+            failure_category = EvalFailureCategory.RUNTIME_ERROR
         else:
             try:
                 with TemporaryDirectory(
@@ -184,28 +212,42 @@ class EvalRunner:
                             await run_turn(agent, case.prompt, budget=self.budget)
                     except Exception as exc:
                         execution_error = _error_message(exc)
+                        failure_category = EvalFailureCategory.RUNTIME_ERROR
                         if isinstance(exc, TimeoutError) and deadline.expired():
+                            failure_category = EvalFailureCategory.RUN_TIMEOUT
                             execution_error = (
                                 "TimeoutError: eval run exceeded "
                                 f"{self.run_timeout_seconds} seconds"
                             )
+                        elif isinstance(
+                            exc, (RunBudgetExceeded, ContextBudgetExceeded)
+                        ):
+                            failure_category = EvalFailureCategory.BUDGET_EXHAUSTED
 
                     # run_turn has returned or completed its cancellation cleanup.
                     # Preserve diagnostics even when execution already failed.
-                    for check in checks:
-                        results.append(await self._evaluate_check(check, workspace))
+                    for index, check in enumerate(checks, start=1):
+                        results.append(
+                            await self._evaluate_check(check, workspace, index=index)
+                        )
             except Exception as exc:
                 error = _error_message(exc)
                 execution_error = (
                     f"{execution_error}; {error}" if execution_error else error
                 )
+                failure_category = failure_category or EvalFailureCategory.RUNTIME_ERROR
 
         # External CancelledError is never caught above. Directory ownership
         # closes before returning a verdict, including on cancellation.
         if execution_error is not None or any(r.error is not None for r in results):
             status = EvalStatus.ERROR
+            if failure_category is None:
+                failure_category = next(
+                    r.failure_category for r in results if r.error is not None
+                )
         elif any(not r.passed for r in results):
             status = EvalStatus.FAIL
+            failure_category = EvalFailureCategory.CHECK_FAILED
         else:
             status = EvalStatus.PASS
 
@@ -216,12 +258,14 @@ class EvalRunner:
             trace_id=trace_id,
             error=execution_error,
             metrics=metrics,
+            failure_category=failure_category,
         )
 
     async def _evaluate_check(
-        self, check: EvalCheck, workspace: Workspace
+        self, check: EvalCheck, workspace: Workspace, *, index: int
     ) -> CheckResult:
         name = type(check).__name__
+        target_path = _check_target_path(check, workspace)
         deadline = asyncio.timeout(self.check_timeout_seconds)
         try:
             async with deadline:
@@ -232,12 +276,36 @@ class EvalRunner:
                 result = await check.evaluate(workspace)
                 if not isinstance(result, CheckResult):
                     raise TypeError("check must return a CheckResult")
-                return result
+                category = (
+                    EvalFailureCategory.CHECK_ERROR
+                    if result.error is not None
+                    else EvalFailureCategory.CHECK_FAILED
+                    if not result.passed
+                    else None
+                )
+                return result.model_copy(
+                    update={
+                        "check_index": index,
+                        "check_type": type(check).__name__,
+                        "target_path": target_path,
+                        "failure_category": category,
+                    }
+                )
         except Exception as exc:
             error = _error_message(exc)
+            category = EvalFailureCategory.CHECK_ERROR
             if isinstance(exc, TimeoutError) and deadline.expired():
+                category = EvalFailureCategory.CHECK_TIMEOUT
                 error = (
                     "TimeoutError: eval check exceeded "
                     f"{self.check_timeout_seconds} seconds"
                 )
-            return CheckResult(name=name, passed=False, error=error)
+            return CheckResult(
+                name=name,
+                passed=False,
+                error=error,
+                check_index=index,
+                check_type=type(check).__name__,
+                target_path=target_path,
+                failure_category=category,
+            )
