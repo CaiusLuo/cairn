@@ -139,5 +139,5 @@ and preserve recovery evidence. Git LFS/external filters, submodules, sparse or
 hidden index entries, non-UTF-8 tree names and percent-containing branch names are
 unsupported. Raw verifier bytes must match staged blobs, so EOL conversion is
 rejected. Ignored build/cache artifacts also invalidate verification: use checks
-that leave the Worktree unchanged. There are no queues, Reviewer Agent, rebase,
-merge or automatic remote recovery.
+that leave the Worktree unchanged. Publication does not invoke the separate local
+review workflow. There are no queues, rebase, merge or automatic remote recovery.
