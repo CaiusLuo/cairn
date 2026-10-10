@@ -154,6 +154,7 @@ class RepoContextProvider:
         *,
         max_paths: int = DEFAULT_MAX_PATHS,
         timeout: float = DEFAULT_GIT_TIMEOUT,
+        secret_env_keys: frozenset[str] | None = None,
     ) -> None:
         if max_paths < 1:
             raise ValueError("max_paths must be at least 1")
@@ -163,12 +164,16 @@ class RepoContextProvider:
         self.workspace = workspace
         self.max_paths = max_paths
         self.timeout = timeout
+        self.secret_env_keys = secret_env_keys
 
     async def _start_git(
         self, *args: str, env: Mapping[str, str] | None = None
     ) -> asyncio.subprocess.Process:
-        # The legacy prompt inspection keeps its configuration behavior. Task
-        # evidence uses an isolated environment and disables external FSMonitor.
+        # Interactive prompt inspection keeps its configuration behavior. Task
+        # prompt/evidence inspection uses an isolated environment and disables
+        # external FSMonitor, including before the first model request.
+        if env is None and self.secret_env_keys is not None:
+            env = build_git_env(os.environ, self.secret_env_keys)
         options = (
             ("-c", f"core.hooksPath={os.devnull}", "-c", "core.fsmonitor=false")
             if env is not None
@@ -277,7 +282,7 @@ class RepoContextProvider:
             raise
 
         if returncode != 0 and not truncated:
-            if env is not None:
+            if env is not None or self.secret_env_keys is not None:
                 raise RuntimeError(f"git status failed ({returncode})")
             detail = stderr.decode("utf-8", errors="replace").strip()
             raise RuntimeError(f"git status failed: {detail or returncode}")

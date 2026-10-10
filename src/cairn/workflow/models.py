@@ -22,7 +22,10 @@ class WorkflowPhase(StrEnum):
     STAGING = "staging"
     VERIFYING = "verifying"
     VERIFIED = "verified"
+    AUTHORIZING = "authorizing"
+    COMMITTING = "committing"
     PUBLISHING = "publishing"
+    CREATING_PR = "creating_pr"
     PUBLISHED = "published"
 
 
@@ -47,6 +50,7 @@ class WorkflowFailure(StrEnum):
     VERIFICATION_ERROR = "verification_error"
     DRIFT = "drift"
     CANCELLED = "cancelled"
+    PERMISSION_DENIED = "permission_denied"
     PUBLISH_FAILED = "publish_failed"
 
 
@@ -157,6 +161,7 @@ class WorkflowReport(BaseModel):
     checks: tuple[VerificationCheck, ...] = ()
     commit: str | None = None
     remote_branch: str | None = None
+    remote_published: bool | None = False
     pr_url: str | None = None
 
 

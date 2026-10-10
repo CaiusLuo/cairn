@@ -160,6 +160,7 @@ class CodingTaskRunner:
                     context_builder=self.context_builder,
                     model_executor=self.model_executor,
                     secret_env_keys=self.secret_env_keys,
+                    repository_secret_env_keys=self.secret_env_keys,
                 )
                 response = await self._turn(agent, spec.prompt, cancellation_event)
                 if response is None:

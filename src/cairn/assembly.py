@@ -22,6 +22,7 @@ def build_agent(
     context_builder: ContextBuilder | None = None,
     secret_env_keys: frozenset[str] = frozenset(),
     model_executor: ModelExecutor | None = None,
+    repository_secret_env_keys: frozenset[str] | None = None,
 ) -> Agent:
     registry = ToolRegistry()
 
@@ -35,7 +36,9 @@ def build_agent(
         permission_handler=permission_handler,
         event_handler=event_handler,
         tracer=tracer,
-        repo_context_provider=RepoContextProvider(workspace),
+        repo_context_provider=RepoContextProvider(
+            workspace, secret_env_keys=repository_secret_env_keys
+        ),
         context_builder=context_builder,
         model_executor=model_executor,
     )

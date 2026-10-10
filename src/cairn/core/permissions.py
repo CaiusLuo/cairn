@@ -75,6 +75,12 @@ class PermissionHandler(Protocol):
     def __call__(self, tool_call: ToolCall) -> PermissionResult: ...
 
 
+class CapabilityPermissionHandler(Protocol):
+    """Approve a capability explicitly requested by a trusted harness operation."""
+
+    def authorize(self, request: PermissionRequest) -> PermissionResult: ...
+
+
 def _is_sudo_guardrail(tool_call: ToolCall) -> bool:
     """Best-effort action guardrail for commands whose first token is ``sudo``.
 
@@ -160,6 +166,28 @@ class SessionPermissionHandler:
         if capability is None:
             return evaluate_permission_policy(tool_call)
 
+        return self.authorize(
+            PermissionRequest(
+                capability=capability,
+                justification=tool_call.arguments["justification"],
+                tool_call=tool_call,
+            )
+        )
+
+    def authorize(self, request: PermissionRequest) -> PermissionResult:
+        """Approve an explicit request without changing model tool policy.
+
+        Harness operations construct their own requests after validating their
+        inputs. This method never derives authority from a tool name or from
+        model-produced arguments; callers must check the granted capability
+        before using a network transport.
+        """
+        capability = request.capability
+        # StrEnum equality also accepts strings; only the actual capability
+        # member authorizes, including when model validation was bypassed.
+        if capability is not PermissionCapability.NETWORK:
+            raise ValueError("Invalid permission capability")
+
         if capability in self.grants:
             return PermissionResult(
                 policy_decision=PermissionDecision.ASK,
@@ -175,13 +203,7 @@ class SessionPermissionHandler:
                 source=PermissionSource.NO_HANDLER,
             )
 
-        choice = self.prompt(
-            PermissionRequest(
-                capability=capability,
-                justification=tool_call.arguments["justification"],
-                tool_call=tool_call,
-            )
-        )
+        choice = self.prompt(request)
 
         # StrEnum equality also accepts strings; only enum members authorize.
         if choice is PermissionChoice.DENY:

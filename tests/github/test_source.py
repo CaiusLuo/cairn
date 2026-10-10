@@ -393,6 +393,7 @@ def test_http_output_and_errors_are_bounded_and_sanitized(
     assert SECRET not in str(caught.value)
     if isinstance(response, HTTPError):
         assert caught.value.status_code == 403
+        assert response.fp is not None and response.fp.closed
 
 
 def test_http_nested_payload_and_encoded_ref_path(

@@ -192,6 +192,8 @@ class GitHubREST:
                 raise GitHubHTTPError("GitHub API returned an invalid response object")
             return result
         except HTTPError as exc:
+            with suppress(Exception):
+                exc.close()
             raise GitHubHTTPError(
                 f"GitHub API returned HTTP {exc.code}", status_code=exc.code
             ) from None

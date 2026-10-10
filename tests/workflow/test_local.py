@@ -548,7 +548,7 @@ def test_report_write_failure_is_observable_and_retains(
     assert list(provider.parent.glob("cairn-worktree-*/*"))
 
 
-def test_github_custom_and_provider_secrets_never_reach_bash(
+def test_github_custom_and_provider_secrets_never_reach_agent_subprocesses(
     provider: WorktreeProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = provider.source.root / ".cairn/models.toml"
@@ -569,6 +569,8 @@ model_ids = ["test/model"]
     captured: list[dict[str, str]] = []
 
     async def spawn(*args: Any, **kwargs: Any) -> asyncio.subprocess.Process:
+        if args[0] == "git":
+            captured.append(dict(kwargs.get("env") or os.environ))
         if args[0] in {"/usr/bin/sandbox-exec", "/usr/bin/bwrap"}:
             captured.append(dict(kwargs["env"]))
             return await original(sys.executable, "-c", "print('safe child')", **kwargs)

@@ -194,6 +194,9 @@ filters, including Git LFS content conversion, are not supported and cause a
 clear error. This does not provide a process sandbox or prevent access to local
 credential files.
 
+Explicit [GitHub Issue workflows](docs/github-workflow.md) use retained Worktrees
+and deterministic verification before approved Draft PR publication.
+
 ## Source layout
 
 ```text
@@ -203,6 +206,8 @@ src/cairn/
 ├── tools/         # Bash and file tools
 ├── workspace/     # Filesystem roots and path boundaries
 ├── git/           # Local worktree creation, retention, and cleanup
+├── github/        # Explicit Issue source and Draft PR transport
+├── workflow/      # Retained coding tasks and exact-tree verification
 ├── observability/ # Trace recording and storage
 ├── terminal/      # CLI input, output, and slash commands
 ├── evals/         # Evaluation cases, checks, and runner
