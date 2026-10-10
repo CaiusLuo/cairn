@@ -128,6 +128,9 @@ def test_publish_exact_verified_commit_and_draft_only(
         publisher(transport, SessionPermissionHandler(approve)).publish(issue, result)
     )
     assert published.report.status is WorkflowStatus.PUBLISHED
+    assert result.task_result is not None
+    assert published.task_result is result.task_result
+    assert published.report.task_result == result.report.task_result
     assert published.report.phase is WorkflowPhase.PUBLISHED
     assert published.handle.state is WorktreeState.RETAINED
     assert transport.calls == ["verify", "publish", "pr"]
@@ -202,6 +205,8 @@ def test_permission_denial_has_zero_transport_calls_and_keeps_edits(
         publisher(transport, handler).publish(test_local.ISSUE, result)
     )
     assert blocked.report.failure is WorkflowFailure.PERMISSION_DENIED
+    assert blocked.task_result is result.task_result
+    assert blocked.report.task_result == result.report.task_result
     assert transport.calls == []
     assert (
         test_local.git(result.handle.path, "rev-parse", "HEAD")

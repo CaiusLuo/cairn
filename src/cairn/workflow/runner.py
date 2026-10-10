@@ -10,11 +10,13 @@ from uuid import uuid4
 from cairn.config import load_project_providers
 from cairn.git.worktree import WorktreeError, WorktreeHandle, WorktreeProvider
 from cairn.github.models import IssueTask
-from cairn.tasks import CodingTaskRunner, TaskStatus
+from cairn.tasks import CodingTaskRunner, TaskResult, TaskStatus
 from cairn.workflow.git import NoChangesError, SnapshotDriftError, WorkflowGit
 from cairn.workflow.models import (
     GitSnapshot,
     LocalWorkflowResult,
+    TaskRepositorySummary,
+    TaskResultSummary,
     VerificationResult,
     WorkflowFailure,
     WorkflowPhase,
@@ -38,6 +40,7 @@ class _Progress:
     recovery_path: Path
     snapshot: GitSnapshot | None = None
     verification: VerificationResult | None = None
+    task_result: TaskResult | None = None
 
     def save(self, **updates: Any) -> None:
         self.report = self.report.model_copy(update=updates)
@@ -61,6 +64,7 @@ class _Progress:
             self.verification,
             self.report,
             self.recovery_path,
+            task_result=self.task_result,
         )
 
 
@@ -123,7 +127,12 @@ class LocalWorkflow:
                     break
             try:
                 result = worker.result()
-                progress = _Progress(result.handle, result.report, result.recovery_path)
+                progress = _Progress(
+                    result.handle,
+                    result.report,
+                    result.recovery_path,
+                    task_result=result.task_result,
+                )
                 progress.save(
                     status=WorkflowStatus.CANCELLED, failure=WorkflowFailure.CANCELLED
                 )
@@ -235,7 +244,16 @@ class LocalWorkflow:
             task_result = await runner.run(
                 issue.task, cancellation_event=cancellation_event
             )
-            progress.save(trace_id=task_result.trace_id)
+            progress.task_result = task_result
+            progress.save(
+                trace_id=task_result.trace_id,
+                task_result=TaskResultSummary(
+                    status=task_result.status,
+                    repository=TaskRepositorySummary.from_evidence(
+                        task_result.repository
+                    ),
+                ),
+            )
             failures = {
                 TaskStatus.BUDGET_EXHAUSTED: WorkflowFailure.TASK_BUDGET_EXHAUSTED,
                 TaskStatus.RUNTIME_ERROR: WorkflowFailure.TASK_RUNTIME_ERROR,

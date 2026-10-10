@@ -11,6 +11,8 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 
 from cairn.git.worktree import WorktreeHandle
+from cairn.repository import RepositoryEvidence
+from cairn.tasks.models import TaskResult, TaskStatus
 
 _REVISION = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _CHECK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:#/-]{0,99}\Z")
@@ -135,6 +137,55 @@ class VerificationResult:
         return all(check.passed for check in self.checks)
 
 
+class TaskRepositorySummary(BaseModel):
+    """Repository facts without arbitrary paths, branches or diagnostic text.
+
+    File counts describe the captured lists, which may be truncated.
+    """
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    is_git_repository: bool | None
+    head_revision: str | None
+    dirty: bool | None
+    changed_file_count: int
+    untracked_file_count: int
+    truncated: bool
+    path_limit: int
+    inspection_failed: bool
+
+    @classmethod
+    def from_evidence(cls, evidence: RepositoryEvidence) -> "TaskRepositorySummary":
+        revision = evidence.head_revision
+        return cls(
+            is_git_repository=evidence.is_git_repository,
+            head_revision=(
+                revision
+                if revision is not None and _REVISION.fullmatch(revision)
+                else None
+            ),
+            dirty=evidence.dirty,
+            changed_file_count=len(evidence.changed_files),
+            untracked_file_count=len(evidence.untracked_files),
+            truncated=evidence.truncated,
+            path_limit=evidence.path_limit,
+            inspection_failed=evidence.inspection_error is not None,
+        )
+
+
+class TaskResultSummary(BaseModel):
+    """Recovery metadata; full task results remain in memory only."""
+
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
+
+    status: TaskStatus
+    repository: TaskRepositorySummary
+
+
 class WorkflowReport(BaseModel):
     """Only harness-owned metadata; never model text or command output."""
 
@@ -158,6 +209,7 @@ class WorkflowReport(BaseModel):
     tree_revision: str | None = None
     changed_files: tuple[str, ...] = ()
     trace_id: str | None = None
+    task_result: TaskResultSummary | None = None
     checks: tuple[VerificationCheck, ...] = ()
     commit: str | None = None
     remote_branch: str | None = None
@@ -172,6 +224,7 @@ class LocalWorkflowResult:
     verification: VerificationResult | None
     report: WorkflowReport
     recovery_path: Path
+    task_result: TaskResult | None = None
 
 
 def persist_report(report: WorkflowReport, path: Path) -> None:

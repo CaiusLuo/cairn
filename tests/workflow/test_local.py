@@ -3,7 +3,7 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +16,7 @@ from cairn.evals.models import CheckResult
 from cairn.git import WorktreeProvider, WorktreeState
 from cairn.git.worktree import WorktreeError
 from cairn.github.models import GitHubRepository, IssueReference, IssueTask
-from cairn.tasks import CodingTaskRunner, TaskSpec
+from cairn.tasks import CodingTaskRunner, TaskResult, TaskSpec, TaskStatus
 from cairn.workflow import (
     GITHUB_SECRET_ENV_KEYS,
     FixedChecksVerifier,
@@ -30,6 +30,7 @@ from cairn.workflow import (
     WorkflowFailure,
     WorkflowGit,
     WorkflowPhase,
+    WorkflowReport,
     WorkflowStatus,
     persist_report,
 )
@@ -160,6 +161,16 @@ def test_real_task_stages_exact_tree_and_preserves_source_index(
     )
     assert result.report.phase is WorkflowPhase.VERIFIED
     assert result.report.status is WorkflowStatus.VERIFIED
+    assert result.task_result is not None
+    assert result.task_result.status is TaskStatus.COMPLETED
+    assert result.task_result.final_response == (
+        "fake-token-do-not-record; all tests passed (a model claim)"
+    )
+    evidence = result.task_result.repository
+    assert evidence.branch == result.handle.branch
+    assert evidence.head_revision == result.handle.base_revision
+    assert evidence.changed_files == ("file.txt",)
+    assert evidence.untracked_files == ("answer.txt",)
     assert result.handle.state is WorktreeState.RETAINED
     assert len(runners) == 1 and len(llm.calls) == 2
     assert result.snapshot is not None
@@ -172,6 +183,23 @@ def test_real_task_stages_exact_tree_and_preserves_source_index(
     report = json.loads(result.recovery_path.read_text())
     assert report["repository"] == "owner/project"
     assert report["tree_revision"] == result.snapshot.tree_revision
+    assert report["task_result"] == {
+        "status": "completed",
+        "repository": {
+            "is_git_repository": True,
+            "head_revision": result.handle.base_revision,
+            "dirty": True,
+            "changed_file_count": 1,
+            "untracked_file_count": 1,
+            "truncated": False,
+            "path_limit": evidence.path_limit,
+            "inspection_failed": False,
+        },
+    }
+    assert (
+        WorkflowReport.model_validate_json(result.recovery_path.read_text())
+        == result.report
+    )
     assert "fake-token" not in result.recovery_path.read_text()
     assert "final_response" not in report and "error" not in report
     assert result.recovery_path.stat().st_mode & 0o077 == 0
@@ -252,6 +280,11 @@ def test_verification_blocks_invalid_or_changed_tree(
     )
     assert result.report.status is WorkflowStatus.BLOCKED
     assert result.report.failure is expected[kind]
+    assert result.task_result is not None
+    assert result.task_result.status is TaskStatus.COMPLETED
+    assert result.task_result.repository.untracked_files == ("answer.txt",)
+    assert result.report.task_result is not None
+    assert result.report.task_result.status is TaskStatus.COMPLETED
     assert result.handle.state is WorktreeState.RETAINED
     assert result.handle.path.exists() and result.recovery_path.exists()
     assert "fake-token" not in result.recovery_path.read_text()
@@ -291,6 +324,85 @@ def test_task_failures_do_not_invoke_verifier(
     )
     assert result.handle.state is WorktreeState.RETAINED
     assert result.verification is None
+    assert result.task_result is not None
+    assert (
+        result.task_result.status
+        is {
+            "runtime": TaskStatus.RUNTIME_ERROR,
+            "budget": TaskStatus.BUDGET_EXHAUSTED,
+            "no-diff": TaskStatus.COMPLETED,
+        }[kind]
+    )
+    assert result.report.task_result is not None
+    assert result.report.task_result.status is result.task_result.status
+    assert json.loads(result.recovery_path.read_text())["task_result"]["status"] == (
+        result.task_result.status.value
+    )
+
+
+@pytest.mark.parametrize("status", list(TaskStatus))
+def test_original_task_result_is_retained_but_only_safe_summary_is_persisted(
+    provider: WorktreeProvider, monkeypatch: pytest.MonkeyPatch, status: TaskStatus
+) -> None:
+    secret = "fake-provider-credential-do-not-persist"
+    original_run = CodingTaskRunner.run
+    captured: list[TaskResult] = []
+
+    async def run(
+        runner: CodingTaskRunner,
+        spec: TaskSpec,
+        *,
+        cancellation_event: asyncio.Event | None = None,
+    ) -> TaskResult:
+        result = await original_run(runner, spec, cancellation_event=cancellation_event)
+        result = result.model_copy(
+            update={
+                "status": status,
+                "task_id": secret,
+                "final_response": secret,
+                "error": secret,
+                "repository": replace(
+                    result.repository,
+                    workspace_root=Path(secret),
+                    repository_root=Path(secret),
+                    branch=secret,
+                    head_revision=secret,
+                    changed_files=(secret,),
+                    untracked_files=(secret,),
+                    truncated=True,
+                    path_limit=1,
+                    inspection_error=secret,
+                ),
+            }
+        )
+        captured.append(result)
+        return result
+
+    monkeypatch.setattr(CodingTaskRunner, "run", run)
+    result = asyncio.run(
+        workflow(provider, editing_llm(), fixed_verifier()).run(ISSUE, base_ref="HEAD")
+    )
+
+    assert result.task_result is captured[0]
+    assert result.task_result.final_response == secret
+    assert result.task_result.error == secret
+    assert result.task_result.repository.inspection_error == secret
+    stored = result.recovery_path.read_text()
+    assert secret not in stored
+    assert json.loads(stored)["task_result"] == {
+        "status": status.value,
+        "repository": {
+            "is_git_repository": True,
+            "head_revision": None,
+            "dirty": True,
+            "changed_file_count": 1,
+            "untracked_file_count": 1,
+            "truncated": True,
+            "path_limit": 1,
+            "inspection_failed": True,
+        },
+    }
+    assert result.handle.state is WorktreeState.RETAINED
 
 
 @pytest.mark.parametrize("wrong_workspace", [False, True])
@@ -312,6 +424,7 @@ def test_factory_must_bind_workspace_and_receives_workflow_credentials(
     )
     if wrong_workspace:
         assert result.report.failure is WorkflowFailure.RUNNER_CONFIGURATION
+        assert result.task_result is None and result.report.task_result is None
         assert not llm.calls
     else:
         assert result.report.status is WorkflowStatus.VERIFIED
@@ -409,6 +522,7 @@ def test_cooperative_cancel_before_run_retains_without_invoking_factory(
             provider, editing_llm(), fixed_verifier(), calls=calls
         ).run(ISSUE, base_ref="HEAD", cancellation_event=event)
         assert result.report.status is WorkflowStatus.CANCELLED
+        assert result.task_result is None and result.report.task_result is None
         assert result.handle.state is WorktreeState.RETAINED
         assert result.recovery_path.exists() and not calls
         assert not [
@@ -463,6 +577,11 @@ def test_cooperative_cancel_covers_every_post_create_phase(
         event.set()
         result = await asyncio.wait_for(task, 5)
         assert result.report.status is WorkflowStatus.CANCELLED
+        if phase != "runner":
+            assert result.task_result is not None
+            assert result.task_result.status is TaskStatus.COMPLETED
+            assert result.report.task_result is not None
+            assert result.report.task_result.status is TaskStatus.COMPLETED
         assert (
             result.handle.state is WorktreeState.RETAINED
             and result.recovery_path.exists()
@@ -518,6 +637,9 @@ def test_repeated_external_cancel_settles_verifier_and_persists_recovery(
         assert len(reports) == 1
         report = json.loads(reports[0].read_text())
         assert report["status"] == "cancelled"
+        assert report["task_result"]["status"] == "completed"
+        assert report["task_result"]["repository"]["untracked_file_count"] == 1
+        assert "fake-token" not in reports[0].read_text()
         assert Path(report["worktree_path"]).exists()
         assert not [
             task for task in asyncio.all_tasks() if task is not asyncio.current_task()

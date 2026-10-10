@@ -61,6 +61,12 @@ publication. An atomic mode-0600 JSON report sits beside it in the caller's pare
 directory. Reports record phase, status/failure category, source/destination,
 branch, Worktree path, base/head/tree, checks, trace ID and available remote state.
 They contain no credential, conversation, provider exception or command output.
+`LocalWorkflowResult.task_result` retains the original task result, when available,
+including its response and repository evidence. Recovery JSON stores only its
+status and a repository summary: Git/dirty state, validated HEAD, captured file
+counts, truncation/limit metadata and whether inspection failed. It omits task
+responses, raw errors and repository paths/branch names from that summary; the
+report separately identifies the owned Worktree and branch.
 
 Cancellation settles owned work before propagating the original CancelledError.
 The exception notes include the retained path, branch and report location. If
