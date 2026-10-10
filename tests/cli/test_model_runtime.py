@@ -752,6 +752,59 @@ def test_model_edit_validation_error_keeps_session_available(
     assert (tmp_path / ".cairn/models.toml").read_text() == TOML
 
 
+def test_unsupported_move_formatting_keeps_file_and_running_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = TOML.replace(
+        '["openai/qwen-flash"]',
+        '["openai/qwen-flash", "openai/backup", # backup\n "openai/extra"]',
+    )
+    agents, requests, token_models = _configure_cli(
+        tmp_path,
+        monkeypatch,
+        "first",
+        "/model move flash openai/backup 1",
+        "/model list",
+        "second",
+        toml=original,
+    )
+    path = tmp_path / ".cairn/models.toml"
+    before = path.stat()
+    env_file = tmp_path / ".env"
+    env_file.write_text("BAILIAN_API_KEY=fake-file-key\n")
+
+    result = CliRunner().invoke(cli_module.app, [])
+
+    assert result.exit_code == 0, result.output
+    assert "Cannot move model: Unsupported TOML formatting" in result.output
+    assert "1. openai/qwen-flash" in result.output
+    assert "2. openai/backup" in result.output
+    assert len(agents) == 1
+    manager = agents[0].model_executor.manager
+    assert manager is not None
+    assert manager.current_model().model_ids == (
+        "openai/qwen-flash",
+        "openai/backup",
+        "openai/extra",
+    )
+    assert (
+        [request["model"] for request in requests]
+        == token_models
+        == ["openai/qwen-flash"] * 2
+    )
+    assert [
+        message.content
+        for message in agents[0].state.messages
+        if message.role == "user"
+    ] == ["first", "second"]
+    after = path.stat()
+    assert (before.st_ino, before.st_mtime_ns) == (after.st_ino, after.st_mtime_ns)
+    assert path.read_bytes() == original.encode()
+    assert not list(path.parent.glob(".cairn-models-*"))
+    assert env_file.read_text() == "BAILIAN_API_KEY=fake-file-key\n"
+    assert API_KEY not in result.output
+
+
 @pytest.mark.parametrize("operation", ["add", "remove", "move"])
 def test_model_edit_in_legacy_session_requires_toml_without_migration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str

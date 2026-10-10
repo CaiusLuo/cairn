@@ -3,6 +3,7 @@ import stat
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
@@ -491,6 +492,23 @@ def test_move_rejects_invalid_target_without_writing(
     assert path.read_text() == TOML
 
 
+@pytest.mark.parametrize("position", [True, False, 1.0, "1", None])
+def test_move_rejects_non_integer_api_positions_without_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, position: object
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    path = write_config(tmp_path)
+    before = path.stat()
+
+    with pytest.raises(ValueError, match="Position must be an integer"):
+        move_model_id("flash", "openai/b", cast(int, position))
+
+    after = path.stat()
+    assert (before.st_ino, before.st_mtime_ns) == (after.st_ino, after.st_mtime_ns)
+    assert path.read_bytes() == TOML.encode()
+    assert list(path.parent.iterdir()) == [path]
+
+
 @pytest.mark.parametrize(
     "group,model_id,position",
     [
@@ -617,14 +635,25 @@ def test_catalog_add_changes_only_the_active_providers_group(
     )
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
 def test_catalog_remove_and_move_change_only_the_active_providers_group(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, newline: str
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    path = write_catalog_config(tmp_path)
+    original = CATALOG_TOML.replace("\n", newline)
+    path = write_catalog_config(tmp_path, original)
 
     remove_model_id("flash", "openai/a", provider="bailian")
+    removed = original.replace('["openai/a", "openai/b"]', '["openai/b"]')
+    assert path.read_bytes() == removed.encode()
+
     move_model_id("default", "openai/y", 1, provider="local")
+    assert (
+        path.read_bytes()
+        == removed.replace(
+            '["openai/z", "openai/y"]', '["openai/y", "openai/z"]'
+        ).encode()
+    )
 
     catalog = load_provider_catalog(path)
     assert catalog.providers[0].config.model_config[0].model_ids == ("openai/b",)
