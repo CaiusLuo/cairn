@@ -451,8 +451,57 @@ def test_workflow_guards_replaced_gitfile_before_staging(
     asyncio.run(scenario())
 
 
+def test_staged_index_preserves_modes_and_literal_paths_in_one_query(
+    provider: WorktreeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario() -> None:
+        handle = await provider.create("HEAD", "codex/index-query")
+        handle.retain()
+        owned_git = WorkflowGit(handle)
+        for name in ("space name.txt", "tab\tname.txt", "executable.sh"):
+            (handle.path / name).write_text("new content\n")
+        (handle.path / "executable.sh").chmod(0o755)
+        (handle.path / "link").symlink_to("space name.txt")
+        snapshot = await owned_git.stage()
+        assert snapshot.changed_files == (
+            "executable.sh",
+            "link",
+            "space name.txt",
+            "tab\tname.txt",
+        )
+        await owned_git.assert_unchanged(snapshot)
+        original_run = owned_git.run
+        calls: list[tuple[str, ...]] = []
+
+        async def record(*args: str) -> bytes:
+            calls.append(args)
+            return await original_run(*args)
+
+        monkeypatch.setattr(owned_git, "run", record)
+        entries = await owned_git._index_entries()
+        assert calls == [("ls-files", "--stage", "-v", "-z")]
+        assert {path: mode for mode, _, path in entries} == {
+            b".gitignore": b"100644",
+            b"file.txt": b"100644",
+            b"executable.sh": b"100755",
+            b"link": b"120000",
+            b"space name.txt": b"100644",
+            b"tab\tname.txt": b"100644",
+        }
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
-    "kind", ["attributes", "config", "hidden-index", "ignored-input"]
+    "kind",
+    [
+        "attributes",
+        "config",
+        "hidden-index",
+        "skip-worktree",
+        "unmerged-index",
+        "ignored-input",
+    ],
 )
 def test_staging_rejects_external_filters_and_unverified_inputs(
     provider: WorktreeProvider, kind: str
@@ -466,8 +515,31 @@ def test_staging_rejects_external_filters_and_unverified_inputs(
             (handle.path / ".gitattributes").write_text("* filter=lfs\n")
         elif kind == "config":
             git(handle.path, "config", "filter.bad.clean", "fake-command-never-run")
-        elif kind == "hidden-index":
-            git(handle.path, "update-index", "--assume-unchanged", "file.txt")
+        elif kind in {"hidden-index", "skip-worktree"}:
+            option = (
+                "--assume-unchanged" if kind == "hidden-index" else "--skip-worktree"
+            )
+            git(handle.path, "update-index", option, "file.txt")
+            expected_flag = "h" if kind == "hidden-index" else "S"
+            assert git(handle.path, "ls-files", "-v", "--", "file.txt").startswith(
+                expected_flag + " "
+            )
+        elif kind == "unmerged-index":
+            base = git(handle.path, "rev-parse", "HEAD:file.txt")
+            changed = git(handle.path, "hash-object", "-w", "file.txt")
+            subprocess.run(
+                ["git", "-C", str(handle.path), "update-index", "--index-info"],
+                input=(
+                    f"0 {'0' * len(base)}\tfile.txt\n"
+                    f"100644 {base} 1\tfile.txt\n"
+                    f"100644 {changed} 2\tfile.txt\n"
+                    f"100644 {base} 3\tfile.txt\n"
+                ),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            assert len(git(handle.path, "ls-files", "--unmerged").splitlines()) == 3
         else:
             (handle.path / "ignored").write_text("not-in-tree")
         with pytest.raises(WorktreeError):

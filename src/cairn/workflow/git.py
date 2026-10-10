@@ -168,18 +168,22 @@ class WorkflowGit:
         await inspect()
 
     async def _index_entries(self) -> list[tuple[bytes, bytes, bytes]]:
-        flags = await self.run("ls-files", "-v", "-z")
-        for record in flags.split(b"\0"):
-            if record and (record[:1].islower() or record[:1] == b"S"):
-                raise SnapshotDriftError("Unsupported hidden index entries")
-        output = await self.run("ls-files", "--stage", "-z")
+        output = await self.run("ls-files", "--stage", "-v", "-z")
         entries: list[tuple[bytes, bytes, bytes]] = []
         for record in output.split(b"\0"):
             if not record:
                 continue
-            metadata, separator, path = record.partition(b"\t")
+            if record[:1].islower() or record[:1] == b"S":
+                raise SnapshotDriftError("Unsupported hidden index entries")
+            metadata, separator, path = record[2:].partition(b"\t")
             parts = metadata.split(b" ")
-            if not separator or not path or len(parts) != 3 or parts[2] != b"0":
+            if (
+                record[1:2] != b" "
+                or not separator
+                or not path
+                or len(parts) != 3
+                or parts[2] != b"0"
+            ):
                 raise SnapshotDriftError("Unsupported or unmerged index entry")
             mode, revision = parts[:2]
             if mode not in {b"100644", b"100755", b"120000"}:
