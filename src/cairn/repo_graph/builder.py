@@ -5,7 +5,7 @@ import os
 import stat
 from collections import Counter
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from cairn.repo_graph.graph import RepoGraph
 from cairn.repo_graph.manifests import parse_manifest
@@ -17,15 +17,20 @@ from cairn.repo_graph.models import (
     FileKind,
     FileRecord,
     FileStatus,
+    ImportRecord,
     IssueReason,
     Language,
     LanguageRecord,
     ManifestKind,
     ManifestRecord,
     ManifestStatus,
+    ModuleRecord,
+    PythonStatus,
     SkipCount,
     SkipReason,
+    SymbolRecord,
 )
+from cairn.repo_graph.python import parse_python, resolve_dependencies
 from cairn.workspace.workspace import Workspace
 
 DEFAULT_EXCLUSIONS = frozenset(
@@ -145,6 +150,7 @@ class RepoGraphBuilder:
         *,
         limits: BuildLimits | None = None,
         exclusions: frozenset[str] = DEFAULT_EXCLUSIONS,
+        python_roots: tuple[str, ...] = (".",),
     ) -> None:
         for name in exclusions:
             if (
@@ -156,9 +162,26 @@ class RepoGraphBuilder:
                 or "\x00" in name
             ):
                 raise ValueError("exclusions must contain single entry basenames")
+        if not isinstance(python_roots, tuple) or not 1 <= len(python_roots) <= 32:
+            raise ValueError("python_roots must be a nonempty tuple of relative paths")
+        for path in python_roots:
+            if (
+                not isinstance(path, str)
+                or not path
+                or len(path) > 8192
+                or "\x00" in path
+                or "\\" in path
+                or PurePosixPath(path).is_absolute()
+                or any(part in {"..", ".git"} for part in path.split("/"))
+                or PurePosixPath(path).as_posix() != path
+            ):
+                raise ValueError("python_roots must contain normalized relative paths")
+        if len(set(python_roots)) != len(python_roots):
+            raise ValueError("python_roots must be unique")
         self.workspace = workspace
         self.limits = limits or BuildLimits()
         self.exclusions = DEFAULT_EXCLUSIONS | exclusions
+        self.python_roots = python_roots
         self.snapshot: RepoGraph | None = None
         self.last_report: BuildReport | None = None
         self._reset_inventory()
@@ -199,10 +222,28 @@ class RepoGraphBuilder:
         self._entry_limit_reached = False
 
     def _reset_structure(self) -> None:
-        """Reset concrete Python structure inspection before a new build."""
+        self._modules: dict[str, ModuleRecord] = {}
+        self._symbols: list[SymbolRecord] = []
+        self._imports: list[ImportRecord] = []
 
     def _inspect_python(self, path: str, data: bytes, sha256: str) -> None:
-        """Inspect the bytes already read through the verified descriptor."""
+        facts = parse_python(
+            path,
+            data,
+            sha256,
+            roots=self.python_roots,
+            max_nodes=self.limits.max_ast_nodes,
+            max_records=self.limits.max_structure_records
+            - len(self._symbols)
+            - len(self._imports),
+        )
+        self._modules[path] = facts.module
+        self._symbols.extend(facts.symbols)
+        self._imports.extend(facts.imports)
+        if facts.module.status == PythonStatus.INVALID:
+            self._issue(IssueReason.INVALID_PYTHON, path)
+        elif facts.module.status == PythonStatus.LIMITED:
+            self._issue(IssueReason.STRUCTURE_LIMIT, path)
 
     def _issue(self, reason: IssueReason, path: str) -> None:
         self._complete = False
@@ -222,6 +263,9 @@ class RepoGraphBuilder:
                 record, status=FileStatus.CHANGED, source_sha256=None
             )
             self._manifests.pop(path, None)
+            self._modules.pop(path, None)
+            self._symbols = [record for record in self._symbols if record.path != path]
+            self._imports = [record for record in self._imports if record.path != path]
 
     def _make_report(self) -> BuildReport:
         return BuildReport(
@@ -259,6 +303,23 @@ class RepoGraphBuilder:
             ),
             manifests=tuple(self._manifests[path] for path in sorted(self._manifests)),
             report=report,
+            modules=tuple(self._modules[path] for path in sorted(self._modules)),
+            symbols=tuple(
+                sorted(
+                    self._symbols,
+                    key=lambda record: (record.path, record.line, record.name),
+                )
+            ),
+            imports=tuple(
+                sorted(
+                    self._imports,
+                    key=lambda record: (record.path, record.line, record.module or ""),
+                )
+            ),
+            dependencies=resolve_dependencies(
+                tuple(self._modules[path] for path in sorted(self._modules)),
+                tuple(self._imports),
+            ),
         )
 
     def _open_root(self) -> int:

@@ -76,6 +76,27 @@ class SkipReason(StrEnum):
     BINARY = "binary"
 
 
+class PythonStatus(StrEnum):
+    PARSED = "parsed"
+    INVALID = "invalid"
+    LIMITED = "limited"
+    UNSUPPORTED = "unsupported"
+
+
+class SymbolKind(StrEnum):
+    CLASS = "class"
+    FUNCTION = "function"
+    ASYNC_FUNCTION = "async_function"
+
+
+class RelationshipStatus(StrEnum):
+    RESOLVED = "resolved"
+    EXTERNAL = "external"
+    UNRESOLVED = "unresolved"
+    AMBIGUOUS = "ambiguous"
+    UNSUPPORTED = "unsupported"
+
+
 @dataclass(frozen=True, slots=True)
 class BuildLimits:
     max_entries: int = 10_000
@@ -85,7 +106,7 @@ class BuildLimits:
     max_manifest_items: int = 128
     max_issues: int = 100
     max_ast_nodes: int = 50_000
-    max_symbols: int = 10_000
+    max_structure_records: int = 10_000
 
     def __post_init__(self) -> None:
         for field in self.__dataclass_fields__:
@@ -146,3 +167,44 @@ class BuildReport:
     skipped: tuple[SkipCount, ...]
     issues: tuple[BuildIssue, ...]
     omitted_issues: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class ModuleRecord:
+    path: str
+    name: str | None
+    is_package: bool
+    status: PythonStatus
+    source_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolRecord:
+    path: str
+    name: str
+    kind: SymbolKind
+    line: int
+    end_line: int
+    source_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ImportRecord:
+    path: str
+    module: str | None
+    names: tuple[str, ...]
+    level: int
+    line: int
+    end_line: int
+    source_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class DependencyRecord:
+    path: str
+    module: str | None
+    target_path: str | None
+    status: RelationshipStatus
+    line: int
+    end_line: int
+    source_sha256: str

@@ -1,41 +1,57 @@
 """Deterministic, bounded repository facts; independent of Agent state."""
 
 from cairn.repo_graph.builder import RepoGraphBuilder
-from cairn.repo_graph.graph import RepoGraph
+from cairn.repo_graph.graph import PromptSummary, QueryResult, RepoGraph
 from cairn.repo_graph.models import (
     BuildIssue,
     BuildLimits,
     BuildReport,
+    DependencyRecord,
     DirectoryRecord,
     FileKind,
     FileRecord,
     FileStatus,
+    ImportRecord,
     IssueReason,
     Language,
     LanguageRecord,
     ManifestKind,
     ManifestRecord,
     ManifestStatus,
+    ModuleRecord,
+    PythonStatus,
+    RelationshipStatus,
     SkipCount,
     SkipReason,
+    SymbolKind,
+    SymbolRecord,
 )
 
 __all__ = [
     "BuildIssue",
     "BuildLimits",
     "BuildReport",
+    "DependencyRecord",
     "DirectoryRecord",
     "FileKind",
     "FileRecord",
     "FileStatus",
+    "ImportRecord",
     "IssueReason",
     "Language",
     "LanguageRecord",
     "ManifestKind",
     "ManifestRecord",
     "ManifestStatus",
+    "ModuleRecord",
+    "PromptSummary",
+    "PythonStatus",
+    "QueryResult",
+    "RelationshipStatus",
     "RepoGraph",
     "RepoGraphBuilder",
     "SkipCount",
     "SkipReason",
+    "SymbolKind",
+    "SymbolRecord",
 ]

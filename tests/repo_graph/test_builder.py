@@ -162,9 +162,11 @@ def test_python_cookie_bytes_reach_inspector_without_utf8_rejection(
 
     class InspectingBuilder(RepoGraphBuilder):
         def _reset_structure(self) -> None:
+            super()._reset_structure()
             self.inspected: list[tuple[str, bytes, str]] = []
 
         def _inspect_python(self, path: str, data: bytes, sha256: str) -> None:
+            super()._inspect_python(path, data, sha256)
             self.inspected.append((path, data, sha256))
 
     builder = InspectingBuilder(Workspace(tmp_path))
