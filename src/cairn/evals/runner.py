@@ -117,6 +117,7 @@ class EvalRunner:
         tracer: Tracer | None = None,
         temp_root: Path | None = None,
         token_counter: TokenCounter | None = None,
+        secret_env_keys: frozenset[str] = frozenset(),
     ) -> None:
         for name, value in (
             ("run_timeout_seconds", run_timeout_seconds),
@@ -135,6 +136,7 @@ class EvalRunner:
         self.tracer = tracer
         self.temp_root = temp_root
         self.token_counter = token_counter
+        self.secret_env_keys = secret_env_keys
 
     async def run(
         self,
@@ -204,6 +206,7 @@ class EvalRunner:
                             permission_handler=None,
                             event_handler=capture_trace,
                             tracer=self.tracer,
+                            secret_env_keys=self.secret_env_keys,
                             context_builder=_MeasuredContextBuilder(
                                 metrics, self.context_budget, self.token_counter
                             ),

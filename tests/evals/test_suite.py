@@ -904,14 +904,17 @@ def test_manual_script_uses_suite_and_returns_aggregate_exit_status(
     from examples.evals import run_coding_smoke
 
     monkeypatch.chdir(tmp_path)
+    for name, value in {
+        "CAIRN_LLM_MODEL": "fake/model",
+        "CAIRN_LLM_API_KEY": "FAKE_SECRET",
+        "CAIRN_BASE_URL": "https://example.invalid",
+        "CAIRN_CONTEXT_MAX_TOKENS": "100",
+        "CAIRN_RESPONSE_MAX_TOKENS": "20",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(run_coding_smoke, "dotenv_values", lambda: {})
     monkeypatch.setattr(
-        run_coding_smoke,
-        "resolve_cairn_config",
-        lambda *_: {
-            "CAIRN_LLM_MODEL": "fake/model",
-            "CAIRN_LLM_API_KEY": "FAKE_SECRET",
-            "CAIRN_BASE_URL": "https://example.invalid",
-        },
+        run_coding_smoke, "LiteLLMTokenCounter", lambda _: ExactCounter()
     )
     monkeypatch.setattr(
         run_coding_smoke,

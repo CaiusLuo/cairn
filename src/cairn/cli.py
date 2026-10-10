@@ -1,6 +1,5 @@
 import asyncio
 import os
-from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -11,7 +10,7 @@ from cairn.assembly import build_agent
 from cairn.config import CAIRN_CONFIG_ENV_NAMES as CAIRN_CONFIG_ENV_NAMES
 from cairn.config import (
     ConfigLayout,
-    environment_provider,
+    default_provider,
     load_project_providers,
     resolve_provider_api_key,
 )
@@ -22,7 +21,7 @@ from cairn.core.events import Event
 from cairn.core.loop import run_turn
 from cairn.core.permissions import SessionPermissionHandler
 from cairn.llm.model_manager import ModelConfig
-from cairn.llm.provider_catalog import NamedProvider, ProviderCatalog
+from cairn.llm.provider_catalog import ProviderCatalog
 from cairn.llm.provider_runtime import ProviderRuntime, build_provider_runtime
 from cairn.observability.sinks import JsonlTraceSink
 from cairn.observability.storage import TraceStore
@@ -31,8 +30,6 @@ from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.router import CommandRouter
 from cairn.terminal.input import CliInput
 from cairn.terminal.output import (
-    choose_model_group,
-    choose_provider,
     confirm_provider_access,
     console_event_handler,
     console_permission_prompt,
@@ -57,36 +54,14 @@ def root(ctx: typer.Context) -> None:
         asyncio.run(main())
 
 
-def select_startup_provider(
-    providers: Sequence[NamedProvider],
-) -> tuple[NamedProvider, ModelConfig]:
-    """Choose the session's first provider and model group from TOML.
-
-    One provider is selected automatically; several require an explicit choice
-    before any runtime exists. A model group is offered only for multi-provider
-    startup; the first configured group is the default otherwise.
-    """
-    if len(providers) == 1:
-        provider = providers[0]
-        return provider, provider.config.model_config[0]
-
-    provider = choose_provider(providers)
-    if len(provider.config.model_config) == 1:
-        return provider, provider.config.model_config[0]
-    return provider, choose_model_group(provider)
-
-
 async def main(cli_input: CliInput | None = None) -> None:
     env_file_values = dotenv_values()
     model_path = Path(".cairn/models.toml")
     project = load_project_providers(model_path)
 
-    if project.layout is ConfigLayout.ENV:
-        # No TOML exists: the existing single-model .env contract is unchanged.
-        provider = environment_provider(os.environ, env_file_values)
-        selected_group = provider.config.model_config[0]
-    else:
-        provider, selected_group = select_startup_provider(project.providers)
+    provider = default_provider(project, os.environ, env_file_values)
+    selected_group = provider.config.model_config[0]
+    if project.layout is not ConfigLayout.ENV:
         if (
             confirm_provider_access(provider, selected_group, switching=False)
             is not True

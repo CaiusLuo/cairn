@@ -1,10 +1,9 @@
 import json
 import sys
-from collections.abc import Sequence
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -113,8 +112,6 @@ def configure_cli(
     *commands: str,
     toml: str | None = CATALOG_TOML,
     approve: Any = True,
-    choose: Any = "bailian",
-    group: Any = "flash",
     tools: ToolRegistry | None = None,
 ) -> SimpleNamespace:
     """Drive the real CLI with fake provider calls and scripted input."""
@@ -153,18 +150,6 @@ def configure_cli(
             return bool(approve(provider, selected_group, switching))
         return bool(approve)
 
-    def choose_one(providers: Sequence[NamedProvider]) -> NamedProvider:
-        if callable(choose):
-            return cast(NamedProvider, choose(providers))
-        return next(provider for provider in providers if provider.name == choose)
-
-    def choose_group(provider: NamedProvider) -> ModelConfig:
-        if callable(group):
-            return cast(ModelConfig, group(provider))
-        return next(
-            model for model in provider.config.model_config if model.name == group
-        )
-
     def capture_agent(**kwargs: Any) -> Agent:
         agent = build_agent(**kwargs)
         if tools is not None:
@@ -196,8 +181,10 @@ def configure_cli(
         return 30
 
     monkeypatch.setattr(cli_module, "confirm_provider_access", confirm_access)
-    monkeypatch.setattr(cli_module, "choose_provider", choose_one)
-    monkeypatch.setattr(cli_module, "choose_model_group", choose_group)
+    state.provider_selection = Mock(side_effect=AssertionError("No startup selection"))
+    state.group_selection = Mock(side_effect=AssertionError("No startup selection"))
+    monkeypatch.setattr(ui_module, "choose_provider", state.provider_selection)
+    monkeypatch.setattr(ui_module, "choose_model_group", state.group_selection)
     monkeypatch.setattr(cli_module, "build_agent", capture_agent)
     monkeypatch.setattr(
         cli_module, "SessionPermissionHandler", lambda **_kwargs: handler
@@ -250,7 +237,7 @@ def test_env_only_startup_keeps_the_legacy_environment_contract(
     state = configure_cli(tmp_path, monkeypatch, "question", toml=None)
     selection = Mock(side_effect=AssertionError("The .env layout has one provider"))
     approval = Mock(side_effect=AssertionError("The .env layout needs no approval"))
-    monkeypatch.setattr(cli_module, "choose_provider", selection)
+    monkeypatch.setattr(ui_module, "choose_provider", selection)
     monkeypatch.setattr(cli_module, "confirm_provider_access", approval)
 
     result = run_cli()
@@ -269,7 +256,7 @@ def test_legacy_toml_startup_keeps_the_single_provider_approval(
 ) -> None:
     state = configure_cli(tmp_path, monkeypatch, "question", toml=LEGACY_TOML)
     selection = Mock(side_effect=AssertionError("One provider needs no selection"))
-    monkeypatch.setattr(cli_module, "choose_provider", selection)
+    monkeypatch.setattr(ui_module, "choose_provider", selection)
 
     result = run_cli()
 
@@ -290,8 +277,8 @@ def test_single_provider_catalog_is_selected_automatically(
     group_selection = Mock(
         side_effect=AssertionError("Single-provider startup uses the first group")
     )
-    monkeypatch.setattr(cli_module, "choose_provider", selection)
-    monkeypatch.setattr(cli_module, "choose_model_group", group_selection)
+    monkeypatch.setattr(ui_module, "choose_provider", selection)
+    monkeypatch.setattr(ui_module, "choose_model_group", group_selection)
 
     result = run_cli()
 
@@ -302,51 +289,46 @@ def test_single_provider_catalog_is_selected_automatically(
     assert state.requests[0]["model"] == "openai/local-flash"
 
 
-def test_multiple_providers_require_an_explicit_selection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    state = configure_cli(
-        tmp_path, monkeypatch, "question", choose="local", group="default"
-    )
-    selected: list[tuple[str, ...]] = []
-
-    def choose(providers: Sequence[NamedProvider]) -> NamedProvider:
-        selected.append(tuple(provider.name for provider in providers))
-        return next(provider for provider in providers if provider.name == "local")
-
-    monkeypatch.setattr(cli_module, "choose_provider", choose)
-
-    result = run_cli()
-
-    assert result.exit_code == 0, result.output
-    assert selected == [("bailian", "local")]
-    assert state.approvals == [("local", "default", False)]
-    assert state.resolved_keys == ["LOCAL_API_KEY"]
-    assert state.requests[0]["api_base"] == "http://localhost:8000/v1"
-    assert state.requests[0]["api_key"] == LOCAL_CREDENTIAL
-    assert state.requests[0]["model"] == "openai/local-model"
-    assert BAILIAN_CREDENTIAL not in result.output
-
-
-def test_multi_provider_startup_allows_explicit_group_selection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    state = configure_cli(tmp_path, monkeypatch, "question", group="plus")
-
-    result = run_cli()
-
-    assert result.exit_code == 0, result.output
-    assert state.approvals == [("bailian", "plus", False)]
-    assert state.requests[0]["model"] == "openai/qwen-plus"
-    assert state.token_models == ["openai/qwen-plus"]
-    assert "Model group: 'plus' (openai/qwen-plus)" in result.output
-
-
-def test_multi_provider_startup_rejects_noninteractive_selection(
+def test_multiple_providers_start_with_first_provider_and_group(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state = configure_cli(tmp_path, monkeypatch, "question")
-    monkeypatch.setattr(cli_module, "choose_provider", ui_module.choose_provider)
+    monkeypatch.delenv("LOCAL_API_KEY")
+
+    result = run_cli()
+
+    assert result.exit_code == 0, result.output
+    state.provider_selection.assert_not_called()
+    state.group_selection.assert_not_called()
+    assert state.approvals == [("bailian", "flash", False)]
+    assert state.resolved_keys == ["BAILIAN_API_KEY"]
+    assert state.requests[0]["api_base"] == "https://bailian.test/v1"
+    assert state.requests[0]["api_key"] == BAILIAN_CREDENTIAL
+    assert state.requests[0]["model"] == "openai/qwen-flash"
+    assert LOCAL_CREDENTIAL not in result.output
+
+
+def test_multi_provider_model_selection_is_available_after_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = configure_cli(tmp_path, monkeypatch, "/model use plus", "question")
+
+    result = run_cli()
+
+    assert result.exit_code == 0, result.output
+    assert state.approvals == [("bailian", "flash", False)]
+    assert state.requests[0]["model"] == "openai/qwen-plus"
+    assert state.token_models == ["openai/qwen-plus"]
+    assert "Model group: 'flash' (openai/qwen-flash)" in result.output
+
+
+def test_multi_provider_startup_still_requires_interactive_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = configure_cli(tmp_path, monkeypatch, "question")
+    monkeypatch.setattr(
+        cli_module, "confirm_provider_access", ui_module.confirm_provider_access
+    )
 
     result = run_cli()
 
@@ -358,22 +340,21 @@ def test_multi_provider_startup_rejects_noninteractive_selection(
     assert state.approvals == []
 
 
-def test_multi_provider_startup_rejects_a_cancelled_selection(
+def test_multi_provider_startup_follows_reordered_toml(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    state = configure_cli(tmp_path, monkeypatch, "question")
-    monkeypatch.setattr(
-        cli_module,
-        "choose_provider",
-        Mock(side_effect=ValueError("Provider selection was cancelled.")),
-    )
+    split = CATALOG_TOML.index('[[providers]]\nname = "local"')
+    reordered = CATALOG_TOML[split:] + CATALOG_TOML[:split]
+    state = configure_cli(tmp_path, monkeypatch, "question", toml=reordered)
 
     result = run_cli()
 
-    assert result.exit_code != 0
-    assert "cancelled" in str(result.exception)
-    assert state.agents == []
-    assert state.approvals == []
+    assert result.exit_code == 0, result.output
+    assert state.requests[0]["model"] == "openai/local-model"
+    assert state.approvals == [("local", "default", False)]
+    assert state.resolved_keys == ["LOCAL_API_KEY"]
+    state.provider_selection.assert_not_called()
+    state.group_selection.assert_not_called()
 
 
 def test_denied_approval_happens_before_any_credential_is_resolved(
@@ -396,13 +377,13 @@ def test_denied_approval_happens_before_any_credential_is_resolved(
 def test_missing_selected_credential_is_reported_without_a_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    state = configure_cli(tmp_path, monkeypatch, "question", choose="local")
-    monkeypatch.delenv("LOCAL_API_KEY")
+    state = configure_cli(tmp_path, monkeypatch, "question")
+    monkeypatch.delenv("BAILIAN_API_KEY")
 
     result = run_cli()
 
     assert result.exit_code != 0
-    assert "LOCAL_API_KEY environment variable is not set" in str(result.exception)
+    assert "BAILIAN_API_KEY environment variable is not set" in str(result.exception)
     assert state.agents == []
     assert state.requests == []
 
@@ -789,7 +770,6 @@ def test_switch_does_not_reload_disk_edits_into_the_approved_session(
         "/provider use local",
         "/provider use bailian",
         "second",
-        group="flash",
     )
     config_path = tmp_path / ".cairn/models.toml"
 
@@ -827,12 +807,12 @@ def test_switching_back_starts_the_provider_at_its_first_group(
     state = configure_cli(
         tmp_path,
         monkeypatch,
+        "/model use plus",
         "first",
         "/provider use local",
         "second",
         "/provider use bailian",
         "third",
-        group="plus",
     )
 
     result = run_cli()
@@ -1055,7 +1035,6 @@ def test_trace_records_distinguish_providers_that_share_a_model_id(
         "/provider use local",
         "second",
         toml=SHARED_MODEL_CATALOG,
-        group="default",
     )
 
     result = run_cli()
@@ -1220,11 +1199,10 @@ def test_model_use_after_a_switch_targets_the_active_provider(
     state = configure_cli(
         tmp_path,
         monkeypatch,
+        "/provider use local",
         "/provider use bailian",
         "/model use plus",
         "question",
-        choose="local",
-        group="default",
     )
 
     result = run_cli()

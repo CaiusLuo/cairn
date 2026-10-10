@@ -105,16 +105,16 @@ exists but is invalid stops startup rather than falling back to `.env`; `.env`
 settings are never migrated into TOML. Credential values are not resolved while
 parsing, and no credential is read for a provider the session does not use.
 
-Set each provider's key variable in your shell or `.env`, never in TOML. With
-one provider Cairn selects it automatically; with several it asks which one to
-use before any runtime exists. Startup then displays the selected provider, model
+Set each provider's key variable in your shell or `.env`, never in TOML. Startup
+uses the first configured provider, its first model group and that group's first
+model ID. Startup displays the selected provider, model
 group and model IDs, and asks for approval showing the provider name, endpoint,
 credential variable and a notice that prompts and conversation content are sent
 to that endpoint. Credentials are resolved only after approval, and only for the
 selected provider.
 
-The first group is selected by default; multi-provider startup also offers an
-explicit group choice. `/model` opens an inline group selector in a terminal:
+Use `/provider use <name>` or `/model` to change selection after startup.
+`/model` opens an inline group selector in a terminal:
 use Up/Down and Enter to select, or Escape/Ctrl+C to cancel. Without a terminal,
 it prints the current group and candidate summary. `/model use plus` switches
 groups directly without losing history.
@@ -224,8 +224,12 @@ uv run pytest --cov=cairn --cov-report=term-missing
 
 See [tests/README.md](tests/README.md) for test organization. To run the
 [five-case coding smoke eval](examples/evals/run_coding_smoke.py) with a real
-provider, configure the `CAIRN_LLM_*` and `CAIRN_BASE_URL` settings above, then run:
+provider, configure TOML and credentials as above, then run:
 
 ```bash
 uv run python examples/evals/run_coding_smoke.py --report .cairn/eval-reports/coding-smoke.json
 ```
+
+The eval uses the same default provider and its first model ID, with normal TOML
+provider approval. Without TOML it uses `.env`. It evaluates that one model;
+interactive model switches and fallback selections are not carried into the eval.

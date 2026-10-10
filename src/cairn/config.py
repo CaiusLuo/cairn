@@ -101,6 +101,17 @@ def environment_provider(
     )
 
 
+def default_provider(
+    project: ProjectProviders,
+    host_env: Mapping[str, str],
+    env_file_values: Mapping[str, str | None],
+) -> NamedProvider:
+    """Use the first declared provider, or the environment-only layout."""
+    if project.layout is ConfigLayout.ENV:
+        return environment_provider(host_env, env_file_values)
+    return project.providers[0]
+
+
 def load_model_config(path: Path = Path(".cairn/models.toml")) -> ProviderConfig:
     """Load a provider and its ordered model groups without resolving credentials.
 
