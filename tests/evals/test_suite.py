@@ -810,7 +810,11 @@ def test_execution_failure_categories_survive_report_sanitizing(
     assert result.failure_category is category
     assert result.error == "Case execution failed."
     assert result.checks[0].passed
-    assert llm.calls == (0 if failure == "context-budget" else 1)
+    if failure == "timeout":
+        # The run deadline also covers repository inspection before generation.
+        assert llm.calls in {0, 1}
+    else:
+        assert llm.calls == (0 if failure == "context-budget" else 1)
     assert list(parent.iterdir()) == []
     output = capsys.readouterr().out
     assert f"execution [{category.value}]" in output

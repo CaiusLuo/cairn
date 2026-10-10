@@ -206,6 +206,7 @@ class ReviewWorkflow:
             raise ValueError("Cannot load source provider credential names") from None
         self.secret_env_keys = (
             GITHUB_SECRET_ENV_KEYS
+            | git.handle.secret_env_keys
             | secret_env_keys
             | frozenset(entry.config.api_key_env for entry in catalog.providers)
         )

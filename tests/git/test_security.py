@@ -132,12 +132,24 @@ def test_real_git_environment_for_entire_lifecycle(
         context.setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
         context.setenv("GIT_CONFIG_VALUE_0", "unowned")
         context.setenv("PYTHONPATH", str(tmp_path / "unowned-python"))
+        context.delenv("CUSTOM_UNSET_SERVICE_TOKEN", raising=False)
         before = dict(os.environ)
         provider = WorktreeProvider(
             source,
             tmp_path / "worktrees",
-            secret_env_keys=frozenset({"XDG_CONFIG_HOME"}),
+            secret_env_keys=frozenset(
+                {"XDG_CONFIG_HOME", "CUSTOM_UNSET_SERVICE_TOKEN"}
+            ),
         )
+
+        def assert_declared_credentials(handle: WorktreeHandle) -> None:
+            assert type(handle.secret_env_keys) is frozenset
+            assert handle.secret_env_keys == frozenset(
+                {*FAKE_SECRETS, "XDG_CONFIG_HOME", "CUSTOM_UNSET_SERVICE_TOKEN"}
+            )
+            assert "CUSTOM_UNSET_SERVICE_TOKEN" not in os.environ
+            with pytest.raises(AttributeError):
+                handle.secret_env_keys = frozenset()  # type: ignore[misc]
 
         async def scenario() -> None:
             if mode == "rollback":
@@ -150,12 +162,14 @@ def test_real_git_environment_for_entire_lifecycle(
                 primary = ValueError("body failure")
                 with pytest.raises(ValueError) as body_error:
                     async with provider.managed("base", "task") as handle:
+                        assert_declared_credentials(handle)
                         (handle.path / "edit").write_text("temporary")
                         raise primary
                 assert body_error.value is primary
                 assert_removed_without_git(handle)
             else:
                 handle = await provider.create("base", "task")
+                assert_declared_credentials(handle)
                 if mode == "retain":
                     handle.retain()
                     assert handle.path.exists()

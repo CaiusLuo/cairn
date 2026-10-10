@@ -12,7 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from cairn.config import load_project_providers
-from cairn.git.environment import build_git_env
+from cairn.git.environment import GIT_SECRET_ENV_KEYS, build_git_env
 from cairn.workspace.workspace import Workspace
 
 GIT_TIMEOUT = 30.0
@@ -188,8 +188,9 @@ class _WorktreeGit:
         declared = frozenset(
             provider.config.api_key_env for provider in providers.providers
         )
+        self.secret_env_keys = GIT_SECRET_ENV_KEYS | secret_env_keys | declared
         try:
-            self.env = build_git_env(os.environ, secret_env_keys | declared)
+            self.env = build_git_env(os.environ, self.secret_env_keys)
         except ValueError as exc:
             raise WorktreeError(str(exc)) from None
 
@@ -373,6 +374,11 @@ class WorktreeHandle:
     @property
     def workspace(self) -> Workspace:
         return Workspace(self.path)
+
+    @property
+    def secret_env_keys(self) -> frozenset[str]:
+        """Creation-time credential names for downstream child-process isolation."""
+        return self._git.secret_env_keys
 
     def retain(self) -> None:
         if self.state not in (WorktreeState.ACTIVE, WorktreeState.RETAINED):

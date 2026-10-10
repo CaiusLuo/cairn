@@ -1,6 +1,8 @@
 import asyncio
 import json
+import os
 from dataclasses import FrozenInstanceError, replace
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -22,9 +24,11 @@ from cairn.workflow import (
     WorkflowGit,
 )
 from cairn.workspace.workspace import Workspace
+from tests.git.test_security import install_git_recorder, records
 from tests.review.test_boundaries import filesystem_state
 from tests.review.test_reviewer import TASK, finding, proposal
 from tests.support.runtime import FailingLLM, RecordingSink, SequenceLLM
+from tests.support.sandbox import require_working_sandbox
 from tests.workflow.test_local import edit, git
 from tests.workflow.test_local import provider as provider
 
@@ -735,5 +739,107 @@ def test_pre_cancelled_workflow_never_starts_a_model(
         assert result.status is ReviewWorkflowStatus.CANCELLED
         assert not llm.calls and not result.rounds and not result.fix_results
         assert result.recovery_path.exists()
+
+    asyncio.run(scenario())
+
+
+def test_provider_declared_secrets_are_inherited_by_real_fixer_children(
+    provider: WorktreeProvider, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    require_working_sandbox(provider.source)
+    secrets = {
+        "CUSTOM_SERVICE_TOKEN": "fake-custom-service-credential",
+        # Git permits LANG normally: this catches loss of the declared names
+        # in both live Agent repository context and final evidence inspection.
+        "LANG": "fake-custom-language-credential",
+    }
+    for name, value in secrets.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("LC_ALL", "C")
+    monkeypatch.setenv("REVIEW_CHILD_CONTROL", "ordinary-variable-visible")
+    log = install_git_recorder(tmp_path, monkeypatch)
+    declared_provider = WorktreeProvider(
+        provider.source, provider.parent, secret_env_keys=frozenset(secrets)
+    )
+    boundaries: dict[str, int] = {}
+    model_boundaries: list[int] = []
+    tool_results: list[dict[str, Any]] = []
+
+    def record_event(event: Event) -> None:
+        if event.type in {"trace_start", "trace_finish"}:
+            boundaries[event.type] = len(records(log))
+        elif event.type == "tool_result" and event.data["tool"] == "bash":
+            tool_results.append(event.data)
+
+    class FixerLLM(SequenceLLM):
+        async def generate(
+            self, messages: list[Message], tools: list[dict[str, Any]] | None = None
+        ) -> LLMResponse:
+            assert any(
+                message.role == "system"
+                and "Runtime repository context:" in (message.content or "")
+                for message in messages
+            )
+            model_boundaries.append(len(records(log)))
+            return await super().generate(messages, tools)
+
+    async def scenario() -> None:
+        owned, snapshot, verified = await proposal(declared_provider)
+        fix_llm = FixerLLM(
+            [
+                LLMResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="environment-probe",
+                            name="bash",
+                            arguments={
+                                "command": 'printf "%s\\n" "${CUSTOM_SERVICE_TOKEN+present}" "${LANG+present}" "$REVIEW_CHILD_CONTROL"'
+                            },
+                        )
+                    ]
+                ),
+                *fixer("fixed\n").responses,
+            ]
+        )
+        result = await ReviewWorkflow(
+            owned,
+            reviewer(owned, TreeReviewLLM([[finding()], []])),
+            RecordingVerifier(),
+            max_fix_iterations=1,
+            fixer_llm=fix_llm,
+            event_handler=record_event,
+        ).run(TASK, snapshot, verified)
+        assert result.status is ReviewWorkflowStatus.REVIEW_PASSED
+        assert len(result.fix_results) == 1
+        assert result.fix_results[0].repository.is_git_repository is True
+        assert result.fix_results[0].repository.inspection_error is None
+        assert len(tool_results) == 1
+        assert tool_results[0]["exit_code"] == 0
+        assert tool_results[0]["stdout"] == "\n\nordinary-variable-visible\n"
+        observed = records(log)
+        prompt_children = observed[boundaries["trace_start"] : model_boundaries[0]]
+        assert len(prompt_children) == 3
+        assert prompt_children[0]["args"][-2:] == ["rev-parse", "--show-toplevel"]
+        assert "--untracked-files=normal" in prompt_children[-1]["args"]
+        final_children = observed[boundaries["trace_finish"] :][:4]
+        assert len(final_children) == 4
+        assert final_children[0]["args"][-2:] == ["rev-parse", "--show-toplevel"]
+        assert final_children[2]["args"][-4:] == [
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "HEAD^{commit}",
+        ]
+        assert "--untracked-files=all" in final_children[-1]["args"]
+        assert "-z" in final_children[-1]["args"]
+        for child in observed:
+            assert not (secrets.keys() & child["env"].keys())
+            assert child["env"]["HOME"] == os.environ["HOME"]
+            assert child["env"]["PATH"] == os.environ["PATH"]
+        assert {name: os.environ[name] for name in secrets} == secrets
+        assert os.environ["REVIEW_CHILD_CONTROL"] == "ordinary-variable-visible"
+        for value in secrets.values():
+            assert value not in log.read_text()
+            assert value not in result.recovery_path.read_text()
 
     asyncio.run(scenario())
