@@ -5,6 +5,7 @@ import hashlib
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -82,7 +83,12 @@ class EvidenceResolver:
         return result
 
     def _validate_source(
-        self, candidate: Candidate, binding: EvidenceBinding, source: EvidenceSource
+        self,
+        candidate: Candidate,
+        binding: EvidenceBinding,
+        source: EvidenceSource,
+        *,
+        initial_acceptance: bool,
     ) -> None:
         if (
             binding.candidate_digest != candidate.digest()
@@ -95,7 +101,8 @@ class EvidenceResolver:
         ):
             raise MemoryError("Invalid memory evidence revision")
         if (
-            candidate.source_task_id is not None or candidate.trace_id is not None
+            initial_acceptance
+            and (candidate.source_task_id is not None or candidate.trace_id is not None)
         ) and (
             source.task is None
             or (
@@ -148,6 +155,23 @@ class EvidenceResolver:
             or any(f.severity is ReviewSeverity.BLOCKER for f in source.review.findings)
         ):
             raise MemoryError("Memory review evidence unavailable")
+
+    def _validate_task_workspace(
+        self, source: EvidenceSource, repository_root: Path
+    ) -> None:
+        task = source.task
+        if task is None:
+            raise MemoryError("Independent workflow evidence required")
+        try:
+            workspace = task.repository.workspace_root.resolve(strict=True)
+            root = task.repository.repository_root
+            canonical_root = root.resolve(strict=True) if root is not None else None
+        except (OSError, RuntimeError):
+            raise MemoryError("Memory task workspace unavailable") from None
+        if workspace != self.workspace.root or (
+            canonical_root is not None and canonical_root != repository_root
+        ):
+            raise MemoryError("Memory task workspace mismatch")
 
     async def _matches_tree(
         self, tree: str, prefix: str, observed: Fingerprint, scope: ScopeKind
@@ -203,15 +227,21 @@ class EvidenceResolver:
         binding: EvidenceBinding,
         source: EvidenceSource,
         actor: str,
+        *,
+        initial_acceptance: bool = True,
     ) -> Attestation:
         try:
-            self._validate_source(candidate, binding, source)
+            self._validate_source(
+                candidate, binding, source, initial_acceptance=initial_acceptance
+            )
             identity = await self.identity()
             # Dependencies have repository-relative coordinates, stable across worktrees.
             if identity.workspace_prefix:
                 raise MemoryError(
                     "Memory evidence requires a repository-root Workspace"
                 )
+            if binding.origin is not Origin.CODE:
+                self._validate_task_workspace(source, identity.repository_root)
             head = await self.head()
             if (
                 await git_read(self.workspace, "cat-file", "-t", source.tree_oid)

@@ -121,7 +121,13 @@ class MemoryService:
     ) -> Attestation:
         if resolver.project_id != self.store.project_id:
             raise MemoryError("Memory project mismatch")
-        attestation = await resolver.resolve(entry.candidate, binding, source, actor)
+        attestation = await resolver.resolve(
+            entry.candidate,
+            binding,
+            source,
+            actor,
+            initial_acceptance=entry.lifecycle is Lifecycle.CANDIDATE,
+        )
         prospective = entry.model_copy(
             update={
                 "lifecycle": Lifecycle.ACCEPTED,

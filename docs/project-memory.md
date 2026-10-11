@@ -55,6 +55,10 @@ claim scope; no inference of arbitrary semantic entailment is made. These inputs
 must originate in the trusted workflow, never from coding-model JSON. The human
 approval callback sees the resolved capsule and explicitly approves its binding
 to the statement. Dependencies/HEAD are checked again after human approval.
+Verification/review TaskResults must belong to the inspected Workspace: canonical
+workspace paths must match, and a supplied repository root must match the inspected
+Git root. Equal commit/tree IDs do not authorize mixing sibling worktree or clone
+results. Canonical aliases of the same Workspace are allowed.
 
 `source_head_oid` records origin A; `evidence_oid` is the actually inspected staged
 tree B; `checkout_head_oid` records the checkout revision at approval. B need not
@@ -71,9 +75,14 @@ Freshness is computed per checkout and never saved as global lifecycle state:
 * **unknown**: incomplete/manual scope, IO failure, unsupported context or limits.
 
 Explicit `revalidate` resolves new evidence and obtains another human approval,
-appending an attestation without deleting previous provenance. Complete exact-path
-scope is a human assertion about dependency completeness, not something hashes can
-prove. Incomplete/manual scopes are never automatically fresh. Broad architectural
+appending an attestation without deleting previous provenance. Initial acceptance
+checks the Candidate's original Task/Trace IDs against its source. Revalidation
+may use a different Task/Trace, or code inspection without a TaskResult, while
+preserving the original Candidate and all prior attestations. Each new attestation
+records its own independently validated source, scopes and fingerprints.
+Complete exact-path scope is a human assertion about dependency completeness,
+not something hashes can prove. Incomplete/manual scopes are never automatically
+fresh. Broad architectural
 claims must not be marked complete on the basis of a few convenient file hashes.
 
 File checks include SHA-256, POSIX permission mode and existence. Symlinks are
@@ -122,9 +131,8 @@ does not change these permissions.
 V1 intentionally exposes host Python APIs rather than a CLI approval UI. A host
 must display the statement, full scope and resolved evidence binding to the human
 inside its approval callback. Candidates that specify original task/trace IDs
-currently require matching source IDs on revalidation; omit those optional
-candidate identifiers when future attestations may come from different tasks,
-and retain per-attestation identifiers in their evidence capsules instead.
+retain them unchanged across revalidation; per-attestation identifiers describe
+the evidence used for each separate approval.
 
 See [implementation comparison and recommendations](project-memory-research.md)
 for the source-backed learn-cc, Codex and pi comparison.
