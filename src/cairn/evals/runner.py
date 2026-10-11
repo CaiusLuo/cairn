@@ -7,6 +7,7 @@ from time import perf_counter
 from typing import Any
 
 from cairn.assembly import build_agent
+from cairn.core.agent import Agent
 from cairn.core.budget import RunBudget, RunBudgetExceeded
 from cairn.core.context import (
     ContextBudget,
@@ -15,7 +16,7 @@ from cairn.core.context import (
     ContextRequest,
     TokenCounter,
 )
-from cairn.core.events import Event
+from cairn.core.events import Event, EventHandler
 from cairn.core.loop import run_turn
 from cairn.core.models import Message
 from cairn.evals.checks import (
@@ -141,6 +142,31 @@ class EvalRunner:
         self.token_counter = token_counter
         self.secret_env_keys = secret_env_keys
 
+    async def _prepare_workspace(self, workspace: Workspace, case: EvalCase) -> None:
+        for raw_path, text in case.files.items():
+            path = workspace.resolve_path(raw_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+
+    def _build_agent(
+        self,
+        workspace: Workspace,
+        llm: LLMClient,
+        metrics: EvalMetrics,
+        event_handler: EventHandler,
+    ) -> Agent:
+        return build_agent(
+            workspace=workspace,
+            llm=llm,
+            permission_handler=None,
+            event_handler=event_handler,
+            tracer=self.tracer,
+            secret_env_keys=self.secret_env_keys,
+            context_builder=_MeasuredContextBuilder(
+                metrics, self.context_budget, self.token_counter
+            ),
+        )
+
     async def run(
         self,
         case: EvalCase,
@@ -188,10 +214,7 @@ class EvalRunner:
                     prefix="cairn-eval-", dir=self.temp_root
                 ) as root:
                     workspace = Workspace(Path(root))
-                    for raw_path, text in case.files.items():
-                        path = workspace.resolve_path(raw_path)
-                        path.parent.mkdir(parents=True, exist_ok=True)
-                        path.write_text(text, encoding="utf-8")
+                    await self._prepare_workspace(workspace, case)
 
                     deadline = asyncio.timeout(self.run_timeout_seconds)
                     try:
@@ -202,17 +225,8 @@ class EvalRunner:
                         output_limit = getattr(llm, "max_output_tokens", None)
                         if type(output_limit) is int and output_limit > 0:
                             metrics.provider_max_output_tokens = output_limit
-                        agent = build_agent(
-                            workspace=workspace,
-                            llm=llm,
-                            # Evals deliberately run with baseline-only authority.
-                            permission_handler=None,
-                            event_handler=capture_trace,
-                            tracer=self.tracer,
-                            secret_env_keys=self.secret_env_keys,
-                            context_builder=_MeasuredContextBuilder(
-                                metrics, self.context_budget, self.token_counter
-                            ),
+                        agent = self._build_agent(
+                            workspace, llm, metrics, capture_trace
                         )
                         async with deadline:
                             await run_turn(agent, case.prompt, budget=self.budget)
