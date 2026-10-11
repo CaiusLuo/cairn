@@ -5,9 +5,11 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from cairn.memory.evidence import EvidenceResolver, EvidenceSource
 from cairn.memory.models import (
     Attestation,
     Candidate,
+    EvidenceBinding,
     Lifecycle,
     MemoryEntry,
     MemoryError,
@@ -73,7 +75,7 @@ class MemoryService:
             raise MemoryError("Memory lifecycle does not allow operation")
         return entry
 
-    def _accept(
+    def _commit_accept(
         self,
         entry: MemoryEntry,
         attestation: Attestation,
@@ -90,11 +92,6 @@ class MemoryService:
         self.store._serialize(
             accepted
         )  # Before approval and before opening a write transaction.
-        self.authority.require(
-            ApprovalRequest(
-                "replace" if replaces else "accept", entry, attestation, replaces
-            )
-        )
         updates = [(accepted, entry.version)]
         if replaces is not None:
             updates.append(
@@ -111,24 +108,105 @@ class MemoryService:
         self.store._update(tuple(updates))
         return accepted
 
-    def accept(
-        self, entry_id: str, expected_version: int, attestation: Attestation
-    ) -> MemoryEntry:
-        return self._accept(
-            self._get(entry_id, expected_version, Lifecycle.CANDIDATE), attestation
+    async def _resolve_approval(
+        self,
+        entry: MemoryEntry,
+        *,
+        resolver: EvidenceResolver,
+        source: EvidenceSource,
+        binding: EvidenceBinding,
+        actor: str,
+        operation: str,
+        replaces: MemoryEntry | None = None,
+    ) -> Attestation:
+        if resolver.project_id != self.store.project_id:
+            raise MemoryError("Memory project mismatch")
+        attestation = await resolver.resolve(entry.candidate, binding, source, actor)
+        prospective = entry.model_copy(
+            update={
+                "lifecycle": Lifecycle.ACCEPTED,
+                "attestations": (*entry.attestations, attestation),
+            }
         )
+        self.store._serialize(prospective)
+        self.authority.require(ApprovalRequest(operation, entry, attestation, replaces))
+        # Human review may have taken time; inspect again before the transaction.
+        await resolver.confirm(attestation)
+        return attestation
 
-    def replace(
+    async def accept(
+        self,
+        entry_id: str,
+        expected_version: int,
+        *,
+        resolver: EvidenceResolver,
+        source: EvidenceSource,
+        binding: EvidenceBinding,
+        actor: str,
+    ) -> MemoryEntry:
+        entry = self._get(entry_id, expected_version, Lifecycle.CANDIDATE)
+        attestation = await self._resolve_approval(
+            entry,
+            resolver=resolver,
+            source=source,
+            binding=binding,
+            actor=actor,
+            operation="accept",
+        )
+        return self._commit_accept(entry, attestation)
+
+    async def replace(
         self,
         old_id: str,
         old_version: int,
         candidate_id: str,
         candidate_version: int,
-        attestation: Attestation,
+        *,
+        resolver: EvidenceResolver,
+        source: EvidenceSource,
+        binding: EvidenceBinding,
+        actor: str,
     ) -> MemoryEntry:
         old = self._get(old_id, old_version, Lifecycle.ACCEPTED)
-        candidate = self._get(candidate_id, candidate_version, Lifecycle.CANDIDATE)
-        return self._accept(candidate, attestation, old)
+        entry = self._get(candidate_id, candidate_version, Lifecycle.CANDIDATE)
+        attestation = await self._resolve_approval(
+            entry,
+            resolver=resolver,
+            source=source,
+            binding=binding,
+            actor=actor,
+            operation="replace",
+            replaces=old,
+        )
+        return self._commit_accept(entry, attestation, old)
+
+    async def revalidate(
+        self,
+        entry_id: str,
+        expected_version: int,
+        *,
+        resolver: EvidenceResolver,
+        source: EvidenceSource,
+        binding: EvidenceBinding,
+        actor: str,
+    ) -> MemoryEntry:
+        entry = self._get(entry_id, expected_version, Lifecycle.ACCEPTED)
+        attestation = await self._resolve_approval(
+            entry,
+            resolver=resolver,
+            source=source,
+            binding=binding,
+            actor=actor,
+            operation="revalidate",
+        )
+        updated = entry.model_copy(
+            update={
+                "attestations": (*entry.attestations, attestation),
+                "version": entry.version + 1,
+            }
+        )
+        self.store._update(((updated, expected_version),))
+        return updated
 
     def delete(self, entry_id: str, expected_version: int) -> MemoryEntry:
         old = self.inspect(entry_id)

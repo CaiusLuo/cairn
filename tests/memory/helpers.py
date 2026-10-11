@@ -8,11 +8,13 @@ from cairn.memory.models import (
     EvidenceCapsule,
     Fingerprint,
     Kind,
+    Lifecycle,
+    MemoryEntry,
     Origin,
     PathKind,
     ScopeKind,
 )
-from cairn.memory.service import ApprovalAuthority, MemoryService
+from cairn.memory.service import ApprovalAuthority, ApprovalRequest, MemoryService
 from cairn.memory.store import MemoryStore
 from tests.git.helpers import git
 
@@ -68,3 +70,26 @@ def repository(root: Path) -> Path:
     git(root, "add", ".")
     git(root, "commit", "-m", "initial")
     return root
+
+
+def accept_synthetic(
+    api: MemoryService, entry_id: str, version: int, evidence: Attestation
+) -> MemoryEntry:
+    """Test ONLY the internal storage transaction; public acceptance resolves real Git."""
+    entry = api._get(entry_id, version, Lifecycle.CANDIDATE)
+    api.authority.require(ApprovalRequest("accept", entry, evidence))
+    return api._commit_accept(entry, evidence)
+
+
+def replace_synthetic(
+    api: MemoryService,
+    old_id: str,
+    old_version: int,
+    candidate_id: str,
+    candidate_version: int,
+    evidence: Attestation,
+) -> MemoryEntry:
+    old = api._get(old_id, old_version, Lifecycle.ACCEPTED)
+    entry = api._get(candidate_id, candidate_version, Lifecycle.CANDIDATE)
+    api.authority.require(ApprovalRequest("replace", entry, evidence, old))
+    return api._commit_accept(entry, evidence, old)

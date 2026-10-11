@@ -161,22 +161,48 @@ class EvidenceBinding(StrictModel):
         return self
 
 
+class CheckEvidence(StrictModel):
+    check_id: Identifier
+    scope: ClaimScope
+
+
 class EvidenceCapsule(StrictModel):
     binding: EvidenceBinding
+    source_task_id: Identifier | None = None
+    trace_id: Annotated[str, Field(pattern=r"\A[0-9a-f]{32}\z")] | None = None
     source_head_oid: Oid | None
     evidence_oid: Oid
     oid_kind: Annotated[str, Field(pattern=r"\Atree\z")] = "tree"
     # The only check verdict representable here is success. Resolution verifies it.
     passed_check_ids: tuple[Identifier, ...] = Field(default=(), max_length=16)
+    checks: tuple[CheckEvidence, ...] = Field(default=(), max_length=16)
     review_trace_id: Annotated[str, Field(pattern=r"\A[0-9a-f]{32}\z")] | None = None
+    # Presence means a completed, non-blocking review was resolved for this scope.
+    review_scope: ClaimScope | None = None
     dependencies: tuple[Fingerprint, ...] = Field(min_length=1, max_length=MAX_PATHS)
 
     @model_validator(mode="after")
     def scope_matches(self) -> "EvidenceCapsule":
+        if self.binding.origin is Origin.REVIEW and (
+            self.review_scope is None
+            or not self.review_scope.complete
+            or self.review_scope.kind != self.binding.scope.kind
+            or not set(self.binding.scope.paths).issubset(self.review_scope.paths)
+        ):
+            raise ValueError("Scoped review evidence required")
         if tuple(d.path for d in self.dependencies) != self.binding.scope.paths:
             raise ValueError("Evidence must cover the entire declared scope")
         if self.passed_check_ids != self.binding.check_ids:
             raise ValueError("Evidence checks do not match binding")
+        if tuple(check.check_id for check in self.checks) != self.passed_check_ids:
+            raise ValueError("Scoped evidence checks required")
+        for check in self.checks:
+            if (
+                not check.scope.complete
+                or check.scope.kind != self.binding.scope.kind
+                or not set(self.binding.scope.paths).issubset(check.scope.paths)
+            ):
+                raise ValueError("Check evidence does not cover claim scope")
         return self
 
 

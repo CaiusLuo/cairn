@@ -17,7 +17,15 @@ from cairn.tools.bash import BashTool
 from cairn.tools.files import EditFileTool
 from cairn.workspace.workspace import Workspace
 from tests.git.helpers import git
-from tests.memory.helpers import PROJECT, attestation, candidate, repository, service
+from tests.memory.helpers import (
+    PROJECT,
+    accept_synthetic,
+    attestation,
+    candidate,
+    replace_synthetic,
+    repository,
+    service,
+)
 from tests.support.sandbox import require_working_sandbox
 
 
@@ -32,7 +40,7 @@ def _propose(root: str, number: int) -> str:
 def _race_accept(root: str, entry_id: str) -> bool:
     api = service(Path(root))
     try:
-        api.accept(entry_id, 1, attestation(api.inspect(entry_id).candidate))
+        accept_synthetic(api, entry_id, 1, attestation(api.inspect(entry_id).candidate))
         return True
     except VersionConflict:
         return False
@@ -42,12 +50,14 @@ def test_lifecycle_idempotence_replace_delete_and_reopen(tmp_path: Path) -> None
     api = service(tmp_path)
     proposed = api.propose(candidate())
     assert api.propose(candidate()) == proposed
-    accepted = api.accept(proposed.id, 1, attestation(proposed.candidate))
+    accepted = accept_synthetic(api, proposed.id, 1, attestation(proposed.candidate))
     assert accepted.lifecycle is Lifecycle.ACCEPTED
     newer = api.propose(
         candidate("Run parser validation before changing its contract.")
     )
-    replacement = api.replace(accepted.id, 2, newer.id, 1, attestation(newer.candidate))
+    replacement = replace_synthetic(
+        api, accepted.id, 2, newer.id, 1, attestation(newer.candidate)
+    )
     assert replacement.supersedes_id == accepted.id
     assert api.inspect(accepted.id).lifecycle is Lifecycle.SUPERSEDED
     deleted = api.delete(newer.id, 2)
@@ -55,14 +65,14 @@ def test_lifecycle_idempotence_replace_delete_and_reopen(tmp_path: Path) -> None
     assert reopened.inspect(newer.id) == deleted
     assert reopened.propose(newer.candidate).lifecycle is Lifecycle.DELETED
     with pytest.raises(MemoryError, match="lifecycle"):
-        reopened.accept(newer.id, 3, attestation(newer.candidate))
+        accept_synthetic(reopened, newer.id, 3, attestation(newer.candidate))
 
 
 def test_approval_is_host_callback_not_model_boolean(tmp_path: Path) -> None:
     api = service(tmp_path, approved=False)
     entry = api.propose(candidate())
     with pytest.raises(MemoryError, match="approval denied"):
-        api.accept(entry.id, 1, attestation(entry.candidate))
+        accept_synthetic(api, entry.id, 1, attestation(entry.candidate))
     with pytest.raises(MemoryError, match="approval denied"):
         api.delete(entry.id, 1)
     assert api.inspect(entry.id).version == 1
@@ -75,7 +85,7 @@ def test_approval_is_host_callback_not_model_boolean(tmp_path: Path) -> None:
         return True
 
     approving = MemoryService(api.store, ApprovalAuthority(decide))
-    approving.accept(entry.id, 1, attestation(entry.candidate))
+    accept_synthetic(approving, entry.id, 1, attestation(entry.candidate))
     assert requests[0].entry.candidate == entry.candidate
     assert requests[0].attestation == attestation(entry.candidate)
 

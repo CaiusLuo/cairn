@@ -7,6 +7,7 @@ The host must keep this directory outside ALL sandbox-writable roots.
 import json
 import os
 import sqlite3
+import stat
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -62,11 +63,14 @@ class MemoryStore:
                 raise MemoryError("Memory storage symlink rejected")
         for suffix in ("", "-wal", "-shm", "-journal"):
             path = Path(str(self.path) + suffix)
-            if path.is_symlink():
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                # SQLite may remove a WAL/shm between connections closing/opening.
+                continue
+            if stat.S_ISLNK(info.st_mode):
                 raise MemoryError("Memory storage symlink rejected")
-            if path.exists() and (
-                not path.is_file() or path.stat().st_size > MAX_DATABASE_BYTES * 2
-            ):
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_DATABASE_BYTES * 2:
                 raise MemoryError("Memory storage size or type invalid")
 
     @contextmanager
@@ -86,6 +90,10 @@ class MemoryStore:
                 raise MemoryError("Memory schema mismatch")
             if connection.execute("PRAGMA quick_check(1)").fetchone() != ("ok",):
                 raise MemoryError("Memory database integrity failure")
+            if connection.execute("SELECT project_id FROM metadata").fetchall() != [
+                (self.project_id,)
+            ]:
+                raise MemoryError("Memory database project mismatch")
             if write:
                 connection.execute("PRAGMA synchronous=FULL")
                 connection.execute("PRAGMA max_page_count=8192")
@@ -144,6 +152,7 @@ class MemoryStore:
             raise MemoryError("Memory record limit exceeded")
         check_sensitive(value, self.sensitive_values)
         entry = MemoryEntry.model_validate_json(value)
+        check_sensitive(entry.model_dump_json(), self.sensitive_values)
         if entry.project_id != self.project_id:
             raise MemoryError("Memory entry project mismatch")
         return entry
