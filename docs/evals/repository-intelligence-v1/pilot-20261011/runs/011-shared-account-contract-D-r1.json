@@ -1,0 +1,437 @@
+{
+  "run_id": "011-shared-account-contract-D-r1",
+  "case_name": "shared-account-contract",
+  "arm": "D",
+  "repetition": 1,
+  "order_index": 10,
+  "result": {
+    "case_name": "shared-account-contract",
+    "status": "error",
+    "checks": [
+      {
+        "name": "shared-account-contract:behavior",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 1,
+        "check_type": "BehaviorCheck",
+        "target_path": null,
+        "failure_category": null
+      },
+      {
+        "name": "preserve:README.md",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 2,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "README.md",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/__init__.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 3,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/__init__.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/pricing/__init__.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 4,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/pricing/__init__.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/pricing/calculator.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 5,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/pricing/calculator.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/shipping/__init__.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 6,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/shipping/__init__.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/shipping/policy.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 7,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/shipping/policy.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/checkout/__init__.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 8,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/checkout/__init__.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/checkout/service.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 9,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/checkout/service.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/text/__init__.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 10,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/text/__init__.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/text/slugs.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 11,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/text/slugs.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/api/__init__.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 12,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/api/__init__.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/api/tags.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 13,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/api/tags.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:docs/text-contract.txt",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 14,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "docs/text-contract.txt",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/storage/__init__.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 15,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/storage/__init__.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/cache/__init__.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 16,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/cache/__init__.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/audit/__init__.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 17,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/audit/__init__.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/routing/__init__.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 18,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/routing/__init__.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/routing/limits.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 19,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/routing/limits.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/routing/chunks.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 20,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/routing/chunks.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/telemetry/__init__.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 21,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/telemetry/__init__.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/telemetry/reduce.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 22,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/telemetry/reduce.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/media.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 23,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/media.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/archive.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 24,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/archive.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/capacity.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 25,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/capacity.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/addresses.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 26,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/addresses.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/profiles.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 27,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/profiles.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/inventory.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 28,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/inventory.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/labels.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 29,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/labels.py",
+        "failure_category": null
+      },
+      {
+        "name": "preserve:forge/receipts.py",
+        "passed": true,
+        "message": null,
+        "error": null,
+        "check_index": 30,
+        "check_type": "FileContentEqualsCheck",
+        "target_path": "forge/receipts.py",
+        "failure_category": null
+      }
+    ],
+    "trace_id": "dae36ad81f184d17acefe0b836e25615",
+    "error": "Case execution failed.",
+    "metrics": {
+      "model_identifier": "openai/qwen3.8-27b",
+      "trace_id": "dae36ad81f184d17acefe0b836e25615",
+      "elapsed_seconds": 59.85082699987106,
+      "agent_steps_used": 8,
+      "context_trimmed_turns": 0,
+      "context_trimmed_messages": 0,
+      "provider_input_tokens": 40629,
+      "provider_output_tokens": 2245,
+      "token_counter_implementation": "cairn.llm.token_counter.LiteLLMTokenCounter",
+      "request_token_counts_estimated": false,
+      "provider_max_output_tokens": 2048
+    },
+    "failure_category": "budget_exhausted"
+  },
+  "metrics": {
+    "model_identifier": "openai/qwen3.8-27b",
+    "trace_id": "dae36ad81f184d17acefe0b836e25615",
+    "elapsed_seconds": 59.85082699987106,
+    "agent_steps_used": 8,
+    "context_trimmed_turns": 0,
+    "context_trimmed_messages": 0,
+    "provider_input_tokens": 40629,
+    "provider_output_tokens": 2245,
+    "token_counter_implementation": "cairn.llm.token_counter.LiteLLMTokenCounter",
+    "request_token_counts_estimated": false,
+    "provider_max_output_tokens": 2048,
+    "initial_tree": "53ef3a8338251c532bd9c6775baf1d913a4216d4",
+    "project_id": "90211cb19e1b86c0e56565c55e8b919f32f07a12c4082123d6899db31c96e40c",
+    "tool_calls": 17,
+    "read_file_calls": 5,
+    "bash_calls": 4,
+    "bash_discovery_calls": 1,
+    "graph_query_calls": 6,
+    "graph_queries_completed": 6,
+    "tool_error_events": 0,
+    "tool_denied_events": 0,
+    "tool_nonzero_results": 0,
+    "bash_timeout_results": 0,
+    "graph_incomplete_builds": 0,
+    "graph_build_refresh_seconds": 0.04191366606391966,
+    "repeated_read_file_calls": 0,
+    "direct_discovery_evidence": [
+      {
+        "path": "forge/audit/records.py",
+        "tool": "repo_graph",
+        "step": 1
+      },
+      {
+        "path": "forge/cache/keys.py",
+        "tool": "repo_graph",
+        "step": 1
+      },
+      {
+        "path": "forge/storage/identities.py",
+        "tool": "repo_graph",
+        "step": 2
+      }
+    ],
+    "memory_fixture_entries": 1,
+    "memory_candidates_checked": 8,
+    "memory_freshness_counts": {
+      "fresh": 8
+    },
+    "memory_selected_ids": [
+      "fe1ab88dd9e64477b9056e033d760791"
+    ],
+    "memory_included_ids": [
+      "fe1ab88dd9e64477b9056e033d760791"
+    ],
+    "memory_dropped_ids": [],
+    "memory_selected_events": 8,
+    "memory_included_events": 8,
+    "memory_budget_drop_events": 0,
+    "memory_size_drop_events": 0,
+    "memory_ineligible_included_events": 0,
+    "memory_relevant_included_events": 8,
+    "memory_read_errors": 0,
+    "memory_retrieval_freshness_seconds": 0.6287831685040146,
+    "memory_fixture_seconds": 0.16172591596841812,
+    "fixture_setup_seconds": 0.25021108402870595,
+    "agent_elapsed_seconds": 59.549129,
+    "request_token_counts": [
+      {
+        "tokens": 944,
+        "is_estimate": false
+      },
+      {
+        "tokens": 2494,
+        "is_estimate": false
+      },
+      {
+        "tokens": 2980,
+        "is_estimate": false
+      },
+      {
+        "tokens": 3232,
+        "is_estimate": false
+      },
+      {
+        "tokens": 3519,
+        "is_estimate": false
+      },
+      {
+        "tokens": 5107,
+        "is_estimate": false
+      },
+      {
+        "tokens": 5550,
+        "is_estimate": false
+      },
+      {
+        "tokens": 5997,
+        "is_estimate": false
+      }
+    ],
+    "request_tokens_total": 29823,
+    "provider_requests": 8,
+    "provider_responses": 8,
+    "provider_failures": 0,
+    "stale_recall_rate": null,
+    "relevant_memory_precision": 1.0
+  }
+}
