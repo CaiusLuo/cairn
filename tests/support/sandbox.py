@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from cairn.tools.bash import BashTool
-from cairn.workspace.workspace import Workspace
+from cairn.infra.tools.bash import BashTool
+from cairn.infra.workspace.workspace import Workspace
 
 
 def skip_without_sandbox() -> None:

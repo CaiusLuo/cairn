@@ -1,10 +1,10 @@
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from cairn.llm.model_executor import ModelExecutor
-from cairn.llm.model_manager import ModelConfig, ModelManager
-from cairn.llm.provider_catalog import ProviderCatalog
-from cairn.observability.storage import TraceStore
+from cairn.core.model_manager import ModelConfig, ModelManager
+from cairn.core.provider_catalog import ProviderCatalog
+from cairn.infra.observability.storage import TraceStore
+from cairn.runtime.model_executor import ModelExecutor
 
 
 @dataclass

@@ -6,7 +6,7 @@ from prompt_toolkit.output import Output
 from prompt_toolkit.shortcuts.choice_input import ChoiceInput
 from prompt_toolkit.styles import Style
 
-from cairn.llm.model_manager import ModelConfig
+from cairn.core.model_manager import ModelConfig
 
 
 def _create_key_bindings() -> KeyBindings:

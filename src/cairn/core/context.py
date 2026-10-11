@@ -4,13 +4,13 @@ import json
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
-from cairn.core.models import Message
-from cairn.memory.context import (
+from cairn.core.memory.context import (
     MEMORY_DATA_POLICY,
     MemoryContext,
     MemoryContextItem,
     render_memory,
 )
+from cairn.core.models import Message
 
 #: Marker used by tests and callers to recognise the omission notice.
 OMISSION_NOTICE_PREFIX = "Context notice:"

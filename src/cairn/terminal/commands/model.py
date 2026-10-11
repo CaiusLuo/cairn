@@ -2,8 +2,8 @@ import sys
 from collections.abc import Awaitable, Callable
 from functools import partial
 
-from cairn.config import add_model_id, move_model_id, remove_model_id
-from cairn.llm.model_manager import ModelConfig
+from cairn.core.model_manager import ModelConfig
+from cairn.infra.config import add_model_id, move_model_id, remove_model_id
 from cairn.terminal.commands.context import CommandContext
 
 MODEL_USAGE = (

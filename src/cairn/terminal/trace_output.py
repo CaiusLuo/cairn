@@ -4,7 +4,12 @@ from rich.console import Console
 from rich.text import Text
 from rich.tree import Tree
 
-from cairn.observability.models import Span, SpanStatus, TraceListResult, TraceSummary
+from cairn.infra.observability.models import (
+    Span,
+    SpanStatus,
+    TraceListResult,
+    TraceSummary,
+)
 
 console = Console()
 

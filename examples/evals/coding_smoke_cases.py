@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
-from cairn.evals import (
+from cairn.infra.workspace.workspace import Workspace
+from cairn.runtime.evals import (
     CheckResult,
     EvalCase,
     EvalCheck,
@@ -11,7 +12,6 @@ from cairn.evals import (
     FileExistsCheck,
     FileNotContainsCheck,
 )
-from cairn.workspace.workspace import Workspace
 
 SmokeCase = tuple[EvalCase, tuple[EvalCheck, ...]]
 

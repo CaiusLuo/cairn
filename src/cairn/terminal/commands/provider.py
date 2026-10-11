@@ -1,5 +1,5 @@
-from cairn.llm.model_manager import ModelConfig
-from cairn.llm.provider_catalog import NamedProvider
+from cairn.core.model_manager import ModelConfig
+from cairn.core.provider_catalog import NamedProvider
 from cairn.terminal.commands.context import CommandContext
 
 PROVIDER_USAGE = "Usage: /provider | /provider list | /provider use <name>"

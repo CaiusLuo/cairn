@@ -8,9 +8,9 @@ from rich.prompt import Confirm, Prompt
 from rich.text import Text
 
 from cairn.core.events import Event
+from cairn.core.model_manager import ModelConfig
 from cairn.core.permissions import PermissionChoice, PermissionRequest
-from cairn.llm.model_manager import ModelConfig
-from cairn.llm.provider_catalog import NamedProvider
+from cairn.core.provider_catalog import NamedProvider
 
 console = Console()
 
