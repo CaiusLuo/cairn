@@ -39,6 +39,10 @@ class IntelligenceMetrics(EvalMetrics):
     bash_discovery_calls: int = 0
     graph_query_calls: int = 0
     graph_queries_completed: int = 0
+    tool_error_events: int = 0
+    tool_denied_events: int = 0
+    tool_nonzero_results: int = 0
+    bash_timeout_results: int = 0
     graph_incomplete_builds: int = 0
     graph_build_refresh_seconds: float = 0
     repeated_read_file_calls: int = 0

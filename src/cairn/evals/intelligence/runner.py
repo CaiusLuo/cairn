@@ -335,10 +335,26 @@ class IntelligenceRunner(EvalRunner):
                             for word in words
                         )
                     )
-            elif event.type == "tool_result" and event.data.get("tool") == "repo_graph":
-                self.observations.graph_queries_completed += int(
-                    event.data.get("exit_code") == 0
+            elif event.type == "tool_error":
+                self.observations.tool_error_events += 1
+            elif event.type == "tool_denied":
+                self.observations.tool_denied_events += 1
+            elif event.type == "tool_result":
+                self.observations.tool_nonzero_results += int(
+                    event.data.get("exit_code") != 0
                 )
+                if event.data.get("tool") == "repo_graph":
+                    self.observations.graph_queries_completed += int(
+                        event.data.get("exit_code") == 0
+                    )
+                elif event.data.get("tool") == "bash":
+                    # BashTool's own fixed timeout envelope, not model text.
+                    self.observations.bash_timeout_results += int(
+                        event.data.get("exit_code") == -1
+                        and str(event.data.get("stderr", "")).endswith(
+                            f" time out after {self.tool_timeout_seconds}s"
+                        )
+                    )
             event_handler(event)
 
         agent = super()._build_agent(workspace, llm, metrics, observe)
