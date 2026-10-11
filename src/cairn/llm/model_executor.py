@@ -7,6 +7,7 @@ from cairn.core.context import ContextBudget, ContextBuilder, ContextRequest
 from cairn.core.models import LLMResponse, Message
 from cairn.llm.base import LLMClient
 from cairn.llm.model_manager import ModelConfig, ModelManager
+from cairn.memory.context import MemoryContext
 
 if TYPE_CHECKING:
     from cairn.core.agent import Agent
@@ -220,6 +221,7 @@ class ModelExecutor:
         history: list[Message],
         current_turn_start: int,
         tools: list[dict[str, Any]],
+        project_memory: MemoryContext | None = None,
         on_request: Callable[
             [ContextRequest, ContextBudget, ModelConfig | None, str | None, int], None
         ]
@@ -244,6 +246,7 @@ class ModelExecutor:
                     history=history,
                     current_turn_start=current_turn_start,
                     tools=tools,
+                    project_memory=project_memory,
                 )
                 attempt += 1
                 if on_request is not None:

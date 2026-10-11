@@ -34,6 +34,7 @@ from cairn.evals.models import (
     EvalStatus,
 )
 from cairn.llm.base import LLMClient
+from cairn.memory.context import MemoryContext
 from cairn.observability.tracer import Tracer
 from cairn.workspace.workspace import Workspace
 
@@ -78,12 +79,14 @@ class _MeasuredContextBuilder(ContextBuilder):
         history: list[Message],
         current_turn_start: int,
         tools: list[dict[str, Any]],
+        project_memory: MemoryContext | None = None,
     ) -> ContextRequest:
         request = super().build(
             system_messages=system_messages,
             history=history,
             current_turn_start=current_turn_start,
             tools=tools,
+            project_memory=project_memory,
         )
         self.metrics.request_token_counts_estimated = (
             self.metrics.request_token_counts_estimated is True

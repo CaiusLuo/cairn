@@ -1,10 +1,16 @@
 """Build bounded request views without removing the original conversation facts."""
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from cairn.core.models import Message
+from cairn.memory.context import (
+    MEMORY_DATA_POLICY,
+    MemoryContext,
+    MemoryContextItem,
+    render_memory,
+)
 
 #: Marker used by tests and callers to recognise the omission notice.
 OMISSION_NOTICE_PREFIX = "Context notice:"
@@ -88,6 +94,10 @@ class ContextRequest:
     tokens_after: TokenCount
     omitted_turns: int
     omitted_messages: int
+    memory_selected_ids: tuple[str, ...] = ()
+    memory_included_ids: tuple[str, ...] = ()
+    memory_dropped_ids: tuple[str, ...] = ()
+    memory_tokens: int = 0
 
 
 class ConversationHistoryError(ValueError):
@@ -242,6 +252,54 @@ class ContextBuilder:
         return components
 
     def build(
+        self,
+        *,
+        system_messages: list[Message],
+        history: list[Message],
+        current_turn_start: int,
+        tools: list[dict[str, Any]],
+        project_memory: MemoryContext | None = None,
+    ) -> ContextRequest:
+        baseline = self._build_baseline(
+            system_messages=system_messages,
+            history=history,
+            current_turn_start=current_turn_start,
+            tools=tools,
+        )
+        if project_memory is None or not project_memory.items:
+            return baseline
+        # Preserve the measured baseline history suffix. Optional evidence can
+        # never cause another round of history trimming or split a tool group.
+        prefix = len(system_messages) + bool(baseline.omitted_turns)
+        included: tuple[MemoryContextItem, ...] = ()
+        dropped: list[str] = []
+        messages = baseline.messages
+        count = baseline.tokens_after
+        for item in project_memory.items:
+            proposed = (*included, item)
+            view = [
+                *baseline.messages[:prefix],
+                Message(role="system", content=MEMORY_DATA_POLICY),
+                Message(role="user", content=render_memory(proposed)),
+                *baseline.messages[prefix:],
+            ]
+            measured = self._count(view, tools)
+            cost = max(0, measured.tokens - baseline.tokens_after.tokens)
+            if cost <= project_memory.max_tokens and self._fits(measured):
+                included, messages, count = proposed, view, measured
+            else:
+                dropped.append(item.id)
+        return replace(
+            baseline,
+            messages=messages,
+            tokens_after=count,
+            memory_selected_ids=tuple(item.id for item in project_memory.items),
+            memory_included_ids=tuple(item.id for item in included),
+            memory_dropped_ids=tuple(dropped),
+            memory_tokens=max(0, count.tokens - baseline.tokens_after.tokens),
+        )
+
+    def _build_baseline(
         self,
         *,
         system_messages: list[Message],

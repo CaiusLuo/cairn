@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 from cairn.core.agent import Agent
 from cairn.core.context import ContextBuilder
 from cairn.core.events import EventHandler
@@ -11,6 +13,9 @@ from cairn.tools.files import EditFileTool, ReadFileTool
 from cairn.tools.registry import ToolRegistry
 from cairn.workspace.workspace import Workspace
 
+if TYPE_CHECKING:
+    from cairn.memory.retrieval import MemoryReader
+
 
 def build_agent(
     *,
@@ -23,6 +28,7 @@ def build_agent(
     secret_env_keys: frozenset[str] = frozenset(),
     model_executor: ModelExecutor | None = None,
     repository_secret_env_keys: frozenset[str] | None = None,
+    memory_reader: "MemoryReader | None" = None,
 ) -> Agent:
     registry = ToolRegistry()
 
@@ -41,4 +47,5 @@ def build_agent(
         ),
         context_builder=context_builder,
         model_executor=model_executor,
+        memory_reader=memory_reader,
     )

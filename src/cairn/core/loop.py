@@ -20,6 +20,7 @@ from cairn.core.permissions import (
     evaluate_permission_policy,
 )
 from cairn.llm.model_manager import ModelConfig
+from cairn.memory.context import MemoryContext
 from cairn.observability.models import Span, SpanStatus
 from cairn.tools.base import InvalidArguments, ToolExecutionContext, ToolNotFound
 
@@ -223,6 +224,18 @@ async def run_turn(
         }
         if model is not None:
             attributes.update(model=model_id, model_name=model.name, attempt=attempt)
+        if memory_context is not None:
+            attributes.update(
+                memory_selected_ids=list(request.memory_selected_ids),
+                memory_included_ids=list(request.memory_included_ids),
+                memory_dropped_ids=list(request.memory_dropped_ids),
+                memory_tokens=request.memory_tokens,
+                memory_count_is_estimate=request.tokens_after.is_estimate,
+                memory_checked_count=memory_context.checked_count,
+                memory_freshness_counts=dict(memory_context.freshness_counts),
+                memory_dropped_for_size=memory_context.dropped_for_size,
+                memory_read_error=memory_context.read_error,
+            )
         llm_span = agent.tracer.start_child_span(
             turn_span, "llm.generate", attributes=attributes
         )
@@ -315,6 +328,14 @@ async def run_turn(
                     Message(role="system", content=repo_context.to_prompt())
                 )
             tool_schemas = agent.tools.schemas()
+            memory_context = None
+            if agent.memory_reader is not None:
+                try:
+                    memory_context = await agent.memory_reader.retrieve(user_input)
+                except Exception:
+                    # No arbitrary memory/IO diagnostics reach the trace. External
+                    # cancellation propagates through the existing turn recovery.
+                    memory_context = MemoryContext(read_error=True)
             llm_span = None
             llm_attempt_started = False
 
@@ -325,6 +346,7 @@ async def run_turn(
                     history=agent.state.messages,
                     current_turn_start=turn_start,
                     tools=tool_schemas,
+                    project_memory=memory_context,
                     on_request=start_attempt,
                     on_fallback=fail_attempt,
                 )

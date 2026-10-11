@@ -10,6 +10,7 @@ from cairn.memory.models import Freshness, MemoryEntry, MemoryError, ScopeKind
 class FreshnessResult:
     status: Freshness
     reason: str  # Only fixed reason codes are returned, never arbitrary IO errors.
+    attestation_index: int | None = None
 
 
 class FreshnessChecker:
@@ -35,12 +36,17 @@ class FreshnessChecker:
             if head != await self.resolver.head():
                 return FreshnessResult(Freshness.UNKNOWN, "checkout_changed")
             matching = [
-                a for a in entry.attestations if a.capsule.dependencies == dependencies
+                (i, a)
+                for i, a in enumerate(entry.attestations)
+                if a.capsule.dependencies == dependencies
             ]
             if not matching:
                 return FreshnessResult(Freshness.STALE, "dependencies_changed")
-            if any(a.checkout_head_oid == head for a in matching):
-                return FreshnessResult(Freshness.FRESH, "attested_scope_matches")
+            for index, attestation in reversed(matching):
+                if attestation.checkout_head_oid == head:
+                    return FreshnessResult(
+                        Freshness.FRESH, "attested_scope_matches", index
+                    )
             return FreshnessResult(Freshness.POTENTIALLY_STALE, "revision_changed")
         except (MemoryError, OSError, ValueError):
             return FreshnessResult(Freshness.UNKNOWN, "evidence_unavailable")

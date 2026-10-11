@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 from cairn.core.context import ContextBuilder
 from cairn.core.events import Event, EventHandler
 from cairn.core.permissions import PermissionHandler
@@ -7,6 +9,9 @@ from cairn.llm.model_executor import ModelExecutor
 from cairn.observability.tracer import Tracer
 from cairn.repository import RepoContextProvider
 from cairn.tools.registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from cairn.memory.retrieval import MemoryReader
 
 DEFAULT_SYSTEM_PROMPT = """You are Cairn, a software engineering agent.
 
@@ -45,6 +50,7 @@ class Agent:
         context_builder: ContextBuilder | None = None,
         model_executor: ModelExecutor | None = None,
         provider_name: str | None = None,
+        memory_reader: "MemoryReader | None" = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -63,6 +69,14 @@ class Agent:
         # Trace-only provider identity. Provider-neutral agents (evals, core
         # tests) leave it unset and record no provider attribute.
         self.provider_name = provider_name
+        if (
+            memory_reader is not None
+            and repo_context_provider is not None
+            and memory_reader.resolver.workspace.root
+            != repo_context_provider.workspace.root
+        ):
+            raise ValueError("Memory reader must use the Agent Workspace")
+        self.memory_reader = memory_reader
 
     def emit(self, event: Event) -> None:
         if self.event_handler is not None:

@@ -87,3 +87,44 @@ also has the existing bounded subprocess timeout/output limit. V1 assumes local
 filesystems: it cannot forcibly time out a kernel-blocked filesystem syscall.
 Observations and post-approval checks detect drift but cannot lock an entire
 checkout against unrelated processes changing it after the final observation.
+
+## Optional retrieval and request admission
+
+The default Agent and CLI do not enable memory. The trusted host constructs a
+`MemoryReader(store, EvidenceResolver(workspace, project_id))` and supplies it as
+`build_agent(..., memory_reader=reader)`. The reader and repository context must
+use the same Workspace, even when their worktrees share a project store. Direct
+Agent integrations without a repository provider must supply the correct reader
+Workspace themselves. No memory mutation API is registered as a model tool.
+
+Use `related_paths` and `kinds` on the reader for explicit task-local filtering.
+Each generation retrieves again, scoring path relationships, kinds and lexical
+relevance deterministically. ASCII words and Chinese bigrams are supported; this
+is not semantic search. The defaults inspect at most 16 ranked candidates and
+return at most five fresh accepted entries / 8 KiB of escaped JSON. No relevant
+entry is an ordinary empty result. Unavailable/corrupt storage and bounded read
+failures produce an empty optional context; cancellation propagates.
+
+`ContextBuilder` first constructs the normal baseline request. It admits whole
+memory items only within the remaining complete-request budget and the optional
+1,024-token memory allowance (including framing overhead). Memory never causes
+additional history trimming. The fixed policy describes historical data as
+lower trust; statements are JSON-escaped in a separate user-role data message,
+not interpolated into system instructions. Each fallback model repeats admission
+with its own builder and token counter. `AgentState.messages` is unchanged.
+
+Trace metadata contains IDs, counts, freshness outcomes, read-error flags and
+estimated request/token costs, never memory statement bodies. This boundary does
+not make an LLM immune to adversarial text: ordinary tool validation, permission
+checks and filesystem isolation remain the authority boundary. Enabling memory
+does not change these permissions.
+
+V1 intentionally exposes host Python APIs rather than a CLI approval UI. A host
+must display the statement, full scope and resolved evidence binding to the human
+inside its approval callback. Candidates that specify original task/trace IDs
+currently require matching source IDs on revalidation; omit those optional
+candidate identifiers when future attestations may come from different tasks,
+and retain per-attestation identifiers in their evidence capsules instead.
+
+See [implementation comparison and recommendations](project-memory-research.md)
+for the source-backed learn-cc, Codex and pi comparison.
