@@ -310,3 +310,113 @@ def test_graph_queries_and_bash_discovery_are_measured_in_loop(tmp_path: Path) -
         assert run.metrics.graph_query_calls == 1
         assert run.metrics.graph_queries_completed == int(run.arm.graph)
         assert len(run.metrics.direct_discovery_evidence) == int(run.arm.graph)
+
+
+def test_partial_comparison_uses_balanced_cohort() -> None:
+    from cairn.evals.models import CheckResult
+
+    report = ExperimentReport(config=config())
+    for arm in Arm:
+        report.runs.append(
+            ExperimentRun(
+                run_id=arm.value,
+                case_name="parser",
+                arm=arm,
+                repetition=1,
+                order_index=0,
+                result=EvalResult(
+                    case_name="parser",
+                    status=EvalStatus.ERROR,
+                    checks=[CheckResult(name="behavior", passed=True)],
+                ),
+                metrics=IntelligenceMetrics(),
+            )
+        )
+    report.runs.append(
+        ExperimentRun(
+            run_id="unpaired",
+            case_name="unpaired",
+            arm=Arm.BASELINE,
+            repetition=1,
+            order_index=4,
+            result=EvalResult(case_name="unpaired", status=EvalStatus.ERROR),
+            metrics=IntelligenceMetrics(),
+        )
+    )
+    summary = comparison(report)
+    assert summary["arms"]["A"]["runs"] == 2
+    assert summary["matched_arms"]["A"]["runs"] == 1
+    assert summary["matched_arms"]["A"]["workspace_check_success_rate"] == 1
+    assert summary["matched_arms"]["A"]["task_success_rate"] == 0
+    assert summary["matched_case_repetitions"] == [{"case": "parser", "repetition": 1}]
+
+
+def test_provider_failure_categories_exclude_exception_details() -> None:
+    from cairn.evals.intelligence.experiment import ObservedLLM
+
+    class Limited(SequenceLLM):
+        async def generate(
+            self, messages: list[Message], tools: list[dict[str, Any]] | None = None
+        ) -> LLMResponse:
+            class RateLimit(Exception):
+                status_code = 429
+
+            raise RateLimit("credential=secret arbitrary payload")
+
+    metrics = IntelligenceMetrics()
+    with pytest.raises(RuntimeError, match="Model request failed"):
+        asyncio.run(ObservedLLM(Limited([]), metrics).generate([]))
+    assert metrics.provider_failure_categories == {"rate_limit": 1}
+    assert "secret" not in metrics.model_dump_json()
+
+
+def test_initial_provider_timeout_stops_remaining_real_calls(tmp_path: Path) -> None:
+    class Waiting(SequenceLLM):
+        async def generate(
+            self, messages: list[Message], tools: list[dict[str, Any]] | None = None
+        ) -> LLMResponse:
+            await asyncio.Event().wait()
+            return LLMResponse(content="unreachable")
+
+    settings = config(real=True)
+    settings.settings.run_timeout_seconds = 0.5
+    report = asyncio.run(
+        run_experiment(
+            (simple_spec(),),
+            settings,
+            lambda: Waiting([]),
+            directory=tmp_path / "reports",
+            temp_root=tmp_path,
+        )
+    )
+    assert report.real_provider_status == "BLOCKED" and len(report.runs) == 1
+    assert report.runs[0].metrics.provider_requests == 1
+    assert report.runs[0].metrics.provider_responses == 0
+
+
+def test_unsafe_run_identifier_is_rejected_before_persistence(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from cairn.evals.models import EvalSuiteCase
+
+    original = simple_spec()
+    spec = replace(
+        original,
+        item=EvalSuiteCase(
+            original.item.case.model_copy(update={"name": "../../escape"}),
+            original.item.checks,
+        ),
+    )
+    settings = config().model_copy(
+        update={
+            "dataset_sha256": dataset_digest((spec,)),
+            "case_names": ("../../escape",),
+        }
+    )
+    with pytest.raises(ValueError, match="path-safe"):
+        asyncio.run(
+            run_experiment(
+                (spec,), settings, lambda: SequenceLLM([]), directory=tmp_path
+            )
+        )
+    assert not list(tmp_path.iterdir())

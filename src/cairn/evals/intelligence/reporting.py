@@ -59,6 +59,7 @@ LIMITATIONS = (
     "Tool sandbox is the existing OS backend with network denied and no approval handler. Host Git/Memory setup uses trusted code, outside evaluated model authority.",
     "End-to-end timing includes fixture setup, deterministic checks and cleanup; Agent timing and feature/setup overhead are separate. Memory timing includes an extra bounded measurement freshness check.",
     "Actual provider usage may be partial after provider failure; request totals count constructed requests, even if transport fails. Completed responses are recorded separately.",
+    "EvalRunner reports ERROR on budget exhaustion even when every workspace check passes. Overall task-success and final-workspace check success are reported separately; finishing within the step budget is part of the former.",
     "Traces retain IDs/counts/timings only. Model text, tool output, check scripts, raw exceptions and credentials are excluded.",
 )
 
@@ -96,7 +97,7 @@ def _observations(runs: list[ExperimentRun], field: str) -> dict[str, Any]:
     }
 
 
-def comparison(report: ExperimentReport) -> dict[str, Any]:
+def comparison(report: ExperimentReport, *, matched: bool = True) -> dict[str, Any]:
     arms: dict[str, Any] = {}
     for arm in Arm:
         runs = [run for run in report.runs if run.arm is arm]
@@ -107,6 +108,11 @@ def comparison(report: ExperimentReport) -> dict[str, Any]:
             if run.result.failure_category
         )
         included = sum(run.metrics.memory_included_events for run in runs)
+        checked_runs = [run for run in runs if run.result.checks]
+        checks_passed = sum(
+            all(check.passed and check.error is None for check in run.result.checks)
+            for run in checked_runs
+        )
         nonfresh = sum(
             count
             for run in runs
@@ -119,6 +125,11 @@ def comparison(report: ExperimentReport) -> dict[str, Any]:
             "fail": counts["fail"],
             "error": counts["error"],
             "task_success_rate": counts["pass"] / len(runs) if runs else None,
+            "workspace_checks_available": len(checked_runs),
+            "workspace_checks_passed": checks_passed,
+            "workspace_check_success_rate": checks_passed / len(checked_runs)
+            if checked_runs
+            else None,
             "failure_categories": dict(categories),
             "failed_check_ids": dict(
                 Counter(
@@ -187,12 +198,15 @@ def comparison(report: ExperimentReport) -> dict[str, Any]:
                 "baseline_run_id": baseline.run_id,
                 "status": run.result.status.value,
                 "baseline_status": baseline.result.status.value,
+                "failure_category": run.result.failure_category.value
+                if run.result.failure_category
+                else None,
                 "pass_delta": int(run.result.status is EvalStatus.PASS)
                 - int(baseline.result.status is EvalStatus.PASS),
                 "differences": deltas,
             }
         )
-    return {
+    result = {
         "schema_version": 1,
         "execution_kind": report.config.execution_kind,
         "state": report.state,
@@ -201,6 +215,26 @@ def comparison(report: ExperimentReport) -> dict[str, Any]:
         "per_case_against_baseline": differences,
         "limitations": list(LIMITATIONS),
     }
+    if matched:
+        groups: dict[tuple[str, int], set[Arm]] = {}
+        for run in report.runs:
+            groups.setdefault((run.case_name, run.repetition), set()).add(run.arm)
+        cohort = {key for key, present in groups.items() if present == set(Arm)}
+        subset = report.model_copy(
+            update={
+                "runs": [
+                    run
+                    for run in report.runs
+                    if (run.case_name, run.repetition) in cohort
+                ]
+            }
+        )
+        result["matched_case_repetitions"] = [
+            {"case": name, "repetition": repetition}
+            for name, repetition in sorted(cohort)
+        ]
+        result["matched_arms"] = comparison(subset, matched=False)["arms"]
+    return result
 
 
 def findings(report: ExperimentReport, summary: dict[str, Any]) -> str:
@@ -235,8 +269,22 @@ def findings(report: ExperimentReport, summary: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "| Case / repetition | Arm | Verdict | Failed checks | Trace |",
-            "| --- | --- | --- | --- | --- |",
+            "All-observed aggregates above can be unbalanced after interruption. The matched comparison below uses only case/repetition groups observed in all four arms.",
+            "",
+            "| Matched arm | Runs | Overall PASS | Workspace checks PASS | Mean tools | Mean reads |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for arm, data in summary["matched_arms"].items():
+        m = data["measurements"]
+        lines.append(
+            f"| {arm} | {data['runs']} | {data['pass']} | {data['workspace_checks_passed']} / {data['workspace_checks_available']} | {number(m['tool_calls']['mean'])} | {number(m['read_file_calls']['mean'])} |"
+        )
+    lines.extend(
+        [
+            "",
+            "| Case / repetition | Arm | Verdict / category | Workspace checks | Failed checks | Trace |",
+            "| --- | --- | --- | --- | --- | --- |",
         ]
     )
     for run in report.runs:
@@ -245,7 +293,7 @@ def findings(report: ExperimentReport, summary: dict[str, Any]) -> str:
             or "none"
         )
         lines.append(
-            f"| {run.case_name} / {run.repetition} | {run.arm.value} | {run.result.status.value.upper()} | {failed} | `{run.result.trace_id or 'unavailable'}` |"
+            f"| {run.case_name} / {run.repetition} | {run.arm.value} | {run.result.status.value.upper()} / {run.result.failure_category.value if run.result.failure_category else 'none'} | {('PASS' if all(check.passed and check.error is None for check in run.result.checks) else 'FAIL') if run.result.checks else 'unavailable'} | {failed} | `{run.result.trace_id or 'unavailable'}` |"
         )
     lines.extend(
         [

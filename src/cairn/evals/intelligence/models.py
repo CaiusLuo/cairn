@@ -69,6 +69,7 @@ class IntelligenceMetrics(EvalMetrics):
     provider_requests: int = 0
     provider_responses: int = 0
     provider_failures: int = 0
+    provider_failure_categories: dict[str, int] = Field(default_factory=dict)
     stale_recall_rate: float | None = None
     relevant_memory_precision: float | None = None
 

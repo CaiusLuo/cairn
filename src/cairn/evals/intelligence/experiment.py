@@ -39,8 +39,26 @@ class ObservedLLM:
         self.metrics.provider_requests += 1
         try:
             response = await self.client.generate(messages, tools)
-        except Exception:
+        except Exception as exc:
             self.metrics.provider_failures += 1
+            status = getattr(exc, "status_code", None)
+            category = (
+                "timeout"
+                if isinstance(exc, TimeoutError)
+                else "authentication"
+                if type(status) is int and status in (401, 403)
+                else "rate_limit"
+                if type(status) is int and status == 429
+                else "service_unavailable"
+                if type(status) is int and 500 <= status <= 599
+                else "invalid_request"
+                if type(status) is int and status == 400
+                else "invalid_response_or_request"
+                if isinstance(exc, ValueError)
+                else "unknown"
+            )
+            counts = self.metrics.provider_failure_categories
+            counts[category] = counts.get(category, 0) + 1
             raise RuntimeError("Model request failed.") from None
         self.metrics.provider_responses += 1
         return response
@@ -53,6 +71,13 @@ def execution_plan(
         raise ValueError("Experiment allows 1-6 cases and 1-3 repetitions")
     if len({spec.item.case.name for spec in cases}) != len(cases):
         raise ValueError("Experiment case names must be unique")
+    if any(
+        not spec.item.case.name.isascii()
+        or not spec.item.case.name.replace("-", "").isalnum()
+        or len(spec.item.case.name) > 64
+        for spec in cases
+    ):
+        raise ValueError("Experiment case names must be bounded path-safe identifiers")
     rng = random.Random(seed)
     plan: list[tuple[IntelligenceCase, Arm, int]] = []
     for repetition in range(1, repetitions + 1):
@@ -147,7 +172,14 @@ async def run_experiment(
         report.active_run_id = report.active_metrics = None
         # A provider failure stops this finite pilot instead of making additional
         # paid/unavailable requests. Completed evidence remains available.
-        if config.execution_kind == "real" and metrics.provider_failures:
+        if config.execution_kind == "real" and (
+            metrics.provider_failures
+            or (
+                result.failure_category is EvalFailureCategory.RUN_TIMEOUT
+                and metrics.provider_requests
+                and not metrics.provider_responses
+            )
+        ):
             report.state = "real_eval_blocked"
             report.real_provider_status = "BLOCKED"
         elif len(report.runs) == len(plan):
