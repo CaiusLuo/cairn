@@ -350,6 +350,10 @@ def test_final_verification_detects_post_read_change(
 
     def mutate_after_read(path: str, data: bytes, sha256: str) -> None:
         file.write_bytes(b"value = 2")
+        # Equal-size writes can share a filesystem timestamp tick on Linux.
+        # Make the metadata change deterministic for this final-stat check.
+        current = file.stat()
+        os.utime(file, ns=(current.st_atime_ns, current.st_mtime_ns + 1_000_000_000))
 
     monkeypatch.setattr(builder, "_inspect_python", mutate_after_read)
 
