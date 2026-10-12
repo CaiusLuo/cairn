@@ -1,7 +1,7 @@
 import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from cairn.core.context import ContextBudget, ContextBuilder, ContextRequest
 from cairn.core.llm import LLMClient
@@ -9,9 +9,6 @@ from cairn.core.memory.context import MemoryContext
 from cairn.core.model_manager import ModelConfig, ModelManager
 from cairn.core.models import LLMResponse, Message
 from cairn.infra.llm.errors import _short_diagnostic, is_fallback_error
-
-if TYPE_CHECKING:
-    from cairn.runtime.agent import Agent
 
 
 class AllModelsUnavailable(RuntimeError):
@@ -44,11 +41,14 @@ class ModelFailure:
 class ModelExecutor:
     """Try each group's IDs in order, then the next group in ``candidates()``.
 
-    The caller keeps ``Agent.llm`` and ``Agent.context_builder`` bound to
-    the first ID of ``ModelManager.current_model()`` (``cli.py`` rebinds both
-    together on ``/model use``). Only that candidate reuses them; all other IDs
-    build a runtime through ``runtime_factory``. Every attempt therefore keeps
+    The caller owns one already-bound "primary" runtime — the LLM client and
+    context builder currently selected for the session — and passes it in. Only
+    the first ID of ``ModelManager.current_model()`` reuses it; all other IDs
+    build their own through ``runtime_factory``. Every attempt therefore keeps
     its own client, tokenizer, context budget admission and output limit.
+
+    The executor depends on those two collaborators rather than on the Agent
+    aggregate, so it can run for any caller that can supply a runtime.
     """
 
     def __init__(
@@ -71,13 +71,13 @@ class ModelExecutor:
 
     def _runtime_for(
         self,
-        agent: "Agent",
+        primary_runtime: tuple[LLMClient, ContextBuilder],
         model: ModelConfig | None,
         model_id: str | None,
     ) -> tuple[LLMClient, ContextBuilder]:
         selected = self.manager.current_model() if self.manager is not None else None
         if model is None or (model == selected and model_id == model.model_ids[0]):
-            return agent.llm, agent.context_builder
+            return primary_runtime
         assert self.runtime_factory is not None
         assert model_id is not None
         return self.runtime_factory(model_id)
@@ -93,7 +93,7 @@ class ModelExecutor:
     async def execute(
         self,
         *,
-        agent: "Agent",
+        primary_runtime: tuple[LLMClient, ContextBuilder],
         system_messages: list[Message],
         history: list[Message],
         current_turn_start: int,
@@ -116,7 +116,7 @@ class ModelExecutor:
                 model.model_ids if model is not None else (None,)
             )
             for model_id in model_ids:
-                llm, builder = self._runtime_for(agent, model, model_id)
+                llm, builder = self._runtime_for(primary_runtime, model, model_id)
                 # Admission failures are not provider failures and must not retry.
                 request = builder.build(
                     system_messages=system_messages,

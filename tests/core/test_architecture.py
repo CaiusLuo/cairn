@@ -137,22 +137,30 @@ def test_core_stays_free_of_infrastructure_dependencies() -> None:
     )
 
 
-def test_core_has_no_internal_import_cycles() -> None:
+def test_packages_have_no_import_cycles() -> None:
+    """No module inside a Cairn layer may be part of an import cycle.
+
+    A cycle means two modules must always change together, and it hides which of
+    them owns the contract between them. Type-only imports count: a cycle held
+    together by ``TYPE_CHECKING`` is still two modules that cannot be understood
+    or tested independently.
+    """
     graph: dict[str, set[str]] = {}
-    for path in sorted((PACKAGE_ROOT / "core").rglob("*.py")):
-        relative = path.relative_to(PACKAGE_ROOT).with_suffix("")
-        parts = ("cairn", *relative.parts[:-1])
-        if path.name != "__init__.py":
-            parts = (*parts, path.stem)
-        module_name = ".".join(parts)
-        graph[module_name] = {
-            target
-            for target in _targets(
-                ast.parse(path.read_text(encoding="utf-8"), filename=str(path)),
-                module_name.rpartition(".")[0],
-            )
-            if _layer_for(target) == "core"
-        }
+    for layer in sorted(LAYERS):
+        for path in sorted((PACKAGE_ROOT / layer).rglob("*.py")):
+            relative = path.relative_to(PACKAGE_ROOT).with_suffix("")
+            parts = ("cairn", *relative.parts[:-1])
+            if path.name != "__init__.py":
+                parts = (*parts, path.stem)
+            module_name = ".".join(parts)
+            graph[module_name] = {
+                target
+                for target in _targets(
+                    ast.parse(path.read_text(encoding="utf-8"), filename=str(path)),
+                    module_name.rpartition(".")[0],
+                )
+                if _layer_for(target) is not None
+            }
 
     cycles: list[str] = []
 
@@ -166,4 +174,4 @@ def test_core_has_no_internal_import_cycles() -> None:
     for module in sorted(graph):
         walk(module, module, (module,))
 
-    assert not cycles, "Circular core imports:\n" + "\n".join(sorted(set(cycles)))
+    assert not cycles, "Circular Cairn imports:\n" + "\n".join(sorted(set(cycles)))
