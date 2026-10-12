@@ -7,7 +7,12 @@ import pytest
 
 from cairn.core.budget import RunBudget
 from cairn.core.models import LLMResponse, ToolCall
-from cairn.runtime.evals.intelligence.dataset import VERSION, dataset, dataset_digest
+from cairn.runtime.evals.intelligence.dataset import (
+    V1_VERSION,
+    VERSION,
+    dataset,
+    dataset_digest,
+)
 from cairn.runtime.evals.intelligence.models import Arm, IntelligenceMetrics
 from cairn.runtime.evals.intelligence.runner import IntelligenceRunner
 from cairn.runtime.evals.models import EvalStatus
@@ -42,11 +47,11 @@ REFERENCE_PATCHES = {
 
 def test_dataset_contract_and_no_prompt_answers() -> None:
     cases = dataset()
-    assert VERSION == "repo-intelligence-v1" and len(cases) == 6
+    assert VERSION == "repo-intelligence-v2" and len(cases) == 6
     assert dataset_digest(cases) == dataset_digest(dataset())
     assert (
         dataset_digest(cases)
-        == "b459ce3fd1293e540572a2ebf8ae0c4a10407fd28a4be76f117a776d45e7553f"
+        == "12dfcc1d70c28cfd3a670b8bfe85a0f3d766c370416d75f3072bbe11e2426cdf"
     )
     assert len({spec.item.case.name for spec in cases}) == 6
     for spec in cases:
@@ -57,6 +62,23 @@ def test_dataset_contract_and_no_prompt_answers() -> None:
             assert fact.evidence_files and len(fact.statement) < 512
             assert all(path in spec.item.case.files for path in fact.evidence_files)
             assert "def " not in fact.statement and "return " not in fact.statement
+
+
+def test_v1_dataset_contract_remains_frozen() -> None:
+    historical = dataset(version=V1_VERSION)
+    corrected = dataset()
+    assert V1_VERSION == "repo-intelligence-v1"
+    assert (
+        dataset_digest(historical)
+        == "b459ce3fd1293e540572a2ebf8ae0c4a10407fd28a4be76f117a776d45e7553f"
+    )
+    for old, new in zip(historical, corrected, strict=True):
+        assert old.item.case == new.item.case
+        assert old.memories == new.memories
+        assert old.relevant_files == new.relevant_files
+        assert old.current_files == new.current_files
+    with pytest.raises(ValueError, match="Unsupported repository intelligence"):
+        dataset(version="repo-intelligence-v3")
 
 
 @pytest.mark.parametrize("case_index", range(6))
@@ -133,6 +155,55 @@ def test_testing_convention_requires_executable_regression(tmp_path: Path) -> No
         temp_root=tmp_path,
     )
     assert asyncio.run(runner.run_case()).status is EvalStatus.FAIL
+
+
+def test_unrelated_case_rejects_corrupted_account_check(tmp_path: Path) -> None:
+    spec = dataset()[5]
+    fixes = REFERENCE_PATCHES[spec.item.case.name]
+    account_check = "checks/check_account.py"
+    responses = [
+        LLMResponse(
+            tool_calls=[
+                *(
+                    ToolCall(
+                        id=f"fix-{i}",
+                        name="edit_file",
+                        arguments={
+                            "path": path,
+                            "old_text": spec.item.case.files[path],
+                            "new_text": text,
+                        },
+                    )
+                    for i, (path, text) in enumerate(fixes.items())
+                ),
+                ToolCall(
+                    id="corrupt-account-check",
+                    name="edit_file",
+                    arguments={
+                        "path": account_check,
+                        "old_text": spec.item.case.files[account_check],
+                        "new_text": "corrupted\n",
+                    },
+                ),
+            ]
+        ),
+        LLMResponse(content="done"),
+    ]
+    runner = IntelligenceRunner(
+        lambda: SequenceLLM(responses),
+        spec=spec,
+        arm=Arm.BASELINE,
+        observations=IntelligenceMetrics(),
+        budget=RunBudget(max_steps=3),
+        run_timeout_seconds=15,
+        check_timeout_seconds=8,
+        temp_root=tmp_path,
+    )
+    result = asyncio.run(runner.run_case())
+    assert result.status is EvalStatus.FAIL
+    assert [check.name for check in result.checks if not check.passed] == [
+        "preserve:checks/check_account.py"
+    ]
 
 
 def test_negative_control_retrieves_no_memory(tmp_path: Path) -> None:

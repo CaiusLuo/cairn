@@ -23,7 +23,7 @@ from cairn.infra.config import (
 )
 from cairn.infra.llm.litellm_client import LiteLLMClient
 from cairn.infra.llm.token_counter import LiteLLMTokenCounter
-from cairn.runtime.evals.intelligence.dataset import dataset, dataset_digest
+from cairn.runtime.evals.intelligence.dataset import VERSION, dataset, dataset_digest
 from cairn.runtime.evals.intelligence.experiment import run_experiment
 from cairn.runtime.evals.intelligence.models import (
     ExperimentConfig,
@@ -67,6 +67,7 @@ async def main(directory: Path, *, repetitions: int = 1, seed: int = 230028) -> 
         check_timeout_seconds=5,
     )
     config = ExperimentConfig(
+        dataset_version=VERSION,
         dataset_sha256=dataset_digest(cases),
         source_revision=source_revision(),
         execution_kind="real",

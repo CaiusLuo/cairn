@@ -1,15 +1,17 @@
-"""Repo-intelligence-v1: fixed prompts, fixtures, facts and independent checks."""
+"""Versioned repository-intelligence prompts, fixtures and independent checks."""
 
 import hashlib
 import json
 from dataclasses import asdict
+from typing import Literal
 
 from cairn.runtime.evals.checks import FileContentEqualsCheck
 from cairn.runtime.evals.intelligence.checks import BehaviorCheck
 from cairn.runtime.evals.intelligence.fixtures import IntelligenceCase, MemoryFixture
 from cairn.runtime.evals.models import EvalCase, EvalCheck, EvalSuiteCase
 
-VERSION = "repo-intelligence-v1"
+V1_VERSION: Literal["repo-intelligence-v1"] = "repo-intelligence-v1"
+VERSION: Literal["repo-intelligence-v2"] = "repo-intelligence-v2"
 
 
 def repository_files() -> dict[str, str]:
@@ -102,7 +104,9 @@ def repository_files() -> dict[str, str]:
     return files
 
 
-def dataset() -> tuple[IntelligenceCase, ...]:
+def dataset(*, version: str = VERSION) -> tuple[IntelligenceCase, ...]:
+    if version not in {V1_VERSION, VERSION}:
+        raise ValueError(f"Unsupported repository intelligence dataset: {version}")
     base = repository_files()
     account_fact = MemoryFixture(
         "account-contract",
@@ -269,7 +273,8 @@ def dataset() -> tuple[IntelligenceCase, ...]:
         checks.extend(
             FileContentEqualsCheck(path, text, name=f"preserve:{path}")
             for path, text in base.items()
-            if path not in relevant and path != "checks/check_account.py"
+            if path not in relevant
+            and not (version == V1_VERSION and path == "checks/check_account.py")
         )
         cases.append(
             IntelligenceCase(

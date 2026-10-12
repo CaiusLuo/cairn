@@ -8,7 +8,7 @@ import pytest
 
 from cairn.core.budget import RunBudget
 from cairn.core.context import ContextBudget, TokenCount
-from cairn.core.models import LLMResponse, Message
+from cairn.core.models import LLMResponse, Message, ToolCall
 from cairn.infra.observability.models import Span, SpanStatus, new_trace_context
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.repo_graph.models import BuildLimits
@@ -106,6 +106,49 @@ def test_graph_refresh_completeness_and_read_only(tmp_path: Path) -> None:
     assert not data["snapshot_complete"] and data["items"] == []
     assert data["freshness"] == "unknown"
     assert tool.builder.snapshot is retained
+
+
+def test_dependency_target_is_graph_discovery_once_without_read(
+    tmp_path: Path,
+) -> None:
+    files = {
+        "source.py": "import target\nfrom target import value\n",
+        "target.py": "value = 1\n",
+    }
+    spec = IntelligenceCase(
+        EvalSuiteCase(
+            EvalCase(name="dependency", prompt="Inspect dependency.", files=files),
+            (FileContentEqualsCheck("target.py", files["target.py"]),),
+        ),
+        (),
+        ("target.py",),
+        (),
+    )
+    llm = SequenceLLM(
+        [
+            LLMResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="dependencies",
+                        name="repo_graph",
+                        arguments={
+                            "operation": "dependencies_of",
+                            "path": "source.py",
+                        },
+                    )
+                ]
+            ),
+            LLMResponse(content="done"),
+        ]
+    )
+    runner = make_runner(spec, Arm.GRAPH, llm, tmp_path)
+    assert asyncio.run(runner.run_case()).status is EvalStatus.PASS
+    metrics = runner.observations
+    assert metrics.read_file_calls == 0
+    assert metrics.graph_queries_completed == 1
+    assert [
+        (evidence.path, evidence.tool) for evidence in metrics.direct_discovery_evidence
+    ] == [("target.py", "repo_graph")]
 
 
 @pytest.mark.parametrize(

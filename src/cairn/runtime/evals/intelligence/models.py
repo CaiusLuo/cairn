@@ -75,7 +75,9 @@ class IntelligenceMetrics(EvalMetrics):
 
 
 class ExperimentConfig(BaseModel):
-    dataset_version: Literal["repo-intelligence-v1"] = "repo-intelligence-v1"
+    dataset_version: Literal["repo-intelligence-v1", "repo-intelligence-v2"] = (
+        "repo-intelligence-v2"
+    )
     dataset_sha256: str
     source_revision: str | None = None
     execution_kind: Literal["offline", "real"]

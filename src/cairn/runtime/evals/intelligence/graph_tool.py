@@ -10,7 +10,7 @@ from typing import Any
 from cairn.core.memory.models import safe_path
 from cairn.core.models import ToolResult
 from cairn.infra.repo_graph.builder import RepoGraphBuilder
-from cairn.infra.repo_graph.models import BuildLimits
+from cairn.infra.repo_graph.models import BuildLimits, RelationshipStatus
 from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
 from cairn.infra.workspace.workspace import Workspace
 
@@ -156,7 +156,15 @@ class RepoGraphQueryTool:
                 result = asdict(graph.dependencies_of(arguments["path"], limit=limit))
             data = result
             data.update(snapshot_complete=True, freshness="rebuilt")
-            paths = tuple(record["path"] for record in result["items"])
+            returned_paths = [record["path"] for record in result["items"]]
+            if operation == "dependencies_of":
+                returned_paths.extend(
+                    record["target_path"]
+                    for record in result["items"]
+                    if record["status"] is RelationshipStatus.RESOLVED
+                    and isinstance(record["target_path"], str)
+                )
+            paths = tuple(returned_paths)
         payload = json.dumps(data, ensure_ascii=True, separators=(",", ":"))
         if len(payload.encode()) > 8192:
             payload = json.dumps(
