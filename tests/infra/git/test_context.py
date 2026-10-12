@@ -1,5 +1,10 @@
 import asyncio
+import os
+import shlex
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from cairn.infra.git.context import RepoContextProvider, RepositoryContext
 from cairn.infra.workspace.workspace import Workspace
@@ -85,3 +90,67 @@ def test_repo_context_paths_are_relative_to_nested_workspace(
     assert context.workspace_root == nested.resolve()
     assert context.changed_files == ("tracked.txt",)
     assert context.untracked_files == ("new.txt",)
+
+
+def test_prompt_inspection_never_executes_repository_configuration(
+    tmp_path: Path,
+) -> None:
+    """Read-only inspection must not run a program the repository supplies.
+
+    ``core.fsmonitor`` is a program Git runs for ``git status``. Prompt
+    inspection happens on every turn with this process's environment, so a
+    repository — or an earlier sandboxed tool call writing ``.git/config`` —
+    could otherwise win unsandboxed execution.
+    """
+    _initialize_repository(tmp_path)
+    marker = tmp_path / "monitor-executed"
+    monitor = tmp_path / "monitor"
+    monitor.write_text(
+        f"#!/bin/sh\ntouch {shlex.quote(str(marker))}\nexit 1\n", encoding="utf-8"
+    )
+    monitor.chmod(0o755)
+    _git(tmp_path, "config", "core.fsmonitor", str(monitor))
+    (tmp_path / "dirty.txt").write_text("changed\n", encoding="utf-8")
+
+    context = asyncio.run(RepoContextProvider(Workspace(tmp_path)).inspect())
+
+    assert context.is_git_repository is True
+    assert context.dirty is True
+    assert not marker.exists()
+    # Positive control: the same repository configuration does execute under
+    # ordinary Git, so the absence above is suppression, not a broken fixture.
+    _git(tmp_path, "status", "--porcelain")
+    assert marker.exists()
+
+
+def test_git_children_are_hardened_and_credential_filtered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every git child carries the overrides and an isolated environment."""
+    captured: list[tuple[tuple[str, ...], dict[str, Any]]] = []
+
+    class _Captured(Exception):
+        pass
+
+    async def capture(*command: str, **kwargs: Any) -> Any:
+        captured.append((command, kwargs))
+        raise _Captured
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capture)
+    monkeypatch.setenv("XDG_CONFIG_HOME", "programmatic-credential")
+    provider = RepoContextProvider(
+        Workspace(tmp_path), secret_env_keys=frozenset({"XDG_CONFIG_HOME"})
+    )
+
+    with pytest.raises(_Captured):
+        asyncio.run(provider._start_git("rev-parse", "--show-toplevel"))
+
+    command, kwargs = captured[0]
+    assert command[:2] == ("git", "-C")
+    assert "core.hooksPath=/dev/null" in command
+    assert "core.fsmonitor=false" in command
+    child_env = kwargs["env"]
+    assert "XDG_CONFIG_HOME" not in child_env
+    assert "CAIRN_LLM_API_KEY" not in child_env
+    assert child_env["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert child_env["GIT_CONFIG_NOSYSTEM"] == "1"

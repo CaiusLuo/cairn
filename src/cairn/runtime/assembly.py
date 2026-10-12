@@ -27,9 +27,14 @@ def build_agent(
     context_builder: ContextBuilder | None = None,
     secret_env_keys: frozenset[str] = frozenset(),
     model_executor: ModelExecutor | None = None,
-    repository_secret_env_keys: frozenset[str] | None = None,
     memory_reader: "MemoryReader | None" = None,
 ) -> Agent:
+    """Build one Agent over a Workspace.
+
+    ``secret_env_keys`` is the Agent's single credential policy: the shell tool
+    and the repository-context provider both keep those names out of the child
+    environments they create, so a new consumer cannot silently miss one.
+    """
     registry = ToolRegistry()
 
     registry.register_tool(BashTool(workspace, secret_env_keys=secret_env_keys))
@@ -43,7 +48,7 @@ def build_agent(
         event_handler=event_handler,
         tracer=tracer,
         repo_context_provider=RepoContextProvider(
-            workspace, secret_env_keys=repository_secret_env_keys
+            workspace, secret_env_keys=secret_env_keys
         ),
         context_builder=context_builder,
         model_executor=model_executor,

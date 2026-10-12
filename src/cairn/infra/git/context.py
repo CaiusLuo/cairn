@@ -132,7 +132,7 @@ class RepoContextProvider:
         *,
         max_paths: int = DEFAULT_MAX_PATHS,
         timeout: float = DEFAULT_GIT_TIMEOUT,
-        secret_env_keys: frozenset[str] | None = None,
+        secret_env_keys: frozenset[str] = frozenset(),
     ) -> None:
         if max_paths < 1:
             raise ValueError("max_paths must be at least 1")
@@ -147,16 +147,20 @@ class RepoContextProvider:
     async def _start_git(
         self, *args: str, env: Mapping[str, str] | None = None
     ) -> asyncio.subprocess.Process:
-        # Interactive prompt inspection keeps its configuration behavior. Task
-        # prompt/evidence inspection uses an isolated environment and disables
-        # external FSMonitor, including before the first model request.
-        if env is None and self.secret_env_keys is not None:
+        # Repository-controlled configuration must never run a program. A
+        # repository can set core.fsmonitor or core.hooksPath, and either would
+        # execute a program outside the sandbox with this process's environment.
+        # Command-line overrides outrank environment, system, global and local
+        # configuration, so these hold in every inspection mode.
+        options = ("-c", f"core.hooksPath={os.devnull}", "-c", "core.fsmonitor=false")
+
+        if env is None:
+            # No repository inspection needs a credential, and host-level Git
+            # configuration must not steer what the agent is shown. Prompt and
+            # evidence inspection therefore share one isolated environment;
+            # local repository configuration stays effective for both.
             env = build_git_env(os.environ, self.secret_env_keys)
-        options = (
-            ("-c", f"core.hooksPath={os.devnull}", "-c", "core.fsmonitor=false")
-            if env is not None
-            else ()
-        )
+
         return await asyncio.create_subprocess_exec(
             "git",
             "-C",
@@ -247,7 +251,8 @@ class RepoContextProvider:
                     )
                     await self._terminate(process)
                 returncode = await process.wait()
-                stderr, _ = await stderr_task
+                # Drain stderr so a full pipe can never stall process.wait().
+                await stderr_task
                 if drain_task is not None:
                     await drain_task
         except BaseException:
@@ -260,10 +265,8 @@ class RepoContextProvider:
             raise
 
         if returncode != 0 and not truncated:
-            if env is not None or self.secret_env_keys is not None:
-                raise RuntimeError(f"git status failed ({returncode})")
-            detail = stderr.decode("utf-8", errors="replace").strip()
-            raise RuntimeError(f"git status failed: {detail or returncode}")
+            # Never expose arbitrary repository configuration text or credentials.
+            raise RuntimeError(f"git status failed ({returncode})")
         return lines, truncated
 
     async def inspect_evidence(
