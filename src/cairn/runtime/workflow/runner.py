@@ -12,6 +12,7 @@ from cairn.infra.config import load_project_providers
 from cairn.infra.git.worktree import WorktreeError, WorktreeHandle, WorktreeProvider
 from cairn.infra.github.models import IssueTask
 from cairn.infra.workspace.workspace import Workspace
+from cairn.runtime.lifecycle import settle_owned
 from cairn.runtime.tasks import CodingTaskRunner
 from cairn.runtime.workflow.git import NoChangesError, SnapshotDriftError, WorkflowGit
 from cairn.runtime.workflow.models import (
@@ -67,19 +68,6 @@ class _Progress:
             self.recovery_path,
             task_result=self.task_result,
         )
-
-
-async def _settle(*tasks: asyncio.Task[Any]) -> None:
-    for task in tasks:
-        if not task.done():
-            task.cancel()
-    completion = asyncio.gather(*tasks, return_exceptions=True)
-    while not completion.done():
-        try:
-            await asyncio.shield(completion)
-        except asyncio.CancelledError:
-            continue
-    completion.result()
 
 
 class LocalWorkflow:
@@ -202,7 +190,7 @@ class LocalWorkflow:
             await asyncio.wait(owned, return_when=asyncio.FIRST_COMPLETED)
             if steps.done():
                 return steps.result()
-            await _settle(steps)
+            await settle_owned(steps)
             progress.save(
                 status=WorkflowStatus.CANCELLED, failure=WorkflowFailure.CANCELLED
             )
@@ -211,7 +199,7 @@ class LocalWorkflow:
             primary = exc
             raise
         finally:
-            await _settle(*owned)
+            await settle_owned(*owned)
             if isinstance(primary, asyncio.CancelledError):
                 try:
                     progress.save(

@@ -5,7 +5,6 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from cairn.core.budget import RunBudget
 from cairn.core.context import ContextBudget
@@ -17,6 +16,7 @@ from cairn.infra.config import load_project_providers
 from cairn.infra.git.worktree import WorktreeError
 from cairn.infra.observability.models import Span
 from cairn.infra.observability.tracer import Tracer
+from cairn.runtime.lifecycle import settle_owned
 from cairn.runtime.review.git import (
     ReviewInputError,
     assert_snapshot_unchanged,
@@ -140,30 +140,6 @@ class _Progress:
         return self.result()
 
 
-async def _settle(
-    *tasks: asyncio.Task[Any], propagate_cancellation: bool = True
-) -> None:
-    if all(task.done() for task in tasks):
-        for task in tasks:
-            if not task.cancelled():
-                task.exception()
-        return
-    for task in tasks:
-        if not task.done():
-            task.cancel()
-    completion = asyncio.gather(*tasks, return_exceptions=True)
-    cancellation: asyncio.CancelledError | None = None
-    while not completion.done():
-        try:
-            await asyncio.shield(completion)
-        except asyncio.CancelledError as exc:
-            if cancellation is None:
-                cancellation = exc
-    completion.result()
-    if propagate_cancellation and cancellation is not None:
-        raise cancellation
-
-
 class ReviewWorkflow:
     """Review/fix a caller-owned retained Worktree, without remote publication."""
 
@@ -202,7 +178,9 @@ class ReviewWorkflow:
         self.permission_handler, self.event_handler = permission_handler, event_handler
         self.tracer = tracer if tracer is not None else Tracer(_DiscardSink())
         try:
-            catalog = load_project_providers(git.handle.source_root / ".cairn/models.toml")
+            catalog = load_project_providers(
+                git.handle.source_root / ".cairn/models.toml"
+            )
         except (ValueError, OSError):
             raise ValueError("Cannot load source provider credential names") from None
         self.secret_env_keys = (
@@ -249,18 +227,20 @@ class ReviewWorkflow:
                 if worker.done():
                     result = worker.result()
                 else:
-                    await _settle(worker)
+                    # This workflow propagates cancellation: an external stop that
+                    # arrives while the review settles must still reach the caller.
+                    await settle_owned(worker, propagate_cancellation=True)
                     progress.verification = None
                     result = progress.finish(
                         ReviewWorkflowStatus.CANCELLED, ReviewWorkflowFailure.CANCELLED
                     )
             # Settle the cancellation watcher before returning, so a first
             # external cancellation during that cleanup is still propagated.
-            await _settle(*owned)
+            await settle_owned(*owned, propagate_cancellation=True)
             return result
         except asyncio.CancelledError as primary:
             externally_cancelled = True
-            await _settle(*owned, propagate_cancellation=False)
+            await settle_owned(*owned, propagate_cancellation=False)
             progress.verification = None
             try:
                 progress.finish(
@@ -277,7 +257,7 @@ class ReviewWorkflow:
                     primary.add_note(f"Review cleanup failed: {type(error).__name__}")
             raise primary
         finally:
-            await _settle(*owned, propagate_cancellation=not externally_cancelled)
+            await settle_owned(*owned, propagate_cancellation=not externally_cancelled)
 
     async def _execute(
         self,
