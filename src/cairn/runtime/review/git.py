@@ -59,8 +59,8 @@ class _ReadOnlyGit(WorkflowGit):
         if (head, branch) != (snapshot.head_revision, snapshot.branch):
             raise SnapshotDriftError("HEAD or branch changed before review")
         await self._assert_index(snapshot)
-        await self._git.check_filters(self.handle.path)
-        await self._git.check_attributes(self.handle.path, snapshot.tree_revision)
+        await self.handle.check_filters()
+        await self.handle.check_attributes(snapshot.tree_revision)
         await self._assert_materialized()
         await self._assert_no_unstaged()
         if await self._head_branch() != (head, branch):
@@ -106,8 +106,8 @@ async def _workspace_state(git: WorkflowGit) -> bytes:
     count = 0
     pending = [git.handle.path]
     # The private index/admin is outside the Workspace; include it separately.
-    pending.append(git.handle._admin_path)
-    common = git.handle._admin_path.parent.parent
+    pending.append(git.handle.admin_path)
+    common = git.handle.common_dir
     pending.extend(
         path
         for path in (common / "config", common / "config.worktree")

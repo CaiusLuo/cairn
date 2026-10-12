@@ -5,12 +5,7 @@ import hashlib
 import os
 import stat
 
-from cairn.infra.git.worktree import (
-    WorktreeError,
-    WorktreeHandle,
-    WorktreeState,
-    _identity,
-)
+from cairn.infra.git.worktree import WorktreeError, WorktreeHandle
 from cairn.runtime.workflow.models import GitSnapshot
 
 
@@ -38,89 +33,51 @@ class WorkflowGit:
 
     def __init__(self, handle: WorktreeHandle) -> None:
         self.handle = handle
-        self._git = handle._git
         self.assert_owned()
-        assert handle._admin is not None
-        self._commondir = (handle._admin[0] / "commondir").read_bytes()
+        self._commondir = (handle.admin_path / "commondir").read_bytes()
 
     @property
     def env(self) -> dict[str, str]:
-        return dict(self._git.env)
+        return self.handle.git_env
 
     def assert_owned(self) -> None:
         try:
-            self._assert_owned()
-        except SnapshotDriftError:
-            raise
-        except (OSError, WorktreeError):
+            commondir = getattr(self, "_commondir", None)
+            self.handle.assert_registered(commondir=commondir)
+        except WorktreeError as exc:
+            # Registration checks report exactly which invariant failed; only an
+            # unreadable registration collapses into a generic drift.
+            raise SnapshotDriftError(str(exc)) from None
+        except OSError:
             raise SnapshotDriftError(
                 "Owned worktree registration is unavailable"
             ) from None
-
-    def _assert_owned(self) -> None:
-        handle = self.handle
-        if handle.state not in (WorktreeState.ACTIVE, WorktreeState.RETAINED):
-            raise SnapshotDriftError("Worktree is no longer retained or active")
-        if _identity(handle.path) != handle._identity:
-            raise SnapshotDriftError("Owned worktree directory changed")
-        gitfile = handle.path / ".git"
-        if (
-            handle._gitfile is None
-            or gitfile.is_symlink()
-            or gitfile.read_bytes() != handle._gitfile
-            or handle._admin is None
-        ):
-            raise SnapshotDriftError("Owned worktree Git registration changed")
-        admin, identity = handle._admin
-        if (
-            _identity(admin) != identity
-            or (admin / "gitdir").is_symlink()
-            or (admin / "gitdir").read_bytes().rstrip(b"\n") != os.fsencode(gitfile)
-            or (admin / "commondir").is_symlink()
-        ):
-            raise SnapshotDriftError("Owned worktree admin registration changed")
-        common = os.fsdecode((admin / "commondir").read_bytes().rstrip(b"\n"))
-        if (admin / common).resolve() != handle._admin_path.parent.parent.resolve():
-            raise SnapshotDriftError("Owned worktree common directory changed")
-        if (
-            hasattr(self, "_commondir")
-            and (admin / "commondir").read_bytes() != self._commondir
-        ):
-            raise SnapshotDriftError("Owned worktree common directory changed")
 
     async def run(self, *args: str) -> bytes:
         """Run trusted harness arguments in the provider's scrubbed Git context."""
         await self.assert_context()
         self.assert_owned()
-        return await self._git(self.handle.path, *args)
+        return await self.handle.run_git(*args)
 
     async def assert_context(self) -> None:
         """Reject config that redirects Git away from the owned paths."""
         self.assert_owned()
         handle = self.handle
-        if (handle._admin_path / "index").is_symlink():
+        if (handle.admin_path / "index").is_symlink():
             raise SnapshotDriftError("Owned worktree index was replaced")
-        # Call the provider executor directly: invoking run() would recurse.
+        # The context probe cannot use run(): verifying the context is exactly
+        # what run() asserts first.
         try:
-            coordinates = await self._git(
-                handle.path,
-                "rev-parse",
-                "--path-format=absolute",
-                "--show-toplevel",
-                "--absolute-git-dir",
-                "--git-common-dir",
-                "--git-path",
-                "index",
-            )
+            coordinates = await handle.probe_git_context()
         except WorktreeError:
             raise SnapshotDriftError("Owned Git context is unavailable") from None
         expected = b"".join(
             os.fsencode(path) + b"\n"
             for path in (
                 handle.path,
-                handle._admin_path,
-                handle._admin_path.parent.parent,
-                handle._admin_path / "index",
+                handle.admin_path,
+                handle.common_dir,
+                handle.admin_path / "index",
             )
         )
         if coordinates != expected:
@@ -137,7 +94,7 @@ class WorkflowGit:
 
     async def _current_attributes(self) -> None:
         # add reads working-tree attributes. HEAD-only checks miss new rules.
-        await self._git.check_filters(self.handle.path)
+        await self.handle.check_filters()
         paths = (
             await self.run(
                 "ls-files", "-z", "--cached", "--others", "--exclude-standard"
@@ -250,7 +207,7 @@ class WorkflowGit:
         await self._current_attributes()
         await self.run("add", "--all", "--", ".")
         tree = (await self.run("write-tree")).decode("ascii").strip()
-        await self._git.check_attributes(self.handle.path, tree)
+        await self.handle.check_attributes(tree)
         output = await self.run(
             "diff",
             "--cached",
@@ -279,8 +236,8 @@ class WorkflowGit:
             snapshot.tree_revision,
         ):
             raise SnapshotDriftError("HEAD, branch or staged tree changed")
-        await self._git.check_filters(self.handle.path)
-        await self._git.check_attributes(self.handle.path, snapshot.tree_revision)
+        await self.handle.check_filters()
+        await self.handle.check_attributes(snapshot.tree_revision)
         await self._assert_materialized()
         await self._assert_no_unstaged()
         # Observe identity again after the filesystem scan's cancellation points.

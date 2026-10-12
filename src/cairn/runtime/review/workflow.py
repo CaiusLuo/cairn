@@ -202,7 +202,7 @@ class ReviewWorkflow:
         self.permission_handler, self.event_handler = permission_handler, event_handler
         self.tracer = tracer if tracer is not None else Tracer(_DiscardSink())
         try:
-            catalog = load_project_providers(git.handle._root / ".cairn/models.toml")
+            catalog = load_project_providers(git.handle.source_root / ".cairn/models.toml")
         except (ValueError, OSError):
             raise ValueError("Cannot load source provider credential names") from None
         self.secret_env_keys = (

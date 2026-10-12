@@ -380,6 +380,95 @@ class WorktreeHandle:
         """Creation-time credential names for downstream child-process isolation."""
         return self._git.secret_env_keys
 
+    @property
+    def source_root(self) -> Path:
+        """Canonical root of the source repository that owns this worktree."""
+        return self._root
+
+    @property
+    def admin_path(self) -> Path:
+        """Git's private admin directory for this owned worktree."""
+        return self._admin_path
+
+    @property
+    def common_dir(self) -> Path:
+        """Git common directory shared by the source repository and worktrees."""
+        return self._admin_path.parent.parent
+
+    @property
+    def git_env(self) -> dict[str, str]:
+        """The scrubbed Git environment captured for this worktree lifecycle."""
+        return dict(self._git.env)
+
+    async def run_git(self, *args: str) -> bytes:
+        """Run trusted harness Git arguments inside this worktree."""
+        return await self._git(self.path, *args)
+
+    async def run_git_with_env(self, *args: str, env: Mapping[str, str]) -> bytes:
+        """Run trusted harness Git arguments with a fully pinned environment.
+
+        The caller must establish ownership and context first, because this
+        entry point skips the automatic filter re-check: a pinned environment is
+        what the caller is establishing, not a reason to trust current
+        repository config.
+        """
+        return await _run_git(self.path, *args, env=env)
+
+    async def probe_git_context(self) -> bytes:
+        """Ask Git where it currently considers this worktree to live.
+
+        This is the only way to read back Git's own view of the owned paths, so
+        it exists to prove that repository configuration has not redirected those
+        paths. It applies no additional context assertions of its own, which is
+        why :meth:`run_git` re-validates them for ordinary operations.
+        """
+        return await self._git(
+            self.path,
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+            "--absolute-git-dir",
+            "--git-common-dir",
+            "--git-path",
+            "index",
+        )
+
+    async def check_filters(self) -> None:
+        """Re-validate that repository config will not execute content filters."""
+        await self._git.check_filters(self.path)
+
+    async def check_attributes(self, revision: str) -> None:
+        """Re-validate that a tree has no unsupported filter attributes."""
+        await self._git.check_attributes(self.path, revision)
+
+    def assert_registered(self, *, commondir: bytes | None = None) -> None:
+        """Validate that this handle still owns the same worktree registration."""
+        if self.state not in (WorktreeState.ACTIVE, WorktreeState.RETAINED):
+            raise WorktreeError("Worktree is no longer retained or active")
+        if _identity(self.path) != self._identity:
+            raise WorktreeError("Owned worktree directory changed")
+        gitfile = self.path / ".git"
+        if (
+            self._gitfile is None
+            or gitfile.is_symlink()
+            or gitfile.read_bytes() != self._gitfile
+            or self._admin is None
+        ):
+            raise WorktreeError("Owned worktree Git registration changed")
+        admin, identity = self._admin
+        if (
+            _identity(admin) != identity
+            or (admin / "gitdir").is_symlink()
+            or (admin / "gitdir").read_bytes().rstrip(b"\n") != os.fsencode(gitfile)
+            or (admin / "commondir").is_symlink()
+        ):
+            raise WorktreeError("Owned worktree admin registration changed")
+        common = os.fsdecode((admin / "commondir").read_bytes().rstrip(b"\n"))
+        if (admin / common).resolve() != self.common_dir.resolve():
+            raise WorktreeError("Owned worktree common directory changed")
+        if commondir is not None and (admin / "commondir").read_bytes() != commondir:
+            raise WorktreeError("Owned worktree common directory changed")
+
     def retain(self) -> None:
         if self.state not in (WorktreeState.ACTIVE, WorktreeState.RETAINED):
             raise WorktreeError(f"Cannot retain a {self.state.value} worktree")

@@ -14,7 +14,6 @@ from cairn.core.permissions import (
     PermissionRequest,
     PermissionResult,
 )
-from cairn.infra.git.worktree import _run_git
 from cairn.infra.github.models import IssueTask
 from cairn.infra.github.transport import (
     MAX_NEW_OBJECTS,
@@ -25,7 +24,7 @@ from cairn.infra.github.transport import (
     GitObject,
     PublishDestination,
     PublishedCommit,
-    _validate_pr_url,
+    validate_pull_request_url,
 )
 from cairn.runtime.workflow.git import SnapshotDriftError, WorkflowGit
 from cairn.runtime.workflow.models import (
@@ -225,7 +224,7 @@ class GitHubPublisher:
                 )
             )
             pr = DraftPR.model_validate(pr.model_dump())
-            _validate_pr_url(pr.url, destination.repository, pr.number)
+            validate_pull_request_url(pr.url, destination.repository, pr.number)
             if pr.draft is not True or pr.head_revision != commit.sha:
                 return blocked(WorkflowFailure.PUBLISH_FAILED)
             save(
@@ -290,8 +289,7 @@ class GitHubPublisher:
         await git.assert_context()
         sha = (
             (
-                await _run_git(
-                    git.handle.path,
+                await git.handle.run_git_with_env(
                     "-c",
                     "commit.gpgSign=false",
                     "-c",
