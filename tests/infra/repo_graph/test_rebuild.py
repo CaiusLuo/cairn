@@ -18,8 +18,10 @@ from tests.infra.git.conftest import source as source
 from tests.support.git import git
 
 
+@pytest.mark.parametrize("operation", ["build", "refresh", "rebuild"])
 def test_rebuild_replaces_edited_deleted_renamed_and_added_facts(
     tmp_path: Path,
+    operation: str,
 ) -> None:
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg/__init__.py").write_text("", encoding="utf-8")
@@ -31,6 +33,8 @@ def test_rebuild_replaces_edited_deleted_renamed_and_added_facts(
     builder = RepoGraphBuilder(Workspace(tmp_path))
     original = builder.build()
     assert original.report.complete
+    assert builder.snapshot is original
+    assert builder.last_report is original.report
 
     (tmp_path / "pkg/a.py").write_text(
         "from .c import added\nasync def after(): pass\n", encoding="utf-8"
@@ -38,9 +42,11 @@ def test_rebuild_replaces_edited_deleted_renamed_and_added_facts(
     (tmp_path / "pkg/b.py").unlink()
     (tmp_path / "old.py").rename(tmp_path / "renamed.py")
     (tmp_path / "pkg/c.py").write_text("def added(): pass", encoding="utf-8")
-    rebuilt = builder.build()
+    rebuilt = getattr(builder, operation)()
 
     assert rebuilt.report.complete
+    assert builder.snapshot is rebuilt
+    assert builder.last_report is rebuilt.report
     assert [record.name for record in rebuilt.symbols] == [
         "after",
         "added",
@@ -60,14 +66,15 @@ def test_rebuild_replaces_edited_deleted_renamed_and_added_facts(
     assert not rebuilt.module_for_path("pkg/b.py").items
     assert original.find_symbols(name="before").items
     assert original.module_for_path("old.py").items[0].name == "old"
-    assert builder.build() == rebuilt
+    assert builder.build() == builder.refresh() == builder.rebuild() == rebuilt
 
 
 @pytest.mark.parametrize(
     "failure", ["oversized", "syntax", "unreadable", "missing_root"]
 )
-def test_incomplete_build_is_reported_and_leaves_earlier_graph_unchanged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+@pytest.mark.parametrize("operation", ["build", "refresh", "rebuild"])
+def test_incomplete_rebuild_preserves_last_complete_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str, operation: str
 ) -> None:
     root = tmp_path / "repo"
     root.mkdir()
@@ -89,9 +96,11 @@ def test_incomplete_build_is_reported_and_leaves_earlier_graph_unchanged(
     else:
         root.rename(tmp_path / "moved")
 
-    candidate = builder.build()
+    candidate = getattr(builder, operation)()
 
     assert not candidate.report.complete
+    assert builder.snapshot is original
+    assert builder.last_report is candidate.report
     assert candidate is not original
     assert original.report.complete
     assert original.find_symbols(name="original").items
@@ -99,22 +108,28 @@ def test_incomplete_build_is_reported_and_leaves_earlier_graph_unchanged(
     assert "private diagnostic" not in repr(candidate)
 
 
-def test_unexpected_failure_leaves_no_partial_state(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("operation", ["build", "refresh", "rebuild"])
+def test_unexpected_failure_preserves_snapshot_and_last_completed_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
     (tmp_path / "module.py").write_text("def original(): pass", encoding="utf-8")
     builder = RepoGraphBuilder(Workspace(tmp_path))
+    original = builder.build()
 
     def failed(_: Path) -> int:
         raise RuntimeError("injected internal failure")
 
     monkeypatch.setattr(builder_module, "open_root", failed)
     with pytest.raises(RuntimeError, match="injected internal failure"):
-        builder.build()
+        getattr(builder, operation)()
+    assert builder.snapshot is original
+    assert builder.last_report is original.report
 
     monkeypatch.undo()
     graph = builder.build()
     assert graph.report.complete
+    assert builder.snapshot is graph
+    assert builder.last_report is graph.report
     assert [symbol.name for symbol in graph.symbols] == ["original"]
 
 

@@ -99,9 +99,12 @@ def test_graph_refresh_completeness_and_read_only(tmp_path: Path) -> None:
     )
     assert data["items"][0]["name"] == "new_name" and data["freshness"] == "rebuilt"
     tool.builder.limits = BuildLimits(max_entries=1)
+    retained = tool.builder.snapshot
     data = json.loads(asyncio.run(tool.execute({"operation": "list_files"})).stdout)
     assert not data["snapshot_complete"] and data["items"] == []
     assert data["freshness"] == "unknown"
+    assert tool.builder.snapshot is retained
+    assert retained is not None and retained.report.complete
 
 
 def test_dependency_target_is_graph_discovery_once_without_read(

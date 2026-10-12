@@ -116,13 +116,13 @@ _READ_CHUNK_BYTES = 64 * 1024
 
 
 class RepoGraphBuilder:
-    """Build one bounded repository candidate per ``build`` call.
+    """Build a bounded snapshot; only complete candidates become ``snapshot``.
 
     The root counts as one entry and has path ``.``. Detecting an overflowing
     directory can inspect one entry beyond ``max_entries``; its whole candidate
     listing is discarded. Symlinks have metadata records but are never opened.
-    Supplied exclusions add to the mandatory defaults. No candidate is retained
-    between calls; ``RepoGraph.report.complete`` describes the returned one.
+    Supplied exclusions add to the mandatory defaults. The retained snapshot is
+    historical after an incomplete attempt; consumers must check the new report.
     """
 
     def __init__(
@@ -163,6 +163,8 @@ class RepoGraphBuilder:
         self.limits = limits or BuildLimits()
         self.exclusions = DEFAULT_EXCLUSIONS | exclusions
         self.python_roots = python_roots
+        self.snapshot: RepoGraph | None = None
+        self.last_report: BuildReport | None = None
         self._reset_inventory()
 
     def build(self) -> RepoGraph:
@@ -179,7 +181,24 @@ class RepoGraphBuilder:
                 self._verify(root_fd)
             finally:
                 os.close(root_fd)
-        return self._make_graph(self._make_report())
+        report = self._make_report()
+        graph = self._make_graph(report)
+        self.last_report = report
+        if report.complete:
+            self.snapshot = graph
+        return graph
+
+    def refresh(self) -> RepoGraph:
+        """Return a new bounded candidate, retaining only complete snapshots.
+
+        Check the returned report before use. An incomplete or exceptional
+        attempt never replaces the last complete snapshot.
+        """
+        return self.rebuild()
+
+    def rebuild(self) -> RepoGraph:
+        """Rescan the workspace; existing immutable snapshots never change."""
+        return self.build()
 
     def _reset_inventory(self) -> None:
         self._files: dict[str, FileRecord] = {}

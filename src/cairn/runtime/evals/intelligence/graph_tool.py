@@ -124,9 +124,8 @@ class RepoGraphQueryTool:
         self.validate(arguments)
         await asyncio.sleep(0)
         started = perf_counter()
-        # Each query rebuilds and uses the graph it just built; the builder keeps
-        # no retained snapshot that could go stale between calls.
-        graph = self.builder.build()
+        # Always use this query's candidate, never a retained historical snapshot.
+        graph = self.builder.refresh()
         elapsed = perf_counter() - started
         await asyncio.sleep(0)
         if not graph.report.complete:
