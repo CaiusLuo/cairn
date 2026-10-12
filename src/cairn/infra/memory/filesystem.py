@@ -10,10 +10,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cairn.core.memory.models import Fingerprint, MemoryError, PathKind, safe_path
+from cairn.infra.descriptors import StatIdentity, open_root
 
 
 @dataclass(frozen=True, slots=True)
 class ReadLimits:
+    """Per-pass observation bounds.
+
+    ``file_bytes``, ``total_bytes`` and ``members`` bound each inspection pass
+    independently; ``capture`` takes two passes, so a valid scope may use up to
+    one pass budget per pass. ``seconds`` bounds both passes together.
+    """
+
     file_bytes: int = 64 * 1024
     total_bytes: int = 512 * 1024
     members: int = 256
@@ -54,32 +62,6 @@ def membership_digest(members: list[tuple[str, str]]) -> str:
     ).hexdigest()
 
 
-def _signature(info: os.stat_result) -> tuple[int, ...]:
-    return (
-        info.st_dev,
-        info.st_ino,
-        info.st_mode,
-        info.st_size,
-        info.st_mtime_ns,
-        info.st_ctime_ns,
-    )
-
-
-def _root_fd(root: Path) -> int:
-    fd = os.open(root.anchor, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        for component in root.parts[1:]:
-            next_fd = os.open(
-                component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd
-            )
-            os.close(fd)
-            fd = next_fd
-        return fd
-    except BaseException:
-        os.close(fd)
-        raise
-
-
 class FileObserver:
     def __init__(self, root: Path, limits: ReadLimits | None = None) -> None:
         self.root = root
@@ -89,7 +71,6 @@ class FileObserver:
         if not 1 <= len(paths) <= 16:
             raise MemoryError("Memory dependency limit exceeded")
         deadline = time.monotonic() + self.limits.seconds
-        remaining = [self.limits.total_bytes]
 
         def check() -> None:
             if time.monotonic() > deadline:
@@ -97,15 +78,22 @@ class FileObserver:
 
         fd: int | None = None
         try:
-            fd = _root_fd(self.root)
+            fd = open_root(self.root)
             root_identity = os.fstat(fd)
+            # Each pass has its own aggregate budget: the comparison pass re-reads
+            # the same paths, and sharing one budget would halve the usable total
+            # for every scope. The deadline still bounds both passes together.
+            remaining = [self.limits.total_bytes]
             results = tuple(self._one(fd, path, remaining, check) for path in paths)
+            comparison_remaining = [self.limits.total_bytes]
             # A second descriptor walk catches replaced intermediate directories and
             # membership/mode changes that do not change the root directory's stat.
-            repeated = tuple(self._one(fd, path, remaining, check) for path in paths)
+            repeated = tuple(
+                self._one(fd, path, comparison_remaining, check) for path in paths
+            )
             if repeated != results:
                 raise MemoryError("Memory evidence changed during inspection")
-            other = _root_fd(self.root)
+            other = open_root(self.root)
             try:
                 current = os.fstat(other)
                 if (root_identity.st_dev, root_identity.st_ino) != (
@@ -159,12 +147,13 @@ class FileObserver:
                 return Fingerprint(
                     path=path, kind=file_kind, mode=stat.S_IMODE(before.st_mode)
                 )
+            identity = StatIdentity.from_stat(before)
             flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
             if file_kind is PathKind.DIRECTORY:
                 flags |= os.O_DIRECTORY
             fd = os.open(name, flags, dir_fd=parent)
             try:
-                if _signature(before) != _signature(os.fstat(fd)):
+                if identity != StatIdentity.from_stat(os.fstat(fd)):
                     raise MemoryError("Memory evidence changed during inspection")
                 members: list[tuple[str, str]] = []
                 if file_kind is PathKind.DIRECTORY:
@@ -199,9 +188,11 @@ class FileObserver:
                             raise MemoryError("Memory evidence read limit exceeded")
                         hasher.update(block)
                     digest = hasher.hexdigest()
-                if _signature(before) != _signature(os.fstat(fd)) or _signature(
-                    before
-                ) != _signature(os.stat(name, dir_fd=parent, follow_symlinks=False)):
+                if identity != StatIdentity.from_stat(
+                    os.fstat(fd)
+                ) or identity != StatIdentity.from_stat(
+                    os.stat(name, dir_fd=parent, follow_symlinks=False)
+                ):
                     raise MemoryError("Memory evidence changed during inspection")
                 return Fingerprint(
                     path=path,

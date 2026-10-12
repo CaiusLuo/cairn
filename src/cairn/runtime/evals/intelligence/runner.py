@@ -2,7 +2,7 @@
 
 import os
 import shlex
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -35,7 +35,7 @@ from cairn.runtime.evals.intelligence.models import (
     DiscoveryEvidence,
     IntelligenceMetrics,
 )
-from cairn.runtime.evals.models import EvalCase, EvalMetrics, EvalResult
+from cairn.runtime.evals.models import EvalCase, EvalCheck, EvalMetrics, EvalResult
 from cairn.runtime.evals.runner import EvalRunner, _MeasuredContextBuilder
 from cairn.runtime.memory.freshness import FreshnessChecker
 from cairn.runtime.memory.retrieval import MemoryReader
@@ -160,7 +160,7 @@ class ObservedContextBuilder(_MeasuredContextBuilder):
         ):
             setattr(metrics, field, sorted(set(getattr(metrics, field)) | set(ids)))
         for entry_id in request.memory_included_ids:
-            reader = self.runner.reader
+            reader = self.runner.memory_reader
             state = (
                 reader.selected_freshness.get(entry_id, Freshness.UNKNOWN)
                 if reader
@@ -214,9 +214,31 @@ class IntelligenceRunner(EvalRunner):
         self.tool_timeout_seconds = tool_timeout_seconds
         self.memory_temp_root = memory_temp_root
         self.memory_directory: TemporaryDirectory[str] | None = None
-        self.reader: ObservedMemoryReader | None = None
+        self.memory_reader: ObservedMemoryReader | None = None
         self.relevant_memories: dict[str, bool] = {}
         self.read_paths: set[str] = set()
+
+    def _release_memory_directory(self) -> None:
+        directory, self.memory_directory = self.memory_directory, None
+        if directory is not None:
+            directory.cleanup()
+
+    async def run(
+        self,
+        case: EvalCase,
+        *,
+        checks: Sequence[EvalCheck],
+        metrics: EvalMetrics | None = None,
+    ) -> EvalResult:
+        """Run one case and always release the Project Memory directory it used.
+
+        ``run_case`` is not the only entry point: a suite runner calls ``run``
+        directly, so ownership of the memory directory belongs at this boundary.
+        """
+        try:
+            return await super().run(case, checks=checks, metrics=metrics)
+        finally:
+            self._release_memory_directory()
 
     async def run_case(self) -> EvalResult:
         started = perf_counter()
@@ -227,12 +249,10 @@ class IntelligenceRunner(EvalRunner):
                 else check
                 for check in self.spec.item.checks
             )
-            return await super().run(
+            return await self.run(
                 self.spec.item.case, checks=checks, metrics=self.observations
             )
         finally:
-            if self.memory_directory is not None:
-                self.memory_directory.cleanup()
             metrics = self.observations
             metrics.elapsed_seconds = perf_counter() - started
             ineligible = sum(
@@ -274,7 +294,7 @@ class IntelligenceRunner(EvalRunner):
                     if os.environ.get(key)
                 ),
             )
-            self.reader = ObservedMemoryReader(
+            self.memory_reader = ObservedMemoryReader(
                 store, resolver, metrics=self.observations
             )
             self.relevant_memories = relevant
@@ -366,9 +386,8 @@ class IntelligenceRunner(EvalRunner):
         assert isinstance(bash, BashTool)
         bash.timeout = self.tool_timeout_seconds
         read = agent.tools.get_tool("read_file")
-        agent.tools.tools["read_file"] = ObservedTool(read, self._observe_read)
+        agent.tools.override_tool(ObservedTool(read, self._observe_read))
         agent.context_builder = ObservedContextBuilder(self, self.observations)
-        agent.memory_reader = self.reader
         if self.arm.graph:
             graph_tool = RepoGraphQueryTool(workspace, observer=self._observe_graph)
             graph_tool.initialize()

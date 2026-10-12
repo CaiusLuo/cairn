@@ -12,7 +12,9 @@ from typing import Any
 from uuid import uuid4
 
 from cairn.infra.config import load_project_providers
-from cairn.infra.git.environment import GIT_SECRET_ENV_KEYS, build_git_env
+from cairn.infra.git.environment import build_git_env
+from cairn.infra.tools.capture import read_bounded
+from cairn.infra.tools.credential_env import SECRET_ENV_KEYS
 from cairn.infra.workspace.workspace import Workspace
 
 GIT_TIMEOUT = 30.0
@@ -67,13 +69,7 @@ async def _preserve(primary: BaseException, cleanup: Coroutine[Any, Any, None]) 
 
 
 async def _read(stream: asyncio.StreamReader) -> tuple[bytes, bool]:
-    captured = bytearray()
-    truncated = False
-    while chunk := await stream.read(16 * 1024):
-        remaining = OUTPUT_LIMIT - len(captured)
-        captured.extend(chunk[:remaining])
-        truncated |= len(chunk) > remaining
-    return bytes(captured), truncated
+    return await read_bounded(stream, OUTPUT_LIMIT)
 
 
 async def _git(root: Path, *args: str, env: Mapping[str, str] | None = None) -> bytes:
@@ -188,7 +184,7 @@ class _WorktreeGit:
         declared = frozenset(
             provider.config.api_key_env for provider in providers.providers
         )
-        self.secret_env_keys = GIT_SECRET_ENV_KEYS | secret_env_keys | declared
+        self.secret_env_keys = SECRET_ENV_KEYS | secret_env_keys | declared
         try:
             self.env = build_git_env(os.environ, self.secret_env_keys)
         except ValueError as exc:

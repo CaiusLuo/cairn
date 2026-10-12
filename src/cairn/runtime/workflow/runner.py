@@ -105,15 +105,7 @@ class LocalWorkflow:
         try:
             return await asyncio.shield(worker)
         except asyncio.CancelledError as primary:
-            if not worker.done():
-                worker.cancel()
-            while not worker.done():
-                try:
-                    await asyncio.shield(worker)
-                except asyncio.CancelledError:
-                    continue
-                except Exception:
-                    break
+            await settle_owned(worker)
             try:
                 result = worker.result()
                 progress = _Progress(

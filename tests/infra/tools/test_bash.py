@@ -11,14 +11,9 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from cairn.infra.tools.bash import (
-    PIPE_READ_CHUNK_SIZE,
-    BashTool,
-    _decode_output,
-    _read_bounded,
-    _resolve_tmpdir,
-    _resolve_uv_cache_dir,
-)
+from cairn.infra.tools.bash import BashTool, _decode_output
+from cairn.infra.tools.capture import PIPE_READ_CHUNK_SIZE, read_bounded
+from cairn.infra.tools.sandbox import resolve_tmpdir, resolve_uv_cache_dir
 from cairn.infra.workspace.workspace import Workspace
 
 _CREATE_SUBPROCESS_EXEC = asyncio.create_subprocess_exec
@@ -240,7 +235,7 @@ def test_resolve_tmpdir_fails_closed_for_invalid_roots(tmp_path: Path) -> None:
 
     for value in invalid:
         env = {} if value is None else {"TMPDIR": value}
-        assert _resolve_tmpdir(env) is None, value
+        assert resolve_tmpdir(env) is None, value
 
 
 def test_resolve_tmpdir_normalizes_directory_and_symlink(tmp_path: Path) -> None:
@@ -249,8 +244,8 @@ def test_resolve_tmpdir_normalizes_directory_and_symlink(tmp_path: Path) -> None
     alias = tmp_path / "alias"
     alias.symlink_to(real, target_is_directory=True)
 
-    assert _resolve_tmpdir({"TMPDIR": str(real)}) == real.resolve()
-    assert _resolve_tmpdir({"TMPDIR": str(alias)}) == real.resolve()
+    assert resolve_tmpdir({"TMPDIR": str(real)}) == real.resolve()
+    assert resolve_tmpdir({"TMPDIR": str(alias)}) == real.resolve()
 
 
 def test_resolve_uv_cache_dir_precedence_and_normalization(tmp_path: Path) -> None:
@@ -263,7 +258,7 @@ def test_resolve_uv_cache_dir_precedence_and_normalization(tmp_path: Path) -> No
     alias.symlink_to(real, target_is_directory=True)
 
     assert (
-        _resolve_uv_cache_dir(
+        resolve_uv_cache_dir(
             {
                 "UV_CACHE_DIR": str(explicit),
                 "XDG_CACHE_HOME": str(xdg),
@@ -273,17 +268,17 @@ def test_resolve_uv_cache_dir_precedence_and_normalization(tmp_path: Path) -> No
         == explicit.resolve()
     )
     assert (
-        _resolve_uv_cache_dir({"XDG_CACHE_HOME": str(xdg), "HOME": str(home)})
+        resolve_uv_cache_dir({"XDG_CACHE_HOME": str(xdg), "HOME": str(home)})
         == (xdg / "uv").resolve()
     )
     assert (
-        _resolve_uv_cache_dir({"XDG_CACHE_HOME": "relative", "HOME": str(home)})
+        resolve_uv_cache_dir({"XDG_CACHE_HOME": "relative", "HOME": str(home)})
         == (home / ".cache" / "uv").resolve()
     )
     assert (
-        _resolve_uv_cache_dir({"HOME": str(home)}) == (home / ".cache" / "uv").resolve()
+        resolve_uv_cache_dir({"HOME": str(home)}) == (home / ".cache" / "uv").resolve()
     )
-    assert _resolve_uv_cache_dir({"UV_CACHE_DIR": str(alias)}) == real.resolve()
+    assert resolve_uv_cache_dir({"UV_CACHE_DIR": str(alias)}) == real.resolve()
 
 
 def test_resolve_uv_cache_dir_fails_closed_for_invalid_explicit_values(
@@ -296,9 +291,7 @@ def test_resolve_uv_cache_dir_fails_closed_for_invalid_explicit_values(
     invalid = ("", "   ", "relative/cache", "/", "//")
 
     for value in invalid:
-        assert _resolve_uv_cache_dir({**fallbacks, "UV_CACHE_DIR": value}) is None, (
-            value
-        )
+        assert resolve_uv_cache_dir({**fallbacks, "UV_CACHE_DIR": value}) is None, value
 
 
 def test_bash_tool_child_inherits_host_env_and_keeps_workspace_cwd(
@@ -684,7 +677,7 @@ def test_bounded_output_does_not_emit_partial_utf8_character() -> None:
         reader.feed_data("你你".encode())
         reader.feed_eof()
 
-        data, truncated = await _read_bounded(reader, 4)
+        data, truncated = await read_bounded(reader, 4)
 
         assert truncated is True
         assert _decode_output(data, truncated=True) == "你"
@@ -701,7 +694,7 @@ def test_bounded_output_never_requests_unbounded_read() -> None:
             b"",
         )
 
-        data, truncated = await _read_bounded(stream, 4)
+        data, truncated = await read_bounded(stream, 4)
 
         assert data == b"aaaa"
         assert truncated is True

@@ -15,7 +15,17 @@ from urllib.parse import urlsplit
 from cairn.core.model_manager import ModelConfig, ProviderConfig
 from cairn.core.provider_catalog import NamedProvider, ProviderCatalog
 
-CAIRN_CONFIG_ENV_NAMES = ("CAIRN_LLM_MODEL", "CAIRN_LLM_API_KEY", "CAIRN_BASE_URL")
+#: Environment settings of the ``.env`` layout, named once so the loader, the
+#: secret resolver and the implicit-provider builder cannot drift apart.
+CAIRN_LLM_MODEL_ENV_NAME = "CAIRN_LLM_MODEL"
+CAIRN_LLM_API_KEY_ENV_NAME = "CAIRN_LLM_API_KEY"
+CAIRN_BASE_URL_ENV_NAME = "CAIRN_BASE_URL"
+
+CAIRN_CONFIG_ENV_NAMES = (
+    CAIRN_LLM_MODEL_ENV_NAME,
+    CAIRN_LLM_API_KEY_ENV_NAME,
+    CAIRN_BASE_URL_ENV_NAME,
+)
 
 #: Name of the implicit provider in the .env and legacy single-provider layouts.
 DEFAULT_PROVIDER_NAME = "default"

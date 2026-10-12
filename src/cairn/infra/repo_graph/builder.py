@@ -4,9 +4,10 @@ import hashlib
 import os
 import stat
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
+from cairn.infra.descriptors import StatIdentity, open_root
 from cairn.infra.repo_graph.graph import RepoGraph
 from cairn.infra.repo_graph.manifests import parse_manifest
 from cairn.infra.repo_graph.models import (
@@ -114,34 +115,14 @@ _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
 _READ_CHUNK_BYTES = 64 * 1024
 
 
-@dataclass(frozen=True, slots=True)
-class _Identity:
-    device: int
-    inode: int
-    mode: int
-    size: int
-    mtime_ns: int
-    ctime_ns: int
-
-    @classmethod
-    def from_stat(cls, result: os.stat_result) -> "_Identity":
-        return cls(
-            result.st_dev,
-            result.st_ino,
-            result.st_mode,
-            result.st_size,
-            result.st_mtime_ns,
-            result.st_ctime_ns,
-        )
-
-
 class RepoGraphBuilder:
-    """Build a bounded snapshot; only complete candidates become ``snapshot``.
+    """Build one bounded repository candidate per ``build`` call.
 
     The root counts as one entry and has path ``.``. Detecting an overflowing
     directory can inspect one entry beyond ``max_entries``; its whole candidate
     listing is discarded. Symlinks have metadata records but are never opened.
-    Supplied exclusions add to the mandatory defaults.
+    Supplied exclusions add to the mandatory defaults. No candidate is retained
+    between calls; ``RepoGraph.report.complete`` describes the returned one.
     """
 
     def __init__(
@@ -182,48 +163,29 @@ class RepoGraphBuilder:
         self.limits = limits or BuildLimits()
         self.exclusions = DEFAULT_EXCLUSIONS | exclusions
         self.python_roots = python_roots
-        self.snapshot: RepoGraph | None = None
-        self.last_report: BuildReport | None = None
         self._reset_inventory()
 
     def build(self) -> RepoGraph:
         self._reset_inventory()
         self._reset_structure()
         try:
-            root_fd = self._open_root()
+            root_fd = open_root(self.workspace.root)
         except OSError:
             self._issue(IssueReason.UNREADABLE, ".")
         else:
             try:
-                self._observed["."] = _Identity.from_stat(os.fstat(root_fd))
+                self._observed["."] = StatIdentity.from_stat(os.fstat(root_fd))
                 self._walk(root_fd)
                 self._verify(root_fd)
             finally:
                 os.close(root_fd)
-        report = self._make_report()
-        graph = self._make_graph(report)
-        self.last_report = report
-        if report.complete:
-            self.snapshot = graph
-        return graph
-
-    def refresh(self) -> RepoGraph:
-        """Return a newly inspected candidate using a complete bounded rebuild.
-
-        Check the returned report: an incomplete candidate does not replace the
-        last complete ``snapshot``. Existing snapshots never change in place.
-        """
-        return self.rebuild()
-
-    def rebuild(self) -> RepoGraph:
-        """Discard transient facts and rescan; there is no persistent cache."""
-        return self.build()
+        return self._make_graph(self._make_report())
 
     def _reset_inventory(self) -> None:
         self._files: dict[str, FileRecord] = {}
         self._directories = {".": DirectoryRecord(".")}
         self._manifests: dict[str, ManifestRecord] = {}
-        self._observed: dict[str, _Identity] = {}
+        self._observed: dict[str, StatIdentity] = {}
         self._listings: dict[str, tuple[str, ...]] = {}
         self._skips: Counter[SkipReason] = Counter()
         self._issues: dict[tuple[IssueReason, str], BuildIssue] = {}
@@ -334,20 +296,6 @@ class RepoGraphBuilder:
             ),
         )
 
-    def _open_root(self) -> int:
-        # Walk absolute parents too: O_NOFOLLOW on just the final root would
-        # still follow a replaced ancestor symlink.
-        fd = os.open(self.workspace.root.anchor, _DIRECTORY_FLAGS)
-        try:
-            for name in self.workspace.root.parts[1:]:
-                child_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=fd)
-                os.close(fd)
-                fd = child_fd
-            return fd
-        except BaseException:
-            os.close(fd)
-            raise
-
     def _open_directory(self, path: str, root_fd: int) -> int:
         fd = os.dup(root_fd)
         if path == ".":
@@ -360,7 +308,7 @@ class RepoGraphBuilder:
                 os.close(fd)
                 fd = child_fd
                 if (
-                    _Identity.from_stat(os.fstat(fd))
+                    StatIdentity.from_stat(os.fstat(fd))
                     != self._observed["/".join(walked)]
                 ):
                     raise OSError("directory changed during inspection")
@@ -389,7 +337,7 @@ class RepoGraphBuilder:
                 for name in children:
                     child_path = name if path == "." else f"{path}/{name}"
                     try:
-                        identity = _Identity.from_stat(
+                        identity = StatIdentity.from_stat(
                             os.stat(name, dir_fd=fd, follow_symlinks=False)
                         )
                     except OSError:
@@ -441,12 +389,12 @@ class RepoGraphBuilder:
         self._entries_seen += len(names)
         names.sort()
         self._listings[path] = tuple(names)
-        if _Identity.from_stat(os.fstat(fd)) != self._observed[path]:
+        if StatIdentity.from_stat(os.fstat(fd)) != self._observed[path]:
             self._issue(IssueReason.CHANGED, path)
             return None
         return tuple(names)
 
-    def _skip_file(self, path: str, identity: _Identity, reason: SkipReason) -> None:
+    def _skip_file(self, path: str, identity: StatIdentity, reason: SkipReason) -> None:
         self._skips[reason] += 1
         self._files[path] = FileRecord(
             path,
@@ -470,7 +418,7 @@ class RepoGraphBuilder:
         return FileKind.TEXT
 
     def _read_file(
-        self, path: str, name: str, identity: _Identity, parent_fd: int
+        self, path: str, name: str, identity: StatIdentity, parent_fd: int
     ) -> None:
         status = FileStatus.READABLE
         data: bytes | None = None
@@ -485,7 +433,7 @@ class RepoGraphBuilder:
                 fd = os.open(name, _FILE_FLAGS, dir_fd=parent_fd)
             except OSError:
                 try:
-                    actual = _Identity.from_stat(
+                    actual = StatIdentity.from_stat(
                         os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
                     )
                 except OSError:
@@ -498,14 +446,14 @@ class RepoGraphBuilder:
                     self._issue(IssueReason.UNREADABLE, path)
             else:
                 try:
-                    if _Identity.from_stat(os.fstat(fd)) != identity:
+                    if StatIdentity.from_stat(os.fstat(fd)) != identity:
                         status = FileStatus.CHANGED
                     else:
                         data = self._read_bytes(fd, identity.size)
                         if (
                             len(data) != identity.size
-                            or _Identity.from_stat(os.fstat(fd)) != identity
-                            or _Identity.from_stat(
+                            or StatIdentity.from_stat(os.fstat(fd)) != identity
+                            or StatIdentity.from_stat(
                                 os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
                             )
                             != identity
@@ -581,7 +529,7 @@ class RepoGraphBuilder:
                 self._issue(IssueReason.CHANGED, path)
                 continue
             try:
-                if _Identity.from_stat(os.fstat(fd)) != self._observed[path]:
+                if StatIdentity.from_stat(os.fstat(fd)) != self._observed[path]:
                     self._issue(IssueReason.CHANGED, path)
                 actual_names: list[str] = []
                 with os.scandir(fd) as entries:
@@ -597,7 +545,7 @@ class RepoGraphBuilder:
                     if identity is None:
                         continue
                     try:
-                        actual = _Identity.from_stat(
+                        actual = StatIdentity.from_stat(
                             os.stat(name, dir_fd=fd, follow_symlinks=False)
                         )
                     except OSError:
@@ -605,7 +553,7 @@ class RepoGraphBuilder:
                     else:
                         if actual != identity:
                             self._changed(child_path)
-                if _Identity.from_stat(os.fstat(fd)) != self._observed[path]:
+                if StatIdentity.from_stat(os.fstat(fd)) != self._observed[path]:
                     self._issue(IssueReason.CHANGED, path)
             except OSError:
                 self._issue(IssueReason.CHANGED, path)
@@ -615,12 +563,12 @@ class RepoGraphBuilder:
 
     def _verify_root_path(self) -> None:
         try:
-            path_fd = self._open_root()
+            path_fd = open_root(self.workspace.root)
         except OSError:
             self._issue(IssueReason.CHANGED, ".")
         else:
             try:
-                if _Identity.from_stat(os.fstat(path_fd)) != self._observed["."]:
+                if StatIdentity.from_stat(os.fstat(path_fd)) != self._observed["."]:
                     self._issue(IssueReason.CHANGED, ".")
             finally:
                 os.close(path_fd)

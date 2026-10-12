@@ -26,6 +26,7 @@ from cairn.infra.github.transport import (
     PublishedCommit,
     validate_pull_request_url,
 )
+from cairn.runtime.lifecycle import settle_owned
 from cairn.runtime.workflow.git import SnapshotDriftError, WorkflowGit
 from cairn.runtime.workflow.models import (
     GitSnapshot,
@@ -78,15 +79,7 @@ class GitHubPublisher:
         try:
             return await asyncio.shield(worker)
         except asyncio.CancelledError as primary:
-            if not worker.done():
-                worker.cancel()
-            while not worker.done():
-                try:
-                    await asyncio.shield(worker)
-                except asyncio.CancelledError:
-                    continue
-                except Exception:
-                    break
+            await settle_owned(worker)
             try:
                 worker.result()
             except BaseException as exc:

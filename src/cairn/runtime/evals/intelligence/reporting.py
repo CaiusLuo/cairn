@@ -1,14 +1,12 @@
 """Sanitized experimental artifacts and comparisons, without inferred usage."""
 
 import json
-import os
 from collections import Counter
-from contextlib import suppress
 from pathlib import Path
 from statistics import mean
-from tempfile import NamedTemporaryFile
 from typing import Any
 
+from cairn.runtime.evals.artifacts import atomic_write_text
 from cairn.runtime.evals.intelligence.models import Arm, ExperimentReport, ExperimentRun
 from cairn.runtime.evals.models import EvalStatus
 
@@ -65,23 +63,11 @@ LIMITATIONS = (
 
 
 def write_json(destination: Path, data: dict[str, Any]) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    try:
-        with NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=destination.parent, delete=False
-        ) as stream:
-            temporary = Path(stream.name)
-            json.dump(data, stream, indent=2, ensure_ascii=True, allow_nan=False)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, destination)
-    except BaseException:
-        if temporary is not None:
-            with suppress(OSError):
-                temporary.unlink(missing_ok=True)
-        raise
+    """Replace one experiment record atomically; readers never see partial JSON."""
+    atomic_write_text(
+        destination,
+        json.dumps(data, indent=2, ensure_ascii=True, allow_nan=False) + "\n",
+    )
 
 
 def _observations(runs: list[ExperimentRun], field: str) -> dict[str, Any]:
@@ -328,5 +314,6 @@ def persist(report: ExperimentReport, directory: Path) -> None:
     write_json(directory / "experiment.json", report.model_dump(mode="json"))
     summary = comparison(report)
     write_json(directory / "comparison.json", summary)
-    # JSON snapshots are the durable contract; Markdown is a derived view.
-    (directory / "findings.md").write_text(findings(report, summary), encoding="utf-8")
+    # JSON snapshots are the durable contract; Markdown is a derived view, and a
+    # reader may open it while the run is still writing.
+    atomic_write_text(directory / "findings.md", findings(report, summary))

@@ -1,15 +1,16 @@
 """Configuration loading and layout selection.
 
 Parsing is deliberately separate from credential resolution and persistent edits:
-loading project configuration validates project-controlled routing but never reads
-or returns secret values.
+loading project configuration validates project-controlled routing and never
+reads or returns secret values. The ``.env`` layout's implicit provider is built
+by :mod:`cairn.infra.config_secrets`, which owns environment resolution.
 """
 
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 
-from cairn.core.model_manager import ModelConfig, ProviderConfig
+from cairn.core.model_manager import ProviderConfig
 from cairn.core.provider_catalog import NamedProvider, ProviderCatalog
 from cairn.infra.config_schema import (
     DEFAULT_PROVIDER_NAME,
@@ -19,7 +20,7 @@ from cairn.infra.config_schema import (
     parse_provider_catalog,
     validate_runtime_provider,
 )
-from cairn.infra.config_secrets import resolve_cairn_config
+from cairn.infra.config_secrets import environment_provider
 
 
 def load_project_providers(
@@ -53,28 +54,6 @@ def load_project_providers(
     return ProjectProviders(
         layout=ConfigLayout.LEGACY,
         providers=(NamedProvider(name=DEFAULT_PROVIDER_NAME, config=provider),),
-    )
-
-
-def environment_provider(
-    host_env: Mapping[str, str],
-    env_file_values: Mapping[str, str | None],
-) -> NamedProvider:
-    """Build the single provider described by ``CAIRN_*`` settings.
-
-    This is the ``.env`` layout, used only when no ``.cairn/models.toml`` exists.
-    It keeps the existing environment contract, including host precedence over
-    ``.env``.
-    """
-    values = resolve_cairn_config(host_env, env_file_values)
-    model_id = values["CAIRN_LLM_MODEL"]
-    return NamedProvider(
-        name=DEFAULT_PROVIDER_NAME,
-        config=ProviderConfig(
-            base_url=values["CAIRN_BASE_URL"],
-            api_key_env="CAIRN_LLM_API_KEY",
-            model_config=(ModelConfig(name=model_id, model_ids=(model_id,)),),
-        ),
     )
 
 

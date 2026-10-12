@@ -24,6 +24,7 @@ from cairn.runtime.evals.intelligence.reporting import persist
 from cairn.runtime.evals.intelligence.runner import IntelligenceRunner, SafeTraceSink
 from cairn.runtime.evals.models import EvalFailureCategory, EvalResult, EvalStatus
 from cairn.runtime.evals.suite import _report_result
+from cairn.runtime.lifecycle import settle_owned
 
 
 class ObservedLLM:
@@ -136,15 +137,7 @@ async def run_experiment(
         try:
             result = await asyncio.shield(task)
         except asyncio.CancelledError:
-            if not task.done():
-                task.cancel()
-            while not task.done():
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    continue
-                except Exception:
-                    break
+            await settle_owned(task)
             if task.done() and not task.cancelled():
                 # Consume cleanup errors without persisting their raw messages.
                 task.exception()

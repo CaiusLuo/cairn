@@ -8,11 +8,11 @@ from typing import Any
 
 from cairn.core.repository import DEFAULT_MAX_PATHS, RepositoryEvidence
 from cairn.infra.git.environment import build_git_env
+from cairn.infra.tools.capture import read_bounded
 from cairn.infra.workspace.workspace import Workspace
 
 DEFAULT_GIT_TIMEOUT = 2.0
 GIT_OUTPUT_CAPTURE_LIMIT = 64 * 1024
-GIT_READ_CHUNK_SIZE = 16 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,32 +56,12 @@ class RepositoryContext:
 
 
 @dataclass(frozen=True, slots=True)
-class _GitCommandResult:
+class GitCommandResult:
     returncode: int
     stdout: bytes
     stderr: bytes
     stdout_truncated: bool
     stderr_truncated: bool
-
-
-async def _read_bounded(
-    stream: asyncio.StreamReader,
-    *,
-    limit: int,
-) -> tuple[bytes, bool]:
-    captured = bytearray()
-    truncated = False
-
-    while True:
-        chunk = await stream.read(GIT_READ_CHUNK_SIZE)
-        if not chunk:
-            return bytes(captured), truncated
-
-        remaining = limit - len(captured)
-        if remaining > 0:
-            captured.extend(chunk[:remaining])
-        if len(chunk) > remaining:
-            truncated = True
 
 
 async def _read_status_paths(
@@ -184,17 +164,26 @@ class RepoContextProvider:
                 process.kill()
             await process.wait()
 
-    async def _run_git(
+    async def run_git(
         self, *args: str, env: Mapping[str, str] | None = None
-    ) -> _GitCommandResult:
+    ) -> GitCommandResult:
+        """Run one bounded Git command in the workspace.
+
+        This is the single public Git subprocess seam; every Harness Git call
+        goes through it, so the hooks/fsmonitor overrides, the pipe capture
+        bound and cancellation cleanup hold for all of them. Callers that
+        inspect or mutate anything beyond prompt context must pass the
+        environment they intend explicitly; ``env=None`` selects the isolated
+        environment this module uses for its own prompt inspection.
+        """
         process = await self._start_git(*args, env=env)
         assert process.stdout is not None
         assert process.stderr is not None
         stdout_task = asyncio.create_task(
-            _read_bounded(process.stdout, limit=GIT_OUTPUT_CAPTURE_LIMIT)
+            read_bounded(process.stdout, GIT_OUTPUT_CAPTURE_LIMIT)
         )
         stderr_task = asyncio.create_task(
-            _read_bounded(process.stderr, limit=GIT_OUTPUT_CAPTURE_LIMIT)
+            read_bounded(process.stderr, GIT_OUTPUT_CAPTURE_LIMIT)
         )
 
         try:
@@ -208,7 +197,7 @@ class RepoContextProvider:
             await _settle_tasks(stdout_task, stderr_task)
             raise
 
-        return _GitCommandResult(
+        return GitCommandResult(
             returncode=returncode,
             stdout=stdout,
             stderr=stderr,
@@ -236,7 +225,7 @@ class RepoContextProvider:
             )
         )
         stderr_task = asyncio.create_task(
-            _read_bounded(process.stderr, limit=GIT_OUTPUT_CAPTURE_LIMIT)
+            read_bounded(process.stderr, GIT_OUTPUT_CAPTURE_LIMIT)
         )
         drain_task: asyncio.Task[tuple[bytes, bool]] | None = None
 
@@ -246,9 +235,7 @@ class RepoContextProvider:
                 if truncated:
                     # Drain only pipe data left after termination so process.wait()
                     # cannot stall; no further status records are retained.
-                    drain_task = asyncio.create_task(
-                        _read_bounded(process.stdout, limit=0)
-                    )
+                    drain_task = asyncio.create_task(read_bounded(process.stdout, 0))
                     await self._terminate(process)
                 returncode = await process.wait()
                 # Drain stderr so a full pipe can never stall process.wait().
@@ -285,13 +272,13 @@ class RepoContextProvider:
             env = build_git_env(os.environ, secret_env_keys)
             env["LC_ALL"] = "C"  # Stable non-repository diagnostic classification.
 
-            async def command(*args: str) -> _GitCommandResult:
-                result = await self._run_git(*args, env=env)
+            async def command(*args: str) -> GitCommandResult:
+                result = await self.run_git(*args, env=env)
                 if result.stdout_truncated or result.stderr_truncated:
                     raise RuntimeError("Git inspection output exceeded capture limit")
                 return result
 
-            def require_success(result: _GitCommandResult, operation: str) -> None:
+            def require_success(result: GitCommandResult, operation: str) -> None:
                 if result.returncode != 0:
                     # Do not expose arbitrary configuration text or credentials.
                     raise RuntimeError(f"Git {operation} failed ({result.returncode})")
@@ -346,7 +333,7 @@ class RepoContextProvider:
             return replace(evidence, inspection_error=f"{type(exc).__name__}: {exc}")
 
     async def inspect(self) -> RepositoryContext:
-        repository = await self._run_git("rev-parse", "--show-toplevel")
+        repository = await self.run_git("rev-parse", "--show-toplevel")
         if repository.returncode != 0:
             return RepositoryContext(
                 workspace_root=self.workspace.root,
@@ -359,12 +346,12 @@ class RepoContextProvider:
 
         repository_root = Path(repository.stdout.decode("utf-8").strip()).resolve()
 
-        branch_result = await self._run_git("branch", "--show-current")
+        branch_result = await self.run_git("branch", "--show-current")
         branch = None
         if branch_result.returncode == 0 and not branch_result.stdout_truncated:
             branch = branch_result.stdout.decode("utf-8").strip() or None
         if branch is None:
-            head = await self._run_git("rev-parse", "--short", "HEAD")
+            head = await self.run_git("rev-parse", "--short", "HEAD")
             if head.returncode == 0 and not head.stdout_truncated:
                 revision = head.stdout.decode("utf-8").strip()
                 if revision:

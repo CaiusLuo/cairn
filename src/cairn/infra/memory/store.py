@@ -1,6 +1,8 @@
 """Bounded SQLite persistence. Mutations are owned by MemoryService, not tools.
 
-Same-user arbitrary Python/SQL is trusted host code, not a security boundary.
+``serialize_entry``, ``insert_entry`` and ``update_entries`` are the host-only
+mutation API; ``MemoryService`` owns every lifecycle transition. Same-user
+arbitrary Python/SQL is trusted host code, not a security boundary.
 The host must keep this directory outside ALL sandbox-writable roots.
 """
 
@@ -175,7 +177,12 @@ class MemoryStore:
                 raise MemoryError("Memory entry limit exceeded")
             return tuple(self._decode(row[0]) for row in rows)
 
-    def _serialize(self, entry: MemoryEntry) -> str:
+    def serialize_entry(self, entry: MemoryEntry) -> str:
+        """Validate and encode one entry ahead of a host-owned write.
+
+        Part of the host-only mutation API. Lifecycle transitions are owned by
+        ``cairn.runtime.memory.service.MemoryService``; no tool drives them.
+        """
         # Revalidate even host-created model_copy/model_construct values before writing.
         try:
             text = entry.model_dump_json()
@@ -188,8 +195,13 @@ class MemoryStore:
         except (ValidationError, ValueError, TypeError):
             raise MemoryError("Invalid memory record") from None
 
-    def _insert(self, entry: MemoryEntry) -> MemoryEntry:
-        payload = self._serialize(entry)
+    def insert_entry(self, entry: MemoryEntry) -> MemoryEntry:
+        """Insert an entry, returning any durable duplicate, including tombstones.
+
+        Part of the host-only mutation API. Lifecycle transitions are owned by
+        ``cairn.runtime.memory.service.MemoryService``; no tool drives them.
+        """
+        payload = self.serialize_entry(entry)
         with self._connect(write=True) as conn:
             old = conn.execute(
                 "SELECT payload FROM entries WHERE digest=?",
@@ -210,9 +222,15 @@ class MemoryStore:
             )
         return entry
 
-    def _update(self, entries: tuple[tuple[MemoryEntry, int], ...]) -> None:
+    def update_entries(self, entries: tuple[tuple[MemoryEntry, int], ...]) -> None:
+        """Compare-and-swap entries as the host-only mutation API.
+
+        Lifecycle transitions are owned by
+        ``cairn.runtime.memory.service.MemoryService``; no tool drives them.
+        """
         payloads = [
-            (entry, expected, self._serialize(entry)) for entry, expected in entries
+            (entry, expected, self.serialize_entry(entry))
+            for entry, expected in entries
         ]
         with self._connect(write=True) as conn:
             for entry, expected, payload in payloads:

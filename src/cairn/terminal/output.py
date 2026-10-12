@@ -1,5 +1,4 @@
 import sys
-from collections.abc import Sequence
 from importlib.resources import files
 
 from rich.console import Console
@@ -50,51 +49,6 @@ def confirm_provider_access(
         )
     except EOFError:
         return False
-
-
-def choose_provider(providers: Sequence[NamedProvider]) -> NamedProvider:
-    """Ask which configured provider this session should use.
-
-    Selection is explicit: there is no default, so the user must name one of the
-    configured providers. Without an interactive terminal this fails closed.
-    """
-    if not sys.stdin.isatty():
-        raise ValueError("Provider selection requires an interactive terminal.")
-    console.print("Several providers are configured; select one for this session:")
-    for provider in providers:
-        console.print(
-            f"  {provider.name}: {provider.config.base_url!a} "
-            f"(credential {provider.config.api_key_env!a})",
-            markup=False,
-        )
-    try:
-        name = Prompt.ask(
-            "Provider",
-            choices=[provider.name for provider in providers],
-            console=console,
-        )
-    except EOFError:
-        raise ValueError("Provider selection was cancelled.") from None
-    return next(provider for provider in providers if provider.name == name)
-
-
-def choose_model_group(provider: NamedProvider) -> ModelConfig:
-    """Ask which of a provider's model groups this session should start on."""
-    if not sys.stdin.isatty():
-        raise ValueError("Model group selection requires an interactive terminal.")
-    groups = provider.config.model_config
-    console.print(f"Provider {provider.name!a} configures several model groups:")
-    for group in groups:
-        console.print(f"  {group.name}: {', '.join(group.model_ids)}", markup=False)
-    try:
-        name = Prompt.ask(
-            "Model group",
-            choices=[group.name for group in groups],
-            console=console,
-        )
-    except EOFError:
-        raise ValueError("Model group selection was cancelled.") from None
-    return next(group for group in groups if group.name == name)
 
 
 def print_provider_selection(provider: NamedProvider, group: ModelConfig) -> None:

@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -27,6 +27,10 @@ class EchoTool:
     ) -> ToolResult:
         self.context = context
         return ToolResult(stdout=str(arguments["value"]), exit_code=0)
+
+
+class MissingTool(EchoTool):
+    name = "missing"
 
 
 def test_registry_rejects_duplicate_and_missing_tools() -> None:
@@ -58,3 +62,27 @@ def test_registry_exposes_schemas_and_executes_tools() -> None:
     assert registry.schemas() == [{"name": "echo"}]
     assert result == ToolResult(stdout="hello", exit_code=0)
     assert tool.context is context
+
+
+def test_registry_tools_are_read_only() -> None:
+    registry = ToolRegistry()
+    tool = EchoTool()
+    registry.register_tool(tool)
+
+    assert registry.tools["echo"] is tool
+    assert set(registry.tools) == {"echo"}
+    with pytest.raises(TypeError):
+        cast(Any, registry.tools)["other"] = tool
+
+
+def test_registry_override_replaces_only_registered_tools() -> None:
+    registry = ToolRegistry()
+    registry.register_tool(EchoTool())
+    wrapper = EchoTool()
+
+    registry.override_tool(wrapper)
+
+    assert registry.get_tool("echo") is wrapper
+    assert set(registry.tools) == {"echo"}
+    with pytest.raises(ToolNotFound, match="Tool not found: missing"):
+        registry.override_tool(MissingTool())

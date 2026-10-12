@@ -16,7 +16,7 @@ from cairn.infra.git.context import RepoContextProvider
 from cairn.infra.git.environment import build_git_env
 from cairn.infra.memory.identity import ProjectIdentity
 from cairn.infra.memory.store import MemoryStore
-from cairn.infra.tools.bash import _resolve_tmpdir, _resolve_uv_cache_dir
+from cairn.infra.tools.sandbox import resolve_tmpdir, resolve_uv_cache_dir
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.evals.checks import FileContentEqualsCheck
 from cairn.runtime.evals.models import EvalSuiteCase
@@ -56,7 +56,7 @@ async def fixture_git(workspace: Workspace, *args: str) -> str:
         GIT_AUTHOR_DATE="2000-01-01T00:00:00+0000",
         GIT_COMMITTER_DATE="2000-01-01T00:00:00+0000",
     )
-    result = await RepoContextProvider(workspace)._run_git(
+    result = await RepoContextProvider(workspace).run_git(
         "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false", *args, env=env
     )
     if result.returncode or result.stdout_truncated or result.stderr_truncated:
@@ -72,7 +72,7 @@ async def initialize_git(workspace: Workspace) -> None:
 
 def writable_roots(workspace: Workspace) -> tuple[Path, ...]:
     roots = [workspace.root, Path("/tmp").resolve()]
-    for root in (_resolve_tmpdir(os.environ), _resolve_uv_cache_dir(os.environ)):
+    for root in (resolve_tmpdir(os.environ), resolve_uv_cache_dir(os.environ)):
         if root is not None:
             roots.append(root)
     return tuple(roots)

@@ -17,6 +17,7 @@ from cairn.infra.observability.tracer import Tracer
 from cairn.infra.tools.files import ReadFileTool
 from cairn.infra.tools.registry import ToolRegistry
 from cairn.runtime.agent import Agent
+from cairn.runtime.lifecycle import await_owned, settle_owned
 from cairn.runtime.loop import run_turn
 from cairn.runtime.review.git import (
     ReviewInput,
@@ -172,15 +173,7 @@ class FreshReviewer:
         except asyncio.CancelledError as primary:
             caller = asyncio.current_task()
             caller_cancelled = caller is not None and caller.cancelling() > 0
-            if not worker.done():
-                worker.cancel()
-            while not worker.done():
-                try:
-                    await asyncio.shield(worker)
-                except asyncio.CancelledError:
-                    continue
-                except Exception:
-                    break
+            await settle_owned(worker)
             try:
                 worker.result()
             except asyncio.CancelledError as exc:
@@ -263,14 +256,11 @@ class FreshReviewer:
                 cleanup = asyncio.create_task(
                     self._check_unchanged(snapshot, review_input)
                 )
-                while not cleanup.done():
-                    try:
-                        await asyncio.shield(cleanup)
-                    except asyncio.CancelledError as exc:
-                        if cancellation is None:
-                            cancellation = exc
-                    except Exception:
-                        break
+                # The unchanged-snapshot check *is* the cleanup, so it must be
+                # awaited to completion rather than cancelled with the work.
+                observed = await await_owned(cleanup)
+                if cancellation is None:
+                    cancellation = observed
                 try:
                     cleanup.result()
                 except SnapshotDriftError:

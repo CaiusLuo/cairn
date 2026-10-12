@@ -116,7 +116,7 @@ def test_transaction_failure_rolls_back_all_rows(tmp_path: Path) -> None:
         for e in (first, second)
     )
     with pytest.raises(VersionConflict):
-        api.store._update(updates)
+        api.store.update_entries(updates)
     assert api.inspect(first.id).version == 1
     with pytest.raises(RuntimeError), api.store._connect(write=True) as conn:
         conn.execute("DELETE FROM entries")

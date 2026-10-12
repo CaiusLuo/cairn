@@ -17,7 +17,7 @@ async def git_read(workspace: Workspace, *args: str) -> bytes:
     env["GIT_NO_LAZY_FETCH"] = "1"
     provider = RepoContextProvider(workspace, secret_env_keys=frozenset())
     try:
-        result = await provider._run_git(
+        result = await provider.run_git(
             "--no-replace-objects", "--literal-pathspecs", *args, env=env
         )
         if result.returncode or result.stdout_truncated or result.stderr_truncated:

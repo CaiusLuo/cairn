@@ -4,7 +4,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from cairn.core.budget import RunBudget, RunBudgetExceeded
 from cairn.core.context import (
@@ -38,6 +38,9 @@ from cairn.runtime.evals.models import (
     EvalStatus,
 )
 from cairn.runtime.loop import run_turn
+
+if TYPE_CHECKING:
+    from cairn.runtime.memory.retrieval import MemoryReader
 
 
 def _error_message(exc: Exception) -> str:
@@ -110,6 +113,11 @@ class EvalRunner:
     directory which must already exist and is never removed by the runner.
     """
 
+    #: Set by a subclass whose cases run with Project Memory. Passing the reader
+    #: through ``build_agent`` lets Agent apply its workspace guard, instead of a
+    #: subclass attaching a reader to an already-built Agent.
+    memory_reader: "MemoryReader | None" = None
+
     def __init__(
         self,
         llm_factory: Callable[[], LLMClient],
@@ -165,6 +173,7 @@ class EvalRunner:
             context_builder=_MeasuredContextBuilder(
                 metrics, self.context_budget, self.token_counter
             ),
+            memory_reader=self.memory_reader,
         )
 
     async def run(
@@ -175,8 +184,12 @@ class EvalRunner:
         metrics: EvalMetrics | None = None,
     ) -> EvalResult:
         metrics = metrics if metrics is not None else EvalMetrics()
-        for name in EvalMetrics.model_fields:
-            setattr(metrics, name, None)
+        # A case's observations start empty, including every field a subclass
+        # adds: resetting only the base fields would carry a previous case's
+        # counters into this one.
+        defaults = type(metrics)()
+        for name in type(metrics).model_fields:
+            setattr(metrics, name, getattr(defaults, name))
         started = perf_counter()
         try:
             return await self._run(case, checks=checks, metrics=metrics)

@@ -2,14 +2,12 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import Mock
 
 import pytest
 from examples.evals import run_coding_smoke as script
 
 import cairn.infra.llm.litellm_client as llm_module
 import cairn.infra.llm.token_counter as counter_module
-import cairn.terminal.output as ui_module
 from cairn.infra.config import resolve_provider_api_key
 from cairn.runtime.agent import Agent
 from cairn.runtime.assembly import build_agent
@@ -109,10 +107,6 @@ def prepare_script(
     monkeypatch.setattr(runner_module, "build_agent", capture_agent)
     monkeypatch.setattr(llm_module, "acompletion", completion)
     monkeypatch.setattr(counter_module, "token_counter", lambda **_: 10)
-    selection = Mock(side_effect=AssertionError("Startup must not ask for selection"))
-    monkeypatch.setattr(ui_module, "choose_provider", selection)
-    monkeypatch.setattr(ui_module, "choose_model_group", selection)
-    state.selection = selection
     monkeypatch.setattr(
         script,
         "coding_smoke_suite",
@@ -187,7 +181,6 @@ def test_smoke_uses_first_configured_provider_group_and_model(
     assert state.requests[0]["max_tokens"] == 20
     assert state.resolved_keys == [key]
     assert state.secret_env_keys == secret_keys
-    state.selection.assert_not_called()
     if toml is None:
         assert state.approvals == []
     else:

@@ -4,6 +4,7 @@ from functools import partial
 
 from cairn.core.model_manager import ModelConfig
 from cairn.infra.config import add_model_id, move_model_id, remove_model_id
+from cairn.runtime.provider_runtime import UnknownModelError
 from cairn.terminal.commands.context import CommandContext
 
 MODEL_USAGE = (
@@ -33,15 +34,16 @@ def _print_current(context: CommandContext, model: ModelConfig) -> None:
 def _select(context: CommandContext, name: str) -> None:
     manager = context.model_manager
     assert manager is not None
-    if not any(model.name == name for model in manager.list_models()):
-        print(f"Model {name!r} not found in the configuration.")
-        return
     if name == manager.current_model().name:
         _print_current(context, manager.current_model())
         return
     assert context.select_model is not None
     try:
         selected = context.select_model(name)
+    except UnknownModelError as exc:
+        # The runtime owns the single model lookup; its message is user-facing.
+        print(exc)
+        return
     except Exception:
         # Runtime construction diagnostics can contain provider credentials.
         print("Could not switch model group; the current model is unchanged.")
