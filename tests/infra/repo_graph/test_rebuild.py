@@ -12,13 +12,16 @@ from cairn.infra.repo_graph import (
     RelationshipStatus,
     RepoGraphBuilder,
 )
+from cairn.infra.repo_graph import builder as builder_module
 from cairn.infra.workspace.workspace import Workspace
 from tests.infra.git.conftest import source as source
 from tests.support.git import git
 
 
-def test_refresh_replaces_edited_deleted_renamed_and_added_facts(
+@pytest.mark.parametrize("operation", ["build", "refresh", "rebuild"])
+def test_rebuild_replaces_edited_deleted_renamed_and_added_facts(
     tmp_path: Path,
+    operation: str,
 ) -> None:
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg/__init__.py").write_text("", encoding="utf-8")
@@ -30,6 +33,8 @@ def test_refresh_replaces_edited_deleted_renamed_and_added_facts(
     builder = RepoGraphBuilder(Workspace(tmp_path))
     original = builder.build()
     assert original.report.complete
+    assert builder.snapshot is original
+    assert builder.last_report is original.report
 
     (tmp_path / "pkg/a.py").write_text(
         "from .c import added\nasync def after(): pass\n", encoding="utf-8"
@@ -37,38 +42,39 @@ def test_refresh_replaces_edited_deleted_renamed_and_added_facts(
     (tmp_path / "pkg/b.py").unlink()
     (tmp_path / "old.py").rename(tmp_path / "renamed.py")
     (tmp_path / "pkg/c.py").write_text("def added(): pass", encoding="utf-8")
-    refreshed = builder.refresh()
+    rebuilt = getattr(builder, operation)()
 
-    assert refreshed.report.complete
-    assert builder.snapshot is refreshed
-    assert builder.last_report is refreshed.report
-    assert [record.name for record in refreshed.symbols] == [
+    assert rebuilt.report.complete
+    assert builder.snapshot is rebuilt
+    assert builder.last_report is rebuilt.report
+    assert [record.name for record in rebuilt.symbols] == [
         "after",
         "added",
         "Renamed",
     ]
-    assert [record.name for record in refreshed.modules] == [
+    assert [record.name for record in rebuilt.modules] == [
         "pkg",
         "pkg.a",
         "pkg.c",
         "renamed",
     ]
-    dependency = refreshed.dependencies_of("pkg/a.py").items[0]
+    dependency = rebuilt.dependencies_of("pkg/a.py").items[0]
     assert dependency.module == "pkg.c"
     assert dependency.status is RelationshipStatus.RESOLVED
     assert dependency.target_path == "pkg/c.py"
-    assert not refreshed.module_for_path("old.py").items
-    assert not refreshed.module_for_path("pkg/b.py").items
+    assert not rebuilt.module_for_path("old.py").items
+    assert not rebuilt.module_for_path("pkg/b.py").items
     assert original.find_symbols(name="before").items
     assert original.module_for_path("old.py").items[0].name == "old"
-    assert builder.rebuild() == refreshed == builder.refresh()
+    assert builder.build() == builder.refresh() == builder.rebuild() == rebuilt
 
 
 @pytest.mark.parametrize(
     "failure", ["oversized", "syntax", "unreadable", "missing_root"]
 )
-def test_incomplete_refresh_keeps_last_complete_snapshot(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+@pytest.mark.parametrize("operation", ["build", "refresh", "rebuild"])
+def test_incomplete_rebuild_preserves_last_complete_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str, operation: str
 ) -> None:
     root = tmp_path / "repo"
     root.mkdir()
@@ -90,33 +96,44 @@ def test_incomplete_refresh_keeps_last_complete_snapshot(
     else:
         root.rename(tmp_path / "moved")
 
-    candidate = builder.refresh()
+    candidate = getattr(builder, operation)()
 
     assert not candidate.report.complete
     assert builder.snapshot is original
     assert builder.last_report is candidate.report
+    assert candidate is not original
+    assert original.report.complete
     assert original.find_symbols(name="original").items
     assert not candidate.find_symbols().complete
     assert "private diagnostic" not in repr(candidate)
 
 
-def test_unexpected_rebuild_failure_also_preserves_snapshot(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("operation", ["build", "refresh", "rebuild"])
+def test_unexpected_failure_preserves_snapshot_and_last_completed_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
     (tmp_path / "module.py").write_text("def original(): pass", encoding="utf-8")
     builder = RepoGraphBuilder(Workspace(tmp_path))
     original = builder.build()
 
-    def failed() -> int:
+    def failed(_: Path) -> int:
         raise RuntimeError("injected internal failure")
 
-    monkeypatch.setattr(builder, "_open_root", failed)
+    monkeypatch.setattr(builder_module, "open_root", failed)
     with pytest.raises(RuntimeError, match="injected internal failure"):
-        builder.rebuild()
+        getattr(builder, operation)()
     assert builder.snapshot is original
+    assert builder.last_report is original.report
+
+    monkeypatch.undo()
+    graph = builder.build()
+    assert graph.report.complete
+    assert builder.snapshot is graph
+    assert builder.last_report is graph.report
+    assert [symbol.name for symbol in graph.symbols] == ["original"]
 
 
-def test_refresh_keeps_policy_exclusions_and_marks_resource_gaps(
+def test_rebuild_keeps_policy_exclusions_and_marks_resource_gaps(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "repo"
@@ -134,9 +151,8 @@ def test_refresh_keeps_policy_exclusions_and_marks_resource_gaps(
     (root / "binary.py").write_bytes(b"\0binary")
     (root / "oversized.py").write_bytes(b"#" * 65)
 
-    candidate = builder.refresh()
+    candidate = builder.build()
 
-    assert builder.snapshot is original
     assert not candidate.report.complete
     assert {issue.reason for issue in candidate.report.issues} == {
         IssueReason.OVERSIZED
@@ -148,10 +164,10 @@ def test_refresh_keeps_policy_exclusions_and_marks_resource_gaps(
     assert statuses["binary.py"] is FileStatus.BINARY
     assert statuses["oversized.py"] is FileStatus.OVERSIZED
     assert "generated/hidden.py" not in statuses
+    assert original.report.complete
     (root / "oversized.py").unlink()
-    complete = builder.refresh()
+    complete = builder.build()
     assert complete.report.complete
-    assert builder.snapshot is complete
     assert not complete.find_symbols().complete  # Excluded Python structures explicit.
     assert complete.find_symbols().unsupported_paths == (
         "binary.py",
@@ -212,17 +228,14 @@ def test_build_and_queries_preserve_source_git_head_index_and_all_file_states(
     graph.module_for_path("module.py")
     graph.dependencies_of("module.py")
     graph.summary_for_prompt()
-    assert builder.refresh() == graph
-    assert builder.rebuild() == graph
+    assert builder.build() == graph
 
     assert repository_state(root) == before
     record = graph.list_files(path_prefix="module.py").items[0]
     assert record.source_sha256 == hashlib.sha256(b"def unstaged(): pass").hexdigest()
 
 
-def test_worktrees_have_independent_snapshots(
-    source: Workspace, tmp_path: Path
-) -> None:
+def test_worktrees_have_independent_graphs(source: Workspace, tmp_path: Path) -> None:
     async def exercise() -> None:
         provider = WorktreeProvider(source, tmp_path / "worktrees")
         first = await provider.create("HEAD", "repo-graph-first")
@@ -243,9 +256,9 @@ def test_worktrees_have_independent_snapshots(
             (first.path / "module.py").write_text(
                 "class Updated: pass", encoding="utf-8"
             )
-            updated = first_builder.refresh()
+            updated = first_builder.build()
             assert [symbol.name for symbol in updated.symbols] == ["Updated"]
-            assert second_builder.refresh() == two
+            assert second_builder.build() == two
             assert [symbol.name for symbol in one.symbols] == ["First"]
             assert not (source.root / "module.py").exists()
         finally:

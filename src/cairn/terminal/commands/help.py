@@ -1,10 +1,9 @@
+from cairn.terminal.commands.model import MODEL_USAGE
+from cairn.terminal.commands.provider import PROVIDER_USAGE
+
 HELP_TEXT: dict[str, dict[str, str]] = {
     "model": {
-        "usage": (
-            "/model | /model list | /model use <name> | /model add <group> <model-id>"
-            " | /model remove <group> <model-id>"
-            " | /model move <group> <model-id> <position>"
-        ),
+        "usage": MODEL_USAGE,
         "description": "Show or select a session model, or edit local model IDs.",
         "detail": (
             "In a terminal, /model opens an inline model-group selector.\n"
@@ -27,7 +26,7 @@ HELP_TEXT: dict[str, dict[str, str]] = {
         ),
     },
     "provider": {
-        "usage": "/provider | /provider list | /provider use <name>",
+        "usage": PROVIDER_USAGE,
         "description": "Show or switch the active provider.",
         "detail": (
             "Show the active provider, its endpoint, credential variable and\n"

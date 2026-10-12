@@ -53,7 +53,7 @@ class MemoryService:
         self.authority = authority
 
     def propose(self, candidate: Candidate) -> MemoryEntry:
-        return self.store._insert(
+        return self.store.insert_entry(
             MemoryEntry(
                 id=uuid.uuid4().hex,
                 project_id=self.store.project_id,
@@ -89,7 +89,7 @@ class MemoryService:
                 "supersedes_id": replaces.id if replaces else None,
             }
         )
-        self.store._serialize(
+        self.store.serialize_entry(
             accepted
         )  # Before approval and before opening a write transaction.
         updates = [(accepted, entry.version)]
@@ -105,7 +105,7 @@ class MemoryService:
                     replaces.version,
                 )
             )
-        self.store._update(tuple(updates))
+        self.store.update_entries(tuple(updates))
         return accepted
 
     async def _resolve_approval(
@@ -134,7 +134,7 @@ class MemoryService:
                 "attestations": (*entry.attestations, attestation),
             }
         )
-        self.store._serialize(prospective)
+        self.store.serialize_entry(prospective)
         self.authority.require(ApprovalRequest(operation, entry, attestation, replaces))
         # Human review may have taken time; inspect again before the transaction.
         await resolver.confirm(attestation)
@@ -211,7 +211,7 @@ class MemoryService:
                 "version": entry.version + 1,
             }
         )
-        self.store._update(((updated, expected_version),))
+        self.store.update_entries(((updated, expected_version),))
         return updated
 
     def delete(self, entry_id: str, expected_version: int) -> MemoryEntry:
@@ -224,5 +224,5 @@ class MemoryService:
         deleted = old.model_copy(
             update={"lifecycle": Lifecycle.DELETED, "version": old.version + 1}
         )
-        self.store._update(((deleted, old.version),))
+        self.store.update_entries(((deleted, old.version),))
         return deleted

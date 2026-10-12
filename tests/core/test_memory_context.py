@@ -171,7 +171,7 @@ def test_fallback_readmits_full_request_with_each_models_counter() -> None:
     )
     request, response = asyncio.run(
         executor.execute(
-            agent=agent,
+            primary_runtime=(agent.llm, agent.context_builder),
             system_messages=[],
             history=agent.state.messages,
             current_turn_start=0,

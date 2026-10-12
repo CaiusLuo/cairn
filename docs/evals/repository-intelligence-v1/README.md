@@ -6,7 +6,7 @@ This optional experiment measures deterministic final repository correctness and
 
 ## Frozen dataset and controls
 
-Dataset `repo-intelligence-v1` lives in `src/cairn/evals/intelligence/dataset.py`. Its SHA256 is `b459ce3fd1293e540572a2ebf8ae0c4a10407fd28a4be76f117a776d45e7553f`. Offline tests pin this digest. Any subsequent task or check revision needs a new dataset version; never tune after observing results.
+Dataset `repo-intelligence-v1` lives in `src/cairn/runtime/evals/intelligence/dataset.py`. Its SHA256 is `b459ce3fd1293e540572a2ebf8ae0c4a10407fd28a4be76f117a776d45e7553f`. Offline tests pin this digest. Any subsequent task or check revision needs a new dataset version; never tune after observing results.
 
 Each case starts with 33 small Python/service/documentation files, including decoys. The host applies exactly the same contents, fixed Git commits and current tree in all arms. A new temporary repository/project identity is created for every case, arm and repetition. MemoryStore directories are also unique and outside all model-writable roots. Stores and repositories are deleted after checks or cancellation. Project identity deliberately differs between arms; initial tree hashes must match.
 
@@ -36,7 +36,7 @@ Git preparation is trusted host code and uses the existing bounded Git subproces
 Run offline validation first:
 
 ```sh
-uv run pytest tests/evals -q
+uv run pytest tests/runtime/evals -q
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src tests
@@ -48,6 +48,8 @@ A real provider pilot is explicit and finite:
 ```sh
 uv run python examples/evals/run_repository_intelligence.py --report-dir .cairn/intelligence-pilot-v1
 ```
+
+The runner now defaults to the current `repo-intelligence-v2` contract; the v1 contract and its 2026-10-11 pilot results are frozen. Any new provider run must use a new output directory — see [repository-intelligence-v2](../repository-intelligence-v2/README.md).
 
 Invocation authorizes 24 runs (6 cases x 4 arms x 1 repetition), at most 8 Agent generations per run, 16,384 context tokens including 2,048 response reserve, 120s/run, 5s/check and 10s/Bash tool call. This caps Agent generation attempts at 192; provider-internal retry/billing semantics are not independently observable. The run stops on a model request exception instead of trying further paid calls. No automatic expansion occurs. `--repetitions` accepts 1-3 for a separately authorized rerun; output directories must be empty. The runner prints configuration before calls. Missing configuration/credentials writes REAL_EVAL_BLOCKED artifacts without invoking a fake provider.
 

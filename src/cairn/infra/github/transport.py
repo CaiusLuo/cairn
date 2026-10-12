@@ -302,7 +302,14 @@ def _matches_repository(value: Any, repository: GitHubRepository) -> bool:
     )
 
 
-def _validate_pr_url(url: str, repository: GitHubRepository, number: int) -> None:
+def validate_pull_request_url(
+    url: str, repository: GitHubRepository, number: int
+) -> None:
+    """Reject a published pull-request URL that is not this destination's.
+
+    Publication accepts the URL only when it names exactly the destination
+    repository and pull-request number, over HTTPS on github.com.
+    """
     parsed = urlsplit(url)
     if (
         parsed.scheme != "https"
@@ -512,7 +519,7 @@ class GitHubRESTPublisher:
                 head_revision=head["sha"],
                 draft=data["draft"],
             )
-            _validate_pr_url(result.url, destination.repository, result.number)
+            validate_pull_request_url(result.url, destination.repository, result.number)
             return result
         except Exception:
             raise GitHubPublishError(

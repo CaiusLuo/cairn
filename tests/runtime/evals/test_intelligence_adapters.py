@@ -80,6 +80,39 @@ def make_runner(
     )
 
 
+@pytest.mark.parametrize("entrypoint", ["run_case", "run"])
+@pytest.mark.parametrize("arm", [Arm.BASELINE, Arm.MEMORY])
+def test_reused_runner_keeps_reads_metrics_and_memory_isolated(
+    tmp_path: Path, entrypoint: str, arm: Arm
+) -> None:
+    spec = simple_spec()
+    responses = [
+        LLMResponse(
+            tool_calls=[
+                ToolCall(id="read", name="read_file", arguments={"path": "parser.py"})
+            ]
+        ),
+        LLMResponse(content="done"),
+    ]
+    runner = make_runner(spec, arm, SequenceLLM(responses * 2), tmp_path)
+    for _ in range(2):
+        result = asyncio.run(
+            runner.run_case()
+            if entrypoint == "run_case"
+            else runner.run(spec.item.case, checks=spec.item.checks)
+        )
+        assert result.status is EvalStatus.PASS
+        assert result.metrics is runner.observations
+        assert runner.observations.read_file_calls == 1
+        assert runner.observations.repeated_read_file_calls == 0
+        assert [
+            item.path for item in runner.observations.direct_discovery_evidence
+        ] == ["parser.py"]
+        assert runner.memory_directory is None
+        if arm.memory:
+            assert runner.observations.memory_fixture_entries == 1
+
+
 def test_graph_refresh_completeness_and_read_only(tmp_path: Path) -> None:
     file = tmp_path / "parser.py"
     file.write_text("def old_name():\n    pass\n")
@@ -91,7 +124,6 @@ def test_graph_refresh_completeness_and_read_only(tmp_path: Path) -> None:
     )
     assert json.loads(result.stdout)["items"][0]["name"] == "old_name"
     assert file.read_bytes() == before
-    previous = tool.builder.snapshot
     file.write_text("def new_name():\n    pass\n")
     data = json.loads(
         asyncio.run(
@@ -99,13 +131,13 @@ def test_graph_refresh_completeness_and_read_only(tmp_path: Path) -> None:
         ).stdout
     )
     assert data["items"][0]["name"] == "new_name" and data["freshness"] == "rebuilt"
-    retained = tool.builder.snapshot
-    assert retained is not previous
     tool.builder.limits = BuildLimits(max_entries=1)
+    retained = tool.builder.snapshot
     data = json.loads(asyncio.run(tool.execute({"operation": "list_files"})).stdout)
     assert not data["snapshot_complete"] and data["items"] == []
     assert data["freshness"] == "unknown"
     assert tool.builder.snapshot is retained
+    assert retained is not None and retained.report.complete
 
 
 def test_dependency_target_is_graph_discovery_once_without_read(

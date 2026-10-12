@@ -82,6 +82,9 @@ the new candidate; check its report before use. Only complete candidates replace
 the latest completed attempt. An incomplete refresh keeps the old snapshot;
 unexpected exceptions propagate without replacing it. Existing snapshots never
 change in place, and separate builders/Workspaces share no index.
+The retained snapshot is historical after an incomplete attempt. Retrieval
+adapters must use the returned candidate and reject incomplete results rather
+than exposing retained facts as current.
 
 Inspection uses descriptor-relative, no-follow reads and checks file/directory
 identities before and after inspection. Detected drift makes the result

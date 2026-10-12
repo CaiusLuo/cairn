@@ -124,7 +124,7 @@ class RepoGraphQueryTool:
         self.validate(arguments)
         await asyncio.sleep(0)
         started = perf_counter()
-        # Always use the returned candidate, never a retained older snapshot.
+        # Always use this query's candidate, never a retained historical snapshot.
         graph = self.builder.refresh()
         elapsed = perf_counter() - started
         await asyncio.sleep(0)

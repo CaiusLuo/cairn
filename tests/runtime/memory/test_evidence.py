@@ -340,7 +340,7 @@ def test_io_failure_limits_and_cancellation(
     def denied(*args: object, **kwargs: object) -> int:
         raise PermissionError("password=must-not-escape")
 
-    monkeypatch.setattr("cairn.infra.memory.filesystem.os.open", denied)
+    monkeypatch.setattr("cairn.infra.descriptors.os.open", denied)
     result = asyncio.run(FreshnessChecker(resolver).check(entry))
     assert result.status is Freshness.UNKNOWN
     assert "password" not in repr(result)

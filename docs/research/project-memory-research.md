@@ -84,4 +84,4 @@ Cairn 可借鉴“持久数据与请求投影分开”，但当前只需要一�
 过期排除和 token 开销；这些指标只记录 ID/计数。没有这些反馈前，不建议引入自动提取、
 embeddings、consolidation 或扩大为跨项目个人记忆。
 
-操作说明、资源限制与安全假设见 [project-memory.md](project-memory.md)。
+操作说明、资源限制与安全假设见 [project-memory.md](../guides/project-memory.md)。

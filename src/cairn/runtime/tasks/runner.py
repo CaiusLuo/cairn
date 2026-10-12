@@ -12,6 +12,7 @@ from cairn.infra.observability.tracer import Tracer
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.assembly import build_agent
+from cairn.runtime.lifecycle import settle_owned
 from cairn.runtime.loop import run_turn
 from cairn.runtime.model_executor import ModelExecutor
 
@@ -66,15 +67,7 @@ class CodingTaskRunner:
         except asyncio.CancelledError as primary:
             caller = asyncio.current_task()
             caller_cancelled = caller is not None and caller.cancelling() > 0
-            if not worker.done():
-                worker.cancel()
-            while not worker.done():
-                try:
-                    await asyncio.shield(worker)
-                except asyncio.CancelledError:
-                    continue
-                except Exception:
-                    break
+            await settle_owned(worker)
             try:
                 result = worker.result()
                 if result.error is not None:
@@ -161,7 +154,6 @@ class CodingTaskRunner:
                     context_builder=self.context_builder,
                     model_executor=self.model_executor,
                     secret_env_keys=self.secret_env_keys,
-                    repository_secret_env_keys=self.secret_env_keys,
                 )
                 response = await self._turn(agent, spec.prompt, cancellation_event)
                 if response is None:

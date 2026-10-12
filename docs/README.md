@@ -1,0 +1,49 @@
+# Cairn documentation
+
+Start with the [README](../README.md) for what Cairn is and how to run it. This
+page is the map for everything else.
+
+## Design
+
+| Document | Covers |
+| --- | --- |
+| [Architecture](architecture.md) | Package ownership, dependency direction, execution lifecycle, and where new code belongs |
+| [Decisions](adr/0001-modular-architecture-baseline.md) | The architectural decisions this foundation rests on, and what they deliberately reject |
+
+## Operating Cairn
+
+| Document | Covers |
+| --- | --- |
+| [Configuration](configuration.md) | Supported `.env` and `.cairn/models.toml` layouts, provider setup, credential resolution, and local model edits |
+| [GitHub Issue workflows](guides/github-workflow.md) | Retained worktrees, deterministic verification, and approved Draft PR publication |
+| [RepoGraph](guides/repo-graph.md) | Bounded repository inventory and Python structure queries |
+| [Project Memory](guides/project-memory.md) | Evidence-backed memory candidates, freshness and retrieval |
+
+## Experiments
+
+| Document | Covers |
+| --- | --- |
+| [Repository Intelligence V2](evals/repository-intelligence-v2/README.md) | The current experiment contract |
+| [Repository Intelligence V1](evals/repository-intelligence-v1/README.md) | The frozen V1 contract and its 2026-10-11 pilot |
+
+## Background
+
+| Document | Covers |
+| --- | --- |
+| [Project Memory research](research/project-memory-research.md) | Historical comparison against comparable harnesses |
+
+## Contributing
+
+[AGENTS.md](../AGENTS.md) holds the working rules for coding agents, and
+[tests/README.md](../tests/README.md) describes test organization. Local checks:
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy src tests
+uv run pytest --cov=cairn --cov-report=term-missing
+```
+
+Two of those tests guard this documentation and the package boundaries:
+`tests/docs/test_documentation.py` checks links and referenced paths, and
+`tests/core/test_architecture.py` checks dependency direction.

@@ -56,105 +56,13 @@ uv run cairn
 
 ## Model configuration
 
-Cairn reads model configuration from one of three sources:
+Cairn reads model configuration from `.env` or `.cairn/models.toml`, in either a
+legacy single-provider layout or a multi-provider catalog. Credentials live in
+your shell or `.env`, never in TOML, and are resolved only for the provider you
+approve.
 
-- **`.cairn/models.toml`, legacy layout** — a single provider:
-
-  ```toml
-  base_url = "https://example.com/v1"
-  api_key_env = "BAILIAN_API_KEY"
-
-  [[models]]
-  name = "flash"
-  model_ids = ["openai/model-a", "openai/model-b"]
-
-  [[models]]
-  name = "plus"
-  model_ids = ["openai/model-c"]
-  ```
-
-- **`.cairn/models.toml`, catalog layout** — several named providers:
-
-  ```toml
-  [[providers]]
-  name = "bailian"
-  base_url = "https://example.com/v1"
-  api_key_env = "BAILIAN_API_KEY"
-
-  [[providers.models]]
-  name = "flash"
-  model_ids = ["openai/model-a"]
-
-  [[providers]]
-  name = "local"
-  base_url = "http://localhost:8000/v1"
-  api_key_env = "LOCAL_API_KEY"
-
-  [[providers.models]]
-  name = "default"
-  model_ids = ["openai/local-model"]
-  ```
-
-- **`.env` only** (no TOML) — the single-model `CAIRN_*` settings above.
-
-The layout is detected from the file: a file that declares `providers` uses the
-catalog layout, and every other existing file must satisfy the legacy contract.
-Mixed layouts, duplicate provider or group names, empty provider/group/model
-lists and invalid endpoints or key variable names are rejected. A file that
-exists but is invalid stops startup rather than falling back to `.env`; `.env`
-settings are never migrated into TOML. Credential values are not resolved while
-parsing, and no credential is read for a provider the session does not use.
-
-Set each provider's key variable in your shell or `.env`, never in TOML. Startup
-uses the first configured provider, its first model group and that group's first
-model ID. Startup displays the selected provider, model
-group and model IDs, and asks for approval showing the provider name, endpoint,
-credential variable and a notice that prompts and conversation content are sent
-to that endpoint. Credentials are resolved only after approval, and only for the
-selected provider.
-
-Use `/provider use <name>` or `/model` to change selection after startup.
-`/model` opens an inline group selector in a terminal:
-use Up/Down and Enter to select, or Escape/Ctrl+C to cancel. Without a terminal,
-it prints the current group and candidate summary. `/model use plus` switches
-groups directly without losing history.
-Each completion starts at the selected group's first ID and, on eligible
-failures, tries the remaining IDs followed by subsequent groups. The example
-order is `model-a → model-b → model-c`; selecting `plus` starts at `model-c`.
-Other errors stop immediately. Fallback never leaves the active provider and
-does not change selection. `/model list` shows the loaded groups and recent
-failures.
-
-### Providers
-
-`/provider` shows the active provider, its endpoint, credential variable and
-current group. `/provider list` lists configured providers. `/provider use local`
-switches provider after displaying the target endpoint, credential variable,
-models and a warning that the conversation history is transferred, then asks for
-approval. Only the target credential is resolved, and the switch commits only
-after the target runtime is fully built, so denied approval, a missing credential
-or a failed construction leaves the previous provider usable with its selection
-and permission grants. A successful switch starts at the target's first model
-group and resets session tool-permission grants; conversation history, workspace,
-tools and traces are preserved. Commands run between turns only, so a provider
-can never change mid-turn and model output is never executed as a command.
-
-`/model add flash openai/model-d` appends an ID; `/model remove flash openai/model-d`
-removes it. Both preserve comments and remaining order, change only local TOML,
-and require a restart and provider approval to take effect. Groups must already
-exist; duplicate IDs and removing a group's final ID are rejected. In the catalog
-layout these edits apply to the active provider's group only, and every other
-provider keeps its groups, order and formatting. Cairn does not migrate `.env` or
-hot-reload configuration.
-
-`/model move flash openai/model-b 1` moves an existing ID to the specified
-1-based position within its group, consistent with `/model list`. Other IDs keep
-their relative order. Unknown groups/IDs and invalid or out-of-range positions
-are rejected; moving an ID to its current position does not rewrite the file.
-The edit preserves string quoting, inline comments with their IDs, standalone
-comments in place, and existing layout wherever supported. Unsupported formatting
-is reported without writing. As with add/remove, restart and normal provider
-approval are required; the running session keeps its loaded order.
+See [Configuration](docs/configuration.md) for the supported layouts, validation
+rules, credential handling, session selection and local `/model` edits.
 
 ## CLI commands
 
@@ -194,10 +102,10 @@ filters, including Git LFS content conversion, are not supported and cause a
 clear error. This does not provide a process sandbox or prevent access to local
 credential files.
 
-Explicit [GitHub Issue workflows](docs/github-workflow.md) use retained Worktrees
+Explicit [GitHub Issue workflows](docs/guides/github-workflow.md) use retained Worktrees
 and deterministic verification before approved Draft PR publication.
 
-[RepoGraph](docs/repo-graph.md) provides bounded repository inventory and Python
+[RepoGraph](docs/guides/repo-graph.md) provides bounded repository inventory and Python
 structure queries through explicit, read-only snapshots.
 
 ## Source layout
@@ -213,7 +121,8 @@ src/cairn/
 ```
 
 See [Architecture](docs/architecture.md) for dependency direction, turn and
-scheduling ownership, and guidance for placing new code.
+scheduling ownership, and guidance for placing new code, or the
+[documentation index](docs/README.md) for every guide and experiment record.
 
 ## Development
 

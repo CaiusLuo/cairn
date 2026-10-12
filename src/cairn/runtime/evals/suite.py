@@ -1,10 +1,8 @@
 import asyncio
-import os
 from collections.abc import Callable
-from contextlib import suppress
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 
+from cairn.runtime.evals.artifacts import atomic_write_text
 from cairn.runtime.evals.models import (
     CheckResult,
     EvalFailureCategory,
@@ -16,6 +14,7 @@ from cairn.runtime.evals.models import (
     EvalSuiteResult,
 )
 from cairn.runtime.evals.runner import EvalRunner
+from cairn.runtime.lifecycle import settle_owned
 
 
 def write_suite_report(report: EvalSuiteResult, destination: Path) -> None:
@@ -24,28 +23,7 @@ def write_suite_report(report: EvalSuiteResult, destination: Path) -> None:
     No prompts, fixtures, model final text or raw events are report fields.
     Suite results normalize free-text diagnostics before reaching this writer.
     """
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    try:
-        with NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=destination.parent,
-            delete=False,
-            prefix=f".{destination.name}-",
-            suffix=".tmp",
-        ) as stream:
-            temporary = Path(stream.name)
-            stream.write(report.model_dump_json(indent=2))
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, destination)
-    except BaseException:
-        if temporary is not None:
-            with suppress(OSError):
-                temporary.unlink(missing_ok=True)
-        raise
+    atomic_write_text(destination, report.model_dump_json(indent=2) + "\n")
 
 
 def _report_result(result: EvalResult) -> EvalResult:
@@ -125,15 +103,7 @@ class EvalSuiteRunner:
                 caller = asyncio.current_task()
                 caller_cancelled = caller is not None and caller.cancelling() > 0
                 finished = task.done() and not task.cancelled()
-                if not task.done() and not task.cancelling():
-                    task.cancel()
-                while not task.done():
-                    try:
-                        await asyncio.shield(task)
-                    except asyncio.CancelledError:
-                        continue
-                    except Exception:
-                        break
+                await settle_owned(task)
                 try:
                     result = task.result()
                     if finished:

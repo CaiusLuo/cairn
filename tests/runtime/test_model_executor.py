@@ -363,7 +363,7 @@ def test_executor_returns_built_request_and_response_without_mutating_history(
 
     request, actual = asyncio.run(
         make_executor(agent, manager).execute(
-            agent=agent,
+            primary_runtime=(agent.llm, agent.context_builder),
             system_messages=system,
             history=history,
             current_turn_start=0,
@@ -406,7 +406,7 @@ def test_executor_reuses_the_selected_runtime_and_builds_only_fallback_runtimes(
     executor = ModelExecutor(manager, runtime_factory)
     _, response = asyncio.run(
         executor.execute(
-            agent=agent,
+            primary_runtime=(agent.llm, agent.context_builder),
             system_messages=[],
             history=agent.state.messages,
             current_turn_start=0,
@@ -432,7 +432,7 @@ def test_executor_never_builds_a_runtime_for_the_selected_model() -> None:
 
     _, actual = asyncio.run(
         ModelExecutor(manager, unexpected_runtime).execute(
-            agent=agent,
+            primary_runtime=(agent.llm, agent.context_builder),
             system_messages=[],
             history=agent.state.messages,
             current_turn_start=0,
@@ -462,7 +462,7 @@ def test_executor_moves_to_the_next_model_after_free_tier_exhaustion() -> None:
 
     request, response = asyncio.run(
         executor.execute(
-            agent=agent,
+            primary_runtime=(agent.llm, agent.context_builder),
             system_messages=[],
             history=agent.state.messages,
             current_turn_start=0,
@@ -495,7 +495,7 @@ def test_executor_records_the_failure_and_clears_it_after_a_success() -> None:
 
     _, first = asyncio.run(
         executor.execute(
-            agent=agent,
+            primary_runtime=(agent.llm, agent.context_builder),
             system_messages=[],
             history=agent.state.messages,
             current_turn_start=0,
@@ -512,7 +512,7 @@ def test_executor_records_the_failure_and_clears_it_after_a_success() -> None:
 
     _, second = asyncio.run(
         executor.execute(
-            agent=agent,
+            primary_runtime=(agent.llm, agent.context_builder),
             system_messages=[],
             history=agent.state.messages,
             current_turn_start=0,
@@ -532,7 +532,7 @@ def test_executor_failure_detail_stays_short_and_single_line() -> None:
     with pytest.raises(RuntimeError):
         asyncio.run(
             executor.execute(
-                agent=agent,
+                primary_runtime=(agent.llm, agent.context_builder),
                 system_messages=[],
                 history=agent.state.messages,
                 current_turn_start=0,
@@ -563,7 +563,7 @@ def test_executor_aggregates_attempts_and_restarts_the_order_for_a_new_request()
     async def scenario() -> None:
         with pytest.raises(AllModelsUnavailable) as raised:
             await executor.execute(
-                agent=agent,
+                primary_runtime=(agent.llm, agent.context_builder),
                 system_messages=[],
                 history=agent.state.messages,
                 current_turn_start=0,
@@ -579,7 +579,7 @@ def test_executor_aggregates_attempts_and_restarts_the_order_for_a_new_request()
         assert executor.failure_for("openai/plus") is not None
 
         _, actual = await executor.execute(
-            agent=agent,
+            primary_runtime=(agent.llm, agent.context_builder),
             system_messages=[],
             history=agent.state.messages,
             current_turn_start=0,
@@ -603,7 +603,7 @@ def test_executor_only_attempts_candidates_at_or_after_manual_selection() -> Non
     with pytest.raises(AllModelsUnavailable) as raised:
         asyncio.run(
             make_executor(agent, manager).execute(
-                agent=agent,
+                primary_runtime=(agent.llm, agent.context_builder),
                 system_messages=[],
                 history=agent.state.messages,
                 current_turn_start=0,
@@ -648,7 +648,7 @@ def test_executor_propagates_non_fallback_and_cancellation_without_retry(
     with pytest.raises(type(failure)) as raised:
         asyncio.run(
             make_executor(agent, manager).execute(
-                agent=agent,
+                primary_runtime=(agent.llm, agent.context_builder),
                 system_messages=[],
                 history=agent.state.messages,
                 current_turn_start=0,
@@ -668,7 +668,7 @@ def test_executor_context_admission_failure_never_calls_provider() -> None:
     with pytest.raises(ContextBudgetExceeded) as raised:
         asyncio.run(
             make_executor(agent, make_manager()).execute(
-                agent=agent,
+                primary_runtime=(agent.llm, agent.context_builder),
                 system_messages=[],
                 history=agent.state.messages,
                 current_turn_start=0,
@@ -706,7 +706,7 @@ def test_executor_admission_failure_on_a_fallback_never_calls_that_provider(
     with pytest.raises(ContextBudgetExceeded):
         asyncio.run(
             ModelExecutor(manager, runtime_factory).execute(
-                agent=agent,
+                primary_runtime=(agent.llm, agent.context_builder),
                 system_messages=[],
                 history=agent.state.messages,
                 current_turn_start=0,

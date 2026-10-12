@@ -496,10 +496,14 @@ def test_commit_hooks_fsmonitor_and_signing_program_are_disabled(
     ):
         test_local.git(provider.source.root, "config", key, value)
     (tmp_path / "reference-transaction").symlink_to(script)
-    # Positive control: ordinary interactive context keeps its legacy policy.
-    asyncio.run(RepoContextProvider(provider.source).inspect())
+    # Positive control: these programs really do run under ordinary Git, so the
+    # absences below are suppression rather than a broken fixture.
+    test_local.git(provider.source.root, "status", "--porcelain")
     assert marker.exists()
     marker.unlink()
+    # Repository inspection is read-only harness work and must not run them.
+    asyncio.run(RepoContextProvider(provider.source).inspect())
+    assert not marker.exists()
     result = prepare(provider)
     published = asyncio.run(
         publisher(FakePublisher(), allow()).publish(test_local.ISSUE, result)

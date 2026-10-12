@@ -23,13 +23,9 @@ from cairn.infra.config import (
     resolve_provider_api_key,
 )
 from cairn.infra.git import WorktreeProvider
-from cairn.infra.github import (
-    GitHubRepository,
-    GitHubREST,
-    GitHubRESTIssueReader,
-    GitHubTaskSource,
-    IssueReference,
-)
+from cairn.infra.github import GitHubRepository, IssueReference
+from cairn.infra.github.http import GitHubREST, GitHubRESTIssueReader
+from cairn.infra.github.source import GitHubTaskSource
 from cairn.infra.github.transport import GitHubRESTPublisher
 from cairn.infra.observability.sinks import JsonlTraceSink
 from cairn.infra.observability.tracer import Tracer

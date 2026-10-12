@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 
 import cairn.infra.llm.litellm_client as llm_module
 import cairn.infra.llm.token_counter as counter_module
+import cairn.runtime.provider_runtime as provider_runtime_module
 import cairn.terminal.cli as cli_module
 import cairn.terminal.output as ui_module
 from cairn.core.budget import RunBudget
@@ -181,10 +182,6 @@ def configure_cli(
         return 30
 
     monkeypatch.setattr(cli_module, "confirm_provider_access", confirm_access)
-    state.provider_selection = Mock(side_effect=AssertionError("No startup selection"))
-    state.group_selection = Mock(side_effect=AssertionError("No startup selection"))
-    monkeypatch.setattr(ui_module, "choose_provider", state.provider_selection)
-    monkeypatch.setattr(ui_module, "choose_model_group", state.group_selection)
     monkeypatch.setattr(cli_module, "build_agent", capture_agent)
     monkeypatch.setattr(
         cli_module, "SessionPermissionHandler", lambda **_kwargs: handler
@@ -235,9 +232,7 @@ def test_env_only_startup_keeps_the_legacy_environment_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state = configure_cli(tmp_path, monkeypatch, "question", toml=None)
-    selection = Mock(side_effect=AssertionError("The .env layout has one provider"))
     approval = Mock(side_effect=AssertionError("The .env layout needs no approval"))
-    monkeypatch.setattr(ui_module, "choose_provider", selection)
     monkeypatch.setattr(cli_module, "confirm_provider_access", approval)
 
     result = run_cli()
@@ -255,8 +250,6 @@ def test_legacy_toml_startup_keeps_the_single_provider_approval(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state = configure_cli(tmp_path, monkeypatch, "question", toml=LEGACY_TOML)
-    selection = Mock(side_effect=AssertionError("One provider needs no selection"))
-    monkeypatch.setattr(ui_module, "choose_provider", selection)
 
     result = run_cli()
 
@@ -273,12 +266,6 @@ def test_single_provider_catalog_is_selected_automatically(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state = configure_cli(tmp_path, monkeypatch, "question", toml=SINGLE_CATALOG_TOML)
-    selection = Mock(side_effect=AssertionError("One provider needs no selection"))
-    group_selection = Mock(
-        side_effect=AssertionError("Single-provider startup uses the first group")
-    )
-    monkeypatch.setattr(ui_module, "choose_provider", selection)
-    monkeypatch.setattr(ui_module, "choose_model_group", group_selection)
 
     result = run_cli()
 
@@ -298,8 +285,6 @@ def test_multiple_providers_start_with_first_provider_and_group(
     result = run_cli()
 
     assert result.exit_code == 0, result.output
-    state.provider_selection.assert_not_called()
-    state.group_selection.assert_not_called()
     assert state.approvals == [("bailian", "flash", False)]
     assert state.resolved_keys == ["BAILIAN_API_KEY"]
     assert state.requests[0]["api_base"] == "https://bailian.test/v1"
@@ -353,8 +338,6 @@ def test_multi_provider_startup_follows_reordered_toml(
     assert state.requests[0]["model"] == "openai/local-model"
     assert state.approvals == [("local", "default", False)]
     assert state.resolved_keys == ["LOCAL_API_KEY"]
-    state.provider_selection.assert_not_called()
-    state.group_selection.assert_not_called()
 
 
 def test_denied_approval_happens_before_any_credential_is_resolved(
@@ -656,7 +639,9 @@ def test_failed_runtime_construction_rolls_back_the_switch(
             raise RuntimeError("cannot construct the target runtime")
         return real_build(provider, *args, **kwargs)
 
-    monkeypatch.setattr(cli_module, "build_provider_runtime", build)
+    # Runtime activation owns the build, so the failing construction is injected
+    # where the switch builds its target.
+    monkeypatch.setattr(provider_runtime_module, "build_provider_runtime", build)
 
     result = run_cli()
 
