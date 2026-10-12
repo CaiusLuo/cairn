@@ -69,9 +69,13 @@ credentials, and editing a local file cannot re-resolve a secret by accident.
 outcome, absorbs cancellation that arrives during cleanup, and optionally
 re-raises it. Call sites state their propagation policy explicitly.
 
-Consequence: the invariant is written once. The per-caller shield loops in the
-task runner were deliberately left in place: their note and result semantics are
-individually pinned by tests and are not equivalent enough to share safely.
+`await_owned` waits without cancelling when the remaining operation is cleanup
+itself. Callers keep their own error notes, result retention and cancellation
+policy; sharing settlement does not merge those responsibilities. Infrastructure
+cannot import runtime, so Git-owned cleanup uses `infra.git.cleanup.finish_cleanup`.
+
+Consequence: each layer shares its cleanup mechanism without losing the
+caller-specific semantics pinned by cancellation and recovery tests.
 
 ## Rejected
 

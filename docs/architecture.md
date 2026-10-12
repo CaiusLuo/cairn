@@ -31,9 +31,10 @@ paths; see [ADR 0001](adr/0001-modular-architecture-baseline.md) for why.
 
 The CLI enters through `cairn.terminal.cli`; `cairn.runtime.assembly` builds the
 session's Agent and its dependencies. `cairn.runtime.loop.run_turn` is the single
-owner of the Agent turn: it records spans, handles failures and usage, and
-finalizes the turn. Tool calls inside an accepted response are executed by
-`cairn.runtime.tool_execution`, which owns preflight, permission evaluation,
+owner of the Agent turn: it handles failures and finalizes the turn, delegating
+root/per-attempt spans, usage and the final trace event to
+`cairn.runtime.turn_trace.TurnTrace`. Calls inside an accepted assistant response
+are executed by `cairn.runtime.tool_execution`, which owns preflight, permission evaluation,
 execution authority, model-facing tool messages and per-tool spans. `run_turn`
 keeps sole ownership of conversation rollback and of which calls are still
 pending when a turn aborts.
@@ -53,14 +54,17 @@ turn should run.
 
 Work the harness owns is allowed to finish its cleanup when the caller cancels,
 and repeated cancellation never interrupts that cleanup.
-`cairn.runtime.lifecycle.settle_owned` owns that sequence for runtime work, and
-each call site states whether a late cancellation propagates.
+`cairn.runtime.lifecycle.settle_owned` cancels abandoned runtime work and observes
+its outcomes; `await_owned` finishes cleanup without cancelling it. Each caller
+keeps ownership of its primary error, result and late cancellation policy.
 
 `infra` may not import `runtime`, so infrastructure keeps its own narrower
-variants with different policies: `infra.git.worktree._finish` absorbs repeated
-cancellation for worktree release, `infra.git.context._settle_tasks` cancels and
-awaits without absorbing, and `infra.tools.bash._settle_collection` bounds
-cleanup with a timeout. These are deliberately not unified; see
+policies: `infra.git.cleanup.finish_cleanup` protects worktree release and Git
+inspection cleanup from repeated cancellation. Inspection owns the spawn task,
+restarts pipe drains when stopping, reaps the process, then settles its readers;
+the original cancellation or failure remains primary.
+`infra.tools.bash._settle_collection` bounds collection cleanup with a timeout.
+These policies remain separate; see
 [known limitations](#known-limitations).
 
 ## Package guide
@@ -87,12 +91,30 @@ stable.
 | --- | --- |
 | Conversation messages | `core.state.AgentState`, held by one `runtime.agent.Agent` |
 | Session model selection and grants | `core.model_manager` and `core.permissions.SessionPermissionHandler` |
-| Active provider runtime | `terminal.cli`, committed only through its `activate` step |
+| Active provider runtime | `runtime.provider_runtime.ProviderSession`, committed through `commit`; terminal command context observes the committed runtime |
 | Per-model failure notes for `/model list` | `runtime.model_executor.ModelExecutor` |
-| Turn spans and usage | `runtime.loop.run_turn` |
+| Turn spans and usage | `runtime.turn_trace.TurnTrace`, finalized by `run_turn` |
 | Task status and results | `runtime.tasks.CodingTaskRunner` |
 | Workflow and review progress reports | `_Progress` in each workflow, persisted atomically |
 | Worktree lifecycle | `infra.git.worktree.WorktreeHandle` |
+
+## Integration entry points
+
+| Operation | Entry point and owner |
+| --- | --- |
+| Build an Agent | `runtime.assembly.build_agent` composes capabilities for an explicit Workspace |
+| Execute a Turn | `runtime.loop.run_turn` owns conversation recovery and invokes tool execution and telemetry |
+| Run a coding Task | `runtime.tasks.CodingTaskRunner.run` owns task state around the same Turn boundary |
+| Verify a change | `runtime.workflow.verification.FixedChecksVerifier.verify` evaluates host-supplied checks; the workflow binds evidence to its Git snapshot and rechecks drift |
+| Execute review | `runtime.review.workflow.ReviewWorkflow.run` owns bounded verification, review and repair progress |
+| Read repository facts | `infra.repo_graph.RepoGraphBuilder` returns bounded candidates and retains complete historical snapshots |
+| Read/write Project Memory | `runtime.memory.retrieval.MemoryReader` retrieves scoped evidence; `runtime.memory.service.MemoryService` owns transitions behind trusted-host approval |
+| Run an EvalSuite | `runtime.evals.suite.EvalSuiteRunner.run` owns the report; `EvalRunner` owns each temporary workspace and deterministic checks |
+
+Future durable transitions belong at the existing runtime owner's boundaries.
+Filesystem, database and remote effects belong in infrastructure; a scheduler
+or persistence integration should call these owners rather than advance a second
+task/turn lifecycle.
 
 ## Extension seams for the next milestones
 
@@ -119,12 +141,11 @@ stable.
 - `core.events.Event.data` is an untyped mapping rendered and consumed by string
   key. A typed payload per event would be a real improvement, but no consumer
   needs it yet.
-- Cancellation settlement exists at two levels. `runtime.lifecycle.settle_owned`
-  serves runtime work; three `infra` variants serve infrastructure, because
-  `infra` may not import `runtime` and their policies genuinely differ (absorb
-  repeated cancellation, bound cleanup with a timeout, or plain cancel and
-  await). Unifying them would need a shared low-level module whose single
-  function would carry more flags than the three it replaced.
+- Cancellation settlement exists in runtime and infrastructure because `infra`
+  may not import `runtime`. Runtime distinguishes abandoning work from finishing
+  cleanup, Git protects owned cleanup, and Bash bounds collection settlement.
+  Sharing a mechanism does not make the callers' result and propagation policies
+  interchangeable.
 - `runtime/review/git.py` and `runtime/workflow/git.py` each compute a
   filesystem identity tuple. The duplication is nine mechanical lines; making it
   public would widen an API for no second behaviour.
