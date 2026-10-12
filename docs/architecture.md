@@ -53,10 +53,15 @@ turn should run.
 
 Work the harness owns is allowed to finish its cleanup when the caller cancels,
 and repeated cancellation never interrupts that cleanup.
-`cairn.runtime.lifecycle.settle_owned` owns that sequence; each call site states
-whether a late cancellation propagates. `cairn.infra.git.worktree` uses the same
-invariant for worktree release through its own `_finish`, because `infra` may not
-import `runtime`.
+`cairn.runtime.lifecycle.settle_owned` owns that sequence for runtime work, and
+each call site states whether a late cancellation propagates.
+
+`infra` may not import `runtime`, so infrastructure keeps its own narrower
+variants with different policies: `infra.git.worktree._finish` absorbs repeated
+cancellation for worktree release, `infra.git.context._settle_tasks` cancels and
+awaits without absorbing, and `infra.tools.bash._settle_collection` bounds
+cleanup with a timeout. These are deliberately not unified; see
+[known limitations](#known-limitations).
 
 ## Package guide
 
@@ -114,6 +119,15 @@ stable.
 - `core.events.Event.data` is an untyped mapping rendered and consumed by string
   key. A typed payload per event would be a real improvement, but no consumer
   needs it yet.
+- Cancellation settlement exists at two levels. `runtime.lifecycle.settle_owned`
+  serves runtime work; three `infra` variants serve infrastructure, because
+  `infra` may not import `runtime` and their policies genuinely differ (absorb
+  repeated cancellation, bound cleanup with a timeout, or plain cancel and
+  await). Unifying them would need a shared low-level module whose single
+  function would carry more flags than the three it replaced.
+- `runtime/review/git.py` and `runtime/workflow/git.py` each compute a
+  filesystem identity tuple. The duplication is nine mechanical lines; making it
+  public would widen an API for no second behaviour.
 
 ## References
 
