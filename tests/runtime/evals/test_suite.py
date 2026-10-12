@@ -619,10 +619,14 @@ def test_reused_metrics_do_not_keep_previous_case_observations() -> None:
         result = await runner(lambda: SequenceLLM([LLMResponse(content="done")])).run(
             case("new").case, checks=case("new").checks, metrics=metrics
         )
-        assert result.metrics is metrics
+        assert result.metrics == metrics
+        assert result.metrics is not metrics
         assert metrics.model_identifier is None
         assert metrics.provider_input_tokens is None
         assert metrics.elapsed_seconds is not None
+        before = result.model_dump(mode="json")
+        metrics.provider_input_tokens = 17
+        assert result.model_dump(mode="json") == before
 
     asyncio.run(scenario())
 

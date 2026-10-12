@@ -4,7 +4,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from cairn.core.budget import RunBudget, RunBudgetExceeded
 from cairn.core.context import (
@@ -109,9 +109,13 @@ class EvalRunner:
     """Run one case with fresh runtime state and judge its final workspace.
 
     The caller supplies a fresh LLM factory and owns any tracer sink. This runner
-    owns only its temporary case directories; the optional temp_root is a parent
-    directory which must already exist and is never removed by the runner.
+    owns the case's observations and temporary directories; the optional temp_root
+    is a parent directory which must already exist and is never removed by the
+    runner. Supplied metrics stay live for interrupted reporting; returned metrics
+    are detached snapshots. One runner executes one case at a time.
     """
+
+    metrics_type: ClassVar[type[EvalMetrics]] = EvalMetrics
 
     #: Set by a subclass whose cases run with Project Memory. Passing the reader
     #: through ``build_agent`` lets Agent apply its workspace guard, instead of a
@@ -149,6 +153,13 @@ class EvalRunner:
         self.temp_root = temp_root
         self.token_counter = token_counter
         self.secret_env_keys = secret_env_keys
+        self._running = False
+
+    def _bind_metrics(self, metrics: EvalMetrics) -> None:
+        """Bind case-specific observation adapters before any case work starts."""
+
+    def _finalize_metrics(self, metrics: EvalMetrics) -> None:
+        """Release case resources and finalize observations after work settles."""
 
     async def _prepare_workspace(self, workspace: Workspace, case: EvalCase) -> None:
         for raw_path, text in case.files.items():
@@ -183,7 +194,13 @@ class EvalRunner:
         checks: Sequence[EvalCheck],
         metrics: EvalMetrics | None = None,
     ) -> EvalResult:
-        metrics = metrics if metrics is not None else EvalMetrics()
+        if self._running:
+            raise RuntimeError("EvalRunner is already running a case")
+        metrics = metrics if metrics is not None else self.metrics_type()
+        if not isinstance(metrics, self.metrics_type):
+            raise TypeError(
+                f"metrics must be an instance of {self.metrics_type.__name__}"
+            )
         # A case's observations start empty, including every field a subclass
         # adds: resetting only the base fields would carry a previous case's
         # counters into this one.
@@ -191,11 +208,18 @@ class EvalRunner:
         for name in type(metrics).model_fields:
             setattr(metrics, name, getattr(defaults, name))
         started = perf_counter()
+        self._running = True
         try:
-            return await self._run(case, checks=checks, metrics=metrics)
+            self._bind_metrics(metrics)
+            result = await self._run(case, checks=checks, metrics=metrics)
         finally:
-            # Also available to suite reporting after cancellation cleanup.
-            metrics.elapsed_seconds = perf_counter() - started
+            try:
+                self._finalize_metrics(metrics)
+            finally:
+                # Also available to suite reporting after cancellation cleanup.
+                metrics.elapsed_seconds = perf_counter() - started
+                self._running = False
+        return result.model_copy(update={"metrics": metrics.model_copy(deep=True)})
 
     async def _run(
         self, case: EvalCase, *, checks: Sequence[EvalCheck], metrics: EvalMetrics

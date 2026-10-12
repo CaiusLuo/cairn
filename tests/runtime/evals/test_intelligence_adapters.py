@@ -102,7 +102,8 @@ def test_reused_runner_keeps_reads_metrics_and_memory_isolated(
             else runner.run(spec.item.case, checks=spec.item.checks)
         )
         assert result.status is EvalStatus.PASS
-        assert result.metrics is runner.observations
+        assert result.metrics == runner.observations
+        assert result.metrics is not runner.observations
         assert runner.observations.read_file_calls == 1
         assert runner.observations.repeated_read_file_calls == 0
         assert [

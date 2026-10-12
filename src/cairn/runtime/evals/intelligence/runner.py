@@ -14,7 +14,7 @@ from cairn.core.events import Event, EventHandler
 from cairn.core.llm import LLMClient
 from cairn.core.memory.context import MemoryContext
 from cairn.core.memory.models import Freshness
-from cairn.core.models import Message, ToolResult
+from cairn.core.models import LLMResponse, Message, ToolResult
 from cairn.infra.memory.identity import ProjectIdentity, git_read
 from cairn.infra.observability.models import Span
 from cairn.infra.observability.sinks import JsonlTraceSink
@@ -39,6 +39,44 @@ from cairn.runtime.evals.models import EvalCase, EvalCheck, EvalMetrics, EvalRes
 from cairn.runtime.evals.runner import EvalRunner, _MeasuredContextBuilder
 from cairn.runtime.memory.freshness import FreshnessChecker
 from cairn.runtime.memory.retrieval import MemoryReader
+
+
+class ObservedLLM:
+    def __init__(self, client: LLMClient, metrics: IntelligenceMetrics) -> None:
+        self.client = client
+        self.metrics = metrics
+        self.model = getattr(client, "model", None)
+        self.max_output_tokens = getattr(client, "max_output_tokens", None)
+
+    async def generate(
+        self, messages: list[Message], tools: list[dict[str, Any]] | None = None
+    ) -> LLMResponse:
+        self.metrics.provider_requests += 1
+        try:
+            response = await self.client.generate(messages, tools)
+        except Exception as exc:
+            self.metrics.provider_failures += 1
+            status = getattr(exc, "status_code", None)
+            category = (
+                "timeout"
+                if isinstance(exc, TimeoutError)
+                else "authentication"
+                if type(status) is int and status in (401, 403)
+                else "rate_limit"
+                if type(status) is int and status == 429
+                else "service_unavailable"
+                if type(status) is int and 500 <= status <= 599
+                else "invalid_request"
+                if type(status) is int and status == 400
+                else "invalid_response_or_request"
+                if isinstance(exc, ValueError)
+                else "unknown"
+            )
+            counts = self.metrics.provider_failure_categories
+            counts[category] = counts.get(category, 0) + 1
+            raise RuntimeError("Model request failed.") from None
+        self.metrics.provider_responses += 1
+        return response
 
 
 class SafeTraceSink:
@@ -197,6 +235,8 @@ class ObservedTool:
 
 
 class IntelligenceRunner(EvalRunner):
+    metrics_type = IntelligenceMetrics
+
     def __init__(
         self,
         *args: Any,
@@ -230,36 +270,27 @@ class IntelligenceRunner(EvalRunner):
         checks: Sequence[EvalCheck],
         metrics: EvalMetrics | None = None,
     ) -> EvalResult:
-        """Run one case and always release the Project Memory directory it used.
+        """Use the retained metrics by default; EvalRunner owns their lifecycle."""
+        return await super().run(
+            case,
+            checks=checks,
+            metrics=self.observations if metrics is None else metrics,
+        )
 
-        ``run_case`` is not the only entry point: a suite runner calls ``run``
-        directly, so ownership of the memory directory belongs at this boundary.
-        """
+    def _bind_metrics(self, metrics: EvalMetrics) -> None:
+        assert isinstance(metrics, IntelligenceMetrics)
+        self.observations = metrics
         self.read_paths.clear()
-        try:
-            return await super().run(
-                case,
-                checks=checks,
-                metrics=self.observations if metrics is None else metrics,
-            )
-        finally:
-            self._release_memory_directory()
+        self.memory_reader = None
+        self.relevant_memories = {}
+        if self.tracer is not None and isinstance(self.tracer.sink, SafeTraceSink):
+            self.tracer.sink.metrics = metrics
 
-    async def run_case(self) -> EvalResult:
-        started = perf_counter()
+    def _finalize_metrics(self, metrics: EvalMetrics) -> None:
+        assert isinstance(metrics, IntelligenceMetrics)
         try:
-            checks = tuple(
-                replace(check, secret_env_keys=self.secret_env_keys)
-                if isinstance(check, BehaviorCheck)
-                else check
-                for check in self.spec.item.checks
-            )
-            return await self.run(
-                self.spec.item.case, checks=checks, metrics=self.observations
-            )
+            self._release_memory_directory()
         finally:
-            metrics = self.observations
-            metrics.elapsed_seconds = perf_counter() - started
             ineligible = sum(
                 count
                 for state, count in metrics.memory_freshness_counts.items()
@@ -275,6 +306,17 @@ class IntelligenceRunner(EvalRunner):
                 if metrics.memory_included_events
                 else None
             )
+
+    async def run_case(self) -> EvalResult:
+        checks = tuple(
+            replace(check, secret_env_keys=self.secret_env_keys)
+            if isinstance(check, BehaviorCheck)
+            else check
+            for check in self.spec.item.checks
+        )
+        return await self.run(
+            self.spec.item.case, checks=checks, metrics=self.observations
+        )
 
     async def _prepare_workspace(self, workspace: Workspace, case: EvalCase) -> None:
         started = perf_counter()
@@ -386,7 +428,13 @@ class IntelligenceRunner(EvalRunner):
                     )
             event_handler(event)
 
-        agent = super()._build_agent(workspace, llm, metrics, observe)
+        # The caller may have instrumented its factory with an old record. Keep
+        # exactly one provider observer and bind it to this case's canonical one.
+        while isinstance(llm, ObservedLLM):
+            llm = llm.client
+        agent = super()._build_agent(
+            workspace, ObservedLLM(llm, self.observations), metrics, observe
+        )
         bash = agent.tools.get_tool("bash")
         assert isinstance(bash, BashTool)
         bash.timeout = self.tool_timeout_seconds

@@ -5,11 +5,9 @@ import random
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
 
 from cairn.core.context import TokenCounter
 from cairn.core.llm import LLMClient
-from cairn.core.models import LLMResponse, Message
 from cairn.infra.observability.tracer import Tracer
 from cairn.runtime.evals.intelligence.dataset import VERSION, dataset_digest
 from cairn.runtime.evals.intelligence.fixtures import IntelligenceCase
@@ -25,44 +23,6 @@ from cairn.runtime.evals.intelligence.runner import IntelligenceRunner, SafeTrac
 from cairn.runtime.evals.models import EvalFailureCategory, EvalResult, EvalStatus
 from cairn.runtime.evals.suite import _report_result
 from cairn.runtime.lifecycle import settle_owned
-
-
-class ObservedLLM:
-    def __init__(self, client: LLMClient, metrics: IntelligenceMetrics) -> None:
-        self.client = client
-        self.metrics = metrics
-        self.model = getattr(client, "model", None)
-        self.max_output_tokens = getattr(client, "max_output_tokens", None)
-
-    async def generate(
-        self, messages: list[Message], tools: list[dict[str, Any]] | None = None
-    ) -> LLMResponse:
-        self.metrics.provider_requests += 1
-        try:
-            response = await self.client.generate(messages, tools)
-        except Exception as exc:
-            self.metrics.provider_failures += 1
-            status = getattr(exc, "status_code", None)
-            category = (
-                "timeout"
-                if isinstance(exc, TimeoutError)
-                else "authentication"
-                if type(status) is int and status in (401, 403)
-                else "rate_limit"
-                if type(status) is int and status == 429
-                else "service_unavailable"
-                if type(status) is int and 500 <= status <= 599
-                else "invalid_request"
-                if type(status) is int and status == 400
-                else "invalid_response_or_request"
-                if isinstance(exc, ValueError)
-                else "unknown"
-            )
-            counts = self.metrics.provider_failure_categories
-            counts[category] = counts.get(category, 0) + 1
-            raise RuntimeError("Model request failed.") from None
-        self.metrics.provider_responses += 1
-        return response
 
 
 def execution_plan(
@@ -118,7 +78,7 @@ async def run_experiment(
         report.active_run_id, report.active_metrics = run_id, metrics
         persist(report, directory)
         runner = IntelligenceRunner(
-            lambda metrics=metrics: ObservedLLM(llm_factory(), metrics),
+            llm_factory,
             spec=spec,
             arm=arm,
             observations=metrics,
@@ -159,7 +119,7 @@ async def run_experiment(
             repetition=repetition,
             order_index=index,
             result=_report_result(result),
-            metrics=metrics,
+            metrics=metrics.model_copy(deep=True),
         )
         report.runs.append(run)
         report.active_run_id = report.active_metrics = None
