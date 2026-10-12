@@ -8,19 +8,19 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
-from cairn.config import (
+from cairn.core.budget import RunBudget
+from cairn.infra.config import (
     ConfigLayout,
     default_provider,
     load_project_providers,
     resolve_context_budget,
     resolve_provider_api_key,
 )
-from cairn.core.budget import RunBudget
-from cairn.evals import EvalResult, EvalRunner, EvalStatus, EvalSuiteRunner
-from cairn.llm.litellm_client import LiteLLMClient
-from cairn.llm.token_counter import LiteLLMTokenCounter
-from cairn.observability.sinks import JsonlTraceSink
-from cairn.observability.tracer import Tracer
+from cairn.infra.llm.litellm_client import LiteLLMClient
+from cairn.infra.llm.token_counter import LiteLLMTokenCounter
+from cairn.infra.observability.sinks import JsonlTraceSink
+from cairn.infra.observability.tracer import Tracer
+from cairn.runtime.evals import EvalResult, EvalRunner, EvalStatus, EvalSuiteRunner
 from cairn.terminal.output import confirm_provider_access, print_provider_selection
 
 if not __package__:

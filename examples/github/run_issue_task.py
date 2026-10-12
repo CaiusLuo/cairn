@@ -8,13 +8,6 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
-from cairn.config import (
-    ConfigLayout,
-    default_provider,
-    load_project_providers,
-    resolve_context_budget,
-    resolve_provider_api_key,
-)
 from cairn.core.budget import RunBudget
 from cairn.core.models import ToolCall
 from cairn.core.permissions import (
@@ -22,24 +15,31 @@ from cairn.core.permissions import (
     PermissionRequest,
     SessionPermissionHandler,
 )
-from cairn.evals.checks import FileContentEqualsCheck
-from cairn.git import WorktreeProvider
-from cairn.github import (
+from cairn.infra.config import (
+    ConfigLayout,
+    default_provider,
+    load_project_providers,
+    resolve_context_budget,
+    resolve_provider_api_key,
+)
+from cairn.infra.git import WorktreeProvider
+from cairn.infra.github import (
     GitHubRepository,
     GitHubREST,
     GitHubRESTIssueReader,
     GitHubTaskSource,
     IssueReference,
 )
-from cairn.github.publisher import GitHubPublisher
-from cairn.github.transport import GitHubRESTPublisher
-from cairn.llm.provider_runtime import build_provider_runtime
-from cairn.observability.sinks import JsonlTraceSink
-from cairn.observability.tracer import Tracer
-from cairn.tasks import CodingTaskRunner
+from cairn.infra.github.transport import GitHubRESTPublisher
+from cairn.infra.observability.sinks import JsonlTraceSink
+from cairn.infra.observability.tracer import Tracer
+from cairn.infra.workspace.workspace import Workspace
+from cairn.runtime.evals.checks import FileContentEqualsCheck
+from cairn.runtime.provider_runtime import build_provider_runtime
+from cairn.runtime.tasks import CodingTaskRunner
+from cairn.runtime.workflow import FixedChecksVerifier, LocalWorkflow, WorkflowStatus
+from cairn.runtime.workflow.publisher import GitHubPublisher
 from cairn.terminal.output import confirm_provider_access, console_permission_prompt
-from cairn.workflow import FixedChecksVerifier, LocalWorkflow, WorkflowStatus
-from cairn.workspace.workspace import Workspace
 
 
 async def main(args: argparse.Namespace) -> int:

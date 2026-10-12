@@ -1,4 +1,4 @@
-from cairn.observability.storage import TraceDeleteResult
+from cairn.infra.observability.storage import TraceDeleteResult
 from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.help import handle_help
 from cairn.terminal.trace_output import print_trace, print_trace_list

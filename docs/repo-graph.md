@@ -7,8 +7,8 @@ It is independent of conversation state and is not Project Memory.
 
 ```python
 from pathlib import Path
-from cairn.repo_graph import RepoGraphBuilder, BuildLimits, Language
-from cairn.workspace.workspace import Workspace
+from cairn.infra.repo_graph import RepoGraphBuilder, BuildLimits, Language
+from cairn.infra.workspace.workspace import Workspace
 
 builder = RepoGraphBuilder(
     Workspace(Path(".")),
@@ -70,7 +70,7 @@ filesystem-order subset; detecting overflow may inspect one extra entry.
 
 Mandatory exclusions include `.git`, `.cairn`, `.env`, dependency/cache folders,
 virtual environments and common generated/build directories; see
-`DEFAULT_EXCLUSIONS` in `repo_graph/builder.py`. Caller exclusions add basenames.
+`DEFAULT_EXCLUSIONS` in `cairn.infra.repo_graph.builder`. Caller exclusions add basenames.
 Git ignore rules are not interpreted. Symlinks, including internal links, are
 never followed; symlink metadata, special files and binary files are explicit
 policy skips. Oversized/unreadable files and resource limits make a build

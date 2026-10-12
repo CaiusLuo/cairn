@@ -204,23 +204,16 @@ structure queries through explicit, read-only snapshots.
 
 ```text
 src/cairn/
-├── core/          # Agent loop, state, context budgets, permissions
-├── llm/           # Model configuration, selection, clients, token counting
-├── tools/         # Bash and file tools
-├── workspace/     # Filesystem roots and path boundaries
-├── repo_graph/    # Bounded inventory, Python structure, and snapshot queries
-├── git/           # Local worktree creation, retention, and cleanup
-├── github/        # Explicit Issue source and Draft PR transport
-├── workflow/      # Retained coding tasks and exact-tree verification
-├── observability/ # Trace recording and storage
-├── terminal/      # CLI input, output, and slash commands
-├── evals/         # Evaluation cases, checks, and runner
-├── resources/     # Terminal banner
-├── repository.py  # Git repository context
-├── assembly.py    # Agent and tool assembly
-├── config.py      # Environment and TOML loading
-└── cli.py         # CLI runtime wiring
+├── core/      # Agent and domain models, policies, and interfaces
+├── runtime/   # Agent loop, assembly, and bounded task/workflow orchestration
+├── infra/     # Providers, tools, filesystem/Git, GitHub, traces, and config
+├── terminal/  # CLI entrypoint, input/output, and slash commands
+├── resources/ # Packaged terminal assets
+└── __init__.py
 ```
+
+See [Architecture](docs/architecture.md) for dependency direction, turn and
+scheduling ownership, and guidance for placing new code.
 
 ## Development
 

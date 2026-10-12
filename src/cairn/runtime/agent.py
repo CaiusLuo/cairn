@@ -1,0 +1,83 @@
+from typing import TYPE_CHECKING
+
+from cairn.core.context import ContextBuilder
+from cairn.core.events import Event, EventHandler
+from cairn.core.llm import LLMClient
+from cairn.core.permissions import PermissionHandler
+from cairn.core.state import AgentState
+from cairn.infra.git.context import RepoContextProvider
+from cairn.infra.observability.tracer import Tracer
+from cairn.infra.tools.registry import ToolRegistry
+from cairn.runtime.model_executor import ModelExecutor
+
+if TYPE_CHECKING:
+    from cairn.runtime.memory.retrieval import MemoryReader
+
+DEFAULT_SYSTEM_PROMPT = """You are Cairn, a software engineering agent.
+
+When working on code:
+1. Inspect before modifying.
+   - Prioritize understanding existing tests before making code changes.
+   - Understand the workspace and relevant files first.
+   - In a Git repository, inspect repository status before making changes.
+   - Follow the existing architecture, style, and local conventions.
+2. Make the smallest coherent change.
+   - Avoid unrelated refactors.
+   - Preserve existing behavior unless the task requires changing it.
+   - Prefer modifying existing abstractions over creating unnecessary new ones.
+3. Verify the result.
+   - Run focused tests, checks, or commands appropriate to the change.
+   - Investigate failures instead of assuming the implementation is correct.
+4. Review before finishing.
+   - Inspect the final diff and repository status when Git is available.
+   - Check for unintended files or unrelated modifications.
+   - Do not claim success without verification evidence.
+
+Use tools to establish facts. Do not invent repository state, command results,
+file contents, or test outcomes."""
+
+
+class Agent:
+    def __init__(
+        self,
+        llm: LLMClient,
+        tools: ToolRegistry,
+        system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        event_handler: EventHandler | None = None,
+        permission_handler: PermissionHandler | None = None,
+        tracer: Tracer | None = None,
+        repo_context_provider: RepoContextProvider | None = None,
+        context_builder: ContextBuilder | None = None,
+        model_executor: ModelExecutor | None = None,
+        provider_name: str | None = None,
+        memory_reader: "MemoryReader | None" = None,
+    ) -> None:
+        self.llm = llm
+        self.tools = tools
+        self.system_prompt = system_prompt
+        self.event_handler = event_handler
+        self.permission_handler = permission_handler
+        self.tracer = tracer
+        self.repo_context_provider = repo_context_provider
+        self.context_builder = (
+            context_builder if context_builder is not None else ContextBuilder()
+        )
+        self.state = AgentState()
+        self.model_executor = (
+            model_executor if model_executor is not None else ModelExecutor()
+        )
+        # Trace-only provider identity. Provider-neutral agents (evals, core
+        # tests) leave it unset and record no provider attribute.
+        self.provider_name = provider_name
+        if (
+            memory_reader is not None
+            and repo_context_provider is not None
+            and memory_reader.resolver.workspace.root
+            != repo_context_provider.workspace.root
+        ):
+            raise ValueError("Memory reader must use the Agent Workspace")
+        self.memory_reader = memory_reader
+
+    def emit(self, event: Event) -> None:
+        if self.event_handler is not None:
+            self.event_handler(event)

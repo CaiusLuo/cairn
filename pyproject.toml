@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-cairn = "cairn.cli:app"
+cairn = "cairn.terminal.cli:app"
 
 [build-system]
 requires = ["uv_build>=0.11.3,<0.12.0"]

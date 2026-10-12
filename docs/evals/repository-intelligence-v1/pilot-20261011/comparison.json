@@ -1,0 +1,1900 @@
+{
+  "schema_version": 1,
+  "execution_kind": "real",
+  "state": "real_eval_blocked",
+  "config": {
+    "dataset_version": "repo-intelligence-v1",
+    "dataset_sha256": "b459ce3fd1293e540572a2ebf8ae0c4a10407fd28a4be76f117a776d45e7553f",
+    "source_revision": "91e2208c2d7a6eab54f952378be6da8dfb233362",
+    "execution_kind": "real",
+    "model_identifier": "openai/qwen3.8-27b",
+    "provider_name": "qwen",
+    "provider_endpoint_sha256": "50f0591cec7ba85e240b8c752a9a812be0160419910e18360a15153c4f0621a9",
+    "seed": 230028,
+    "repetitions": 1,
+    "case_names": [
+      "quote-dependencies",
+      "find-label-normalizer",
+      "shared-account-contract",
+      "testing-convention",
+      "stale-batch-history",
+      "unrelated-memory-control"
+    ],
+    "settings": {
+      "run_budget": {
+        "max_steps": 8
+      },
+      "context_budget": {
+        "max_tokens": 16384,
+        "response_tokens": 2048
+      },
+      "run_timeout_seconds": 120.0,
+      "check_timeout_seconds": 5.0
+    },
+    "tool_timeout_seconds": 10.0,
+    "sandbox": "macos-sandbox-exec",
+    "network_policy": "baseline-deny-no-approval"
+  },
+  "arms": {
+    "A": {
+      "runs": 4,
+      "pass": 1,
+      "fail": 0,
+      "error": 3,
+      "task_success_rate": 0.25,
+      "workspace_checks_available": 4,
+      "workspace_checks_passed": 3,
+      "workspace_check_success_rate": 0.75,
+      "failure_categories": {
+        "budget_exhausted": 2,
+        "runtime_error": 1
+      },
+      "failed_check_ids": {
+        "find-label-normalizer:behavior": 1
+      },
+      "measurements": {
+        "tool_calls": {
+          "available": 4,
+          "total": 36,
+          "mean": 9
+        },
+        "read_file_calls": {
+          "available": 4,
+          "total": 12,
+          "mean": 3
+        },
+        "bash_calls": {
+          "available": 4,
+          "total": 18,
+          "mean": 4.5
+        },
+        "bash_discovery_calls": {
+          "available": 4,
+          "total": 9,
+          "mean": 2.25
+        },
+        "graph_query_calls": {
+          "available": 4,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_error_events": {
+          "available": 4,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_denied_events": {
+          "available": 4,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_nonzero_results": {
+          "available": 4,
+          "total": 4,
+          "mean": 1
+        },
+        "bash_timeout_results": {
+          "available": 4,
+          "total": 0,
+          "mean": 0
+        },
+        "provider_requests": {
+          "available": 4,
+          "total": 25,
+          "mean": 6.25
+        },
+        "provider_responses": {
+          "available": 4,
+          "total": 24,
+          "mean": 6
+        },
+        "provider_failures": {
+          "available": 4,
+          "total": 1,
+          "mean": 0.25
+        },
+        "repeated_read_file_calls": {
+          "available": 4,
+          "total": 0,
+          "mean": 0
+        },
+        "provider_input_tokens": {
+          "available": 3,
+          "total": 58856,
+          "mean": 19618.666666666668
+        },
+        "provider_output_tokens": {
+          "available": 3,
+          "total": 7242,
+          "mean": 2414
+        },
+        "request_tokens_total": {
+          "available": 4,
+          "total": 46504,
+          "mean": 11626
+        },
+        "agent_steps_used": {
+          "available": 4,
+          "total": 25,
+          "mean": 6.25
+        },
+        "elapsed_seconds": {
+          "available": 4,
+          "total": 170.35375412437133,
+          "mean": 42.588438531092834
+        },
+        "agent_elapsed_seconds": {
+          "available": 4,
+          "total": 169.798021,
+          "mean": 42.44950525
+        },
+        "fixture_setup_seconds": {
+          "available": 4,
+          "total": 0.3649150419514626,
+          "mean": 0.09122876048786566
+        },
+        "graph_build_refresh_seconds": {
+          "available": 4,
+          "total": 0.0,
+          "mean": 0.0
+        },
+        "memory_retrieval_freshness_seconds": {
+          "available": 4,
+          "total": 0.0,
+          "mean": 0.0
+        },
+        "memory_fixture_seconds": {
+          "available": 4,
+          "total": 0.0,
+          "mean": 0.0
+        },
+        "context_trimmed_turns": {
+          "available": 4,
+          "total": 0,
+          "mean": 0
+        },
+        "context_trimmed_messages": {
+          "available": 4,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_candidates_checked": {
+          "available": 4,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_selected_events": {
+          "available": 4,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_included_events": {
+          "available": 4,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_budget_drop_events": {
+          "available": 4,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_size_drop_events": {
+          "available": 4,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_read_errors": {
+          "available": 4,
+          "total": 0,
+          "mean": 0
+        }
+      },
+      "memory_freshness_counts": {},
+      "stale_recall_rate": null,
+      "relevant_memory_precision": null,
+      "relevant_paths_observed": 9,
+      "bash_relevant_file_discovery": null,
+      "repeated_bash_file_exploration": null
+    },
+    "B": {
+      "runs": 3,
+      "pass": 2,
+      "fail": 0,
+      "error": 1,
+      "task_success_rate": 0.6666666666666666,
+      "workspace_checks_available": 3,
+      "workspace_checks_passed": 3,
+      "workspace_check_success_rate": 1.0,
+      "failure_categories": {
+        "budget_exhausted": 1
+      },
+      "failed_check_ids": {},
+      "measurements": {
+        "tool_calls": {
+          "available": 3,
+          "total": 39,
+          "mean": 13
+        },
+        "read_file_calls": {
+          "available": 3,
+          "total": 13,
+          "mean": 4.333333333333333
+        },
+        "bash_calls": {
+          "available": 3,
+          "total": 16,
+          "mean": 5.333333333333333
+        },
+        "bash_discovery_calls": {
+          "available": 3,
+          "total": 9,
+          "mean": 3
+        },
+        "graph_query_calls": {
+          "available": 3,
+          "total": 4,
+          "mean": 1.3333333333333333
+        },
+        "tool_error_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_denied_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_nonzero_results": {
+          "available": 3,
+          "total": 3,
+          "mean": 1
+        },
+        "bash_timeout_results": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "provider_requests": {
+          "available": 3,
+          "total": 23,
+          "mean": 7.666666666666667
+        },
+        "provider_responses": {
+          "available": 3,
+          "total": 23,
+          "mean": 7.666666666666667
+        },
+        "provider_failures": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "repeated_read_file_calls": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "provider_input_tokens": {
+          "available": 3,
+          "total": 105887,
+          "mean": 35295.666666666664
+        },
+        "provider_output_tokens": {
+          "available": 3,
+          "total": 7905,
+          "mean": 2635
+        },
+        "request_tokens_total": {
+          "available": 3,
+          "total": 79321,
+          "mean": 26440.333333333332
+        },
+        "agent_steps_used": {
+          "available": 3,
+          "total": 23,
+          "mean": 7.666666666666667
+        },
+        "elapsed_seconds": {
+          "available": 3,
+          "total": 181.18411375023425,
+          "mean": 60.39470458341142
+        },
+        "agent_elapsed_seconds": {
+          "available": 3,
+          "total": 180.712115,
+          "mean": 60.23737166666667
+        },
+        "fixture_setup_seconds": {
+          "available": 3,
+          "total": 0.26575987599790096,
+          "mean": 0.08858662533263366
+        },
+        "graph_build_refresh_seconds": {
+          "available": 3,
+          "total": 0.03171579306945205,
+          "mean": 0.010571931023150682
+        },
+        "memory_retrieval_freshness_seconds": {
+          "available": 3,
+          "total": 0.0,
+          "mean": 0.0
+        },
+        "memory_fixture_seconds": {
+          "available": 3,
+          "total": 0.0,
+          "mean": 0.0
+        },
+        "context_trimmed_turns": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "context_trimmed_messages": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_candidates_checked": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_selected_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_included_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_budget_drop_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_size_drop_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_read_errors": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        }
+      },
+      "memory_freshness_counts": {},
+      "stale_recall_rate": null,
+      "relevant_memory_precision": null,
+      "relevant_paths_observed": 9,
+      "bash_relevant_file_discovery": null,
+      "repeated_bash_file_exploration": null
+    },
+    "C": {
+      "runs": 3,
+      "pass": 1,
+      "fail": 0,
+      "error": 2,
+      "task_success_rate": 0.3333333333333333,
+      "workspace_checks_available": 3,
+      "workspace_checks_passed": 3,
+      "workspace_check_success_rate": 1.0,
+      "failure_categories": {
+        "budget_exhausted": 2
+      },
+      "failed_check_ids": {},
+      "measurements": {
+        "tool_calls": {
+          "available": 3,
+          "total": 35,
+          "mean": 11.666666666666666
+        },
+        "read_file_calls": {
+          "available": 3,
+          "total": 11,
+          "mean": 3.6666666666666665
+        },
+        "bash_calls": {
+          "available": 3,
+          "total": 18,
+          "mean": 6
+        },
+        "bash_discovery_calls": {
+          "available": 3,
+          "total": 10,
+          "mean": 3.3333333333333335
+        },
+        "graph_query_calls": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_error_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_denied_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_nonzero_results": {
+          "available": 3,
+          "total": 2,
+          "mean": 0.6666666666666666
+        },
+        "bash_timeout_results": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "provider_requests": {
+          "available": 3,
+          "total": 24,
+          "mean": 8
+        },
+        "provider_responses": {
+          "available": 3,
+          "total": 24,
+          "mean": 8
+        },
+        "provider_failures": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "repeated_read_file_calls": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "provider_input_tokens": {
+          "available": 3,
+          "total": 81725,
+          "mean": 27241.666666666668
+        },
+        "provider_output_tokens": {
+          "available": 3,
+          "total": 6640,
+          "mean": 2213.3333333333335
+        },
+        "request_tokens_total": {
+          "available": 3,
+          "total": 65284,
+          "mean": 21761.333333333332
+        },
+        "agent_steps_used": {
+          "available": 3,
+          "total": 24,
+          "mean": 8
+        },
+        "elapsed_seconds": {
+          "available": 3,
+          "total": 166.76266629225574,
+          "mean": 55.58755543075191
+        },
+        "agent_elapsed_seconds": {
+          "available": 3,
+          "total": 165.77847500000001,
+          "mean": 55.25949166666667
+        },
+        "fixture_setup_seconds": {
+          "available": 3,
+          "total": 0.8446307079866529,
+          "mean": 0.2815435693288843
+        },
+        "graph_build_refresh_seconds": {
+          "available": 3,
+          "total": 0.0,
+          "mean": 0.0
+        },
+        "memory_retrieval_freshness_seconds": {
+          "available": 3,
+          "total": 1.756811416707933,
+          "mean": 0.585603805569311
+        },
+        "memory_fixture_seconds": {
+          "available": 3,
+          "total": 0.5622894179541618,
+          "mean": 0.1874298059847206
+        },
+        "context_trimmed_turns": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "context_trimmed_messages": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_candidates_checked": {
+          "available": 3,
+          "total": 24,
+          "mean": 8
+        },
+        "memory_selected_events": {
+          "available": 3,
+          "total": 19,
+          "mean": 6.333333333333333
+        },
+        "memory_included_events": {
+          "available": 3,
+          "total": 19,
+          "mean": 6.333333333333333
+        },
+        "memory_budget_drop_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_size_drop_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_read_errors": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        }
+      },
+      "memory_freshness_counts": {
+        "fresh": 19,
+        "stale": 5
+      },
+      "stale_recall_rate": 0.0,
+      "relevant_memory_precision": 1.0,
+      "relevant_paths_observed": 9,
+      "bash_relevant_file_discovery": null,
+      "repeated_bash_file_exploration": null
+    },
+    "D": {
+      "runs": 3,
+      "pass": 1,
+      "fail": 0,
+      "error": 2,
+      "task_success_rate": 0.3333333333333333,
+      "workspace_checks_available": 3,
+      "workspace_checks_passed": 3,
+      "workspace_check_success_rate": 1.0,
+      "failure_categories": {
+        "budget_exhausted": 2
+      },
+      "failed_check_ids": {},
+      "measurements": {
+        "tool_calls": {
+          "available": 3,
+          "total": 38,
+          "mean": 12.666666666666666
+        },
+        "read_file_calls": {
+          "available": 3,
+          "total": 11,
+          "mean": 3.6666666666666665
+        },
+        "bash_calls": {
+          "available": 3,
+          "total": 13,
+          "mean": 4.333333333333333
+        },
+        "bash_discovery_calls": {
+          "available": 3,
+          "total": 5,
+          "mean": 1.6666666666666667
+        },
+        "graph_query_calls": {
+          "available": 3,
+          "total": 8,
+          "mean": 2.6666666666666665
+        },
+        "tool_error_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_denied_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_nonzero_results": {
+          "available": 3,
+          "total": 2,
+          "mean": 0.6666666666666666
+        },
+        "bash_timeout_results": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "provider_requests": {
+          "available": 3,
+          "total": 23,
+          "mean": 7.666666666666667
+        },
+        "provider_responses": {
+          "available": 3,
+          "total": 23,
+          "mean": 7.666666666666667
+        },
+        "provider_failures": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "repeated_read_file_calls": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "provider_input_tokens": {
+          "available": 3,
+          "total": 106651,
+          "mean": 35550.333333333336
+        },
+        "provider_output_tokens": {
+          "available": 3,
+          "total": 6608,
+          "mean": 2202.6666666666665
+        },
+        "request_tokens_total": {
+          "available": 3,
+          "total": 79492,
+          "mean": 26497.333333333332
+        },
+        "agent_steps_used": {
+          "available": 3,
+          "total": 23,
+          "mean": 7.666666666666667
+        },
+        "elapsed_seconds": {
+          "available": 3,
+          "total": 169.49895304092206,
+          "mean": 56.49965101364069
+        },
+        "agent_elapsed_seconds": {
+          "available": 3,
+          "total": 168.47861799999998,
+          "mean": 56.159539333333335
+        },
+        "fixture_setup_seconds": {
+          "available": 3,
+          "total": 0.8634293340146542,
+          "mean": 0.2878097780048847
+        },
+        "graph_build_refresh_seconds": {
+          "available": 3,
+          "total": 0.05958741600625217,
+          "mean": 0.019862472002084058
+        },
+        "memory_retrieval_freshness_seconds": {
+          "available": 3,
+          "total": 1.6972926266025752,
+          "mean": 0.5657642088675251
+        },
+        "memory_fixture_seconds": {
+          "available": 3,
+          "total": 0.5899214989040047,
+          "mean": 0.19664049963466823
+        },
+        "context_trimmed_turns": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "context_trimmed_messages": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_candidates_checked": {
+          "available": 3,
+          "total": 23,
+          "mean": 7.666666666666667
+        },
+        "memory_selected_events": {
+          "available": 3,
+          "total": 19,
+          "mean": 6.333333333333333
+        },
+        "memory_included_events": {
+          "available": 3,
+          "total": 19,
+          "mean": 6.333333333333333
+        },
+        "memory_budget_drop_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_size_drop_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_read_errors": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        }
+      },
+      "memory_freshness_counts": {
+        "fresh": 19,
+        "stale": 4
+      },
+      "stale_recall_rate": 0.0,
+      "relevant_memory_precision": 1.0,
+      "relevant_paths_observed": 8,
+      "bash_relevant_file_discovery": null,
+      "repeated_bash_file_exploration": null
+    }
+  },
+  "per_case_against_baseline": [
+    {
+      "case": "quote-dependencies",
+      "arm": "D",
+      "repetition": 1,
+      "run_id": "001-quote-dependencies-D-r1",
+      "baseline_run_id": "003-quote-dependencies-A-r1",
+      "status": "error",
+      "baseline_status": "pass",
+      "failure_category": "budget_exhausted",
+      "pass_delta": -1,
+      "differences": {
+        "tool_calls": -1,
+        "read_file_calls": -1,
+        "bash_calls": 0,
+        "bash_discovery_calls": 0,
+        "graph_query_calls": 0,
+        "tool_error_events": 0,
+        "tool_denied_events": 0,
+        "tool_nonzero_results": 1,
+        "bash_timeout_results": 0,
+        "provider_requests": 0,
+        "provider_responses": 0,
+        "provider_failures": 0,
+        "repeated_read_file_calls": 0,
+        "provider_input_tokens": 8496,
+        "provider_output_tokens": -87,
+        "request_tokens_total": 6503,
+        "agent_steps_used": 0,
+        "elapsed_seconds": -3.008434417191893,
+        "agent_elapsed_seconds": -3.220472000000001,
+        "fixture_setup_seconds": 0.2359738750383258,
+        "graph_build_refresh_seconds": 0.0025371660012751818,
+        "memory_retrieval_freshness_seconds": 0.5950343762524426,
+        "memory_fixture_seconds": 0.2324220419395715,
+        "context_trimmed_turns": 0,
+        "context_trimmed_messages": 0,
+        "memory_candidates_checked": 8,
+        "memory_selected_events": 6,
+        "memory_included_events": 6,
+        "memory_budget_drop_events": 0,
+        "memory_size_drop_events": 0,
+        "memory_read_errors": 0
+      }
+    },
+    {
+      "case": "quote-dependencies",
+      "arm": "B",
+      "repetition": 1,
+      "run_id": "002-quote-dependencies-B-r1",
+      "baseline_run_id": "003-quote-dependencies-A-r1",
+      "status": "pass",
+      "baseline_status": "pass",
+      "failure_category": null,
+      "pass_delta": 0,
+      "differences": {
+        "tool_calls": 0,
+        "read_file_calls": -2,
+        "bash_calls": 1,
+        "bash_discovery_calls": 1,
+        "graph_query_calls": 1,
+        "tool_error_events": 0,
+        "tool_denied_events": 0,
+        "tool_nonzero_results": 1,
+        "bash_timeout_results": 0,
+        "provider_requests": 0,
+        "provider_responses": 0,
+        "provider_failures": 0,
+        "repeated_read_file_calls": 0,
+        "provider_input_tokens": 14446,
+        "provider_output_tokens": 1101,
+        "request_tokens_total": 10145,
+        "agent_steps_used": 0,
+        "elapsed_seconds": 17.979490665951744,
+        "agent_elapsed_seconds": 17.971014000000004,
+        "fixture_setup_seconds": -0.006117082899436355,
+        "graph_build_refresh_seconds": 0.009270666865631938,
+        "memory_retrieval_freshness_seconds": 0.0,
+        "memory_fixture_seconds": 0.0,
+        "context_trimmed_turns": 0,
+        "context_trimmed_messages": 0,
+        "memory_candidates_checked": 0,
+        "memory_selected_events": 0,
+        "memory_included_events": 0,
+        "memory_budget_drop_events": 0,
+        "memory_size_drop_events": 0,
+        "memory_read_errors": 0
+      }
+    },
+    {
+      "case": "quote-dependencies",
+      "arm": "C",
+      "repetition": 1,
+      "run_id": "004-quote-dependencies-C-r1",
+      "baseline_run_id": "003-quote-dependencies-A-r1",
+      "status": "pass",
+      "baseline_status": "pass",
+      "failure_category": null,
+      "pass_delta": 0,
+      "differences": {
+        "tool_calls": -1,
+        "read_file_calls": -2,
+        "bash_calls": 1,
+        "bash_discovery_calls": 0,
+        "graph_query_calls": 0,
+        "tool_error_events": 0,
+        "tool_denied_events": 0,
+        "tool_nonzero_results": 0,
+        "bash_timeout_results": 0,
+        "provider_requests": 0,
+        "provider_responses": 0,
+        "provider_failures": 0,
+        "repeated_read_file_calls": 0,
+        "provider_input_tokens": 1320,
+        "provider_output_tokens": 0,
+        "request_tokens_total": 1159,
+        "agent_steps_used": 0,
+        "elapsed_seconds": 1.8695064168423414,
+        "agent_elapsed_seconds": 1.6813720000000032,
+        "fixture_setup_seconds": 0.19697308307513595,
+        "graph_build_refresh_seconds": 0.0,
+        "memory_retrieval_freshness_seconds": 0.48326649982482195,
+        "memory_fixture_seconds": 0.1977975838817656,
+        "context_trimmed_turns": 0,
+        "context_trimmed_messages": 0,
+        "memory_candidates_checked": 8,
+        "memory_selected_events": 4,
+        "memory_included_events": 4,
+        "memory_budget_drop_events": 0,
+        "memory_size_drop_events": 0,
+        "memory_read_errors": 0
+      }
+    },
+    {
+      "case": "testing-convention",
+      "arm": "C",
+      "repetition": 1,
+      "run_id": "005-testing-convention-C-r1",
+      "baseline_run_id": "007-testing-convention-A-r1",
+      "status": "error",
+      "baseline_status": "error",
+      "failure_category": "budget_exhausted",
+      "pass_delta": 0,
+      "differences": {
+        "tool_calls": 0,
+        "read_file_calls": 1,
+        "bash_calls": -1,
+        "bash_discovery_calls": -1,
+        "graph_query_calls": 0,
+        "tool_error_events": 0,
+        "tool_denied_events": 0,
+        "tool_nonzero_results": -1,
+        "bash_timeout_results": 0,
+        "provider_requests": 0,
+        "provider_responses": 0,
+        "provider_failures": 0,
+        "repeated_read_file_calls": 0,
+        "provider_input_tokens": 11892,
+        "provider_output_tokens": 331,
+        "request_tokens_total": 10212,
+        "agent_steps_used": 0,
+        "elapsed_seconds": 14.728858791990206,
+        "agent_elapsed_seconds": 14.522464,
+        "fixture_setup_seconds": 0.20266562490724027,
+        "graph_build_refresh_seconds": 0.0,
+        "memory_retrieval_freshness_seconds": 0.6481980828102678,
+        "memory_fixture_seconds": 0.19547979207709432,
+        "context_trimmed_turns": 0,
+        "context_trimmed_messages": 0,
+        "memory_candidates_checked": 8,
+        "memory_selected_events": 7,
+        "memory_included_events": 7,
+        "memory_budget_drop_events": 0,
+        "memory_size_drop_events": 0,
+        "memory_read_errors": 0
+      }
+    },
+    {
+      "case": "testing-convention",
+      "arm": "B",
+      "repetition": 1,
+      "run_id": "006-testing-convention-B-r1",
+      "baseline_run_id": "007-testing-convention-A-r1",
+      "status": "pass",
+      "baseline_status": "error",
+      "failure_category": null,
+      "pass_delta": 1,
+      "differences": {
+        "tool_calls": 1,
+        "read_file_calls": 1,
+        "bash_calls": -2,
+        "bash_discovery_calls": -1,
+        "graph_query_calls": 2,
+        "tool_error_events": 0,
+        "tool_denied_events": 0,
+        "tool_nonzero_results": -1,
+        "bash_timeout_results": 0,
+        "provider_requests": -1,
+        "provider_responses": -1,
+        "provider_failures": 0,
+        "repeated_read_file_calls": 0,
+        "provider_input_tokens": 19257,
+        "provider_output_tokens": -122,
+        "request_tokens_total": 14159,
+        "agent_steps_used": -1,
+        "elapsed_seconds": 2.7491583758965135,
+        "agent_elapsed_seconds": 2.704170000000005,
+        "fixture_setup_seconds": 0.0008819999638944864,
+        "graph_build_refresh_seconds": 0.013759792083874345,
+        "memory_retrieval_freshness_seconds": 0.0,
+        "memory_fixture_seconds": 0.0,
+        "context_trimmed_turns": 0,
+        "context_trimmed_messages": 0,
+        "memory_candidates_checked": 0,
+        "memory_selected_events": 0,
+        "memory_included_events": 0,
+        "memory_budget_drop_events": 0,
+        "memory_size_drop_events": 0,
+        "memory_read_errors": 0
+      }
+    },
+    {
+      "case": "testing-convention",
+      "arm": "D",
+      "repetition": 1,
+      "run_id": "008-testing-convention-D-r1",
+      "baseline_run_id": "007-testing-convention-A-r1",
+      "status": "pass",
+      "baseline_status": "error",
+      "failure_category": null,
+      "pass_delta": 1,
+      "differences": {
+        "tool_calls": -2,
+        "read_file_calls": -1,
+        "bash_calls": -3,
+        "bash_discovery_calls": -3,
+        "graph_query_calls": 2,
+        "tool_error_events": 0,
+        "tool_denied_events": 0,
+        "tool_nonzero_results": -1,
+        "bash_timeout_results": 0,
+        "provider_requests": -1,
+        "provider_responses": -1,
+        "provider_failures": 0,
+        "repeated_read_file_calls": 0,
+        "provider_input_tokens": 18476,
+        "provider_output_tokens": -77,
+        "request_tokens_total": 12858,
+        "agent_steps_used": -1,
+        "elapsed_seconds": 8.567478874931112,
+        "agent_elapsed_seconds": 8.345655,
+        "fixture_setup_seconds": 0.1936757080256939,
+        "graph_build_refresh_seconds": 0.015136583941057324,
+        "memory_retrieval_freshness_seconds": 0.473475081846118,
+        "memory_fixture_seconds": 0.19577354099601507,
+        "context_trimmed_turns": 0,
+        "context_trimmed_messages": 0,
+        "memory_candidates_checked": 7,
+        "memory_selected_events": 5,
+        "memory_included_events": 5,
+        "memory_budget_drop_events": 0,
+        "memory_size_drop_events": 0,
+        "memory_read_errors": 0
+      }
+    },
+    {
+      "case": "shared-account-contract",
+      "arm": "C",
+      "repetition": 1,
+      "run_id": "010-shared-account-contract-C-r1",
+      "baseline_run_id": "009-shared-account-contract-A-r1",
+      "status": "error",
+      "baseline_status": "error",
+      "failure_category": "budget_exhausted",
+      "pass_delta": 0,
+      "differences": {
+        "tool_calls": 0,
+        "read_file_calls": 0,
+        "bash_calls": 0,
+        "bash_discovery_calls": 2,
+        "graph_query_calls": 0,
+        "tool_error_events": 0,
+        "tool_denied_events": 0,
+        "tool_nonzero_results": -1,
+        "bash_timeout_results": 0,
+        "provider_requests": 0,
+        "provider_responses": 0,
+        "provider_failures": 0,
+        "repeated_read_file_calls": 0,
+        "provider_input_tokens": 9657,
+        "provider_output_tokens": -933,
+        "request_tokens_total": 8051,
+        "agent_steps_used": 0,
+        "elapsed_seconds": -19.429779707919806,
+        "agent_elapsed_seconds": -19.599472,
+        "fixture_setup_seconds": 0.1687565001193434,
+        "graph_build_refresh_seconds": 0.0,
+        "memory_retrieval_freshness_seconds": 0.6253468340728432,
+        "memory_fixture_seconds": 0.16901204199530184,
+        "context_trimmed_turns": 0,
+        "context_trimmed_messages": 0,
+        "memory_candidates_checked": 8,
+        "memory_selected_events": 8,
+        "memory_included_events": 8,
+        "memory_budget_drop_events": 0,
+        "memory_size_drop_events": 0,
+        "memory_read_errors": 0
+      }
+    },
+    {
+      "case": "shared-account-contract",
+      "arm": "D",
+      "repetition": 1,
+      "run_id": "011-shared-account-contract-D-r1",
+      "baseline_run_id": "009-shared-account-contract-A-r1",
+      "status": "error",
+      "baseline_status": "error",
+      "failure_category": "budget_exhausted",
+      "pass_delta": 0,
+      "differences": {
+        "tool_calls": 5,
+        "read_file_calls": 1,
+        "bash_calls": -2,
+        "bash_discovery_calls": -1,
+        "graph_query_calls": 6,
+        "tool_error_events": 0,
+        "tool_denied_events": 0,
+        "tool_nonzero_results": -2,
+        "bash_timeout_results": 0,
+        "provider_requests": 0,
+        "provider_responses": 0,
+        "provider_failures": 0,
+        "repeated_read_file_calls": 0,
+        "provider_input_tokens": 20823,
+        "provider_output_tokens": -470,
+        "request_tokens_total": 14269,
+        "agent_steps_used": 0,
+        "elapsed_seconds": -5.654172208160162,
+        "agent_elapsed_seconds": -5.820675999999999,
+        "fixture_setup_seconds": 0.15754425106570125,
+        "graph_build_refresh_seconds": 0.04191366606391966,
+        "memory_retrieval_freshness_seconds": 0.6287831685040146,
+        "memory_fixture_seconds": 0.16172591596841812,
+        "context_trimmed_turns": 0,
+        "context_trimmed_messages": 0,
+        "memory_candidates_checked": 8,
+        "memory_selected_events": 8,
+        "memory_included_events": 8,
+        "memory_budget_drop_events": 0,
+        "memory_size_drop_events": 0,
+        "memory_read_errors": 0
+      }
+    },
+    {
+      "case": "shared-account-contract",
+      "arm": "B",
+      "repetition": 1,
+      "run_id": "012-shared-account-contract-B-r1",
+      "baseline_run_id": "009-shared-account-contract-A-r1",
+      "status": "error",
+      "baseline_status": "error",
+      "failure_category": "budget_exhausted",
+      "pass_delta": 0,
+      "differences": {
+        "tool_calls": 2,
+        "read_file_calls": 2,
+        "bash_calls": -1,
+        "bash_discovery_calls": 0,
+        "graph_query_calls": 1,
+        "tool_error_events": 0,
+        "tool_denied_events": 0,
+        "tool_nonzero_results": -1,
+        "bash_timeout_results": 0,
+        "provider_requests": 0,
+        "provider_responses": 0,
+        "provider_failures": 0,
+        "repeated_read_file_calls": 0,
+        "provider_input_tokens": 13328,
+        "provider_output_tokens": -316,
+        "request_tokens_total": 9155,
+        "agent_steps_used": 0,
+        "elapsed_seconds": -9.138616082957014,
+        "agent_elapsed_seconds": -9.13718,
+        "fixture_setup_seconds": -0.005240540951490402,
+        "graph_build_refresh_seconds": 0.008685334119945765,
+        "memory_retrieval_freshness_seconds": 0.0,
+        "memory_fixture_seconds": 0.0,
+        "context_trimmed_turns": 0,
+        "context_trimmed_messages": 0,
+        "memory_candidates_checked": 0,
+        "memory_selected_events": 0,
+        "memory_included_events": 0,
+        "memory_budget_drop_events": 0,
+        "memory_size_drop_events": 0,
+        "memory_read_errors": 0
+      }
+    }
+  ],
+  "limitations": [
+    "Synthetic Python AST repositories; results do not establish general repository or production quality.",
+    "Offline fake-LLM tests validate the harness only. One repetition establishes no statistical significance.",
+    "Provider sampling defaults are unchanged; seeded scheduling controls order, not model randomness.",
+    "Request counts include full serialized tool schemas and admitted memory. Provider usage is separate; no dollar cost is inferred.",
+    "Discovery evidence means a ground-truth relevant path was returned by read_file or repo_graph, not that the model understood it. Bash discovery and repeats are unavailable beyond explicit utility/read-file classifiers.",
+    "Bash discovery counts calls containing rg/grep/find/ls/tree tokens; this heuristic is not complete semantic search intent.",
+    "Memory counts are retrieval/admission events and can count an entry repeatedly. Stale recall denominator is observed non-fresh candidates; no eligible denominator means null.",
+    "Memory fixtures are human-authorized, host-allowlisted facts, with exact independent source checks; arbitrary statement truth still requires human judgment.",
+    "Tool sandbox is the existing OS backend with network denied and no approval handler. Host Git/Memory setup uses trusted code, outside evaluated model authority.",
+    "End-to-end timing includes fixture setup, deterministic checks and cleanup; Agent timing and feature/setup overhead are separate. Memory timing includes an extra bounded measurement freshness check.",
+    "Actual provider usage may be partial after provider failure; request totals count constructed requests, even if transport fails. Completed responses are recorded separately.",
+    "EvalRunner reports ERROR on budget exhaustion even when every workspace check passes. Overall task-success and final-workspace check success are reported separately; finishing within the step budget is part of the former.",
+    "Traces retain IDs/counts/timings only. Model text, tool output, check scripts, raw exceptions and credentials are excluded."
+  ],
+  "matched_case_repetitions": [
+    {
+      "case": "quote-dependencies",
+      "repetition": 1
+    },
+    {
+      "case": "shared-account-contract",
+      "repetition": 1
+    },
+    {
+      "case": "testing-convention",
+      "repetition": 1
+    }
+  ],
+  "matched_arms": {
+    "A": {
+      "runs": 3,
+      "pass": 1,
+      "fail": 0,
+      "error": 2,
+      "task_success_rate": 0.3333333333333333,
+      "workspace_checks_available": 3,
+      "workspace_checks_passed": 3,
+      "workspace_check_success_rate": 1.0,
+      "failure_categories": {
+        "budget_exhausted": 2
+      },
+      "failed_check_ids": {},
+      "measurements": {
+        "tool_calls": {
+          "available": 3,
+          "total": 36,
+          "mean": 12
+        },
+        "read_file_calls": {
+          "available": 3,
+          "total": 12,
+          "mean": 4
+        },
+        "bash_calls": {
+          "available": 3,
+          "total": 18,
+          "mean": 6
+        },
+        "bash_discovery_calls": {
+          "available": 3,
+          "total": 9,
+          "mean": 3
+        },
+        "graph_query_calls": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_error_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_denied_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_nonzero_results": {
+          "available": 3,
+          "total": 4,
+          "mean": 1.3333333333333333
+        },
+        "bash_timeout_results": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "provider_requests": {
+          "available": 3,
+          "total": 24,
+          "mean": 8
+        },
+        "provider_responses": {
+          "available": 3,
+          "total": 24,
+          "mean": 8
+        },
+        "provider_failures": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "repeated_read_file_calls": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "provider_input_tokens": {
+          "available": 3,
+          "total": 58856,
+          "mean": 19618.666666666668
+        },
+        "provider_output_tokens": {
+          "available": 3,
+          "total": 7242,
+          "mean": 2414
+        },
+        "request_tokens_total": {
+          "available": 3,
+          "total": 45862,
+          "mean": 15287.333333333334
+        },
+        "agent_steps_used": {
+          "available": 3,
+          "total": 24,
+          "mean": 8
+        },
+        "elapsed_seconds": {
+          "available": 3,
+          "total": 169.594080791343,
+          "mean": 56.531360263781
+        },
+        "agent_elapsed_seconds": {
+          "available": 3,
+          "total": 169.17411099999998,
+          "mean": 56.391370333333334
+        },
+        "fixture_setup_seconds": {
+          "available": 3,
+          "total": 0.27623549988493323,
+          "mean": 0.09207849996164441
+        },
+        "graph_build_refresh_seconds": {
+          "available": 3,
+          "total": 0.0,
+          "mean": 0.0
+        },
+        "memory_retrieval_freshness_seconds": {
+          "available": 3,
+          "total": 0.0,
+          "mean": 0.0
+        },
+        "memory_fixture_seconds": {
+          "available": 3,
+          "total": 0.0,
+          "mean": 0.0
+        },
+        "context_trimmed_turns": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "context_trimmed_messages": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_candidates_checked": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_selected_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_included_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_budget_drop_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_size_drop_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_read_errors": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        }
+      },
+      "memory_freshness_counts": {},
+      "stale_recall_rate": null,
+      "relevant_memory_precision": null,
+      "relevant_paths_observed": 9,
+      "bash_relevant_file_discovery": null,
+      "repeated_bash_file_exploration": null
+    },
+    "B": {
+      "runs": 3,
+      "pass": 2,
+      "fail": 0,
+      "error": 1,
+      "task_success_rate": 0.6666666666666666,
+      "workspace_checks_available": 3,
+      "workspace_checks_passed": 3,
+      "workspace_check_success_rate": 1.0,
+      "failure_categories": {
+        "budget_exhausted": 1
+      },
+      "failed_check_ids": {},
+      "measurements": {
+        "tool_calls": {
+          "available": 3,
+          "total": 39,
+          "mean": 13
+        },
+        "read_file_calls": {
+          "available": 3,
+          "total": 13,
+          "mean": 4.333333333333333
+        },
+        "bash_calls": {
+          "available": 3,
+          "total": 16,
+          "mean": 5.333333333333333
+        },
+        "bash_discovery_calls": {
+          "available": 3,
+          "total": 9,
+          "mean": 3
+        },
+        "graph_query_calls": {
+          "available": 3,
+          "total": 4,
+          "mean": 1.3333333333333333
+        },
+        "tool_error_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_denied_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_nonzero_results": {
+          "available": 3,
+          "total": 3,
+          "mean": 1
+        },
+        "bash_timeout_results": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "provider_requests": {
+          "available": 3,
+          "total": 23,
+          "mean": 7.666666666666667
+        },
+        "provider_responses": {
+          "available": 3,
+          "total": 23,
+          "mean": 7.666666666666667
+        },
+        "provider_failures": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "repeated_read_file_calls": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "provider_input_tokens": {
+          "available": 3,
+          "total": 105887,
+          "mean": 35295.666666666664
+        },
+        "provider_output_tokens": {
+          "available": 3,
+          "total": 7905,
+          "mean": 2635
+        },
+        "request_tokens_total": {
+          "available": 3,
+          "total": 79321,
+          "mean": 26440.333333333332
+        },
+        "agent_steps_used": {
+          "available": 3,
+          "total": 23,
+          "mean": 7.666666666666667
+        },
+        "elapsed_seconds": {
+          "available": 3,
+          "total": 181.18411375023425,
+          "mean": 60.39470458341142
+        },
+        "agent_elapsed_seconds": {
+          "available": 3,
+          "total": 180.712115,
+          "mean": 60.23737166666667
+        },
+        "fixture_setup_seconds": {
+          "available": 3,
+          "total": 0.26575987599790096,
+          "mean": 0.08858662533263366
+        },
+        "graph_build_refresh_seconds": {
+          "available": 3,
+          "total": 0.03171579306945205,
+          "mean": 0.010571931023150682
+        },
+        "memory_retrieval_freshness_seconds": {
+          "available": 3,
+          "total": 0.0,
+          "mean": 0.0
+        },
+        "memory_fixture_seconds": {
+          "available": 3,
+          "total": 0.0,
+          "mean": 0.0
+        },
+        "context_trimmed_turns": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "context_trimmed_messages": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_candidates_checked": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_selected_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_included_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_budget_drop_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_size_drop_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_read_errors": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        }
+      },
+      "memory_freshness_counts": {},
+      "stale_recall_rate": null,
+      "relevant_memory_precision": null,
+      "relevant_paths_observed": 9,
+      "bash_relevant_file_discovery": null,
+      "repeated_bash_file_exploration": null
+    },
+    "C": {
+      "runs": 3,
+      "pass": 1,
+      "fail": 0,
+      "error": 2,
+      "task_success_rate": 0.3333333333333333,
+      "workspace_checks_available": 3,
+      "workspace_checks_passed": 3,
+      "workspace_check_success_rate": 1.0,
+      "failure_categories": {
+        "budget_exhausted": 2
+      },
+      "failed_check_ids": {},
+      "measurements": {
+        "tool_calls": {
+          "available": 3,
+          "total": 35,
+          "mean": 11.666666666666666
+        },
+        "read_file_calls": {
+          "available": 3,
+          "total": 11,
+          "mean": 3.6666666666666665
+        },
+        "bash_calls": {
+          "available": 3,
+          "total": 18,
+          "mean": 6
+        },
+        "bash_discovery_calls": {
+          "available": 3,
+          "total": 10,
+          "mean": 3.3333333333333335
+        },
+        "graph_query_calls": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_error_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_denied_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_nonzero_results": {
+          "available": 3,
+          "total": 2,
+          "mean": 0.6666666666666666
+        },
+        "bash_timeout_results": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "provider_requests": {
+          "available": 3,
+          "total": 24,
+          "mean": 8
+        },
+        "provider_responses": {
+          "available": 3,
+          "total": 24,
+          "mean": 8
+        },
+        "provider_failures": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "repeated_read_file_calls": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "provider_input_tokens": {
+          "available": 3,
+          "total": 81725,
+          "mean": 27241.666666666668
+        },
+        "provider_output_tokens": {
+          "available": 3,
+          "total": 6640,
+          "mean": 2213.3333333333335
+        },
+        "request_tokens_total": {
+          "available": 3,
+          "total": 65284,
+          "mean": 21761.333333333332
+        },
+        "agent_steps_used": {
+          "available": 3,
+          "total": 24,
+          "mean": 8
+        },
+        "elapsed_seconds": {
+          "available": 3,
+          "total": 166.76266629225574,
+          "mean": 55.58755543075191
+        },
+        "agent_elapsed_seconds": {
+          "available": 3,
+          "total": 165.77847500000001,
+          "mean": 55.25949166666667
+        },
+        "fixture_setup_seconds": {
+          "available": 3,
+          "total": 0.8446307079866529,
+          "mean": 0.2815435693288843
+        },
+        "graph_build_refresh_seconds": {
+          "available": 3,
+          "total": 0.0,
+          "mean": 0.0
+        },
+        "memory_retrieval_freshness_seconds": {
+          "available": 3,
+          "total": 1.756811416707933,
+          "mean": 0.585603805569311
+        },
+        "memory_fixture_seconds": {
+          "available": 3,
+          "total": 0.5622894179541618,
+          "mean": 0.1874298059847206
+        },
+        "context_trimmed_turns": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "context_trimmed_messages": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_candidates_checked": {
+          "available": 3,
+          "total": 24,
+          "mean": 8
+        },
+        "memory_selected_events": {
+          "available": 3,
+          "total": 19,
+          "mean": 6.333333333333333
+        },
+        "memory_included_events": {
+          "available": 3,
+          "total": 19,
+          "mean": 6.333333333333333
+        },
+        "memory_budget_drop_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_size_drop_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_read_errors": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        }
+      },
+      "memory_freshness_counts": {
+        "fresh": 19,
+        "stale": 5
+      },
+      "stale_recall_rate": 0.0,
+      "relevant_memory_precision": 1.0,
+      "relevant_paths_observed": 9,
+      "bash_relevant_file_discovery": null,
+      "repeated_bash_file_exploration": null
+    },
+    "D": {
+      "runs": 3,
+      "pass": 1,
+      "fail": 0,
+      "error": 2,
+      "task_success_rate": 0.3333333333333333,
+      "workspace_checks_available": 3,
+      "workspace_checks_passed": 3,
+      "workspace_check_success_rate": 1.0,
+      "failure_categories": {
+        "budget_exhausted": 2
+      },
+      "failed_check_ids": {},
+      "measurements": {
+        "tool_calls": {
+          "available": 3,
+          "total": 38,
+          "mean": 12.666666666666666
+        },
+        "read_file_calls": {
+          "available": 3,
+          "total": 11,
+          "mean": 3.6666666666666665
+        },
+        "bash_calls": {
+          "available": 3,
+          "total": 13,
+          "mean": 4.333333333333333
+        },
+        "bash_discovery_calls": {
+          "available": 3,
+          "total": 5,
+          "mean": 1.6666666666666667
+        },
+        "graph_query_calls": {
+          "available": 3,
+          "total": 8,
+          "mean": 2.6666666666666665
+        },
+        "tool_error_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_denied_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "tool_nonzero_results": {
+          "available": 3,
+          "total": 2,
+          "mean": 0.6666666666666666
+        },
+        "bash_timeout_results": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "provider_requests": {
+          "available": 3,
+          "total": 23,
+          "mean": 7.666666666666667
+        },
+        "provider_responses": {
+          "available": 3,
+          "total": 23,
+          "mean": 7.666666666666667
+        },
+        "provider_failures": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "repeated_read_file_calls": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "provider_input_tokens": {
+          "available": 3,
+          "total": 106651,
+          "mean": 35550.333333333336
+        },
+        "provider_output_tokens": {
+          "available": 3,
+          "total": 6608,
+          "mean": 2202.6666666666665
+        },
+        "request_tokens_total": {
+          "available": 3,
+          "total": 79492,
+          "mean": 26497.333333333332
+        },
+        "agent_steps_used": {
+          "available": 3,
+          "total": 23,
+          "mean": 7.666666666666667
+        },
+        "elapsed_seconds": {
+          "available": 3,
+          "total": 169.49895304092206,
+          "mean": 56.49965101364069
+        },
+        "agent_elapsed_seconds": {
+          "available": 3,
+          "total": 168.47861799999998,
+          "mean": 56.159539333333335
+        },
+        "fixture_setup_seconds": {
+          "available": 3,
+          "total": 0.8634293340146542,
+          "mean": 0.2878097780048847
+        },
+        "graph_build_refresh_seconds": {
+          "available": 3,
+          "total": 0.05958741600625217,
+          "mean": 0.019862472002084058
+        },
+        "memory_retrieval_freshness_seconds": {
+          "available": 3,
+          "total": 1.6972926266025752,
+          "mean": 0.5657642088675251
+        },
+        "memory_fixture_seconds": {
+          "available": 3,
+          "total": 0.5899214989040047,
+          "mean": 0.19664049963466823
+        },
+        "context_trimmed_turns": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "context_trimmed_messages": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_candidates_checked": {
+          "available": 3,
+          "total": 23,
+          "mean": 7.666666666666667
+        },
+        "memory_selected_events": {
+          "available": 3,
+          "total": 19,
+          "mean": 6.333333333333333
+        },
+        "memory_included_events": {
+          "available": 3,
+          "total": 19,
+          "mean": 6.333333333333333
+        },
+        "memory_budget_drop_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_size_drop_events": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        },
+        "memory_read_errors": {
+          "available": 3,
+          "total": 0,
+          "mean": 0
+        }
+      },
+      "memory_freshness_counts": {
+        "fresh": 19,
+        "stale": 4
+      },
+      "stale_recall_rate": 0.0,
+      "relevant_memory_precision": 1.0,
+      "relevant_paths_observed": 8,
+      "bash_relevant_file_discovery": null,
+      "repeated_bash_file_exploration": null
+    }
+  }
+}
