@@ -8,6 +8,7 @@ Tests follow Cairn's package ownership:
 | `runtime/` | Agent turns, fallback, evaluation, memory lifecycle, tasks, review, and workflows |
 | `infra/` | Configuration, Git and GitHub adapters, LLM clients, tools, workspace, traces, memory storage, and repository graphs |
 | `terminal/` | CLI startup, provider and model selection, input handling, commands, and rendered output |
+| `docs/` | Documentation navigation: relative links, referenced source paths, and documented test commands |
 | `support/` | Shared deterministic runtime doubles, Git helpers, and native sandbox readiness helpers |
 
 Prefer tests that exercise observable behavior through the public interface.
@@ -19,9 +20,11 @@ Use small parameter tables for distinct outcomes of one behavior.
 
 Shared helpers belong in `tests.support` so one test package does not need to
 import another package's test module. The architecture regression in
-`core/test_architecture.py` guards the production dependency direction:
-`core` depends on `core`, `infra` on `core` and `infra`, and `runtime` on those
-packages plus `runtime`. The terminal may depend on the other packages.
+`core/test_architecture.py` guards the production dependency direction and the
+`core` import rule: `core` depends only on `core` and must not import provider,
+process, network or persistence modules; `infra` depends on `core` and `infra`;
+`runtime` depends on those plus `runtime`; the terminal may depend on all of
+them.
 
 Run repository checks from the root:
 
@@ -39,6 +42,9 @@ uv run pytest tests/infra/git
 uv run pytest tests/runtime
 uv run pytest tests/terminal/test_input.py
 ```
+
+`tests/docs` validates the documentation itself, and `tests/core/test_architecture.py`
+validates package boundaries and `core` independence. Both are fast and offline.
 
 Native Bash tests require a usable platform sandbox. On macOS, the outer
 environment must permit nested `sandbox-exec`; on Linux, bubblewrap must be

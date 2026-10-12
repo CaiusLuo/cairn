@@ -134,5 +134,5 @@ inside its approval callback. Candidates that specify original task/trace IDs
 retain them unchanged across revalidation; per-attestation identifiers describe
 the evidence used for each separate approval.
 
-See [implementation comparison and recommendations](project-memory-research.md)
+See [implementation comparison and recommendations](../research/project-memory-research.md)
 for the source-backed learn-cc, Codex and pi comparison.

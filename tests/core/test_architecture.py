@@ -14,6 +14,36 @@ ALLOWED = {
     "terminal": {"core", "infra", "runtime", "terminal"},
 }
 
+#: Concrete adapters and effect modules that a stable domain contract must not
+#: depend on. `core` may import the standard library, but not a library or module
+#: that performs provider calls, process execution, networking or persistence.
+FORBIDDEN_IN_CORE = frozenset(
+    {
+        # Third-party infrastructure declared by the project.
+        "litellm",
+        "tomlkit",
+        "typer",
+        "rich",
+        "prompt_toolkit",
+        "dotenv",
+        # Standard-library effects: processes, networking, sockets, persistence.
+        "asyncio",
+        "subprocess",
+        "multiprocessing",
+        "socket",
+        "ssl",
+        "sqlite3",
+        "shutil",
+        "tempfile",
+        "http",
+        "urllib",
+        "ftplib",
+        "smtplib",
+        "http.client",
+        "xmlrpc",
+    }
+)
+
 
 def _layer_for(module: str) -> str | None:
     parts = module.split(".")
@@ -69,3 +99,71 @@ def test_package_imports_follow_the_dependency_direction() -> None:
     assert not violations, "Invalid Cairn package dependencies:\n" + "\n".join(
         violations
     )
+
+
+def _imported_roots(tree: ast.Module) -> set[str]:
+    roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            roots.add(node.module)
+    return roots
+
+
+def _forbidden_root(module: str) -> str | None:
+    for forbidden in FORBIDDEN_IN_CORE:
+        if module == forbidden or module.startswith(f"{forbidden}."):
+            return forbidden
+    return None
+
+
+def test_core_stays_free_of_infrastructure_dependencies() -> None:
+    violations: list[str] = []
+    for path in sorted((PACKAGE_ROOT / "core").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for module in sorted(_imported_roots(tree)):
+            forbidden = _forbidden_root(module)
+            if forbidden is not None:
+                violations.append(
+                    f"{path.relative_to(ROOT)} imports {module} "
+                    f"({forbidden} is infrastructure)"
+                )
+
+    assert not violations, (
+        "core must stay independent of provider, process, network and persistence "
+        "modules; move this behaviour into infra and depend on a core contract:\n"
+        + "\n".join(violations)
+    )
+
+
+def test_core_has_no_internal_import_cycles() -> None:
+    graph: dict[str, set[str]] = {}
+    for path in sorted((PACKAGE_ROOT / "core").rglob("*.py")):
+        relative = path.relative_to(PACKAGE_ROOT).with_suffix("")
+        parts = ("cairn", *relative.parts[:-1])
+        if path.name != "__init__.py":
+            parts = (*parts, path.stem)
+        module_name = ".".join(parts)
+        graph[module_name] = {
+            target
+            for target in _targets(
+                ast.parse(path.read_text(encoding="utf-8"), filename=str(path)),
+                module_name.rpartition(".")[0],
+            )
+            if _layer_for(target) == "core"
+        }
+
+    cycles: list[str] = []
+
+    def walk(origin: str, node: str, seen: tuple[str, ...]) -> None:
+        for target in sorted(graph.get(node, ())):
+            if target == origin:
+                cycles.append(" -> ".join((*seen, target)))
+            elif target in graph and target not in seen:
+                walk(origin, target, (*seen, target))
+
+    for module in sorted(graph):
+        walk(module, module, (module,))
+
+    assert not cycles, "Circular core imports:\n" + "\n".join(sorted(set(cycles)))
