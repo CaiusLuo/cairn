@@ -19,6 +19,7 @@ from cairn.runtime.evals import (
     FileExistsCheck,
 )
 from cairn.runtime.evals import runner as runner_module
+from tests.support.streaming import CompletionResponse
 
 FIRST_PROVIDER = """\
 [[providers]]
@@ -95,7 +96,7 @@ def prepare_script(
 
     async def completion(**kwargs: Any) -> SimpleNamespace:
         state.requests.append(kwargs)
-        return SimpleNamespace(
+        return CompletionResponse(
             choices=[
                 SimpleNamespace(message=SimpleNamespace(content="done", tool_calls=[]))
             ],

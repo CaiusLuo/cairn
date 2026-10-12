@@ -1,9 +1,12 @@
 import json
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from litellm import acompletion
 
+from cairn.core.llm import LLMStreamChunk
 from cairn.core.models import LLMResponse, LLMUsage, Message, ToolCall
+from cairn.infra.llm.litellm_stream import stream_completion
 
 
 def _parse_tool_arguments(
@@ -91,6 +94,30 @@ class LiteLLMClient:
         self.api_key = api_key
         self.api_base = api_base
         self.max_output_tokens = max_output_tokens
+
+    def stream_generate(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> AsyncGenerator[LLMStreamChunk, None]:
+        options: dict[str, Any] = {}
+        if self.max_output_tokens is not None:
+            options["max_tokens"] = self.max_output_tokens
+        return stream_completion(
+            lambda: acompletion(
+                model=self.model,
+                messages=[to_llm_message(message) for message in messages],
+                api_key=self.api_key,
+                api_base=self.api_base,
+                tools=tools,
+                stream=True,
+                stream_options={"include_usage": True},
+                num_retries=0,
+                max_retries=0,
+                **options,
+            ),
+            self.api_key,
+        )
 
     async def generate(
         self,

@@ -32,6 +32,7 @@ from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.provider import handle_provider
 from tests.support.runtime import RecordingTool
 from tests.support.sandbox import require_working_sandbox
+from tests.support.streaming import CompletionResponse
 
 CATALOG_TOML = """\
 [[providers]]
@@ -100,7 +101,7 @@ CREDENTIALS = {
 
 
 def _response(content: str) -> SimpleNamespace:
-    return SimpleNamespace(
+    return CompletionResponse(
         choices=[
             SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=[]))
         ]
@@ -419,7 +420,7 @@ def test_unselected_provider_credential_is_absent_from_tool_child_and_trace(
     async def completion(**kwargs: Any) -> SimpleNamespace:
         state.requests.append(kwargs)
         if len(state.requests) == 1:
-            return SimpleNamespace(
+            return CompletionResponse(
                 choices=[
                     SimpleNamespace(
                         message=SimpleNamespace(
@@ -693,7 +694,7 @@ def test_history_and_tool_results_survive_a_switch(
         state.requests.append(kwargs)
         calls += 1
         if calls == 1:
-            return SimpleNamespace(
+            return CompletionResponse(
                 choices=[
                     SimpleNamespace(
                         message=SimpleNamespace(

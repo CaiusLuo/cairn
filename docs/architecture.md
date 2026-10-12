@@ -43,6 +43,14 @@ pending when a turn aborts.
 each candidate, builds that candidate's request, and returns `(request, response)`.
 It does not own turn tracing, turn error finalization or turn lifecycle.
 
+For a streaming client it owns one provisional `ResponseAssembler` per attempt.
+Only a validated response after provider finish, clean exhaustion and stream
+cleanup crosses the existing `(request, response)` boundary. Text deltas go to
+transient CLI events; they never enter conversation state or trace attributes.
+See [M1-A streaming](guides/model-streaming.md) for limits, provider support and
+failure semantics. Session lifecycle (M1-B) and durable acknowledgement (M1-C)
+remain future work.
+
 Task, workflow, review and evaluation code in `cairn.runtime` provide bounded
 orchestration around Agent turns. They do not create a second general Agent loop.
 Existing scheduling and retry behavior belongs with the runtime flow that uses it.
@@ -64,6 +72,8 @@ inspection cleanup from repeated cancellation. Inspection owns the spawn task,
 restarts pipe drains when stopping, reaps the process, then settles its readers;
 the original cancellation or failure remains primary.
 `infra.tools.bash._settle_collection` bounds collection cleanup with a timeout.
+`infra.llm.litellm_stream` settles request acquisition and closes the provider
+iterator/resource; runtime owns and settles the consuming attempt task.
 These policies remain separate; see
 [known limitations](#known-limitations).
 
@@ -93,6 +103,7 @@ stable.
 | Session model selection and grants | `core.model_manager` and `core.permissions.SessionPermissionHandler` |
 | Active provider runtime | `runtime.provider_runtime.ProviderSession`, committed through `commit`; terminal command context observes the committed runtime |
 | Per-model failure notes for `/model list` | `runtime.model_executor.ModelExecutor` |
+| Provisional response assembly | `runtime.response_assembly.ResponseAssembler`, private to one ModelExecutor attempt |
 | Turn spans and usage | `runtime.turn_trace.TurnTrace`, finalized by `run_turn` |
 | Task status and results | `runtime.tasks.CodingTaskRunner` |
 | EvalCase observations | `runtime.evals.runner.EvalRunner.run` binds, resets and finalizes one compatible metrics record; completed results hold detached snapshots |

@@ -28,6 +28,7 @@ from cairn.runtime.agent import Agent
 from cairn.runtime.assembly import build_agent
 from cairn.runtime.loop import run_turn
 from tests.support.sandbox import require_working_sandbox
+from tests.support.streaming import CompletionResponse
 
 API_KEY = "test-only-provider-credential"
 TOML = """\
@@ -49,7 +50,7 @@ GROUPS_TOML = TOML.replace(
 
 
 def _response(content: str) -> SimpleNamespace:
-    return SimpleNamespace(
+    return CompletionResponse(
         choices=[
             SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=[]))
         ]
@@ -446,7 +447,7 @@ def test_configured_credentials_are_absent_from_real_tool_child_and_trace(
     async def completion(**kwargs: Any) -> SimpleNamespace:
         requests.append(kwargs)
         if len(requests) == 1:
-            return SimpleNamespace(
+            return CompletionResponse(
                 choices=[
                     SimpleNamespace(
                         message=SimpleNamespace(
