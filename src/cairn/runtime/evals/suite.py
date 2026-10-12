@@ -6,7 +6,6 @@ from cairn.runtime.evals.artifacts import atomic_write_text
 from cairn.runtime.evals.models import (
     CheckResult,
     EvalFailureCategory,
-    EvalMetrics,
     EvalResult,
     EvalStatus,
     EvalSuite,
@@ -31,6 +30,7 @@ def _report_result(result: EvalResult) -> EvalResult:
     # payloads. Keep structured categories, check identities and trace refs;
     # never copy arbitrary failure text or expected file contents.
     return result.model_copy(
+        deep=True,
         update={
             "error": "Case execution failed." if result.error is not None else None,
             "failure_category": result.failure_category
@@ -56,7 +56,7 @@ def _report_result(result: EvalResult) -> EvalResult:
                 )
                 for check in result.checks
             ],
-        }
+        },
     )
 
 
@@ -90,7 +90,7 @@ class EvalSuiteRunner:
         )
         write_suite_report(report, destination)
         for item in suite.cases:
-            metrics = EvalMetrics()
+            metrics = self.runner.metrics_type()
             report.active_case_name = item.case.name
             report.active_case_metrics = metrics
             task = asyncio.create_task(

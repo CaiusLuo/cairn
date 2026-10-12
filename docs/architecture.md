@@ -95,6 +95,7 @@ stable.
 | Per-model failure notes for `/model list` | `runtime.model_executor.ModelExecutor` |
 | Turn spans and usage | `runtime.turn_trace.TurnTrace`, finalized by `run_turn` |
 | Task status and results | `runtime.tasks.CodingTaskRunner` |
+| EvalCase observations | `runtime.evals.runner.EvalRunner.run` binds, resets and finalizes one compatible metrics record; completed results hold detached snapshots |
 | Workflow and review progress reports | `_Progress` in each workflow, persisted atomically |
 | Worktree lifecycle | `infra.git.worktree.WorktreeHandle` |
 

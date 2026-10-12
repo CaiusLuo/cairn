@@ -27,3 +27,23 @@ still counted once per path.
 No paid provider pilot was run for this correction. Any future provider run
 must use a new output directory and retain its explicit dataset version and
 hash.
+
+## Observation ownership
+
+`EvalRunner.run` owns each case's metrics lifecycle. The runner declares its
+`metrics_type`; suites create that type, and incompatible supplied metrics raise
+`TypeError` before case work starts. Compatible subclasses reset all their fields.
+One runner executes one case at a time; overlapping calls fail before rebinding.
+
+`IntelligenceRunner` binds Context, Tool, Memory, Trace and Provider observations
+to that same record. `run_case` only selects the configured case and checks;
+both entry points finalize derived metrics after owned work settles and release
+temporary resources. Supplied metrics remain live for interrupted reporting;
+returned results and completed report entries hold detached snapshots.
+
+Report schemas remain at version 1. `EvalResult.metrics` and generic suite metrics
+persist the declared `EvalMetrics` fields, including estimate flags and actual
+trace usage; Intelligence-only counters and discovery evidence are omitted there.
+`ExperimentRun.metrics` and `ExperimentReport.active_metrics` explicitly persist
+all declared `IntelligenceMetrics` fields. Unknown subclass fields are excluded
+from both schemas. No dataset, check, frozen pilot or provider policy changes.

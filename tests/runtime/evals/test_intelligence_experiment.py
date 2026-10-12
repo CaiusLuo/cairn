@@ -89,8 +89,15 @@ def test_actual_metrics_and_artifacts(tmp_path: Path) -> None:
     )
     assert report.state == "completed" and report.real_provider_status is None
     assert len(report.runs) == 4
+    saved = ExperimentReport.model_validate_json(
+        (directory / "experiment.json").read_text()
+    )
+    assert saved.model_dump(mode="json") == report.model_dump(mode="json")
     for run in report.runs:
         m = run.metrics
+        assert isinstance(run.result.metrics, IntelligenceMetrics)
+        assert run.result.metrics == m
+        assert run.result.metrics is not m
         assert m.tool_calls == m.read_file_calls == 2
         assert m.repeated_read_file_calls == 1
         assert len(m.direct_discovery_evidence) == 1
@@ -104,6 +111,7 @@ def test_actual_metrics_and_artifacts(tmp_path: Path) -> None:
         assert m.request_tokens_total == sum(
             count.tokens for count in m.request_token_counts
         )
+        assert m.request_token_counts_estimated is True
         assert (
             json.loads((directory / "runs" / f"{run.run_id}.json").read_text())[
                 "metrics"
@@ -185,13 +193,23 @@ def test_provider_unavailable_stops_real_pilot_and_sanitizes(tmp_path: Path) -> 
 
 def test_cancel_persists_active_metrics_and_cleans_up(tmp_path: Path) -> None:
     entered = asyncio.Event()
+    cleaning = asyncio.Event()
+    release = asyncio.Event()
+    settled = asyncio.Event()
 
     class Waiting(SequenceLLM):
         async def generate(
             self, messages: list[Message], tools: list[dict[str, Any]] | None = None
         ) -> LLMResponse:
+            if self.responses:
+                return await super().generate(messages, tools)
             entered.set()
-            await asyncio.Event().wait()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                await release.wait()
+                settled.set()
             return LLMResponse(content="unreachable")
 
     async def cancel() -> None:
@@ -199,14 +217,29 @@ def test_cancel_persists_active_metrics_and_cleans_up(tmp_path: Path) -> None:
             run_experiment(
                 (simple_spec(),),
                 config(),
-                lambda: Waiting([]),
+                lambda: Waiting(
+                    [
+                        LLMResponse(
+                            tool_calls=[
+                                ToolCall(
+                                    id="read",
+                                    name="read_file",
+                                    arguments={"path": "parser.py"},
+                                )
+                            ]
+                        )
+                    ]
+                ),
                 directory=tmp_path / "reports",
                 temp_root=tmp_path,
             )
         )
         await asyncio.wait_for(entered.wait(), 5)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
+        task.cancel("original stop")
+        await asyncio.wait_for(cleaning.wait(), 5)
+        task.cancel("repeated stop")
+        release.set()
+        with pytest.raises(asyncio.CancelledError, match="original stop"):
             await task
 
     asyncio.run(cancel())
@@ -214,7 +247,15 @@ def test_cancel_persists_active_metrics_and_cleans_up(tmp_path: Path) -> None:
         (tmp_path / "reports" / "experiment.json").read_text()
     )
     assert report.state == "interrupted" and report.active_metrics is not None
-    assert report.active_metrics.provider_requests == 1 and report.active_run_id
+    assert report.active_metrics.provider_requests == 2 and report.active_run_id
+    assert report.active_metrics.provider_responses == 1
+    assert report.active_metrics.provider_failures == 0
+    assert report.active_metrics.read_file_calls == 1
+    assert report.active_metrics.direct_discovery_evidence[0].step == 1
+    assert report.active_metrics.request_token_counts_estimated is True
+    assert report.active_metrics.agent_steps_used == 2
+    assert report.active_metrics.elapsed_seconds is not None
+    assert settled.is_set()
     assert not list(tmp_path.glob("cairn-eval-*"))
 
 
@@ -352,7 +393,7 @@ def test_partial_comparison_uses_balanced_cohort() -> None:
 
 
 def test_provider_failure_categories_exclude_exception_details() -> None:
-    from cairn.runtime.evals.intelligence.experiment import ObservedLLM
+    from cairn.runtime.evals.intelligence.runner import ObservedLLM
 
     class Limited(SequenceLLM):
         async def generate(
