@@ -2,7 +2,8 @@
 
 Status: proposed; independent architecture review required before implementation.
 Scope: [Issue #31](https://github.com/CaiusLuo/cairn/issues/31), single local
-process, opt-in CLI/Agent sessions. Source audit baseline:
+process, opt-in CLI/Agent sessions; future M1-C persistence subdesign.
+Source audit baseline:
 `52d75fa2124dba6801e7139f74db7ac229ba04f1` (latest main at design time).
 [Architecture](../architecture.md), [ADR 0001](../adr/0001-modular-architecture-baseline.md)
 and [AGENTS.md](../../AGENTS.md) remain canonical.
@@ -27,6 +28,49 @@ V1 persists completed and cooperatively interrupted **settled** turns, including
 a turn that rolled back before tool execution. A process-interrupted attempt
 cannot be promoted to a checkpoint, even if diagnostic output looks complete.
 A host must reconcile and abandon it before starting a new turn.
+
+## Roadmap dependencies and streaming boundary
+
+[Roadmap V2](https://github.com/CaiusLuo/cairn/issues/24#issuecomment-6098692888)
+sets the order below. Designing M1-C now does not authorize skipping its
+predecessors or coding the Store slices before M1-A/M1-B pass their milestone
+acceptance gates.
+
+| Stage | Prerequisite contract / scope |
+| --- | --- |
+| M1-A — Streaming | Bounded response/tool-call assembly, cancellation and no partial tool execution; define the provider/LLM streaming API. |
+| M1-B — Session Lifecycle | Session/Turn identity, bounded ordered event delivery and binding/close/cancellation rules; finalize the Agent admission hook used below. |
+| M1-C — SessionStore | This document: committed-turn persistence and manual conversation recovery, implemented only after M1-A/M1-B milestone acceptance. |
+| M2 — durable Task recovery | Separate TaskRun state/checkpoint/recovery design owned by the Task runner; consumes the settled-turn boundary, not streaming deltas. |
+
+Current [LLMClient.generate](../../src/cairn/core/llm.py) returns one LLMResponse;
+[Event](../../src/cairn/core/events.py) has no token-delta contract. M1-A/M1-B own
+those changes. Persistence consumes their accepted completion/lifecycle seam:
+
+- Streaming text and tool-call fragments are provisional, bounded per-attempt
+  assembly data; SessionStore persists no deltas or assembly buffers. While a
+  response is incomplete, only its turn intent and any fences from earlier
+  accepted responses may already be durable. Only an explicitly completed, fully
+  assembled and validated response may enter AgentState at the existing
+  response-acceptance point.
+  Parseable argument JSON or one finished call in an incomplete group is not
+  permission to dispatch a tool. Never mix fragments from fallback attempts.
+- Cancelling an incomplete response discards its assembly buffer and dispatches
+  none of its tools. After owned stream work/cleanup settles, the existing turn
+  abort policy applies: a checkpoint may record a settled interruption containing
+  only previously accepted facts (or an empty rollback range), never partial
+  deltas/calls. Process death still leaves an unfinished intent for manual recovery.
+- Durable-session stream events carry Session/Turn/attempt identity and order
+  under M1-B delivery rules. Emitted tokens, `agent_finish` and `trace_finish` are
+  provisional with respect to durability; their consumers cannot advance
+  Turn/Task state, execute tools or write checkpoints. `run_turn` retains
+  settlement ownership.
+- For durable turns, a distinct `turn_committed` lifecycle notification carries
+  Session/Turn IDs, checkpoint sequence/revision and settled outcome **only after**
+  the checkpoint receipt. It acknowledges storage, not Task correctness or normal
+  completion. Missing/failed acknowledgement delivery is a separate diagnostic:
+  preserve the committed outcome/primary cancellation, do not re-enter rollback
+  or replay, and inspect the receipt by Turn ID on reopen.
 
 ## Current owners and evidence
 
@@ -189,10 +233,13 @@ attempts, not exactly-once tool effects.
 
 The write sequence is:
 
-1. Under the lifetime writer lock and an in-process single-turn guard, validate
-   binding/input/limits, capture `turn_start`, allocate Turn ID and commit intent.
+1. Enforce the runtime ownership/admission check below before trace creation,
+   events, live state changes or store writes. Then under the lifetime writer
+   lock and single-turn guard validate binding/input/limits, capture `turn_start`,
+   allocate Turn ID and commit intent.
 2. Use the existing Agent loop, fallback and admission. Accept response into
-   live state only; no durable step or response becomes a resume position.
+   live state only after complete-response assembly/validation; no durable step
+   or response becomes a resume position.
 3. For **every** tool, including apparently read-only tools: existence and
    argument validation → current permission decision → validate fence data →
    commit fence → `mark_tool_execution_started` → await `tool.execute`.
@@ -377,10 +424,32 @@ identity requires a separate explicitly created session, not a rebind.
 The host constructs resolution objects from its UI/caller decision, never
 model text. A Revision alone confers no OS lock, permission or host approval.
 Create/reopen require an empty Agent with no active turn; reject an already
-populated Agent instead of overwriting its history. The trusted host must route
-every bound Agent turn through `run_turn(session=...)`. Calling a bare loop or
-direct SQL from arbitrary same-user host code is outside this API boundary;
-models cannot obtain that authority.
+populated Agent instead of overwriting its history.
+
+### Runtime-enforced Agent ownership
+
+Use one Agent-local private `_durable_owner` slot (initially None), exposed through
+a read-only `durable_owner` property and a once-only private binding method.
+DurableSession.create/reopen installs its exact object identity before attachment
+I/O or state restoration, with admission suspended until setup/reconciliation
+finishes. Binding cannot be replaced. Failed attachment and `close` leave the
+owner marker installed and non-runnable; neither operation silently downgrades
+the Agent to stateless. Reopening uses a fresh Agent. No global registry or
+serialized ownership token is needed; AgentState and checkpoint DTOs stay unchanged.
+
+The first operation in `run_turn` checks the slot against the optional `session`:
+both None allows today's stateless path; otherwise `session is agent.durable_owner`
+and `session` must own this exact Agent. Require an open owner/store with its
+lifetime lock and a ready, reconciled admission gate. Reject omitted/wrong/closed,
+suspended/recovery-required or busy bindings with `SessionAdmissionError` before
+any event, provider/tool/approval call, user-message append or durable mutation.
+Check and reserve the single-turn guard synchronously before the first await;
+passing a session cannot auto-bind an unbound Agent. The admitted turn still uses
+the same `run_turn` implementation. Deliberate private-field/direct-SQL tampering
+by arbitrary host code remains outside the threat boundary; ordinary bare-loop
+calls are checked and rejected.
+
+### Transaction and storage rules
 
 Each mutation does bounded prevalidation, then `BEGIN IMMEDIATE`; rereads and
 checks the expected revision/state/binding; applies the operation; CAS-updates
@@ -466,8 +535,8 @@ the last committed full conversation, `I` an intent and `F` at least one fence.
 | Failure window | Durable evidence | Possible external effect | Reopen / recovery action |
 | --- | --- | --- | --- |
 | Before intent commits | `C_N`; no I | No admitted model/tool | Restore C_N after explicit host attachment. |
-| Intent committed; before/during model request, before reply | `C_N + I`, no F | Provider request/billing may have happened | Restore C_N; surface unfinished attempt; abandon by host reconciliation. Never resend prompt automatically. |
-| Reply received/appended; before first tool fence | `C_N + I`, no F | No tool through this boundary | Same; response is not a checkpoint. Do not infer a resume position from trace text. |
+| Intent committed; before/during model request or partial stream, before complete reply | `C_N + I`, possibly earlier F | Provider request/billing and earlier tool effects may have happened | Restore C_N; discard partial assembly and surface unfinished attempt; abandon by host reconciliation. Never resend prompt automatically. |
+| Complete validated reply accepted/appended; before first tool fence | `C_N + I`, no F | No tool through this boundary | Same; response is not a checkpoint. Do not infer a resume position from trace text. |
 | Preflight/approval failure or denial | `I`, no new F | That call cannot execute | Live loop follows existing failure rules; settled commit is possible. If process dies first, reconcile I. Approval is not persisted. |
 | Fence COMMIT fails or acknowledgement unknown | `I`, F absent or present | This invocation must not start | Block live session; inspect exact revision. Crash recovery is conservative even if F committed just before death. |
 | Fence committed; before tool entry | `C_N + I + F` | Possibly none; indistinguishable on restart | Recovery-required; human reconciliation. Do not use F as a retry ticket. |
@@ -476,7 +545,7 @@ the last committed full conversation, `I` an intent and `F` at least one fence.
 | Abort cleanup or trace callback interrupted | `C_N + I`, possibly F | Earlier effects retained; outcome uncertain | Recovery-required. Closed-looking message groups are insufficient settlement evidence. |
 | Fully settled; before checkpoint transaction | `C_N + I`, possibly F | Effects completed/failed as observed live | Recover C_N only; losing a final response does not authorize rerunning the turn. |
 | During checkpoint transaction | Either complete `C_N/I` or complete `C_(N+1)/terminal attempt` | Same effects in either case | Assert atomic old/new state and relationships; no partial head or half terminal status. Old case requires reconciliation. |
-| COMMIT durable; before receipt/CLI output/process exit | `C_(N+1)` with terminal attempt | Already observed | Restore C_(N+1); show committed outcome. Discover by Turn ID, never resubmit the prompt because output was lost. |
+| COMMIT durable; before receipt/turn_committed delivery/CLI output/process exit | `C_(N+1)` with terminal attempt | Already observed | Restore C_(N+1); show committed outcome. Discover by Turn ID, never resubmit the prompt because output was lost. |
 | Trace sink failed, checkpoint succeeded | `C_(N+1)`, trace_persisted=false | Independent of tracing | Restore normally; missing trace is a diagnostic, not lost conversation or retry authority. |
 | Secrets/size/DB failure after effects | Prior C plus I/F, no rejected payload | Effects may exist | Preserve live facts, gate session and sanitize error; no transcript dump or silent stateless continuation. |
 | Reopen with changed Workspace/provider | Valid checkpoint, mismatched current binding | Old history may be stale; new endpoint not approved | Inspect only. Reject identity replacement; require fresh provider approval/HEAD acknowledgement and empty grants before a new turn. |
@@ -486,38 +555,40 @@ the last committed full conversation, `I` an intent and `F` at least one fence.
 
 | Current method / boundary | Proposed change | Preserved contract |
 | --- | --- | --- |
-| `runtime.loop.run_turn(agent, user_input, *, budget)` | Add optional `session: DurableSession \| None = None`. Validate Agent association, begin before execution, build fence callback, settle/commit after existing abort handling and `trace.close`. | `-> str` and caller exceptions; same Agent loop, budgets, message rollback and pending ownership. `None` performs no storage I/O. |
+| `runtime.loop.run_turn(agent, user_input, *, budget)` | Add optional `session: DurableSession \| None = None`. First enforce the Agent-local owner/gate; then begin, build fence callback and settle/commit after abort handling and `trace.close`. Notify `turn_committed` after its receipt outside execution/rollback handlers. | `-> str` and primary execution exceptions; same loop, budgets, rollback and pending ownership. Both Agent owner and argument None preserve stateless behavior with no storage I/O. |
 | `runtime.tool_execution.execute_tool_call` | Add optional `before_execute: Callable[[], None]` passed by the loop with its host ordinal/call reference. Invoke outside the execution-exception catch after approval, before mark/execute. | Preflight precedes permission; capability-derived ToolExecutionContext; tool result, cancellation and event ordering. No SessionStore import or lifecycle decisions here. |
 | `runtime.turn_trace.TurnTrace.close` | Expose a typed immutable `summary` after finalization, including nullable usage and a sanitized persistence flag/code. | One final trace event; no second telemetry finalizer. `Tracer`/TraceStore continue independently. |
-| `runtime.agent.Agent`, `runtime.assembly.build_agent` | No signature change. The explicit host binds a DurableSession to a freshly built Agent; restore validates then assigns its state once under the session guard. | No credentials or IDs added to AgentState; normal callers/evals stay stateless. |
+| `runtime.agent.Agent`, `runtime.assembly.build_agent` | Keep constructor/build signatures; add Agent-local private owner slot, read-only property and once-only binding hook using the reviewed M1-B lifecycle contract. DurableSession factories bind before restoration; closing retains the marker. | No credentials/IDs/owner reference added to AgentState or persistence. Unbound callers/evals stay stateless; bound Agents cannot bypass admission by omitting session. |
 | `runtime.provider_runtime.ProviderSession.commit` and selection | No API change. Host observes committed runtime when constructing/updating the next Turn's binding. | Build replacement before rebinding; per-candidate matching admission. Persisted references cannot switch a provider. |
 | `terminal.cli.root/main` | Later slice adds explicit create/reopen flags, store setup, read-only recovery display and trusted human resolution; pass optional session to run_turn. Default invocation bypasses all of it. | Existing input/model commands; commands only between turns. Fresh permission handler on reopen, current provider consent before credentials/network. Durable failure blocks another turn. |
-| `runtime.tasks.CodingTaskRunner._execute / _turn` | No V1 execution change. Later milestone creates a separate durable Session for each fresh Task Agent and passes it through _turn. Persist final TaskResult only after owned inspection/cleanup. | `run() -> TaskResult`, TaskStatus meanings, fresh Agent per Task and external cancellation propagation. |
+| `runtime.tasks.CodingTaskRunner._execute / _turn` | No M1-C Task execution change. M2 creates a separate durable Session for each fresh Task Agent and passes it through _turn. Persist final TaskResult only after owned inspection/cleanup. | `run() -> TaskResult`, TaskStatus meanings, fresh Agent per Task and external cancellation propagation. |
 | `WorktreeHandle`, LocalWorkflow/review/publisher | No V1 changes. Read public ownership facts when a future Task integration needs diagnostic provenance. | Existing retained Worktree and publication guards; no automatic handle reconstruction, checkout, index reset, release or PR retry. |
 
 A recovered session's host-built recovery notice is optional system request
 context in the existing `run_turn` request construction, never conversation
 messages or a second resume loop. It is bounded and included before admission
 with all other system-message overhead for every fallback candidate.
-No change to LLMClient.generate,
-ModelExecutor's `(request, response)` contract, ToolResult, permission policy,
-ContextBuilder trimming, Project Memory, RepoGraph or frozen Eval artifacts.
+M1-A/M1-B own LLMClient streaming and Event API changes; M1-C consumes their
+approved fully assembled response boundary. This persistence subdesign preserves
+ModelExecutor's `(request, response)` completion contract, ToolResult, permission
+policy, ContextBuilder trimming, Project Memory, RepoGraph and frozen Eval artifacts.
 
 ## Staged implementation and acceptance
 
-Architecture review of this document is the gate for starting these slices.
-No provider runs or remote publication are needed. Each slice gets focused
-tests and semantic diff review; full offline checks run at integration.
+These are **M1-C slices**, gated by M1-A Streaming/M1-B Session Lifecycle milestone
+acceptance and independent review of this design; Store-first implementation is
+not proposed. No provider runs or remote publication are needed. Each slice gets
+focused tests and semantic diff review; full offline checks run at integration.
 Under `tests/`, proposed new store tests belong in `infra/sessions/`, runtime
 tests in `runtime/` and CLI tests in `terminal/`. Shared fault helpers belong in
 the existing `tests/support/`.
 
 | Slice | Deliverable | Independent observable acceptance |
 | --- | --- | --- |
-| 1 — storage/codec contract | Strict checkpoint/attempt DTOs, concrete SessionStore, version/schema rules, atomic create/begin/fence/commit/reconcile, safe storage and lifetime lock. **No loop/CLI change.** | Real temporary SQLite DB; full-state roundtrip, invalid data rejected, CAS/atomicity/crash/lock/path/secret tests below. |
-| 2 — opt-in turn boundary | DurableSession and optional run_turn/tool fence hooks; typed TurnTrace summary; recovery gate and context. | Existing stateless loop suite unchanged; deterministic LLM/tool doubles cover settled success, all aborts, fencing failure and no redispatch. |
-| 3 — explicit local create/reopen UI | CLI flags and recovery inspection/host acknowledgement; provider approval and grants reset. | Public CliRunner/pipe input, no real provider. Opening/reconciling performs zero model/tool calls; absent opt-in creates no store. |
-| 4 — separate Task recovery milestone | Versioned Task metadata/results linked to Session/Turn; retain current runner as owner. | Crash after committed turn/before inspection/result shows an unfinished Task without rerunning it; temporary Git repos test provenance and retention. |
+| M1-C.1 — storage/codec contract | Strict checkpoint/attempt DTOs, concrete SessionStore, version/schema rules, atomic create/begin/fence/commit/reconcile, safe storage and lifetime lock. **No loop/CLI change.** | Real temporary SQLite DB; full-state roundtrip, invalid data rejected, CAS/atomicity/crash/lock/path/secret tests below. |
+| M1-C.2 — opt-in turn boundary | DurableSession, enforced Agent binding/admission and tool fence hooks; typed TurnTrace summary; recovery gate/context and post-receipt lifecycle acknowledgement. | Stateless suite unchanged; deterministic stream/LLM/tool doubles cover ownership rejection, settled aborts, fencing, acknowledgement failure and no redispatch. |
+| M1-C.3 — explicit local create/reopen UI | CLI flags and recovery inspection/host acknowledgement; provider approval and grants reset. | Public CliRunner/pipe input, no real provider. Opening/reconciling performs zero model/tool calls; absent opt-in creates no store. |
+| M2 — separate Task recovery milestone | Versioned Task metadata/results linked to Session/Turn; retain current runner as owner. | Crash after committed turn/before inspection/result shows an unfinished Task without rerunning it; temporary Git repos test provenance and retention. |
 | Later — separately designed idempotency | Only when a concrete tool has a verified effect/receipt protocol | Independent design/version/tests; never infer it from checkpoint sequence or trace success. |
 
 Deterministic tests must assert final observable state, not incidental SQL call
@@ -526,6 +597,8 @@ scripted LLMs and a local file-mutating tool double:
 
 | Test family | Exact oracle |
 | --- | --- |
+| Streaming/acknowledgement | Script interleaved text/call fragments, parseable-but-unfinished arguments, an incomplete call group and fallback attempt changes: no partial assistant/tool group enters AgentState and no partial tool executes. A complete validated response is accepted once and uses the existing fenced tool path. Cancel before completion, both before any tool and after an earlier accepted tool: discard the buffer, retain only settled existing facts. Tokens/finish/trace events acknowledge no checkpoint; turn_committed follows a receipt with matching IDs/seq/outcome. Commit failure emits no acknowledgement; failed acknowledgement delivery preserves the committed receipt and primary outcome/cancellation without replay. |
+| Agent ownership | Snapshot live state and all session/turn/checkpoint rows/revisions after fixture setup. Call public run_turn on a bound Agent with session omitted/None (also after close or failed attachment), a different owner object (even with the same Session ID), a correct but closed owner/store, or a suspended/recovery-required/busy gate. Each rejects before events, approval, model/tool calls or live/durable mutation. Rebinding and passing an owner to an unbound/different Agent also reject. Controls: matching ready owner takes the durable path; owner=None/session=None retains normal stateless behavior. |
 | Codec/history | Roundtrip Unicode/nulls/empty rolled-back turn and interrupted closed groups. Reject extra/duplicate JSON keys, bad digest/version, orphan/duplicate/out-of-order results, duplicate IDs inside a group and changed committed prefix. Reused IDs in different groups succeed. Full history survives request trimming. |
 | Atomicity/CAS | A stale Revision cannot begin/fence/commit/reconcile; stale reconciliation cannot clear a newer attempt. Inject failure after checkpoint INSERT and after attempt UPDATE: head/attempt/checkpoint remain old together. Duplicate terminal commit cannot append another checkpoint. |
 | Process crash | Parent waits for a child readiness signal at each named window, kills/exits child, then reopens actual SQLite. Accept precisely old or new transaction state with consistent head/terminal links; never partial rows. Tool double increments a file and fsyncs it before its crash barrier: after reopen its count remains 1 and calls remain 0. |
@@ -543,11 +616,11 @@ test. OS/power-loss expectations rely on SQLite FULL sync and working local
 filesystem durability primitives; document that limit. Use existing native
 sandbox readiness helpers for actual Bash isolation and report skips explicitly.
 
-## Task recovery without scheduling
+## M2 Task recovery without scheduling
 
-A future schema migration can add a `tasks` row keyed by Session ID and existing
-Task ID, with version, input digest, phase, nullable TaskResult and public
-Worktree provenance. The **runner** records `running → turn_committed →
+In the separate M2 design, a schema migration can add a `tasks` row keyed by
+Session ID and existing Task ID, with version, input digest, phase, nullable
+TaskResult and public Worktree provenance. The **runner** records `running → turn_committed →
 inspecting → result_recorded` around its current operations. A committed turn is
 not a completed Task: repository inspection can still fail or be cancelled.
 On restart an unfinished Task becomes recovery-required, leaving the Session
@@ -563,20 +636,12 @@ fresh evidence, not republishing. Future scheduling calls CodingTaskRunner and
 references these IDs/revisions; this schema does not require a queue, DAG,
 dispatcher, background worker or distributed lock.
 
-## Review decisions and implementation gates
+## Implementation gates and deferred decisions
 
-The proposed defaults are resolved enough for slice 1; review should accept or
-amend these particular tradeoffs before runtime integration:
+M1-C starts only after M1-A/M1-B milestone acceptance and independent review
+of this design, including the ownership and streaming negative-test oracles above.
+Release/CLI gates remain:
 
-- Checkpoint settled failure/cancellation as well as success; empty rollback
-  checkpoints advance sequence. Trace callback failure prevents commit, ordinary
-  trace sink failure does not. Confirm this distinction against loop contracts.
-- Use a store-wide lifetime writer lock and one writable connection initially.
-  This limits simultaneous durable CLI sessions and does not protect independent
-  stores/stateless programs changing the same Workspace.
-- Require explicit host attachment on every reopen and reconciliation for every
-  unfinished intent; no automatic abandon, prompt resubmission or tool retry.
-  Historical observations never become fresh evidence by reopening.
 - Reject sensitive/oversize checkpoints instead of redacting conversation.
   Confirm proposed bounds and false-positive handling before the CLI slice.
 - Establish a supported SQLite deployment/runtime version and platform lock
@@ -584,7 +649,8 @@ amend these particular tradeoffs before runtime integration:
   documented WAL fixes. No dependency/runtime changes are part of this design.
 
 CLI flag spelling, retention/export UX, Worktree adoption and Task-result schema
-are intentionally deferred. None is a hidden requirement for the first slice.
-The recommended first implementation task is **slice 1: isolated SessionStore
-and codec**, with deterministic SQLite crash/CAS/lock/security tests and no
-Agent execution changes.
+are deferred; Task recovery belongs to M2. The next implementation work is
+**M1-A Streaming, then M1-B Session Lifecycle**. After those prerequisites and
+review, the first persistence slice is **M1-C.1: isolated SessionStore and codec**
+with deterministic SQLite crash/CAS/lock/security tests. This branch remains
+design-only.
