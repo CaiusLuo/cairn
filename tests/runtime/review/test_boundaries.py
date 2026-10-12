@@ -168,12 +168,12 @@ def test_mutation_during_review_invalidates_even_a_valid_model_verdict(
 def test_injected_write_and_network_calls_have_no_authority(
     provider: WorktreeProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from cairn.runtime import loop
+    from cairn.runtime import tool_execution
 
     def approval(*args: Any, **kwargs: Any) -> Any:
         pytest.fail("A reviewer must never ask for write or network authority")
 
-    monkeypatch.setattr(loop, "_ask_for_approval", approval)
+    monkeypatch.setattr(tool_execution, "_ask_for_approval", approval)
 
     async def scenario() -> None:
         owned, snapshot, verified = await proposal(provider)
