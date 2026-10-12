@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from cairn.infra.config import load_project_providers
+from cairn.infra.git.cleanup import finish_cleanup as _finish
 from cairn.infra.git.environment import build_git_env
 from cairn.infra.tools.capture import read_bounded
 from cairn.infra.tools.credential_env import SECRET_ENV_KEYS
@@ -37,26 +38,6 @@ class WorktreeState(Enum):
     RETAINED = "retained"
     RELEASING = "releasing"
     RELEASED = "released"
-
-
-async def _finish[T](operation: Coroutine[Any, Any, T]) -> T:
-    """Observe cleanup to completion even under repeated external cancellation."""
-    task = asyncio.create_task(operation)
-    cancelled: asyncio.CancelledError | None = None
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError as exc:
-            cancelled = cancelled or exc
-        except Exception:
-            break
-    if cancelled is not None:
-        try:
-            task.result()
-        except BaseException as exc:
-            cancelled.add_note(f"Cleanup failed: {exc!r}")
-        raise cancelled
-    return task.result()
 
 
 async def _preserve(primary: BaseException, cleanup: Coroutine[Any, Any, None]) -> None:

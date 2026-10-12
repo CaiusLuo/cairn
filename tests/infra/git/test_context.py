@@ -1,6 +1,8 @@
 import asyncio
 import os
 import shlex
+import signal
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -154,3 +156,104 @@ def test_git_children_are_hardened_and_credential_filtered(
     assert "CAIRN_LLM_API_KEY" not in child_env
     assert child_env["GIT_CONFIG_GLOBAL"] == os.devnull
     assert child_env["GIT_CONFIG_NOSYSTEM"] == "1"
+
+
+@pytest.mark.parametrize("operation", ["command", "status", "nul-status"])
+@pytest.mark.parametrize("interruption", ["cancel", "timeout", "spawn-cancel"])
+def test_inspection_reaps_child_and_readers_under_repeated_cancellation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    interruption: str,
+) -> None:
+    original_spawn = asyncio.create_subprocess_exec
+    processes: list[asyncio.subprocess.Process] = []
+    ready = tmp_path / "ready"
+    # The child ignores termination and can fill a pipe before spawning returns.
+    script = (
+        "import os, pathlib, signal, sys, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "pathlib.Path(sys.argv[1]).touch(); "
+        "os.write(2, b'x' * 200000); time.sleep(60)"
+    )
+
+    async def scenario() -> None:
+        spawned = asyncio.Event()
+        allow_spawn_return = asyncio.Event()
+        terminating = asyncio.Event()
+
+        async def spawn(*args: Any, **kwargs: Any) -> asyncio.subprocess.Process:
+            process = await original_spawn(
+                sys.executable, "-c", script, str(ready), **kwargs
+            )
+            processes.append(process)
+            while not ready.exists():
+                await asyncio.sleep(0.001)
+            spawned.set()
+            if interruption == "spawn-cancel":
+                await allow_spawn_return.wait()
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+        provider = RepoContextProvider(Workspace(tmp_path), timeout=0.05)
+        original_terminate = provider._terminate
+
+        async def terminate(process: asyncio.subprocess.Process) -> None:
+            terminating.set()
+            await original_terminate(process)
+
+        monkeypatch.setattr(provider, "_terminate", terminate)
+        task: asyncio.Task[Any]
+        if operation == "command":
+            task = asyncio.create_task(provider.run_git("status"))
+        else:
+            task = asyncio.create_task(
+                provider._read_status(nul=operation == "nul-status")
+            )
+        try:
+            async with asyncio.timeout(5):
+                await spawned.wait()
+                if interruption != "timeout":
+                    task.cancel("first cancellation")
+                if interruption == "spawn-cancel":
+                    await asyncio.sleep(0)
+                    task.cancel("second cancellation")
+                    allow_spawn_return.set()
+                else:
+                    await terminating.wait()
+                    task.cancel("second cancellation")
+                    await asyncio.sleep(0)
+                    task.cancel("third cancellation")
+                with pytest.raises(
+                    TimeoutError
+                    if interruption == "timeout"
+                    else asyncio.CancelledError,
+                    match=None if interruption == "timeout" else "first cancellation",
+                ):
+                    await task
+                process = processes[0]
+                assert process.returncode == -signal.SIGKILL
+                with pytest.raises(ProcessLookupError):
+                    os.kill(process.pid, 0)
+                assert not [
+                    pending
+                    for pending in asyncio.all_tasks()
+                    if pending is not asyncio.current_task()
+                ]
+        finally:
+            # A failing regression must not leave its real subprocess behind.
+            for process in processes:
+                if process.returncode is None:
+                    process.kill()
+            pending = [
+                child
+                for child in asyncio.all_tasks()
+                if child is not asyncio.current_task()
+            ]
+            for child in pending:
+                child.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for process in processes:
+                await process.communicate()
+
+    asyncio.run(scenario())

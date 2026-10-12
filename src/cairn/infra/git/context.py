@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from cairn.core.repository import DEFAULT_MAX_PATHS, RepositoryEvidence
+from cairn.infra.git.cleanup import finish_cleanup
 from cairn.infra.git.environment import build_git_env
 from cairn.infra.tools.capture import read_bounded
 from cairn.infra.workspace.workspace import Workspace
@@ -169,32 +170,32 @@ class RepoContextProvider:
     ) -> GitCommandResult:
         """Run one bounded Git command in the workspace.
 
-        This is the single public Git subprocess seam; every Harness Git call
-        goes through it, so the hooks/fsmonitor overrides, the pipe capture
-        bound and cancellation cleanup hold for all of them. Callers that
+        This is the bounded command seam for repository inspection, with
+        hooks/fsmonitor overrides and cancellation cleanup. Callers that
         inspect or mutate anything beyond prompt context must pass the
         environment they intend explicitly; ``env=None`` selects the isolated
         environment this module uses for its own prompt inspection.
         """
-        process = await self._start_git(*args, env=env)
-        assert process.stdout is not None
-        assert process.stderr is not None
-        stdout_task = asyncio.create_task(
-            read_bounded(process.stdout, GIT_OUTPUT_CAPTURE_LIMIT)
-        )
-        stderr_task = asyncio.create_task(
-            read_bounded(process.stderr, GIT_OUTPUT_CAPTURE_LIMIT)
-        )
-
+        spawn = asyncio.create_task(self._start_git(*args, env=env))
+        readers: list[asyncio.Task[Any]] = []
         try:
+            process = await asyncio.shield(spawn)
+            assert process.stdout is not None
+            assert process.stderr is not None
+            stdout_task = asyncio.create_task(
+                read_bounded(process.stdout, GIT_OUTPUT_CAPTURE_LIMIT)
+            )
+            readers.append(stdout_task)
+            stderr_task = asyncio.create_task(
+                read_bounded(process.stderr, GIT_OUTPUT_CAPTURE_LIMIT)
+            )
+            readers.append(stderr_task)
             async with asyncio.timeout(self.timeout):
                 returncode = await process.wait()
                 stdout, stdout_truncated = await stdout_task
                 stderr, stderr_truncated = await stderr_task
-        except BaseException:
-            with suppress(Exception):
-                await self._terminate(process)
-            await _settle_tasks(stdout_task, stderr_task)
+        except BaseException as primary:
+            await self._cleanup_after_error(primary, spawn, readers)
             raise
 
         return GitCommandResult(
@@ -205,50 +206,84 @@ class RepoContextProvider:
             stderr_truncated=stderr_truncated,
         )
 
+    async def _cleanup_after_error(
+        self,
+        primary: BaseException,
+        spawn: asyncio.Task[asyncio.subprocess.Process],
+        readers: list[asyncio.Task[Any]],
+    ) -> None:
+        try:
+            await finish_cleanup(self._stop_git(spawn, readers))
+        except BaseException as exc:
+            # Preserve the original error without exposing arbitrary diagnostics.
+            primary.add_note(
+                f"Git inspection cleanup interrupted ({type(exc).__name__})"
+            )
+
+    async def _stop_git(
+        self,
+        spawn: asyncio.Task[asyncio.subprocess.Process],
+        readers: list[asyncio.Task[Any]],
+    ) -> None:
+        process = await spawn
+        await _settle_tasks(*readers)
+        assert process.stdout is not None and process.stderr is not None
+        # A cancelled reader may have left a paused full pipe. Restart drains
+        # before waiting for termination, even if spawning had not returned.
+        drains = [
+            asyncio.create_task(read_bounded(process.stdout, 0)),
+            asyncio.create_task(read_bounded(process.stderr, 0)),
+        ]
+        try:
+            await self._terminate(process)
+        finally:
+            await _settle_tasks(*drains)
+
     async def _read_status(
         self, *, nul: bool = False, env: Mapping[str, str] | None = None
     ) -> tuple[list[str], bool]:
-        process = await self._start_git(
-            "status",
-            "--porcelain=v1",
-            "--untracked-files=all" if nul else "--untracked-files=normal",
-            *(("-z",) if nul else ()),
-            "--",
-            ".",
-            env=env,
-        )
-        assert process.stdout is not None
-        assert process.stderr is not None
-        stdout_task = asyncio.create_task(
-            (_read_status_records if nul else _read_status_paths)(
-                process.stdout, max_paths=self.max_paths
+        spawn = asyncio.create_task(
+            self._start_git(
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all" if nul else "--untracked-files=normal",
+                *(("-z",) if nul else ()),
+                "--",
+                ".",
+                env=env,
             )
         )
-        stderr_task = asyncio.create_task(
-            read_bounded(process.stderr, GIT_OUTPUT_CAPTURE_LIMIT)
-        )
-        drain_task: asyncio.Task[tuple[bytes, bool]] | None = None
-
+        readers: list[asyncio.Task[Any]] = []
         try:
+            process = await asyncio.shield(spawn)
+            assert process.stdout is not None
+            assert process.stderr is not None
+            stdout_task = asyncio.create_task(
+                (_read_status_records if nul else _read_status_paths)(
+                    process.stdout, max_paths=self.max_paths
+                )
+            )
+            readers.append(stdout_task)
+            stderr_task = asyncio.create_task(
+                read_bounded(process.stderr, GIT_OUTPUT_CAPTURE_LIMIT)
+            )
+            readers.append(stderr_task)
+            drain_task: asyncio.Task[tuple[bytes, bool]] | None = None
             async with asyncio.timeout(self.timeout):
                 lines, truncated = await stdout_task
                 if truncated:
                     # Drain only pipe data left after termination so process.wait()
                     # cannot stall; no further status records are retained.
                     drain_task = asyncio.create_task(read_bounded(process.stdout, 0))
+                    readers.append(drain_task)
                     await self._terminate(process)
                 returncode = await process.wait()
                 # Drain stderr so a full pipe can never stall process.wait().
                 await stderr_task
                 if drain_task is not None:
                     await drain_task
-        except BaseException:
-            with suppress(Exception):
-                await self._terminate(process)
-            tasks = [stdout_task, stderr_task]
-            if drain_task is not None:
-                tasks.append(drain_task)
-            await _settle_tasks(*tasks)
+        except BaseException as primary:
+            await self._cleanup_after_error(primary, spawn, readers)
             raise
 
         if returncode != 0 and not truncated:
