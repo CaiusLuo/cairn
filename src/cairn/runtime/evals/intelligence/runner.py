@@ -235,8 +235,13 @@ class IntelligenceRunner(EvalRunner):
         ``run_case`` is not the only entry point: a suite runner calls ``run``
         directly, so ownership of the memory directory belongs at this boundary.
         """
+        self.read_paths.clear()
         try:
-            return await super().run(case, checks=checks, metrics=metrics)
+            return await super().run(
+                case,
+                checks=checks,
+                metrics=self.observations if metrics is None else metrics,
+            )
         finally:
             self._release_memory_directory()
 
