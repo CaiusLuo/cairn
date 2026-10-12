@@ -9,6 +9,7 @@ page is the map for everything else.
 | --- | --- |
 | [Architecture](architecture.md) | Package ownership, dependency direction, execution lifecycle, and where new code belongs |
 | [Decisions](adr/0001-modular-architecture-baseline.md) | The architectural decisions this foundation rests on, and what they deliberately reject |
+| [Durable Session V1 design](design/durable-session-v1.md) | Proposed committed-turn persistence, safe recovery and implementation slices; pending architecture review |
 
 ## Operating Cairn
 
