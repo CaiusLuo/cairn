@@ -78,8 +78,12 @@ rules, credential handling, session selection and local `/model` edits.
 | `/help [COMMAND]` | Full command usage, including trace management |
 | `/exit`, `/quit` | End the session |
 
-Traces are saved under `.cairn/traces/`. Conversation state and approvals last
-only for the current process.
+Traces are saved under `.cairn/traces/`. Default conversation state and approvals
+last only for the current process. Opt into local durable conversation state with
+`cairn session new`, inspect with `cairn session inspect SESSION_ID`, and reopen
+with `cairn session reopen SESSION_ID`. Interrupted turns require explicit
+`cairn session reconcile SESSION_ID`. See the [durable CLI guide](docs/guides/durable-cli.md)
+for approval, storage and release limits; approvals are always fresh.
 
 Bash commands run inside an OS sandbox with network access denied by default;
 extra network access requires explicit approval. Filesystem boundaries differ

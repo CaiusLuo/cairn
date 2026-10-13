@@ -4,7 +4,8 @@
 into the existing [Session lifecycle](session-lifecycle.md) and
 [SessionStore](session-store.md). `run_turn` remains the sole execution owner.
 Stateless CLI, EvalRunner and CodingTaskRunner callers do no session storage I/O.
-This API adds no CLI flags, Task recovery, replay or scheduler.
+The [durable CLI](durable-cli.md) provides explicit local creation and recovery.
+This API adds no Task recovery, replay or scheduler.
 
 ## Host API and authority
 
@@ -146,5 +147,5 @@ Local SQLite **3.50.4** remains a **release blocker**; integration does not upgr
 or claim deployment support. The [Store release gate](session-store.md#verification-and-release-gate)
 requires a fixed SQLite runtime and target macOS/Linux filesystem/locking
 qualification. Storage is synchronous and cleanup cooperative; an uncooperative
-tool/provider or blocking callback can delay settlement. CLI recovery UI is
-M1-C.3; Task recovery and Worktree adoption remain M2.
+tool/provider or blocking callback can delay settlement. Task recovery and
+Worktree adoption remain M2.

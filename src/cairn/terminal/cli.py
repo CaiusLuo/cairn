@@ -1,6 +1,7 @@
 import asyncio
 import os
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from dotenv import dotenv_values
@@ -20,15 +21,26 @@ from cairn.infra.observability.sinks import JsonlTraceSink
 from cairn.infra.observability.storage import TraceStore
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.workspace.workspace import Workspace
+from cairn.runtime.agent import Agent
 from cairn.runtime.assembly import build_agent
+from cairn.runtime.durable_session import DurableSession
+from cairn.runtime.lifecycle import settle_owned
 from cairn.runtime.loop import run_turn
 from cairn.runtime.provider_runtime import (
     ProviderRuntime,
     ProviderSession,
     build_provider_runtime,
 )
+from cairn.runtime.session import SessionState
 from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.router import CommandRouter
+from cairn.terminal.durable import (
+    DurableOptions,
+    attach_session,
+    inspect_session,
+    reconcile_session,
+    show_report,
+)
 from cairn.terminal.input import CliInput
 from cairn.terminal.output import (
     StreamingDisplay,
@@ -48,6 +60,91 @@ app = typer.Typer(
 
 DEFAULT_CLI_RUN_BUDGET = RunBudget(max_steps=50)
 
+session_app = typer.Typer(
+    help="Create, inspect, reopen or reconcile local conversations."
+)
+app.add_typer(session_app, name="session")
+StoreOption = Annotated[
+    Path | None, typer.Option("--store", help="Session storage directory.")
+]
+RootsOption = Annotated[
+    list[Path] | None,
+    typer.Option(
+        "--forbid-root", help="Additional host sandbox-writable root (repeatable)."
+    ),
+]
+
+
+def _durable_command(options: DurableOptions) -> None:
+    try:
+        asyncio.run(main(durable=options))
+    except Exception:
+        typer.echo(
+            "Durable session unavailable or binding rejected. Inspect before recovery.",
+            err=True,
+        )
+        raise typer.Exit(1) from None
+
+
+@session_app.command("new")
+def session_new(store: StoreOption = None, forbid_root: RootsOption = None) -> None:
+    """Create a durable conversation and enter the CLI."""
+    _durable_command(
+        DurableOptions(
+            "new", directory=store, additional_roots=tuple(forbid_root or ())
+        )
+    )
+
+
+@session_app.command("inspect")
+def session_inspect(
+    session_id: str, store: StoreOption = None, forbid_root: RootsOption = None
+) -> None:
+    """Read bounded recovery metadata without mutation or provider access."""
+    try:
+        inspect_session(session_id, store, tuple(forbid_root or ()))
+    except Exception:
+        typer.echo(
+            "Session inspection unavailable; verify ID, store and writable roots.",
+            err=True,
+        )
+        raise typer.Exit(1) from None
+
+
+@session_app.command("reopen")
+def session_reopen(
+    session_id: str, store: StoreOption = None, forbid_root: RootsOption = None
+) -> None:
+    """Reopen with fresh provider approval and explicit binding acknowledgement."""
+    _durable_command(
+        DurableOptions("reopen", session_id, store, tuple(forbid_root or ()))
+    )
+
+
+@session_app.command("reconcile")
+def session_reconcile(
+    session_id: str, store: StoreOption = None, forbid_root: RootsOption = None
+) -> None:
+    """Explicitly abandon an unfinished turn without replay, then exit."""
+    _durable_command(
+        DurableOptions("reconcile", session_id, store, tuple(forbid_root or ()))
+    )
+
+
+async def _durable_turn(agent: Agent, user_input: str, session: DurableSession) -> str:
+    task = asyncio.create_task(
+        run_turn(
+            agent, user_input=user_input, budget=DEFAULT_CLI_RUN_BUDGET, session=session
+        )
+    )
+    try:
+        return await asyncio.shield(task)
+    except BaseException:
+        # The CLI must join execution/cleanup before closing the writer, even
+        # through repeated caller cancellation. EOF is read only between turns.
+        await settle_owned(task)
+        raise
+
 
 @app.callback()
 def root(ctx: typer.Context) -> None:
@@ -55,14 +152,16 @@ def root(ctx: typer.Context) -> None:
         asyncio.run(main())
 
 
-async def main(cli_input: CliInput | None = None) -> None:
+async def main(
+    cli_input: CliInput | None = None, *, durable: DurableOptions | None = None
+) -> None:
     env_file_values = dotenv_values()
     model_path = Path(".cairn/models.toml")
     project = load_project_providers(model_path)
 
     provider = default_provider(project, os.environ, env_file_values)
     selected_group = provider.config.model_config[0]
-    if project.layout is not ConfigLayout.ENV:
+    if durable is not None or project.layout is not ConfigLayout.ENV:
         if (
             confirm_provider_access(provider, selected_group, switching=False)
             is not True
@@ -98,6 +197,19 @@ async def main(cli_input: CliInput | None = None) -> None:
 
     def handle_event(event: Event) -> None:
         nonlocal pending_trace_finish
+        if durable is not None:
+            notices = {
+                "tool_call": "Provisional tool execution; checkpoint not committed.",
+                "tool_result": "Provisional tool observation; checkpoint not committed.",
+                "tool_error": "Tool failed; checkpoint not committed.",
+                "tool_denied": "Tool permission denied.",
+                "agent_finish": "Turn output finished; awaiting durable checkpoint.",
+            }
+            if event.type in notices:
+                if event.type == "agent_finish":
+                    streaming_display.observe(event)
+                print(notices[event.type])
+                return
         if event.type == "trace_finish":
             if event.data.get("persisted", True):
                 command_context.last_trace_id = event.data["trace_id"]
@@ -159,50 +271,118 @@ async def main(cli_input: CliInput | None = None) -> None:
         input_reader.choose_model(provider, models, current)
     )
 
-    while True:
-        try:
-            user_input = await input_reader.read()
-        except KeyboardInterrupt:
-            continue
-        except EOFError:
-            break
-
-        if not user_input or user_input.isspace():
-            continue
-
-        command_result = router.handle(
-            user_input,
-            command_context,
+    durable_session: DurableSession | None = None
+    if durable is not None:
+        durable_session, observe_binding = attach_session(
+            durable,
+            agent,
+            workspace,
+            active_runtime,
+            max_steps=DEFAULT_CLI_RUN_BUDGET.max_steps,
+            secret_env_keys=secret_env_keys,
+            sensitive_values=tuple(
+                {
+                    api_key,
+                    *(
+                        os.environ.get(k) or env_file_values.get(k) or ""
+                        for k in secret_env_keys
+                    ),
+                }
+                - {""}
+            ),
         )
-
-        if command_result.handled:
-            if command_result.interaction is not None:
-                await command_result.interaction()
-            if command_result.should_exit:
-                break
-            continue
-
-        streaming_display.reset()
-        try:
-            response = await run_turn(
-                agent,
-                user_input=user_input,
-                budget=DEFAULT_CLI_RUN_BUDGET,
+    try:
+        if durable_session is not None:
+            assert durable is not None
+            if durable.operation == "new":
+                show_report(durable_session.inspect())
+            elif not reconcile_session(
+                durable_session,
+                observe_binding,
+                allow_unfinished=durable.operation == "reconcile",
+            ):
+                return
+            if durable.operation == "reconcile":
+                return
+            if durable_session.recovery_notice:
+                print(durable_session.recovery_notice)
+            print(
+                "Durable mode: output is provisional until a committed checkpoint status."
             )
-        except RunBudgetExceeded:
-            pass
-        except Exception as exc:
-            print_runtime_error(exc)
-        else:
-            if not streaming_display.final_text_visible:
-                print_assistant_response(response)
-        finally:
-            streaming_display.close_incomplete()
-            if pending_trace_finish is not None:
-                console_event_handler(pending_trace_finish)
-                pending_trace_finish = None
+        while True:
+            try:
+                user_input = await input_reader.read()
+            except KeyboardInterrupt:
+                continue
+            except EOFError:
+                break
+            if not user_input or user_input.isspace():
+                continue
+            if durable_session is not None and user_input.split()[0].lower() in {
+                "/model",
+                "/provider",
+            }:
+                print(
+                    "Model/provider switching is disabled in durable mode. Exit and reopen with fresh approval to acknowledge current configuration."
+                )
+                continue
+            command_result = router.handle(user_input, command_context)
+            if command_result.handled:
+                if command_result.interaction is not None:
+                    await command_result.interaction()
+                if command_result.should_exit:
+                    break
+                continue
+            streaming_display.reset()
+            previous_seq = (
+                durable_session.receipt.revision.head_seq if durable_session else None
+            )
+            try:
+                if durable_session is None:
+                    response = await run_turn(
+                        agent, user_input=user_input, budget=DEFAULT_CLI_RUN_BUDGET
+                    )
+                else:
+                    response = await _durable_turn(agent, user_input, durable_session)
+            except RunBudgetExceeded:
+                pass
+            except Exception as exc:
+                if durable_session is None:
+                    print_runtime_error(exc)
+                else:
+                    print(
+                        "Durable turn failed. Check committed status; inspect before recovery."
+                    )
+            else:
+                if not streaming_display.final_text_visible:
+                    print_assistant_response(response)
+            finally:
+                streaming_display.close_incomplete()
+                if pending_trace_finish is not None:
+                    if (
+                        durable_session is not None
+                        and not pending_trace_finish.data.get("persisted", True)
+                    ):
+                        print("Trace unavailable: persistence failed.")
+                    else:
+                        console_event_handler(pending_trace_finish)
+                    pending_trace_finish = None
+            if durable_session is not None:
+                if durable_session.state is not SessionState.READY:
+                    print(
+                        "Session stopped: recovery required. Use cairn session inspect/reconcile before new turns."
+                    )
+                    break
+                receipt = durable_session.receipt
+                if receipt.revision.head_seq != previous_seq:
+                    print(
+                        f"Committed checkpoint {receipt.revision.head_seq} ({receipt.outcome})."
+                    )
 
-    print("Goodbye! see you next time.")
+        print("Goodbye! see you next time.")
+    finally:
+        if durable_session is not None:
+            durable_session.close()
 
 
 if __name__ == "__main__":

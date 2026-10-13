@@ -6,7 +6,7 @@ only. It neither attaches an Agent nor calls a model, tool, permission handler,
 Git command or publisher. [M1-B](session-lifecycle.md) owns the live Session/Turn;
 [M1-C.2 DurableSession](durable-session.md) integrates these primitives at the
 existing runtime boundaries. Default stateless callers and CLI remain unchanged;
-explicit recovery UI belongs to M1-C.3.
+explicit recovery UI is provided by the [M1-C.3 durable CLI](durable-cli.md).
 
 ## Host API
 
