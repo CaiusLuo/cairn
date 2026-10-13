@@ -1,7 +1,8 @@
 """Opt-in storage at the existing Session/Agent turn boundary; never a replay loop."""
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,6 +39,7 @@ from cairn.infra.sessions.models import (
     same_workspace,
 )
 from cairn.infra.sessions.store import SessionStore
+from cairn.infra.sessions.task_models import TaskRecord
 from cairn.runtime.agent import Agent, SessionAdmissionError
 from cairn.runtime.session import Session, SessionState, TurnOutcome
 from cairn.runtime.turn_trace import TurnTraceSummary
@@ -81,6 +83,8 @@ class DurableSession(Session):
         self._ordinal = 0
         self._committed: CheckpointReceipt | None = None
         self._expected_receipt: CheckpointReceipt | None = None
+        self._task: TaskRecord | None = None
+        self._task_started = False
         super().__init__(agent)
 
     @classmethod
@@ -278,6 +282,62 @@ class DurableSession(Session):
         return self._receipt
 
     @property
+    def store(self) -> SessionStore:
+        """The exact host-supplied Store, without opening or upgrading it."""
+        return self._store
+
+    def validate_task_binding(self, budget: RunBudget) -> Revision:
+        """Validate a fresh, ready host binding before Task admission/effects."""
+        if (
+            self.state is not SessionState.READY
+            or self.last_turn is not None
+            or self._task is not None
+            or self.agent.permission_handler is None
+        ):
+            raise SessionAdmissionError("A fresh ready Task binding is required.")
+        self._validate_permissions()
+        report = self._check_binding(budget)
+        if snapshot_messages(self.agent.state.messages) != report.checkpoint.messages:
+            raise SessionAdmissionError("Conversation differs from committed history.")
+        return report.revision
+
+    def validate_task_inspection(
+        self, budget: RunBudget, receipt: CheckpointReceipt
+    ) -> None:
+        """Check current host observations around an owned post-turn inspection."""
+        if self._task is None or not self._task_started:
+            raise SessionAdmissionError("An owned Task Turn is required.")
+        report = self._check_binding(budget)
+        if receipt != self._receipt or receipt != report.receipt:
+            raise SessionAdmissionError("Exact Task checkpoint is required.")
+
+    @contextmanager
+    def task_execution(self, task: TaskRecord) -> Iterator[None]:
+        """Attribute one intended Turn to an exact admitted, host-owned Task.
+
+        Keep both the Session and writer bound through post-turn inspection and
+        cleanup. Closing the Session requests shutdown without releasing work.
+        """
+        if self._task is not None or task.base_revision != self._revision:
+            raise SessionAdmissionError("Exact Task admission is required.")
+        current = self._store.inspect_task(
+            task.revision.session_id, task.revision.task_id
+        )
+        if current.task != task or task.revision.session_id != str(self.session_id):
+            raise SessionAdmissionError("Exact Task admission is required.")
+        try:
+            with self._store.task_execution(task.revision):
+                self._task = task
+                self._task_started = False
+                try:
+                    yield
+                finally:
+                    self._task = None
+        finally:
+            if self.close_requested:
+                self.close()
+
+    @property
     def recovery_report(self) -> RecoveryReport:
         return self.inspect()
 
@@ -293,7 +353,11 @@ class DurableSession(Session):
     def reconcile(
         self, report: RecoveryReport, *, host_resolution: HostResolution
     ) -> None:
-        if self.active_turn is not None or self.close_requested:
+        if (
+            self.active_turn is not None
+            or self.close_requested
+            or self._task is not None
+        ):
             raise SessionAdmissionError("Session is executing or closed.")
         current = self.inspect()
         if report != current or self._owned:
@@ -311,34 +375,52 @@ class DurableSession(Session):
         self._pin_runtime()
         self._suspended = self._recovery = False
 
+    def _check_binding(self, budget: RunBudget) -> RecoveryReport:
+        report = self._store.inspect(str(self.session_id))
+        if (
+            report.revision != self._revision
+            or report.status != "clean"
+            or report.local_fault
+            or report.binding != self._binding
+        ):
+            raise SessionAdmissionError("Durable Session requires reconciliation.")
+        self._check_runtime()
+        observed = self._observe()
+        if (
+            observed.model_copy(
+                update={"observed_at_utc": self._binding.observed_at_utc}
+            )
+            != self._binding
+        ):
+            raise SessionAdmissionError("Host binding requires reconciliation.")
+        if (
+            self._binding.provider is not None
+            and budget.max_steps != self._binding.provider.max_steps
+        ):
+            raise SessionAdmissionError("Run budget binding mismatch.")
+        return report
+
     def _admit_durable(self, agent: Agent, user_input: str, budget: RunBudget) -> None:
         if self.state is not SessionState.READY:
             raise SessionAdmissionError("Durable Session is not ready.")
         # Reserve the same Session guard synchronously, before the first effect.
         super()._admit(agent)
         try:
-            report = self._store.inspect(str(self.session_id))
-            if (
-                report.revision != self._revision
-                or report.status != "clean"
-                or report.local_fault
-                or report.binding != self._binding
-            ):
-                raise SessionAdmissionError("Durable Session requires reconciliation.")
-            self._check_runtime()
-            observed = self._observe()
-            if (
-                observed.model_copy(
-                    update={"observed_at_utc": self._binding.observed_at_utc}
+            report = self._check_binding(budget)
+            if self._task is not None:
+                task = self._task
+                current = self._store.inspect_task(
+                    str(self.session_id), task.revision.task_id
                 )
-                != self._binding
-            ):
-                raise SessionAdmissionError("Host binding requires reconciliation.")
-            if (
-                self._binding.provider is not None
-                and budget.max_steps != self._binding.provider.max_steps
-            ):
-                raise SessionAdmissionError("Run budget binding mismatch.")
+                if (
+                    self._task_started
+                    or current.task != task
+                    or task.base_revision != self._revision
+                    or task.input_digest
+                    != hashlib.sha256(user_input.encode("utf-8")).hexdigest()
+                ):
+                    raise SessionAdmissionError("Task Turn attribution mismatch.")
+                self._task_started = True
         except BaseException as exc:
             self._suspended = True
             self._turn = None
@@ -405,12 +487,27 @@ class DurableSession(Session):
                 input_digest=hashlib.sha256(user_input.encode("utf-8")).hexdigest(),
                 started_at_utc=_now(),
                 binding=self._binding,
+                task_id=self._task.revision.task_id if self._task is not None else None,
             )
             self._revision = self._store.begin_turn(self._revision, self._intent)
             self._owned = True
         except BaseException as exc:
             self._recovery = True
             self._turn = None
+            # A host interruption can lose begin_turn's return after it acquired
+            # local ownership. Admission is synchronous: no model/tool work was
+            # dispatched, so cleanup is already settled. Keep the unfinished
+            # intent, mark recovery and release only this exact local ownership.
+            self._cleanup_settled = True
+            if self._intent is not None:
+                self._owned = self._store.owns_turn(
+                    str(self.session_id), self._intent.turn_id
+                )
+            if self._owned:
+                try:
+                    self._release_failed_turn()
+                except Exception:
+                    exc.add_note("Durable session requires recovery.")
             if isinstance(exc, Exception):
                 raise SessionDurabilityError() from None
             raise
@@ -551,7 +648,7 @@ class DurableSession(Session):
             self._cleanup_settled = True
             if self._recovery:
                 self._release_failed_turn()
-            if self.close_requested:
+            if self.close_requested and self._task is None:
                 self._store.close()
         except Exception:
             self._recovery = True
@@ -578,7 +675,7 @@ class DurableSession(Session):
 
     def close(self) -> None:
         super().close()
-        if self.active_turn is None:
+        if self.active_turn is None and self._task is None:
             if self._owned and self._cleanup_settled:
                 self._release_failed_turn()
             self._store.close()

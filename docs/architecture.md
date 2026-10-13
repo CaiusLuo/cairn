@@ -57,9 +57,11 @@ extends that same gate with Store admission, tool fences and post-receipt
 
 [M1-C.1 SessionStore](guides/session-store.md) supplies isolated, host-only SQLite
 and checkpoint primitives in `infra.sessions`.
-[M2-A Task Ledger](guides/task-ledger.md) adds independently revised Task facts
-and read-only recovery reports in the same Store; TaskRunner integration is
-outside this slice, and stored records never execute work.
+[M2 Durable Tasks](guides/task-ledger.md) adds independently revised Task facts
+and read-only recovery reports in the same Store. Opt-in `CodingTaskRunner`
+execution admits a Task before the existing Turn, records its verified receipt,
+then persists inspection and sanitized result boundaries. Stored records never
+execute work or grant recovery/publication authority.
 The Store owns storage validation, transactions, its lifetime writer lock and the
 short inspection/effect guard. Storage faults retain local Turn ownership until
 the trusted runtime owner confirms cleanup has settled.

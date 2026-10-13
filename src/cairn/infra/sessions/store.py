@@ -176,6 +176,7 @@ class SessionStore:
         self._fault_sessions: set[str] = set()
         self._mutation_session = "*"
         self._owned_turns: set[tuple[str, str]] = set()
+        self._owned_tasks: set[tuple[str, str]] = set()
         self._inspected: dict[str, Revision] = {}
         self.maintenance_failed = False
         try:
@@ -880,6 +881,8 @@ class SessionStore:
                     raise SessionStoreError("read_only_store")
                 if self._owned_turns:
                     raise SessionStoreError("turn_still_owned")
+                if self._owned_tasks:
+                    raise SessionStoreError("task_still_owned")
                 if self._fault:
                     raise SessionStoreError("recovery_required")
                 conn = self._conn()
@@ -1059,6 +1062,33 @@ class SessionStore:
                 ),
             )
         return task
+
+    @contextmanager
+    def task_execution(self, expected: TaskRevision) -> Iterator[None]:
+        """Retain writer ownership through the trusted runtime's Task cleanup.
+
+        This guard records no lifecycle fact and releases no Turn ownership.
+        The runtime must leave it only after all work it started has settled.
+        """
+        if self.mode != "writer":
+            raise SessionStoreError("read_only_store")
+        self._encode(expected, kind=TaskRevision)
+        key = (expected.session_id, expected.task_id)
+        if key in self._owned_tasks:
+            raise SessionStoreError("task_still_owned")
+        with self._read() as conn:
+            task, session = self._task_current(conn, expected, "running")
+            if (
+                session.status != "clean"
+                or session.local_fault
+                or task.base_revision != session.revision
+            ):
+                raise SessionStoreError("task_session_not_ready")
+        self._owned_tasks.add(key)
+        try:
+            yield
+        finally:
+            self._owned_tasks.remove(key)
 
     def _task_current(
         self, conn: sqlite3.Connection, expected: TaskRevision, phase: TaskPhase
@@ -1460,8 +1490,9 @@ class SessionStore:
         """Host confirms faulted owned work AND cleanup have completely settled.
 
         Local-only recovery handshake, never a SQL transition or cancellation.
-        M1-C.2 must call this after run_turn's owned settlement/finalization, not
-        from inspect/reconcile or merely because a storage operation failed.
+        The runtime calls this after run_turn's owned settlement/finalization,
+        or after synchronous admission failed before any work was dispatched.
+        Inspection/reconciliation or a storage failure alone proves no cleanup.
         """
         self._mutation_session = expected.session_id
         self._encode(expected, kind=Revision)
@@ -1490,6 +1521,10 @@ class SessionStore:
                 raise SessionStoreError("live_turn_required")
         self._owned_turns.remove(key)
         self._inspected.pop(expected.session_id, None)
+
+    def owns_turn(self, session_id: str, turn_id: str) -> bool:
+        """Local execution ownership only; stored facts never acquire it."""
+        return (session_id, turn_id) in self._owned_turns
 
     def reconcile(self, expected: Revision, resolution: HostResolution) -> Revision:
         self._mutation_session = expected.session_id
@@ -1549,6 +1584,8 @@ class SessionStore:
     def close(self) -> None:
         if self.mode == "writer" and self._owned_turns:
             raise SessionStoreError("turn_still_owned")
+        if self.mode == "writer" and self._owned_tasks:
+            raise SessionStoreError("task_still_owned")
         if self._connection is not None:
             try:
                 with self._paths.access(validate=False):

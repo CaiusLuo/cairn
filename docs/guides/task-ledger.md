@@ -1,10 +1,10 @@
-# Durable Task Ledger (M2-A)
+# Durable Task Ledger
 
 [SessionStore](../../src/cairn/infra/sessions/store.py) persists Task lifecycle
-facts alongside committed Sessions. It does not integrate
-[CodingTaskRunner](../../src/cairn/runtime/tasks/runner.py), execute a Turn,
-inspect Git, reconstruct a WorktreeHandle or publish to GitHub. Runtime Task
-execution remains unchanged until a separate integration slice.
+facts alongside committed Sessions. The Store never executes a Turn, inspects
+Git, reconstructs a WorktreeHandle or publishes to GitHub.
+[CodingTaskRunner](../../src/cairn/runtime/tasks/runner.py) offers opt-in durable
+execution through the existing `run_turn`; default stateless callers are unchanged.
 
 ## Host API
 
@@ -65,6 +65,83 @@ model response, arbitrary error text, tool arguments, paths or execution objects
 are accepted. Unavailable observations stay null. Historical HEAD/dirty facts
 provide no current Git evidence, checkout identity or publication authority.
 
+## Opt-in CodingTaskRunner
+
+The trusted host supplies a schema-2 writer Store, a fresh Agent with a fresh
+permission handler, current Workspace/Git observations and freshly approved
+provider configuration. It attaches that Agent with `DurableSession.create` or
+`reopen`; a reopened Session must be explicitly reconciled using the current
+exact report before admitting a new Task. See [DurableSession](durable-session.md)
+for binding, credential and permission responsibilities. The runner neither
+opens/upgrades storage nor resolves credentials or approves a provider.
+
+```python
+from cairn.runtime.tasks import CodingTaskRunner
+
+# session is a ready, fresh host-supplied DurableSession. budget is its approved
+# RunBudget; workspace and secret_env_keys are the current host configuration.
+agent = session.agent
+runner = CodingTaskRunner(
+    workspace=workspace,
+    llm=agent.llm,
+    budget=budget,
+    context_builder=agent.context_builder,
+    permission_handler=agent.permission_handler,
+    event_handler=agent.event_handler,
+    tracer=agent.tracer,
+    model_executor=agent.model_executor,
+    secret_env_keys=secret_env_keys,
+)
+try:
+    result = await runner.run(spec, durable_session=session)
+    facts = session.store.inspect_task(str(session.session_id), spec.task_id)
+finally:
+    session.close()
+```
+
+`run(spec)` retains the stateless API and creates no Store. Durable execution
+checks the exact Agent/configuration, empty permission grants, current host
+binding, committed conversation and RunBudget before Task admission. Each Task
+requires a fresh Agent/Session binding; prepare another fresh binding and
+explicitly reconcile it for the next Task. Custom permission handlers and mutable
+provider internals remain trusted-host responsibilities; saved references and
+old grants authorize nothing.
+
+1. Revalidate TaskSpec, hash its exact UTF-8 prompt, and atomically create
+   `running` at the exact current Session revision before model/tool dispatch.
+2. `DurableSession.task_execution(TaskRecord)` binds the exact admitted Task ID,
+   digest and base revision to one intended Turn. It rejects changed attribution
+   or a second Turn; identity never comes from model text. The ordinary
+   `run_turn(..., session=session)` owns admission, fences, cleanup and checkpoint.
+3. Verify the actual receipt against that settled Turn and current clean Session,
+   then call `commit_task_turn`. A committed Turn still leaves an unfinished Task.
+4. Persist `inspecting`, perform fresh `RepoContextProvider.inspect_evidence`,
+   validate current host bindings before and after inspection, then record only
+   sanitized TaskResultData. Public TaskResult retains its
+   response/status semantics; the ledger never stores its model output or error.
+
+The local `SessionStore.task_execution(TaskRevision)` guard retains writer
+ownership until post-turn inspection and owned cleanup settle. `session.close()`
+requests shutdown during that scope; direct Store close rejects with
+`task_still_owned`. Repeated caller cancellation cannot release either Task or
+Turn ownership while cleanup is pending.
+
+Cooperative cancellation can checkpoint a cancelled Turn, inspect current Git
+and record a cancelled result. External cancellation propagates after cleanup;
+if an unambiguous receipt exists, its Task may reach `turn_committed`, but no
+inspection or result is manufactured. Failed inspection leaves `inspecting`
+with `inspection_failed`; interrupted unfinished work uses `interrupted`.
+Persistence failures use `storage_failed` when writable. If storage cannot be
+read or written, incomplete records and the existing fault gate remain.
+
+Unknown COMMIT acknowledgements are resolved by reading actual records without
+retrying the failed mutation. A result may already be recorded even when the
+caller receives a runtime error; inspect the facts before deciding what happened.
+There is no automatic model/tool retry, inspection retry or Task resume. Reopening
+and read-only inspection make no model/tool calls. Task reconciliation, including
+authorized post-restart inspection of an unfinished Task, is deferred; Session
+reconciliation alone never advances its phases or clears its recovery diagnostic.
+
 ## Schema compatibility and explicit upgrade
 
 New databases use schema **2**, adding one `tasks` table; Session tables and
@@ -76,11 +153,11 @@ there is no downgrade or reset operation.
 
 Upgrading is an explicit trusted-host operation, independent of Agent execution:
 
-1. Stop every writer and wait for owned Turn work and cleanup to finish.
+1. Stop every writer and wait for owned Task/Turn work and cleanup to finish.
 2. Open the existing Store as a writer with the actual effective sandbox-writable
    roots and known sensitive values, as described in [SessionStore](session-store.md).
 3. Call `upgrade_schema()` once if `schema_version == 1`; retain its returned
-   backup path. An inspector, another writer or a locally owned Turn cannot
+   backup path. An inspector, another writer or a locally owned Task/Turn cannot
    perform this operation.
 4. Verify the schema version and committed Sessions before using Task APIs.
 
@@ -106,7 +183,7 @@ Run from the actual Workspace. For a custom host configuration, pass its exact
 store directory, `additional_roots`, `secret_env_keys` and `sensitive_values` to
 `open_store`; do not omit writable roots or use stored provider grants. This
 operation does not resolve credentials, make network requests or start an Agent.
-There is no Task CLI or automatic CLI upgrade in M2-A.
+There is no Task CLI or automatic CLI upgrade.
 
 The upgrader holds exclusive writer ownership, verifies all committed Sessions,
 uses SQLite's backup API to include committed WAL pages, validates the private
@@ -140,8 +217,8 @@ replay no tools and manufacture no result. Completed Task reports remain readabl
 when later Session checkpoints exist; further forward transitions require the
 original Task checkpoint to remain current.
 
-M2-A provides no Task reconciliation or execution-resume operation, TaskRunner
-integration, retry, scheduling, queue, DAG or background worker. Session
+There is no Task reconciliation or execution-resume operation, retry, scheduling,
+queue, DAG or background worker. Session
 reconciliation continues to use its existing exact trusted-host procedure and
 does not advance Task facts or clear Task recovery diagnostics.
 

@@ -13,6 +13,7 @@ from cairn.core.models import LLMResponse, Message, ToolCall
 from cairn.infra.git import WorktreeProvider, WorktreeState
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.workspace.workspace import Workspace
+from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.review import (
     FreshReviewer,
     ReviewResult,
@@ -236,10 +237,18 @@ def test_blocker_runs_fresh_fixer_then_verifies_new_tree_and_reviews_from_clean_
             runners.append(self)
 
         async def run(
-            self, spec: TaskSpec, *, cancellation_event: asyncio.Event | None = None
+            self,
+            spec: TaskSpec,
+            *,
+            cancellation_event: asyncio.Event | None = None,
+            durable_session: DurableSession | None = None,
         ) -> Any:
             specs.append(spec)
-            return await super().run(spec, cancellation_event=cancellation_event)
+            return await super().run(
+                spec,
+                cancellation_event=cancellation_event,
+                durable_session=durable_session,
+            )
 
     monkeypatch.setattr(workflow_module, "CodingTaskRunner", RecordingRunner)
 

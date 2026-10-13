@@ -7,8 +7,8 @@ Git command or publisher. [M1-B](session-lifecycle.md) owns the live Session/Tur
 [M1-C.2 DurableSession](durable-session.md) integrates these primitives at the
 existing runtime boundaries. Default stateless callers and CLI remain unchanged;
 explicit recovery UI is provided by the [M1-C.3 durable CLI](durable-cli.md).
-[M2-A Task Ledger](task-ledger.md) adds independent persisted Task facts and an
-explicit schema upgrade; TaskRunner execution is not integrated.
+[M2 Durable Tasks](task-ledger.md) adds independent persisted Task facts, opt-in
+TaskRunner execution and an explicit schema upgrade.
 
 ## Host API
 
@@ -55,7 +55,7 @@ Failed Git inspection must not be represented as observed non-Git.
 | `require_recovery(Revision, reason_code)` | Fixed `storage_failed`, `finalization_failed` or `binding_unavailable`; marks Session/active attempt and latches admission, version + 1. |
 | `release_turn(Revision, turn_id)` | Trusted owner confirms a faulted local Turn's execution **and all cleanup/finalization have ended**. Exact current Revision and owned Turn required, including a possibly committed receipt after uncertain COMMIT. Local-only: changes no rows/revisions and grants no admission. Invalidates prior inspection. |
 | `reconcile(Revision, HostResolution)` | Exact revision from explicit successful inspect; typed host `abandon_without_replay` only. Rejects any still-owned Turn in that Session, including during cleanup or after a write fault. Abandons exact unresolved Turn or acknowledges a clean binding. Retains history/fences; version + 1, head unchanged. |
-| `close()` | Writer rejects locally owned Turns with fixed `turn_still_owned` before closing SQLite or either lock; preserves ownership/connection/locks without latching a fault. Successful terminal commit or explicit faulted release permits close. SQLite then closes under the effect guard; busy guard retains resources. Inspector close and successful repeated close remain ordinary cleanup. Never unlinks stable locks. |
+| `close()` | Writer rejects locally owned Turns or Tasks with fixed `turn_still_owned` or `task_still_owned` before closing SQLite or either lock; preserves ownership/connection/locks without latching a fault. Successful terminal commit or explicit faulted Turn release, and settled Task ownership, permit close. SQLite then closes under the effect guard; busy guard retains resources. Inspector close and successful repeated close remain ordinary cleanup. Never unlinks stable locks. |
 
 Revision contains Session ID, version and head sequence; receipt adds Turn ID,
 outcome and payload SHA-256. The original commit version remains in the attempt;
@@ -156,9 +156,11 @@ the fault or abandons the SQL attempt. Successful settled commit already release
 ownership. M1-C.2 must place the faulted release after owned model/tool cleanup,
 conversation settlement, tracing and lifecycle delivery; an exception handler or
 recovery UI must not release early. The Store cannot prove that asynchronous work
-has stopped. Writer close enforces that no locally owned Turn remains, including
-through cancellation cleanup or after a write fault. Completed cleanup alone does
-not remove ownership; use terminal commit or the explicit faulted release.
+has stopped. Writer close enforces that no locally owned Turn or Task remains,
+including through cancellation cleanup or after a write fault. Completed cleanup alone does
+not remove ownership; use terminal commit or the explicit faulted Turn release.
+Durable TaskRunner retains a separate local Task scope through post-turn repository
+inspection and cleanup; leaving that settled scope changes no persisted facts.
 Abrupt process termination releases the kernel-held lock and leaves the existing
 orphan inspection/recovery contract intact. Closing a database is not cancellation.
 Store itself adds no execution or force-close path; DurableSession performs that
