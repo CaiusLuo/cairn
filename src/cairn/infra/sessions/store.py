@@ -1,0 +1,1091 @@
+"""Concrete, host-only SQLite store. Facts in this database never dispatch work."""
+
+import hashlib
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Literal
+
+from cairn.infra.sessions.codec import (
+    canonical,
+    decode_checkpoint,
+    decode_record,
+    encode_checkpoint,
+    encode_record,
+)
+from cairn.infra.sessions.models import (
+    MAX_CHECKPOINT_BYTES,
+    MAX_DATABASE_BYTES,
+    MAX_INTEGER,
+    MAX_RECORD_BYTES,
+    MAX_WAL_BYTES,
+    SCHEMA_VERSION,
+    AttemptDiagnostics,
+    CheckpointPayload,
+    CheckpointReceipt,
+    HostResolution,
+    MessageRange,
+    Reason,
+    RecoveryReport,
+    Revision,
+    SessionBinding,
+    SessionState,
+    SessionStoreError,
+    SettledTurn,
+    StrictDTO,
+    ToolFence,
+    TurnIntent,
+    TurnRecord,
+    VersionConflict,
+    instant,
+    same_workspace,
+    utc_text,
+    uuid4_text,
+)
+from cairn.infra.sessions.paths import StorePaths
+
+_SCHEMA = (
+    """CREATE TABLE sessions (
+        session_id TEXT PRIMARY KEY,
+        version INTEGER NOT NULL CHECK(version >= 0),
+        head_seq INTEGER NOT NULL CHECK(head_seq >= 0),
+        state TEXT NOT NULL CHECK(state IN ('ready','executing','recovery_required')),
+        active_turn_id TEXT,
+        binding_json TEXT NOT NULL,
+        created_at_utc TEXT NOT NULL,
+        updated_at_utc TEXT NOT NULL,
+        CHECK((state='ready' AND active_turn_id IS NULL)
+            OR (state='executing' AND active_turn_id IS NOT NULL)
+            OR state='recovery_required'),
+        FOREIGN KEY(session_id,head_seq) REFERENCES checkpoints(session_id,seq)
+            DEFERRABLE INITIALLY DEFERRED,
+        FOREIGN KEY(session_id,active_turn_id) REFERENCES turns(session_id,turn_id)
+            DEFERRABLE INITIALLY DEFERRED
+    )""",
+    """CREATE TABLE turns (
+        session_id TEXT NOT NULL REFERENCES sessions(session_id),
+        turn_id TEXT NOT NULL,
+        base_seq INTEGER NOT NULL,
+        task_id TEXT,
+        state TEXT NOT NULL CHECK(state IN
+            ('executing','completed','interrupted','recovery_required','abandoned')),
+        input_digest TEXT NOT NULL,
+        started_at_utc TEXT NOT NULL,
+        ended_at_utc TEXT,
+        settled_seq INTEGER,
+        diagnostics_json TEXT NOT NULL,
+        PRIMARY KEY(session_id,turn_id),
+        CHECK((state IN ('completed','interrupted') AND settled_seq IS NOT NULL)
+            OR (state IN ('executing','recovery_required','abandoned') AND settled_seq IS NULL)),
+        FOREIGN KEY(session_id,base_seq) REFERENCES checkpoints(session_id,seq),
+        FOREIGN KEY(session_id,settled_seq) REFERENCES checkpoints(session_id,seq)
+            DEFERRABLE INITIALLY DEFERRED
+    )""",
+    """CREATE UNIQUE INDEX one_unresolved_turn ON turns(session_id)
+        WHERE state IN ('executing','recovery_required')""",
+    """CREATE TABLE checkpoints (
+        session_id TEXT NOT NULL REFERENCES sessions(session_id),
+        seq INTEGER NOT NULL CHECK(seq >= 0),
+        turn_id TEXT,
+        format_version INTEGER NOT NULL CHECK(format_version=1),
+        created_at_utc TEXT NOT NULL,
+        payload BLOB NOT NULL CHECK(length(payload) <= 8388608),
+        sha256 TEXT NOT NULL CHECK(length(sha256)=64),
+        PRIMARY KEY(session_id,seq),
+        UNIQUE(session_id,turn_id),
+        CHECK((seq=0 AND turn_id IS NULL) OR (seq>0 AND turn_id IS NOT NULL)),
+        FOREIGN KEY(session_id,turn_id) REFERENCES turns(session_id,turn_id)
+            DEFERRABLE INITIALLY DEFERRED
+    )""",
+)
+
+
+class _SessionRow(StrictDTO):
+    revision: Revision
+    state: SessionState
+    active_turn_id: str | None
+    binding: SessionBinding
+    created_at_utc: str
+    updated_at_utc: str
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def sqlite_wal_fix_supported(version: tuple[int, int, int] | None = None) -> bool:
+    """Release gate, not a runtime upgrade or claim that older SQLite is safe."""
+    v = sqlite3.sqlite_version_info if version is None else version
+    return (
+        v >= (3, 51, 3)
+        or (v[:2] == (3, 50) and v[2] >= 7)
+        or (v[:2] == (3, 44) and v[2] >= 6)
+    )
+
+
+class SessionStore:
+    def __init__(
+        self,
+        directory: Path,
+        *,
+        mode: Literal["writer", "inspect"] = "writer",
+        forbidden_roots: tuple[Path, ...],
+        sensitive_values: tuple[str, ...] = (),
+    ) -> None:
+        if mode not in ("writer", "inspect") or any(
+            type(s) is not str for s in sensitive_values
+        ):
+            raise SessionStoreError("invalid_options")
+        self.mode = mode
+        self.sensitive_values = sensitive_values
+        self._connection: sqlite3.Connection | None = None
+        self._paths = StorePaths(directory, forbidden_roots, writer=mode == "writer")
+        self.directory = self._paths.directory
+        self.path = self._paths.path
+        self._fault = False
+        self._fault_sessions: set[str] = set()
+        self._mutation_session = "*"
+        self._owned_turns: set[tuple[str, str]] = set()
+        self._inspected: dict[str, Revision] = {}
+        self.maintenance_failed = False
+        try:
+            self._paths.check()
+            conn = sqlite3.connect(
+                self.path.as_uri() + ("?mode=rw" if mode == "writer" else "?mode=ro"),
+                uri=True,
+                timeout=2,
+                isolation_level=None,
+            )
+            self._connection = conn
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA trusted_schema=OFF")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA busy_timeout=2000")
+            if self._paths.new_database:
+                if conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
+                    raise SessionStoreError("wal_unavailable")
+                conn.execute("PRAGMA synchronous=FULL")
+                conn.execute("BEGIN IMMEDIATE")
+                for statement in _SCHEMA:
+                    conn.execute(statement)
+                conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                conn.commit()
+            self._schema(conn)
+            if conn.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
+                raise SessionStoreError("wal_unavailable")
+            if mode == "writer":
+                conn.execute("PRAGMA synchronous=FULL")
+                page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+                if (
+                    conn.execute(
+                        f"PRAGMA max_page_count={MAX_DATABASE_BYTES // page_size}"
+                    ).fetchone()[0]
+                    * page_size
+                    > MAX_DATABASE_BYTES
+                ):
+                    raise SessionStoreError("database_limit")
+                conn.execute("PRAGMA wal_autocheckpoint=0")
+            else:
+                conn.execute("PRAGMA query_only=ON")
+            required = {"foreign_keys": 1, "trusted_schema": 0, "busy_timeout": 2000}
+            required["synchronous" if mode == "writer" else "query_only"] = (
+                2 if mode == "writer" else 1
+            )
+            for pragma, expected in required.items():
+                setting = conn.execute(f"PRAGMA {pragma}").fetchone()
+                if setting is None or setting[0] != expected:
+                    raise SessionStoreError("sqlite_configuration_unavailable")
+            self._paths.check()
+            if mode == "writer":
+                self._maintain()
+        except SessionStoreError:
+            self.close()
+            raise
+        except (sqlite3.Error, OSError, ValueError, TypeError):
+            self.close()
+            raise SessionStoreError() from None
+
+    def _conn(self) -> sqlite3.Connection:
+        if self._connection is None:
+            raise SessionStoreError("closed_store")
+        self._paths.check()
+        return self._connection
+
+    def _schema(self, conn: sqlite3.Connection) -> None:
+        if conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+            raise SessionStoreError("schema_mismatch")
+        observed = {
+            " ".join(row[0].split())
+            for row in conn.execute(
+                "SELECT sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'"
+            )
+        }
+        if observed != {" ".join(s.split()) for s in _SCHEMA}:
+            raise SessionStoreError("schema_mismatch")
+        if (
+            conn.execute("PRAGMA quick_check(1)").fetchone()[0] != "ok"
+            or conn.execute("PRAGMA foreign_key_check").fetchone() is not None
+        ):
+            raise SessionStoreError("database_integrity")
+        # Bound TEXT/BLOB retrieval too, rather than allocate an arbitrary hostile
+        # row and only then check its decoded size.
+        for table, column, limit, sql_type in (
+            ("sessions", "binding_json", MAX_RECORD_BYTES, "text"),
+            ("turns", "diagnostics_json", MAX_RECORD_BYTES, "text"),
+            ("checkpoints", "payload", MAX_CHECKPOINT_BYTES, "blob"),
+        ):
+            if (
+                conn.execute(
+                    f"SELECT 1 FROM {table} WHERE typeof({column}) != ? OR length(CAST({column} AS BLOB)) > ? LIMIT 1",
+                    (sql_type, limit),
+                ).fetchone()
+                is not None
+            ):
+                raise SessionStoreError("record_limit")
+
+    def _encode(
+        self,
+        value: StrictDTO,
+        *,
+        limit: int = MAX_RECORD_BYTES,
+        kind: type[StrictDTO] | None = None,
+    ) -> bytes:
+        try:
+            raw = encode_record(
+                value, limit=limit, sensitive_values=self.sensitive_values
+            )
+            if kind is not None:
+                decode_record(
+                    kind, raw, limit=limit, sensitive_values=self.sensitive_values
+                )
+            return raw
+        except SessionStoreError:
+            self._latch()
+            raise
+
+    def _latch(self) -> None:
+        self._fault = True
+        self._fault_sessions.add(
+            self._mutation_session if type(self._mutation_session) is str else "*"
+        )
+        self._owned_turns.clear()
+        self._inspected.clear()
+
+    def _maintain(self) -> None:
+        """Idle, bounded WAL housekeeping; its error never revokes a receipt."""
+        try:
+            conn = self._conn()
+            if self.mode == "writer":
+                result = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                self.maintenance_failed = result[0] != 0
+                self._paths.check()
+        except (sqlite3.Error, OSError, SessionStoreError):
+            self.maintenance_failed = True
+
+    def _wal_size(self) -> int:
+        try:
+            return Path(str(self.path) + "-wal").stat().st_size
+        except FileNotFoundError:
+            return 0
+
+    @contextmanager
+    def _write(
+        self, *, recovery: bool = False, idle_after: bool = False
+    ) -> Iterator[sqlite3.Connection]:
+        conn: sqlite3.Connection | None = None
+        committing = False
+        try:
+            if self.mode != "writer":
+                raise SessionStoreError("read_only_store")
+            if self._fault and not recovery:
+                raise SessionStoreError("recovery_required")
+            conn = self._conn()
+            if self._wal_size() >= MAX_WAL_BYTES:
+                if not self._owned_turns or recovery:
+                    self._maintain()
+                if self._wal_size() >= MAX_WAL_BYTES:
+                    raise SessionStoreError("wal_admission_limit")
+            conn.execute("BEGIN IMMEDIATE")
+            self._schema(conn)
+            yield conn
+            self._paths.check()
+            committing = True
+            self._commit(conn)
+        except BaseException as exc:
+            self._latch()
+            if conn is not None:
+                with suppress(sqlite3.Error):
+                    conn.rollback()
+            if isinstance(exc, SessionStoreError):
+                raise
+            if isinstance(exc, Exception):
+                raise SessionStoreError(
+                    "commit_uncertain" if committing else "storage_failed"
+                ) from None
+            raise
+        if idle_after:
+            self._maintain()
+
+    def _commit(self, conn: sqlite3.Connection) -> None:
+        conn.commit()
+
+    def _row(self, conn: sqlite3.Connection, expected: Revision) -> _SessionRow:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE session_id=?", (expected.session_id,)
+        ).fetchone()
+        if row is None:
+            raise SessionStoreError("session_missing")
+        binding = decode_record(
+            SessionBinding,
+            row["binding_json"].encode(),
+            sensitive_values=self.sensitive_values,
+        )
+        result = _SessionRow(
+            revision=Revision(
+                session_id=row["session_id"],
+                version=row["version"],
+                head_seq=row["head_seq"],
+            ),
+            state=row["state"],
+            active_turn_id=row["active_turn_id"],
+            binding=binding,
+            created_at_utc=row["created_at_utc"],
+            updated_at_utc=row["updated_at_utc"],
+        )
+        utc_text(result.created_at_utc)
+        utc_text(result.updated_at_utc)
+        # Host wall-clock observations may move backwards. Revision/CAS, not
+        # created/updated timestamp ordering, establishes the mutation order.
+        if binding.session_id != expected.session_id:
+            raise SessionStoreError("invalid_relationship")
+        if result.active_turn_id is not None:
+            uuid4_text(result.active_turn_id)
+        if result.revision != expected:
+            raise VersionConflict()
+        return result
+
+    def _cas(
+        self,
+        conn: sqlite3.Connection,
+        expected: Revision,
+        *,
+        state: SessionState,
+        active: str | None,
+        binding: SessionBinding,
+        head: int | None = None,
+    ) -> Revision:
+        if expected.version >= MAX_INTEGER:
+            raise SessionStoreError("revision_limit")
+        revision = Revision(
+            session_id=expected.session_id,
+            version=expected.version + 1,
+            head_seq=expected.head_seq if head is None else head,
+        )
+        result = conn.execute(
+            "UPDATE sessions SET version=?,head_seq=?,state=?,active_turn_id=?,binding_json=?,updated_at_utc=? WHERE session_id=? AND version=? AND head_seq=?",
+            (
+                revision.version,
+                revision.head_seq,
+                state,
+                active,
+                self._encode(binding).decode(),
+                _now(),
+                expected.session_id,
+                expected.version,
+                expected.head_seq,
+            ),
+        )
+        if result.rowcount != 1:
+            raise VersionConflict()
+        return revision
+
+    def _records(
+        self, conn: sqlite3.Connection, session_id: str
+    ) -> tuple[TurnRecord, ...]:
+        result: list[TurnRecord] = []
+        for row in conn.execute(
+            "SELECT * FROM turns WHERE session_id=? ORDER BY rowid", (session_id,)
+        ):
+            diagnostics = decode_record(
+                AttemptDiagnostics,
+                row["diagnostics_json"].encode(),
+                sensitive_values=self.sensitive_values,
+            )
+            record = TurnRecord(
+                intent=TurnIntent(
+                    session_id=row["session_id"],
+                    turn_id=row["turn_id"],
+                    base_seq=row["base_seq"],
+                    message_start=diagnostics.message_start,
+                    input_digest=row["input_digest"],
+                    started_at_utc=row["started_at_utc"],
+                    task_id=row["task_id"],
+                    binding=diagnostics.binding,
+                ),
+                state=row["state"],
+                ended_at_utc=row["ended_at_utc"],
+                settled_seq=row["settled_seq"],
+                diagnostics=diagnostics,
+            )
+            self._validate_record(record)
+            result.append(record)
+        return tuple(result)
+
+    def _validate_record(self, record: TurnRecord) -> None:
+        intent, diagnostic = record.intent, record.diagnostics
+        references: set[tuple[int, str]] = set()
+        index = intent.message_start
+        timestamp = intent.started_at_utc
+        for ordinal, fence in enumerate(diagnostic.fences, 1):
+            if (
+                fence.session_id != intent.session_id
+                or fence.turn_id != intent.turn_id
+                or fence.ordinal != ordinal
+                or fence.assistant_message_index < index
+                or instant(fence.observed_at_utc) < instant(timestamp)
+                or (fence.assistant_message_index, fence.call_id) in references
+            ):
+                raise SessionStoreError("invalid_fence")
+            references.add((fence.assistant_message_index, fence.call_id))
+            index, timestamp = fence.assistant_message_index, fence.observed_at_utc
+        terminal = record.state in ("completed", "interrupted")
+        if terminal != (
+            record.settled_seq is not None and diagnostic.commit_version is not None
+        ):
+            raise SessionStoreError("invalid_relationship")
+        if terminal and diagnostic.reason is not None:
+            raise SessionStoreError("invalid_relationship")
+        if record.state == "recovery_required" and diagnostic.reason is None:
+            raise SessionStoreError("invalid_relationship")
+        if (record.state == "abandoned" and diagnostic.commit_version is not None) or (
+            record.state == "executing" and diagnostic.reason is not None
+        ):
+            raise SessionStoreError("invalid_relationship")
+        if record.state in ("executing", "recovery_required"):
+            if (
+                record.ended_at_utc is not None
+                or diagnostic.resolution is not None
+                or record.settled_seq is not None
+                or diagnostic.commit_version is not None
+            ):
+                raise SessionStoreError("invalid_relationship")
+        else:
+            if record.ended_at_utc is None or instant(
+                utc_text(record.ended_at_utc)
+            ) < instant(timestamp):
+                raise SessionStoreError("invalid_relationship")
+            if (record.state == "abandoned") != (diagnostic.resolution is not None):
+                raise SessionStoreError("invalid_relationship")
+        if diagnostic.resolution is not None:
+            resolution = diagnostic.resolution
+            if (
+                resolution.session_id != intent.session_id
+                or resolution.turn_id != intent.turn_id
+                or resolution.resolved_at_utc != record.ended_at_utc
+                or not same_workspace(intent.binding, resolution.binding)
+            ):
+                raise SessionStoreError("invalid_relationship")
+
+    def _admit_diagnostics(
+        self, intent: TurnIntent, diagnostics: AttemptDiagnostics
+    ) -> None:
+        """Leave space to settle or abandon every admitted intent/fence.
+
+        This is size accounting only, never a persisted or approved resolution.
+        Reserve bounded actor/note, timestamps, counters and HEAD/branch drift
+        with the current provider reference. A larger future reference must still
+        fit the record, or be acknowledged separately after abandonment.
+        """
+        binding = intent.binding
+        if binding.workspace.git is not None:
+            binding = binding.model_copy(
+                update={
+                    "workspace": binding.workspace.model_copy(
+                        update={
+                            "git": binding.workspace.git.model_copy(
+                                update={"head": "f" * 64, "branch": "\U0010fffd" * 256}
+                            )
+                        }
+                    )
+                }
+            )
+        timestamp = "9999-12-31T23:59:59.999999Z"
+        binding = binding.model_copy(update={"observed_at_utc": timestamp})
+        resolution = HostResolution(
+            session_id=intent.session_id,
+            turn_id=intent.turn_id,
+            actor="\U0010fffd" * 256,
+            note="\U0010fffd" * 1024,
+            resolved_at_utc=timestamp,
+            binding=binding,
+        )
+        reserved = diagnostics.model_copy(
+            update={
+                "reason": "finalization_failed",
+                "resolution": resolution,
+                "commit_version": MAX_INTEGER,
+            }
+        )
+        if len(canonical(reserved.model_dump(mode="json"))) > MAX_RECORD_BYTES:
+            raise SessionStoreError("record_limit")
+
+    def _validate_fenced_history(
+        self, record: TurnRecord, checkpoint: CheckpointPayload
+    ) -> None:
+        previous = (-1, -1)
+        for fence in record.diagnostics.fences:
+            if fence.assistant_message_index >= len(checkpoint.messages):
+                raise SessionStoreError("fenced_history_missing")
+            message = checkpoint.messages[fence.assistant_message_index]
+            position = next(
+                (
+                    i
+                    for i, c in enumerate(message.tool_calls)
+                    if c.id == fence.call_id and c.name == fence.tool_name
+                ),
+                None,
+            )
+            if (
+                message.role != "assistant"
+                or position is None
+                or (fence.assistant_message_index, position) <= previous
+            ):
+                raise SessionStoreError("invalid_fence")
+            if instant(fence.observed_at_utc) > instant(checkpoint.settled_at_utc):
+                raise SessionStoreError("invalid_fence")
+            previous = (fence.assistant_message_index, position)
+
+    def _report(self, conn: sqlite3.Connection, session_id: str) -> RecoveryReport:
+        raw = conn.execute(
+            "SELECT version,head_seq FROM sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+        if raw is None:
+            raise SessionStoreError("session_missing")
+        revision = Revision(session_id=session_id, version=raw[0], head_seq=raw[1])
+        session = self._row(conn, revision)
+        records = self._records(conn, session_id)
+        by_turn = {r.intent.turn_id: r for r in records}
+        previous: CheckpointPayload | None = None
+        receipt: CheckpointReceipt | None = None
+        committed: set[str] = set()
+        bases: dict[int, tuple[int, str]] = {}
+        for row in conn.execute(
+            "SELECT * FROM checkpoints WHERE session_id=? ORDER BY seq", (session_id,)
+        ):
+            if (
+                not isinstance(row["payload"], bytes)
+                or len(row["payload"]) > MAX_CHECKPOINT_BYTES
+            ):
+                raise SessionStoreError("record_limit")
+            checkpoint = decode_checkpoint(
+                row["payload"], row["sha256"], sensitive_values=self.sensitive_values
+            )
+            if (
+                checkpoint.session_id != session_id
+                or checkpoint.seq != row["seq"]
+                or checkpoint.turn_id != row["turn_id"]
+                or row["format_version"] != checkpoint.format_version
+                or row["created_at_utc"] != checkpoint.settled_at_utc
+                or checkpoint.seq != (0 if previous is None else previous.seq + 1)
+                or not same_workspace(session.binding, checkpoint.binding)
+            ):
+                raise SessionStoreError("invalid_relationship")
+            commit_version = 0
+            if previous is not None:
+                record = by_turn.get(checkpoint.turn_id or "")
+                if record is None:
+                    raise SessionStoreError("invalid_relationship")
+                self._settled_relationship(record, checkpoint, previous)
+                commit_version = record.diagnostics.commit_version or 0
+                if (
+                    receipt is None
+                    or commit_version <= receipt.revision.version
+                    or commit_version > revision.version
+                ):
+                    raise SessionStoreError("invalid_relationship")
+                committed.add(record.intent.turn_id)
+            receipt = CheckpointReceipt(
+                revision=Revision(
+                    session_id=session_id,
+                    version=commit_version,
+                    head_seq=checkpoint.seq,
+                ),
+                turn_id=checkpoint.turn_id,
+                sha256=row["sha256"],
+                outcome=checkpoint.outcome,
+            )
+            previous = checkpoint
+            bases[checkpoint.seq] = (
+                len(checkpoint.messages),
+                checkpoint.settled_at_utc,
+            )
+        if previous is None or receipt is None or previous.seq != revision.head_seq:
+            raise SessionStoreError("committed_head_missing")
+        unresolved = [
+            r for r in records if r.state in ("executing", "recovery_required")
+        ]
+        if (
+            len(unresolved) > 1
+            or (unresolved[0].intent.turn_id if unresolved else None)
+            != session.active_turn_id
+            or (session.state == "ready" and unresolved)
+            or (session.state == "executing" and not unresolved)
+            or (unresolved and session.state != unresolved[0].state)
+        ):
+            raise SessionStoreError("invalid_relationship")
+        expected_base = 0
+        for record in records:
+            if (record.state in ("completed", "interrupted")) != (
+                record.intent.turn_id in committed
+            ) or record.intent.base_seq > revision.head_seq:
+                raise SessionStoreError("invalid_relationship")
+            if not same_workspace(session.binding, record.intent.binding):
+                raise SessionStoreError("invalid_relationship")
+            base = bases.get(record.intent.base_seq)
+            if (
+                record.intent.base_seq != expected_base
+                or base is None
+                or record.intent.message_start != base[0]
+                or instant(record.intent.started_at_utc) < instant(base[1])
+            ):
+                raise SessionStoreError("invalid_relationship")
+            if record.state in ("completed", "interrupted"):
+                expected_base += 1
+        if unresolved and (
+            unresolved[0].intent.base_seq != revision.head_seq
+            or unresolved[0].intent.message_start != len(previous.messages)
+            or unresolved[0].intent.binding != session.binding
+        ):
+            raise SessionStoreError("invalid_relationship")
+        status: Literal[
+            "clean", "executing", "effects_unknown", "recovery_required"
+        ] = "clean"
+        if unresolved:
+            status = (
+                "effects_unknown" if unresolved[0].diagnostics.fences else "executing"
+            )
+        if session.state == "recovery_required" or self._fault:
+            status = "recovery_required"
+        return RecoveryReport(
+            revision=revision,
+            state=session.state,
+            status=status,
+            binding=session.binding,
+            checkpoint=previous,
+            receipt=receipt,
+            attempts=records,
+            local_fault=self._fault,
+        )
+
+    def _settled_relationship(
+        self,
+        record: TurnRecord,
+        checkpoint: CheckpointPayload,
+        previous: CheckpointPayload,
+    ) -> None:
+        intent = record.intent
+        if (
+            checkpoint.seq != intent.base_seq + 1
+            or checkpoint.turn_id != intent.turn_id
+            or checkpoint.message_range.start != intent.message_start
+            or intent.message_start != len(previous.messages)
+            or checkpoint.messages[: len(previous.messages)] != previous.messages
+            or checkpoint.started_at_utc != intent.started_at_utc
+            or not same_workspace(intent.binding, checkpoint.binding)
+            or checkpoint.binding.provider != intent.binding.provider
+            or instant(checkpoint.binding.observed_at_utc)
+            < instant(intent.binding.observed_at_utc)
+            or record.state
+            != ("completed" if checkpoint.outcome == "completed" else "interrupted")
+            or record.settled_seq != checkpoint.seq
+            or record.ended_at_utc != checkpoint.settled_at_utc
+        ):
+            raise SessionStoreError("invalid_settled_history")
+        tail = checkpoint.messages[intent.message_start :]
+        if tail and (
+            # Intent binds the exact host input, without storing it before settlement.
+            hashlib.sha256((tail[0].content or "").encode("utf-8")).hexdigest()
+            != intent.input_digest
+        ):
+            raise SessionStoreError("input_digest_mismatch")
+        self._validate_fenced_history(record, checkpoint)
+
+    def _snapshot(self, session_id: str) -> RecoveryReport:
+        try:
+            uuid4_text(session_id)
+            conn = self._conn()
+            conn.execute("BEGIN")
+            try:
+                self._schema(conn)
+                report = self._report(conn, session_id)
+                self._paths.check()
+            finally:
+                conn.rollback()
+            return report
+        except SessionStoreError:
+            raise
+        except (sqlite3.Error, OSError, ValueError, TypeError, KeyError):
+            raise SessionStoreError("invalid_or_unavailable_store") from None
+
+    def inspect(self, session_id: str) -> RecoveryReport:
+        report = self._snapshot(session_id)
+        self._inspected[session_id] = report.revision
+        return report
+
+    @contextmanager
+    def _prepare(
+        self, expected: Revision, *, recovery: bool = False
+    ) -> Iterator[RecoveryReport]:
+        """Read/prevalidate combined payloads before opening a mutation transaction."""
+        try:
+            if self.mode != "writer":
+                raise SessionStoreError("read_only_store")
+            if self._fault and not recovery:
+                raise SessionStoreError("recovery_required")
+            report = self._snapshot(expected.session_id)
+            if report.revision != expected:
+                raise VersionConflict()
+            yield report
+        except SessionStoreError:
+            self._latch()
+            raise
+
+    def _current(
+        self, conn: sqlite3.Connection, expected: Revision, prepared: RecoveryReport
+    ) -> RecoveryReport:
+        self._row(conn, expected)
+        current = self._report(conn, expected.session_id)
+        if current != prepared:
+            raise VersionConflict()
+        return current
+
+    def create(self, binding: SessionBinding) -> CheckpointReceipt:
+        self._mutation_session = binding.session_id
+        raw_binding = self._encode(binding, kind=SessionBinding)
+        binding = decode_record(SessionBinding, raw_binding)
+        checkpoint = CheckpointPayload(
+            session_id=binding.session_id,
+            turn_id=None,
+            seq=0,
+            binding=binding,
+            messages=(),
+            message_range=MessageRange(start=0, end=0),
+            outcome=None,
+            started_at_utc=None,
+            settled_at_utc=binding.observed_at_utc,
+        )
+        payload, digest = encode_checkpoint(
+            checkpoint, sensitive_values=self.sensitive_values
+        )
+        with self._write(idle_after=True) as conn:
+            conn.execute(
+                "INSERT INTO sessions VALUES (?,?,?,'ready',NULL,?,?,?)",
+                (
+                    binding.session_id,
+                    0,
+                    0,
+                    raw_binding.decode(),
+                    binding.observed_at_utc,
+                    binding.observed_at_utc,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO checkpoints VALUES (?,0,NULL,1,?,?,?)",
+                (binding.session_id, checkpoint.settled_at_utc, payload, digest),
+            )
+        try:
+            self._paths.sync_creation()
+        except (OSError, SessionStoreError):
+            self._latch()
+            raise SessionStoreError("create_acknowledgement_uncertain") from None
+        return CheckpointReceipt(
+            revision=Revision(session_id=binding.session_id, version=0, head_seq=0),
+            turn_id=None,
+            sha256=digest,
+            outcome=None,
+        )
+
+    def begin_turn(self, expected: Revision, intent: TurnIntent) -> Revision:
+        self._mutation_session = expected.session_id
+        self._encode(expected, kind=Revision)
+        raw = self._encode(intent, kind=TurnIntent)
+        intent = decode_record(TurnIntent, raw)
+        diagnostics = AttemptDiagnostics(
+            binding=intent.binding, message_start=intent.message_start
+        )
+        diagnostic_raw = self._encode(diagnostics)
+        try:
+            self._admit_diagnostics(intent, diagnostics)
+        except SessionStoreError:
+            self._latch()
+            raise
+        with self._write() as conn:
+            session = self._row(conn, expected)
+            report = self._report(conn, expected.session_id)
+            if (
+                session.state != "ready"
+                or session.active_turn_id is not None
+                or intent.session_id != expected.session_id
+                or intent.base_seq != expected.head_seq
+                or intent.message_start != len(report.checkpoint.messages)
+                or intent.binding != session.binding
+                or instant(intent.started_at_utc)
+                < instant(report.checkpoint.settled_at_utc)
+            ):
+                raise SessionStoreError("turn_admission_rejected")
+            conn.execute(
+                "INSERT INTO turns VALUES (?,?,?,?, 'executing',?,?,NULL,NULL,?)",
+                (
+                    intent.session_id,
+                    intent.turn_id,
+                    intent.base_seq,
+                    intent.task_id,
+                    intent.input_digest,
+                    intent.started_at_utc,
+                    diagnostic_raw.decode(),
+                ),
+            )
+            revision = self._cas(
+                conn,
+                expected,
+                state="executing",
+                active=intent.turn_id,
+                binding=intent.binding,
+            )
+        self._owned_turns.add((intent.session_id, intent.turn_id))
+        return revision
+
+    def _active(self, report: RecoveryReport, turn_id: str) -> TurnRecord:
+        record = report.unresolved
+        if (
+            report.state != "executing"
+            or record is None
+            or record.state != "executing"
+            or record.intent.turn_id != turn_id
+            or (report.revision.session_id, turn_id) not in self._owned_turns
+        ):
+            raise SessionStoreError("live_turn_required")
+        return record
+
+    def fence_tool(self, expected: Revision, fence: ToolFence) -> Revision:
+        self._mutation_session = expected.session_id
+        self._encode(expected, kind=Revision)
+        fence = decode_record(ToolFence, self._encode(fence, kind=ToolFence))
+        with self._prepare(expected) as prepared:
+            record = self._active(prepared, fence.turn_id)
+            if (
+                fence.session_id != expected.session_id
+                or fence.turn_id != record.intent.turn_id
+            ):
+                raise SessionStoreError("invalid_fence")
+            diagnostics = record.diagnostics.model_copy(
+                update={"fences": (*record.diagnostics.fences, fence)}
+            )
+            diagnostic_raw = self._encode(diagnostics)
+            self._validate_record(
+                record.model_copy(update={"diagnostics": diagnostics})
+            )
+            self._admit_diagnostics(record.intent, diagnostics)
+        with self._write() as conn:
+            current = self._current(conn, expected, prepared)
+            self._active(current, fence.turn_id)
+            conn.execute(
+                "UPDATE turns SET diagnostics_json=? WHERE session_id=? AND turn_id=? AND state='executing'",
+                (diagnostic_raw.decode(), expected.session_id, fence.turn_id),
+            )
+            revision = self._cas(
+                conn,
+                expected,
+                state="executing",
+                active=fence.turn_id,
+                binding=record.intent.binding,
+            )
+        return revision
+
+    def commit_turn(
+        self, expected: Revision, settled: SettledTurn
+    ) -> CheckpointReceipt:
+        self._mutation_session = expected.session_id
+        self._encode(expected, kind=Revision)
+        # Checkpoint's larger bound; everything is validated before BEGIN IMMEDIATE.
+        try:
+            raw_settled = self._encode(
+                settled, limit=MAX_CHECKPOINT_BYTES + 32, kind=SettledTurn
+            )
+            settled = decode_record(
+                SettledTurn, raw_settled, limit=MAX_CHECKPOINT_BYTES + 32
+            )
+            payload, digest = encode_checkpoint(
+                settled.checkpoint, sensitive_values=self.sensitive_values
+            )
+            checkpoint = decode_checkpoint(payload, digest)
+        except SessionStoreError:
+            self._latch()
+            raise
+        with self._prepare(expected) as prepared:
+            if checkpoint.session_id != expected.session_id:
+                raise SessionStoreError("invalid_relationship")
+            record = self._active(prepared, checkpoint.turn_id or "")
+            diagnostics = record.diagnostics.model_copy(
+                update={"commit_version": expected.version + 1}
+            )
+            terminal = record.model_copy(
+                update={
+                    "state": "completed"
+                    if checkpoint.outcome == "completed"
+                    else "interrupted",
+                    "settled_seq": checkpoint.seq,
+                    "ended_at_utc": checkpoint.settled_at_utc,
+                    "diagnostics": diagnostics,
+                }
+            )
+            diagnostic_raw = self._encode(diagnostics)
+            self._settled_relationship(terminal, checkpoint, prepared.checkpoint)
+            self._validate_record(terminal)
+        with self._write(idle_after=True) as conn:
+            current = self._current(conn, expected, prepared)
+            self._active(current, checkpoint.turn_id or "")
+            conn.execute(
+                "INSERT INTO checkpoints VALUES (?,?,?,?,?,?,?)",
+                (
+                    checkpoint.session_id,
+                    checkpoint.seq,
+                    checkpoint.turn_id,
+                    checkpoint.format_version,
+                    checkpoint.settled_at_utc,
+                    payload,
+                    digest,
+                ),
+            )
+            conn.execute(
+                "UPDATE turns SET state=?,ended_at_utc=?,settled_seq=?,diagnostics_json=? WHERE session_id=? AND turn_id=? AND state='executing'",
+                (
+                    terminal.state,
+                    terminal.ended_at_utc,
+                    terminal.settled_seq,
+                    diagnostic_raw.decode(),
+                    expected.session_id,
+                    checkpoint.turn_id,
+                ),
+            )
+            revision = self._cas(
+                conn,
+                expected,
+                state="ready",
+                active=None,
+                binding=checkpoint.binding,
+                head=checkpoint.seq,
+            )
+        self._owned_turns.discard((expected.session_id, checkpoint.turn_id or ""))
+        return CheckpointReceipt(
+            revision=revision,
+            turn_id=checkpoint.turn_id,
+            sha256=digest,
+            outcome=checkpoint.outcome,
+        )
+
+    def require_recovery(self, expected: Revision, reason_code: Reason) -> Revision:
+        self._mutation_session = expected.session_id
+        self._encode(expected, kind=Revision)
+        if reason_code not in (
+            "storage_failed",
+            "finalization_failed",
+            "binding_unavailable",
+        ):
+            self._latch()
+            raise SessionStoreError("invalid_reason")
+        with self._prepare(expected, recovery=True) as prepared:
+            record = prepared.unresolved
+            raw: bytes | None = None
+            if record is not None:
+                diagnostics = record.diagnostics.model_copy(
+                    update={"reason": reason_code}
+                )
+                raw = self._encode(diagnostics)
+        with self._write(recovery=True) as conn:
+            self._current(conn, expected, prepared)
+            session = self._row(conn, expected)
+            if record is not None and raw is not None:
+                conn.execute(
+                    "UPDATE turns SET state='recovery_required',diagnostics_json=? WHERE session_id=? AND turn_id=?",
+                    (raw.decode(), expected.session_id, record.intent.turn_id),
+                )
+            revision = self._cas(
+                conn,
+                expected,
+                state="recovery_required",
+                active=session.active_turn_id,
+                binding=session.binding,
+            )
+        self._latch()
+        return revision
+
+    def reconcile(self, expected: Revision, resolution: HostResolution) -> Revision:
+        self._mutation_session = expected.session_id
+        self._encode(expected, kind=Revision)
+        resolution = decode_record(
+            HostResolution, self._encode(resolution, kind=HostResolution)
+        )
+        with self._prepare(expected, recovery=True) as prepared:
+            if self._inspected.get(expected.session_id) != expected:
+                raise SessionStoreError("fresh_inspection_required")
+            record = prepared.unresolved
+            if (
+                resolution.session_id != expected.session_id
+                or resolution.turn_id
+                != (record.intent.turn_id if record is not None else None)
+                or not same_workspace(prepared.binding, resolution.binding)
+                or instant(resolution.resolved_at_utc)
+                < instant(prepared.checkpoint.settled_at_utc)
+            ):
+                raise SessionStoreError("reconciliation_rejected")
+            raw: bytes | None = None
+            if record is not None:
+                diagnostics = record.diagnostics.model_copy(
+                    update={"resolution": resolution}
+                )
+                abandoned = record.model_copy(
+                    update={
+                        "state": "abandoned",
+                        "ended_at_utc": resolution.resolved_at_utc,
+                        "diagnostics": diagnostics,
+                    }
+                )
+                raw = self._encode(diagnostics)
+                self._validate_record(abandoned)
+        with self._write(recovery=True, idle_after=True) as conn:
+            self._current(conn, expected, prepared)
+            if record is not None and raw is not None:
+                conn.execute(
+                    "UPDATE turns SET state='abandoned',ended_at_utc=?,diagnostics_json=? WHERE session_id=? AND turn_id=?",
+                    (
+                        resolution.resolved_at_utc,
+                        raw.decode(),
+                        expected.session_id,
+                        record.intent.turn_id,
+                    ),
+                )
+            revision = self._cas(
+                conn, expected, state="ready", active=None, binding=resolution.binding
+            )
+        self._owned_turns = {
+            key for key in self._owned_turns if key[0] != expected.session_id
+        }
+        self._inspected.pop(expected.session_id, None)
+        self._fault_sessions.discard(expected.session_id)
+        self._fault = bool(self._fault_sessions)
+        return revision
+
+    def close(self) -> None:
+        if self._connection is not None:
+            try:
+                self._connection.close()
+            except sqlite3.Error:
+                raise SessionStoreError("close_failed") from None
+            finally:
+                self._connection = None
+                self._paths.close()
+        else:
+            self._paths.close()

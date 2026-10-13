@@ -1,0 +1,210 @@
+"""Deterministic host facts and SQLite fault/process fixtures (no providers)."""
+
+import hashlib
+import sqlite3
+from multiprocessing.connection import Connection
+from pathlib import Path
+from typing import Literal
+
+from cairn.core.models import Message, ToolCall
+from cairn.infra.sessions.codec import snapshot_messages
+from cairn.infra.sessions.models import (
+    CheckpointPayload,
+    MessageRange,
+    Outcome,
+    PathIdentity,
+    Revision,
+    SessionBinding,
+    SettledTurn,
+    ToolFence,
+    TurnIntent,
+    WorkspaceBinding,
+)
+from cairn.infra.sessions.store import SessionStore
+
+SESSION = "00000000-0000-4000-8000-000000000001"
+TURN = "00000000-0000-4000-8000-000000000002"
+OTHER_TURN = "00000000-0000-4000-8000-000000000003"
+T0 = "2020-01-01T00:00:00Z"
+T1 = "2020-01-01T00:00:01Z"
+T2 = "2020-01-01T00:00:02Z"
+T3 = "2020-01-01T00:00:03Z"
+T4 = "2020-01-01T00:00:04Z"
+
+
+def binding(root: Path, *, session_id: str = SESSION) -> SessionBinding:
+    work = root.resolve() / "work"
+    work.mkdir(exist_ok=True)
+    info = work.stat()
+    return SessionBinding(
+        session_id=session_id,
+        workspace=WorkspaceBinding(
+            root=PathIdentity(path=str(work), device=info.st_dev, inode=info.st_ino),
+            git=None,
+        ),
+        provider=None,
+        observed_at_utc=T0,
+    )
+
+
+def store(
+    root: Path,
+    *,
+    mode: Literal["writer", "inspect"] = "writer",
+    sensitive_values: tuple[str, ...] = (),
+) -> SessionStore:
+    return SessionStore(
+        root.resolve() / "store",
+        mode=mode,
+        forbidden_roots=(
+            root.resolve() / "work",
+            root.resolve() / "tmp",
+            root.resolve() / "cache",
+        ),
+        sensitive_values=sensitive_values,
+    )
+
+
+def intent(
+    bind: SessionBinding,
+    expected: Revision,
+    *,
+    turn_id: str = TURN,
+    start: int = 0,
+    user: str = "hello",
+    time: str = T1,
+) -> TurnIntent:
+    return TurnIntent(
+        session_id=bind.session_id,
+        turn_id=turn_id,
+        base_seq=expected.head_seq,
+        message_start=start,
+        input_digest=hashlib.sha256(user.encode()).hexdigest(),
+        started_at_utc=time,
+        binding=bind,
+    )
+
+
+def messages(user: str = "hello") -> list[Message]:
+    return [
+        Message(role="user", content=user),
+        Message(
+            role="assistant",
+            content=None,
+            tool_calls=[
+                ToolCall(id="call-1", name="read_file", arguments={"path": "a.py"})
+            ],
+        ),
+        Message(role="tool", tool_call_id="call-1", content="observed"),
+        Message(role="assistant", content="done"),
+    ]
+
+
+def fence(
+    bind: SessionBinding,
+    *,
+    ordinal: int = 1,
+    turn_id: str = TURN,
+    index: int = 1,
+    call_id: str = "call-1",
+    tool_name: str = "read_file",
+) -> ToolFence:
+    return ToolFence(
+        session_id=bind.session_id,
+        turn_id=turn_id,
+        ordinal=ordinal,
+        assistant_message_index=index,
+        call_id=call_id,
+        tool_name=tool_name,
+        observed_at_utc=T2,
+    )
+
+
+def settled(
+    turn: TurnIntent,
+    *,
+    history: list[Message] | None = None,
+    outcome: Outcome = "completed",
+    time: str = T4,
+) -> SettledTurn:
+    values = messages() if history is None else history
+    bind = turn.binding.model_copy(update={"observed_at_utc": time})
+    return SettledTurn(
+        checkpoint=CheckpointPayload(
+            session_id=turn.session_id,
+            turn_id=turn.turn_id,
+            seq=turn.base_seq + 1,
+            binding=bind,
+            messages=snapshot_messages(values),
+            message_range=MessageRange(start=turn.message_start, end=len(values)),
+            outcome=outcome,
+            started_at_utc=turn.started_at_utc,
+            settled_at_utc=time,
+        )
+    )
+
+
+def crash_writer(root_text: str, window: str, barrier: Connection) -> None:
+    """Parent kills only after an explicit SQL/API barrier, never a timed sleep."""
+    root = Path(root_text)
+    bind = binding(root)
+    api = store(root)
+
+    def stop(name: str) -> None:
+        barrier.send(name)
+        barrier.recv()  # parent SIGKILLs this process at the named boundary
+
+    if window == "before_intent":
+        stop(window)
+    initial = api.inspect(SESSION).revision
+    turn = intent(bind, initial)
+    active = api.begin_turn(initial, turn)
+    if window == "intent":
+        stop(window)
+    active = api.fence_tool(active, fence(bind))
+    if window == "fence":
+        stop(window)
+    # A local external-effect double: exactly one append after the fence.
+    with (root / "work" / "effect.txt").open("a") as output:
+        output.write("one effect\n")
+    assert api._connection is not None
+    if window in ("checkpoint_insert", "attempt_update", "before_commit"):
+        blocked = "turns" if window == "checkpoint_insert" else "sessions"
+
+        def authorize(
+            action: int,
+            table: str | None,
+            column: str | None,
+            database: str | None,
+            source: str | None,
+        ) -> int:
+            if (
+                window != "before_commit"
+                and action == sqlite3.SQLITE_UPDATE
+                and table == blocked
+            ) or (
+                window == "before_commit"
+                and action == sqlite3.SQLITE_TRANSACTION
+                and table == "COMMIT"
+            ):
+                stop(window)
+            return sqlite3.SQLITE_OK
+
+        api._connection.set_authorizer(authorize)
+    api.commit_turn(active, settled(turn))
+    stop("committed")
+
+
+def competing_writer(root_text: str, barrier: Connection) -> None:
+    from cairn.infra.sessions.models import SessionStoreError
+
+    try:
+        api = store(Path(root_text))
+    except SessionStoreError as error:
+        barrier.send(error.code)
+    else:
+        try:
+            api.create(binding(Path(root_text), session_id=OTHER_TURN))
+            barrier.send("unexpected_writer")
+        finally:
+            api.close()

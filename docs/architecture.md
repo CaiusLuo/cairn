@@ -53,6 +53,12 @@ opt-in in-memory API. One Agent-local owner binds an exact Session; the loop
 admits before effects and holds its guard through cleanup, rollback, tracing and
 the settled notification. Durable acknowledgement (M1-C) remains future work.
 
+[M1-C.1 SessionStore](guides/session-store.md) supplies isolated, host-only SQLite
+and checkpoint primitives in `infra.sessions`; it is not connected to the loop.
+The Store owns storage validation, transactions and its lifetime writer lock.
+Runtime still owns all live turn decisions; intent/fence records never dispatch
+work or grant permission. Durable acknowledgement remains an integration slice.
+
 Task, workflow, review and evaluation code in `cairn.runtime` provide bounded
 orchestration around Agent turns. They do not create a second general Agent loop.
 Existing scheduling and retry behavior belongs with the runtime flow that uses it.
