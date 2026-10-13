@@ -7,6 +7,8 @@ Git command or publisher. [M1-B](session-lifecycle.md) owns the live Session/Tur
 [M1-C.2 DurableSession](durable-session.md) integrates these primitives at the
 existing runtime boundaries. Default stateless callers and CLI remain unchanged;
 explicit recovery UI is provided by the [M1-C.3 durable CLI](durable-cli.md).
+[M2-A Task Ledger](task-ledger.md) adds independent persisted Task facts and an
+explicit schema upgrade; TaskRunner execution is not integrated.
 
 ## Host API
 
@@ -65,8 +67,10 @@ an endpoint or prove checkout freshness.
 
 ## Codec and transactions
 
-[Codec](../../src/cairn/infra/sessions/codec.py) uses schema **1** and independent
-payload format **1**. Checkpoints contain full conversation, never ContextBuilder's
+[SessionStore](../../src/cairn/infra/sessions/store.py) creates schema **2** and
+continues to support schema **1** for Session operations. The
+[codec](../../src/cairn/infra/sessions/codec.py) retains independent payload format
+**1**. Checkpoints contain full conversation, never ContextBuilder's
 trimmed requests. `snapshot_messages` detaches core messages and stores arguments
 as canonical JSON object text (`arguments_json`), making nested arguments immutable.
 `restore_messages` revalidates and returns new core Message/ToolCall objects.
@@ -82,10 +86,14 @@ assistant; interrupted tails can end in a closed tool group or be empty after
 rollback. Previous committed history is an exact unchanged prefix. SHA-256 detects
 damage, not malicious trusted-host forgery. `model_copy` bypasses are revalidated.
 
-The accepted schema has `sessions`, `turns`, `checkpoints`, deferred head/active/
+Both accepted schemas have `sessions`, `turns`, `checkpoints`, deferred head/active/
 terminal foreign keys, unique Session/Turn checkpoint and one unresolved attempt
-per Session. Bounded `diagnostics_json` stores start binding/message boundary,
-ordered fences, fixed reason, nullable resolution and commit version; no tool
+per Session. Schema 2 additionally has the bounded `tasks` table described in
+[Task Ledger](task-ledger.md#schema-compatibility-and-explicit-upgrade); Task APIs
+on schema 1 require explicit trusted-host `upgrade_schema()`. Existing durable
+CLI Sessions remain usable without upgrading. Bounded `diagnostics_json` stores
+start binding/message boundary, ordered fences, fixed reason, nullable resolution
+and commit version; no tool
 arguments/results or replay position. UTC describes observations; revisions and
 sequences determine order. Readers validate schema shape/version, quick-check,
 foreign keys, exact head and the full committed prefix/attempt chain. Corruption
@@ -238,5 +246,6 @@ blocker**, not a supported deployment claim. The reviewed
 the version check. This isolated development slice does not upgrade or disable
 the project runtime. Compatible SQLite and target-platform tests are required
 before shipping durable execution. Runtime integration is opt-in through
-DurableSession; Task recovery, automatic replay, queue and DAG remain outside
-these storage primitives.
+DurableSession. Task lifecycle facts and read-only recovery reports are available
+through [Task Ledger](task-ledger.md); Task execution/recovery integration,
+automatic replay, queue and DAG remain outside these storage primitives.

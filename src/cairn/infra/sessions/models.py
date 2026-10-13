@@ -23,7 +23,7 @@ MAX_RECORD_BYTES = 64 * 1024
 MAX_DATABASE_BYTES = 256 * 1024 * 1024
 MAX_WAL_BYTES = 32 * 1024 * 1024
 FORMAT_VERSION = 1
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 Counter = Annotated[int, Field(ge=0, le=MAX_INTEGER)]
 Digest = Annotated[str, Field(pattern=r"\A[0-9a-f]{64}\z")]

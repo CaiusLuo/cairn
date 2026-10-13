@@ -3,6 +3,7 @@
 import asyncio
 import multiprocessing
 import os
+import sqlite3
 from collections.abc import AsyncGenerator, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -197,7 +198,10 @@ def test_default_is_stateless_and_commands_remain_available(harness: Harness) ->
     assert "session" in runner.invoke(cli.app, ["--help"]).output
 
 
-def test_new_multiple_turns_inspect_and_fresh_reopen(harness: Harness) -> None:
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_new_multiple_turns_inspect_and_fresh_reopen(
+    harness: Harness, schema_version: int
+) -> None:
     harness.responses = [LLMResponse(content="one"), LLMResponse(content="two")]
     harness.inputs("first", "second", EOFError())
     result = harness.invoke("new")
@@ -213,6 +217,10 @@ def test_new_multiple_turns_inspect_and_fresh_reopen(harness: Harness) -> None:
     ]
     assert result.output.index("one") < result.output.index("Committed checkpoint 1")
     assert result.output.index("two") < result.output.index("Committed checkpoint 2")
+    if schema_version == 1:
+        with sqlite3.connect(harness.directory / "sessions.sqlite3") as conn:
+            conn.execute("DROP TABLE tasks")
+            conn.execute("PRAGMA user_version=1")
     before = {
         p.name: (p.read_bytes(), p.stat().st_ino, p.stat().st_mtime_ns)
         for p in harness.directory.iterdir()
@@ -241,6 +249,8 @@ def test_new_multiple_turns_inspect_and_fresh_reopen(harness: Harness) -> None:
         is not harness.agents[0].permission_handler
     )
     assert len(harness.agents[-1].state.messages) == 4
+    with sqlite3.connect(harness.directory / "sessions.sqlite3") as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == schema_version
 
 
 def _orphan(directory: str, workspace: str, session_id: str) -> None:

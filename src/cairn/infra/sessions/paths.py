@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from threading import get_ident
+from uuid import uuid4
 
 from cairn.infra.sessions.models import MAX_DATABASE_BYTES, SessionStoreError
 
@@ -80,6 +81,7 @@ class StorePaths:
         self.new_database = False
         self._components: dict[Path, tuple[int, int]] = {}
         self._files: dict[Path, tuple[int, int]] = {}
+        self._backups: set[Path] = set()
         self._read_sidecars: dict[Path, tuple[int, int]] | None = None
         self._pid = os.getpid()
         self._thread = get_ident()
@@ -203,6 +205,7 @@ class StorePaths:
             self.lock_path,
             self.access_path,
             *(Path(str(self.path) + s) for s in ("-wal", "-shm", "-journal")),
+            *self._backups,
         ):
             tracked: dict[Path, tuple[int, int]] | None = self._files
             if not self.writer and path not in (
@@ -230,7 +233,9 @@ class StorePaths:
                 or stat.S_IMODE(info.st_mode) != 0o600
             ):
                 raise SessionStoreError("unsafe_store_file")
-            if info.st_size > MAX_DATABASE_BYTES * (1 if path == self.path else 2):
+            if info.st_size > MAX_DATABASE_BYTES * (
+                1 if path == self.path or path in self._backups else 2
+            ):
                 raise SessionStoreError("database_limit")
             if tracked is not None:
                 old = tracked.setdefault(path, _identity(info))
@@ -284,6 +289,43 @@ class StorePaths:
         # SQLite FULL owns DB/WAL content synchronization. Do not open/close a
         # second DB descriptor while any SQLite connection may hold locks.
         os.fsync(self.directory_fd)  # DB/WAL/lock entries, after SQLite FULL COMMIT.
+
+    def create_backup(self) -> Path:
+        """Exclusive private destination, under the same validated storage root."""
+        self.check()
+        if not self.writer:
+            raise SessionStoreError("read_only_store")
+        path = self.directory / f"schema-1-backup-{uuid4().hex}.sqlite3"
+        fd = os.open(
+            path.name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=self.directory_fd,
+        )
+        try:
+            self._files[path] = _identity(os.fstat(fd))
+            self._backups.add(path)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        self.check()
+        self.sync_creation()
+        return path
+
+    def sync_backup(self, path: Path) -> None:
+        # SQLite's destination connection must be closed first. This never opens
+        # another descriptor to the source database or interferes with its locks.
+        self.check()
+        if path not in self._backups:
+            raise SessionStoreError("invalid_backup")
+        fd = os.open(path.name, _FILE, dir_fd=self.directory_fd)
+        try:
+            if _identity(os.fstat(fd)) != self._files[path]:
+                raise SessionStoreError("path_identity_changed")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        self.sync_creation()
 
     def close(self) -> None:
         if os.getpid() != self._pid:
