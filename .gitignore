@@ -27,3 +27,6 @@ litellm_cache/
 
 # Ignore local traces files
 .cairn/*
+
+# Ignore codegraph files
+.codegraph/
