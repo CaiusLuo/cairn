@@ -428,8 +428,10 @@ populated Agent instead of overwriting its history.
 
 ### Runtime-enforced Agent ownership
 
-Use one Agent-local private `_durable_owner` slot (initially None), exposed through
-a read-only `durable_owner` property and a once-only private binding method.
+Reuse M1-B's Agent-local private `_session_owner` slot (initially None), exposed
+through the read-only `session_owner` property and once-only `_bind_session` method.
+The shared [Session lifecycle](../guides/session-lifecycle.md) supplies admission
+and settlement; DurableSession extends that gate instead of adding another owner.
 DurableSession.create/reopen installs its exact object identity before attachment
 I/O or state restoration, with admission suspended until setup/reconciliation
 finishes. Binding cannot be replaced. Failed attachment and `close` leave the
@@ -438,7 +440,7 @@ the Agent to stateless. Reopening uses a fresh Agent. No global registry or
 serialized ownership token is needed; AgentState and checkpoint DTOs stay unchanged.
 
 The first operation in `run_turn` checks the slot against the optional `session`:
-both None allows today's stateless path; otherwise `session is agent.durable_owner`
+both None allows today's stateless path; otherwise `session is agent.session_owner`
 and `session` must own this exact Agent. Require an open owner/store with its
 lifetime lock and a ready, reconciled admission gate. Reject omitted/wrong/closed,
 suspended/recovery-required or busy bindings with `SessionAdmissionError` before
@@ -555,7 +557,7 @@ the last committed full conversation, `I` an intent and `F` at least one fence.
 
 | Current method / boundary | Proposed change | Preserved contract |
 | --- | --- | --- |
-| `runtime.loop.run_turn(agent, user_input, *, budget)` | Add optional `session: DurableSession \| None = None`. First enforce the Agent-local owner/gate; then begin, build fence callback and settle/commit after abort handling and `trace.close`. Notify `turn_committed` after its receipt outside execution/rollback handlers. | `-> str` and primary execution exceptions; same loop, budgets, rollback and pending ownership. Both Agent owner and argument None preserve stateless behavior with no storage I/O. |
+| `runtime.loop.run_turn(agent, user_input, *, budget, session=None)` | Reuse M1-B's optional Session argument and Agent-local owner/gate. DurableSession adds begin, fence and settle/commit after abort handling and `trace.close`. Notify `turn_committed` after its receipt outside execution/rollback handlers. | `-> str` and primary execution exceptions; same loop, budgets, rollback and pending ownership. Both Agent owner and argument None preserve stateless behavior with no storage I/O. |
 | `runtime.tool_execution.execute_tool_call` | Add optional `before_execute: Callable[[], None]` passed by the loop with its host ordinal/call reference. Invoke outside the execution-exception catch after approval, before mark/execute. | Preflight precedes permission; capability-derived ToolExecutionContext; tool result, cancellation and event ordering. No SessionStore import or lifecycle decisions here. |
 | `runtime.turn_trace.TurnTrace.close` | Expose a typed immutable `summary` after finalization, including nullable usage and a sanitized persistence flag/code. | One final trace event; no second telemetry finalizer. `Tracer`/TraceStore continue independently. |
 | `runtime.agent.Agent`, `runtime.assembly.build_agent` | Keep constructor/build signatures; add Agent-local private owner slot, read-only property and once-only binding hook using the reviewed M1-B lifecycle contract. DurableSession factories bind before restoration; closing retains the marker. | No credentials/IDs/owner reference added to AgentState or persistence. Unbound callers/evals stay stateless; bound Agents cannot bypass admission by omitting session. |

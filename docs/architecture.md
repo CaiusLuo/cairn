@@ -48,8 +48,10 @@ Only a validated response after provider finish, clean exhaustion and stream
 cleanup crosses the existing `(request, response)` boundary. Text deltas go to
 transient CLI events; they never enter conversation state or trace attributes.
 See [M1-A streaming](guides/model-streaming.md) for limits, provider support and
-failure semantics. Session lifecycle (M1-B) and durable acknowledgement (M1-C)
-remain future work.
+failure semantics. [Session lifecycle (M1-B)](guides/session-lifecycle.md) is an
+opt-in in-memory API. One Agent-local owner binds an exact Session; the loop
+admits before effects and holds its guard through cleanup, rollback, tracing and
+the settled notification. Durable acknowledgement (M1-C) remains future work.
 
 Task, workflow, review and evaluation code in `cairn.runtime` provide bounded
 orchestration around Agent turns. They do not create a second general Agent loop.
@@ -100,6 +102,7 @@ stable.
 | State | Owner |
 | --- | --- |
 | Conversation messages | `core.state.AgentState`, held by one `runtime.agent.Agent` |
+| Bound Session and active Turn | `runtime.session.Session`; `run_turn` alone admits/settles its guard, and Agent retains the once-only owner after close/failure |
 | Session model selection and grants | `core.model_manager` and `core.permissions.SessionPermissionHandler` |
 | Active provider runtime | `runtime.provider_runtime.ProviderSession`, committed through `commit`; terminal command context observes the committed runtime |
 | Per-model failure notes for `/model list` | `runtime.model_executor.ModelExecutor` |

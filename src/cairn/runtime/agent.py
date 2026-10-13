@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from cairn.core.context import ContextBuilder
@@ -12,6 +13,11 @@ from cairn.runtime.model_executor import ModelExecutor
 
 if TYPE_CHECKING:
     from cairn.runtime.memory.retrieval import MemoryReader
+
+
+class SessionAdmissionError(RuntimeError):
+    """An invalid binding/gate was rejected before execution began."""
+
 
 DEFAULT_SYSTEM_PROMPT = """You are Cairn, a software engineering agent.
 
@@ -77,7 +83,28 @@ class Agent:
         ):
             raise ValueError("Memory reader must use the Agent Workspace")
         self.memory_reader = memory_reader
+        self._session_owner: object | None = None
+        self._session_attribution: Callable[[Event], Event] | None = None
+        # Only the loop advances this count. It prevents attachment midway
+        # through an unbound turn without changing stateless execution policy.
+        self._stateless_turns = 0
+
+    @property
+    def session_owner(self) -> object | None:
+        return self._session_owner
+
+    def _bind_session(
+        self, session: object, attribute_event: Callable[[Event], Event]
+    ) -> None:
+        if self._session_owner is not None or self._stateless_turns:
+            raise SessionAdmissionError("Agent is already owned or executing.")
+        self._session_owner = session
+        self._session_attribution = attribute_event
 
     def emit(self, event: Event) -> None:
+        if self._session_owner is not None:
+            if self._session_attribution is None:
+                raise SessionAdmissionError("Session attachment is incomplete.")
+            event = self._session_attribution(event)
         if self.event_handler is not None:
             self.event_handler(event)

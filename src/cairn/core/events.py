@@ -1,8 +1,11 @@
 from typing import Any, Literal, Protocol
+from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 EventType = Literal[
+    "turn_started",
+    "turn_settled",
     "model_stream_start",
     "model_text_delta",
     "model_stream_end",
@@ -22,6 +25,16 @@ EventType = Literal[
 class Event(BaseModel):
     type: EventType
     data: dict[str, Any] = Field(default_factory=dict)
+
+
+class SessionEvent(Event):
+    """Transient turn attribution; this envelope is not a durable receipt."""
+
+    model_config = ConfigDict(frozen=True)
+
+    session_id: UUID
+    turn_id: UUID
+    sequence: int = Field(ge=1)
 
 
 class EventHandler(Protocol):

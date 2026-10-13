@@ -8,8 +8,9 @@ Rich markup/emoji syntax is literal and C0/C1 terminal controls are filtered
 
 This implements M1-A. The [Durable Session design](../design/durable-session-v1.md)
 records the predecessor requirements; its source audit describes the earlier
-non-streaming baseline. M1-B Session/Turn identity, ordered delivery and admission,
-and M1-C SessionStore/checkpoint acknowledgements remain proposed. A text delta,
+non-streaming baseline. [M1-B](session-lifecycle.md) supplies opt-in Session/Turn
+identity, ordered delivery and admission. M1-C SessionStore/checkpoint
+acknowledgements remain proposed. A text delta,
 completed response, `agent_finish` or `trace_finish` is not durable acknowledgement.
 
 ## Ownership and acceptance
