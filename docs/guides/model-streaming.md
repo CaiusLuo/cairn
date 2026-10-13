@@ -17,6 +17,9 @@ completed response, `agent_finish` or `trace_finish` is not durable acknowledgem
 `LLMClient.generate()` is unchanged. The optional `StreamingLLMClient` capability
 in [core/llm.py](../../src/cairn/core/llm.py) yields typed `LLMStreamChunk` values
 and returns a closable async generator. Core exposes no SDK types.
+Before requesting, ModelExecutor also respects an optional per-client
+`supports_streaming` flag. Clients without that flag retain the existing optional
+capability behavior; generate-only clients remain unchanged.
 
 `LiteLLMClient → ModelExecutor / ResponseAssembler → run_turn → tool_execution`
 is the response path. ModelExecutor selects and admits candidates as before; one owned
@@ -60,12 +63,28 @@ to pin this behavior.
 The integration intentionally depends on its `completion_stream`/`aclose` seam;
 SDK upgrades must rerun those tests.
 
-V1 supports asynchronous, single-choice OpenAI-compatible chat chunks and the
-LiteLLM `openai`/`azure` wrappers for that shape. Native provider iterators,
-synchronous streams, multiple choices, legacy function calls, audio, refusal and
-reasoning deltas require a separately audited normalizer and fail closed. Repeated
-full identity headers after arguments begin are unsupported. There is no hidden
-retry through `generate()` when streaming fails.
+LiteLLMClient defaults to streaming for explicit `openai/<chat-model>` and
+`azure/<chat-deployment>` routes, including custom OpenAI-compatible endpoints.
+Selection uses only the configured model ID, loaded SDK mode metadata and local
+routing flags; it makes no provider request or credential/provider lookup. Cached
+non-chat modes, `responses/` subroutes, legacy completion fine-tunes and enabled
+SDK proxy/Responses rerouting decline streaming. Unknown IDs on the two explicit
+chat routes remain eligible for custom models/deployments; chunks still require
+full validation.
+
+Native provider prefixes (including `deepseek`, `anthropic`, `gemini`, `azure_ai`),
+implicit model names such as `gpt-4o`, and all other routes select the unchanged
+`generate()` path before any request. An OpenAI-compatible endpoint alone does
+not enable streaming. The decision is independent for every fallback candidate;
+it does not change admission, request options or fallback eligibility.
+
+The stream normalizer supports asynchronous, single-choice OpenAI-compatible chat
+chunks and the LiteLLM `openai`/`azure` wrappers for that shape. An unexpected native
+iterator, synchronous stream, multiple choices, legacy function calls, audio,
+refusal or reasoning delta fails closed after a selected stream request. Repeated
+full identity headers after arguments begin are unsupported. Explicitly requesting
+a stream for a declined configuration fails before requesting the provider.
+There is no hidden retry through `generate()` when streaming fails.
 
 | Condition | Result / recovery |
 | --- | --- |
@@ -95,6 +114,8 @@ No eval/report schema, frozen dataset, permissions or persistence contract chang
 Event-barrier tests cover visibility before completion, interleaving, limits,
 invalid groups, fresh fallback admission, callback failures, cancellation at each
 boundary, repeated cancellation, cleanup failure and prior-tool fact retention.
+Selection tests cover native/implicit routes, local capability decisions, exactly
+one non-streaming request, both mixed fallback directions and unchanged tool grants.
 CLI tests check plain text, answer deduplication, abandonment, trace ordering and
 legacy Markdown. Provider calls are mocked; SDK-estimated usage is deliberately
 different from reported usage.

@@ -45,7 +45,12 @@ class LLMClient(Protocol):
 
 @runtime_checkable
 class StreamingLLMClient(Protocol):
-    """Optional capability; existing generate-only clients remain valid."""
+    """Optional capability; existing generate-only clients remain valid.
+
+    A client may opt out per configuration with ``supports_streaming=False``.
+    This optional flag is not required for existing streaming implementations.
+    Consumers decide before requesting; a failed stream never retries generate.
+    """
 
     def stream_generate(
         self,

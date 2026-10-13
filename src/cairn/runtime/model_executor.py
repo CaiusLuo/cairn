@@ -188,10 +188,12 @@ class ModelExecutor:
                 attempt += 1
                 if on_request is not None:
                     on_request(request, builder.budget, model, model_id, attempt)
-                streaming = isinstance(llm, StreamingLLMClient)
+                streaming = isinstance(llm, StreamingLLMClient) and (
+                    getattr(llm, "supports_streaming", True) is True
+                )
                 attribution = {"attempt": attempt, "model_id": model_id}
                 try:
-                    if isinstance(llm, StreamingLLMClient):
+                    if streaming and isinstance(llm, StreamingLLMClient):
                         collecting = asyncio.create_task(
                             _assemble_stream(
                                 llm, request, tools, on_stream, attribution

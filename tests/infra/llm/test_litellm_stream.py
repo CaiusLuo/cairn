@@ -108,13 +108,15 @@ def test_invalid_provider_shape_closes_without_raw_diagnostics(
     stream = ProviderStream(raw)
     requests = install(monkeypatch, stream)
     with pytest.raises(StreamProtocolError) as error:
-        asyncio.run(collect(LiteLLMClient("test")))
+        asyncio.run(collect(LiteLLMClient("openai/test")))
     assert "secret" not in str(error.value)
     assert stream.closed
     assert len(requests) == 1
 
 
-def sdk_stream(*chunks: dict[str, Any]) -> tuple[CustomStreamWrapper, ProviderStream]:
+def sdk_stream(
+    *chunks: dict[str, Any], provider: str = "openai"
+) -> tuple[CustomStreamWrapper, ProviderStream]:
     # Real SDK objects/normalization, no provider/network call. This pins the
     # synthetic-finish/usage behavior of the installed LiteLLM release.
     source = ProviderStream(
@@ -141,11 +143,30 @@ def sdk_stream(*chunks: dict[str, Any]) -> tuple[CustomStreamWrapper, ProviderSt
     wrapper = CustomStreamWrapper(
         source,
         model="test",
-        custom_llm_provider="openai",
+        custom_llm_provider=provider,
         logging_obj=logging,
         stream_options={"include_usage": True},
     )
     return wrapper, source
+
+
+@pytest.mark.parametrize("provider", ["openai", "azure"])
+def test_supported_sdk_routes_still_stream_through_run_turn(
+    monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    wrapper, source = sdk_stream(
+        provider_chunk("answer"), provider_chunk(finish="stop"), provider=provider
+    )
+    requests = install(monkeypatch, wrapper)
+    agent = Agent(llm=LiteLLMClient(f"{provider}/test"), tools=ToolRegistry())
+    assert (
+        asyncio.run(run_turn(agent, "hello", budget=RunBudget(max_steps=1))) == "answer"
+    )
+    assert len(requests) == 1
+    assert requests[0]["stream"] is True
+    assert requests[0]["model"] == f"{provider}/test"
+    assert agent.state.messages[-1].content == "answer"
+    assert source.closed
 
 
 @pytest.mark.parametrize("reported", [False, True])
@@ -166,7 +187,7 @@ def test_real_sdk_synthetic_usage_is_ignored(
         )
     wrapper, source = sdk_stream(*chunks)
     install(monkeypatch, wrapper)
-    response = asyncio.run(collect(LiteLLMClient("test"))).finish()
+    response = asyncio.run(collect(LiteLLMClient("openai/test"))).finish()
     assert response.content == "answer"
     assert response.usage == (
         LLMUsage(input_tokens=7, output_tokens=3) if reported else None
@@ -179,7 +200,7 @@ def test_real_sdk_synthetic_finish_does_not_accept_truncation(
 ) -> None:
     wrapper, source = sdk_stream(provider_chunk("unfinished"))
     install(monkeypatch, wrapper)
-    assembler = asyncio.run(collect(LiteLLMClient("test")))
+    assembler = asyncio.run(collect(LiteLLMClient("openai/test")))
     with pytest.raises(StreamProtocolError, match="without provider completion"):
         assembler.finish()
     assert source.closed
@@ -206,7 +227,7 @@ def test_real_sdk_interleaved_tool_fragments_are_observed_before_sdk_assembly(
         provider_chunk(finish="tool_calls"),
     )
     install(monkeypatch, wrapper)
-    response = asyncio.run(collect(LiteLLMClient("test"))).finish()
+    response = asyncio.run(collect(LiteLLMClient("openai/test"))).finish()
     assert [item.id for item in response.tool_calls] == ["first", "second"]
     assert [item.arguments for item in response.tool_calls] == [
         {"path": "文档"},
@@ -236,7 +257,7 @@ def test_partial_error_omits_generated_content_and_preserves_shared_quota_chain(
     stream = ProviderStream(provider_chunk("partial"), wrapper_error)
     install(monkeypatch, stream)
     with pytest.raises(RateLimitError) as raised:
-        asyncio.run(collect(LiteLLMClient("test")))
+        asyncio.run(collect(LiteLLMClient("openai/test")))
     assert raised.value is original and original.__context__ is quota
     assert not is_fallback_error(original)
     assert "raw" not in str(original) and "argument" not in repr(original)
@@ -254,7 +275,7 @@ def test_partial_message_only_free_tier_error_keeps_narrow_fallback_policy(
     )
     install(monkeypatch, ProviderStream(provider_chunk("partial"), original))
     with pytest.raises(APIError) as raised:
-        asyncio.run(collect(LiteLLMClient("test")))
+        asyncio.run(collect(LiteLLMClient("openai/test")))
     assert raised.value is original and is_fallback_error(original)
     assert "raw-secret" not in str(original)
 
@@ -272,7 +293,7 @@ def test_real_sdk_cleanup_failure_is_detected_even_if_sdk_swallows_it(
     monkeypatch.setattr(source, "aclose", fail_close)
     install(monkeypatch, wrapper)
     with pytest.raises(StreamProtocolError, match="cleanup failed") as raised:
-        asyncio.run(collect(LiteLLMClient("test")))
+        asyncio.run(collect(LiteLLMClient("openai/test")))
     assert "secret" not in str(raised.value)
 
 
@@ -292,7 +313,7 @@ def test_sdk_remapping_cannot_hide_cairn_protocol_rejection(
     )
     install(monkeypatch, wrapper)
     with pytest.raises(StreamProtocolError, match="fragment identity"):
-        asyncio.run(collect(LiteLLMClient("test")))
+        asyncio.run(collect(LiteLLMClient("openai/test")))
     assert source.closed
 
 
@@ -308,7 +329,7 @@ def test_sdk_cannot_hide_transport_failure_after_finish(
     )
     install(monkeypatch, wrapper)
     with pytest.raises(RuntimeError) as error:
-        asyncio.run(collect(LiteLLMClient("test"))).finish()
+        asyncio.run(collect(LiteLLMClient("openai/test"))).finish()
     assert "secret" not in str(error.value)
     assert source.closed
 
@@ -334,7 +355,7 @@ def test_hidden_sdk_failure_cannot_dispatch_completed_tool_group(
     registry = ToolRegistry()
     tool = RecordingTool()
     registry.register_tool(tool)
-    agent = Agent(llm=LiteLLMClient("test"), tools=registry)
+    agent = Agent(llm=LiteLLMClient("openai/test"), tools=registry)
     with pytest.raises(RuntimeError, match="LLM provider streaming failed"):
         asyncio.run(run_turn(agent, "hello", budget=RunBudget(max_steps=1)))
     assert agent.state.messages == []
@@ -355,13 +376,13 @@ def test_midstream_sdk_wrapper_preserves_original_eligibility_and_redacts(
     stream = ProviderStream(provider_chunk("partial"), error)
     requests = install(monkeypatch, stream)
     with pytest.raises(RateLimitError) as raised:
-        asyncio.run(collect(LiteLLMClient("test")))
+        asyncio.run(collect(LiteLLMClient("openai/test")))
     assert raised.value is original
     assert stream.closed and len(requests) == 1
     secret_stream = ProviderStream(RuntimeError("credential TOPSECRET"))
     install(monkeypatch, secret_stream)
     with pytest.raises(RuntimeError, match="details were omitted") as sanitized:
-        asyncio.run(collect(LiteLLMClient("test", api_key="TOPSECRET")))
+        asyncio.run(collect(LiteLLMClient("openai/test", api_key="TOPSECRET")))
     assert "TOPSECRET" not in str(sanitized.value)
     assert secret_stream.closed
 
@@ -375,7 +396,7 @@ def test_cancellation_and_repeated_cleanup_settle_provider(
         stream = ProviderStream(provider_chunk("partial"), blocked)
         stream.close_barrier = closing
         install(monkeypatch, stream)
-        task = asyncio.create_task(collect(LiteLLMClient("test")))
+        task = asyncio.create_task(collect(LiteLLMClient("openai/test")))
         await blocked.entered.wait()
         task.cancel()
         await closing.entered.wait()
@@ -406,7 +427,7 @@ def test_cancelled_acquisition_closes_late_stream(
             raise AssertionError("The acquisition must be cancelled.")
 
         monkeypatch.setattr(client_module, "acompletion", completion)
-        task = asyncio.create_task(collect(LiteLLMClient("test")))
+        task = asyncio.create_task(collect(LiteLLMClient("openai/test")))
         await entered.wait()
         task.cancel()
         await cancelled.wait()
@@ -438,7 +459,7 @@ def test_late_cancellation_is_primary_when_cleanup_also_fails(
 
         monkeypatch.setattr(source, "aclose", close)
         install(monkeypatch, source)
-        task = asyncio.create_task(collect(LiteLLMClient("test")))
+        task = asyncio.create_task(collect(LiteLLMClient("openai/test")))
         await entered.wait()
         task.cancel()
         release.set()

@@ -18,14 +18,27 @@ from cairn.core.context import (
 from cairn.core.events import Event
 from cairn.core.llm import LLMStreamChunk, StreamProtocolError, ToolCallDelta
 from cairn.core.model_manager import ModelConfig, ModelManager, ProviderConfig
-from cairn.core.models import LLMUsage, Message
+from cairn.core.models import LLMUsage, Message, ToolCall, ToolResult
+from cairn.core.permissions import (
+    PermissionCapability,
+    PermissionDecision,
+    PermissionResult,
+)
+from cairn.infra.llm import litellm_client as client_module
+from cairn.infra.llm.litellm_client import LiteLLMClient
 from cairn.infra.observability.tracer import Tracer
+from cairn.infra.tools.base import ToolExecutionContext
 from cairn.infra.tools.registry import ToolRegistry
 from cairn.runtime.agent import Agent
 from cairn.runtime.loop import run_turn
 from cairn.runtime.model_executor import ModelExecutor, StreamObserverError
-from tests.support.runtime import TEST_BUDGET, RecordingSink
-from tests.support.streaming import ScriptedStreamLLM
+from tests.support.runtime import TEST_BUDGET, NetworkRequestTool, RecordingSink
+from tests.support.streaming import (
+    CompletionResponse,
+    ProviderStream,
+    ScriptedStreamLLM,
+    provider_chunk,
+)
 
 
 class Counter:
@@ -71,6 +84,270 @@ def throttled() -> RateLimitError:
     return RateLimitError(
         message="provider rate limit", model="one", llm_provider="openai"
     )
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "anthropic/claude-3-5-sonnet-latest",
+        "deepseek/deepseek-chat",
+        "gemini/gemini-2.0-flash",
+        "azure_ai/model",
+        "gpt-4o",
+        "openai/responses/gpt-4o",
+        "text-completion-openai/text-davinci-003",
+    ],
+)
+def test_unsupported_stream_configuration_uses_one_generate_request(
+    monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    requests: list[dict[str, Any]] = []
+
+    async def completion(**kwargs: Any) -> CompletionResponse:
+        requests.append(kwargs)
+        assert "stream" not in kwargs, "Unsupported route must select generate first"
+        return CompletionResponse(
+            choices=[
+                CompletionResponse(
+                    message=CompletionResponse(content="done", tool_calls=[])
+                )
+            ],
+            usage=CompletionResponse(prompt_tokens=17, completion_tokens=3),
+        )
+
+    monkeypatch.setattr(client_module, "acompletion", completion)
+    events: list[Event] = []
+    sink = RecordingSink()
+    agent = Agent(
+        llm=LiteLLMClient(model, max_output_tokens=42),
+        tools=ToolRegistry(),
+        event_handler=lambda event: events.append(event),
+        tracer=Tracer(sink),
+    )
+    assert asyncio.run(run_turn(agent, "hello", budget=TEST_BUDGET)) == "done"
+    assert len(requests) == 1
+    assert requests[0]["model"] == model
+    assert requests[0]["max_tokens"] == 42
+    assert "stream_options" not in requests[0]
+    assert [message.role for message in agent.state.messages] == ["user", "assistant"]
+    assert agent.state.messages[-1].content == "done"
+    assert not any(event.type.startswith("model_") for event in events)
+    attempt = next(span for span in sink.spans if span.name == "llm.generate")
+    assert attempt.attributes["input_tokens"] == 17
+    assert attempt.attributes["output_tokens"] == 3
+    finish = next(event for event in events if event.type == "trace_finish")
+    assert finish.data["usage"] == {"input_tokens": 17, "output_tokens": 3}
+
+
+@pytest.mark.parametrize(
+    "models",
+    [
+        ("openai/one", "anthropic/two"),
+        ("anthropic/one", "openai/two"),
+    ],
+)
+def test_fallback_selects_streaming_per_candidate_with_matching_admission(
+    monkeypatch: pytest.MonkeyPatch, models: tuple[str, str]
+) -> None:
+    requests: list[dict[str, Any]] = []
+    failed_stream: ProviderStream | None = None
+
+    async def completion(**kwargs: Any) -> object:
+        nonlocal failed_stream
+        requests.append(kwargs)
+        model = kwargs["model"]
+        assert kwargs.get("stream", False) is model.startswith("openai/")
+        if model == models[0]:
+            error = RateLimitError(
+                message="provider rate limit",
+                model=model,
+                llm_provider=model.split("/")[0],
+            )
+            if kwargs.get("stream"):
+                failed_stream = ProviderStream(provider_chunk("abandoned"), error)
+                return failed_stream
+            raise error
+        return CompletionResponse(
+            choices=[
+                CompletionResponse(
+                    message=CompletionResponse(content="accepted", tool_calls=[])
+                )
+            ],
+            usage=CompletionResponse(prompt_tokens=17, completion_tokens=3),
+        )
+
+    monkeypatch.setattr(client_module, "acompletion", completion)
+    counters = Counter(10), Counter(20)
+    builders = tuple(
+        ContextBuilder(ContextBudget(max_tokens=100, response_tokens=reserve), counter)
+        for reserve, counter in zip((20, 30), counters, strict=True)
+    )
+    clients = tuple(
+        LiteLLMClient(model, api_base="https://example.test", max_output_tokens=reserve)
+        for model, reserve in zip(models, (20, 30), strict=True)
+    )
+    manager = ModelManager(
+        ProviderConfig(
+            "https://example.test", "TEST_KEY", (ModelConfig("group", models),)
+        )
+    )
+    built: list[str] = []
+
+    def runtime(model: str) -> tuple[LiteLLMClient, ContextBuilder]:
+        built.append(model)
+        assert model == models[1]
+        return clients[1], builders[1]
+
+    events: list[Event] = []
+    sink = RecordingSink()
+    agent = Agent(
+        llm=clients[0],
+        context_builder=builders[0],
+        model_executor=ModelExecutor(manager, runtime),
+        tools=ToolRegistry(),
+        event_handler=lambda event: events.append(event),
+        tracer=Tracer(sink),
+    )
+    assert asyncio.run(run_turn(agent, "hello", budget=TEST_BUDGET)) == "accepted"
+    assert [request["model"] for request in requests] == list(models)
+    assert [request["max_tokens"] for request in requests] == [20, 30]
+    assert built == [models[1]]
+    assert counters[0].messages == counters[1].messages
+    assert [message.role for message in agent.state.messages] == ["user", "assistant"]
+    assert agent.state.messages[-1].content == "accepted"
+    attempts = [span for span in sink.spans if span.name == "llm.generate"]
+    assert [span.attributes["model"] for span in attempts] == list(models)
+    assert [span.attributes["context_tokens_after"] for span in attempts] == [10, 20]
+    assert attempts[1].attributes["input_tokens"] == 17
+    assert attempts[1].attributes["output_tokens"] == 3
+    statuses = [
+        event.data["status"] for event in events if event.type == "model_stream_end"
+    ]
+    assert statuses == (
+        ["abandoned"] if models[0].startswith("openai/") else ["completed"]
+    )
+    if failed_stream is not None:
+        assert failed_stream.closed
+    finish = next(event for event in events if event.type == "trace_finish")
+    assert "usage" not in finish.data
+
+
+def test_unexpected_stream_shape_does_not_retry_generate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[dict[str, Any]] = []
+    stream = ProviderStream({"choices": [{"index": 0}, {"index": 1}]})
+
+    async def completion(**kwargs: Any) -> ProviderStream:
+        requests.append(kwargs)
+        assert kwargs["stream"] is True
+        return stream
+
+    monkeypatch.setattr(client_module, "acompletion", completion)
+    agent = Agent(llm=LiteLLMClient("openai/test"), tools=ToolRegistry())
+    with pytest.raises(StreamProtocolError):
+        asyncio.run(run_turn(agent, "hello", budget=TEST_BUDGET))
+    assert len(requests) == 1
+    assert stream.closed
+    assert agent.state.messages == []
+
+
+@pytest.mark.parametrize("allowed", [False, True])
+def test_generate_selected_route_keeps_tool_permission_and_state_semantics(
+    monkeypatch: pytest.MonkeyPatch, allowed: bool
+) -> None:
+    order: list[str] = []
+
+    class CheckedTool(NetworkRequestTool):
+        def validate(self, arguments: dict[str, Any]) -> None:
+            order.append("preflight")
+
+        async def execute(
+            self,
+            arguments: dict[str, Any],
+            *,
+            context: ToolExecutionContext | None = None,
+        ) -> ToolResult:
+            assert context is not None and context.network_access
+            order.append("execute")
+            return await super().execute(arguments, context=context)
+
+    responses = iter(
+        [
+            CompletionResponse(
+                choices=[
+                    CompletionResponse(
+                        message=CompletionResponse(
+                            content=None,
+                            tool_calls=[
+                                CompletionResponse(
+                                    id="call",
+                                    function=CompletionResponse(
+                                        name="bash",
+                                        arguments='{"command":"curl example.com","network_access":true,"justification":"fetch"}',
+                                    ),
+                                )
+                            ],
+                        )
+                    )
+                ]
+            ),
+            CompletionResponse(
+                choices=[
+                    CompletionResponse(
+                        message=CompletionResponse(content="done", tool_calls=[])
+                    )
+                ]
+            ),
+        ]
+    )
+    requests: list[dict[str, Any]] = []
+
+    async def completion(**kwargs: Any) -> CompletionResponse:
+        requests.append(kwargs)
+        assert "stream" not in kwargs
+        return next(responses)
+
+    monkeypatch.setattr(client_module, "acompletion", completion)
+    tool = CheckedTool()
+    registry = ToolRegistry()
+    registry.register_tool(tool)
+    events: list[Event] = []
+    agent = Agent(
+        llm=LiteLLMClient("anthropic/test"),
+        tools=registry,
+        event_handler=lambda event: events.append(event),
+    )
+
+    def approve(tool_call: ToolCall) -> PermissionResult:
+        order.append("permission")
+        assert tool.calls == []
+        assert agent.state.messages[-1].tool_calls == [tool_call]
+        return PermissionResult(
+            policy_decision=PermissionDecision.ASK,
+            allowed=allowed,
+            granted_capabilities=frozenset({PermissionCapability.NETWORK})
+            if allowed
+            else frozenset(),
+        )
+
+    agent.permission_handler = approve
+    assert asyncio.run(run_turn(agent, "hello", budget=TEST_BUDGET)) == "done"
+    assert len(requests) == 2  # One request per accepted Agent step.
+    assert order == (
+        ["preflight", "permission", "execute"]
+        if allowed
+        else ["preflight", "permission"]
+    )
+    assert len(tool.calls) == int(allowed)
+    assert [message.role for message in agent.state.messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert agent.state.messages[2].tool_call_id == "call"
+    assert any(event.type == "tool_denied" for event in events) is (not allowed)
 
 
 def test_partial_fallback_uses_fresh_admission_assembly_and_unknown_total_usage() -> (
