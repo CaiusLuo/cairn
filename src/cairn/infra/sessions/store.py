@@ -1171,6 +1171,8 @@ class SessionStore:
         return revision
 
     def close(self) -> None:
+        if self.mode == "writer" and self._owned_turns:
+            raise SessionStoreError("turn_still_owned")
         if self._connection is not None:
             try:
                 with self._paths.access(validate=False):

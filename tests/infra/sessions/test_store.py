@@ -17,6 +17,7 @@ from tests.support.sessions import (
     SESSION,
     T4,
     binding,
+    crash_at,
     fence,
     intent,
     messages,
@@ -107,6 +108,9 @@ def test_stale_cas_never_advances_rows_and_latches_gate(
         assert report.local_fault
         with pytest.raises(SessionStoreError, match="recovery_required"):
             api.commit_turn(active, settled(turn))
+        api.release_turn(
+            active, turn.turn_id
+        )  # the failed test operations have settled
     finally:
         api.close()
 
@@ -134,6 +138,8 @@ def test_duplicate_mutations_never_repeat_or_clear_fault(
         assert report.revision == expected
         assert report.checkpoint.seq == (1 if operation == "commit" else 0)
         assert len(report.attempts[0].diagnostics.fences) == 1
+        if operation == "fence":
+            api.release_turn(expected, turn.turn_id)
     finally:
         api.close()
 
@@ -143,13 +149,15 @@ def test_reopened_attempt_requires_exact_host_abandonment(tmp_path: Path) -> Non
     api = store(tmp_path)
     initial = api.create(bind).revision
     turn = intent(bind, initial)
-    active = api.begin_turn(initial, turn)
-    fenced = api.fence_tool(active, fence(bind))
     api.close()
+    crash_at(tmp_path, "fence")
     api = store(tmp_path)
     try:
         report = api.inspect(SESSION)
+        fenced = report.revision
         assert report.status == "effects_unknown"
+        assert report.unresolved is not None
+        assert report.unresolved.diagnostics.fences == (fence(bind),)
         with pytest.raises(SessionStoreError, match="live_turn_required"):
             api.commit_turn(fenced, settled(turn))
         report = api.inspect(SESSION)
@@ -343,6 +351,7 @@ def test_history_input_binding_and_fences_must_match(
         assert current.revision == active
         assert current.checkpoint == report.checkpoint
         assert report.checkpoint.messages[2].content == "observed"
+        api.release_turn(active, second.turn_id)
     finally:
         api.close()
 
@@ -416,6 +425,7 @@ def test_terminal_transaction_failure_rolls_back_every_row(
             ).fetchone() == (None, None)
         with pytest.raises(SessionStoreError, match="recovery_required"):
             api.commit_turn(active, settled(turn))
+        api.release_turn(active, turn.turn_id)
     finally:
         api.close()
 
@@ -447,6 +457,7 @@ def test_uncertain_commit_is_only_confirmed_by_exact_inspected_receipt(
         assert report.revision.version == active.version + int(committed)
         with pytest.raises(SessionStoreError, match="recovery_required"):
             api.commit_turn(report.revision, settled(turn))
+        api.release_turn(report.revision, turn.turn_id)
     finally:
         api.close()
 
@@ -494,6 +505,7 @@ def test_sensitive_and_oversize_rejected_before_begin_and_absent_from_db_wal(
             assert "opaque-sensitive-哨兵".encode() not in path.read_bytes()
             assert b"x" * 4096 not in path.read_bytes()
         assert api.inspect(SESSION).revision == active
+        api.release_turn(active, turn.turn_id)
     finally:
         api.close()
 
@@ -545,6 +557,7 @@ def test_sqlite_full_rejects_terminal_insert_without_partial_state(
         assert report.revision == active
         assert report.checkpoint.seq == 0 and report.unresolved is not None
         assert report.unresolved.settled_seq is None
+        api.release_turn(active, turn.turn_id)
     finally:
         api.close()
 
@@ -617,6 +630,7 @@ def test_failed_fence_subclass_and_invalid_settled_container_latch_gate(
         assert api.inspect(SESSION).local_fault
         with pytest.raises(SessionStoreError, match="recovery_required"):
             api.commit_turn(active, settled(turn))
+        api.release_turn(active, turn.turn_id)
     finally:
         api.close()
 
@@ -631,10 +645,12 @@ def test_metadata_wall_clock_does_not_order_revisions(
         monkeypatch.setattr(
             "cairn.infra.sessions.store._now", lambda: "2019-12-31T23:59:59Z"
         )
-        active = api.begin_turn(initial, intent(bind, initial))
+        turn = intent(bind, initial)
+        active = api.begin_turn(initial, turn)
         report = api.inspect(SESSION)
         assert report.revision == active
         assert report.status == "executing"
         assert report.checkpoint.seq == 0
+        api.commit_turn(active, settled(turn, history=[], outcome="cancelled"))
     finally:
         api.close()

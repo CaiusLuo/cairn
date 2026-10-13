@@ -12,9 +12,10 @@ from tests.support.sessions import (
     T4,
     binding,
     competing_writer,
-    crash_writer,
+    crash_at,
     fence,
     intent,
+    settled,
     store,
 )
 
@@ -38,19 +39,7 @@ def test_crash_barriers_restore_old_or_complete_head_without_replay(
     api = store(tmp_path)
     api.create(bind)
     api.close()
-    context = multiprocessing.get_context("spawn")
-    parent, child = context.Pipe()
-    worker = context.Process(target=crash_writer, args=(str(tmp_path), window, child))
-    worker.start()
-    child.close()
-    try:
-        assert parent.poll(15), f"missing barrier; child exit={worker.exitcode}"
-        assert parent.recv() == window
-    finally:
-        worker.kill()
-        worker.join(10)
-        parent.close()
-    assert worker.exitcode == -9
+    crash_at(tmp_path, window)
     # Inspect the orphan WAL without recovering/rewriting its source files first.
     directory = tmp_path / "store"
     before_files = {
@@ -128,7 +117,8 @@ def test_store_wide_writer_lock_denies_another_session_and_reader_has_no_writer_
     api = store(tmp_path)
     try:
         initial = api.create(bind).revision
-        api.begin_turn(initial, intent(bind, initial))
+        turn = intent(bind, initial)
+        active = api.begin_turn(initial, turn)
         context = multiprocessing.get_context("spawn")
         parent, child = context.Pipe()
         worker = context.Process(target=competing_writer, args=(str(tmp_path), child))
@@ -184,6 +174,7 @@ def test_store_wide_writer_lock_denies_another_session_and_reader_has_no_writer_
             assert api.inspect(SESSION).revision == report.revision
         finally:
             reader.close()
+        api.commit_turn(active, settled(turn, history=[], outcome="cancelled"))
     finally:
         monkeypatch.undo()  # the writer's own close requires EX on the read guard
         api.close()

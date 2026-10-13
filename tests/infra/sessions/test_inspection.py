@@ -83,6 +83,9 @@ def test_inspection_changes_no_database_or_sidecar_files(
             reader.close()
         assert filesystem_state(api.directory) == before
     finally:
+        monkeypatch.undo()
+        if live:
+            api.commit_turn(active, settled(turn))  # no owned work remains in this test
         api.close()
 
 
@@ -146,12 +149,19 @@ def test_shared_inspection_guard_prevents_concurrent_writer_effects(
     api.close()
     context = multiprocessing.get_context("spawn")
     parent, child = context.Pipe()
-    worker = context.Process(target=inspection_writer, args=(str(tmp_path), child))
+    close_probe = operation == "close_attempt"
+    worker = context.Process(
+        target=inspection_writer, args=(str(tmp_path), child, close_probe)
+    )
     worker.start()
     child.close()
     reader = None
     try:
-        assert parent.poll(15) and parent.recv() == ("active", 2)
+        expected_version = 3 if close_probe else 2
+        assert parent.poll(15) and parent.recv() == (
+            "ready" if close_probe else "active",
+            expected_version,
+        )
         reader = store(tmp_path, mode="inspect")
         original_schema = reader._schema
         requested = False
@@ -167,7 +177,8 @@ def test_shared_inspection_guard_prevents_concurrent_writer_effects(
         monkeypatch.setattr(reader, "_schema", held_schema)
         before = filesystem_state(reader.directory)
         report = reader.inspect(SESSION)
-        assert report.revision.version == 2
+        assert report.revision.version == expected_version
+        assert report.status == ("clean" if close_probe else "effects_unknown")
         assert report.attempts[0].diagnostics.fences == (fence(bind),)
         assert filesystem_state(reader.directory) == before
         parent.send("close")

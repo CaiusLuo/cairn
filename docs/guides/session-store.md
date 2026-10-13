@@ -53,7 +53,7 @@ Failed Git inspection must not be represented as observed non-Git.
 | `require_recovery(Revision, reason_code)` | Fixed `storage_failed`, `finalization_failed` or `binding_unavailable`; marks Session/active attempt and latches admission, version + 1. |
 | `release_turn(Revision, turn_id)` | Trusted owner confirms a faulted local Turn's execution **and all cleanup/finalization have ended**. Exact current Revision and owned Turn required, including a possibly committed receipt after uncertain COMMIT. Local-only: changes no rows/revisions and grants no admission. Invalidates prior inspection. |
 | `reconcile(Revision, HostResolution)` | Exact revision from explicit successful inspect; typed host `abandon_without_replay` only. Rejects any still-owned Turn in that Session, including during cleanup or after a write fault. Abandons exact unresolved Turn or acknowledges a clean binding. Retains history/fences; version + 1, head unchanged. |
-| `close()` | SQLite closes under the effect guard before metadata descriptors/lock; idempotent after success. A busy guard rejects close and retains the connection/writer lock for later host cleanup. Never unlinks stable locks. |
+| `close()` | Writer rejects locally owned Turns with fixed `turn_still_owned` before closing SQLite or either lock; preserves ownership/connection/locks without latching a fault. Successful terminal commit or explicit faulted release permits close. SQLite then closes under the effect guard; busy guard retains resources. Inspector close and successful repeated close remain ordinary cleanup. Never unlinks stable locks. |
 
 Revision contains Session ID, version and head sequence; receipt adds Turn ID,
 outcome and payload SHA-256. The original commit version remains in the attempt;
@@ -148,8 +148,12 @@ the fault or abandons the SQL attempt. Successful settled commit already release
 ownership. M1-C.2 must place the faulted release after owned model/tool cleanup,
 conversation settlement, tracing and lifecycle delivery; an exception handler or
 recovery UI must not release early. The Store cannot prove that asynchronous work
-has stopped. The host must also settle work before closing/reopening a writer;
-closing a database is not cancellation. This slice adds no runtime integration.
+has stopped. Writer close enforces that no locally owned Turn remains, including
+through cancellation cleanup or after a write fault. Completed cleanup alone does
+not remove ownership; use terminal commit or the explicit faulted release.
+Abrupt process termination releases the kernel-held lock and leaves the existing
+orphan inspection/recovery contract intact. Closing a database is not cancellation.
+This slice adds no runtime integration or force-close path.
 
 [Path handling](../../src/cairn/infra/sessions/paths.py) walks components using
 descriptor-relative O_NOFOLLOW, creates 0700 directories/0600 files, rejects

@@ -1,6 +1,7 @@
 """Deterministic host facts and SQLite fault/process fixtures (no providers)."""
 
 import hashlib
+import multiprocessing
 import os
 import sqlite3
 from multiprocessing.connection import Connection
@@ -198,6 +199,23 @@ def crash_writer(root_text: str, window: str, barrier: Connection) -> None:
     stop("committed")
 
 
+def crash_at(root: Path, window: str) -> None:
+    """Terminate an owned writer at the existing crash barrier, not by close()."""
+    context = multiprocessing.get_context("spawn")
+    parent, child = context.Pipe()
+    worker = context.Process(target=crash_writer, args=(str(root), window, child))
+    worker.start()
+    child.close()
+    try:
+        assert parent.poll(15), f"missing barrier; child exit={worker.exitcode}"
+        assert parent.recv() == window
+    finally:
+        worker.kill()
+        worker.join(10)
+        parent.close()
+    assert worker.exitcode == -9
+
+
 def competing_writer(root_text: str, barrier: Connection) -> None:
     from cairn.infra.sessions.models import SessionStoreError
 
@@ -208,12 +226,35 @@ def competing_writer(root_text: str, barrier: Connection) -> None:
     else:
         try:
             api.create(binding(Path(root_text), session_id=OTHER_TURN))
-            barrier.send("unexpected_writer")
+            barrier.send("writer_acquired")
         finally:
             api.close()
 
 
-def inspection_writer(root_text: str, barrier: Connection) -> None:
+def assert_competing_writer(
+    root: Path, expected: Literal["writer_busy", "writer_acquired"]
+) -> None:
+    """Probe the actual lifetime flock in a fresh process, never a timed race."""
+    context = multiprocessing.get_context("spawn")
+    parent, child = context.Pipe()
+    worker = context.Process(target=competing_writer, args=(str(root), child))
+    worker.start()
+    child.close()
+    try:
+        assert parent.poll(15), f"missing writer probe; child exit={worker.exitcode}"
+        assert parent.recv() == expected
+    finally:
+        worker.join(10)
+        if worker.is_alive():
+            worker.kill()
+            worker.join(10)
+        parent.close()
+    assert worker.exitcode == 0
+
+
+def inspection_writer(
+    root_text: str, barrier: Connection, settle_before_probe: bool = False
+) -> None:
     """A live writer paused before COMMIT or commanded while a reader owns SH."""
     from cairn.infra.sessions.models import SessionStoreError
 
@@ -224,7 +265,9 @@ def inspection_writer(root_text: str, barrier: Connection) -> None:
         initial = api.inspect(SESSION).revision
         turn = intent(bind, initial)
         active = api.fence_tool(api.begin_turn(initial, turn), fence(bind))
-        barrier.send(("active", active.version))
+        if settle_before_probe:
+            active = api.commit_turn(active, settled(turn)).revision
+        barrier.send(("ready" if settle_before_probe else "active", active.version))
         command = barrier.recv()
         if command == "commit":
             assert api._connection is not None
@@ -257,6 +300,10 @@ def inspection_writer(root_text: str, barrier: Connection) -> None:
             else:
                 barrier.send("unexpected_mutation")
         assert barrier.recv() == "close"
+        if command == "fence":
+            # The probe has finished all its work; guard contention faulted this
+            # Turn. Explicitly release it before gracefully closing the writer.
+            api.release_turn(active, turn.turn_id)
     finally:
         api.close()
     barrier.send("closed")
