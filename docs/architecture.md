@@ -55,7 +55,9 @@ the settled notification. Durable acknowledgement (M1-C) remains future work.
 
 [M1-C.1 SessionStore](guides/session-store.md) supplies isolated, host-only SQLite
 and checkpoint primitives in `infra.sessions`; it is not connected to the loop.
-The Store owns storage validation, transactions and its lifetime writer lock.
+The Store owns storage validation, transactions, its lifetime writer lock and the
+short inspection/effect guard. Storage faults retain local Turn ownership until
+the trusted runtime owner confirms cleanup has settled.
 Runtime still owns all live turn decisions; intent/fence records never dispatch
 work or grant permission. Durable acknowledgement remains an integration slice.
 

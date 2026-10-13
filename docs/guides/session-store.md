@@ -16,7 +16,7 @@ from cairn.infra.sessions.store import SessionStore
 
 store = SessionStore(
     Path.home() / ".local/state/cairn/sessions",
-    mode="writer",  # "inspect" uses mode=ro/query_only; no writer lock
+    mode="writer",  # "inspect" is read-only under a short shared read guard
     forbidden_roots=(workspace_root, effective_tmp_root, effective_cache_root),
     sensitive_values=known_credentials,
 )
@@ -51,8 +51,9 @@ Failed Git inspection must not be represented as observed non-Git.
 | `fence_tool(Revision, ToolFence)` | Exact active Turn begun by this Store instance; monotone unique invocation reference. Fence only, version + 1. |
 | `commit_turn(Revision, SettledTurn)` | Same live Turn, settled by runtime; exact prefix/input/binding/fence relationships. One checkpoint, terminal attempt and head/version advance atomically. Duplicate commit rejects. |
 | `require_recovery(Revision, reason_code)` | Fixed `storage_failed`, `finalization_failed` or `binding_unavailable`; marks Session/active attempt and latches admission, version + 1. |
-| `reconcile(Revision, HostResolution)` | Exact revision from explicit successful inspect; typed host `abandon_without_replay` only. Abandons exact unresolved Turn or acknowledges a clean binding. Retains history/fences; version + 1, head unchanged. |
-| `close()` | SQLite closes before metadata descriptors/lock; idempotent. Never unlinks stable lock. |
+| `release_turn(Revision, turn_id)` | Trusted owner confirms a faulted local Turn's execution **and all cleanup/finalization have ended**. Exact current Revision and owned Turn required, including a possibly committed receipt after uncertain COMMIT. Local-only: changes no rows/revisions and grants no admission. Invalidates prior inspection. |
+| `reconcile(Revision, HostResolution)` | Exact revision from explicit successful inspect; typed host `abandon_without_replay` only. Rejects any still-owned Turn in that Session, including during cleanup or after a write fault. Abandons exact unresolved Turn or acknowledges a clean binding. Retains history/fences; version + 1, head unchanged. |
+| `close()` | SQLite closes under the effect guard before metadata descriptors/lock; idempotent after success. A busy guard rejects close and retains the connection/writer lock for later host cleanup. Never unlinks stable locks. |
 
 Revision contains Session ID, version and head sequence; receipt adds Turn ID,
 outcome and payload SHA-256. The original commit version remains in the attempt;
@@ -94,8 +95,10 @@ Each mutation prevalidates/encodes payloads, including combined diagnostics,
 before `BEGIN IMMEDIATE`; then rereads state/binding/active identity and CAS-updates
 with Session ID, expected version and head. Failure rolls back every row.
 WAL, FULL synchronous, foreign keys ON, trusted schema OFF and 2,000 ms busy
-timeout are checked. A Store owns one connection and one thread; do not transfer
-an open Store across fork. No background writes or mutation retries exist.
+timeout are checked. A writer keeps one connection; an inspector opens at most
+one connection per guarded call and closes it before releasing the guard. Both
+are confined to their constructing thread/process. No background writes or
+mutation retries exist.
 
 | Bound | Behaviour |
 | --- | --- |
@@ -127,14 +130,26 @@ on a clean Session if needed. Reserved accounting is never stored as a resolutio
 | Uncertain COMMIT acknowledgement | Raise `commit_uncertain`; inspect exact Turn/receipt to distinguish old versus committed state. Never automatically retry settlement/execution. |
 | Bad/missing head, digest, JSON, FK or schema | Fail closed; no older checkpoint promoted as recovered head. |
 
-Mutation failure drops live attempt ownership and latches the Store. Another
-Session's reconciliation cannot clear that Session's fault. Reopened writers also
-lack ownership of pre-existing attempts. Host abandonment retains evidence and
-manufactures no tool results, kill authority or replay permission. The host must
-inspect possible effects/surviving work before constructing HostResolution;
+Mutation failure latches writes while **retaining** live attempt ownership.
+`require_recovery` and inspection are not evidence that execution has ended.
+Rejected live reconciliation leaves ordinary owned execution usable; it does not
+latch a new fault. Another Session's reconciliation cannot clear that Session's
+fault. Reopened writers lack ownership of pre-existing attempts. Host abandonment
+retains evidence and manufactures no tool results, kill authority or replay
+permission. The host must inspect possible effects/surviving work before constructing HostResolution;
 decisions must not come from model text. A later normal checkpoint cannot clear
 a fault. New human-requested work cannot be proven semantically different from
 an earlier mutation; exactly-once external effects are not promised.
+
+After a local storage/finalization fault, the trusted owner must finish owned
+work using the existing runtime settlement boundary, then call `release_turn`,
+inspect again and explicitly reconcile. Releasing ownership alone never clears
+the fault or abandons the SQL attempt. Successful settled commit already releases
+ownership. M1-C.2 must place the faulted release after owned model/tool cleanup,
+conversation settlement, tracing and lifecycle delivery; an exception handler or
+recovery UI must not release early. The Store cannot prove that asynchronous work
+has stopped. The host must also settle work before closing/reopening a writer;
+closing a database is not cancellation. This slice adds no runtime integration.
 
 [Path handling](../../src/cairn/infra/sessions/paths.py) walks components using
 descriptor-relative O_NOFOLLOW, creates 0700 directories/0600 files, rejects
@@ -147,7 +162,44 @@ ext/XFS/Btrfs/tmpfs/overlay/ZFS/F2FS filesystems. Unsupported
 platform/filesystem/locking fails closed. Nonblocking exclusive `flock` on stable
 `writer.lock` lasts until close across all Session IDs; no PID/expiry stealing or
 stale-lock deletion. Inspect creates no absent database/schema and never falls
-back to writable access. SQLite may require WAL shared-memory sidecar access.
+back to writable access.
+
+Inspection uses a separate stable 0600 `inspection.lock`. Only a writer may
+create it; inspectors open it O_RDONLY and take nonblocking shared `flock`, never
+the lifetime writer lock or an exclusive lock. Every Store SQLite operation,
+including writer open, transaction/rollback, maintenance, reads and close, takes
+the corresponding exclusive guard. This serializes short inspection epochs
+against SQLite effects while the live execution/writer ownership remains intact.
+Contention fails closed with `store_busy`, without implicit retries. Mutation
+contention follows the existing fault latch; an idle inspector cannot pin a
+SQLite snapshot or block later reclamation.
+
+Under that guard, inspection selects **before any database read**:
+
+- With no WAL, `mode=ro&immutable=1` reads the pinned main database. The guard
+  prevents writer changes for the entire connection lifetime; it is never an
+  immutable connection on an unprotected changing source. SQLite reports a
+  connection-local DELETE journal mode here; writable opens still enforce WAL.
+- With any WAL (including an empty one), `mode=ro&vfs=unix-none`, EXCLUSIVE
+  locking mode before the first read and `query_only=ON` build the WAL index in
+  heap memory. This reads committed WAL frames without mapping/writing SHM.
+  Checked `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` prevents checkpoint or WAL deletion
+  on inspector close. The application guard supplies the locking intentionally
+  omitted by that VFS. Each call opens afresh, so no stale cached WAL index survives.
+
+This follows SQLite's [WAL without shared memory](https://www.sqlite.org/wal.html#noshm)
+and [no checkpoint on close](https://www.sqlite.org/c3ref/c_dbconfig_defensive.html#sqlitedbconfignockptonclose)
+contracts. Ordinary `mode=ro/query_only` can create sidecars, and `readonly_shm=1`
+can reuse a writable SHM node in the same process; neither is the inspection
+contract. No custom VFS, raw DB descriptor, snapshot copy or writable fallback
+is introduced. Missing/unsafe guard, unsupported VFS/configuration, rollback
+journal or unavailable locking rejects inspection without changing source files.
+An older store lacking the guard needs one explicit trusted writer open/close.
+All clients must use this guard protocol; mixed-version writers, direct SQLite
+clients and host file replacement are unsupported. Read access may update OS
+atime; the guarantee covers file set, contents, identities, permissions and
+modification metadata, not filesystem access accounting. macOS/Linux deployment
+qualification of these VFS/flock semantics remains required.
 
 Known secrets and conservative credential patterns are checked on decoded strings,
 nested arguments and canonical encoding before mutation. Reject entire records;
@@ -166,8 +218,13 @@ uv run pytest -q tests/core/test_architecture.py tests/docs tests/infra/memory/t
 
 Real SQLite tests use spawned child/Pipe barriers, SIGKILL at seven named windows,
 faults after checkpoint INSERT/attempt UPDATE, busy/I/O/unknown COMMIT, security
-rejection and exact bounds. SIGKILL tests application crashes, **not power-loss
-durability**. Deployment filesystems/device synchronization still need validation.
+rejection and exact bounds. Held work/cleanup barriers reject live reconciliation
+under repeated cancellation; uncertain COMMIT tests retain local ownership even
+when SQL already contains the terminal receipt. Real cold/live/crashed-WAL reads
+compare filesystem state, with spawned writer barriers testing both guard directions.
+The file-mutating effect double flushes and fsyncs before its crash barrier.
+SIGKILL tests application crashes, **not power-loss durability**. Deployment
+filesystems/device synchronization still need validation.
 
 Local Python 3.12.13 uses SQLite **3.50.4** on macOS with flock. This is a **release
 blocker**, not a supported deployment claim. The reviewed

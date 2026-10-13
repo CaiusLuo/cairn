@@ -4,8 +4,10 @@ import ctypes
 import os
 import stat
 import sys
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
+from threading import get_ident
 
 from cairn.infra.sessions.models import MAX_DATABASE_BYTES, SessionStoreError
 
@@ -70,13 +72,17 @@ class StorePaths:
         self.directory = directory.absolute()
         self.path = self.directory / "sessions.sqlite3"
         self.lock_path = self.directory / "writer.lock"
+        self.access_path = self.directory / "inspection.lock"
         self.writer = writer
         self.directory_fd = -1
         self.lock_fd = -1
+        self.access_fd = -1
         self.new_database = False
         self._components: dict[Path, tuple[int, int]] = {}
         self._files: dict[Path, tuple[int, int]] = {}
+        self._read_sidecars: dict[Path, tuple[int, int]] | None = None
         self._pid = os.getpid()
+        self._thread = get_ident()
         try:
             if not forbidden_roots:
                 raise SessionStoreError("forbidden_roots_required")
@@ -113,6 +119,14 @@ class StorePaths:
                         self.new_database = True
                     finally:
                         os.close(fd)
+            self.access_fd = os.open(
+                self.access_path.name,
+                (os.O_RDWR | os.O_CREAT if writer else os.O_RDONLY)
+                | os.O_NOFOLLOW
+                | os.O_CLOEXEC,
+                0o600,
+                dir_fd=self.directory_fd,
+            )
             self.check()
             if self.path not in self._files:
                 raise SessionStoreError("database_missing")
@@ -166,6 +180,8 @@ class StorePaths:
     def check(self) -> None:
         if self.directory_fd < 0 or os.getpid() != self._pid:
             raise SessionStoreError("closed_or_forked_store")
+        if get_ident() != self._thread:
+            raise SessionStoreError("wrong_store_thread")
         try:
             if any(path.resolve() != target for path, target in self._forbidden):
                 raise SessionStoreError("forbidden_root_changed")
@@ -185,16 +201,26 @@ class StorePaths:
         for path in (
             self.path,
             self.lock_path,
+            self.access_path,
             *(Path(str(self.path) + s) for s in ("-wal", "-shm", "-journal")),
         ):
+            tracked: dict[Path, tuple[int, int]] | None = self._files
+            if not self.writer and path not in (
+                self.path,
+                self.lock_path,
+                self.access_path,
+            ):
+                # Sidecars can disappear/reappear between inspection calls as
+                # a writer closes/reopens. Pin them only under the shared guard.
+                tracked = self._read_sidecars
             try:
                 info = os.stat(
                     path.name, dir_fd=self.directory_fd, follow_symlinks=False
                 )
             except FileNotFoundError:
-                if path in self._files:
+                if tracked is not None and path in tracked:
                     # SQLite removes sidecars when the final connection closes.
-                    # While our connection lives, disappearance is never expected.
+                    # Disappearance inside one guarded read is never expected.
                     raise SessionStoreError("path_identity_changed") from None
                 continue
             if (
@@ -206,13 +232,52 @@ class StorePaths:
                 raise SessionStoreError("unsafe_store_file")
             if info.st_size > MAX_DATABASE_BYTES * (1 if path == self.path else 2):
                 raise SessionStoreError("database_limit")
-            old = self._files.setdefault(path, _identity(info))
-            if old != _identity(info):
-                raise SessionStoreError("path_identity_changed")
-        if self.lock_fd >= 0 and _identity(os.fstat(self.lock_fd)) != self._files.get(
-            self.lock_path
+            if tracked is not None:
+                old = tracked.setdefault(path, _identity(info))
+                if old != _identity(info):
+                    raise SessionStoreError("path_identity_changed")
+        for fd, path in (
+            (self.lock_fd, self.lock_path),
+            (self.access_fd, self.access_path),
         ):
-            raise SessionStoreError("path_identity_changed")
+            if fd >= 0 and _identity(os.fstat(fd)) != self._files.get(path):
+                raise SessionStoreError("path_identity_changed")
+
+    @contextmanager
+    def access(self, *, validate: bool = True) -> Iterator[None]:
+        """Pin DB/WAL during a read; serialize SQLite effects against inspectors.
+
+        Inspectors open this existing descriptor read-only and take only SH.
+        Writers retain their independent lifetime EX writer.lock. No lock waits,
+        upgrades, creation by readers or writable SQLite fallback are allowed.
+        Closing SQLite still uses the pinned guard after a path fault.
+        """
+        import fcntl
+
+        if self.access_fd < 0 or os.getpid() != self._pid:
+            raise SessionStoreError("closed_or_forked_store")
+        if get_ident() != self._thread:
+            raise SessionStoreError("wrong_store_thread")
+        if validate:
+            self.check()
+        try:
+            fcntl.flock(
+                self.access_fd,
+                (fcntl.LOCK_EX if self.writer else fcntl.LOCK_SH) | fcntl.LOCK_NB,
+            )
+        except BlockingIOError:
+            raise SessionStoreError("store_busy") from None
+        except OSError:
+            raise SessionStoreError("unsupported_locking") from None
+        try:
+            if not self.writer:
+                self._read_sidecars = {}
+            if validate:
+                self.check()
+            yield
+        finally:
+            self._read_sidecars = None
+            fcntl.flock(self.access_fd, fcntl.LOCK_UN)
 
     def sync_creation(self) -> None:
         self.check()
@@ -221,8 +286,12 @@ class StorePaths:
         os.fsync(self.directory_fd)  # DB/WAL/lock entries, after SQLite FULL COMMIT.
 
     def close(self) -> None:
+        if os.getpid() != self._pid:
+            raise SessionStoreError("closed_or_forked_store")
+        if get_ident() != self._thread:
+            raise SessionStoreError("wrong_store_thread")
         # Do not unlink writer.lock: replacing its inode would split the lock.
-        for name in ("lock_fd", "directory_fd"):
+        for name in ("access_fd", "lock_fd", "directory_fd"):
             fd = getattr(self, name)
             if fd >= 0:
                 with suppress(OSError):

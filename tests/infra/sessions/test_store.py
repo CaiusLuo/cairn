@@ -463,6 +463,8 @@ def test_sensitive_and_oversize_rejected_before_begin_and_absent_from_db_wal(
         with pytest.raises(SessionStoreError, match="sensitive"):
             api.fence_tool(active, fence(bind, tool_name="opaque-sensitive-哨兵"))
         report = api.inspect(SESSION)
+        api.release_turn(report.revision, turn.turn_id)
+        report = api.inspect(SESSION)
         api.reconcile(
             report.revision,
             HostResolution(
@@ -594,6 +596,8 @@ def test_failed_fence_subclass_and_invalid_settled_container_latch_gate(
         with pytest.raises(SessionStoreError, match="recovery_required"):
             api.fence_tool(active, fence(bind))
         report = api.inspect(SESSION)  # the failed retry invalidated the old inspection
+        api.release_turn(report.revision, turn.turn_id)
+        report = api.inspect(SESSION)
         api.reconcile(
             report.revision,
             HostResolution(

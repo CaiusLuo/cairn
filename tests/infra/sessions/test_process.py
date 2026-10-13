@@ -51,6 +51,19 @@ def test_crash_barriers_restore_old_or_complete_head_without_replay(
         worker.join(10)
         parent.close()
     assert worker.exitcode == -9
+    # Inspect the orphan WAL without recovering/rewriting its source files first.
+    directory = tmp_path / "store"
+    before_files = {
+        p.name: (p.stat().st_mode, p.read_bytes()) for p in directory.iterdir()
+    }
+    reader = store(tmp_path, mode="inspect")
+    try:
+        assert reader.inspect(SESSION).checkpoint.seq == int(window == "committed")
+    finally:
+        reader.close()
+    assert {
+        p.name: (p.stat().st_mode, p.read_bytes()) for p in directory.iterdir()
+    } == before_files
     # Killing the owner releases flock; no PID/lease expiry or unlink required.
     api = store(tmp_path)
     try:
@@ -108,7 +121,7 @@ def test_crash_barriers_restore_old_or_complete_head_without_replay(
         api.close()
 
 
-def test_store_wide_writer_lock_denies_another_session_and_reader_does_not_lock(
+def test_store_wide_writer_lock_denies_another_session_and_reader_has_no_writer_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     bind = binding(tmp_path)
@@ -133,10 +146,15 @@ def test_store_wide_writer_lock_denies_another_session_and_reader_does_not_lock(
         assert worker.exitcode == 0
         import fcntl
 
-        def forbidden_lock(fd: int, operation: int) -> None:
-            raise AssertionError("reader acquired writer lock")
+        original_flock = fcntl.flock
+        read_lock_inode = (api.directory / "inspection.lock").stat().st_ino
 
-        monkeypatch.setattr(fcntl, "flock", forbidden_lock)
+        def read_guard_only(fd: int, operation: int) -> None:
+            assert os.fstat(fd).st_ino == read_lock_inode
+            assert operation in (fcntl.LOCK_SH | fcntl.LOCK_NB, fcntl.LOCK_UN)
+            original_flock(fd, operation)
+
+        monkeypatch.setattr(fcntl, "flock", read_guard_only)
         original_open = os.open
 
         def reader_open(
@@ -149,6 +167,9 @@ def test_store_wide_writer_lock_denies_another_session_and_reader_does_not_lock(
             assert Path(os.fsdecode(file)).name != api.path.name, (
                 "extra raw DB fd could drop SQLite locks"
             )
+            if Path(os.fsdecode(file)).name == "inspection.lock":
+                assert flags & os.O_ACCMODE == os.O_RDONLY
+                assert not flags & os.O_CREAT
             return original_open(file, flags, mode, dir_fd=dir_fd)
 
         monkeypatch.setattr(os, "open", reader_open)
@@ -159,8 +180,10 @@ def test_store_wide_writer_lock_denies_another_session_and_reader_does_not_lock(
             assert report.revision.version == 1
             with pytest.raises(SessionStoreError, match="read_only_store"):
                 reader.begin_turn(report.revision, intent(bind, report.revision))
+            monkeypatch.undo()
             assert api.inspect(SESSION).revision == report.revision
         finally:
             reader.close()
     finally:
+        monkeypatch.undo()  # the writer's own close requires EX on the read guard
         api.close()

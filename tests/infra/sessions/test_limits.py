@@ -147,6 +147,8 @@ def test_wal_admission_at_threshold_blocks_live_fences(
         )
         # Idle host reconciliation may reclaim WAL. It abandons, never permits
         # the old invocation or creates an invented tool message.
+        api.release_turn(report.revision, turn.turn_id)  # no owned work in this test
+        report = api.inspect(SESSION)
         ready = api.reconcile(
             report.revision,
             HostResolution(
@@ -199,6 +201,8 @@ def test_combined_fence_record_limit_is_checked_before_mutation_transaction(
                 )
                 # Every admitted fence must leave capacity for a bounded host
                 # resolution, rather than trapping evidence at a full record.
+                api.release_turn(report.revision, turn.turn_id)
+                report = api.inspect(SESSION)
                 api.reconcile(
                     report.revision,
                     HostResolution(
@@ -334,6 +338,9 @@ def test_fault_in_one_session_cannot_be_cleared_by_reconciling_another(
         )
         with pytest.raises(SessionStoreError, match="recovery_required"):
             api.commit_turn(active, settled(intent(bind, initial)))
+        report = api.inspect(SESSION)
+        assert report.unresolved is not None
+        api.release_turn(report.revision, report.unresolved.intent.turn_id)
         report = api.inspect(SESSION)
         assert report.unresolved is not None
         api.reconcile(

@@ -151,14 +151,57 @@ class SessionStore:
         self._inspected: dict[str, Revision] = {}
         self.maintenance_failed = False
         try:
-            self._paths.check()
-            conn = sqlite3.connect(
-                self.path.as_uri() + ("?mode=rw" if mode == "writer" else "?mode=ro"),
-                uri=True,
-                timeout=2,
-                isolation_level=None,
-            )
-            self._connection = conn
+            with self._paths.access():
+                try:
+                    self._connection = self._open()
+                    if mode == "writer":
+                        self._maintain()
+                except BaseException:
+                    if self._connection is not None:
+                        self._connection.close()
+                        self._connection = None
+                    raise
+                finally:
+                    if mode == "inspect" and self._connection is not None:
+                        self._connection.close()
+                        self._connection = None
+        except SessionStoreError:
+            self.close()
+            raise
+        except (sqlite3.Error, OSError, ValueError, TypeError, AttributeError):
+            self.close()
+            raise SessionStoreError() from None
+
+    def _open(self) -> sqlite3.Connection:
+        self._paths.check()
+        if self.mode == "inspect" and Path(str(self.path) + "-journal").exists():
+            raise SessionStoreError("inspection_unavailable")
+        # The caller holds the read/effect guard until this connection closes.
+        # Immutable is safe only for this pinned, WAL-absent epoch. It ignores WAL.
+        cold = self.mode == "inspect" and not Path(str(self.path) + "-wal").exists()
+        options = "?mode=rw"
+        if self.mode == "inspect":
+            options = "?mode=ro&immutable=1" if cold else "?mode=ro&vfs=unix-none"
+        conn = sqlite3.connect(
+            self.path.as_uri() + options,
+            uri=True,
+            timeout=2,
+            isolation_level=None,
+        )
+        try:
+            if self.mode == "inspect":
+                # The access guard excludes every Store SQLite effect. Heap WAL
+                # indexing reads committed WAL without touching SHM or treating
+                # an active WAL database as immutable.
+                conn.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
+                if not conn.getconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE):
+                    raise SessionStoreError("sqlite_configuration_unavailable")
+                if (
+                    conn.execute("PRAGMA locking_mode=EXCLUSIVE").fetchone()[0]
+                    != "exclusive"
+                ):
+                    raise SessionStoreError("sqlite_configuration_unavailable")
+                conn.execute("PRAGMA query_only=ON")
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA trusted_schema=OFF")
             conn.execute("PRAGMA foreign_keys=ON")
@@ -173,9 +216,9 @@ class SessionStore:
                 conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 conn.commit()
             self._schema(conn)
-            if conn.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
+            if not cold and conn.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
                 raise SessionStoreError("wal_unavailable")
-            if mode == "writer":
+            if self.mode == "writer":
                 conn.execute("PRAGMA synchronous=FULL")
                 page_size = conn.execute("PRAGMA page_size").fetchone()[0]
                 if (
@@ -187,25 +230,19 @@ class SessionStore:
                 ):
                     raise SessionStoreError("database_limit")
                 conn.execute("PRAGMA wal_autocheckpoint=0")
-            else:
-                conn.execute("PRAGMA query_only=ON")
             required = {"foreign_keys": 1, "trusted_schema": 0, "busy_timeout": 2000}
-            required["synchronous" if mode == "writer" else "query_only"] = (
-                2 if mode == "writer" else 1
+            required["synchronous" if self.mode == "writer" else "query_only"] = (
+                2 if self.mode == "writer" else 1
             )
             for pragma, expected in required.items():
                 setting = conn.execute(f"PRAGMA {pragma}").fetchone()
                 if setting is None or setting[0] != expected:
                     raise SessionStoreError("sqlite_configuration_unavailable")
             self._paths.check()
-            if mode == "writer":
-                self._maintain()
-        except SessionStoreError:
-            self.close()
+        except BaseException:
+            conn.close()
             raise
-        except (sqlite3.Error, OSError, ValueError, TypeError):
-            self.close()
-            raise SessionStoreError() from None
+        return conn
 
     def _conn(self) -> sqlite3.Connection:
         if self._connection is None:
@@ -270,7 +307,8 @@ class SessionStore:
         self._fault_sessions.add(
             self._mutation_session if type(self._mutation_session) is str else "*"
         )
-        self._owned_turns.clear()
+        # Storage failure revokes write eligibility, not runtime liveness. Only
+        # settled commit or explicit host release after cleanup drops ownership.
         self._inspected.clear()
 
     def _maintain(self) -> None:
@@ -297,27 +335,33 @@ class SessionStore:
         conn: sqlite3.Connection | None = None
         committing = False
         try:
-            if self.mode != "writer":
-                raise SessionStoreError("read_only_store")
-            if self._fault and not recovery:
-                raise SessionStoreError("recovery_required")
-            conn = self._conn()
-            if self._wal_size() >= MAX_WAL_BYTES:
-                if not self._owned_turns or recovery:
+            with self._paths.access():
+                try:
+                    if self.mode != "writer":
+                        raise SessionStoreError("read_only_store")
+                    if self._fault and not recovery:
+                        raise SessionStoreError("recovery_required")
+                    conn = self._conn()
+                    if self._wal_size() >= MAX_WAL_BYTES:
+                        if not self._owned_turns or recovery:
+                            self._maintain()
+                        if self._wal_size() >= MAX_WAL_BYTES:
+                            raise SessionStoreError("wal_admission_limit")
+                    conn.execute("BEGIN IMMEDIATE")
+                    self._schema(conn)
+                    yield conn
+                    self._paths.check()
+                    committing = True
+                    self._commit(conn)
+                except BaseException:
+                    if conn is not None:
+                        with suppress(sqlite3.Error):
+                            conn.rollback()
+                    raise
+                if idle_after:
                     self._maintain()
-                if self._wal_size() >= MAX_WAL_BYTES:
-                    raise SessionStoreError("wal_admission_limit")
-            conn.execute("BEGIN IMMEDIATE")
-            self._schema(conn)
-            yield conn
-            self._paths.check()
-            committing = True
-            self._commit(conn)
         except BaseException as exc:
             self._latch()
-            if conn is not None:
-                with suppress(sqlite3.Error):
-                    conn.rollback()
             if isinstance(exc, SessionStoreError):
                 raise
             if isinstance(exc, Exception):
@@ -325,8 +369,6 @@ class SessionStore:
                     "commit_uncertain" if committing else "storage_failed"
                 ) from None
             raise
-        if idle_after:
-            self._maintain()
 
     def _commit(self, conn: sqlite3.Connection) -> None:
         conn.commit()
@@ -715,18 +757,33 @@ class SessionStore:
     def _snapshot(self, session_id: str) -> RecoveryReport:
         try:
             uuid4_text(session_id)
-            conn = self._conn()
-            conn.execute("BEGIN")
-            try:
-                self._schema(conn)
-                report = self._report(conn, session_id)
-                self._paths.check()
-            finally:
-                conn.rollback()
-            return report
+            with self._paths.access():
+                try:
+                    if self.mode == "inspect":
+                        self._connection = self._open()
+                    conn = self._conn()
+                    conn.execute("BEGIN")
+                    try:
+                        self._schema(conn)
+                        report = self._report(conn, session_id)
+                        self._paths.check()
+                    finally:
+                        conn.rollback()
+                    return report
+                finally:
+                    if self.mode == "inspect" and self._connection is not None:
+                        self._connection.close()
+                        self._connection = None
         except SessionStoreError:
             raise
-        except (sqlite3.Error, OSError, ValueError, TypeError, KeyError):
+        except (
+            sqlite3.Error,
+            OSError,
+            ValueError,
+            TypeError,
+            KeyError,
+            AttributeError,
+        ):
             raise SessionStoreError("invalid_or_unavailable_store") from None
 
     def inspect(self, session_id: str) -> RecoveryReport:
@@ -748,8 +805,9 @@ class SessionStore:
             if report.revision != expected:
                 raise VersionConflict()
             yield report
-        except SessionStoreError:
-            self._latch()
+        except SessionStoreError as error:
+            if error.code != "turn_still_owned":
+                self._latch()
             raise
 
     def _current(
@@ -1022,6 +1080,41 @@ class SessionStore:
         self._latch()
         return revision
 
+    def release_turn(self, expected: Revision, turn_id: str) -> None:
+        """Host confirms faulted owned work AND cleanup have completely settled.
+
+        Local-only recovery handshake, never a SQL transition or cancellation.
+        M1-C.2 must call this after run_turn's owned settlement/finalization, not
+        from inspect/reconcile or merely because a storage operation failed.
+        """
+        self._mutation_session = expected.session_id
+        self._encode(expected, kind=Revision)
+        if type(turn_id) is not str:
+            raise SessionStoreError("live_turn_required")
+        try:
+            uuid4_text(turn_id)
+        except ValueError:
+            raise SessionStoreError("live_turn_required") from None
+        with self._prepare(expected, recovery=True) as prepared:
+            key = (expected.session_id, turn_id)
+            if key not in self._owned_turns:
+                raise SessionStoreError("live_turn_required")
+            if (
+                expected.session_id not in self._fault_sessions
+                and "*" not in self._fault_sessions
+            ):
+                raise SessionStoreError("turn_still_owned")
+            # An uncertain COMMIT may have actually settled this exact Turn.
+            record = prepared.unresolved
+            if (
+                record.intent.turn_id
+                if record is not None
+                else prepared.receipt.turn_id
+            ) != turn_id:
+                raise SessionStoreError("live_turn_required")
+        self._owned_turns.remove(key)
+        self._inspected.pop(expected.session_id, None)
+
     def reconcile(self, expected: Revision, resolution: HostResolution) -> Revision:
         self._mutation_session = expected.session_id
         self._encode(expected, kind=Revision)
@@ -1041,6 +1134,8 @@ class SessionStore:
                 < instant(prepared.checkpoint.settled_at_utc)
             ):
                 raise SessionStoreError("reconciliation_rejected")
+            if any(sid == expected.session_id for sid, _ in self._owned_turns):
+                raise SessionStoreError("turn_still_owned")
             raw: bytes | None = None
             if record is not None:
                 diagnostics = record.diagnostics.model_copy(
@@ -1070,9 +1165,6 @@ class SessionStore:
             revision = self._cas(
                 conn, expected, state="ready", active=None, binding=resolution.binding
             )
-        self._owned_turns = {
-            key for key in self._owned_turns if key[0] != expected.session_id
-        }
         self._inspected.pop(expected.session_id, None)
         self._fault_sessions.discard(expected.session_id)
         self._fault = bool(self._fault_sessions)
@@ -1081,11 +1173,15 @@ class SessionStore:
     def close(self) -> None:
         if self._connection is not None:
             try:
-                self._connection.close()
-            except sqlite3.Error:
-                raise SessionStoreError("close_failed") from None
+                with self._paths.access(validate=False):
+                    try:
+                        self._connection.close()
+                    except sqlite3.Error:
+                        raise SessionStoreError("close_failed") from None
+                    finally:
+                        self._connection = None
             finally:
-                self._connection = None
-                self._paths.close()
+                if self._connection is None:
+                    self._paths.close()
         else:
             self._paths.close()

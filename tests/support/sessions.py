@@ -1,6 +1,7 @@
 """Deterministic host facts and SQLite fault/process fixtures (no providers)."""
 
 import hashlib
+import os
 import sqlite3
 from multiprocessing.connection import Connection
 from pathlib import Path
@@ -167,6 +168,8 @@ def crash_writer(root_text: str, window: str, barrier: Connection) -> None:
     # A local external-effect double: exactly one append after the fence.
     with (root / "work" / "effect.txt").open("a") as output:
         output.write("one effect\n")
+        output.flush()
+        os.fsync(output.fileno())
     assert api._connection is not None
     if window in ("checkpoint_insert", "attempt_update", "before_commit"):
         blocked = "turns" if window == "checkpoint_insert" else "sessions"
@@ -208,3 +211,52 @@ def competing_writer(root_text: str, barrier: Connection) -> None:
             barrier.send("unexpected_writer")
         finally:
             api.close()
+
+
+def inspection_writer(root_text: str, barrier: Connection) -> None:
+    """A live writer paused before COMMIT or commanded while a reader owns SH."""
+    from cairn.infra.sessions.models import SessionStoreError
+
+    root = Path(root_text)
+    bind = binding(root)
+    api = store(root)
+    try:
+        initial = api.inspect(SESSION).revision
+        turn = intent(bind, initial)
+        active = api.fence_tool(api.begin_turn(initial, turn), fence(bind))
+        barrier.send(("active", active.version))
+        command = barrier.recv()
+        if command == "commit":
+            assert api._connection is not None
+
+            def authorize(
+                action: int,
+                table: str | None,
+                column: str | None,
+                database: str | None,
+                source: str | None,
+            ) -> int:
+                if action == sqlite3.SQLITE_TRANSACTION and table == "COMMIT":
+                    barrier.send("before_commit")
+                    assert barrier.recv() == "release"
+                return sqlite3.SQLITE_OK
+
+            api._connection.set_authorizer(authorize)
+            receipt = api.commit_turn(active, settled(turn))
+            api._connection.set_authorizer(None)
+            barrier.send(("committed", receipt.revision.version))
+        else:
+            assert command in ("fence", "close_attempt")
+            try:
+                if command == "fence":
+                    api.fence_tool(active, fence(bind, ordinal=2, call_id="call-2"))
+                else:
+                    api.close()
+            except SessionStoreError as error:
+                barrier.send(error.code)
+            else:
+                barrier.send("unexpected_mutation")
+        assert barrier.recv() == "close"
+    finally:
+        api.close()
+    barrier.send("closed")

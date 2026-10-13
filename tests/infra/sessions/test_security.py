@@ -51,6 +51,7 @@ def test_every_effective_writable_root_is_forbidden(
         "sessions.sqlite3-shm",
         "sessions.sqlite3-journal",
         "writer.lock",
+        "inspection.lock",
     ],
 )
 def test_symlink_components_and_all_store_files_fail_closed(
@@ -77,7 +78,17 @@ def test_symlink_components_and_all_store_files_fail_closed(
 
 @pytest.mark.parametrize(
     "name",
-    ["directory", "parent", "database", "lock", "wal", "shm", "hardlink", "mode"],
+    [
+        "directory",
+        "parent",
+        "database",
+        "lock",
+        "read_lock",
+        "wal",
+        "shm",
+        "hardlink",
+        "mode",
+    ],
 )
 def test_replaced_path_descriptor_or_permissions_prevents_mutation(
     tmp_path: Path, name: str
@@ -102,6 +113,7 @@ def test_replaced_path_descriptor_or_permissions_prevents_mutation(
             path = {
                 "database": api.path,
                 "lock": api.directory / "writer.lock",
+                "read_lock": api.directory / "inspection.lock",
                 "wal": Path(str(api.path) + "-wal"),
                 "shm": Path(str(api.path) + "-shm"),
             }[name]
@@ -200,6 +212,11 @@ def test_missing_inspection_never_creates_paths_or_schema(tmp_path: Path) -> Non
     directory.mkdir(mode=0o700)
     directory.joinpath("sessions.sqlite3").touch(mode=0o600)
     before = directory.joinpath("sessions.sqlite3").read_bytes()
+    with pytest.raises(SessionStoreError, match="unsafe_path_or_lock"):
+        store(tmp_path, mode="inspect")
+    assert sorted(p.name for p in directory.iterdir()) == ["sessions.sqlite3"]
+    # An established read guard must still reject the empty/unsupported schema.
+    directory.joinpath("inspection.lock").touch(mode=0o600)
     with pytest.raises(SessionStoreError, match="schema_mismatch"):
         store(tmp_path, mode="inspect")
     assert directory.joinpath("sessions.sqlite3").read_bytes() == before
@@ -239,6 +256,9 @@ def test_corruption_fails_closed_without_older_head_fallback(
             report.binding, report.revision, turn_id=OTHER_TURN, start=4, time=T4
         )
         api.begin_turn(report.revision, extra)
+        report = api.inspect(SESSION)
+        revision = api.require_recovery(report.revision, "finalization_failed")
+        api.release_turn(revision, extra.turn_id)  # no execution/cleanup is outstanding
         report = api.inspect(SESSION)
         api.reconcile(
             report.revision,
