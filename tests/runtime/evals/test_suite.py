@@ -42,6 +42,7 @@ from cairn.runtime.evals import runner as runner_module
 from cairn.runtime.evals import suite as suite_module
 from tests.runtime.evals.test_coding_smoke_cases import EXPECTED_NAMES, _expected_files
 from tests.support.runtime import RecordingSink, SequenceLLM
+from tests.support.streaming import CompletionResponse
 
 
 def case(name: str) -> EvalSuiteCase:
@@ -245,7 +246,7 @@ def test_real_trace_usage_and_explicit_provider_limit_are_distinct_from_context(
     from cairn.infra.llm import litellm_client
 
     completion = AsyncMock(
-        return_value=SimpleNamespace(
+        return_value=CompletionResponse(
             choices=[
                 SimpleNamespace(
                     message=SimpleNamespace(content="done", tool_calls=None)

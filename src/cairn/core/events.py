@@ -3,6 +3,9 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, Field
 
 EventType = Literal[
+    "model_stream_start",
+    "model_text_delta",
+    "model_stream_end",
     "agent_step",
     "tool_call",
     "tool_result",

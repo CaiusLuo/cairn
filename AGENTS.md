@@ -26,13 +26,18 @@ git diff --check
 
 ## Environment
 
+Reference commands; choose the verification scope under **Verification** below.
+
 ```bash
 uv sync --locked --all-groups
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src tests
-uv run pytest --cov=cairn --cov-report=term-missing
 ```
+
+Run `pytest` with explicit regression and related test paths by default. The full
+offline suite command, when justified, is
+`uv run pytest --cov=cairn --cov-report=term-missing`.
 
 `pytest` is offline by default. Paid provider runs and external publication need
 separate, explicit authorization. Use the authorized execution environment; do
@@ -99,9 +104,13 @@ redundant tests. See [tests/README.md](tests/README.md).
 
 - Exercise observable contracts through public interfaces. Do not replace a
   failure test with a happy path or pin incidental wording and call counts.
-- Run focused tests during each code slice, then the full offline checks above
-  once at the integration checkpoint. Repeat expensive checks only for a new
-  change, failure or unresolved concern. Explain removed tests and coverage loss.
+- Run new or changed regression tests and related tests for the affected owners,
+  callers and invariants. This scoped set is the default completion gate; do not
+  automatically run the full suite for each change or at integration.
+- Expand verification only when the user requests it or a concrete failure or
+  cross-module risk requires broader coverage. Explain that reason before running
+  broader checks. Repeat passing checks only for a new change, failure or
+  unresolved concern. Explain removed tests and coverage loss.
 - Documentation-only changes normally need link/path tests and a diff review;
   optional runtime and packaging checks depend on the affected contract.
 
@@ -151,7 +160,7 @@ must check the new candidate.
 ## Definition of done
 
 For code changes, implement the requested behaviour and regression coverage;
-pass focused checks and full offline Ruff/format/Mypy/pytest at integration;
+pass regression and related tests plus applicable Ruff/format/Mypy checks;
 run applicable extra checks above; update changed contracts; and review the diff
 for unintended authority, sandbox, evidence or lifecycle changes. Disclose
 limitations and blocked checks.

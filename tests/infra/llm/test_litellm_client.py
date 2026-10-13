@@ -2,11 +2,78 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any
 
+import litellm
 import pytest
 
 import cairn.infra.llm.litellm_client as litellm_module
+from cairn.core.llm import StreamingLLMClient, StreamProtocolError
 from cairn.core.models import LLMUsage, Message, ToolCall
 from cairn.infra.llm.litellm_client import LiteLLMClient
+
+
+@pytest.mark.parametrize(
+    ("model", "supported"),
+    [
+        ("openai/local-model", True),
+        ("azure/deployment", True),
+        ("openai/known-chat", True),
+        ("openai/known-responses", False),
+        ("azure/known-responses", False),
+        ("openai/text-davinci-003", False),
+        ("openai/ft:babbage-002:test", False),
+        ("azure/ft:davinci-002:test", False),
+        ("openai/", False),
+        ("azure/responses/deployment", False),
+    ],
+)
+def test_stream_capability_is_local_and_explicit(
+    monkeypatch: pytest.MonkeyPatch, model: str, supported: bool
+) -> None:
+    monkeypatch.delenv("USE_LITELLM_PROXY", raising=False)
+    monkeypatch.setattr(litellm, "use_litellm_proxy", False)
+    monkeypatch.setattr(litellm, "route_all_chat_openai_to_responses", False)
+    monkeypatch.setattr(
+        litellm,
+        "model_cost",
+        {
+            "openai/known-chat": {"mode": "chat"},
+            "known-responses": {"mode": "responses"},
+            "text-davinci-003": {"mode": "completion"},
+        },
+    )
+    calls: list[dict[str, Any]] = []
+
+    async def forbidden(**kwargs: Any) -> None:
+        calls.append(kwargs)
+        raise AssertionError("Capability selection must not issue a provider request")
+
+    monkeypatch.setattr(litellm_module, "acompletion", forbidden)
+    client = LiteLLMClient(model, api_key="credential", api_base="https://example.test")
+    assert isinstance(client, StreamingLLMClient)
+    assert client.supports_streaming is supported
+    if not supported:
+        with pytest.raises(StreamProtocolError, match="unsupported"):
+            client.stream_generate([])
+    assert calls == []
+
+
+@pytest.mark.parametrize("override", ["sdk-proxy", "env-proxy", "responses"])
+def test_sdk_routing_overrides_decline_streaming_before_request(
+    monkeypatch: pytest.MonkeyPatch, override: str
+) -> None:
+    monkeypatch.delenv("USE_LITELLM_PROXY", raising=False)
+    monkeypatch.setattr(litellm, "use_litellm_proxy", override == "sdk-proxy")
+    monkeypatch.setattr(
+        litellm,
+        "route_all_chat_openai_to_responses",
+        override == "responses",
+    )
+    if override == "env-proxy":
+        monkeypatch.setenv("USE_LITELLM_PROXY", "true")
+    client = LiteLLMClient("openai/local-model")
+    assert client.supports_streaming is False
+    with pytest.raises(StreamProtocolError):
+        client.stream_generate([])
 
 
 @dataclass

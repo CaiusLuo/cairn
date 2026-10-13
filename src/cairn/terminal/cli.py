@@ -31,6 +31,7 @@ from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.router import CommandRouter
 from cairn.terminal.input import CliInput
 from cairn.terminal.output import (
+    StreamingDisplay,
     confirm_provider_access,
     console_event_handler,
     console_permission_prompt,
@@ -93,6 +94,7 @@ async def main(cli_input: CliInput | None = None) -> None:
     secret_env_keys = frozenset(named.config.api_key_env for named in catalog.providers)
 
     pending_trace_finish: Event | None = None
+    streaming_display = StreamingDisplay()
 
     def handle_event(event: Event) -> None:
         nonlocal pending_trace_finish
@@ -103,7 +105,8 @@ async def main(cli_input: CliInput | None = None) -> None:
                 command_context.last_trace_id = None
             pending_trace_finish = event
             return
-        console_event_handler(event)
+        if not streaming_display.observe(event):
+            console_event_handler(event)
 
     agent = build_agent(
         workspace=workspace,
@@ -179,6 +182,7 @@ async def main(cli_input: CliInput | None = None) -> None:
                 break
             continue
 
+        streaming_display.reset()
         try:
             response = await run_turn(
                 agent,
@@ -190,8 +194,10 @@ async def main(cli_input: CliInput | None = None) -> None:
         except Exception as exc:
             print_runtime_error(exc)
         else:
-            print_assistant_response(response)
+            if not streaming_display.final_text_visible:
+                print_assistant_response(response)
         finally:
+            streaming_display.close_incomplete()
             if pending_trace_finish is not None:
                 console_event_handler(pending_trace_finish)
                 pending_trace_finish = None

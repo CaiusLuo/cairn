@@ -76,6 +76,13 @@ async def run_turn(
                 )
             )
 
+            def on_stream(event: Event, current_step: int = step + 1) -> None:
+                # Transient text belongs to presentation, never AgentState or
+                # spans. Attempt numbering is local to this existing step.
+                agent.emit(
+                    Event(type=event.type, data={**event.data, "step": current_step})
+                )
+
             try:
                 _, response = await agent.model_executor.execute(
                     primary_runtime=(agent.llm, agent.context_builder),
@@ -86,6 +93,7 @@ async def run_turn(
                     project_memory=memory_context,
                     on_request=trace.on_request,
                     on_fallback=trace.on_failure,
+                    on_stream=on_stream,
                 )
             except (asyncio.CancelledError, Exception) as exc:
                 # Cancellation and provider failures both finalize the attempt.

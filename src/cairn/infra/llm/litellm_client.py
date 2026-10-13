@@ -1,9 +1,14 @@
 import json
+import os
+from collections.abc import AsyncGenerator
 from typing import Any
 
+import litellm
 from litellm import acompletion
 
+from cairn.core.llm import LLMStreamChunk, StreamProtocolError
 from cairn.core.models import LLMResponse, LLMUsage, Message, ToolCall
+from cairn.infra.llm.litellm_stream import stream_completion
 
 
 def _parse_tool_arguments(
@@ -91,6 +96,60 @@ class LiteLLMClient:
         self.api_key = api_key
         self.api_base = api_base
         self.max_output_tokens = max_output_tokens
+
+    @property
+    def supports_streaming(self) -> bool:
+        """Select only audited chat routes using local configuration/SDK metadata.
+
+        Do not infer support from an endpoint or resolve providers/credentials:
+        unsupported and implicit routes retain their existing generate behavior.
+        """
+        provider, _, model = self.model.partition("/")
+        if provider not in ("openai", "azure") or not model:
+            return False
+        if litellm.use_litellm_proxy or os.getenv(
+            "USE_LITELLM_PROXY", ""
+        ).lower() not in ("", "false", "0", "no", "n", "f"):
+            return False
+        if provider == "openai" and litellm.route_all_chat_openai_to_responses:
+            return False
+        if model.startswith("responses/") or any(
+            name in model for name in ("ft:babbage-002", "ft:davinci-002")
+        ):
+            return False
+        metadata = (
+            litellm.model_cost.get(self.model) or litellm.model_cost.get(model) or {}
+        )
+        mode: object = metadata.get("mode", "chat")
+        return mode == "chat"
+
+    def stream_generate(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> AsyncGenerator[LLMStreamChunk, None]:
+        if not self.supports_streaming:
+            raise StreamProtocolError(
+                "Streaming is unsupported for this configuration."
+            )
+        options: dict[str, Any] = {}
+        if self.max_output_tokens is not None:
+            options["max_tokens"] = self.max_output_tokens
+        return stream_completion(
+            lambda: acompletion(
+                model=self.model,
+                messages=[to_llm_message(message) for message in messages],
+                api_key=self.api_key,
+                api_base=self.api_base,
+                tools=tools,
+                stream=True,
+                stream_options={"include_usage": True},
+                num_retries=0,
+                max_retries=0,
+                **options,
+            ),
+            self.api_key,
+        )
 
     async def generate(
         self,

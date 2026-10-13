@@ -1,14 +1,73 @@
 import asyncio
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
 from cairn.core.context import ContextBudget, ContextBuilder, ContextRequest
-from cairn.core.llm import LLMClient
+from cairn.core.events import Event
+from cairn.core.llm import LLMClient, StreamingLLMClient, StreamProtocolError
 from cairn.core.memory.context import MemoryContext
 from cairn.core.model_manager import ModelConfig, ModelManager
 from cairn.core.models import LLMResponse, Message
 from cairn.infra.llm.errors import _short_diagnostic, is_fallback_error
+from cairn.runtime.lifecycle import await_owned, settle_owned
+from cairn.runtime.response_assembly import ResponseAssembler
+
+
+class StreamObserverError(RuntimeError):
+    """Presentation failures are never eligible provider fallback errors."""
+
+
+def _notify(observer: Callable[[Event], None] | None, event: Event) -> None:
+    if observer is not None:
+        try:
+            observer(event)
+        except Exception:
+            raise StreamObserverError("Streaming observer failed.") from None
+
+
+async def _assemble_stream(
+    client: StreamingLLMClient,
+    request: ContextRequest,
+    tools: list[dict[str, Any]],
+    observer: Callable[[Event], None] | None,
+    attribution: dict[str, Any],
+) -> LLMResponse:
+    stream = client.stream_generate(request.messages, tools)
+    assembler = ResponseAssembler()
+    primary: BaseException | None = None
+    try:
+        _notify(observer, Event(type="model_stream_start", data=attribution))
+        async for chunk in stream:
+            assembler.add(chunk)
+            if chunk.text:
+                _notify(
+                    observer,
+                    Event(
+                        type="model_text_delta",
+                        data={**attribution, "text": chunk.text},
+                    ),
+                )
+        response = assembler.finish()
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        assembler.discard()
+        # Even an observer failure must close the suspended producer. Cleanup is
+        # owned work and cannot be detached by a second caller cancellation.
+        closing = asyncio.create_task(stream.aclose())
+        cancellation = await await_owned(closing)
+        try:
+            closing.result()
+        except BaseException:
+            if primary is None:
+                raise StreamProtocolError("Stream cleanup failed.") from None
+            primary.add_note("Stream cleanup failed.")
+        if primary is None and cancellation is not None:
+            raise cancellation
+    return response
 
 
 class AllModelsUnavailable(RuntimeError):
@@ -104,6 +163,7 @@ class ModelExecutor:
         ]
         | None = None,
         on_fallback: Callable[[Exception], None] | None = None,
+        on_stream: Callable[[Event], None] | None = None,
     ) -> tuple[ContextRequest, LLMResponse]:
         errors: list[tuple[str, Exception]] = []
 
@@ -128,23 +188,84 @@ class ModelExecutor:
                 attempt += 1
                 if on_request is not None:
                     on_request(request, builder.budget, model, model_id, attempt)
+                streaming = isinstance(llm, StreamingLLMClient) and (
+                    getattr(llm, "supports_streaming", True) is True
+                )
+                attribution = {"attempt": attempt, "model_id": model_id}
                 try:
-                    response = await llm.generate(
-                        messages=request.messages,
-                        tools=tools,
-                    )
+                    if streaming and isinstance(llm, StreamingLLMClient):
+                        collecting = asyncio.create_task(
+                            _assemble_stream(
+                                llm, request, tools, on_stream, attribution
+                            )
+                        )
+                        try:
+                            response = await asyncio.shield(collecting)
+                        except asyncio.CancelledError:
+                            await settle_owned(collecting)
+                            raise
+                    else:
+                        response = await llm.generate(
+                            messages=request.messages,
+                            tools=tools,
+                        )
                 except asyncio.CancelledError:
+                    if streaming:
+                        # Presentation failure cannot replace a primary stop.
+                        with suppress(StreamObserverError):
+                            _notify(
+                                on_stream,
+                                Event(
+                                    type="model_stream_end",
+                                    data={**attribution, "status": "incomplete"},
+                                ),
+                            )
                     raise
                 except Exception as exc:
                     self._note_failure(model_id, exc)
-                    if model_id is None or not is_fallback_error(exc):
+                    fallback = (
+                        model_id is not None
+                        and not isinstance(
+                            exc, (StreamProtocolError, StreamObserverError)
+                        )
+                        and is_fallback_error(exc)
+                    )
+                    if streaming:
+                        try:
+                            _notify(
+                                on_stream,
+                                Event(
+                                    type="model_stream_end",
+                                    data={
+                                        **attribution,
+                                        "status": "abandoned"
+                                        if fallback
+                                        else "incomplete",
+                                    },
+                                ),
+                            )
+                        except StreamObserverError:
+                            exc.add_note(
+                                "Stream failure display could not be delivered."
+                            )
+                            fallback = False
+                    if not fallback:
                         raise
 
+                    assert model_id is not None
                     errors.append((model_id, exc))
                     if on_fallback is not None:
                         on_fallback(exc)
                     continue
 
+                if streaming:
+                    _notify(
+                        on_stream,
+                        Event(
+                            type="model_stream_end",
+                            data={**attribution, "status": "completed"},
+                        ),
+                    )
                 if model_id is not None:
                     self._last_failures.pop(model_id, None)
                 return request, response

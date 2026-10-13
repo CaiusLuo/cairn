@@ -212,6 +212,80 @@ def console_event_handler(event: Event) -> None:
                 )
 
 
+class StreamingDisplay:
+    """Per-CLI transient display state; it never advances an Agent lifecycle."""
+
+    def __init__(self) -> None:
+        self.final_text_visible = False
+        self._open = False
+        self._active = False
+        self._completed_text_step: int | None = None
+
+    def reset(self) -> None:
+        self.final_text_visible = False
+        self._completed_text_step = None
+
+    def observe(self, event: Event) -> bool:
+        """Return True only for handled streaming events; legacy output stays put."""
+        if event.type == "model_stream_start":
+            self._completed_text_step = None
+            self._active = True
+            return True
+        if event.type == "model_text_delta":
+            if not self._open:
+                console.print("[bold]Cairn>[/bold] [dim](provisional)[/dim]")
+                self._open = True
+            text = str(event.data["text"])
+            # Rich markup and C0/C1 terminal controls have no authority. Preserve
+            # newline/tab and printable Unicode, including multibyte fragments.
+            plain = "".join(
+                char
+                for char in text
+                if char in "\n\t" or not (ord(char) < 32 or 127 <= ord(char) <= 159)
+            )
+            console.print(
+                plain,
+                end="",
+                markup=False,
+                highlight=False,
+                emoji=False,
+                soft_wrap=True,
+            )
+            return True
+        if event.type == "model_stream_end":
+            status = event.data["status"]
+            if status == "completed":
+                self._active = False
+                if self._open:
+                    self._completed_text_step = event.data.get("step")
+                    console.print()
+                    self._open = False
+            else:
+                self.close_incomplete(abandoned=status == "abandoned")
+            return True
+        if event.type == "agent_finish":
+            self.final_text_visible = (
+                self._completed_text_step == event.data.get("step")
+                and self._completed_text_step is not None
+            )
+        return False
+
+    def close_incomplete(self, *, abandoned: bool = False) -> None:
+        if self._open:
+            console.print()
+            self._open = False
+        if self._active:
+            self._active = False
+            console.print(
+                "[abandoned attempt; provisional output discarded]"
+                if abandoned
+                else "[incomplete response; provisional output discarded]",
+                style="yellow",
+                markup=False,
+            )
+        self._completed_text_step = None
+
+
 def console_permission_prompt(request: PermissionRequest) -> PermissionChoice:
     console.print("\n[bold yellow]Permission required[/bold yellow]\n")
     console.print(f"Capability: {request.capability.value}", markup=False)
