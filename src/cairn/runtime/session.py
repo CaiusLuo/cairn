@@ -12,6 +12,8 @@ from cairn.runtime.agent import SessionAdmissionError as SessionAdmissionError
 class SessionState(StrEnum):
     READY = "ready"
     EXECUTING = "executing"
+    SUSPENDED = "suspended"
+    RECOVERY_REQUIRED = "recovery_required"
     CLOSED = "closed"
 
 
@@ -30,6 +32,7 @@ class Turn:
     end_sequence: int | None = None
     trace_finalization_failed: bool = False
     settlement_delivery_failed: bool = False
+    commit_delivery_failed: bool = False
 
 
 class Session:
@@ -90,7 +93,7 @@ class Session:
         self._turn = Turn(uuid4(), start_sequence=self._sequence + 1)
 
     def _attribute(self, event: Event) -> Event:
-        if event.type in ("turn_started", "turn_settled"):
+        if event.type in ("turn_started", "turn_settled", "turn_committed"):
             raise SessionAdmissionError("Lifecycle events belong to the turn owner.")
         return self._envelope(event)
 
@@ -115,6 +118,15 @@ class Session:
             self._agent.event_handler(event)
 
     def _settle(self, outcome: TurnOutcome, trace_finalization_failed: bool) -> None:
+        try:
+            self._notify_settled(outcome, trace_finalization_failed)
+        finally:
+            self._finish_turn()
+
+    def _notify_settled(
+        self, outcome: TurnOutcome, trace_finalization_failed: bool
+    ) -> None:
+        """Record/deliver settlement while the loop still holds the turn guard."""
         turn = self._turn
         assert turn is not None
         self._last_turn = replace(
@@ -139,4 +151,8 @@ class Session:
             self._last_turn = replace(self._last_turn, settlement_delivery_failed=True)
         finally:
             self._last_turn = replace(self._last_turn, end_sequence=self._sequence)
-            self._turn = None
+
+    def _finish_turn(self) -> None:
+        if self._last_turn is not None:
+            self._last_turn = replace(self._last_turn, end_sequence=self._sequence)
+        self._turn = None

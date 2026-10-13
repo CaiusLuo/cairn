@@ -3,10 +3,10 @@
 The concrete [SessionStore](../../src/cairn/infra/sessions/store.py) persists host
 facts in a separate local SQLite database. This slice supplies storage primitives
 only. It neither attaches an Agent nor calls a model, tool, permission handler,
-Git command or publisher. `run_turn`, tool execution, AgentState and CLI behaviour
-are unchanged. [M1-B](session-lifecycle.md) owns the live Session/Turn;
-[M1-C.2/M1-C.3](../design/durable-session-v1.md#staged-implementation-and-acceptance)
-will integrate settlement/fencing and explicit recovery UI.
+Git command or publisher. [M1-B](session-lifecycle.md) owns the live Session/Turn;
+[M1-C.2 DurableSession](durable-session.md) integrates these primitives at the
+existing runtime boundaries. Default stateless callers and CLI remain unchanged;
+explicit recovery UI belongs to M1-C.3.
 
 ## Host API
 
@@ -153,7 +153,8 @@ through cancellation cleanup or after a write fault. Completed cleanup alone doe
 not remove ownership; use terminal commit or the explicit faulted release.
 Abrupt process termination releases the kernel-held lock and leaves the existing
 orphan inspection/recovery contract intact. Closing a database is not cancellation.
-This slice adds no runtime integration or force-close path.
+Store itself adds no execution or force-close path; DurableSession performs that
+trusted cleanup/release handshake only at the settled runtime boundary.
 
 [Path handling](../../src/cairn/infra/sessions/paths.py) walks components using
 descriptor-relative O_NOFOLLOW, creates 0700 directories/0600 files, rejects
@@ -236,5 +237,6 @@ blocker**, not a supported deployment claim. The reviewed
 3.50.7/3.44.6 backports or documented equivalent. `sqlite_wal_fix_supported()` exposes
 the version check. This isolated development slice does not upgrade or disable
 the project runtime. Compatible SQLite and target-platform tests are required
-before shipping durable execution. M1-C.2 integration, Task recovery, automatic
-replay, queue and DAG are outside this slice.
+before shipping durable execution. Runtime integration is opt-in through
+DurableSession; Task recovery, automatic replay, queue and DAG remain outside
+these storage primitives.

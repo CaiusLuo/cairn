@@ -19,6 +19,7 @@ page is the map for everything else.
 | [M1-A model streaming](guides/model-streaming.md) | Provisional CLI text, bounded response assembly, supported provider shapes, fallback and cancellation |
 | [M1-B Session lifecycle](guides/session-lifecycle.md) | Opt-in Agent ownership, turn admission, ordered events, close and settlement |
 | [M1-C.1 SessionStore](guides/session-store.md) | Isolated SQLite storage, strict checkpoint codec, CAS, local lock and manual recovery facts |
+| [M1-C.2 DurableSession](guides/durable-session.md) | Opt-in runtime admission, tool fences, settled checkpoint receipts and explicit host recovery |
 | [GitHub Issue workflows](guides/github-workflow.md) | Retained worktrees, deterministic verification, and approved Draft PR publication |
 | [RepoGraph](guides/repo-graph.md) | Bounded repository inventory and Python structure queries |
 | [Project Memory](guides/project-memory.md) | Evidence-backed memory candidates, freshness and retrieval |

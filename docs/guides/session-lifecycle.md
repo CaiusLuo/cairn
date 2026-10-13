@@ -103,10 +103,12 @@ without raw diagnostics or retry. Failed delivery may leave an observation gap;
 the host can inspect `last_turn` in memory. Event payloads are not retained as
 lifecycle metadata. Callback work must remain synchronous and bounded.
 
-Future M1-C DurableSession reuses this owner/admission seam and adds its store
-gate and receipt boundary. `turn_settled`, deltas, `agent_finish` and `trace_finish`
-acknowledge no checkpoint. `turn_committed` remains reserved for a durable receipt;
-see the [Durable Session design](../design/durable-session-v1.md).
+[M1-C.2 DurableSession](durable-session.md) reuses this owner/admission seam and
+adds its store gate and receipt boundary. In-memory Session does not emit
+`turn_committed`; `turn_settled`, deltas, `agent_finish` and `trace_finish`
+acknowledge no checkpoint. Ordinary Agent.emit cannot forge `turn_committed` on
+either bound owner. The shared sequence/guard remain held through durable
+acknowledgement delivery when that opt-in owner is used.
 
 ## Verification and limits
 

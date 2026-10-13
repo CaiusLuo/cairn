@@ -19,6 +19,7 @@ from cairn.core.events import Event
 from cairn.core.memory.context import MemoryContext
 from cairn.core.models import Message, ToolCall, ToolFailure
 from cairn.runtime.agent import Agent
+from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.session import Session, SessionAdmissionError, TurnOutcome
 from cairn.runtime.tool_execution import execute_tool_call
 from cairn.runtime.turn_trace import AttemptContext, TurnTrace
@@ -34,17 +35,21 @@ async def run_turn(
     # Admission is synchronous and precedes every trace/event/state/effect.
     if agent.session_owner is not session:
         raise SessionAdmissionError("The exact owning Session is required.")
-    if session is not None:
+    durable = session if isinstance(session, DurableSession) else None
+    if durable is not None:
+        durable._admit_durable(agent, user_input, budget)
+    elif session is not None:
         session._admit(agent)
     else:
         agent._stateless_turns += 1
     outcome = TurnOutcome.RUNTIME_ERROR
     trace_finalization_failed = False
+    primary_error: BaseException | None = None
+    trace: TurnTrace | None = None
     try:
         if session is not None:
             session._started()
         trace_error: str | None = None
-        primary_error: BaseException | None = None
         tool_execution_started = False
         pending_tool_calls: deque[ToolCall] = deque()
         trace = TurnTrace(agent, budget)
@@ -68,6 +73,10 @@ async def run_turn(
                 )
 
                 system_messages = [Message(role="system", content=agent.system_prompt)]
+                if durable is not None and durable.recovery_notice is not None:
+                    system_messages.append(
+                        Message(role="system", content=durable.recovery_notice)
+                    )
                 if agent.repo_context_provider is not None:
                     repo_context = await agent.repo_context_provider.inspect()
                     system_messages.append(
@@ -149,13 +158,22 @@ async def run_turn(
                 ) -> None:
                     pending.popleft()
 
+                assistant_index = len(agent.state.messages) - 1
                 for tool_call in response.tool_calls:
+
+                    def before_execute(
+                        call: ToolCall = tool_call, index: int = assistant_index
+                    ) -> None:
+                        assert durable is not None
+                        durable._before_execute(call, index)
+
                     await execute_tool_call(
                         agent,
                         tool_call,
                         trace.turn_span,
                         mark_tool_execution_started=mark_tool_execution_started,
                         consume_tool_call=consume_tool_call,
+                        before_execute=before_execute if durable is not None else None,
                     )
 
             agent.emit(
@@ -212,6 +230,7 @@ async def run_turn(
                     raise
                 primary_error.add_note("Turn trace finalization failed.")
     except BaseException as exc:
+        primary_error = exc
         if isinstance(exc, asyncio.CancelledError):
             outcome = TurnOutcome.CANCELLED
         elif isinstance(exc, (RunBudgetExceeded, ContextBudgetExceeded)):
@@ -220,10 +239,31 @@ async def run_turn(
             outcome = TurnOutcome.RUNTIME_ERROR
         raise
     finally:
-        if session is not None:
-            session._settle(outcome, trace_finalization_failed)
-        else:
-            agent._stateless_turns -= 1
+        durability_error: BaseException | None = None
+        if durable is not None:
+            try:
+                durable._commit(
+                    outcome,
+                    None
+                    if trace_finalization_failed or trace is None
+                    else trace.summary,
+                )
+            except BaseException as exc:
+                durability_error = exc
+        try:
+            if session is not None:
+                session._settle(outcome, trace_finalization_failed)
+            else:
+                agent._stateless_turns -= 1
+        except BaseException as exc:
+            if durable is None:
+                raise
+            if durability_error is None:
+                durability_error = exc
+        if durability_error is not None:
+            if primary_error is None:
+                raise durability_error
+            primary_error.add_note("Durable session requires recovery.")
 
 
 def _settle_aborted_turn(

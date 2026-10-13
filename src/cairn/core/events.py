@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 EventType = Literal[
     "turn_started",
     "turn_settled",
+    "turn_committed",
     "model_stream_start",
     "model_text_delta",
     "model_stream_end",
@@ -28,7 +29,7 @@ class Event(BaseModel):
 
 
 class SessionEvent(Event):
-    """Transient turn attribution; this envelope is not a durable receipt."""
+    """Ordered live attribution; only turn_committed acknowledges a checkpoint."""
 
     model_config = ConfigDict(frozen=True)
 

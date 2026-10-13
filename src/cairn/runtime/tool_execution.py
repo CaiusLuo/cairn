@@ -167,6 +167,7 @@ async def execute_tool_call(
     *,
     mark_tool_execution_started: Callable[[], None],
     consume_tool_call: Callable[[], None],
+    before_execute: Callable[[], None] | None = None,
 ) -> None:
     """Validate, authorize and execute one tool call from the current turn.
 
@@ -218,6 +219,11 @@ async def execute_tool_call(
         )
 
         return
+
+    # Persistence admission is not a tool error. Failure escapes to the turn
+    # owner before any executable span, execution marker or external effect.
+    if before_execute is not None:
+        before_execute()
 
     tool_span = None
 

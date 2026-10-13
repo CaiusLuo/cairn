@@ -14,7 +14,7 @@ what a completed turn reported; that answer lives here.
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from cairn.core.budget import RunBudget
 from cairn.core.context import ContextBudget, ContextRequest
@@ -36,6 +36,15 @@ class AttemptContext:
     memory: MemoryContext | None
 
 
+@dataclass(frozen=True, slots=True)
+class TurnTraceSummary:
+    trace_id: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    persisted: bool | None = None
+    error_code: Literal["sink_failed"] | None = None
+
+
 class TurnTrace:
     """Own the spans, usage and trace events of exactly one turn."""
 
@@ -50,6 +59,12 @@ class TurnTrace:
         self._reported_omitted_turns = 0
         self._input_tokens: int | None = 0
         self._output_tokens: int | None = 0
+        self._summary: TurnTraceSummary | None = None
+
+    @property
+    def summary(self) -> TurnTraceSummary | None:
+        """Available only after close and its final event return successfully."""
+        return self._summary
 
     @property
     def turn_span(self) -> Span | None:
@@ -210,6 +225,7 @@ class TurnTrace:
         rollback that a failed finalization requires.
         """
         if self._turn_span is None or self._agent.tracer is None:
+            self._summary = TurnTraceSummary()
             return
         status = SpanStatus.OK if trace_error is None else SpanStatus.ERROR
         input_tokens = self._input_tokens if self._response_count else None
@@ -239,3 +255,10 @@ class TurnTrace:
             trace_finish_data["usage"] = usage
 
         self._agent.emit(Event(type="trace_finish", data=trace_finish_data))
+        self._summary = TurnTraceSummary(
+            trace_id=self._turn_span.context.trace_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            persisted=persistence_error is None,
+            error_code=None if persistence_error is None else "sink_failed",
+        )

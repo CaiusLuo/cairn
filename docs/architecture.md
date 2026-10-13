@@ -51,15 +51,20 @@ See [M1-A streaming](guides/model-streaming.md) for limits, provider support and
 failure semantics. [Session lifecycle (M1-B)](guides/session-lifecycle.md) is an
 opt-in in-memory API. One Agent-local owner binds an exact Session; the loop
 admits before effects and holds its guard through cleanup, rollback, tracing and
-the settled notification. Durable acknowledgement (M1-C) remains future work.
+the settled notification. [DurableSession (M1-C.2)](guides/durable-session.md)
+extends that same gate with Store admission, tool fences and post-receipt
+`turn_committed`; stateless callers remain unchanged.
 
 [M1-C.1 SessionStore](guides/session-store.md) supplies isolated, host-only SQLite
-and checkpoint primitives in `infra.sessions`; it is not connected to the loop.
+and checkpoint primitives in `infra.sessions`.
 The Store owns storage validation, transactions, its lifetime writer lock and the
 short inspection/effect guard. Storage faults retain local Turn ownership until
 the trusted runtime owner confirms cleanup has settled.
 Runtime still owns all live turn decisions; intent/fence records never dispatch
-work or grant permission. Durable acknowledgement remains an integration slice.
+work or grant permission. `runtime.durable_session` binds the exact Agent, keeps
+reopening suspended until trusted host reconciliation, and supplies persistence
+at the existing loop's admission/tool/finalization boundaries. Only finalized
+full conversation is checkpointed; there is no second execution implementation.
 
 Task, workflow, review and evaluation code in `cairn.runtime` provide bounded
 orchestration around Agent turns. They do not create a second general Agent loop.
@@ -110,7 +115,7 @@ stable.
 | State | Owner |
 | --- | --- |
 | Conversation messages | `core.state.AgentState`, held by one `runtime.agent.Agent` |
-| Bound Session and active Turn | `runtime.session.Session`; `run_turn` alone admits/settles its guard, and Agent retains the once-only owner after close/failure |
+| Bound Session and active Turn | `runtime.session.Session`, optionally `runtime.durable_session.DurableSession`; `run_turn` alone admits/settles its guard, and Agent retains the once-only owner after close/failure |
 | Session model selection and grants | `core.model_manager` and `core.permissions.SessionPermissionHandler` |
 | Active provider runtime | `runtime.provider_runtime.ProviderSession`, committed through `commit`; terminal command context observes the committed runtime |
 | Per-model failure notes for `/model list` | `runtime.model_executor.ModelExecutor` |
