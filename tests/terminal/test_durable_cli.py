@@ -6,6 +6,7 @@ import os
 from collections.abc import AsyncGenerator, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 from uuid import uuid4
 
@@ -121,50 +122,68 @@ class Harness:
 
 
 @pytest.fixture
-def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Harness]:
-    work = tmp_path / "work"
-    work.mkdir()
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.chdir(work)
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("TMPDIR", str(scratch))
-    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "cache"))
-    monkeypatch.setenv("CAIRN_LLM_MODEL", "offline/model")
-    monkeypatch.setenv("CAIRN_LLM_API_KEY", "test-private-credential")
-    monkeypatch.setenv("CAIRN_BASE_URL", "https://example.invalid/v1")
-    monkeypatch.setattr(cli, "dotenv_values", lambda: {})
-    monkeypatch.setattr(cli, "print_banner", lambda: None)
-    monkeypatch.setattr(cli, "confirm_provider_access", lambda *a, **k: True)
-    monkeypatch.setattr(durable, "interactive_terminal", lambda: True)
-    result = Harness(tmp_path, monkeypatch)
+def harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[Harness]:
+    # Linux tmp_path lives under forbidden /tmp. Keep store and writable roots
+    # as siblings under the real home on both platforms, before replacing HOME.
+    with (
+        TemporaryDirectory(
+            prefix="cairn-durable-cli-", dir=Path.home().resolve()
+        ) as parent,
+        monkeypatch.context() as isolated,
+    ):
+        root = Path(parent).resolve()
+        work = root / "work"
+        work.mkdir()
+        scratch = root / "scratch"
+        scratch.mkdir()
+        home = root / "home"
+        home.mkdir()
+        isolated.chdir(work)
+        isolated.setenv("HOME", str(home))
+        isolated.setenv("TMPDIR", str(scratch))
+        isolated.setenv("UV_CACHE_DIR", str(root / "cache"))
+        isolated.setenv("CAIRN_LLM_MODEL", "offline/model")
+        isolated.setenv("CAIRN_LLM_API_KEY", "test-private-credential")
+        isolated.setenv("CAIRN_BASE_URL", "https://example.invalid/v1")
+        isolated.setattr(cli, "dotenv_values", lambda: {})
+        isolated.setattr(cli, "print_banner", lambda: None)
+        isolated.setattr(cli, "confirm_provider_access", lambda *a, **k: True)
+        isolated.setattr(durable, "interactive_terminal", lambda: True)
+        result = Harness(root, isolated)
 
-    def runtime(
-        provider: NamedProvider, credential: str, budget: ContextBudget, *, group: str
-    ) -> ProviderRuntime:
-        client = result.client_type(list(result.responses))
-        result.clients.append(client)
-        manager = ModelManager(provider.config)
-        manager.select_model(group)
-        builder = ContextBuilder(budget=budget)
+        def runtime(
+            provider: NamedProvider,
+            credential: str,
+            budget: ContextBudget,
+            *,
+            group: str,
+        ) -> ProviderRuntime:
+            client = result.client_type(list(result.responses))
+            result.clients.append(client)
+            manager = ModelManager(provider.config)
+            manager.select_model(group)
+            builder = ContextBuilder(budget=budget)
 
-        def factory(model: str) -> tuple[SequenceLLM, ContextBuilder]:
-            return client, builder
+            def factory(model: str) -> tuple[SequenceLLM, ContextBuilder]:
+                return client, builder
 
-        return ProviderRuntime(
-            provider, manager, ModelExecutor(manager, factory), client, builder, factory
-        )
+            return ProviderRuntime(
+                provider,
+                manager,
+                ModelExecutor(manager, factory),
+                client,
+                builder,
+                factory,
+            )
 
-    def agent(**kwargs: Any) -> Agent:
-        built = build_agent(**kwargs)
-        result.agents.append(built)
-        return built
+        def agent(**kwargs: Any) -> Agent:
+            built = build_agent(**kwargs)
+            result.agents.append(built)
+            return built
 
-    monkeypatch.setattr(cli, "build_provider_runtime", runtime)
-    monkeypatch.setattr(cli, "build_agent", agent)
-    yield result
+        isolated.setattr(cli, "build_provider_runtime", runtime)
+        isolated.setattr(cli, "build_agent", agent)
+        yield result
 
 
 def test_default_is_stateless_and_commands_remain_available(harness: Harness) -> None:
@@ -509,6 +528,15 @@ def test_old_network_permissions_never_restored(harness: Harness) -> None:
     assert isinstance(new_handler, SessionPermissionHandler)
     assert not new_handler.grants
     assert "Committed checkpoint 2" in result.output
+
+
+def test_linux_tmp_store_layout_rejects_with_exact_reason(harness: Harness) -> None:
+    with TemporaryDirectory(prefix="cairn-durable-rejected-", dir="/tmp") as parent:
+        directory = Path(parent) / "store"
+        with pytest.raises(SessionStoreError) as failure:
+            durable.open_store(directory, Workspace(harness.root / "work"))
+        assert failure.value.code == "writable_root_overlap"
+        assert not directory.exists()
 
 
 @pytest.mark.parametrize("root", ["workspace", "tmp", "cache", "additional"])
