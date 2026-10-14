@@ -1,5 +1,6 @@
 """End-to-end JSONL tests with an offline subprocess and the real turn owner."""
 
+import asyncio
 import json
 import os
 import queue
@@ -8,10 +9,19 @@ import sys
 import threading
 import time
 from collections.abc import Iterator
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+import cairn.runtime.provider_runtime as provider_module
+import cairn.terminal.bridge as bridge_module
+from cairn.core.context import ContextBudget
+from cairn.core.permissions import PermissionCapability
+from cairn.core.provider_catalog import NamedProvider
+from cairn.runtime.provider_runtime import ProviderRuntime
+from tests.support.pi_backend import offline_runtime
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -216,3 +226,158 @@ def test_backend_errors_do_not_expose_provider_secrets(client: Client) -> None:
     assert client.until("error")["code"] == "operation_failed"
     client.until("idle")
     assert "SECRET-MUST-NOT-LEAK" not in json.dumps(client.seen)
+
+
+@pytest.mark.parametrize("initial", [True, False], ids=["activation", "switch"])
+def test_provider_commit_is_linearized_with_reader_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, initial: bool
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OFFLINE_KEY", "offline")
+    (tmp_path / ".cairn").mkdir()
+    (tmp_path / ".cairn/models.toml").write_text(
+        "\n".join(
+            f'[[providers]]\nname = "{name}"\nbase_url = "https://offline.test/v1"\n'
+            'api_key_env = "OFFLINE_KEY"\n[[providers.models]]\n'
+            f'name = "first"\nmodel_ids = ["offline/{name}"]\n'
+            for name in ("alpha", "beta")
+        )
+    )
+    target = "alpha" if initial else "beta"
+    building = threading.Event()
+    release_build = threading.Event()
+    committed = threading.Event()
+    release_status = threading.Event()
+    messages: queue.Queue[dict[str, Any]] = queue.Queue()
+    bridges: queue.Queue[bridge_module.Bridge] = queue.Queue()
+    failures: queue.Queue[BaseException] = queue.Queue()
+    seen: list[dict[str, Any]] = []
+    block_status = False
+
+    def build(
+        provider: NamedProvider,
+        credential: str,
+        context_budget: ContextBudget,
+        *,
+        group: str | None = None,
+    ) -> ProviderRuntime:
+        candidate = offline_runtime(provider, credential, context_budget, group=group)
+        if provider.name == target:
+            building.set()
+            assert release_build.wait(5), "provider builder was not released"
+        return candidate
+
+    original_status = bridge_module.Bridge.status
+
+    def status(bridge: bridge_module.Bridge) -> None:
+        if block_status:
+            committed.set()
+            assert release_status.wait(5), "committed status was not released"
+        original_status(bridge)
+
+    class Output(StringIO):
+        def write(self, text: str) -> int:
+            messages.put(json.loads(text))
+            return len(text)
+
+    monkeypatch.setattr(bridge_module, "build_provider_runtime", build)
+    monkeypatch.setattr(provider_module, "build_provider_runtime", build)
+    monkeypatch.setattr(bridge_module.Bridge, "status", status)
+    monkeypatch.setattr(bridge_module.Bridge, "confirm_provider", lambda self, p: True)
+    read_fd, write_fd = os.pipe()
+    source = os.fdopen(read_fd, "rb")
+    writer = os.fdopen(write_fd, "w")
+
+    async def run() -> None:
+        bridge = bridge_module.Bridge(source, Output())
+        bridges.put(bridge)
+        await bridge.run()
+
+    def run_backend() -> None:
+        try:
+            asyncio.run(run())
+        except BaseException as exc:
+            failures.put(exc)
+
+    backend = threading.Thread(target=run_backend, daemon=True)
+    backend.start()
+    bridge = bridges.get(timeout=5)
+    request_id = 0
+
+    def send(op: str, **fields: Any) -> int:
+        nonlocal request_id
+        request_id += 1
+        writer.write(json.dumps({"v": 1, "id": request_id, "op": op, **fields}) + "\n")
+        writer.flush()
+        return request_id
+
+    def until(kind: str, **fields: Any) -> dict[str, Any]:
+        while True:
+            message = messages.get(timeout=5)
+            seen.append(message)
+            if message["type"] == kind and all(
+                message.get(k) == v for k, v in fields.items()
+            ):
+                return message
+
+    try:
+        until("hello")
+        if not initial:
+            until("idle", request_id=send("init"))
+            until("idle", request_id=send("prompt", text="keep this conversation"))
+        with bridge.lock:
+            previous = bridge.runtime
+            providers = bridge.providers
+            session = bridge.session
+            history = session.agent.state.messages.copy() if session else []
+            bridge.permissions.grants.add(PermissionCapability.NETWORK)
+
+        operation = send("init") if initial else send("provider", name=target)
+        assert building.wait(5)
+        cancellation = send("cancel", request_id=operation, turn_id=None)
+        # Receiving the ack proves cancellation was accepted while the builder
+        # was blocked, without sleeping or relying on scheduler timing.
+        until("ack", request_id=cancellation)
+        release_build.set()
+        until("idle", request_id=operation)
+        assert bridge.runtime is previous
+        assert bridge.providers is providers
+        assert bridge.session is session
+        assert bridge.permissions.grants == {PermissionCapability.NETWORK}
+        if session:
+            assert session.agent.state.messages == history
+            assert previous is not None
+            assert session.agent.llm is previous.llm
+            assert session.agent.context_builder is previous.context_builder
+            assert session.agent.model_executor is previous.model_executor
+        replies = [m["type"] for m in seen if m.get("request_id") == operation]
+        assert "cancelled" in replies and "ready" not in replies
+
+        # Hold the operation open after commitment, before ready is sent. A
+        # cancellation here must not claim the old provider remained active.
+        block_status = True
+        operation = send("init") if initial else send("provider", name=target)
+        assert committed.wait(5)
+        cancellation = send("cancel", request_id=operation, turn_id=None)
+        assert until("error", request_id=cancellation)["code"] == "stale_cancel"
+        release_status.set()
+        assert until("ready", request_id=operation)["provider"] == target
+        until("idle", request_id=operation)
+        assert bridge.runtime is not previous
+        assert bridge.session is not None
+        if session:
+            assert bridge.session is session
+            assert session.agent.state.messages == history
+            assert not bridge.permissions.grants
+        assert not any(
+            m["type"] == "cancelled" and m.get("request_id") == operation for m in seen
+        )
+    finally:
+        release_build.set()
+        release_status.set()
+        send("shutdown")
+        backend.join(timeout=5)
+        writer.close()
+        source.close()
+        assert not backend.is_alive(), "backend did not settle"
+        assert failures.empty()

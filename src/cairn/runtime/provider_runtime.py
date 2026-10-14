@@ -9,6 +9,7 @@ rebinding it performs.
 """
 
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -117,10 +118,12 @@ class ProviderSession:
         *,
         agent: "Agent",
         on_commit: Callable[[ProviderRuntime], None] | None = None,
+        commit_guard: Callable[[], AbstractContextManager[None]] = nullcontext,
     ) -> None:
         self._agent = agent
         self._on_commit = on_commit
-        self.commit(runtime)
+        with commit_guard():
+            self.commit(runtime)
 
     def commit(self, runtime: ProviderRuntime) -> None:
         """Bind one fully built runtime to the session's holders."""
@@ -161,6 +164,7 @@ class ProviderSession:
         confirm: Callable[[NamedProvider, ModelConfig], bool],
         resolve_credential: Callable[[ProviderConfig], str],
         context_budget: ContextBudget,
+        commit_guard: Callable[[], AbstractContextManager[None]] = nullcontext,
     ) -> bool:
         """Switch this session to another configured provider.
 
@@ -170,6 +174,10 @@ class ProviderSession:
         approval, a missing credential or a construction failure leaves the
         current provider usable. Returns ``True`` when a switch committed and
         ``False`` when ``name`` was already active.
+
+        A caller's optional ``commit_guard`` linearizes cancellation with the
+        binding change. Only :meth:`commit` runs inside it; approval, credential
+        resolution and construction remain outside that critical section.
         """
         runtime = self._runtime
         target = next(
@@ -196,5 +204,6 @@ class ProviderSession:
                 f"Provider {name!r} could not be activated "
                 f"({type(exc).__name__}); the current provider is unchanged."
             ) from None
-        self.commit(candidate)
+        with commit_guard():
+            self.commit(candidate)
         return True

@@ -7,6 +7,8 @@ import signal
 import sys
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from importlib.resources import files
 from pathlib import Path
 from typing import Any, BinaryIO, TextIO
@@ -101,6 +103,7 @@ class Bridge:
         self.operation: int | None = None
         self.turn_id: str | None = None
         self.interrupted = False
+        self.provider_committed = False
         self.closing = False
         self.disconnected = False
         self.pending: dict[str, Any] | None = None
@@ -196,6 +199,7 @@ class Bridge:
                         if (
                             self.operation != message["request_id"]
                             or self.turn_id != message["turn_id"]
+                            or self.provider_committed
                         ):
                             self.error(message["id"], "stale_cancel")
                             continue
@@ -214,6 +218,7 @@ class Bridge:
                     # race a blocking approval or bypass the busy check.
                     self.operation = message["id"]
                     self.interrupted = False
+                    self.provider_committed = False
                     self.loop.call_soon_threadsafe(self.enqueue, message)
         except OSError:
             pass
@@ -283,6 +288,15 @@ class Bridge:
     def mirror(self, runtime: ProviderRuntime) -> None:
         self.runtime = runtime
 
+    @contextmanager
+    def provider_commit(self) -> Iterator[None]:
+        """Serialize the runtime owner's binding change with reader cancellation."""
+        with self.lock:
+            if self.interrupted or self.closing:
+                raise asyncio.CancelledError
+            yield
+            self.provider_committed = True
+
     def status(self) -> None:
         assert self.runtime and self.catalog
         self.send(
@@ -330,8 +344,14 @@ class Bridge:
                 p.config.api_key_env for p in self.catalog.providers
             ),
         )
-        self.providers = ProviderSession(runtime, agent=agent, on_commit=self.mirror)
-        self.session = Session(agent)
+        session = Session(agent)
+        self.providers = ProviderSession(
+            runtime,
+            agent=agent,
+            on_commit=self.mirror,
+            commit_guard=self.provider_commit,
+        )
+        self.session = session
 
     def event(self, event: Event) -> None:
         if isinstance(event, SessionEvent):
@@ -402,6 +422,7 @@ class Bridge:
                             config, os.environ, self.env
                         ),
                         context_budget=resolve_context_budget(os.environ, self.env),
+                        commit_guard=self.provider_commit,
                     )
                     if changed:
                         self.permissions.reset_grants()

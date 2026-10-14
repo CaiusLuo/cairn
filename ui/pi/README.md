@@ -69,6 +69,12 @@ configuration without resolving keys. `approval` identifies an exact pending
 provider or capability request; it expires after 120 seconds. Wrong, duplicate,
 expired, cancelled or disconnected approvals cannot create grants.
 `approval_closed` dismisses that overlay. `ready` reports committed selection.
+Initial activation and provider switching share a commit guard: cancellation
+accepted before commitment aborts the candidate and preserves the previous
+runtime, conversation and permission grants. After commitment, cancellation is
+rejected as `stale_cancel`; `ready` reports the provider that actually committed.
+The cancellation lock protects only `ProviderSession`'s final binding change,
+not credential resolution or provider construction.
 
 `event` carries the original Session `turn_id` and monotonically increasing
 `sequence`, correlated with `request_id`. Only display events/fields are sent;
@@ -101,7 +107,8 @@ These are deferred integration constraints, not changes to core ownership:
    construction are synchronous. Cancellation can wake a pending approval, but
    cannot preempt an already approved synchronous build. The UI stays responsive
    in its separate process; Python must finish construction before handling the
-   queued stop. There is no forced timeout that could abandon cleanup.
+   queued stop. A candidate cancelled before its commit is discarded after the
+   build returns. There is no forced timeout that could abandon cleanup.
 4. **Tool attribution:** existing tool events lack a tool-call ID. Cards associate
    results with the current call under Cairn's existing sequential execution.
    Parallel tool execution would require explicit call attribution first.
@@ -134,6 +141,10 @@ and denied approvals, busy rejection, cancellation/EOF cleanup, and sanitized
 errors. They do not establish paid-provider behavior or real sandbox execution.
 The two frontend tests render actual Pi components and check duplicate final text,
 tool expansion, control-character filtering and incomplete output labels.
+A controlled blocking-builder regression drives the real Bridge reader for
+initial activation and an active-provider switch. It fixes cancellation before
+commit and after commit at deterministic barriers, checking runtime bindings,
+conversation retention, permission grants and the reported provider.
 
 For an interactive offline smoke, set `CAIRN_TUI_PYTHON` to an executable wrapper
 that runs this checkout's Python with `-m tests.support.pi_backend`, then run
