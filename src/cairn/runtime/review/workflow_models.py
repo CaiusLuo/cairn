@@ -1,7 +1,5 @@
 """Round evidence and safe recovery metadata for bounded local review."""
 
-import os
-import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -10,6 +8,7 @@ from pydantic import BaseModel, ConfigDict
 
 from cairn.core.tasks import TaskResult
 from cairn.infra.git.worktree import WorktreeHandle
+from cairn.runtime.artifacts import atomic_write_text
 from cairn.runtime.review.models import ReviewResult, ReviewSeverity, ReviewStatus
 from cairn.runtime.workflow.models import (
     GitSnapshot,
@@ -121,22 +120,7 @@ class ReviewPersistenceError(RuntimeError):
 
 
 def persist_review_report(report: ReviewWorkflowReport, path: Path) -> None:
+    """Atomically write a private review report outside the retained working tree."""
     if path.resolve().is_relative_to(report.worktree_path.resolve()):
         raise ValueError("Review recovery report must be outside the working tree")
-    temporary: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=".cairn-review-",
-            delete=False,
-        ) as stream:
-            temporary = stream.name
-            stream.write(report.model_dump_json(indent=2) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            Path(temporary).unlink(missing_ok=True)
+    atomic_write_text(path, report.model_dump_json(indent=2) + "\n")

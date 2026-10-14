@@ -1,9 +1,7 @@
 """Safe, immutable evidence for one locally verified Issue task."""
 
 import json
-import os
 import re
-import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -13,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 from cairn.core.repository import RepositoryEvidence
 from cairn.core.tasks import TaskResult, TaskStatus
 from cairn.infra.git.worktree import WorktreeHandle
+from cairn.runtime.artifacts import atomic_write_text
 
 _REVISION = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _CHECK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:#/-]{0,99}\Z")
@@ -232,20 +231,4 @@ def persist_report(report: WorkflowReport, path: Path) -> None:
     if path.resolve().is_relative_to(report.worktree_path.resolve()):
         raise ValueError("Workflow report must be outside the working tree")
     payload = json.dumps(report.model_dump(mode="json"), ensure_ascii=True, indent=2)
-    temporary: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=".cairn-report-",
-            delete=False,
-        ) as stream:
-            temporary = stream.name
-            stream.write(payload + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            Path(temporary).unlink(missing_ok=True)
+    atomic_write_text(path, payload + "\n")

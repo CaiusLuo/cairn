@@ -13,6 +13,7 @@ from cairn.infra.git.worktree import WorktreeError, WorktreeHandle, WorktreeProv
 from cairn.infra.github.models import IssueTask
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.lifecycle import settle_owned
+from cairn.runtime.report_writer import ReportWriter
 from cairn.runtime.tasks import CodingTaskRunner
 from cairn.runtime.workflow.git import NoChangesError, SnapshotDriftError, WorkflowGit
 from cairn.runtime.workflow.models import (
@@ -44,20 +45,31 @@ class _Progress:
     verification: VerificationResult | None = None
     task_result: TaskResult | None = None
 
+    def _writer(self) -> ReportWriter:
+        return ReportWriter(
+            report=self.report,
+            recovery_path=self.recovery_path,
+            handle=self.handle,
+            persist=persist_report,
+            error_factory=lambda: ReportPersistenceError(
+                "Workflow report persistence failed"
+            ),
+            extra_notes=self._extra_notes,
+        )
+
+    def _extra_notes(self) -> tuple[str, ...]:
+        return (
+            f"Retained branch: {self.handle.branch}",
+            f"Base revision: {self.handle.base_revision}",
+        )
+
     def save(self, **updates: Any) -> None:
-        self.report = self.report.model_copy(update=updates)
-        try:
-            persist_report(self.report, self.recovery_path)
-        except Exception:
-            failure = ReportPersistenceError("Workflow report persistence failed")
-            self.annotate(failure)
-            raise failure from None
+        writer = self._writer()
+        writer.save(**updates)
+        self.report = writer.report
 
     def annotate(self, error: BaseException) -> None:
-        error.add_note(f"Retained worktree: {self.handle.path}")
-        error.add_note(f"Recovery report: {self.recovery_path}")
-        error.add_note(f"Retained branch: {self.handle.branch}")
-        error.add_note(f"Base revision: {self.handle.base_revision}")
+        self._writer().annotate(error)
 
     def result(self) -> LocalWorkflowResult:
         return LocalWorkflowResult(
