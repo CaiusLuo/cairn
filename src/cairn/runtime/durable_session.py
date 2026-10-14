@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NoReturn
 from uuid import UUID
 
 from cairn.core.budget import RunBudget
@@ -33,6 +34,7 @@ from cairn.infra.sessions.models import (
     SessionBinding,
     SessionStoreError,
     SettledTurn,
+    StoredMessage,
     ToolFence,
     TraceSummary,
     TurnIntent,
@@ -401,10 +403,29 @@ class DurableSession(Session):
         return report
 
     def _admit_durable(self, agent: Agent, user_input: str, budget: RunBudget) -> None:
+        """Reserve durable admission, then begin the Turn.
+
+        Three stages can fail, and each abandons a different amount of state:
+        a binding that fails suspends the session, a rejected input only releases
+        the Turn guard, and a failed ``begin_turn`` requires host recovery. Each
+        stage names its own failure policy instead of setting flags inline.
+        """
         if self.state is not SessionState.READY:
             raise SessionAdmissionError("Durable Session is not ready.")
         # Reserve the same Session guard synchronously, before the first effect.
         super()._admit(agent)
+        report = self._check_binding_stage(budget, user_input)
+        history = self._validate_input_stage(agent, user_input, report)
+        self._begin_turn_stage(user_input, history)
+
+    def _check_binding_stage(
+        self, budget: RunBudget, user_input: str
+    ) -> RecoveryReport:
+        """Verify the committed binding and any Task attribution.
+
+        A failure here suspends the session: the store may have moved on, so the
+        host must reconcile before this binding can be trusted again.
+        """
         try:
             report = self._check_binding(budget)
             if self._task is not None:
@@ -421,14 +442,23 @@ class DurableSession(Session):
                 ):
                     raise SessionAdmissionError("Task Turn attribution mismatch.")
                 self._task_started = True
+            return report
         except BaseException as exc:
-            self._suspended = True
-            self._turn = None
-            if isinstance(exc, Exception):
-                raise SessionAdmissionError(
-                    "Durable binding requires reconciliation."
-                ) from None
-            raise
+            self._abandon_admission(
+                exc,
+                suspended=True,
+                message="Durable binding requires reconciliation.",
+            )
+
+    def _validate_input_stage(
+        self, agent: Agent, user_input: str, report: RecoveryReport
+    ) -> tuple[StoredMessage, ...]:
+        """Reject an input or history the store could not accept.
+
+        Nothing was written yet, so only the Turn guard is released. A history
+        that differs from the committed checkpoint additionally suspends the
+        session, because the live conversation is no longer the stored one.
+        """
         try:
             if type(user_input) is not str or len(agent.state.messages) >= MAX_MESSAGES:
                 raise SessionAdmissionError("Durable input rejected.")
@@ -468,11 +498,20 @@ class DurableSession(Session):
                 ),
                 sensitive_values=self._store.sensitive_values,
             )
+            return history
         except BaseException as exc:
-            self._turn = None
-            if isinstance(exc, Exception):
-                raise SessionAdmissionError("Durable admission rejected.") from None
-            raise
+            self._abandon_admission(
+                exc, suspended=False, message="Durable admission rejected."
+            )
+
+    def _begin_turn_stage(
+        self, user_input: str, history: tuple[StoredMessage, ...]
+    ) -> None:
+        """Record the Turn intent and let the store begin it.
+
+        A failure here requires host recovery: the store may already own the
+        Turn, so the session must never continue as if admission succeeded.
+        """
         assert self.active_turn is not None
         self._ordinal = 0
         self._reason = "storage_failed"
@@ -492,26 +531,55 @@ class DurableSession(Session):
             self._revision = self._store.begin_turn(self._revision, self._intent)
             self._owned = True
         except BaseException as exc:
-            self._recovery = True
-            self._turn = None
-            # A host interruption can lose begin_turn's return after it acquired
-            # local ownership. Admission is synchronous: no model/tool work was
-            # dispatched, so cleanup is already settled. Keep the unfinished
-            # intent, mark recovery and release only this exact local ownership.
-            self._cleanup_settled = True
-            if self._intent is not None:
-                self._owned = self._store.owns_turn(
-                    str(self.session_id), self._intent.turn_id
-                )
-            if self._owned:
-                try:
-                    self._release_failed_turn()
-                except Exception:
-                    exc.add_note("Durable session requires recovery.")
-            _replacement = self._durability_error(exc)
-            if _replacement is None:
-                raise
-            raise _replacement from None
+            self._abandon_admission(exc, began_turn=True)
+
+    def _abandon_admission(
+        self,
+        exc: BaseException,
+        *,
+        suspended: bool = False,
+        began_turn: bool = False,
+        message: str = "",
+    ) -> NoReturn:
+        """Release the Turn guard, then raise this stage's admission failure.
+
+        Always raises, so callers end their ``except`` with this call. The Turn
+        guard is always released: admission is synchronous and no model or tool
+        work was dispatched. ``_turn`` must be cleared before the raise, because
+        ``state`` reports the active Turn first and would otherwise hide the
+        recovery or suspension recorded here.
+
+        A cancelled caller keeps its own error and traceback. An ordinary
+        exception becomes the stage's fixed ``message`` with no cause attached,
+        since store text can carry host paths and credentials.
+        """
+        self._turn = None
+        if suspended:
+            self._suspended = True
+        if not began_turn:
+            if isinstance(exc, Exception):
+                raise SessionAdmissionError(message) from None
+            raise exc
+
+        # A host interruption can lose begin_turn's return after it acquired
+        # local ownership. Admission is synchronous: no model/tool work was
+        # dispatched, so cleanup is already settled. Keep the unfinished
+        # intent, mark recovery and release only this exact local ownership.
+        self._recovery = True
+        self._cleanup_settled = True
+        if self._intent is not None:
+            self._owned = self._store.owns_turn(
+                str(self.session_id), self._intent.turn_id
+            )
+        if self._owned:
+            try:
+                self._release_failed_turn()
+            except Exception:
+                exc.add_note("Durable session requires recovery.")
+        replacement = self._durability_error(exc)
+        if replacement is None:
+            raise
+        raise replacement from None
 
     def _before_execute(self, call: ToolCall, assistant_index: int) -> None:
         assert self._intent is not None

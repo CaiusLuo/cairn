@@ -507,6 +507,37 @@ def test_begin_failure_is_sanitized_no_events_or_provider_and_never_downgrades(
         session.close()
 
 
+def test_cancelled_begin_keeps_its_own_error_and_requires_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancellation during admission is never downgraded to a durability error.
+
+    The turn was reserved but no work was dispatched, so the guard is released
+    and the session still requires host recovery -- while the caller keeps the
+    exact cancellation it raised, with no cause chained onto it.
+    """
+    llm = SequenceLLM([])
+    events: list[Event] = []
+    agent = make_agent(llm, events=events)
+    api, session = create_session(tmp_path, agent)
+
+    def cancel_begin(*args: object) -> object:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(api, "begin_turn", cancel_begin)
+    try:
+        with pytest.raises(asyncio.CancelledError) as error:
+            asyncio.run(run_turn(agent, "hello", budget=TEST_BUDGET, session=session))
+        assert error.value.__cause__ is None
+        assert not events and not llm.calls and not agent.state.messages
+        assert session.active_turn is None
+        assert session.state is SessionState.RECOVERY_REQUIRED
+        with pytest.raises(SessionAdmissionError):
+            asyncio.run(run_turn(agent, "bare", budget=TEST_BUDGET))
+    finally:
+        session.close()
+
+
 @pytest.mark.parametrize("mismatch", ["session_id", "workspace"])
 def test_reopen_identity_mismatch_never_restores_or_dispatches(
     tmp_path: Path, mismatch: str
