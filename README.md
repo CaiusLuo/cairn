@@ -23,7 +23,10 @@ test, and extend. This is an early-stage learning and engineering project.
 - Asynchronous agent loop with context and step budgets.
 - LiteLLM integration with session model selection.
 - Sandboxed Bash, bounded file reading, and guarded file editing.
-- Interactive CLI, JSONL traces, and headless coding evaluations.
+- Interactive CLI and an experimental Pi TUI with keyboard-driven selection,
+  tool cards, permission dialogs, and cancellation.
+- Streaming answers and separate provisional thinking from `reasoning_content`.
+- JSONL traces and headless coding evaluations.
 
 ## Quick start
 
@@ -54,6 +57,37 @@ from requests while the full conversation stays in memory.
 uv run cairn
 ```
 
+This starts the standard Python CLI with the `cairn>` prompt. Both the CLI and
+Pi TUI can display streaming thinking separately from the answer when the provider
+returns `reasoning_content`. Thinking is provisional and is not retained in
+conversation history or traces. See [model streaming](docs/guides/model-streaming.md)
+for supported providers and stream limits.
+
+## Experimental Pi TUI
+
+The optional TypeScript frontend uses Pi TUI for terminal interaction while
+Cairn's Python runtime owns model calls, conversation, tools and permissions.
+It requires Node.js >=22.19 and pnpm in addition to the Python setup above.
+
+From this checkout, install and build the frontend, then launch it:
+
+```bash
+pnpm --dir ui/pi install --frozen-lockfile
+pnpm --dir ui/pi build
+uv run cairn tui
+```
+
+In the TUI, `/model` and `/provider` open keyboard-driven selection overlays;
+`/tools` expands bounded tool output. Permission dialogs offer Allow Once,
+Allow Session and Deny for supported capabilities. Ctrl+C cancels active work,
+and `/quit` exits after runtime cleanup.
+
+The default `uv run cairn` entry point continues to use the standard CLI. The
+experimental TUI runs in memory and has no durable session or trace UI. Frontend
+assets are built separately from the Python wheel; see the
+[Pi TUI guide](ui/pi/README.md) for wheel installation, the local protocol and
+current limitations.
+
 ## Model configuration
 
 Cairn reads model configuration from `.env` or `.cairn/models.toml`, in either a
@@ -65,6 +99,9 @@ See [Configuration](docs/configuration.md) for the supported layouts, validation
 rules, credential handling, session selection and local `/model` edits.
 
 ## CLI commands
+
+These commands apply to the standard Python CLI. The experimental TUI's smaller
+command set is described in its [guide](ui/pi/README.md#interaction).
 
 | Command | Purpose |
 | --- | --- |
