@@ -86,7 +86,10 @@ These are deferred integration constraints, not changes to core ownership:
 
 1. **Reasoning stream:** `LLMStreamChunk` and runtime events carry answer text,
    tool-call deltas and finish metadata, but no separate reasoning delta. This
-   UI therefore streams answers only. Add an explicit provider/core event
+   UI therefore streams answers only. The current LiteLLM normalizer rejects
+   nonempty `reasoning_content` or `reasoning` as an unsupported delta shape, so
+   reasoning-enabled providers can fail the stream rather than merely hide
+   reasoning text. Add an explicit provider/core event
    contract before displaying reasoning; asynchronous execution alone cannot
    supply missing reasoning data.
 2. **Synchronous approval API:** `SessionPermissionHandler` takes a synchronous
