@@ -69,6 +69,11 @@ def print_banner() -> None:
     console.print(files("cairn.resources").joinpath("banner.txt").read_text("utf-8"))
 
 
+def _suffix(value: object, prefix: str = " ") -> str:
+    """Render a model-supplied argument only when it really is a string."""
+    return f"{prefix}{value}" if isinstance(value, str) else ""
+
+
 def _render_tool_call(event: Event) -> None:
     raw_tool = event.data.get("tool")
     tool = raw_tool if isinstance(raw_tool, str) else "tool"
@@ -76,22 +81,17 @@ def _render_tool_call(event: Event) -> None:
     arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
 
     if tool == "read_file":
-        path = arguments.get("path")
-        start = arguments.get("start_line", 1)
+        path_suffix = _suffix(arguments.get("path"))
         end = arguments.get("end_line")
-        path_suffix = f" {path}" if isinstance(path, str) else ""
         if end is None or not path_suffix:
             summary = f"→ read_file{path_suffix}"
         else:
+            start = arguments.get("start_line", 1)
             summary = f"→ read_file{path_suffix} lines {start}-{end}"
     elif tool == "edit_file":
-        path = arguments.get("path")
-        path_suffix = f" {path}" if isinstance(path, str) else ""
-        summary = f"→ edit_file{path_suffix}"
+        summary = f"→ edit_file{_suffix(arguments.get('path'))}"
     elif tool == "bash":
-        command = arguments.get("command")
-        command_suffix = f": {command}" if isinstance(command, str) else ""
-        summary = f"→ bash{command_suffix}"
+        summary = f"→ bash{_suffix(arguments.get('command'), ': ')}"
     else:
         summary = f"→ {tool}"
 

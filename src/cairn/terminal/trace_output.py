@@ -16,6 +16,23 @@ console = Console()
 #: Cap diagnostics so one burst of unreadable traces cannot flood the list.
 MAX_DIAGNOSTICS = 5
 
+#: One status-to-display mapping, so a span and a trace never disagree.
+#: A span may be UNSET; a TraceSummary is literal OK or ERROR.
+_SPAN_ICONS: dict[SpanStatus, str] = {SpanStatus.OK: "✓", SpanStatus.ERROR: "✗"}
+_SPAN_STYLES: dict[SpanStatus, str] = {SpanStatus.OK: "green", SpanStatus.ERROR: "red"}
+
+#: Fallbacks for a span whose status was never set.
+_UNSET_ICON = "•"
+_UNSET_STYLE = "dim"
+
+
+def _icon(status: SpanStatus) -> str:
+    return _SPAN_ICONS.get(status, _UNSET_ICON)
+
+
+def _style(status: SpanStatus) -> str:
+    return _SPAN_STYLES.get(status, _UNSET_STYLE)
+
 
 def _duration(span: Span | TraceSummary) -> str:
     if span.end_time is None:
@@ -30,13 +47,7 @@ def _duration(span: Span | TraceSummary) -> str:
 
 
 def _label(span: Span) -> Text:
-    icon = (
-        "✓"
-        if span.status == SpanStatus.OK
-        else "✗"
-        if span.status == SpanStatus.ERROR
-        else "•"
-    )
+    icon = _icon(span.status)
 
     return Text(f"{icon} {_display_name(span)} [{_duration(span)}]")
 
@@ -87,11 +98,10 @@ def print_trace_list(result: TraceListResult) -> None:
         console.print("[dim]No traces found.[/dim]")
 
     for trace in result.traces:
-        icon = "✓" if trace.status == SpanStatus.OK else "✗"
+        label = f"{_icon(trace.status)} {trace.trace_id[:8]}"
         time = trace.start_time.astimezone().strftime("%m-%d %H:%M:%S")
-        style = "green" if trace.status == SpanStatus.OK else "red"
         console.print(
-            Text(f"{icon} {trace.trace_id[:8]} {time} {_duration(trace)}", style=style)
+            Text(f"{label} {time} {_duration(trace)}", style=_style(trace.status))
         )
 
     for diagnostic in result.diagnostics[:MAX_DIAGNOSTICS]:

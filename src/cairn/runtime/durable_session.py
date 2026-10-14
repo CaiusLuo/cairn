@@ -508,9 +508,10 @@ class DurableSession(Session):
                     self._release_failed_turn()
                 except Exception:
                     exc.add_note("Durable session requires recovery.")
-            if isinstance(exc, Exception):
-                raise SessionDurabilityError() from None
-            raise
+            _replacement = self._durability_error(exc)
+            if _replacement is None:
+                raise
+            raise _replacement from None
 
     def _before_execute(self, call: ToolCall, assistant_index: int) -> None:
         assert self._intent is not None
@@ -536,9 +537,22 @@ class DurableSession(Session):
             )
         except BaseException as exc:
             self._recovery = True
-            if isinstance(exc, Exception):
-                raise SessionDurabilityError() from None
-            raise
+            _replacement = self._durability_error(exc)
+            if _replacement is None:
+                raise
+            raise _replacement from None
+
+    def _durability_error(self, exc: BaseException) -> BaseException | None:
+        """The error to raise after durable state could not be advanced.
+
+        Returns ``None`` when the caller must re-raise the original exception
+        unchanged, which keeps a cancelled turn's primary error and traceback.
+        An ordinary exception is replaced by the fixed durability error with no
+        cause attached: store text could carry host paths or credentials.
+        """
+        if isinstance(exc, Exception):
+            return SessionDurabilityError()
+        return None
 
     def _commit(self, outcome: TurnOutcome, summary: TurnTraceSummary | None) -> None:
         if summary is None:
@@ -602,9 +616,10 @@ class DurableSession(Session):
             raise SessionDurabilityError() from None
         except BaseException as exc:
             self._recovery = True
-            if isinstance(exc, Exception):
-                raise SessionDurabilityError() from None
-            raise
+            _replacement = self._durability_error(exc)
+            if _replacement is None:
+                raise
+            raise _replacement from None
 
     def _release_failed_turn(self) -> None:
         report = self._store.inspect(str(self.session_id))

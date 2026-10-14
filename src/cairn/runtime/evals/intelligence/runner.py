@@ -40,6 +40,29 @@ from cairn.runtime.evals.runner import EvalRunner, _MeasuredContextBuilder
 from cairn.runtime.memory.freshness import FreshnessChecker
 from cairn.runtime.memory.retrieval import MemoryReader
 
+#: A provider failure is labelled for metrics only; the order decides the label.
+#: A timeout wins over a status code, which wins over a malformed response.
+_STATUS_CATEGORIES: dict[int, str] = {
+    400: "invalid_request",
+    401: "authentication",
+    403: "authentication",
+    429: "rate_limit",
+}
+
+
+def _failure_category(exc: Exception, status: object) -> str:
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if type(status) is int:
+        known = _STATUS_CATEGORIES.get(status)
+        if known is not None:
+            return known
+        if 500 <= status <= 599:
+            return "service_unavailable"
+    if isinstance(exc, ValueError):
+        return "invalid_response_or_request"
+    return "unknown"
+
 
 class ObservedLLM:
     def __init__(self, client: LLMClient, metrics: IntelligenceMetrics) -> None:
@@ -57,21 +80,7 @@ class ObservedLLM:
         except Exception as exc:
             self.metrics.provider_failures += 1
             status = getattr(exc, "status_code", None)
-            category = (
-                "timeout"
-                if isinstance(exc, TimeoutError)
-                else "authentication"
-                if type(status) is int and status in (401, 403)
-                else "rate_limit"
-                if type(status) is int and status == 429
-                else "service_unavailable"
-                if type(status) is int and 500 <= status <= 599
-                else "invalid_request"
-                if type(status) is int and status == 400
-                else "invalid_response_or_request"
-                if isinstance(exc, ValueError)
-                else "unknown"
-            )
+            category = _failure_category(exc, status)
             counts = self.metrics.provider_failure_categories
             counts[category] = counts.get(category, 0) + 1
             raise RuntimeError("Model request failed.") from None

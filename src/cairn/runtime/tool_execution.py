@@ -115,10 +115,12 @@ def _check_tool_permission(
     tool_call: ToolCall,
     turn_span: Span | None,
 ) -> PermissionResult:
+    # A span exists only when a tracer does, so one local binding is enough.
+    tracer = agent.tracer
     permission_span = None
 
-    if agent.tracer is not None and turn_span is not None:
-        permission_span = agent.tracer.start_child_span(
+    if tracer is not None and turn_span is not None:
+        permission_span = tracer.start_child_span(
             turn_span,
             "permission.check",
             attributes={
@@ -135,7 +137,7 @@ def _check_tool_permission(
         if permission.policy_decision is PermissionDecision.ASK:
             permission = _ask_for_approval(agent, tool_call)
 
-        if permission_span is not None and agent.tracer is not None:
+        if permission_span is not None and tracer is not None:
             permission_span.attributes.update(
                 {
                     "policy_decision": permission.policy_decision.value,
@@ -146,16 +148,16 @@ def _check_tool_permission(
                 }
             )
     except Exception as exc:
-        if permission_span is not None and agent.tracer is not None:
-            agent.tracer.end_span(
+        if permission_span is not None and tracer is not None:
+            tracer.end_span(
                 permission_span,
                 status=SpanStatus.ERROR,
                 error=f"{type(exc).__name__}: {exc}",
             )
         raise
     else:
-        if permission_span is not None and agent.tracer is not None:
-            agent.tracer.end_span(permission_span, status=SpanStatus.OK)
+        if permission_span is not None and tracer is not None:
+            tracer.end_span(permission_span, status=SpanStatus.OK)
 
     return permission
 

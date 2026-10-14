@@ -24,18 +24,19 @@ class ModelManager:
             raise ValueError("Model names must be unique.")
 
         self.config = config
+        # Names are unique, so this lookup is lossless and keeps declaration order.
+        self._by_name = {model.name: model for model in config.model_config}
         self.model = config.model_config[0]
 
     def list_models(self) -> tuple[ModelConfig, ...]:
         return self.config.model_config
 
     def select_model(self, model_name: str) -> ModelConfig:
-        models = self.list_models()
-        for model in models:
-            if model.name == model_name:
-                self.model = model
-                return model
-        raise ValueError(f"Model '{model_name}' not found in the configuration.")
+        model = self._by_name.get(model_name)
+        if model is None:
+            raise ValueError(f"Model '{model_name}' not found in the configuration.")
+        self.model = model
+        return model
 
     def current_model(self) -> ModelConfig:
         return self.model

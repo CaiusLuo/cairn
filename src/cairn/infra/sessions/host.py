@@ -18,6 +18,16 @@ from cairn.infra.sessions.models import (
 from cairn.infra.workspace.workspace import Workspace
 
 
+def _registration_unavailable() -> None:
+    """The repository registration cannot be trusted as evidence."""
+    raise SessionStoreError("git_registration_unavailable")
+
+
+def _observation_unavailable() -> None:
+    """The host's Git observation is incomplete or unusable."""
+    raise SessionStoreError("git_observation_unavailable")
+
+
 def identify(path: Path) -> PathIdentity:
     path = path.resolve(strict=True)
     info = path.stat()
@@ -28,12 +38,12 @@ def identify(path: Path) -> PathIdentity:
 
 def _pointer(path: Path) -> tuple[int, int, str]:
     if path.is_symlink() or not path.is_file():
-        raise SessionStoreError("git_registration_unavailable")
+        _registration_unavailable()
     before = path.stat()
     with path.open("rb") as stream:
         raw = stream.read(4097)
     if len(raw) > 4096 or path.stat() != before:
-        raise SessionStoreError("git_registration_unavailable")
+        _registration_unavailable()
     return before.st_dev, before.st_ino, raw.decode("utf-8").strip()
 
 
@@ -48,25 +58,25 @@ async def _observe_workspace(
     async def command(*args: str, optional: bool = False) -> tuple[int, str]:
         result = await provider.run_git("--no-replace-objects", *args, env=env)
         if result.stdout_truncated or result.stderr_truncated:
-            raise SessionStoreError("git_observation_unavailable")
+            _observation_unavailable()
         if result.returncode and not optional:
-            raise SessionStoreError("git_observation_unavailable")
+            _observation_unavailable()
         return result.returncode, result.stdout.decode("utf-8").strip()
 
     discovery = await provider.run_git("rev-parse", "--show-toplevel", env=env)
     if discovery.stdout_truncated or discovery.stderr_truncated:
-        raise SessionStoreError("git_observation_unavailable")
+        _observation_unavailable()
     if discovery.returncode:
         # Discovery failure in a marked checkout is never a non-Git fallback.
         if any(
             (p / ".git").exists() or (p / ".git").is_symlink()
             for p in (workspace.root, *workspace.root.parents)
         ):
-            raise SessionStoreError("git_observation_unavailable")
+            _observation_unavailable()
         if discovery.returncode != 128 or not discovery.stderr.startswith(
             b"fatal: not a git repository"
         ):
-            raise SessionStoreError("git_observation_unavailable")
+            _observation_unavailable()
         return WorkspaceBinding(root=root_identity, git=None)
     root = Path(discovery.stdout.decode("utf-8").strip()).resolve(strict=True)
     _, common_text = await command(
@@ -76,35 +86,35 @@ async def _observe_workspace(
     common, admin = Path(common_text), Path(admin_text)
     _, registrations = await command("worktree", "list", "--porcelain", "-z")
     if f"worktree {root}\0" not in registrations + "\0":
-        raise SessionStoreError("git_registration_unavailable")
+        _registration_unavailable()
     pointers: list[tuple[int, int, str]] = []
     marker = root / ".git"
     if marker.is_symlink():
-        raise SessionStoreError("git_registration_unavailable")
+        _registration_unavailable()
     if marker.is_file():
         pointer = _pointer(marker)
         if not pointer[2].startswith("gitdir: ") or (root / pointer[2][8:]).resolve(
             strict=True
         ) != admin.resolve(strict=True):
-            raise SessionStoreError("git_registration_unavailable")
+            _registration_unavailable()
         backlink = _pointer(admin / "gitdir")
         if Path(backlink[2]).resolve(strict=True) != marker.resolve(strict=True):
-            raise SessionStoreError("git_registration_unavailable")
+            _registration_unavailable()
         pointers.extend((pointer, backlink))
     elif marker.resolve(strict=True) != admin.resolve(strict=True):
-        raise SessionStoreError("git_registration_unavailable")
+        _registration_unavailable()
     _, branch = await command("branch", "--show-current")
     head_code, head = await command(
         "rev-parse", "--verify", "--quiet", "HEAD^{commit}", optional=True
     )
     if head_code:
         if not branch or head_code != 1:
-            raise SessionStoreError("git_observation_unavailable")
+            _observation_unavailable()
         ref_code, _ = await command(
             "show-ref", "--verify", "--quiet", f"refs/heads/{branch}", optional=True
         )
         if ref_code != 1:
-            raise SessionStoreError("git_observation_unavailable")
+            _observation_unavailable()
     prefix = workspace.root.relative_to(root).as_posix()
     observed = WorkspaceBinding(
         root=root_identity,

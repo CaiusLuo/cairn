@@ -336,6 +336,17 @@ class SessionStore:
             self._latch()
             raise
 
+    def _begin(self, expected: Revision | TaskRevision, kind: type[StrictDTO]) -> None:
+        """Attribute a later fault to this caller's session, then validate.
+
+        Every public mutator opens with these two steps in this order:
+        ``_latch`` reads ``_mutation_session``, so it must be set before the
+        validation that could fail, and the validation must precede any
+        transaction or external effect.
+        """
+        self._mutation_session = expected.session_id
+        self._encode(expected, kind=kind)
+
     def _latch(self) -> None:
         self._fault = True
         self._fault_sessions.add(
@@ -1023,8 +1034,7 @@ class SessionStore:
     def create_task(
         self, expected: Revision, *, task_id: str, input_digest: str
     ) -> TaskRecord:
-        self._mutation_session = expected.session_id
-        self._encode(expected, kind=Revision)
+        self._begin(expected, Revision)
         try:
             task = TaskRecord(
                 revision=TaskRevision(
@@ -1136,8 +1146,7 @@ class SessionStore:
     def commit_task_turn(
         self, expected: TaskRevision, receipt: CheckpointReceipt
     ) -> TaskRecord:
-        self._mutation_session = expected.session_id
-        self._encode(expected, kind=TaskRevision)
+        self._begin(expected, TaskRevision)
         self._encode(receipt, kind=CheckpointReceipt)
         with self._write() as conn:
             task, session = self._task_current(conn, expected, "running")
@@ -1153,8 +1162,7 @@ class SessionStore:
             raise SessionStoreError("task_checkpoint_not_current")
 
     def start_task_inspection(self, expected: TaskRevision) -> TaskRecord:
-        self._mutation_session = expected.session_id
-        self._encode(expected, kind=TaskRevision)
+        self._begin(expected, TaskRevision)
         with self._write() as conn:
             task, session = self._task_current(conn, expected, "turn_committed")
             self._task_head(task, session)
@@ -1165,8 +1173,7 @@ class SessionStore:
     def record_task_result(
         self, expected: TaskRevision, result: TaskResultData
     ) -> TaskRecord:
-        self._mutation_session = expected.session_id
-        self._encode(expected, kind=TaskRevision)
+        self._begin(expected, TaskRevision)
         raw = self._encode(result, limit=MAX_TASK_BYTES, kind=TaskResultData)
         result = decode_record(TaskResultData, raw, limit=MAX_TASK_BYTES)
         with self._write() as conn:
@@ -1181,8 +1188,7 @@ class SessionStore:
     def require_task_recovery(
         self, expected: TaskRevision, diagnostic: TaskDiagnostic
     ) -> TaskRecord:
-        self._mutation_session = expected.session_id
-        self._encode(expected, kind=TaskRevision)
+        self._begin(expected, TaskRevision)
         with self._write(recovery=True) as conn:
             task, session = self._task(conn, expected.session_id, expected.task_id)
             if task.revision != expected:
@@ -1272,8 +1278,7 @@ class SessionStore:
         )
 
     def begin_turn(self, expected: Revision, intent: TurnIntent) -> Revision:
-        self._mutation_session = expected.session_id
-        self._encode(expected, kind=Revision)
+        self._begin(expected, Revision)
         raw = self._encode(intent, kind=TurnIntent)
         intent = decode_record(TurnIntent, raw)
         diagnostics = AttemptDiagnostics(
@@ -1334,8 +1339,7 @@ class SessionStore:
         return record
 
     def fence_tool(self, expected: Revision, fence: ToolFence) -> Revision:
-        self._mutation_session = expected.session_id
-        self._encode(expected, kind=Revision)
+        self._begin(expected, Revision)
         fence = decode_record(ToolFence, self._encode(fence, kind=ToolFence))
         with self._prepare(expected) as prepared:
             record = self._active(prepared, fence.turn_id)
@@ -1371,8 +1375,7 @@ class SessionStore:
     def commit_turn(
         self, expected: Revision, settled: SettledTurn
     ) -> CheckpointReceipt:
-        self._mutation_session = expected.session_id
-        self._encode(expected, kind=Revision)
+        self._begin(expected, Revision)
         # Checkpoint's larger bound; everything is validated before BEGIN IMMEDIATE.
         try:
             raw_settled = self._encode(
@@ -1451,8 +1454,7 @@ class SessionStore:
         )
 
     def require_recovery(self, expected: Revision, reason_code: Reason) -> Revision:
-        self._mutation_session = expected.session_id
-        self._encode(expected, kind=Revision)
+        self._begin(expected, Revision)
         if reason_code not in (
             "storage_failed",
             "finalization_failed",
@@ -1494,8 +1496,7 @@ class SessionStore:
         or after synchronous admission failed before any work was dispatched.
         Inspection/reconciliation or a storage failure alone proves no cleanup.
         """
-        self._mutation_session = expected.session_id
-        self._encode(expected, kind=Revision)
+        self._begin(expected, Revision)
         if type(turn_id) is not str:
             raise SessionStoreError("live_turn_required")
         try:
@@ -1527,8 +1528,7 @@ class SessionStore:
         return (session_id, turn_id) in self._owned_turns
 
     def reconcile(self, expected: Revision, resolution: HostResolution) -> Revision:
-        self._mutation_session = expected.session_id
-        self._encode(expected, kind=Revision)
+        self._begin(expected, Revision)
         resolution = decode_record(
             HostResolution, self._encode(resolution, kind=HostResolution)
         )
