@@ -1,0 +1,23 @@
+{
+  "name": "cairn-pi-tui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "test": "node --test dist/*.test.js",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@earendil-works/pi-tui": "1.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

@@ -15,6 +15,7 @@ page is the map for everything else.
 
 | Document | Covers |
 | --- | --- |
+| [Experimental Pi TUI](../ui/pi/README.md) | Separate terminal frontend, local protocol, installation and integration limits |
 | [Configuration](configuration.md) | Supported `.env` and `.cairn/models.toml` layouts, provider setup, credential resolution, and local model edits |
 | [M1-A model streaming](guides/model-streaming.md) | Provisional CLI text, bounded response assembly, supported provider shapes, fallback and cancellation |
 | [M1-B Session lifecycle](guides/session-lifecycle.md) | Opt-in Agent ownership, turn admission, ordered events, close and settlement |
