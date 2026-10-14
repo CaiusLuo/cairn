@@ -128,7 +128,17 @@ class SafeTraceSink:
             tool = span.attributes["tool"]
             attributes["tool"] = (
                 tool
-                if tool in {"bash", "read_file", "edit_file", "repo_graph"}
+                if tool
+                in {
+                    "bash",
+                    "read_file",
+                    "edit_file",
+                    "write_file",
+                    "patch_file",
+                    "glob",
+                    "grep",
+                    "repo_graph",
+                }
                 else "unknown_tool"
             )
         self.sink.emit(

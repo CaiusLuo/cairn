@@ -214,8 +214,20 @@ def test_four_arm_git_identity_and_feature_isolation(tmp_path: Path) -> None:
         runs.append(metrics)
         messages, tools = llm.calls[0]
         assert tools is not None
+        # The runner shares build_agent, so this set tracks the assembled tool
+        # surface. Adding grep/glob changed it for both arms: the
+        # bash-discovery observations now under-report fallback shell search.
+        # Runs recorded before that change are not directly comparable.
         assert {schema["function"]["name"] for schema in tools} == (
-            {"bash", "read_file", "edit_file"}
+            {
+                "bash",
+                "read_file",
+                "edit_file",
+                "write_file",
+                "patch_file",
+                "glob",
+                "grep",
+            }
             | ({"repo_graph"} if arm.graph else set())
         )
         assert (

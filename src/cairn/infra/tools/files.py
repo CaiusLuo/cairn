@@ -253,6 +253,14 @@ class EditFileTool:
                         },
                         "old_text": {"type": "string"},
                         "new_text": {"type": "string"},
+                        "replace_all": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": (
+                                "Replace every occurrence of old_text instead of "
+                                "exactly one. Unsupported when creating a file."
+                            ),
+                        },
                     },
                     "required": ["path", "old_text", "new_text"],
                     "additionalProperties": False,
@@ -261,11 +269,15 @@ class EditFileTool:
         }
 
     def validate(self, arguments: dict[str, Any]) -> None:
-        _validate_file_path(self.workspace, arguments, {"path", "old_text", "new_text"})
+        _validate_file_path(
+            self.workspace, arguments, {"path", "old_text", "new_text", "replace_all"}
+        )
         if not isinstance(arguments.get("old_text"), str) or not isinstance(
             arguments.get("new_text"), str
         ):
             raise InvalidArguments("old_text and new_text must be strings")
+        if not isinstance(arguments.get("replace_all", False), bool):
+            raise InvalidArguments("replace_all must be a boolean")
 
     async def execute(
         self,
@@ -277,9 +289,12 @@ class EditFileTool:
         path = self.workspace.resolve_path(arguments["path"])
         old_text = arguments["old_text"]
         new_text = arguments["new_text"]
+        replace_all = arguments.get("replace_all", False)
 
         creating = old_text == ""
         if creating:
+            if replace_all:
+                raise ValueError("replace_all is not supported when creating a file")
             if path.exists():
                 raise ValueError("File already exists; no changes made")
             if _utf8_size(new_text) > EDIT_FILE_MAX_BYTES:
@@ -294,11 +309,15 @@ class EditFileTool:
                 raise FileNotFoundError(f"File not found: {arguments['path']}")
             original = _read_edit_file(path)
             matches = original.count(old_text)
-            if matches != 1:
+            if matches == 0:
+                raise ValueError("old_text matched 0 times; no changes made")
+            if matches > 1 and not replace_all:
                 raise ValueError(f"old_text matched {matches} times; no changes made")
 
             updated_size = (
-                _utf8_size(original) - _utf8_size(old_text) + _utf8_size(new_text)
+                _utf8_size(original)
+                - _utf8_size(old_text) * matches
+                + _utf8_size(new_text) * (matches if replace_all else 1)
             )
 
             if updated_size > EDIT_FILE_MAX_BYTES:
@@ -307,7 +326,7 @@ class EditFileTool:
                     f"{EDIT_FILE_MAX_BYTES} bytes; no changes made"
                 )
 
-            updated = original.replace(old_text, new_text, 1)
+            updated = original.replace(old_text, new_text, -1 if replace_all else 1)
 
         fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".cairn-edit-")
         try:

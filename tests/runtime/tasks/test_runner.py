@@ -113,7 +113,15 @@ def test_coding_task_uses_real_loop_and_preserves_runtime_boundaries(
     assert agent.model_executor is executor
     assert agent.permission_handler is permission_handler
     assert agent.tracer is tracer
-    assert set(agent.tools.tools) == {"bash", "read_file", "edit_file"}
+    assert set(agent.tools.tools) == {
+        "bash",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "patch_file",
+        "glob",
+        "grep",
+    }
     assert len(llm.calls) == 3
     assert all(message.role != "system" for message in agent.state.messages)
     loop.assert_awaited_once_with(agent, SPEC.prompt, budget=runner.budget)
