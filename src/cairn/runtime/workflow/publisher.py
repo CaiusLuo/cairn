@@ -27,6 +27,7 @@ from cairn.infra.github.transport import (
     validate_pull_request_url,
 )
 from cairn.runtime.lifecycle import settle_owned
+from cairn.runtime.report_writer import ReportWriter
 from cairn.runtime.workflow.git import SnapshotDriftError, WorkflowGit
 from cairn.runtime.workflow.models import (
     GitSnapshot,
@@ -93,23 +94,24 @@ class GitHubPublisher:
         self, issue: IssueTask, result: LocalWorkflowResult
     ) -> LocalWorkflowResult:
         self._claim_publication(result)
-        report = result.report
+        writer = ReportWriter(
+            report=result.report,
+            recovery_path=result.recovery_path,
+            handle=result.handle,
+            persist=persist_report,
+            error_factory=lambda: ReportPersistenceError(
+                "Workflow report persistence failed"
+            ),
+        )
 
         def save(**changes: object) -> None:
-            nonlocal report
-            report = report.model_copy(update=changes)
-            try:
-                persist_report(report, result.recovery_path)
-            except Exception:
-                error = ReportPersistenceError("Workflow report persistence failed")
-                error.add_note(f"Retained worktree: {result.handle.path}")
-                error.add_note(f"Recovery report: {result.recovery_path}")
-                raise error from None
+            writer.save(**changes)
 
         def blocked(failure: WorkflowFailure) -> LocalWorkflowResult:
             save(status=WorkflowStatus.BLOCKED, failure=failure)
-            return replace(result, report=report)
+            return replace(result, report=writer.report)
 
+        report = writer.report
         try:
             git = WorkflowGit(result.handle)
             issue = IssueTask.model_validate(issue.model_dump())
@@ -226,7 +228,7 @@ class GitHubPublisher:
                 failure=None,
                 pr_url=pr.url,
             )
-            return replace(result, report=report)
+            return replace(result, report=writer.report)
         except asyncio.CancelledError as primary:
             try:
                 save(status=WorkflowStatus.CANCELLED, failure=WorkflowFailure.CANCELLED)

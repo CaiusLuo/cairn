@@ -17,6 +17,7 @@ from cairn.infra.git.worktree import WorktreeError
 from cairn.infra.observability.models import Span
 from cairn.infra.observability.tracer import Tracer
 from cairn.runtime.lifecycle import settle_owned
+from cairn.runtime.report_writer import ReportWriter
 from cairn.runtime.review.git import (
     ReviewInputError,
     assert_snapshot_unchanged,
@@ -80,8 +81,19 @@ class _Progress:
             self.recovery_path,
         )
 
-    def save(self) -> None:
-        report = ReviewWorkflowReport(
+    def _writer(self) -> ReportWriter:
+        return ReportWriter(
+            report=self._build_report(),
+            recovery_path=self.recovery_path,
+            handle=self.git.handle,
+            persist=persist_review_report,
+            error_factory=lambda: ReviewPersistenceError(
+                "Review recovery report persistence failed"
+            ),
+        )
+
+    def _build_report(self) -> ReviewWorkflowReport:
+        return ReviewWorkflowReport(
             status=self.status,
             phase=self.phase,
             failure=self.failure,
@@ -121,16 +133,12 @@ class _Progress:
                 for fix in self.fixes
             ),
         )
-        try:
-            persist_review_report(report, self.recovery_path)
-        except Exception:
-            error = ReviewPersistenceError("Review recovery report persistence failed")
-            self.annotate(error)
-            raise error from None
+
+    def save(self) -> None:
+        self._writer().save()
 
     def annotate(self, error: BaseException) -> None:
-        error.add_note(f"Retained worktree: {self.git.handle.path}")
-        error.add_note(f"Recovery report: {self.recovery_path}")
+        self._writer().annotate(error)
 
     def finish(
         self, status: ReviewWorkflowStatus, failure: ReviewWorkflowFailure | None = None
