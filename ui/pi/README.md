@@ -39,7 +39,8 @@ interpreter. It replaces itself with Node; there is no extra launcher process.
 - Ctrl+C cancels an active operation, or clears the idle editor/selection.
   `/quit`, `/exit` or Ctrl+D closes after runtime cleanup. Repeated cancellation
   does not interrupt cleanup. The UI never force-kills the backend.
-- Text streams into one Markdown component per attempt; a matching final message
+- Thinking from `reasoning_content` streams into its own labelled Markdown
+  component. Answer text uses a separate component; a matching final message
   is not appended again. Abandoned attempts and cancelled turns stay labelled.
 
 The default CLI and durable session commands retain their existing behavior.
@@ -90,14 +91,12 @@ and ordered turn event attribution; transport failure closes stdin for cleanup.
 
 These are deferred integration constraints, not changes to core ownership:
 
-1. **Reasoning stream:** `LLMStreamChunk` and runtime events carry answer text,
-   tool-call deltas and finish metadata, but no separate reasoning delta. This
-   UI therefore streams answers only. The current LiteLLM normalizer rejects
-   nonempty `reasoning_content` or `reasoning` as an unsupported delta shape, so
-   reasoning-enabled providers can fail the stream rather than merely hide
-   reasoning text. Add an explicit provider/core event
-   contract before displaying reasoning; asynchronous execution alone cannot
-   supply missing reasoning data.
+1. **Reasoning variants and retention:** streaming string `reasoning_content`
+   is supported, with an independent 1 MiB UTF-8 budget per attempt. Structured
+   `reasoning` shapes remain unsupported. Thinking is transient display data,
+   omitted from the completed answer, conversation, trace and provider replay.
+   Non-streaming reasoning display and historical reasoning replay are not part
+   of this interface.
 2. **Synchronous approval API:** `SessionPermissionHandler` takes a synchronous
    callback. A small input thread validates control messages and wakes a
    condition; it never executes tools or mutates Agent state. Runtime execution
@@ -140,7 +139,8 @@ handshake/malformed requests, switching, ordered events, bounded output, stale
 and denied approvals, busy rejection, cancellation/EOF cleanup, and sanitized
 errors. They do not establish paid-provider behavior or real sandbox execution.
 The two frontend tests render actual Pi components and check duplicate final text,
-tool expansion, control-character filtering and incomplete output labels.
+tool expansion, control-character filtering, separate thinking/answer order and
+incomplete output labels.
 A controlled blocking-builder regression drives the real Bridge reader for
 initial activation and an active-provider switch. It fixes cancellation before
 commit and after commit at deterministic barriers, checking runtime bindings,

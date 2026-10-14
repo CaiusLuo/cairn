@@ -12,6 +12,7 @@ from openai.types.chat import ChatCompletionChunk
 
 import cairn.infra.llm.litellm_client as client_module
 from cairn.core.budget import RunBudget
+from cairn.core.events import Event
 from cairn.core.llm import StreamProtocolError
 from cairn.core.models import LLMUsage, Message
 from cairn.infra.llm.errors import is_fallback_error
@@ -99,6 +100,9 @@ def test_stream_options_serialization_unicode_and_partial_usage(
         provider_chunk(tool_calls=[{"index": 0}]),
         provider_chunk(tool_calls=[{"index": 0, "function": {"arguments": {}}}]),
         {"choices": [{"index": 0, "delta": {"function_call": {"name": "secret"}}}]},
+        {"choices": [{"index": 0, "delta": {"reasoning_content": 0}}]},
+        {"choices": [{"index": 0, "delta": {"reasoning_content": {"secret": "x"}}}]},
+        {"choices": [{"index": 0, "delta": {"reasoning": "secret"}}]},
         provider_chunk(usage={"prompt_tokens": True}),
     ],
 )
@@ -155,10 +159,22 @@ def test_supported_sdk_routes_still_stream_through_run_turn(
     monkeypatch: pytest.MonkeyPatch, provider: str
 ) -> None:
     wrapper, source = sdk_stream(
-        provider_chunk("answer"), provider_chunk(finish="stop"), provider=provider
+        provider_chunk(reasoning="先思考"),
+        provider_chunk("answer", reasoning="再回答"),
+        provider_chunk(finish="stop"),
+        provider=provider,
     )
     requests = install(monkeypatch, wrapper)
-    agent = Agent(llm=LiteLLMClient(f"{provider}/test"), tools=ToolRegistry())
+    events: list[Event] = []
+
+    def observe(event: Event) -> None:
+        events.append(event)
+
+    agent = Agent(
+        llm=LiteLLMClient(f"{provider}/test"),
+        tools=ToolRegistry(),
+        event_handler=observe,
+    )
     assert (
         asyncio.run(run_turn(agent, "hello", budget=RunBudget(max_steps=1))) == "answer"
     )
@@ -166,6 +182,9 @@ def test_supported_sdk_routes_still_stream_through_run_turn(
     assert requests[0]["stream"] is True
     assert requests[0]["model"] == f"{provider}/test"
     assert agent.state.messages[-1].content == "answer"
+    assert [
+        event.data["text"] for event in events if event.type == "model_reasoning_delta"
+    ] == ["先思考", "再回答"]
     assert source.closed
 
 

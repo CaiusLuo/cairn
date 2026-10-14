@@ -381,6 +381,7 @@ class Bridge:
                 "turn_settled",
                 "model_stream_start",
                 "model_text_delta",
+                "model_reasoning_delta",
                 "model_stream_end",
                 "agent_finish",
             }:

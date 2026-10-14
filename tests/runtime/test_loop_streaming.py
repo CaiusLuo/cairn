@@ -211,6 +211,7 @@ def test_invalid_stream_commits_no_partial_messages_or_tool_effects(
     [
         [],
         [LLMStreamChunk(text="partial")],
+        [LLMStreamChunk(reasoning_text="partial thought")],
         [LLMStreamChunk(tool_calls=(ToolCallDelta(0, "a", "record", '{"value":'),))],
         [LLMStreamChunk(tool_calls=(ToolCallDelta(0, "a", "record", "{}"),))],
         [
@@ -328,3 +329,40 @@ def test_provisional_tool_arguments_never_enter_trace_or_events() -> None:
     assert secret not in repr(events)
     assert secret not in repr(sink.spans)
     assert agent.state.messages == []
+
+
+def test_reasoning_is_visible_before_answer_but_never_enters_history_or_trace() -> None:
+    async def scenario() -> None:
+        thought = "transient-thought-你好"
+        blocked = StreamBarrier(asyncio.Event(), asyncio.Event())
+        llm = ScriptedStreamLLM(
+            [
+                LLMStreamChunk(reasoning_text=thought),
+                blocked,
+                LLMStreamChunk(text="answer"),
+                LLMStreamChunk(finish_reason="stop"),
+            ]
+        )
+        events: list[Event] = []
+        agent = make_agent(llm, events)
+        sink = RecordingSink()
+        agent.tracer = Tracer(sink)
+        task = asyncio.create_task(run_turn(agent, "hello", budget=TEST_BUDGET))
+        await blocked.entered.wait()
+        reasoning = next(e for e in events if e.type == "model_reasoning_delta")
+        assert reasoning.data == {
+            "text": thought,
+            "step": 1,
+            "attempt": 1,
+            "model_id": None,
+        }
+        assert not task.done()
+        assert agent.state.messages == [Message(role="user", content="hello")]
+        blocked.release.set()
+        assert await task == "answer"
+        assert agent.state.messages[-1].content == "answer"
+        assert thought not in repr(agent.state.messages)
+        assert thought not in repr(sink.spans)
+        assert llm.closed == 1
+
+    asyncio.run(scenario())

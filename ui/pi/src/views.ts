@@ -99,6 +99,8 @@ class ToolCard implements Component {
 export class Transcript extends Container {
   private stream: Markdown | null = null;
   private streamText = "";
+  private reasoning: Markdown | null = null;
+  private reasoningText = "";
   private streamStep: number | null = null;
   private streamCompleted = false;
   private tool: ToolCard | null = null;
@@ -120,17 +122,29 @@ export class Transcript extends Container {
     const d = m.data;
     switch (m.event) {
       case "model_stream_start":
-        this.stream = markdown("");
+        this.stream = null;
         this.streamText = "";
+        this.reasoning = null;
+        this.reasoningText = "";
         this.streamStep = d.step;
         this.streamCompleted = false;
-        this.addChild(this.stream);
+        break;
+      case "model_reasoning_delta":
+        if (!this.reasoning) {
+          this.notice("Thinking (provisional)");
+          this.reasoning = markdown("");
+          this.addChild(this.reasoning);
+        }
+        this.reasoningText += clean(d.text);
+        this.reasoning.setText(this.reasoningText);
         break;
       case "model_text_delta":
-        if (this.stream) {
-          this.streamText += clean(d.text);
-          this.stream.setText(this.streamText);
+        if (!this.stream) {
+          this.stream = markdown("");
+          this.addChild(this.stream);
         }
+        this.streamText += clean(d.text);
+        this.stream.setText(this.streamText);
         break;
       case "model_stream_end":
         this.streamCompleted = d.status === "completed";

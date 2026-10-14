@@ -158,6 +158,7 @@ def test_stream_and_tool_events_are_ordered_and_bounded(client: Client) -> None:
     client.until("idle")
     events = [m for m in client.seen if m["type"] == "event"]
     names = [e["event"] for e in events]
+    assert names.index("model_reasoning_delta") < names.index("model_text_delta")
     assert (
         names.index("model_text_delta")
         < names.index("tool_call")

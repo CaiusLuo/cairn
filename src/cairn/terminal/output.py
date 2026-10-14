@@ -218,6 +218,8 @@ class StreamingDisplay:
     def __init__(self) -> None:
         self.final_text_visible = False
         self._open = False
+        self._channel: str | None = None
+        self._text_seen = False
         self._active = False
         self._completed_text_step: int | None = None
 
@@ -229,12 +231,24 @@ class StreamingDisplay:
         """Return True only for handled streaming events; legacy output stays put."""
         if event.type == "model_stream_start":
             self._completed_text_step = None
+            self._text_seen = False
+            self._channel = None
             self._active = True
             return True
-        if event.type == "model_text_delta":
-            if not self._open:
-                console.print("[bold]Cairn>[/bold] [dim](provisional)[/dim]")
+        if event.type in ("model_text_delta", "model_reasoning_delta"):
+            if not self._open or self._channel != event.type:
+                if self._open:
+                    console.print()
+                label = (
+                    "(thinking, provisional)"
+                    if event.type == "model_reasoning_delta"
+                    else "(provisional)"
+                )
+                console.print(f"[bold]Cairn>[/bold] [dim]{label}[/dim]")
                 self._open = True
+                self._channel = event.type
+            if event.type == "model_text_delta":
+                self._text_seen = True
             text = str(event.data["text"])
             # Rich markup and C0/C1 terminal controls have no authority. Preserve
             # newline/tab and printable Unicode, including multibyte fragments.
@@ -256,8 +270,9 @@ class StreamingDisplay:
             status = event.data["status"]
             if status == "completed":
                 self._active = False
-                if self._open:
+                if self._text_seen:
                     self._completed_text_step = event.data.get("step")
+                if self._open:
                     console.print()
                     self._open = False
             else:

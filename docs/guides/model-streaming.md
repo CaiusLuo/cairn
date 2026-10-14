@@ -6,6 +6,14 @@ incomplete tool arguments are never previewed. Streaming text is plain text:
 Rich markup/emoji syntax is literal and C0/C1 terminal controls are filtered
 (newline/tab remain). Generate-only clients keep the existing Markdown rendering.
 
+OpenAI-compatible `delta.reasoning_content` strings are normalized separately as
+`LLMStreamChunk.reasoning_text` and shown under a `(thinking, provisional)` label.
+Thinking and answer fragments may occur in the same chunk. Thinking is transient:
+it is never merged into the answer, retained in `LLMResponse` or conversation,
+replayed to a provider, or stored in trace/checkpoint data. No provider-specific
+thinking option is forced; this accepts the field when the selected provider
+returns it. Generate-only clients retain their existing response contract.
+
 This implements M1-A. The [Durable Session design](../design/durable-session-v1.md)
 records the predecessor requirements; its source audit describes the earlier
 non-streaming baseline. [M1-B](session-lifecycle.md) supplies opt-in Session/Turn
@@ -35,6 +43,7 @@ The [assembler](../../src/cairn/runtime/response_assembly.py) enforces:
 | Contract | Rule |
 | --- | --- |
 | Text | Ordered UTF-8 fragments; at most 1 MiB cumulatively |
+| Thinking | Valid UTF-8 fragments; independent cumulative 1 MiB limit per attempt; counted without retaining a reasoning buffer |
 | Tool indices | New indices contiguous from zero; fragments may interleave |
 | Identity | Append ID/name fragments before nonempty arguments; no identity changes after arguments begin; final IDs unique in the group |
 | ID/name shape | IDs: ASCII letters/digits/underscore/hyphen, 1–256 characters; names: letter/underscore followed by letters/digits/underscore/dot/colon/hyphen, 1–128 characters |
@@ -82,7 +91,9 @@ it does not change admission, request options or fallback eligibility.
 The stream normalizer supports asynchronous, single-choice OpenAI-compatible chat
 chunks and the LiteLLM `openai`/`azure` wrappers for that shape. An unexpected native
 iterator, synchronous stream, multiple choices, legacy function calls, audio,
-refusal or reasoning delta fails closed after a selected stream request. Repeated
+refusal or structured `reasoning` delta fails closed after a selected stream
+request. The `reasoning_content` extension accepts only string/null values, not
+objects, lists or scalar numbers. Repeated
 full identity headers after arguments begin are unsupported. Explicitly requesting
 a stream for a declined configuration fails before requesting the provider.
 There is no hidden retry through `generate()` when streaming fails.
@@ -102,8 +113,10 @@ uses `settle_owned` for abandoning the consuming task and `await_owned` for its
 generator close. Cleanup is cooperative, with no new timeout policy: a provider
 that never settles cancellation/close may delay cancellation indefinitely.
 
-Only transient events `model_stream_start`, `model_text_delta`, `model_stream_end`
-are added, attributed by step and candidate attempt (model ID nullable).
+Transient events `model_stream_start`, `model_text_delta`, `model_reasoning_delta`
+and `model_stream_end` are attributed by step and candidate attempt (model ID
+nullable). Reasoning events use the same `text` payload and cleanup/fallback
+boundary as answer events; neither delta enters conversation or trace attributes.
 `completed` means one assembled response, not a completed Turn. No events contain
 tool fragments or credential options, and no raw provisional chunks enter trace
 spans/reports. Credential-bearing errors are omitted; errors after provider chunks

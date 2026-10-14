@@ -63,14 +63,14 @@ def normalize_chunk(raw: object) -> LLMStreamChunk:
         raise StreamProtocolError("Missing provider response delta.")
     if _field(delta, "role") not in (None, "assistant"):
         raise StreamProtocolError("Invalid provider response role.")
-    # No legacy function calls, audio, refusal or reasoning-only response shape.
+    # Only the string reasoning_content extension is supported; structured
+    # reasoning and other unaudited response shapes still fail closed.
     if any(
         _field(delta, key)
         for key in (
             "function_call",
             "audio",
             "refusal",
-            "reasoning_content",
             "reasoning",
         )
     ):
@@ -106,6 +106,7 @@ def normalize_chunk(raw: object) -> LLMStreamChunk:
         tool_calls=tuple(fragments),
         finish_reason=_text(_field(choice, "finish_reason")),
         usage=usage,
+        reasoning_text=_text(_field(delta, "reasoning_content")),
     )
 
 

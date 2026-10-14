@@ -36,6 +36,8 @@ class OfflineClient:
         prompt = next(m.content or "" for m in reversed(messages) if m.role == "user")
         if prompt == "fail":
             raise RuntimeError("SECRET-MUST-NOT-LEAK")
+        yield LLMStreamChunk(reasoning_text="Offline thinking. ")
+        await asyncio.sleep(0.03)
         if messages[-1].role != "tool" and prompt in {"tool", "permission", "slow"}:
             yield LLMStreamChunk(text="Checking workspace. ")
             args: dict[str, Any] = {"command": prompt}

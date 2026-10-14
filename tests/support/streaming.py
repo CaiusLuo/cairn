@@ -57,12 +57,16 @@ def provider_chunk(
     tool_calls: list[dict[str, Any]] | None = None,
     finish: str | None = None,
     usage: dict[str, Any] | None = None,
+    reasoning: str | None = None,
 ) -> dict[str, Any]:
+    delta: dict[str, Any] = {"content": text, "tool_calls": tool_calls}
+    if reasoning is not None:
+        delta["reasoning_content"] = reasoning
     return {
         "choices": [
             {
                 "index": 0,
-                "delta": {"content": text, "tool_calls": tool_calls},
+                "delta": delta,
                 "finish_reason": finish,
             }
         ],

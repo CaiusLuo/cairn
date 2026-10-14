@@ -9,6 +9,7 @@ EventType = Literal[
     "turn_committed",
     "model_stream_start",
     "model_text_delta",
+    "model_reasoning_delta",
     "model_stream_end",
     "agent_step",
     "tool_call",

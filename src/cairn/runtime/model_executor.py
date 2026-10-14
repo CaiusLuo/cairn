@@ -41,6 +41,14 @@ async def _assemble_stream(
         _notify(observer, Event(type="model_stream_start", data=attribution))
         async for chunk in stream:
             assembler.add(chunk)
+            if chunk.reasoning_text:
+                _notify(
+                    observer,
+                    Event(
+                        type="model_reasoning_delta",
+                        data={**attribution, "text": chunk.reasoning_text},
+                    ),
+                )
             if chunk.text:
                 _notify(
                     observer,
