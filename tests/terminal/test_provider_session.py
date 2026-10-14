@@ -4,7 +4,7 @@ from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 import pytest
 from litellm.exceptions import RateLimitError
@@ -30,6 +30,12 @@ from cairn.runtime.loop import run_turn
 from cairn.runtime.provider_runtime import build_provider_runtime
 from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.provider import handle_provider
+from tests.support.cli_harness import (
+    count_tokens_as,
+    isolate_cli,
+    set_limits,
+    write_models_toml,
+)
 from tests.support.runtime import RecordingTool
 from tests.support.sandbox import require_working_sandbox
 from tests.support.streaming import CompletionResponse
@@ -117,18 +123,14 @@ def configure_cli(
     tools: ToolRegistry | None = None,
 ) -> SimpleNamespace:
     """Drive the real CLI with fake provider calls and scripted input."""
-    monkeypatch.chdir(tmp_path)
     if toml is not None:
-        (tmp_path / ".cairn").mkdir(parents=True, exist_ok=True)
-        (tmp_path / ".cairn/models.toml").write_text(toml, encoding="utf-8")
+        write_models_toml(tmp_path, toml)
     for name in CREDENTIALS:
         monkeypatch.delenv(name, raising=False)
-    for name in ("CAIRN_CONTEXT_MAX_TOKENS", "CAIRN_RESPONSE_MAX_TOKENS"):
-        monkeypatch.setenv(name, {"CAIRN_CONTEXT_MAX_TOKENS": "100"}.get(name, "20"))
     for name, value in CREDENTIALS.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.setattr(cli_module, "dotenv_values", lambda: {})
-    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    isolate_cli(tmp_path, monkeypatch, *commands)
+    set_limits(monkeypatch)
 
     # The session handler is created here so tests can pre-seed grants before
     # the CLI commits any switch.
@@ -178,10 +180,6 @@ def configure_cli(
         state.requests.append(kwargs)
         return _response(f"reply {len(state.requests)}")
 
-    def count(**kwargs: Any) -> int:
-        state.token_models.append(kwargs["model"])
-        return 30
-
     monkeypatch.setattr(cli_module, "confirm_provider_access", confirm_access)
     monkeypatch.setattr(cli_module, "build_agent", capture_agent)
     monkeypatch.setattr(
@@ -190,12 +188,7 @@ def configure_cli(
     monkeypatch.setattr(cli_module, "CommandContext", capture_context)
     monkeypatch.setattr(cli_module, "resolve_provider_api_key", resolve_key)
     monkeypatch.setattr(llm_module, "acompletion", completion)
-    monkeypatch.setattr(counter_module, "token_counter", count)
-    monkeypatch.setattr(
-        cli_module,
-        "CliInput",
-        lambda: SimpleNamespace(read=AsyncMock(side_effect=[*commands, "/exit"])),
-    )
+    state.token_models = count_tokens_as(monkeypatch)
     return state
 
 

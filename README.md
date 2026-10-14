@@ -167,7 +167,10 @@ scheduling ownership, and guidance for placing new code, or the
 
 ## Development
 
+The canonical local check set. Other documents link here instead of repeating it.
+
 ```bash
+uv sync --locked --all-groups
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src tests

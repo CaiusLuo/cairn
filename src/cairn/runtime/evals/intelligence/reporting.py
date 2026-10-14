@@ -83,77 +83,119 @@ def _observations(runs: list[ExperimentRun], field: str) -> dict[str, Any]:
     }
 
 
+def _arm_summary(runs: list[Any]) -> dict[str, Any]:
+    """Aggregate one arm's runs into the reported measurement block."""
+    counts = Counter(run.result.status.value for run in runs)
+    categories = Counter(
+        run.result.failure_category.value for run in runs if run.result.failure_category
+    )
+    included = sum(run.metrics.memory_included_events for run in runs)
+    checked_runs = [run for run in runs if run.result.checks]
+    checks_passed = sum(
+        all(check.passed and check.error is None for check in run.result.checks)
+        for run in checked_runs
+    )
+    nonfresh = sum(
+        count
+        for run in runs
+        for state, count in run.metrics.memory_freshness_counts.items()
+        if state != "fresh"
+    )
+    return {
+        "runs": len(runs),
+        "pass": counts["pass"],
+        "fail": counts["fail"],
+        "error": counts["error"],
+        "task_success_rate": counts["pass"] / len(runs) if runs else None,
+        "workspace_checks_available": len(checked_runs),
+        "workspace_checks_passed": checks_passed,
+        "workspace_check_success_rate": checks_passed / len(checked_runs)
+        if checked_runs
+        else None,
+        "failure_categories": dict(categories),
+        "failed_check_ids": dict(
+            Counter(
+                check.name
+                for run in runs
+                for check in run.result.checks
+                if not check.passed
+            )
+        ),
+        "measurements": {field: _observations(runs, field) for field in MEASUREMENTS},
+        "memory_freshness_counts": dict(
+            Counter(
+                state
+                for run in runs
+                for state, count in run.metrics.memory_freshness_counts.items()
+                for _ in range(count)
+            )
+        ),
+        "stale_recall_rate": sum(
+            run.metrics.memory_ineligible_included_events for run in runs
+        )
+        / nonfresh
+        if nonfresh
+        else None,
+        "relevant_memory_precision": sum(
+            run.metrics.memory_relevant_included_events for run in runs
+        )
+        / included
+        if included
+        else None,
+        "relevant_paths_observed": sum(
+            len(run.metrics.direct_discovery_evidence) for run in runs
+        ),
+        "bash_relevant_file_discovery": None,
+        "repeated_bash_file_exploration": None,
+    }
+
+
+def _measurement_deltas(run: Any, baseline: Any) -> dict[str, Any]:
+    """Per-measurement difference, null when either side has no observation."""
+    deltas: dict[str, Any] = {}
+    for field in MEASUREMENTS:
+        current, original = (
+            getattr(run.metrics, field),
+            getattr(baseline.metrics, field),
+        )
+        deltas[field] = (
+            current - original if current is not None and original is not None else None
+        )
+    return deltas
+
+
+def _case_difference(run: Any, baseline: Any) -> dict[str, Any]:
+    """One non-baseline run compared against its baseline counterpart."""
+    return {
+        "case": run.case_name,
+        "arm": run.arm.value,
+        "repetition": run.repetition,
+        "run_id": run.run_id,
+        "baseline_run_id": baseline.run_id,
+        "status": run.result.status.value,
+        "baseline_status": baseline.result.status.value,
+        "failure_category": run.result.failure_category.value
+        if run.result.failure_category
+        else None,
+        "pass_delta": int(run.result.status is EvalStatus.PASS)
+        - int(baseline.result.status is EvalStatus.PASS),
+        "differences": _measurement_deltas(run, baseline),
+    }
+
+
+def _matched_cohort(report: ExperimentReport) -> set[tuple[str, int]]:
+    """Case/repetition pairs where every arm is present."""
+    groups: dict[tuple[str, int], set[Arm]] = {}
+    for run in report.runs:
+        groups.setdefault((run.case_name, run.repetition), set()).add(run.arm)
+    return {key for key, present in groups.items() if present == set(Arm)}
+
+
 def comparison(report: ExperimentReport, *, matched: bool = True) -> dict[str, Any]:
-    arms: dict[str, Any] = {}
-    for arm in Arm:
-        runs = [run for run in report.runs if run.arm is arm]
-        counts = Counter(run.result.status.value for run in runs)
-        categories = Counter(
-            run.result.failure_category.value
-            for run in runs
-            if run.result.failure_category
-        )
-        included = sum(run.metrics.memory_included_events for run in runs)
-        checked_runs = [run for run in runs if run.result.checks]
-        checks_passed = sum(
-            all(check.passed and check.error is None for check in run.result.checks)
-            for run in checked_runs
-        )
-        nonfresh = sum(
-            count
-            for run in runs
-            for state, count in run.metrics.memory_freshness_counts.items()
-            if state != "fresh"
-        )
-        arms[arm.value] = {
-            "runs": len(runs),
-            "pass": counts["pass"],
-            "fail": counts["fail"],
-            "error": counts["error"],
-            "task_success_rate": counts["pass"] / len(runs) if runs else None,
-            "workspace_checks_available": len(checked_runs),
-            "workspace_checks_passed": checks_passed,
-            "workspace_check_success_rate": checks_passed / len(checked_runs)
-            if checked_runs
-            else None,
-            "failure_categories": dict(categories),
-            "failed_check_ids": dict(
-                Counter(
-                    check.name
-                    for run in runs
-                    for check in run.result.checks
-                    if not check.passed
-                )
-            ),
-            "measurements": {
-                field: _observations(runs, field) for field in MEASUREMENTS
-            },
-            "memory_freshness_counts": dict(
-                Counter(
-                    state
-                    for run in runs
-                    for state, count in run.metrics.memory_freshness_counts.items()
-                    for _ in range(count)
-                )
-            ),
-            "stale_recall_rate": sum(
-                run.metrics.memory_ineligible_included_events for run in runs
-            )
-            / nonfresh
-            if nonfresh
-            else None,
-            "relevant_memory_precision": sum(
-                run.metrics.memory_relevant_included_events for run in runs
-            )
-            / included
-            if included
-            else None,
-            "relevant_paths_observed": sum(
-                len(run.metrics.direct_discovery_evidence) for run in runs
-            ),
-            "bash_relevant_file_discovery": None,
-            "repeated_bash_file_exploration": None,
-        }
+    arms = {
+        arm.value: _arm_summary([run for run in report.runs if run.arm is arm])
+        for arm in Arm
+    }
     baselines = {
         (run.case_name, run.repetition): run
         for run in report.runs
@@ -164,34 +206,7 @@ def comparison(report: ExperimentReport, *, matched: bool = True) -> dict[str, A
         baseline = baselines.get((run.case_name, run.repetition))
         if run.arm is Arm.BASELINE or baseline is None:
             continue
-        deltas = {}
-        for field in MEASUREMENTS:
-            current, original = (
-                getattr(run.metrics, field),
-                getattr(baseline.metrics, field),
-            )
-            deltas[field] = (
-                current - original
-                if current is not None and original is not None
-                else None
-            )
-        differences.append(
-            {
-                "case": run.case_name,
-                "arm": run.arm.value,
-                "repetition": run.repetition,
-                "run_id": run.run_id,
-                "baseline_run_id": baseline.run_id,
-                "status": run.result.status.value,
-                "baseline_status": baseline.result.status.value,
-                "failure_category": run.result.failure_category.value
-                if run.result.failure_category
-                else None,
-                "pass_delta": int(run.result.status is EvalStatus.PASS)
-                - int(baseline.result.status is EvalStatus.PASS),
-                "differences": deltas,
-            }
-        )
+        differences.append(_case_difference(run, baseline))
     result = {
         "schema_version": 1,
         "execution_kind": report.config.execution_kind,
@@ -202,10 +217,7 @@ def comparison(report: ExperimentReport, *, matched: bool = True) -> dict[str, A
         "limitations": list(LIMITATIONS),
     }
     if matched:
-        groups: dict[tuple[str, int], set[Arm]] = {}
-        for run in report.runs:
-            groups.setdefault((run.case_name, run.repetition), set()).add(run.arm)
-        cohort = {key for key, present in groups.items() if present == set(Arm)}
+        cohort = _matched_cohort(report)
         subset = report.model_copy(
             update={
                 "runs": [

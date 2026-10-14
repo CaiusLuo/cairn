@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 import pytest
 from litellm.exceptions import (
@@ -27,6 +27,12 @@ from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.assembly import build_agent
 from cairn.runtime.loop import run_turn
+from tests.support.cli_harness import (
+    count_tokens_as,
+    isolate_cli,
+    set_limits,
+    write_models_toml,
+)
 from tests.support.sandbox import require_working_sandbox
 from tests.support.streaming import CompletionResponse
 
@@ -70,32 +76,23 @@ def _configure_cli(
     *commands: str,
     toml: str | None = TOML,
 ) -> tuple[list[Agent], list[dict[str, Any]], list[str]]:
-    monkeypatch.chdir(tmp_path)
-    if toml is not None:
-        (tmp_path / ".cairn").mkdir()
-        (tmp_path / ".cairn/models.toml").write_text(toml, encoding="utf-8")
     for name, value in {
         "BAILIAN_API_KEY": API_KEY,
         "CAIRN_LLM_MODEL": "openai/legacy-model",
         "CAIRN_LLM_API_KEY": "test-only-legacy-key",
         "CAIRN_BASE_URL": "https://legacy.test/v1",
-        "CAIRN_CONTEXT_MAX_TOKENS": "100",
-        "CAIRN_RESPONSE_MAX_TOKENS": "20",
     }.items():
         monkeypatch.setenv(name, value)
-    monkeypatch.setattr(cli_module, "dotenv_values", lambda: {})
-    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    if toml is not None:
+        write_models_toml(tmp_path, toml)
+    isolate_cli(tmp_path, monkeypatch, *commands)
+    set_limits(monkeypatch)
     monkeypatch.setattr(
         cli_module, "confirm_provider_access", lambda *_args, **_kwargs: True
     )
-    monkeypatch.setattr(
-        cli_module,
-        "CliInput",
-        lambda: SimpleNamespace(read=AsyncMock(side_effect=[*commands, "/exit"])),
-    )
     agents: list[Agent] = []
     requests: list[dict[str, Any]] = []
-    token_models: list[str] = []
+    token_models = count_tokens_as(monkeypatch)
 
     def capture_agent(**kwargs: Any) -> Agent:
         agent = build_agent(**kwargs)
@@ -106,13 +103,8 @@ def _configure_cli(
         requests.append(kwargs)
         return _response(f"reply {len(requests)}")
 
-    def count(**kwargs: Any) -> int:
-        token_models.append(kwargs["model"])
-        return 30
-
     monkeypatch.setattr(cli_module, "build_agent", capture_agent)
     monkeypatch.setattr(llm_module, "acompletion", completion)
-    monkeypatch.setattr(counter_module, "token_counter", count)
     return agents, requests, token_models
 
 

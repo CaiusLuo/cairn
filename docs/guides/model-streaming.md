@@ -14,11 +14,10 @@ replayed to a provider, or stored in trace/checkpoint data. No provider-specific
 thinking option is forced; this accepts the field when the selected provider
 returns it. Generate-only clients retain their existing response contract.
 
-This implements M1-A. The [Durable Session design](../design/durable-session-v1.md)
-records the predecessor requirements; its source audit describes the earlier
-non-streaming baseline. [M1-B](session-lifecycle.md) supplies opt-in Session/Turn
-identity, ordered delivery and admission. M1-C SessionStore/checkpoint
-acknowledgements remain proposed. A text delta,
+This implements M1-A. [M1-B](session-lifecycle.md) supplies opt-in Session/Turn
+identity, ordered delivery and admission; [M1-C.1](session-store.md),
+[M1-C.2](durable-session.md) and [M1-C.3](durable-cli.md) supply the durable
+store, admission and CLI. A text delta,
 completed response, `agent_finish` or `trace_finish` is not durable acknowledgement.
 
 ## Ownership and acceptance

@@ -1,8 +1,6 @@
 import asyncio
 from io import StringIO
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 from litellm.exceptions import RateLimitError
@@ -17,6 +15,7 @@ from cairn.core.budget import RunBudget
 from cairn.core.models import LLMResponse
 from cairn.runtime.agent import Agent
 from cairn.runtime.loop import run_turn
+from tests.support.cli_harness import isolate_cli, set_limits
 from tests.support.runtime import SequenceLLM
 from tests.support.streaming import ProviderStream, StreamBarrier, provider_chunk
 
@@ -24,22 +23,14 @@ from tests.support.streaming import ProviderStream, StreamBarrier, provider_chun
 def configure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> tuple[StringIO, list[Agent]]:
-    monkeypatch.chdir(tmp_path)
     for key, value in {
         "CAIRN_LLM_MODEL": "openai/test",
         "CAIRN_LLM_API_KEY": "TOPSECRET",
         "CAIRN_BASE_URL": "https://example.test/v1",
-        "CAIRN_CONTEXT_MAX_TOKENS": "100",
-        "CAIRN_RESPONSE_MAX_TOKENS": "20",
     }.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr(cli_module, "dotenv_values", lambda: {})
-    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
-    monkeypatch.setattr(
-        cli_module,
-        "CliInput",
-        lambda: SimpleNamespace(read=AsyncMock(side_effect=["hello", "/exit"])),
-    )
+    isolate_cli(tmp_path, monkeypatch, "hello")
+    set_limits(monkeypatch)
     monkeypatch.setattr(counter_module, "token_counter", lambda **kwargs: 10)
     text = StringIO()
     monkeypatch.setattr(

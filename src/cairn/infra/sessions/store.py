@@ -2,7 +2,7 @@
 
 import hashlib
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +15,7 @@ from cairn.infra.sessions.codec import (
     encode_checkpoint,
     encode_record,
 )
+from cairn.infra.sessions.ledger import TaskLedgerMixin
 from cairn.infra.sessions.models import (
     MAX_CHECKPOINT_BYTES,
     MAX_DATABASE_BYTES,
@@ -45,15 +46,7 @@ from cairn.infra.sessions.models import (
     uuid4_text,
 )
 from cairn.infra.sessions.paths import StorePaths
-from cairn.infra.sessions.task_models import (
-    MAX_TASK_BYTES,
-    TaskDiagnostic,
-    TaskPhase,
-    TaskRecord,
-    TaskRecoveryReport,
-    TaskResultData,
-    TaskRevision,
-)
+from cairn.infra.sessions.task_models import MAX_TASK_BYTES, TaskRevision
 
 _SCHEMA = (
     """CREATE TABLE sessions (
@@ -153,7 +146,7 @@ def sqlite_wal_fix_supported(version: tuple[int, int, int] | None = None) -> boo
     )
 
 
-class SessionStore:
+class SessionStore(TaskLedgerMixin):
     def __init__(
         self,
         directory: Path,
@@ -644,6 +637,156 @@ class SessionStore:
                 raise SessionStoreError("invalid_fence")
             previous = (fence.assistant_message_index, position)
 
+    def _checkpoint_row(self, row: sqlite3.Row) -> CheckpointPayload:
+        """Decode one checkpoint row, enforcing its byte bound."""
+        if (
+            not isinstance(row["payload"], bytes)
+            or len(row["payload"]) > MAX_CHECKPOINT_BYTES
+        ):
+            raise SessionStoreError("record_limit")
+        return decode_checkpoint(
+            row["payload"], row["sha256"], sensitive_values=self.sensitive_values
+        )
+
+    def _validate_checkpoint_identity(
+        self,
+        session: _SessionRow,
+        session_id: str,
+        row: sqlite3.Row,
+        checkpoint: CheckpointPayload,
+        previous: CheckpointPayload | None,
+    ) -> None:
+        """A stored checkpoint must describe the row that carries it, and follow
+        its predecessor by exactly one sequence step."""
+        if checkpoint.session_id != session_id:
+            raise SessionStoreError("checkpoint_session_mismatch")
+        if checkpoint.seq != row["seq"]:
+            raise SessionStoreError("checkpoint_seq_mismatch")
+        if checkpoint.turn_id != row["turn_id"]:
+            raise SessionStoreError("checkpoint_turn_mismatch")
+        if row["format_version"] != checkpoint.format_version:
+            raise SessionStoreError("checkpoint_format_version_mismatch")
+        if row["created_at_utc"] != checkpoint.settled_at_utc:
+            raise SessionStoreError("checkpoint_settled_time_mismatch")
+        expected_seq = 0 if previous is None else previous.seq + 1
+        if checkpoint.seq != expected_seq:
+            raise SessionStoreError("checkpoint_sequence_gap")
+        if not same_workspace(session.binding, checkpoint.binding):
+            raise SessionStoreError("checkpoint_binding_mismatch")
+
+    def _advance_receipt(
+        self,
+        revision: Revision,
+        session_id: str,
+        checkpoint: CheckpointPayload,
+        previous: CheckpointPayload | None,
+        receipt: CheckpointReceipt | None,
+        row: sqlite3.Row,
+        by_turn: dict[str, TurnRecord],
+        committed: set[str],
+    ) -> CheckpointReceipt:
+        """Validate the settled relationship for a later checkpoint and return
+        the receipt it advances to."""
+        commit_version = 0
+        if previous is not None:
+            record = by_turn.get(checkpoint.turn_id or "")
+            if record is None:
+                raise SessionStoreError("checkpoint_without_turn_record")
+            self._settled_relationship(record, checkpoint, previous)
+            commit_version = record.diagnostics.commit_version or 0
+            if receipt is None:
+                raise SessionStoreError("checkpoint_receipt_missing")
+            if commit_version <= receipt.revision.version:
+                raise SessionStoreError("checkpoint_commit_version_not_advancing")
+            if commit_version > revision.version:
+                raise SessionStoreError("checkpoint_commit_version_ahead_of_head")
+            committed.add(record.intent.turn_id)
+        return CheckpointReceipt(
+            revision=Revision(
+                session_id=session_id,
+                version=commit_version,
+                head_seq=checkpoint.seq,
+            ),
+            turn_id=checkpoint.turn_id,
+            sha256=row["sha256"],
+            outcome=checkpoint.outcome,
+        )
+
+    def _validate_unresolved_turn(
+        self, session: _SessionRow, unresolved: Sequence[TurnRecord]
+    ) -> None:
+        """At most one turn may be unresolved, and it must match the session."""
+        if not unresolved:
+            if session.state == "executing":
+                raise SessionStoreError("executing_session_without_unresolved_turn")
+            return
+        if len(unresolved) > 1:
+            raise SessionStoreError("multiple_unresolved_turns")
+        active = unresolved[0]
+        if active.intent.turn_id != session.active_turn_id:
+            raise SessionStoreError("unresolved_turn_not_active")
+        if session.state == "ready":
+            raise SessionStoreError("ready_session_with_unresolved_turn")
+        if session.state != active.state:
+            raise SessionStoreError("unresolved_turn_state_mismatch")
+
+    def _validate_record_bases(
+        self,
+        session: _SessionRow,
+        revision: Revision,
+        records: Sequence[TurnRecord],
+        committed: set[str],
+        bases: dict[int, tuple[int, str]],
+    ) -> None:
+        """Committed state, binding and base chain must agree with each record."""
+        expected_base = 0
+        for record in records:
+            settled = record.state in ("completed", "interrupted")
+            if settled != (record.intent.turn_id in committed):
+                raise SessionStoreError("record_commit_state_mismatch")
+            if record.intent.base_seq > revision.head_seq:
+                raise SessionStoreError("record_base_ahead_of_head")
+            if not same_workspace(session.binding, record.intent.binding):
+                raise SessionStoreError("record_binding_mismatch")
+            base = bases.get(record.intent.base_seq)
+            if record.intent.base_seq != expected_base:
+                raise SessionStoreError("record_base_chain_gap")
+            if base is None:
+                raise SessionStoreError("record_base_checkpoint_missing")
+            if record.intent.message_start != base[0]:
+                raise SessionStoreError("record_message_start_mismatch")
+            if instant(record.intent.started_at_utc) < instant(base[1]):
+                raise SessionStoreError("record_started_before_base")
+            if settled:
+                expected_base += 1
+
+    def _validate_unresolved_intent(
+        self,
+        session: _SessionRow,
+        revision: Revision,
+        unresolved: Sequence[TurnRecord],
+        previous: CheckpointPayload,
+    ) -> None:
+        """An unresolved turn must continue from the committed head."""
+        if not unresolved:
+            return
+        active = unresolved[0]
+        if active.intent.base_seq != revision.head_seq:
+            raise SessionStoreError("unresolved_turn_base_not_head")
+        if active.intent.message_start != len(previous.messages):
+            raise SessionStoreError("unresolved_turn_message_start_mismatch")
+        if active.intent.binding != session.binding:
+            raise SessionStoreError("unresolved_turn_binding_mismatch")
+
+    def _recovery_status(
+        self, session: _SessionRow, unresolved: Sequence[TurnRecord]
+    ) -> Literal["clean", "executing", "effects_unknown", "recovery_required"]:
+        if session.state == "recovery_required" or self._fault:
+            return "recovery_required"
+        if not unresolved:
+            return "clean"
+        return "effects_unknown" if unresolved[0].diagnostics.fences else "executing"
+
     def _report(self, conn: sqlite3.Connection, session_id: str) -> RecoveryReport:
         raw = conn.execute(
             "SELECT version,head_seq FROM sessions WHERE session_id=?", (session_id,)
@@ -661,104 +804,39 @@ class SessionStore:
         for row in conn.execute(
             "SELECT * FROM checkpoints WHERE session_id=? ORDER BY seq", (session_id,)
         ):
-            if (
-                not isinstance(row["payload"], bytes)
-                or len(row["payload"]) > MAX_CHECKPOINT_BYTES
-            ):
-                raise SessionStoreError("record_limit")
-            checkpoint = decode_checkpoint(
-                row["payload"], row["sha256"], sensitive_values=self.sensitive_values
+            checkpoint = self._checkpoint_row(row)
+            self._validate_checkpoint_identity(
+                session, session_id, row, checkpoint, previous
             )
-            if (
-                checkpoint.session_id != session_id
-                or checkpoint.seq != row["seq"]
-                or checkpoint.turn_id != row["turn_id"]
-                or row["format_version"] != checkpoint.format_version
-                or row["created_at_utc"] != checkpoint.settled_at_utc
-                or checkpoint.seq != (0 if previous is None else previous.seq + 1)
-                or not same_workspace(session.binding, checkpoint.binding)
-            ):
-                raise SessionStoreError("invalid_relationship")
-            commit_version = 0
-            if previous is not None:
-                record = by_turn.get(checkpoint.turn_id or "")
-                if record is None:
-                    raise SessionStoreError("invalid_relationship")
-                self._settled_relationship(record, checkpoint, previous)
-                commit_version = record.diagnostics.commit_version or 0
-                if (
-                    receipt is None
-                    or commit_version <= receipt.revision.version
-                    or commit_version > revision.version
-                ):
-                    raise SessionStoreError("invalid_relationship")
-                committed.add(record.intent.turn_id)
-            receipt = CheckpointReceipt(
-                revision=Revision(
-                    session_id=session_id,
-                    version=commit_version,
-                    head_seq=checkpoint.seq,
-                ),
-                turn_id=checkpoint.turn_id,
-                sha256=row["sha256"],
-                outcome=checkpoint.outcome,
+            receipt = self._advance_receipt(
+                revision,
+                session_id,
+                checkpoint,
+                previous,
+                receipt,
+                row,
+                by_turn,
+                committed,
             )
             previous = checkpoint
             bases[checkpoint.seq] = (
                 len(checkpoint.messages),
                 checkpoint.settled_at_utc,
             )
-        if previous is None or receipt is None or previous.seq != revision.head_seq:
+        if previous is None or receipt is None:
             raise SessionStoreError("committed_head_missing")
+        if previous.seq != revision.head_seq:
+            raise SessionStoreError("committed_head_seq_mismatch")
         unresolved = [
             r for r in records if r.state in ("executing", "recovery_required")
         ]
-        if (
-            len(unresolved) > 1
-            or (unresolved[0].intent.turn_id if unresolved else None)
-            != session.active_turn_id
-            or (session.state == "ready" and unresolved)
-            or (session.state == "executing" and not unresolved)
-            or (unresolved and session.state != unresolved[0].state)
-        ):
-            raise SessionStoreError("invalid_relationship")
-        expected_base = 0
-        for record in records:
-            if (record.state in ("completed", "interrupted")) != (
-                record.intent.turn_id in committed
-            ) or record.intent.base_seq > revision.head_seq:
-                raise SessionStoreError("invalid_relationship")
-            if not same_workspace(session.binding, record.intent.binding):
-                raise SessionStoreError("invalid_relationship")
-            base = bases.get(record.intent.base_seq)
-            if (
-                record.intent.base_seq != expected_base
-                or base is None
-                or record.intent.message_start != base[0]
-                or instant(record.intent.started_at_utc) < instant(base[1])
-            ):
-                raise SessionStoreError("invalid_relationship")
-            if record.state in ("completed", "interrupted"):
-                expected_base += 1
-        if unresolved and (
-            unresolved[0].intent.base_seq != revision.head_seq
-            or unresolved[0].intent.message_start != len(previous.messages)
-            or unresolved[0].intent.binding != session.binding
-        ):
-            raise SessionStoreError("invalid_relationship")
-        status: Literal[
-            "clean", "executing", "effects_unknown", "recovery_required"
-        ] = "clean"
-        if unresolved:
-            status = (
-                "effects_unknown" if unresolved[0].diagnostics.fences else "executing"
-            )
-        if session.state == "recovery_required" or self._fault:
-            status = "recovery_required"
+        self._validate_unresolved_turn(session, unresolved)
+        self._validate_record_bases(session, revision, records, committed, bases)
+        self._validate_unresolved_intent(session, revision, unresolved, previous)
         return RecoveryReport(
             revision=revision,
             state=session.state,
-            status=status,
+            status=self._recovery_status(session, unresolved),
             binding=session.binding,
             checkpoint=previous,
             receipt=receipt,
@@ -918,290 +996,6 @@ class SessionStore:
     def _tasks_supported(self, conn: sqlite3.Connection) -> None:
         if conn.execute("PRAGMA user_version").fetchone()[0] != 2:
             raise SessionStoreError("schema_upgrade_required")
-
-    def _receipt_at(
-        self, conn: sqlite3.Connection, session: RecoveryReport, seq: int
-    ) -> CheckpointReceipt:
-        # _report has already verified the entire Session history in this same
-        # transaction. Receipts can be historical, but never fabricated heads.
-        row = conn.execute(
-            "SELECT payload,sha256 FROM checkpoints WHERE session_id=? AND seq=?",
-            (session.revision.session_id, seq),
-        ).fetchone()
-        if row is None:
-            raise SessionStoreError("task_checkpoint_missing")
-        checkpoint = decode_checkpoint(
-            row[0], row[1], sensitive_values=self.sensitive_values
-        )
-        version = 0
-        if seq:
-            record = next(
-                r for r in session.attempts if r.intent.turn_id == checkpoint.turn_id
-            )
-            version = record.diagnostics.commit_version or 0
-        return CheckpointReceipt(
-            revision=Revision(
-                session_id=session.revision.session_id, version=version, head_seq=seq
-            ),
-            turn_id=checkpoint.turn_id,
-            sha256=row[1],
-            outcome=checkpoint.outcome,
-        )
-
-    def _validate_task(
-        self, conn: sqlite3.Connection, task: TaskRecord, session: RecoveryReport
-    ) -> None:
-        base = self._receipt_at(conn, session, task.base_revision.head_seq)
-        if (
-            task.base_revision.version < base.revision.version
-            or task.base_revision.version > session.revision.version
-            or task.revision.session_id != session.revision.session_id
-        ):
-            raise SessionStoreError("invalid_task_relationship")
-        if task.checkpoint is not None:
-            actual = self._receipt_at(conn, session, task.checkpoint.revision.head_seq)
-            if actual != task.checkpoint:
-                raise SessionStoreError("task_checkpoint_mismatch")
-            turn = next(
-                r for r in session.attempts if r.intent.turn_id == actual.turn_id
-            )
-            if (
-                turn.intent.task_id != task.revision.task_id
-                or turn.intent.input_digest != task.input_digest
-                or turn.intent.base_seq != task.base_revision.head_seq
-                or turn.diagnostics.commit_version is None
-                or task.base_revision.version >= turn.diagnostics.commit_version
-            ):
-                raise SessionStoreError("task_turn_mismatch")
-
-    def _task(
-        self, conn: sqlite3.Connection, session_id: str, task_id: str
-    ) -> tuple[TaskRecord, RecoveryReport]:
-        self._tasks_supported(conn)
-        session = self._report(conn, session_id)
-        row = conn.execute(
-            "SELECT * FROM tasks WHERE session_id=? AND task_id=?",
-            (session_id, task_id),
-        ).fetchone()
-        if row is None:
-            raise SessionStoreError("task_missing")
-        task = decode_record(
-            TaskRecord,
-            row["record_json"].encode(),
-            limit=MAX_TASK_BYTES,
-            sensitive_values=self.sensitive_values,
-        )
-        if (
-            (task.revision.session_id, task.revision.task_id, task.revision.version)
-            != (row["session_id"], row["task_id"], row["version"])
-            or task.phase != row["phase"]
-            or task.base_revision.head_seq != row["base_seq"]
-            or (None if task.checkpoint is None else task.checkpoint.revision.head_seq)
-            != row["checkpoint_seq"]
-        ):
-            raise SessionStoreError("invalid_task_relationship")
-        self._validate_task(conn, task, session)
-        return task, session
-
-    def inspect_task(self, session_id: str, task_id: str) -> TaskRecoveryReport:
-        """Read facts only. An unfinished Task never acquires a result on restart."""
-        with self._read() as conn:
-            task, session = self._task(conn, session_id, task_id)
-            status: Literal["incomplete", "recovery_required", "result_recorded"] = (
-                "result_recorded" if task.phase == "result_recorded" else "incomplete"
-            )
-            if (
-                task.recovery_required
-                or self._fault
-                or session.state == "recovery_required"
-            ):
-                status = "recovery_required"
-            effects = any(
-                r.intent.task_id == task_id
-                and r.intent.base_seq == task.base_revision.head_seq
-                and r.intent.input_digest == task.input_digest
-                and bool(r.diagnostics.fences)
-                for r in session.attempts
-            )
-            return TaskRecoveryReport(
-                task=task,
-                session_revision=session.revision,
-                session_checkpoint=session.receipt,
-                status=status,
-                external_effects_may_have_occurred=effects,
-            )
-
-    def create_task(
-        self, expected: Revision, *, task_id: str, input_digest: str
-    ) -> TaskRecord:
-        self._begin(expected, Revision)
-        try:
-            task = TaskRecord(
-                revision=TaskRevision(
-                    session_id=expected.session_id, task_id=task_id, version=0
-                ),
-                input_digest=input_digest,
-                phase="running",
-                base_revision=expected,
-            )
-        except (ValueError, TypeError):
-            self._latch()
-            raise SessionStoreError("invalid_record") from None
-        raw = self._encode(task, limit=MAX_TASK_BYTES, kind=TaskRecord)
-        with self._write() as conn:
-            self._tasks_supported(conn)
-            self._row(conn, expected)
-            session = self._report(conn, expected.session_id)
-            if session.status != "clean":
-                raise SessionStoreError("task_session_not_ready")
-            if conn.execute(
-                "SELECT 1 FROM tasks WHERE session_id=? AND task_id=?",
-                (expected.session_id, task_id),
-            ).fetchone():
-                raise SessionStoreError("task_exists")
-            conn.execute(
-                "INSERT INTO tasks VALUES (?,?,?,?,?,?,?)",
-                (
-                    expected.session_id,
-                    task_id,
-                    0,
-                    "running",
-                    expected.head_seq,
-                    None,
-                    raw.decode(),
-                ),
-            )
-        return task
-
-    @contextmanager
-    def task_execution(self, expected: TaskRevision) -> Iterator[None]:
-        """Retain writer ownership through the trusted runtime's Task cleanup.
-
-        This guard records no lifecycle fact and releases no Turn ownership.
-        The runtime must leave it only after all work it started has settled.
-        """
-        if self.mode != "writer":
-            raise SessionStoreError("read_only_store")
-        self._encode(expected, kind=TaskRevision)
-        key = (expected.session_id, expected.task_id)
-        if key in self._owned_tasks:
-            raise SessionStoreError("task_still_owned")
-        with self._read() as conn:
-            task, session = self._task_current(conn, expected, "running")
-            if (
-                session.status != "clean"
-                or session.local_fault
-                or task.base_revision != session.revision
-            ):
-                raise SessionStoreError("task_session_not_ready")
-        self._owned_tasks.add(key)
-        try:
-            yield
-        finally:
-            self._owned_tasks.remove(key)
-
-    def _task_current(
-        self, conn: sqlite3.Connection, expected: TaskRevision, phase: TaskPhase
-    ) -> tuple[TaskRecord, RecoveryReport]:
-        task, session = self._task(conn, expected.session_id, expected.task_id)
-        if task.revision != expected:
-            raise VersionConflict()
-        if task.recovery_required:
-            raise SessionStoreError("task_recovery_required")
-        if task.phase != phase:
-            raise SessionStoreError("invalid_task_transition")
-        return task, session
-
-    def _save_task(
-        self, conn: sqlite3.Connection, task: TaskRecord, session: RecoveryReport
-    ) -> TaskRecord:
-        expected = task.revision
-        task = task.model_copy(
-            update={
-                "revision": expected.model_copy(
-                    update={"version": expected.version + 1}
-                )
-            }
-        )
-        raw = self._encode(task, limit=MAX_TASK_BYTES, kind=TaskRecord)
-        task = decode_record(TaskRecord, raw, limit=MAX_TASK_BYTES)
-        self._validate_task(conn, task, session)
-        changed = conn.execute(
-            "UPDATE tasks SET version=?,phase=?,checkpoint_seq=?,record_json=? "
-            "WHERE session_id=? AND task_id=? AND version=?",
-            (
-                task.revision.version,
-                task.phase,
-                None if task.checkpoint is None else task.checkpoint.revision.head_seq,
-                raw.decode(),
-                expected.session_id,
-                expected.task_id,
-                expected.version,
-            ),
-        ).rowcount
-        if changed != 1:
-            raise VersionConflict()
-        return task
-
-    def commit_task_turn(
-        self, expected: TaskRevision, receipt: CheckpointReceipt
-    ) -> TaskRecord:
-        self._begin(expected, TaskRevision)
-        self._encode(receipt, kind=CheckpointReceipt)
-        with self._write() as conn:
-            task, session = self._task_current(conn, expected, "running")
-            if receipt != session.receipt or session.status != "clean":
-                raise SessionStoreError("task_checkpoint_mismatch")
-            task = task.model_copy(
-                update={"phase": "turn_committed", "checkpoint": receipt}
-            )
-            return self._save_task(conn, task, session)
-
-    def _task_head(self, task: TaskRecord, session: RecoveryReport) -> None:
-        if task.checkpoint != session.receipt or session.status != "clean":
-            raise SessionStoreError("task_checkpoint_not_current")
-
-    def start_task_inspection(self, expected: TaskRevision) -> TaskRecord:
-        self._begin(expected, TaskRevision)
-        with self._write() as conn:
-            task, session = self._task_current(conn, expected, "turn_committed")
-            self._task_head(task, session)
-            return self._save_task(
-                conn, task.model_copy(update={"phase": "inspecting"}), session
-            )
-
-    def record_task_result(
-        self, expected: TaskRevision, result: TaskResultData
-    ) -> TaskRecord:
-        self._begin(expected, TaskRevision)
-        raw = self._encode(result, limit=MAX_TASK_BYTES, kind=TaskResultData)
-        result = decode_record(TaskResultData, raw, limit=MAX_TASK_BYTES)
-        with self._write() as conn:
-            task, session = self._task_current(conn, expected, "inspecting")
-            self._task_head(task, session)
-            return self._save_task(
-                conn,
-                task.model_copy(update={"phase": "result_recorded", "result": result}),
-                session,
-            )
-
-    def require_task_recovery(
-        self, expected: TaskRevision, diagnostic: TaskDiagnostic
-    ) -> TaskRecord:
-        self._begin(expected, TaskRevision)
-        with self._write(recovery=True) as conn:
-            task, session = self._task(conn, expected.session_id, expected.task_id)
-            if task.revision != expected:
-                raise VersionConflict()
-            if task.phase == "result_recorded":
-                raise SessionStoreError("invalid_task_transition")
-            return self._save_task(
-                conn,
-                task.model_copy(
-                    update={"recovery_required": True, "diagnostic": diagnostic}
-                ),
-                session,
-            )
 
     @contextmanager
     def _prepare(

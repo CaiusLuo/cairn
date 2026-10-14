@@ -9,7 +9,6 @@ page is the map for everything else.
 | --- | --- |
 | [Architecture](architecture.md) | Package ownership, dependency direction, execution lifecycle, and where new code belongs |
 | [Decisions](adr/0001-modular-architecture-baseline.md) | The architectural decisions this foundation rests on, and what they deliberately reject |
-| [Durable Session V1 design](design/durable-session-v1.md) | Proposed committed-turn persistence, safe recovery and implementation slices; pending architecture review |
 
 ## Operating Cairn
 
@@ -43,14 +42,8 @@ page is the map for everything else.
 ## Contributing
 
 [AGENTS.md](../AGENTS.md) holds the working rules for coding agents, and
-[tests/README.md](../tests/README.md) describes test organization. Local checks:
-
-```bash
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy src tests
-uv run pytest --cov=cairn --cov-report=term-missing
-```
+[tests/README.md](../tests/README.md) describes test organization. The canonical
+local check set lives in [README.md](../README.md#development).
 
 Two of those tests guard this documentation and the package boundaries:
 `tests/docs/test_documentation.py` checks links and referenced paths, and

@@ -26,14 +26,8 @@ process, network or persistence modules; `infra` depends on `core` and `infra`;
 `runtime` depends on those plus `runtime`; the terminal may depend on all of
 them.
 
-Run repository checks from the root:
-
-```sh
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy src tests
-uv run pytest --cov=cairn --cov-report=term-missing
-```
+Run repository checks from the root; the canonical command list is in
+[README.md](../README.md#development).
 
 For focused coverage, run a package or module from the repository root:
 

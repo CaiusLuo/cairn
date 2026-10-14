@@ -7,11 +7,13 @@ import typer
 from dotenv import dotenv_values
 
 from cairn.core.budget import RunBudget, RunBudgetExceeded
-from cairn.core.events import Event
+from cairn.core.context import ContextBudget
+from cairn.core.events import Event, EventHandler
 from cairn.core.permissions import SessionPermissionHandler
 from cairn.core.provider_catalog import ProviderCatalog
 from cairn.infra.config import (
     ConfigLayout,
+    ProjectProviders,
     default_provider,
     load_project_providers,
     resolve_context_budget,
@@ -162,13 +164,58 @@ def root(ctx: typer.Context) -> None:
         asyncio.run(main())
 
 
-async def main(
-    cli_input: CliInput | None = None, *, durable: DurableOptions | None = None
-) -> None:
-    env_file_values = dotenv_values()
-    model_path = Path(".cairn/models.toml")
-    project = load_project_providers(model_path)
+def _durable_notices(durable: DurableOptions | None) -> dict[str, str]:
+    return {
+        "tool_call": "Provisional tool execution; checkpoint not committed.",
+        "tool_result": "Provisional tool observation; checkpoint not committed.",
+        "tool_error": "Tool failed; checkpoint not committed.",
+        "tool_denied": "Tool permission denied.",
+        "agent_finish": "Turn output finished; awaiting durable checkpoint.",
+    }
 
+
+def _make_event_handler(
+    durable: DurableOptions | None,
+    streaming_display: StreamingDisplay,
+    command_context: CommandContext,
+) -> tuple[EventHandler, list[Event | None]]:
+    """Build the CLI event handler and the shared pending-trace slot.
+
+    The slot is a one-element list so the turn loop can read and clear the
+    pending `trace_finish` without a second closure.
+    """
+    pending_trace_finish: list[Event | None] = [None]
+    notices = _durable_notices(durable) if durable is not None else {}
+
+    def handle_event(event: Event) -> None:
+        if durable is not None and event.type in notices:
+            if event.type == "agent_finish":
+                streaming_display.observe(event)
+            print(notices[event.type])
+            return
+        if event.type == "trace_finish":
+            if event.data.get("persisted", True):
+                command_context.last_trace_id = event.data["trace_id"]
+            else:
+                command_context.last_trace_id = None
+            pending_trace_finish[0] = event
+            return
+        if not streaming_display.observe(event):
+            console_event_handler(event)
+
+    return handle_event, pending_trace_finish
+
+
+def _resolve_active_runtime(
+    durable: DurableOptions | None,
+    project: ProjectProviders,
+    env_file_values: dict[str, str | None],
+) -> tuple[ProviderRuntime, str, ContextBudget]:
+    """Approve the selected provider, then resolve only its credential.
+
+    Returns the runtime plus the resolved credential and context budget, which
+    the caller still needs for durable attachment and later provider switches.
+    """
     provider = default_provider(project, os.environ, env_file_values)
     selected_group = provider.config.model_config[0]
     if durable is not None or project.layout is not ConfigLayout.ENV:
@@ -185,8 +232,108 @@ async def main(
     # configuration was validated and approved.
     api_key = resolve_provider_api_key(provider.config, os.environ, env_file_values)
     context_budget = resolve_context_budget(os.environ, env_file_values)
-    active_runtime = build_provider_runtime(
+    runtime = build_provider_runtime(
         provider, api_key, context_budget, group=selected_group.name
+    )
+    return runtime, api_key, context_budget
+
+
+def _print_durable_intro(durable_session: DurableSession) -> None:
+    if durable_session.recovery_notice:
+        print(durable_session.recovery_notice)
+    print("Durable mode: output is provisional until a committed checkpoint status.")
+
+
+async def _turn_loop(
+    *,
+    agent: Agent,
+    input_reader: CliInput,
+    router: CommandRouter,
+    command_context: CommandContext,
+    streaming_display: StreamingDisplay,
+    pending_trace_finish: list[Event | None],
+    durable_session: DurableSession | None,
+) -> None:
+    """Read input, dispatch commands, and run turns until exit."""
+    while True:
+        try:
+            user_input = await input_reader.read()
+        except KeyboardInterrupt:
+            continue
+        except EOFError:
+            break
+        if not user_input or user_input.isspace():
+            continue
+        if durable_session is not None and user_input.split()[0].lower() in {
+            "/model",
+            "/provider",
+        }:
+            print(
+                "Model/provider switching is disabled in durable mode. Exit and reopen with fresh approval to acknowledge current configuration."
+            )
+            continue
+        command_result = router.handle(user_input, command_context)
+        if command_result.handled:
+            if command_result.interaction is not None:
+                await command_result.interaction()
+            if command_result.should_exit:
+                break
+            continue
+        streaming_display.reset()
+        previous_seq = (
+            durable_session.receipt.revision.head_seq if durable_session else None
+        )
+        try:
+            if durable_session is None:
+                response = await run_turn(
+                    agent, user_input=user_input, budget=DEFAULT_CLI_RUN_BUDGET
+                )
+            else:
+                response = await _durable_turn(agent, user_input, durable_session)
+        except RunBudgetExceeded:
+            pass
+        except Exception as exc:
+            if durable_session is None:
+                print_runtime_error(exc)
+            else:
+                print(
+                    "Durable turn failed. Check committed status; inspect before recovery."
+                )
+        else:
+            if not streaming_display.final_text_visible:
+                print_assistant_response(response)
+        finally:
+            streaming_display.close_incomplete()
+            pending = pending_trace_finish[0]
+            if pending is not None:
+                if durable_session is not None and not pending.data.get(
+                    "persisted", True
+                ):
+                    print("Trace unavailable: persistence failed.")
+                else:
+                    console_event_handler(pending)
+                pending_trace_finish[0] = None
+        if durable_session is not None:
+            if durable_session.state is not SessionState.READY:
+                print(
+                    "Session stopped: recovery required. Use cairn session inspect/reconcile before new turns."
+                )
+                break
+            receipt = durable_session.receipt
+            if receipt.revision.head_seq != previous_seq:
+                print(
+                    f"Committed checkpoint {receipt.revision.head_seq} ({receipt.outcome})."
+                )
+
+
+async def main(
+    cli_input: CliInput | None = None, *, durable: DurableOptions | None = None
+) -> None:
+    env_file_values = dotenv_values()
+    model_path = Path(".cairn/models.toml")
+    project = load_project_providers(model_path)
+    active_runtime, api_key, context_budget = _resolve_active_runtime(
+        durable, project, env_file_values
     )
 
     print_banner()
@@ -197,38 +344,16 @@ async def main(
     command_context = CommandContext(trace_store=TraceStore(trace_root))
     permission_handler = SessionPermissionHandler(prompt=console_permission_prompt)
     # The .env layout declares no catalog; its implicit provider is the only one.
-    catalog = ProviderCatalog(providers=project.providers or (provider,))
-    # Every configured credential variable is withheld from Bash children,
+    catalog = ProviderCatalog(
+        providers=project.providers or (active_runtime.provider,)
+    )  # Every configured credential variable is withheld from Bash children,
     # including providers this session has not selected.
     secret_env_keys = frozenset(named.config.api_key_env for named in catalog.providers)
 
-    pending_trace_finish: Event | None = None
     streaming_display = StreamingDisplay()
-
-    def handle_event(event: Event) -> None:
-        nonlocal pending_trace_finish
-        if durable is not None:
-            notices = {
-                "tool_call": "Provisional tool execution; checkpoint not committed.",
-                "tool_result": "Provisional tool observation; checkpoint not committed.",
-                "tool_error": "Tool failed; checkpoint not committed.",
-                "tool_denied": "Tool permission denied.",
-                "agent_finish": "Turn output finished; awaiting durable checkpoint.",
-            }
-            if event.type in notices:
-                if event.type == "agent_finish":
-                    streaming_display.observe(event)
-                print(notices[event.type])
-                return
-        if event.type == "trace_finish":
-            if event.data.get("persisted", True):
-                command_context.last_trace_id = event.data["trace_id"]
-            else:
-                command_context.last_trace_id = None
-            pending_trace_finish = event
-            return
-        if not streaming_display.observe(event):
-            console_event_handler(event)
+    handle_event, pending_trace_finish = _make_event_handler(
+        durable, streaming_display, command_context
+    )
 
     agent = build_agent(
         workspace=workspace,
@@ -314,81 +439,16 @@ async def main(
                 return
             if durable.operation == "reconcile":
                 return
-            if durable_session.recovery_notice:
-                print(durable_session.recovery_notice)
-            print(
-                "Durable mode: output is provisional until a committed checkpoint status."
-            )
-        while True:
-            try:
-                user_input = await input_reader.read()
-            except KeyboardInterrupt:
-                continue
-            except EOFError:
-                break
-            if not user_input or user_input.isspace():
-                continue
-            if durable_session is not None and user_input.split()[0].lower() in {
-                "/model",
-                "/provider",
-            }:
-                print(
-                    "Model/provider switching is disabled in durable mode. Exit and reopen with fresh approval to acknowledge current configuration."
-                )
-                continue
-            command_result = router.handle(user_input, command_context)
-            if command_result.handled:
-                if command_result.interaction is not None:
-                    await command_result.interaction()
-                if command_result.should_exit:
-                    break
-                continue
-            streaming_display.reset()
-            previous_seq = (
-                durable_session.receipt.revision.head_seq if durable_session else None
-            )
-            try:
-                if durable_session is None:
-                    response = await run_turn(
-                        agent, user_input=user_input, budget=DEFAULT_CLI_RUN_BUDGET
-                    )
-                else:
-                    response = await _durable_turn(agent, user_input, durable_session)
-            except RunBudgetExceeded:
-                pass
-            except Exception as exc:
-                if durable_session is None:
-                    print_runtime_error(exc)
-                else:
-                    print(
-                        "Durable turn failed. Check committed status; inspect before recovery."
-                    )
-            else:
-                if not streaming_display.final_text_visible:
-                    print_assistant_response(response)
-            finally:
-                streaming_display.close_incomplete()
-                if pending_trace_finish is not None:
-                    if (
-                        durable_session is not None
-                        and not pending_trace_finish.data.get("persisted", True)
-                    ):
-                        print("Trace unavailable: persistence failed.")
-                    else:
-                        console_event_handler(pending_trace_finish)
-                    pending_trace_finish = None
-            if durable_session is not None:
-                if durable_session.state is not SessionState.READY:
-                    print(
-                        "Session stopped: recovery required. Use cairn session inspect/reconcile before new turns."
-                    )
-                    break
-                receipt = durable_session.receipt
-                if receipt.revision.head_seq != previous_seq:
-                    print(
-                        f"Committed checkpoint {receipt.revision.head_seq} ({receipt.outcome})."
-                    )
-
+            _print_durable_intro(durable_session)
+        await _turn_loop(
+            agent=agent,
+            input_reader=input_reader,
+            router=router,
+            command_context=command_context,
+            streaming_display=streaming_display,
+            pending_trace_finish=pending_trace_finish,
+            durable_session=durable_session,
+        )
         print("Goodbye! see you next time.")
     finally:
         if durable_session is not None:
