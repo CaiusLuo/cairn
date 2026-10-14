@@ -108,6 +108,41 @@ def _source_fields(value: object) -> None:
             _source_fields(item)
 
 
+def validate_record(
+    value: StrictDTO,
+    *,
+    limit: int = MAX_RECORD_BYTES,
+    sensitive_values: tuple[str, ...] = (),
+) -> None:
+    """Validate an already-decoded record without re-serializing it.
+
+    `encode_record` serializes a model and then re-parses the bytes to validate
+    them. Callers that only need the guarantees - and that already hold a model
+    produced by `decode_record` - would otherwise pay a full
+    dump/canonicalize/parse round-trip per record. This keeps every check that
+    matters here (declared fields, size bound, credential and sensitive-value
+    filtering) and drops only the redundant round-trip.
+    """
+    try:
+        _source_fields(value)
+        raw = canonical(
+            value.model_dump(mode="json", warnings="error", serialize_as_any=True)
+        )
+        if len(raw) > limit:
+            raise SessionStoreError("record_limit")
+        _sensitive(value.model_dump(mode="json"), sensitive_values)
+        text = raw.decode("utf-8")
+        check_sensitive(text, sensitive_values)
+        if _CREDENTIAL_FIELD.search(text):
+            raise SessionStoreError("sensitive_record")
+    except SessionStoreError:
+        raise
+    except MemoryError:
+        raise SessionStoreError("sensitive_record") from None
+    except (ValueError, TypeError, RecursionError, OverflowError):
+        raise SessionStoreError("invalid_record") from None
+
+
 def encode_record(
     value: StrictDTO,
     *,
@@ -166,7 +201,7 @@ def validate_history(checkpoint: CheckpointPayload, secrets: tuple[str, ...]) ->
     seen_user = False
     tail_calls = 0
     for index, message in enumerate(checkpoint.messages):
-        encode_record(message, limit=MAX_MESSAGE_BYTES, sensitive_values=secrets)
+        validate_record(message, limit=MAX_MESSAGE_BYTES, sensitive_values=secrets)
         if pending:
             if message.role != "tool" or message.tool_call_id != pending.pop(0):
                 raise SessionStoreError("invalid_tool_group")

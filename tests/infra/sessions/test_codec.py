@@ -13,6 +13,7 @@ from cairn.infra.sessions.codec import (
     encode_record,
     parse,
     restore_messages,
+    validate_record,
 )
 from cairn.infra.sessions.models import (
     MAX_CHECKPOINT_BYTES,
@@ -24,6 +25,7 @@ from cairn.infra.sessions.models import (
     Revision,
     SessionStoreError,
     StoredMessage,
+    StoredToolCall,
     TraceSummary,
 )
 from tests.support.sessions import SESSION, T0, binding, intent, messages, settled
@@ -323,3 +325,72 @@ def test_argument_json_size_and_object_contract() -> None:
         parse(raw.replace(b'"}', b'x"}'), MAX_MESSAGE_BYTES)
     assert TraceSummary().input_tokens is None
     assert json.loads(raw)["text"]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        StoredMessage(role="user", content="hello"),
+        StoredMessage(role="user", content=""),
+        StoredMessage(role="user", content="sk-abcdefghijklmnopqrstuvwxyz123456"),
+        StoredMessage(role="user", content="bearer token here"),
+        StoredMessage(role="assistant", content=None, tool_calls=()),
+    ],
+)
+@pytest.mark.parametrize("secrets", [(), ("bearer token here",)])
+def test_validate_record_agrees_with_encode_record(
+    message: StoredMessage, secrets: tuple[str, ...]
+) -> None:
+    """`validate_record` must keep exactly the contract `encode_record` enforced.
+
+    `validate_history` validates every stored message of every checkpoint, so it
+    uses the non-serializing path. If the two ever diverge, a stored record
+    could pass history validation while failing to re-encode.
+    """
+
+    def outcome(record: StoredMessage) -> str:
+        try:
+            encode_record(record, limit=MAX_MESSAGE_BYTES, sensitive_values=secrets)
+        except SessionStoreError as error:
+            return error.code
+        return "accepted"
+
+    def checked(record: StoredMessage) -> str:
+        try:
+            validate_record(record, limit=MAX_MESSAGE_BYTES, sensitive_values=secrets)
+        except SessionStoreError as error:
+            return error.code
+        return "accepted"
+
+    assert outcome(message) == checked(message)
+
+
+def test_validate_record_rejects_credential_field_values() -> None:
+    """Nested credential-shaped fields stay rejected on the non-serializing path."""
+    message = StoredMessage(
+        role="assistant",
+        content=None,
+        tool_calls=(
+            StoredToolCall(
+                id="call-1", name="bash", arguments_json='{"api_key":"live"}'
+            ),
+        ),
+    )
+    with pytest.raises(SessionStoreError, match="sensitive"):
+        validate_record(message, limit=MAX_MESSAGE_BYTES)
+
+
+def test_validate_record_enforces_the_exact_message_byte_bound() -> None:
+    """The size bound must be enforced on the encoded message, not on a proxy."""
+    empty = canonical(StoredMessage(role="user", content="").model_dump(mode="json"))
+    overhead = len(empty)
+    assert overhead <= MAX_MESSAGE_BYTES
+
+    fits = StoredMessage(role="user", content="x" * (MAX_MESSAGE_BYTES - overhead))
+    assert len(canonical(fits.model_dump(mode="json"))) == MAX_MESSAGE_BYTES
+    validate_record(fits, limit=MAX_MESSAGE_BYTES)
+
+    over = StoredMessage(role="user", content="x" * (MAX_MESSAGE_BYTES - overhead + 1))
+    assert len(canonical(over.model_dump(mode="json"))) == MAX_MESSAGE_BYTES + 1
+    with pytest.raises(SessionStoreError, match="limit"):
+        validate_record(over, limit=MAX_MESSAGE_BYTES)
