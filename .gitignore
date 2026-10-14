@@ -30,3 +30,6 @@ litellm_cache/
 
 # Ignore codegraph files
 .codegraph/
+
+# Pi TUI dependencies
+node_modules/

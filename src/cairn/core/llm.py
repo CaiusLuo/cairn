@@ -29,6 +29,8 @@ class LLMStreamChunk:
     tool_calls: tuple[ToolCallDelta, ...] = ()
     finish_reason: str | None = None
     usage: LLMUsage | None = None
+    # Transient display only; never part of the completed answer or conversation.
+    reasoning_text: str | None = None
 
 
 class StreamProtocolError(ValueError):

@@ -65,6 +65,7 @@ def test_real_cli_deltas_visible_before_completion_plain_and_not_duplicated(
     async def scenario() -> None:
         blocked = StreamBarrier(asyncio.Event(), asyncio.Event())
         stream = ProviderStream(
+            provider_chunk(reasoning="先思考 [bold]literal[/bold] \x1b[31m"),
             provider_chunk("你好 [bold]literal[/bold] \x1b[31mred\x1b[0m"),
             blocked,
             provider_chunk(" 🌳"),
@@ -81,6 +82,8 @@ def test_real_cli_deltas_visible_before_completion_plain_and_not_duplicated(
         await blocked.entered.wait()
         shown = text.getvalue()
         assert "你好 [bold]literal[/bold] [31mred[0m" in shown
+        assert "(thinking, provisional)" in shown
+        assert shown.index("先思考") < shown.index("你好")
         assert "\x1b" not in shown and "(provisional)" in shown
         assert not task.done()
         assert [message.role for message in agents[0].state.messages] == ["user"]
@@ -115,10 +118,15 @@ def test_public_cli_partial_fallback_labels_abandoned_text(
         cli_module, "confirm_provider_access", lambda *args, **kwargs: True
     )
     first = ProviderStream(
+        provider_chunk(reasoning="ABANDONED_THOUGHT"),
         provider_chunk("ABANDONED"),
         RateLimitError(message="throttled", model="one", llm_provider="openai"),
     )
-    second = ProviderStream(provider_chunk("ACCEPTED"), provider_chunk(finish="stop"))
+    second = ProviderStream(
+        provider_chunk(reasoning="ACCEPTED_THOUGHT"),
+        provider_chunk("ACCEPTED"),
+        provider_chunk(finish="stop"),
+    )
     calls: list[str] = []
 
     async def completion(**kwargs: Any) -> ProviderStream:
@@ -135,7 +143,8 @@ def test_public_cli_partial_fallback_labels_abandoned_text(
         < shown.index("[abandoned attempt; provisional output discarded]")
         < shown.index("ACCEPTED")
     )
-    assert shown.count("ACCEPTED") == 1
+    assert shown.count("ACCEPTED_THOUGHT") == 1
+    assert shown.count("ACCEPTED\n") == 1
     assert "TOPSECRET" not in shown
     assert calls == ["openai/one", "openai/two"]
     assert agents[0].state.messages[-1].content == "ACCEPTED"
@@ -150,6 +159,7 @@ def test_cli_cancellation_labels_incomplete_and_never_previews_tool_arguments(
     async def scenario() -> None:
         blocked = StreamBarrier(asyncio.Event(), asyncio.Event())
         stream = ProviderStream(
+            provider_chunk(reasoning="unfinished thought"),
             provider_chunk("partial"),
             provider_chunk(
                 tool_calls=[
@@ -176,6 +186,7 @@ def test_cli_cancellation_labels_incomplete_and_never_previews_tool_arguments(
         with pytest.raises(asyncio.CancelledError):
             await task
         assert "[incomplete response; provisional output discarded]" in text.getvalue()
+        assert "unfinished thought" in text.getvalue()
         assert "TOPSECRET" not in text.getvalue()
         assert "Permission required" not in text.getvalue()
         assert agents[0].state.messages == []

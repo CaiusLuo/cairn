@@ -16,6 +16,7 @@ class StreamLimits:
     argument_bytes: int = 1_048_576
     tool_calls: int = 32
     chunks: int = 16_384
+    reasoning_bytes: int = 1_048_576
 
     def __post_init__(self) -> None:
         if any(
@@ -25,6 +26,7 @@ class StreamLimits:
                 self.argument_bytes,
                 self.tool_calls,
                 self.chunks,
+                self.reasoning_bytes,
             )
         ):
             raise ValueError("Stream limits must be positive.")
@@ -73,6 +75,7 @@ class ResponseAssembler:
         self._calls: list[_Call] = []
         self._text_bytes = 0
         self._argument_bytes = 0
+        self._reasoning_bytes = 0
         self._chunks = 0
         self._finish: str | None = None
         self._usage: LLMUsage | None = None
@@ -88,10 +91,16 @@ class ResponseAssembler:
             raise StreamProtocolError("Invalid normalized stream chunk.")
         if self._finish is not None and (
             chunk.text is not None
+            or chunk.reasoning_text is not None
             or chunk.tool_calls
             or chunk.finish_reason is not None
         ):
             raise StreamProtocolError("Response data after finish.")
+        if chunk.reasoning_text is not None:
+            self._reasoning_bytes += self._bytes(chunk.reasoning_text)
+            if self._reasoning_bytes > self.limits.reasoning_bytes:
+                raise StreamProtocolError("Stream reasoning limit exceeded.")
+            # Validate/count before emitting; no reasoning buffer crosses finish().
         if chunk.text is not None:
             self._text_bytes += self._bytes(chunk.text)
             if self._text_bytes > self.limits.text_bytes:

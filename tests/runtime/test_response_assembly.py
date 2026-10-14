@@ -16,6 +16,7 @@ def test_ordered_unicode_text_and_exact_partial_usage() -> None:
     usage = LLMUsage(input_tokens=17)
     assembler = assemble(
         LLMStreamChunk(text="你好 "),
+        LLMStreamChunk(reasoning_text="仅供展示的思考"),
         LLMStreamChunk(text="🌳"),
         LLMStreamChunk(finish_reason="stop"),
         LLMStreamChunk(usage=usage),
@@ -112,6 +113,8 @@ def test_incomplete_or_invalid_tool_arguments(arguments: str) -> None:
             LLMStreamChunk(finish_reason="stop"),
         ),
         (LLMStreamChunk(text="\ud800"),),
+        (LLMStreamChunk(reasoning_text="\ud800"),),
+        (LLMStreamChunk(finish_reason="stop"), LLMStreamChunk(reasoning_text="late")),
     ],
 )
 def test_invalid_groups_and_sequences_fail_closed(
@@ -125,6 +128,10 @@ def test_invalid_groups_and_sequences_fail_closed(
     ("limits", "chunks"),
     [
         (StreamLimits(text_bytes=3), (LLMStreamChunk(text="你好"),)),
+        (
+            StreamLimits(reasoning_bytes=5),
+            (LLMStreamChunk(reasoning_text="你"), LLMStreamChunk(reasoning_text="好")),
+        ),
         (
             StreamLimits(argument_bytes=3),
             (LLMStreamChunk(tool_calls=(ToolCallDelta(0, "x", "bash", '{"x":0}'),)),),

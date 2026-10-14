@@ -146,6 +146,16 @@ async def _durable_turn(agent: Agent, user_input: str, session: DurableSession) 
         raise
 
 
+@app.command("tui")
+def tui(
+    ui_dir: Annotated[Path | None, typer.Option(help="Built ui/pi directory.")] = None,
+) -> None:
+    """Launch the experimental Pi terminal UI."""
+    from cairn.terminal.tui import launch
+
+    launch(ui_dir)
+
+
 @app.callback()
 def root(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is None:
