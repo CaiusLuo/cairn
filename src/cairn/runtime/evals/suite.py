@@ -2,7 +2,7 @@ import asyncio
 from collections.abc import Callable
 from pathlib import Path
 
-from cairn.runtime.evals.artifacts import atomic_write_text
+from cairn.runtime.artifacts import atomic_write_text
 from cairn.runtime.evals.models import (
     CheckResult,
     EvalFailureCategory,

@@ -6,7 +6,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from cairn.runtime.evals.artifacts import atomic_write_text
+from cairn.runtime.artifacts import atomic_write_text
 from cairn.runtime.evals.intelligence.models import Arm, ExperimentReport, ExperimentRun
 from cairn.runtime.evals.models import EvalStatus
 
