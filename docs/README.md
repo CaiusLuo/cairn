@@ -21,7 +21,7 @@ page is the map for everything else.
 | [M1-C.1 SessionStore](guides/session-store.md) | Isolated SQLite storage, strict checkpoint codec, CAS, local lock and manual recovery facts |
 | [M1-C.2 DurableSession](guides/durable-session.md) | Opt-in runtime admission, tool fences, settled checkpoint receipts and explicit host recovery |
 | [M1-C.3 Durable CLI](guides/durable-cli.md) | Local creation, read-only inspection, fresh reopen and exact human reconciliation |
-| [M2 Durable Tasks](guides/task-ledger.md) | Task Ledger, opt-in CodingTaskRunner execution, verified checkpoint references, read-only recovery and explicit schema upgrade |
+| [M2 Durable Tasks](guides/task-ledger.md) | Task Ledger, opt-in CodingTaskRunner execution, verified checkpoint references, explicit host-only Task reconciliation and schema upgrade |
 | [GitHub Issue workflows](guides/github-workflow.md) | Retained worktrees, deterministic verification, and approved Draft PR publication |
 | [RepoGraph](guides/repo-graph.md) | Bounded repository inventory and Python structure queries |
 | [Project Memory](guides/project-memory.md) | Evidence-backed memory candidates, freshness and retrieval |

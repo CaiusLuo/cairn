@@ -5,7 +5,8 @@ into the existing [Session lifecycle](session-lifecycle.md) and
 [SessionStore](session-store.md). `run_turn` remains the sole execution owner.
 Stateless CLI, EvalRunner and CodingTaskRunner callers do no session storage I/O.
 The [durable CLI](durable-cli.md) provides explicit local creation and recovery.
-This API adds no Task recovery, replay or scheduler.
+Manual Task recovery is owned by the [Task runtime](task-ledger.md#explicit-trusted-host-task-reconciliation);
+it reuses this Session's fresh binding and ownership checks without admitting a Turn.
 
 ## Host API and authority
 
@@ -129,6 +130,14 @@ Reconciliation requires an idle owner, an exact fresh RecoveryReport and typed
 HostResolution; it cannot bypass a live Turn or cleanup. It restores only that
 report's committed history, explicitly discarding any uncommitted live tail after
 host assessment. It never synthesizes crashed tool results.
+
+The separate `task_reconciliation(report, budget=...)` host guard requires a
+ready, reconciled Session with matching current Task report and committed
+conversation. It retains the existing Task/writer ownership through read-only
+inspection and cancellation cleanup. It cannot lend a live Task/Turn's ownership
+to recovery, admit the old Task as a new Turn, or release the Store on close
+before cleanup finishes. `validate_task_inspection` checks current bindings
+around either ordinary post-turn inspection or authorized recovery inspection.
 
 Abandoned attempts
 produce bounded, sanitized host-built system context (count and up to eight

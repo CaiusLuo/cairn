@@ -20,6 +20,7 @@ from cairn.infra.sessions.models import (
     SessionStoreError,
     StrictDTO,
     VersionConflict,
+    instant,
 )
 from cairn.infra.sessions.task_models import (
     MAX_TASK_BYTES,
@@ -27,6 +28,7 @@ from cairn.infra.sessions.task_models import (
     TaskPhase,
     TaskRecord,
     TaskRecoveryReport,
+    TaskResolution,
     TaskResultData,
     TaskRevision,
 )
@@ -45,6 +47,8 @@ class TaskLedgerMixin:
     sensitive_values: tuple[str, ...]
     _fault: bool
     _owned_tasks: set[tuple[str, str]]
+    _owned_turns: set[tuple[str, str]]
+    _task_recovery: tuple[str, str] | None = None
 
     def _begin(self, expected: Revision | TaskRevision, kind: type[StrictDTO]) -> None:
         raise NotImplementedError
@@ -120,6 +124,15 @@ class TaskLedgerMixin:
             or task.revision.session_id != session.revision.session_id
         ):
             raise SessionStoreError("invalid_task_relationship")
+        if task.resolution is not None:
+            if task.resolution.session_revision.version > session.revision.version:
+                raise SessionStoreError("invalid_task_relationship")
+            if task.resolution.action == "abandon_without_replay" and any(
+                r.intent.task_id == task.revision.task_id
+                and r.diagnostics.commit_version is not None
+                for r in session.attempts
+            ):
+                raise SessionStoreError("task_checkpoint_mismatch")
         if task.checkpoint is not None:
             actual = self._receipt_at(conn, session, task.checkpoint.revision.head_seq)
             if actual != task.checkpoint:
@@ -169,29 +182,144 @@ class TaskLedgerMixin:
         """Read facts only. An unfinished Task never acquires a result on restart."""
         with self._read() as conn:
             task, session = self._task(conn, session_id, task_id)
-            status: Literal["incomplete", "recovery_required", "result_recorded"] = (
-                "result_recorded" if task.phase == "result_recorded" else "incomplete"
-            )
+            return self._task_report(task, session)
+
+    def _task_report(
+        self, task: TaskRecord, session: RecoveryReport
+    ) -> TaskRecoveryReport:
+        status: Literal[
+            "incomplete", "recovery_required", "result_recorded", "abandoned"
+        ] = "result_recorded" if task.phase == "result_recorded" else "incomplete"
+        if (
+            task.recovery_required
+            or self._fault
+            or session.state == "recovery_required"
+        ):
+            status = "recovery_required"
+        if (
+            task.resolution is not None
+            and task.resolution.action == "abandon_without_replay"
+        ):
+            status = "abandoned"
+        effects = any(
+            r.intent.task_id == task.revision.task_id
+            and r.intent.base_seq == task.base_revision.head_seq
+            and r.intent.input_digest == task.input_digest
+            and bool(r.diagnostics.fences)
+            for r in session.attempts
+        )
+        return TaskRecoveryReport(
+            task=task,
+            session_revision=session.revision,
+            session_checkpoint=session.receipt,
+            status=status,
+            external_effects_may_have_occurred=effects,
+        )
+
+    def _task_recovery_current(
+        self, conn: sqlite3.Connection, expected: TaskRecoveryReport
+    ) -> tuple[TaskRecord, RecoveryReport]:
+        task, session = self._task(
+            conn, expected.task.revision.session_id, expected.task.revision.task_id
+        )
+        if (
+            task.revision != expected.task.revision
+            or session.revision != expected.session_revision
+        ):
+            raise VersionConflict()
+        if self._task_report(task, session) != expected:
+            raise SessionStoreError("task_recovery_mismatch")
+        if session.status != "clean" or session.local_fault:
+            raise SessionStoreError("task_session_not_ready")
+        return task, session
+
+    @contextmanager
+    def task_reconciliation(self, expected: TaskRecoveryReport) -> Iterator[None]:
+        """Hold existing writer ownership through recovery work and cleanup.
+
+        Live Task/Turn work cannot lend its ownership to recovery. Session
+        reconciliation must already have resolved any orphan Turn/fault gate.
+        """
+        if self.mode != "writer":
+            raise SessionStoreError("read_only_store")
+        self._encode(expected, limit=MAX_RECORD_BYTES, kind=TaskRecoveryReport)
+        if self._owned_tasks or self._task_recovery is not None:
+            raise SessionStoreError("task_still_owned")
+        if self._owned_turns:
+            raise SessionStoreError("turn_still_owned")
+        with self._read() as conn:
+            self._task_recovery_current(conn, expected)
+        key = (expected.task.revision.session_id, expected.task.revision.task_id)
+        self._owned_tasks.add(key)
+        self._task_recovery = key
+        try:
+            yield
+        finally:
+            self._task_recovery = None
+            self._owned_tasks.remove(key)
+
+    def reconcile_task(
+        self, expected: TaskRecoveryReport, resolution: TaskResolution
+    ) -> TaskRecord:
+        """Apply one explicit decision; no execution, inspection or effect retry.
+
+        The runtime must hold task_reconciliation until all newly authorized
+        inspection and cancellation cleanup have settled.
+        """
+        self._begin(expected.task.revision, TaskRevision)
+        if not isinstance(resolution, TaskResolution):
+            raise SessionStoreError("task_reconciliation_rejected")
+        resolution = decode_record(
+            TaskResolution,
+            self._encode(resolution, limit=MAX_TASK_BYTES, kind=TaskResolution),
+        )
+        key = (expected.task.revision.session_id, expected.task.revision.task_id)
+        if self._task_recovery != key or key not in self._owned_tasks:
+            raise SessionStoreError("task_recovery_ownership_required")
+        if self._owned_turns:
+            raise SessionStoreError("turn_still_owned")
+        with self._write() as conn:
+            task, session = self._task_recovery_current(conn, expected)
             if (
-                task.recovery_required
-                or self._fault
-                or session.state == "recovery_required"
+                resolution.task_revision != task.revision
+                or resolution.session_revision != session.revision
+                or resolution.input_digest != task.input_digest
+                or instant(resolution.resolved_at_utc)
+                < max(
+                    instant(session.checkpoint.settled_at_utc),
+                    instant(session.binding.observed_at_utc),
+                )
             ):
-                status = "recovery_required"
-            effects = any(
-                r.intent.task_id == task_id
-                and r.intent.base_seq == task.base_revision.head_seq
-                and r.intent.input_digest == task.input_digest
-                and bool(r.diagnostics.fences)
-                for r in session.attempts
-            )
-            return TaskRecoveryReport(
-                task=task,
-                session_revision=session.revision,
-                session_checkpoint=session.receipt,
-                status=status,
-                external_effects_may_have_occurred=effects,
-            )
+                raise SessionStoreError("task_reconciliation_rejected")
+            if task.phase == "result_recorded" or (
+                task.resolution is not None
+                and task.resolution.action == "abandon_without_replay"
+            ):
+                raise SessionStoreError("invalid_task_transition")
+            changes: dict[str, object] = {"resolution": resolution}
+            if resolution.action == "abandon_without_replay":
+                if (
+                    task.phase != "running"
+                    or session.receipt.revision.head_seq != task.base_revision.head_seq
+                ):
+                    raise SessionStoreError("task_checkpoint_mismatch")
+                changes.update(
+                    recovery_required=True, diagnostic=task.diagnostic or "interrupted"
+                )
+            else:
+                if session.receipt.revision.head_seq != task.base_revision.head_seq + 1:
+                    raise SessionStoreError("task_checkpoint_not_current")
+                changes.update(recovery_required=False, diagnostic=None)
+                if resolution.action == "acknowledge_checkpoint":
+                    if task.phase not in ("running", "turn_committed"):
+                        raise SessionStoreError("invalid_task_transition")
+                    changes.update(phase="turn_committed", checkpoint=session.receipt)
+                else:
+                    if task.phase not in ("turn_committed", "inspecting"):
+                        raise SessionStoreError("invalid_task_transition")
+                    self._task_head(task, session)
+                    changes.update(phase="inspecting")
+            return self._save_task(conn, task.model_copy(update=changes), session)
 
     def create_task(
         self, expected: Revision, *, task_id: str, input_digest: str
