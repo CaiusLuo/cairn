@@ -152,6 +152,8 @@ durability. SQLite schema/codec/CAS and nonmutating inspection are unchanged.
 Local SQLite **3.50.4** remains a **release blocker**; integration does not upgrade
 or claim deployment support. The [Store release gate](session-store.md#verification-and-release-gate)
 requires a fixed SQLite runtime and target macOS/Linux filesystem/locking
-qualification. Storage is synchronous and cleanup cooperative; an uncooperative
+qualification; the store refuses an unfixed runtime at construction unless the host
+declares it. See the [support matrix](../performance/sqlite-runtime-support.md).
+Storage is synchronous and cleanup cooperative; an uncooperative
 tool/provider or blocking callback can delay settlement. Task recovery and
 Worktree adoption remain M2.

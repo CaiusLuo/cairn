@@ -49,12 +49,20 @@ def binding(root: Path, *, session_id: str = SESSION) -> SessionBinding:
     )
 
 
+#: The suite's one declaration that the development runtime may be unverified.
+#: Production keeps the fail-closed default; this exists so the real
+#: WAL/CAS/lock/crash regressions still run on a development interpreter.
+UNVERIFIED_RUNTIME = True
+
+
 def store(
     root: Path,
     *,
     mode: Literal["writer", "inspect"] = "writer",
     sensitive_values: tuple[str, ...] = (),
+    allow_unverified: bool = UNVERIFIED_RUNTIME,
 ) -> SessionStore:
+    """Build a store for the suite, declaring the local runtime if needed."""
     return SessionStore(
         root.resolve() / "store",
         mode=mode,
@@ -64,6 +72,7 @@ def store(
             root.resolve() / "cache",
         ),
         sensitive_values=sensitive_values,
+        allow_unverified=allow_unverified,
     )
 
 

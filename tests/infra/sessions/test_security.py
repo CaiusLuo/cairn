@@ -3,6 +3,7 @@ import os
 import sqlite3
 import stat
 from pathlib import Path
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -12,11 +13,18 @@ from cairn.infra.sessions.models import (
     HostResolution,
     SessionStoreError,
 )
-from cairn.infra.sessions.store import SessionStore, sqlite_wal_fix_supported
+from cairn.infra.sessions.store import (
+    UNVERIFIED_SQLITE_DECLARATION,
+    VERIFIED_SQLITE_VERSIONS,
+    SessionStore,
+    sqlite_wal_fix_supported,
+    wal_admission,
+)
 from tests.support.sessions import (
     OTHER_TURN,
     SESSION,
     T4,
+    UNVERIFIED_RUNTIME,
     binding,
     intent,
     settled,
@@ -35,10 +43,15 @@ def test_every_effective_writable_root_is_forbidden(
             forbidden_roots=tuple(
                 tmp_path.resolve() / r for r in ("work", "tmp", "cache", "extra")
             ),
+            allow_unverified=UNVERIFIED_RUNTIME,
         )
     assert not root.exists()
     with pytest.raises(SessionStoreError, match="forbidden_roots"):
-        SessionStore(tmp_path.resolve() / "store", forbidden_roots=())
+        SessionStore(
+            tmp_path.resolve() / "store",
+            forbidden_roots=(),
+            allow_unverified=UNVERIFIED_RUNTIME,
+        )
 
 
 @pytest.mark.parametrize(
@@ -71,7 +84,11 @@ def test_symlink_components_and_all_store_files_fail_closed(
         target_file.write_bytes(b"untouched")
         (directory / name).symlink_to(target_file)
     with pytest.raises(SessionStoreError):
-        SessionStore(directory, forbidden_roots=(root / "work",))
+        SessionStore(
+            directory,
+            forbidden_roots=(root / "work",),
+            allow_unverified=UNVERIFIED_RUNTIME,
+        )
     if name not in ("directory", "parent"):
         assert (target / "untouched").read_bytes() == b"untouched"
 
@@ -96,7 +113,11 @@ def test_replaced_path_descriptor_or_permissions_prevents_mutation(
     bind = binding(tmp_path)
     root = tmp_path.resolve()
     holder = root / "holder"
-    api = SessionStore(holder / "store", forbidden_roots=(root / "work",))
+    api = SessionStore(
+        holder / "store",
+        forbidden_roots=(root / "work",),
+        allow_unverified=UNVERIFIED_RUNTIME,
+    )
     try:
         initial = api.create(bind).revision
         if name == "directory":
@@ -167,7 +188,11 @@ def test_redirected_forbidden_root_is_rechecked_before_mutation(tmp_path: Path) 
     root = tmp_path.resolve()
     alias = root / "cache-alias"
     alias.symlink_to(root / "cache")
-    api = SessionStore(root / "store", forbidden_roots=(root / "work", alias))
+    api = SessionStore(
+        root / "store",
+        forbidden_roots=(root / "work", alias),
+        allow_unverified=UNVERIFIED_RUNTIME,
+    )
     try:
         initial = api.create(bind).revision
         alias.unlink()
@@ -353,6 +378,117 @@ def test_database_sparse_file_boundary_and_release_gate(tmp_path: Path) -> None:
     assert sqlite_wal_fix_supported((3, 44, 6))
     assert sqlite_wal_fix_supported((3, 51, 3))
     assert not sqlite_wal_fix_supported((3, 51, 2))
+
+
+def test_unverified_sqlite_fails_closed_without_declaration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unverified runtime is refused with the versions and the way to declare."""
+    monkeypatch.delenv(UNVERIFIED_SQLITE_DECLARATION, raising=False)
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 50, 4))
+    root = tmp_path.resolve()
+    with pytest.raises(SessionStoreError) as refused:
+        SessionStore(root / "store", forbidden_roots=(root / "work",))
+    assert refused.value.code == "sqlite_wal_unverified"
+    detail = refused.value.detail
+    assert "current=3.50.4" in detail
+    assert VERIFIED_SQLITE_VERSIONS in detail
+    assert UNVERIFIED_SQLITE_DECLARATION in detail
+    assert not (root / "store").exists()
+
+
+def test_verified_version_rule_matches_the_supported_versions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The operator-facing rule names exactly the versions the gate admits."""
+    monkeypatch.delenv(UNVERIFIED_SQLITE_DECLARATION, raising=False)
+    for boundary in ((3, 51, 3), (3, 50, 7), (3, 44, 6)):
+        assert str(boundary[2]) in VERIFIED_SQLITE_VERSIONS
+        assert wal_admission(version=boundary) == "verified"
+    for below in ((3, 51, 2), (3, 50, 6), (3, 44, 5)):
+        assert wal_admission(version=below) == "refused"
+
+
+@pytest.mark.parametrize("mode", ["writer", "inspect"])
+def test_unverified_sqlite_refuses_every_store_mode(
+    tmp_path: Path, mode: Literal["writer", "inspect"], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Read-only inspection is refused too; neither mode admits silently."""
+    monkeypatch.delenv(UNVERIFIED_SQLITE_DECLARATION, raising=False)
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 50, 4))
+    root = tmp_path.resolve()
+    with pytest.raises(SessionStoreError, match="sqlite_wal_unverified"):
+        SessionStore(root / "store", mode=mode, forbidden_roots=(root / "work",))
+    assert not (root / "store").exists()
+
+
+def test_declared_unverified_sqlite_opens_only_as_unverified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A declared unverified runtime still never claims verified admission."""
+    monkeypatch.delenv(UNVERIFIED_SQLITE_DECLARATION, raising=False)
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 50, 4))
+    api = store(tmp_path, allow_unverified=UNVERIFIED_RUNTIME)
+    try:
+        assert api.wal_admission == "unverified"
+    finally:
+        api.close()
+
+
+def test_environment_declaration_matches_verified_runtime_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The environment declaration admits an unverified runtime as unverified."""
+    monkeypatch.setenv(UNVERIFIED_SQLITE_DECLARATION, "1")
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 50, 4))
+    api = store(tmp_path, allow_unverified=False)
+    try:
+        assert api.wal_admission == "unverified"
+    finally:
+        api.close()
+
+
+def test_verified_sqlite_runtime_is_admitted_as_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A runtime with the verified WAL-reset fix needs no declaration."""
+    monkeypatch.delenv(UNVERIFIED_SQLITE_DECLARATION, raising=False)
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 51, 3))
+    api = store(tmp_path, allow_unverified=False)
+    try:
+        assert api.wal_admission == "verified"
+    finally:
+        api.close()
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "false", "0", [], {}, object()])
+def test_unverified_runtime_override_requires_an_actual_boolean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: object
+) -> None:
+    monkeypatch.setenv(UNVERIFIED_SQLITE_DECLARATION, "1")
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 50, 4))
+    with pytest.raises(SessionStoreError, match="invalid_options"):
+        wal_admission(allow_unverified=cast(Any, value))
+    directory = tmp_path.resolve() / "store"
+    with pytest.raises(SessionStoreError, match="invalid_options"):
+        SessionStore(
+            directory,
+            forbidden_roots=(tmp_path / "work",),
+            allow_unverified=cast(Any, value),
+        )
+    assert not directory.exists()
+
+
+@pytest.mark.parametrize("declaration", ["", "0", "false", "true", "yes", "1 ", " 1"])
+def test_environment_declaration_requires_exact_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, declaration: str
+) -> None:
+    monkeypatch.setenv(UNVERIFIED_SQLITE_DECLARATION, declaration)
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 50, 4))
+    assert wal_admission(allow_unverified=False) == "refused"
+    with pytest.raises(SessionStoreError, match="sqlite_wal_unverified"):
+        store(tmp_path, allow_unverified=False)
+    assert not (tmp_path / "store").exists()
 
 
 def test_unsupported_lock_and_filesystem_fail_closed(
