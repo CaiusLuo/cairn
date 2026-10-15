@@ -11,11 +11,14 @@ from cairn.core.repository import RepositoryEvidence
 from cairn.core.tasks import TaskResult, TaskSpec, TaskStatus
 from cairn.infra.git.context import RepoContextProvider
 from cairn.infra.observability.tracer import Tracer
+from cairn.infra.sessions.codec import decode_record, encode_record
 from cairn.infra.sessions.models import Revision, SessionStoreError
 from cairn.infra.sessions.task_models import (
     TaskDiagnostic,
     TaskRecord,
+    TaskRecoveryReport,
     TaskRepositoryObservation,
+    TaskResolution,
     TaskResultData,
 )
 from cairn.infra.workspace.workspace import Workspace
@@ -149,6 +152,102 @@ class CodingTaskRunner:
                 for outcome in outcomes:
                     if isinstance(outcome, Exception) and outcome is not primary:
                         primary.add_note(f"Task cleanup failed: {outcome}")
+
+    async def reconcile_task(
+        self,
+        session: DurableSession,
+        report: TaskRecoveryReport,
+        *,
+        resolution: TaskResolution,
+    ) -> TaskRecoveryReport:
+        """Apply a trusted-host decision to exact inspected facts, without replay.
+
+        Reconcile the Session separately before unfinished Task recovery. A
+        terminal Task is read-only. Unknown COMMIT acknowledgements return actual
+        stored facts with their recovery gate; no mutation/inspection is retried.
+        """
+        worker = asyncio.create_task(self._reconcile_task(session, report, resolution))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            await settle_owned(worker)
+            raise
+
+    async def _reconcile_task(
+        self,
+        session: DurableSession,
+        report: TaskRecoveryReport,
+        resolution: TaskResolution,
+    ) -> TaskRecoveryReport:
+        api = session.store
+        if not isinstance(resolution, TaskResolution):
+            raise SessionStoreError("task_reconciliation_rejected")
+        resolution = decode_record(
+            TaskResolution,
+            encode_record(resolution, sensitive_values=api.sensitive_values),
+        )
+        if (
+            report.task.revision.session_id != str(session.session_id)
+            or resolution.task_revision != report.task.revision
+            or resolution.session_revision != report.session_revision
+            or resolution.input_digest != report.task.input_digest
+        ):
+            raise SessionStoreError("task_reconciliation_rejected")
+        actual = api.inspect_task(
+            report.task.revision.session_id, report.task.revision.task_id
+        )
+        if actual != report:
+            raise SessionStoreError("task_recovery_mismatch")
+        if report.task.phase == "result_recorded" or report.status == "abandoned":
+            return actual
+        self._validate_durable_agent(session)
+        with session.task_reconciliation(report, budget=self.budget):
+            task: TaskRecord | None = None
+            diagnostic: TaskDiagnostic = "inspection_failed"
+            try:
+                task = api.reconcile_task(report, resolution)
+                if resolution.action == "inspect_repository":
+                    session.validate_task_inspection(self.budget, session.receipt)
+                    try:
+                        repository = await RepoContextProvider(
+                            self.workspace
+                        ).inspect_evidence(secret_env_keys=self.secret_env_keys)
+                    except Exception:
+                        raise SessionStoreError("task_inspection_unavailable") from None
+                    session.validate_task_inspection(self.budget, session.receipt)
+                    if repository.inspection_error is not None or repository.truncated:
+                        raise SessionStoreError("task_inspection_unavailable")
+                    receipt = task.checkpoint
+                    assert receipt is not None and receipt.outcome is not None
+                    current = session.inspect()
+                    task = api.record_task_result(
+                        task.revision,
+                        TaskResultData(
+                            status=receipt.outcome,
+                            trace_id=current.checkpoint.trace.trace_id,
+                            repository=TaskRepositoryObservation(
+                                is_git_repository=repository.is_git_repository,
+                                head_revision=repository.head_revision,
+                                dirty=repository.dirty,
+                            ),
+                        ),
+                    )
+                task = None  # Successful decisions need no failure diagnostic.
+            except asyncio.CancelledError:
+                diagnostic = "interrupted"
+                raise
+            except SessionStoreError as error:
+                if error.code != "commit_uncertain":
+                    raise
+                # Inspect only: the write may have happened. The Store fault
+                # remains latched and an incomplete Task receives no result.
+                task = None
+            finally:
+                if task is not None and resolution.action == "inspect_repository":
+                    self._require_task_recovery(session, task, diagnostic)
+            return api.inspect_task(
+                report.task.revision.session_id, report.task.revision.task_id
+            )
 
     async def _execute(
         self,

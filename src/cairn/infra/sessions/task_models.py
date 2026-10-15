@@ -12,6 +12,7 @@ from cairn.infra.sessions.models import (
     Reference,
     Revision,
     StrictDTO,
+    utc_text,
     uuid4_text,
 )
 
@@ -26,6 +27,31 @@ class TaskRevision(StrictDTO):
     version: Counter
 
     _session = field_validator("session_id")(uuid4_text)
+
+
+class TaskResolution(StrictDTO):
+    """Explicit trusted-host decision about exact inspected Task/Session facts.
+
+    Model text and stored records never supply this approval. No action resumes
+    a Turn; inspection authorizes only new, read-only repository observation.
+    """
+
+    task_revision: TaskRevision
+    session_revision: Revision
+    input_digest: Digest
+    action: Literal[
+        "abandon_without_replay", "acknowledge_checkpoint", "inspect_repository"
+    ]
+    actor: Reference
+    resolved_at_utc: str
+
+    _time = field_validator("resolved_at_utc")(utc_text)
+
+    @model_validator(mode="after")
+    def session_identity(self) -> Self:
+        if self.task_revision.session_id != self.session_revision.session_id:
+            raise ValueError("Invalid Task resolution identity")
+        return self
 
 
 class TaskRepositoryObservation(StrictDTO):
@@ -63,6 +89,9 @@ class TaskRecord(StrictDTO):
     result: TaskResultData | None = None
     recovery_required: bool = False
     diagnostic: TaskDiagnostic | None = None
+    resolution: TaskResolution | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def relationships(self) -> Self:
@@ -93,6 +122,27 @@ class TaskRecord(StrictDTO):
             and (self.checkpoint is None or self.checkpoint.outcome != "completed")
         ):
             raise ValueError("Invalid completed Task result")
+        if self.resolution is not None:
+            decision = self.resolution
+            if (
+                decision.task_revision.session_id != self.revision.session_id
+                or decision.task_revision.task_id != self.revision.task_id
+                or decision.task_revision.version >= self.revision.version
+                or decision.input_digest != self.input_digest
+                or decision.session_revision.version < self.base_revision.version
+            ):
+                raise ValueError("Invalid Task resolution")
+            if decision.action == "abandon_without_replay":
+                if (
+                    self.phase != "running"
+                    or not self.recovery_required
+                    or decision.session_revision.head_seq != self.base_revision.head_seq
+                ):
+                    raise ValueError("Invalid Task abandonment")
+            elif self.checkpoint is None or (
+                decision.session_revision.head_seq != self.checkpoint.revision.head_seq
+            ):
+                raise ValueError("Invalid Task recovery checkpoint")
         return self
 
 
@@ -100,5 +150,5 @@ class TaskRecoveryReport(StrictDTO):
     task: TaskRecord
     session_revision: Revision
     session_checkpoint: CheckpointReceipt
-    status: Literal["incomplete", "recovery_required", "result_recorded"]
+    status: Literal["incomplete", "recovery_required", "result_recorded", "abandoned"]
     external_effects_may_have_occurred: bool

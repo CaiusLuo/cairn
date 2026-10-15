@@ -42,7 +42,7 @@ from cairn.infra.sessions.models import (
     same_workspace,
 )
 from cairn.infra.sessions.store import SessionStore
-from cairn.infra.sessions.task_models import TaskRecord
+from cairn.infra.sessions.task_models import TaskRecord, TaskRecoveryReport
 from cairn.runtime.agent import Agent, SessionAdmissionError
 from cairn.runtime.session import Session, SessionState, TurnOutcome
 from cairn.runtime.turn_trace import TurnTraceSummary
@@ -332,6 +332,45 @@ class DurableSession(Session):
             with self._store.task_execution(task.revision):
                 self._task = task
                 self._task_started = False
+                try:
+                    yield
+                finally:
+                    self._task = None
+        finally:
+            if self.close_requested:
+                self.close()
+
+    @contextmanager
+    def task_reconciliation(
+        self, report: TaskRecoveryReport, *, budget: RunBudget
+    ) -> Iterator[None]:
+        """Own host-only recovery through inspection and cancellation cleanup.
+
+        Requires a separately reconciled, fresh Session. It admits no Turn and
+        grants no tool/provider permission; Task decisions belong to the host.
+        """
+        if (
+            self.state is not SessionState.READY
+            or self.active_turn is not None
+            or self._task is not None
+            or self._owned
+            or report.task.revision.session_id != str(self.session_id)
+        ):
+            raise SessionAdmissionError("Exact idle Task recovery is required.")
+        self._validate_permissions()
+        current = self._check_binding(budget)
+        if (
+            current.revision != report.session_revision
+            or current.receipt != report.session_checkpoint
+            or snapshot_messages(self.agent.state.messages)
+            != current.checkpoint.messages
+        ):
+            raise SessionAdmissionError("Exact Task recovery facts are required.")
+        try:
+            with self._store.task_reconciliation(report):
+                self._task = report.task
+                # The existing admission gate must refuse to run this old Task.
+                self._task_started = True
                 try:
                     yield
                 finally:

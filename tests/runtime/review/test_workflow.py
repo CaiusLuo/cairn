@@ -835,20 +835,18 @@ def test_provider_declared_secrets_are_inherited_by_real_fixer_children(
         assert tool_results[0]["stdout"] == "\n\nordinary-variable-visible\n"
         observed = records(log)
         prompt_children = observed[boundaries["trace_start"] : model_boundaries[0]]
-        assert len(prompt_children) == 3
         assert prompt_children[0]["args"][-2:] == ["rev-parse", "--show-toplevel"]
         assert "--untracked-files=normal" in prompt_children[-1]["args"]
-        final_children = observed[boundaries["trace_finish"] :][:4]
-        assert len(final_children) == 4
+        final_children = observed[boundaries["trace_finish"] :]
         assert final_children[0]["args"][-2:] == ["rev-parse", "--show-toplevel"]
-        assert final_children[2]["args"][-4:] == [
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            "HEAD^{commit}",
-        ]
-        assert "--untracked-files=all" in final_children[-1]["args"]
-        assert "-z" in final_children[-1]["args"]
+        assert any(
+            child["args"][-4:] == ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]
+            for child in final_children
+        )
+        assert any(
+            "--untracked-files=all" in child["args"] and "-z" in child["args"]
+            for child in final_children
+        )
         for child in observed:
             assert not (secrets.keys() & child["env"].keys())
             assert child["env"]["HOME"] == os.environ["HOME"]

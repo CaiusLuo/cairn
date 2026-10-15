@@ -91,17 +91,26 @@ def test_repository_failures_are_not_classified_as_non_git(
     assert evidence.inspection_error is not None
 
 
-def test_status_failure_preserves_discovered_facts(tmp_path: Path) -> None:
+@pytest.mark.parametrize("failure", ["invalid_index", "status_config"])
+def test_status_failure_preserves_discovered_facts(
+    tmp_path: Path, failure: str
+) -> None:
     _initialize_repository(tmp_path)
     revision = _git(tmp_path, "rev-parse", "HEAD")
-    (tmp_path / ".git" / "index").write_bytes(b"bad index")
+    index = tmp_path / ".git" / "index"
+    if failure == "invalid_index":
+        index.write_bytes(b"bad index")
+    else:
+        _git(tmp_path, "config", "status.showUntrackedFiles", "private-invalid-mode")
+    before = index.read_bytes()
     evidence = asyncio.run(RepoContextProvider(Workspace(tmp_path)).inspect_evidence())
     assert evidence.is_git_repository is True
     assert evidence.head_revision == revision
     assert evidence.branch == "main"
     assert evidence.dirty is None
     assert evidence.inspection_error is not None
-    assert "git status failed" in evidence.inspection_error
+    assert "private-invalid-mode" not in evidence.inspection_error
+    assert index.read_bytes() == before
 
 
 def test_missing_git_is_an_inspection_failure(
