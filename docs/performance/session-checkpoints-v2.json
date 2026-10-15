@@ -1,0 +1,849 @@
+{
+  "environment": {
+    "python": "3.12.13",
+    "platform": "macOS-26.3.1-arm64-arm-64bit",
+    "sqlite": "3.50.4",
+    "pydantic": "2.13.5",
+    "legacy": false,
+    "repeats": 7,
+    "tool_result_bytes": 1024,
+    "assistant_bytes": 1024
+  },
+  "measurements": [
+    {
+      "turns": 5,
+      "schema_version": 3,
+      "ordinary": {
+        "begin_ms": {
+          "median": 13.983625,
+          "min": 12.185708,
+          "max": 15.263042
+        },
+        "snapshot_ms": {
+          "median": 0.207375,
+          "min": 0.188333,
+          "max": 0.22025
+        },
+        "commit_ms": {
+          "median": 63.717667,
+          "min": 56.230709,
+          "max": 72.226042
+        }
+      },
+      "inspect_ms": {
+        "median": 5.209167,
+        "min": 5.096833,
+        "max": 5.226334
+      },
+      "cold_reopen_ms": {
+        "median": 6.379375,
+        "min": 6.317792,
+        "max": 6.549625
+      },
+      "live_reopen_ms": {
+        "median": 6.494417,
+        "min": 6.35675,
+        "max": 6.752958
+      },
+      "steady": {
+        "begin_ms": {
+          "median": 8.590291,
+          "min": 6.198583,
+          "max": 11.253459
+        },
+        "fence_ms": {
+          "median": 16.545,
+          "min": 11.3485,
+          "max": 22.122833
+        },
+        "snapshot_ms": {
+          "median": 0.148667,
+          "min": 0.115458,
+          "max": 0.189291
+        },
+        "commit_ms": {
+          "median": 40.959375,
+          "min": 27.9665,
+          "max": 53.758958
+        },
+        "sqlite_commit_ms": {
+          "median": 0.112583,
+          "min": 0.077541,
+          "max": 0.55725
+        }
+      },
+      "payload_bytes": 17221,
+      "db_bytes": 73728,
+      "live_wal_bytes": 0,
+      "peak_wal_at_commit_bytes": 74192,
+      "inspect_peak_tracemalloc_bytes": 167429,
+      "inspect_profile": {
+        "codec.py:decode_storage_checkpoint": {
+          "calls": 6,
+          "self_ms": 0.012039000000000001,
+          "cumulative_ms": 4.113751000000001
+        },
+        "codec.py:encode_record": {
+          "calls": 1,
+          "self_ms": 0.003917,
+          "cumulative_ms": 1.460625
+        },
+        "codec.py:validate_history": {
+          "calls": 6,
+          "self_ms": 0.023003,
+          "cumulative_ms": 1.482042
+        },
+        "store.py:_report": {
+          "calls": 1,
+          "self_ms": 0.038705,
+          "cumulative_ms": 7.609375000000001
+        },
+        "store.py:_settled_relationship": {
+          "calls": 5,
+          "self_ms": 0.01204,
+          "cumulative_ms": 0.03966700000000001
+        },
+        "store.py:_schema": {
+          "calls": 1,
+          "self_ms": 0.012249000000000001,
+          "cumulative_ms": 0.069917
+        }
+      },
+      "write_profile": {
+        "codec.py:decode_storage_checkpoint": {
+          "calls": 100,
+          "self_ms": 0.147204,
+          "cumulative_ms": 63.022539
+        },
+        "codec.py:encode_checkpoint": {
+          "calls": 2,
+          "self_ms": 0.01129,
+          "cumulative_ms": 24.359166000000002
+        },
+        "codec.py:decode_checkpoint": {
+          "calls": 1,
+          "self_ms": 0.005668,
+          "cumulative_ms": 8.020583000000002
+        },
+        "codec.py:encode_record": {
+          "calls": 20,
+          "self_ms": 0.10687200000000001,
+          "cumulative_ms": 34.317460000000004
+        },
+        "store.py:_current": {
+          "calls": 2,
+          "self_ms": 0.032916,
+          "cumulative_ms": 46.401958
+        },
+        "store.py:_commit": {
+          "calls": 3,
+          "self_ms": 0.0016260000000000003,
+          "cumulative_ms": 0.518167
+        },
+        "codec.py:validate_history": {
+          "calls": 103,
+          "self_ms": 0.369647,
+          "cumulative_ms": 34.085915
+        },
+        "store.py:_report": {
+          "calls": 5,
+          "self_ms": 0.400774,
+          "cumulative_ms": 114.375917
+        },
+        "store.py:_settled_relationship": {
+          "calls": 96,
+          "self_ms": 0.17850600000000003,
+          "cumulative_ms": 0.5992540000000001
+        },
+        "codec.py:snapshot_messages": {
+          "calls": 1,
+          "self_ms": 0.048038000000000004,
+          "cumulative_ms": 0.250417
+        },
+        "codec.py:encode_storage_checkpoint": {
+          "calls": 1,
+          "self_ms": 0.013583,
+          "cumulative_ms": 16.68925
+        },
+        "store.py:_schema": {
+          "calls": 6,
+          "self_ms": 0.083666,
+          "cumulative_ms": 0.690333
+        },
+        "store.py:_prepare": {
+          "calls": 4,
+          "self_ms": 0.002126,
+          "cumulative_ms": 47.828250000000004
+        }
+      }
+    },
+    {
+      "turns": 10,
+      "schema_version": 3,
+      "ordinary": {
+        "begin_ms": {
+          "median": 17.804708,
+          "min": 16.023334,
+          "max": 21.221292
+        },
+        "snapshot_ms": {
+          "median": 0.258042,
+          "min": 0.245208,
+          "max": 0.268709
+        },
+        "commit_ms": {
+          "median": 82.513417,
+          "min": 77.548958,
+          "max": 89.097166
+        }
+      },
+      "inspect_ms": {
+        "median": 9.528,
+        "min": 9.308584,
+        "max": 9.867083
+      },
+      "cold_reopen_ms": {
+        "median": 10.814042,
+        "min": 10.692208,
+        "max": 10.906708
+      },
+      "live_reopen_ms": {
+        "median": 10.86225,
+        "min": 10.726667,
+        "max": 11.232709
+      },
+      "steady": {
+        "begin_ms": {
+          "median": 12.667041,
+          "min": 10.24,
+          "max": 15.524709
+        },
+        "fence_ms": {
+          "median": 24.988,
+          "min": 19.928459,
+          "max": 30.363334
+        },
+        "snapshot_ms": {
+          "median": 0.206583,
+          "min": 0.181542,
+          "max": 0.262042
+        },
+        "commit_ms": {
+          "median": 61.293375,
+          "min": 48.066416,
+          "max": 73.890833
+        },
+        "sqlite_commit_ms": {
+          "median": 0.113,
+          "min": 0.08,
+          "max": 0.354166
+        }
+      },
+      "payload_bytes": 33862,
+      "db_bytes": 102400,
+      "live_wal_bytes": 0,
+      "peak_wal_at_commit_bytes": 74192,
+      "inspect_peak_tracemalloc_bytes": 314515,
+      "inspect_profile": {
+        "codec.py:decode_storage_checkpoint": {
+          "calls": 11,
+          "self_ms": 0.020125,
+          "cumulative_ms": 7.648918
+        },
+        "codec.py:encode_record": {
+          "calls": 1,
+          "self_ms": 0.006959000000000001,
+          "cumulative_ms": 2.735417
+        },
+        "codec.py:validate_history": {
+          "calls": 11,
+          "self_ms": 0.037541000000000005,
+          "cumulative_ms": 2.7930010000000003
+        },
+        "store.py:_report": {
+          "calls": 1,
+          "self_ms": 0.05254,
+          "cumulative_ms": 14.126875
+        },
+        "store.py:_settled_relationship": {
+          "calls": 10,
+          "self_ms": 0.018330000000000003,
+          "cumulative_ms": 0.065041
+        },
+        "store.py:_schema": {
+          "calls": 1,
+          "self_ms": 0.013375000000000001,
+          "cumulative_ms": 0.085583
+        }
+      },
+      "write_profile": {
+        "codec.py:decode_storage_checkpoint": {
+          "calls": 125,
+          "self_ms": 0.177375,
+          "cumulative_ms": 80.456923
+        },
+        "codec.py:encode_checkpoint": {
+          "calls": 2,
+          "self_ms": 0.014457000000000001,
+          "cumulative_ms": 31.008583
+        },
+        "codec.py:decode_checkpoint": {
+          "calls": 1,
+          "self_ms": 0.006334000000000001,
+          "cumulative_ms": 10.210500000000001
+        },
+        "codec.py:encode_record": {
+          "calls": 20,
+          "self_ms": 0.13571200000000003,
+          "cumulative_ms": 43.176625
+        },
+        "store.py:_current": {
+          "calls": 2,
+          "self_ms": 0.045707000000000005,
+          "cumulative_ms": 59.224833000000004
+        },
+        "store.py:_commit": {
+          "calls": 3,
+          "self_ms": 0.001624,
+          "cumulative_ms": 0.594291
+        },
+        "codec.py:validate_history": {
+          "calls": 128,
+          "self_ms": 0.48369300000000004,
+          "cumulative_ms": 44.341459
+        },
+        "store.py:_report": {
+          "calls": 5,
+          "self_ms": 0.48046900000000003,
+          "cumulative_ms": 145.60458300000002
+        },
+        "store.py:_settled_relationship": {
+          "calls": 121,
+          "self_ms": 0.222744,
+          "cumulative_ms": 0.768503
+        },
+        "codec.py:snapshot_messages": {
+          "calls": 1,
+          "self_ms": 0.050582,
+          "cumulative_ms": 0.3125
+        },
+        "codec.py:encode_storage_checkpoint": {
+          "calls": 1,
+          "self_ms": 0.019126,
+          "cumulative_ms": 20.98325
+        },
+        "store.py:_schema": {
+          "calls": 6,
+          "self_ms": 0.08359100000000001,
+          "cumulative_ms": 0.7222500000000001
+        },
+        "store.py:_prepare": {
+          "calls": 4,
+          "self_ms": 0.002458,
+          "cumulative_ms": 59.839000000000006
+        }
+      }
+    },
+    {
+      "turns": 20,
+      "schema_version": 3,
+      "ordinary": {
+        "begin_ms": {
+          "median": 26.657083,
+          "min": 24.962042,
+          "max": 28.066125
+        },
+        "snapshot_ms": {
+          "median": 0.398416,
+          "min": 0.372708,
+          "max": 0.423291
+        },
+        "commit_ms": {
+          "median": 124.588417,
+          "min": 117.509291,
+          "max": 132.719542
+        }
+      },
+      "inspect_ms": {
+        "median": 18.626875,
+        "min": 18.263708,
+        "max": 18.913834
+      },
+      "cold_reopen_ms": {
+        "median": 20.059792,
+        "min": 19.516709,
+        "max": 20.455875
+      },
+      "live_reopen_ms": {
+        "median": 19.998375,
+        "min": 19.784667,
+        "max": 20.217792
+      },
+      "steady": {
+        "begin_ms": {
+          "median": 21.548333,
+          "min": 19.687,
+          "max": 24.554166
+        },
+        "fence_ms": {
+          "median": 42.679917,
+          "min": 37.90875,
+          "max": 48.003584
+        },
+        "snapshot_ms": {
+          "median": 0.332208,
+          "min": 0.306875,
+          "max": 0.367
+        },
+        "commit_ms": {
+          "median": 102.814375,
+          "min": 89.900916,
+          "max": 114.160791
+        },
+        "sqlite_commit_ms": {
+          "median": 0.135125,
+          "min": 0.086583,
+          "max": 0.263958
+        }
+      },
+      "payload_bytes": 67162,
+      "db_bytes": 151552,
+      "live_wal_bytes": 0,
+      "peak_wal_at_commit_bytes": 74192,
+      "inspect_peak_tracemalloc_bytes": 611354,
+      "inspect_profile": {
+        "codec.py:decode_storage_checkpoint": {
+          "calls": 21,
+          "self_ms": 0.063754,
+          "cumulative_ms": 25.88746
+        },
+        "codec.py:encode_record": {
+          "calls": 1,
+          "self_ms": 0.013292,
+          "cumulative_ms": 5.190834
+        },
+        "codec.py:validate_history": {
+          "calls": 21,
+          "self_ms": 0.141498,
+          "cumulative_ms": 8.7085
+        },
+        "store.py:_report": {
+          "calls": 1,
+          "self_ms": 0.208669,
+          "cumulative_ms": 38.938
+        },
+        "store.py:_settled_relationship": {
+          "calls": 20,
+          "self_ms": 0.07084,
+          "cumulative_ms": 0.273544
+        },
+        "store.py:_schema": {
+          "calls": 1,
+          "self_ms": 0.012795,
+          "cumulative_ms": 0.094584
+        }
+      },
+      "write_profile": {
+        "codec.py:decode_storage_checkpoint": {
+          "calls": 175,
+          "self_ms": 0.25042000000000003,
+          "cumulative_ms": 117.37245600000001
+        },
+        "codec.py:encode_checkpoint": {
+          "calls": 2,
+          "self_ms": 0.015710000000000002,
+          "cumulative_ms": 46.135917000000006
+        },
+        "codec.py:decode_checkpoint": {
+          "calls": 1,
+          "self_ms": 0.007791,
+          "cumulative_ms": 15.138125
+        },
+        "codec.py:encode_record": {
+          "calls": 20,
+          "self_ms": 0.166334,
+          "cumulative_ms": 62.57550200000001
+        },
+        "store.py:_current": {
+          "calls": 2,
+          "self_ms": 0.059084000000000005,
+          "cumulative_ms": 85.227917
+        },
+        "store.py:_commit": {
+          "calls": 3,
+          "self_ms": 0.001917,
+          "cumulative_ms": 0.644042
+        },
+        "codec.py:validate_history": {
+          "calls": 178,
+          "self_ms": 0.707482,
+          "cumulative_ms": 66.171709
+        },
+        "store.py:_report": {
+          "calls": 5,
+          "self_ms": 0.660461,
+          "cumulative_ms": 210.67212500000002
+        },
+        "store.py:_settled_relationship": {
+          "calls": 171,
+          "self_ms": 0.311612,
+          "cumulative_ms": 1.0930440000000001
+        },
+        "codec.py:snapshot_messages": {
+          "calls": 1,
+          "self_ms": 0.07512400000000001,
+          "cumulative_ms": 0.473875
+        },
+        "codec.py:encode_storage_checkpoint": {
+          "calls": 1,
+          "self_ms": 0.020707,
+          "cumulative_ms": 30.453542000000002
+        },
+        "store.py:_schema": {
+          "calls": 6,
+          "self_ms": 0.08476100000000002,
+          "cumulative_ms": 0.827542
+        },
+        "store.py:_prepare": {
+          "calls": 4,
+          "self_ms": 0.0019590000000000002,
+          "cumulative_ms": 85.786125
+        }
+      }
+    },
+    {
+      "turns": 40,
+      "schema_version": 3,
+      "ordinary": {
+        "begin_ms": {
+          "median": 44.838708,
+          "min": 43.439667,
+          "max": 45.873041
+        },
+        "snapshot_ms": {
+          "median": 0.641541,
+          "min": 0.621458,
+          "max": 0.645375
+        },
+        "commit_ms": {
+          "median": 211.019,
+          "min": 204.046083,
+          "max": 214.51925
+        }
+      },
+      "inspect_ms": {
+        "median": 35.955125,
+        "min": 35.496834,
+        "max": 36.138375
+      },
+      "cold_reopen_ms": {
+        "median": 36.819292,
+        "min": 36.769167,
+        "max": 37.327666
+      },
+      "live_reopen_ms": {
+        "median": 37.060666,
+        "min": 36.950542,
+        "max": 39.977833
+      },
+      "steady": {
+        "begin_ms": {
+          "median": 40.700292,
+          "min": 36.958167,
+          "max": 42.604917
+        },
+        "fence_ms": {
+          "median": 80.797542,
+          "min": 72.36175,
+          "max": 84.35425
+        },
+        "snapshot_ms": {
+          "median": 0.600333,
+          "min": 0.562459,
+          "max": 0.645125
+        },
+        "commit_ms": {
+          "median": 188.557958,
+          "min": 170.950167,
+          "max": 199.8805
+        },
+        "sqlite_commit_ms": {
+          "median": 0.230833,
+          "min": 0.104125,
+          "max": 0.391083
+        }
+      },
+      "payload_bytes": 133799,
+      "db_bytes": 249856,
+      "live_wal_bytes": 0,
+      "peak_wal_at_commit_bytes": 74192,
+      "inspect_peak_tracemalloc_bytes": 1207131,
+      "inspect_profile": {
+        "codec.py:decode_storage_checkpoint": {
+          "calls": 41,
+          "self_ms": 0.062033000000000005,
+          "cumulative_ms": 29.435789
+        },
+        "codec.py:encode_record": {
+          "calls": 1,
+          "self_ms": 0.023208000000000003,
+          "cumulative_ms": 9.877916
+        },
+        "codec.py:validate_history": {
+          "calls": 41,
+          "self_ms": 0.143349,
+          "cumulative_ms": 10.816793
+        },
+        "store.py:_report": {
+          "calls": 1,
+          "self_ms": 0.15832700000000002,
+          "cumulative_ms": 52.771792000000005
+        },
+        "store.py:_settled_relationship": {
+          "calls": 40,
+          "self_ms": 0.072878,
+          "cumulative_ms": 0.256793
+        },
+        "store.py:_schema": {
+          "calls": 1,
+          "self_ms": 0.015003,
+          "cumulative_ms": 0.142917
+        }
+      },
+      "write_profile": {
+        "codec.py:decode_storage_checkpoint": {
+          "calls": 275,
+          "self_ms": 0.41397000000000006,
+          "cumulative_ms": 191.680787
+        },
+        "codec.py:encode_checkpoint": {
+          "calls": 2,
+          "self_ms": 0.026542,
+          "cumulative_ms": 76.48408400000001
+        },
+        "codec.py:decode_checkpoint": {
+          "calls": 1,
+          "self_ms": 0.012542000000000001,
+          "cumulative_ms": 25.025459
+        },
+        "codec.py:encode_record": {
+          "calls": 20,
+          "self_ms": 0.261587,
+          "cumulative_ms": 100.724332
+        },
+        "store.py:_current": {
+          "calls": 2,
+          "self_ms": 0.09112400000000001,
+          "cumulative_ms": 138.095333
+        },
+        "store.py:_commit": {
+          "calls": 3,
+          "self_ms": 0.00179,
+          "cumulative_ms": 0.858791
+        },
+        "codec.py:validate_history": {
+          "calls": 278,
+          "self_ms": 1.153093,
+          "cumulative_ms": 110.037413
+        },
+        "store.py:_report": {
+          "calls": 5,
+          "self_ms": 1.013805,
+          "cumulative_ms": 343.969293
+        },
+        "store.py:_settled_relationship": {
+          "calls": 271,
+          "self_ms": 0.491489,
+          "cumulative_ms": 1.778161
+        },
+        "codec.py:snapshot_messages": {
+          "calls": 1,
+          "self_ms": 0.11622700000000001,
+          "cumulative_ms": 0.795708
+        },
+        "codec.py:encode_storage_checkpoint": {
+          "calls": 1,
+          "self_ms": 0.029125,
+          "cumulative_ms": 49.484542000000005
+        },
+        "store.py:_schema": {
+          "calls": 6,
+          "self_ms": 0.085498,
+          "cumulative_ms": 0.998
+        },
+        "store.py:_prepare": {
+          "calls": 4,
+          "self_ms": 0.002206,
+          "cumulative_ms": 138.032332
+        }
+      }
+    },
+    {
+      "turns": 80,
+      "schema_version": 3,
+      "ordinary": {
+        "begin_ms": {
+          "median": 80.5405,
+          "min": 77.784541,
+          "max": 84.676292
+        },
+        "snapshot_ms": {
+          "median": 1.213875,
+          "min": 1.157958,
+          "max": 1.292333
+        },
+        "commit_ms": {
+          "median": 377.985917,
+          "min": 369.340208,
+          "max": 391.753042
+        }
+      },
+      "inspect_ms": {
+        "median": 71.039417,
+        "min": 70.607792,
+        "max": 73.808709
+      },
+      "cold_reopen_ms": {
+        "median": 72.839792,
+        "min": 72.493292,
+        "max": 76.110375
+      },
+      "live_reopen_ms": {
+        "median": 73.004209,
+        "min": 72.079167,
+        "max": 74.156792
+      },
+      "steady": {
+        "begin_ms": {
+          "median": 75.61175,
+          "min": 73.462625,
+          "max": 78.694792
+        },
+        "fence_ms": {
+          "median": 151.311209,
+          "min": 145.584084,
+          "max": 158.269917
+        },
+        "snapshot_ms": {
+          "median": 1.102208,
+          "min": 1.09275,
+          "max": 1.16925
+        },
+        "commit_ms": {
+          "median": 359.770375,
+          "min": 342.260667,
+          "max": 367.049125
+        },
+        "sqlite_commit_ms": {
+          "median": 0.239959,
+          "min": 0.090542,
+          "max": 0.405791
+        }
+      },
+      "payload_bytes": 267119,
+      "db_bytes": 462848,
+      "live_wal_bytes": 0,
+      "peak_wal_at_commit_bytes": 78312,
+      "inspect_peak_tracemalloc_bytes": 2400313,
+      "inspect_profile": {
+        "codec.py:decode_storage_checkpoint": {
+          "calls": 81,
+          "self_ms": 0.116032,
+          "cumulative_ms": 59.973036
+        },
+        "codec.py:encode_record": {
+          "calls": 1,
+          "self_ms": 0.042541,
+          "cumulative_ms": 18.714333
+        },
+        "codec.py:validate_history": {
+          "calls": 81,
+          "self_ms": 0.279212,
+          "cumulative_ms": 22.190878
+        },
+        "store.py:_report": {
+          "calls": 1,
+          "self_ms": 0.30575,
+          "cumulative_ms": 105.47333400000001
+        },
+        "store.py:_settled_relationship": {
+          "calls": 80,
+          "self_ms": 0.14970600000000003,
+          "cumulative_ms": 0.512954
+        },
+        "store.py:_schema": {
+          "calls": 1,
+          "self_ms": 0.014626,
+          "cumulative_ms": 0.191417
+        }
+      },
+      "write_profile": {
+        "codec.py:decode_storage_checkpoint": {
+          "calls": 475,
+          "self_ms": 0.706898,
+          "cumulative_ms": 342.31982700000003
+        },
+        "codec.py:encode_checkpoint": {
+          "calls": 2,
+          "self_ms": 0.039542,
+          "cumulative_ms": 131.991126
+        },
+        "codec.py:decode_checkpoint": {
+          "calls": 1,
+          "self_ms": 0.017833,
+          "cumulative_ms": 44.153541000000004
+        },
+        "codec.py:encode_record": {
+          "calls": 20,
+          "self_ms": 0.41424500000000003,
+          "cumulative_ms": 177.202708
+        },
+        "store.py:_current": {
+          "calls": 2,
+          "self_ms": 0.137875,
+          "cumulative_ms": 246.46666600000003
+        },
+        "store.py:_commit": {
+          "calls": 3,
+          "self_ms": 0.0020840000000000003,
+          "cumulative_ms": 0.561459
+        },
+        "codec.py:validate_history": {
+          "calls": 478,
+          "self_ms": 2.0718010000000002,
+          "cumulative_ms": 194.624173
+        },
+        "store.py:_report": {
+          "calls": 5,
+          "self_ms": 1.7852180000000002,
+          "cumulative_ms": 605.389419
+        },
+        "store.py:_settled_relationship": {
+          "calls": 471,
+          "self_ms": 0.8631270000000001,
+          "cumulative_ms": 3.1998320000000002
+        },
+        "codec.py:snapshot_messages": {
+          "calls": 1,
+          "self_ms": 0.216706,
+          "cumulative_ms": 1.4578330000000002
+        },
+        "codec.py:encode_storage_checkpoint": {
+          "calls": 1,
+          "self_ms": 0.047542,
+          "cumulative_ms": 87.041667
+        },
+        "store.py:_schema": {
+          "calls": 6,
+          "self_ms": 0.088757,
+          "cumulative_ms": 1.3777910000000002
+        },
+        "store.py:_prepare": {
+          "calls": 4,
+          "self_ms": 0.002499,
+          "cumulative_ms": 243.03691600000002
+        }
+      }
+    }
+  ]
+}

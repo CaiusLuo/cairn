@@ -39,7 +39,7 @@ Failures roll back and use the existing Store fault latch and fixed error codes.
 Concurrent writers are rejected by the existing lifetime writer lock. An uncertain
 COMMIT requires inspection of actual stored facts; there is no mutation retry.
 
-For an already securely opened, schema-2 Store, a trusted host can record facts:
+For an already securely opened, schema-2/3 Store, a trusted host can record facts:
 
 ```python
 import hashlib
@@ -67,7 +67,7 @@ provide no current Git evidence, checkout identity or publication authority.
 
 ## Opt-in CodingTaskRunner
 
-The trusted host supplies a schema-2 writer Store, a fresh Agent with a fresh
+The trusted host supplies a schema-2/3 writer Store, a fresh Agent with a fresh
 permission handler, current Workspace/Git observations and freshly approved
 provider configuration. It attaches that Agent with `DurableSession.create` or
 `reopen`; a reopened Session must be explicitly reconciled using the current
@@ -144,22 +144,22 @@ reconciliation alone never advances its phases or clears its recovery diagnostic
 
 ## Schema compatibility and explicit upgrade
 
-New databases use schema **2**, adding one `tasks` table; Session tables and
-checkpoint payload format **1** are unchanged. This version of Cairn continues
-to inspect, reopen and write schema-1 Sessions, including through the durable
-CLI, without migration. Task APIs reject schema 1 with `schema_upgrade_required`.
-Older Cairn versions that accept only schema 1 reject a migrated database;
-there is no downgrade or reset operation.
+New databases use schema **3**, accepting both historical V1 full snapshots and
+V2 incremental checkpoints. Task records and CheckpointReceipts keep their exact
+meaning and bytes. Schemas 1/2 remain readable and writable without migration;
+schema 1 still requires an explicit upgrade for Task APIs. Old Cairn versions
+that do not support schema 3 reject it; there is no downgrade or reset operation.
+See [SessionStore](session-store.md#codec-and-transactions) for the format matrix.
 
 Upgrading is an explicit trusted-host operation, independent of Agent execution:
 
 1. Stop every writer and wait for owned Task/Turn work and cleanup to finish.
 2. Open the existing Store as a writer with the actual effective sandbox-writable
    roots and known sensitive values, as described in [SessionStore](session-store.md).
-3. Call `upgrade_schema()` once if `schema_version == 1`; retain its returned
+3. Call `upgrade_schema()` once if `schema_version in (1, 2)`; retain its returned
    backup path. An inspector, another writer or a locally owned Task/Turn cannot
    perform this operation.
-4. Verify the schema version and committed Sessions before using Task APIs.
+4. Verify the schema version and committed Sessions before using incremental checkpoints.
 
 For the standard durable CLI layout, the existing CLI Store opener computes the
 Workspace, `/tmp`, effective temporary and uv cache roots:
@@ -171,10 +171,10 @@ from cairn.terminal.durable import open_store
 
 store = open_store(None, Workspace(Path.cwd()))
 try:
-    if store.schema_version == 1:
+    if store.schema_version in (1, 2):
         backup = store.upgrade_schema()
-        print(f"Retained schema-1 backup: {backup}")
-    assert store.schema_version == 2
+        print(f"Retained source-schema backup: {backup}")
+    assert store.schema_version == 3
 finally:
     store.close()
 ```
@@ -185,20 +185,30 @@ store directory, `additional_roots`, `secret_env_keys` and `sensitive_values` to
 operation does not resolve credentials, make network requests or start an Agent.
 There is no Task CLI or automatic CLI upgrade.
 
-The upgrader holds exclusive writer ownership, verifies all committed Sessions,
-uses SQLite's backup API to include committed WAL pages, validates the private
-schema-1 backup and synchronizes it before starting migration. The backup is
-retained as `schema-1-backup-<random-id>.sqlite3` inside the isolated Store.
-Adding the table, changing `user_version` and validating schema, foreign keys
-and committed Session chains occur in one transaction. A pre-COMMIT failure
-rolls back that transaction and retains the original schema, database inode and
-committed data. No file replacement or automatic backup restoration occurs.
-Ordinary writer opening and closing can still perform existing WAL maintenance.
+The upgrader holds exclusive writer ownership, verifies all Sessions and Task
+receipt attribution, uses SQLite backup to include committed WAL pages, validates
+the private backup and synchronizes it before migration. It retains the file as
+`schema-<source-version>-backup-<random-id>.sqlite3` in the isolated Store.
+
+One transaction creates the Task table when upgrading schema 1 and replaces the
+checkpoint table with identical rows under the broadened format constraint. It
+adds a per-Session Turn traversal index and copies payload blobs and digest
+strings verbatim: Session/Turn/Task references,
+commit versions and original receipts remain unchanged. Only new checkpoints use
+V2. The Store suspends SQLite FK enforcement solely under its exclusive effect
+guard for the table rebuild, checks all foreign keys and semantic chains before
+COMMIT, and restores enforcement after either COMMIT or rollback. Ordinary
+mutations retain foreign keys ON. A pre-COMMIT failure rolls back to the original
+schema and data; the source inode and backup are retained. There is no automatic
+backup restoration or evidence deletion. The table copy needs temporary space
+within the existing database limit; insufficient space fails closed.
 
 On `commit_uncertain`, stop writes and inspect the actual schema and Sessions:
-the migration may have committed. The backup remains schema 1. Do not retry
-blindly or copy it over a live database. Already-schema-2 calls reject with
-`schema_upgrade_not_required` and create no extra backup.
+the migration may have committed. The backup remains at its original schema.
+Do not retry blindly or copy it over a live database. Already-schema-3 calls
+reject with `schema_upgrade_not_required` and create no extra backup. Inspection
+and ordinary writer open never migrate. Writer open/close can still perform the
+existing WAL maintenance.
 
 ## Recovery facts and limits
 

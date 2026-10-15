@@ -16,11 +16,14 @@ import statistics
 import tempfile
 import time
 import tracemalloc
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 from tests.support.sessions import T4, binding, fence, intent, messages, settled, store
+
+from cairn.core.models import Message
 
 
 def stats(values: list[float]) -> dict[str, float]:
@@ -50,6 +53,8 @@ def profile(call: Any) -> dict[str, Any]:
         if name in {
             "_report",
             "decode_checkpoint",
+            "decode_storage_checkpoint",
+            "encode_storage_checkpoint",
             "validate_history",
             "_settled_relationship",
             "_schema",
@@ -68,10 +73,16 @@ def profile(call: Any) -> dict[str, Any]:
     return result
 
 
-def run(turns: int, repeats: int) -> dict[str, Any]:
+def run(turns: int, repeats: int, *, legacy: bool = False) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="cairn-checkpoints-") as directory:
         root = Path(directory)
-        api = store(root)
+        if legacy:
+            from tests.support.sessions import legacy_store
+
+            api = legacy_store(root)
+        else:
+            api = store(root)
+        schema_version = api.schema_version
         bind = binding(root)
         receipt = api.create(bind)
         history = []
@@ -89,11 +100,13 @@ def run(turns: int, repeats: int) -> dict[str, Any]:
         original_commit = api._commit
 
         def sql_commit(conn: sqlite3.Connection) -> None:
+            nonlocal wal_peak
             start = time.perf_counter_ns()
             original_commit(conn)
             observations["sqlite_commit_ms"].append(
                 (time.perf_counter_ns() - start) / 1e6
             )
+            wal_peak = max(wal_peak, Path(str(api.path) + "-wal").stat().st_size)
 
         api._commit = sql_commit  # type: ignore[method-assign]
         for number in range(turns + repeats):
@@ -190,11 +203,45 @@ def run(turns: int, repeats: int) -> dict[str, Any]:
             receipt = api.commit_turn(active, value)
             bind = value.checkpoint.binding
 
-        steady = {k: stats(v[-repeats:]) for k, v in observations.items()}
+        steady = {
+            k: stats(v[-3 * repeats :] if k == "sqlite_commit_ms" else v)
+            for k, v in observations.items()
+        }
+        # Tool-free commits on N+8..N+14; the same window in before/after runs.
+        ordinary: dict[str, list[float]] = {
+            key: [] for key in ("begin_ms", "snapshot_ms", "commit_ms")
+        }
+        for number in range(repeats):
+            turn = intent(
+                bind,
+                receipt.revision,
+                turn_id=str(UUID(int=5000 + number, version=4)),
+                start=len(history),
+                time=T4,
+            )
+            start = time.perf_counter_ns()
+            active = api.begin_turn(receipt.revision, turn)
+            ordinary["begin_ms"].append((time.perf_counter_ns() - start) / 1e6)
+            history.extend(
+                [
+                    Message(role="user", content="hello"),
+                    Message(role="assistant", content="a" * 1024),
+                ]
+            )
+            start = time.perf_counter_ns()
+            value = settled(turn, history=history)
+            ordinary["snapshot_ms"].append((time.perf_counter_ns() - start) / 1e6)
+            start = time.perf_counter_ns()
+            receipt = api.commit_turn(active, value)
+            ordinary["commit_ms"].append((time.perf_counter_ns() - start) / 1e6)
+            bind = value.checkpoint.binding
+        measured_wal_peak = wal_peak
         write_profile = profile(write_cycle)
         api.close()
         return {
             "turns": turns,
+            "schema_version": schema_version,
+            "ordinary": {key: stats(values) for key, values in ordinary.items()},
             "inspect_ms": inspect_ms,
             "cold_reopen_ms": cold_ms,
             "live_reopen_ms": live_reopen_ms,
@@ -202,7 +249,7 @@ def run(turns: int, repeats: int) -> dict[str, Any]:
             "payload_bytes": payload_bytes,
             "db_bytes": db_bytes,
             "live_wal_bytes": live_wal_bytes,
-            "peak_wal_between_fences_bytes": wal_peak,
+            "peak_wal_at_commit_bytes": measured_wal_peak,
             "inspect_peak_tracemalloc_bytes": peak,
             "inspect_profile": report_profile,
             "write_profile": write_profile,
@@ -213,20 +260,26 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--repeats", type=int, default=7)
+    parser.add_argument(
+        "--legacy", action="store_true", help="Use schema 2 on the new implementation"
+    )
+    parser.add_argument("--turns", type=int, nargs="+", default=[5, 10, 20, 40, 80])
     args = parser.parse_args()
     result = {
         "environment": {
             "python": platform.python_version(),
             "platform": platform.platform(),
             "sqlite": sqlite3.sqlite_version,
+            "pydantic": version("pydantic"),
+            "legacy": args.legacy,
             "repeats": args.repeats,
             "tool_result_bytes": 1024,
             "assistant_bytes": 1024,
         },
         "measurements": [],
     }
-    for count in (5, 10, 20, 40, 80):
-        record = run(count, args.repeats)
+    for count in args.turns:
+        record = run(count, args.repeats, legacy=args.legacy)
         result["measurements"].append(record)
         print(count, record["inspect_ms"], flush=True)
         args.output.write_text(json.dumps(result, indent=2) + "\n")

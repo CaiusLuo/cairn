@@ -90,7 +90,10 @@ credential objects, provider runtimes or Worktree handles.
    fixed `sink_failed` code. Raw trace payloads/exception text are never stored.
 5. Validate full settled conversation and commit exactly once using Store CAS.
    Success and cooperative aborts, including empty rollback tails, can checkpoint.
-   Match all receipt fields: Session/Turn, version/head, digest and outcome.
+   Compute the expected digest using the Store schema's encoding and the exact
+   preceding receipt (V1 full payload or V2 tail plus predecessor), then match all
+   receipt fields: Session/Turn, version/head, digest and outcome. The full
+   materialized recovery view is not the bytes hashed by a V2 receipt.
 6. Deliver `turn_settled`, then receipt-backed `turn_committed`, holding the guard
    throughout both. The latter's SessionEvent UUIDs and sequence attribute its
    checkpoint_seq, revision and outcome. Release faulted local Store ownership

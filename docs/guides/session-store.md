@@ -67,14 +67,43 @@ an endpoint or prove checkout freshness.
 
 ## Codec and transactions
 
-[SessionStore](../../src/cairn/infra/sessions/store.py) creates schema **2** and
-continues to support schema **1** for Session operations. The
-[codec](../../src/cairn/infra/sessions/codec.py) retains independent payload format
-**1**. Checkpoints contain full conversation, never ContextBuilder's
-trimmed requests. `snapshot_messages` detaches core messages and stores arguments
-as canonical JSON object text (`arguments_json`), making nested arguments immutable.
-`restore_messages` revalidates and returns new core Message/ToolCall objects.
-No migration, reset, legacy adapter or older-head fallback is implicit.
+[SessionStore](../../src/cairn/infra/sessions/store.py) creates schema **3** and
+continues to read and write schemas **1** and **2** without implicit migration.
+The [codec](../../src/cairn/infra/sessions/codec.py) distinguishes the full host
+`CheckpointPayload` (format 1) from stored `CheckpointDelta` (format 2).
+The host supplies full AgentState history, never ContextBuilder's trimmed request.
+`snapshot_messages` detaches core messages and stores arguments as canonical JSON
+object text (`arguments_json`); `restore_messages` returns new core objects from
+the validated materialized report. `report.receipt.sha256` always hashes the actual
+stored bytes. Hashing `report.checkpoint` is **not** a way to reproduce a V2 receipt.
+
+| SQL schema | Readable checkpoint formats | New writes | Task Ledger |
+| --- | --- | --- | --- |
+| 1 | V1 full snapshots | V1 | Explicit upgrade required |
+| 2 | V1 full snapshots | V1 | Supported |
+| 3 | V1 prefix followed by V2, or V2 only | V2 incremental tails | Supported |
+
+V2 checkpoint 0 is empty with a null predecessor. Every later record carries its
+exact predecessor receipt (Session, sequence, Turn, original commit revision,
+outcome and SHA-256), an absolute message range and exactly one settled Turn's
+tail. An empty rollback tail still advances the checkpoint chain. Restoration
+validates every row, tail, input digest, binding, timestamp, outcome, tool group,
+fence and predecessor before returning the complete ordered history. V2-to-V1
+format downgrade within a chain is rejected. The chain detects damage and local
+rewrites, including recomputing one intermediate digest; it is unkeyed and cannot
+protect against a host attacker rewriting the whole database and its receipts.
+
+One recovery traversal appends tails to a bounded accumulator and materializes
+only the final full view. For a V2-only chain the work is proportional to total
+stored message bytes plus Turn records, instead of the sum of full historical
+prefixes. Schema integrity/size checks still scan the database; no validation
+cache or external-change invalidation assumption is introduced. Mutation admission
+and the transaction both revalidate current facts. Commit still validates the full
+host snapshot and its exact unchanged prefix, so ordinary commit cost grows with
+logical history. It does not write that prefix again. See the
+[performance study](../performance/session-checkpoints.md) for measurements and
+legacy limitations. Explicit migration preserves every V1 payload byte and receipt;
+it cannot remove the historical prefix-validation cost.
 
 Canonical UTF-8 JSON has sorted keys, compact separators and unescaped Unicode.
 Writes and reads reject unknown/duplicate fields, noncanonical encodings,
@@ -86,12 +115,15 @@ assistant; interrupted tails can end in a closed tool group or be empty after
 rollback. Previous committed history is an exact unchanged prefix. SHA-256 detects
 damage, not malicious trusted-host forgery. `model_copy` bypasses are revalidated.
 
-Both accepted schemas have `sessions`, `turns`, `checkpoints`, deferred head/active/
+All accepted schemas have `sessions`, `turns`, `checkpoints`, deferred head/active/
 terminal foreign keys, unique Session/Turn checkpoint and one unresolved attempt
-per Session. Schema 2 additionally has the bounded `tasks` table described in
-[Task Ledger](task-ledger.md#schema-compatibility-and-explicit-upgrade); Task APIs
-on schema 1 require explicit trusted-host `upgrade_schema()`. Existing durable
-CLI Sessions remain usable without upgrading. Bounded `diagnostics_json` stores
+per Session. Schemas 2/3 additionally have the bounded `tasks` table described in
+[Task Ledger](task-ledger.md#schema-compatibility-and-explicit-upgrade). Schema 3
+broadens the SQL checkpoint constraint to formats 1/2 and indexes Turns by
+Session/insertion order to avoid a temporary sort during validation. `upgrade_schema()` is the
+explicit trusted-host operation from schema 1/2 to 3; read-only inspection never
+upgrades. Existing durable CLI Sessions remain usable on their original schema.
+Bounded `diagnostics_json` stores
 start binding/message boundary, ordered fences, fixed reason, nullable resolution
 and commit version; no tool
 arguments/results or replay position. UTC describes observations; revisions and
@@ -110,7 +142,7 @@ mutation retries exist.
 
 | Bound | Behaviour |
 | --- | --- |
-| Checkpoint 8 MiB; 10,000 messages | Inclusive limits; no pruning. |
+| Stored checkpoint 8 MiB; full materialized history 8 MiB / 10,000 messages | Inclusive limits on both representations; no pruning. V2 predecessor/envelope overhead counts toward its record bound. |
 | Message/argument encoding 1 MiB | Both apply; escaping/envelope overhead can make message bound bind first. |
 | 256 calls/fences per turn; diagnostics 64 KiB | Both apply; long references can exhaust diagnostics first. |
 | Database 256 MiB | File and SQLite max-page-count checks; no evidence deletion. |
