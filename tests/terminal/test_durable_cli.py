@@ -44,6 +44,7 @@ from cairn.terminal import cli, durable
 from cairn.terminal.input import CliInput
 from tests.support.git import git, initialize_repository
 from tests.support.runtime import NetworkRequestTool, SequenceLLM
+from tests.support.sessions import legacy_store
 
 runner = CliRunner()
 
@@ -198,10 +199,12 @@ def test_default_is_stateless_and_commands_remain_available(harness: Harness) ->
     assert "session" in runner.invoke(cli.app, ["--help"]).output
 
 
-@pytest.mark.parametrize("schema_version", [1, 2])
+@pytest.mark.parametrize("schema_version", [1, 2, 3])
 def test_new_multiple_turns_inspect_and_fresh_reopen(
     harness: Harness, schema_version: int
 ) -> None:
+    if schema_version < 3:
+        legacy_store(harness.root, version=schema_version).close()
     harness.responses = [LLMResponse(content="one"), LLMResponse(content="two")]
     harness.inputs("first", "second", EOFError())
     result = harness.invoke("new")
@@ -217,10 +220,6 @@ def test_new_multiple_turns_inspect_and_fresh_reopen(
     ]
     assert result.output.index("one") < result.output.index("Committed checkpoint 1")
     assert result.output.index("two") < result.output.index("Committed checkpoint 2")
-    if schema_version == 1:
-        with sqlite3.connect(harness.directory / "sessions.sqlite3") as conn:
-            conn.execute("DROP TABLE tasks")
-            conn.execute("PRAGMA user_version=1")
     before = {
         p.name: (p.read_bytes(), p.stat().st_ino, p.stat().st_mtime_ns)
         for p in harness.directory.iterdir()

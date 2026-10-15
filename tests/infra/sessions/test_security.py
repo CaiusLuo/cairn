@@ -314,7 +314,7 @@ def test_corruption_fails_closed_without_older_head_fallback(
             elif damage == "duplicate":
                 row = row[:-1] + b',"seq":1}'
             elif damage == "format":
-                row = row.replace(b'"format_version":1', b'"format_version":2')
+                row = row.replace(b'"format_version":2', b'"format_version":99')
             if damage != "digest":
                 conn.execute(
                     "UPDATE checkpoints SET payload=?,sha256=? WHERE seq=1",

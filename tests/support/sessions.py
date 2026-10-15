@@ -307,3 +307,23 @@ def inspection_writer(
     finally:
         api.close()
     barrier.send("closed")
+
+
+def legacy_store(root: Path, *, version: int = 2) -> SessionStore:
+    """Seed an EMPTY historical schema, before any checkpoint is written.
+
+    Never relabel or rewrite V2 facts as V1 fixtures. Production has no downgrade.
+    """
+    from cairn.infra.sessions.store import _SCHEMA
+
+    api = store(root)
+    api.close()
+    with sqlite3.connect(api.path) as conn:
+        assert conn.execute("SELECT count(*) FROM checkpoints").fetchone()[0] == 0
+        conn.execute("DROP TABLE checkpoints")
+        conn.execute("DROP INDEX session_turn_order")
+        conn.execute(_SCHEMA[-1])
+        if version == 1:
+            conn.execute("DROP TABLE tasks")
+        conn.execute(f"PRAGMA user_version={version}")
+    return store(root)

@@ -1,4 +1,4 @@
-"""Strict version-1 checkpoint encoding. No provider/runtime objects cross it."""
+"""Strict full-history and incremental encoding, without provider/runtime objects."""
 
 import hashlib
 import json
@@ -14,7 +14,9 @@ from cairn.infra.sessions.models import (
     MAX_INVOCATIONS,
     MAX_MESSAGE_BYTES,
     MAX_RECORD_BYTES,
+    CheckpointDelta,
     CheckpointPayload,
+    CheckpointReceipt,
     SessionStoreError,
     StoredMessage,
     StoredToolCall,
@@ -196,7 +198,12 @@ def decode_record[T: StrictDTO](
         raise SessionStoreError("invalid_record") from None
 
 
-def validate_history(checkpoint: CheckpointPayload, secrets: tuple[str, ...]) -> None:
+def validate_history(
+    checkpoint: CheckpointPayload | CheckpointDelta, secrets: tuple[str, ...]
+) -> None:
+    start = (
+        0 if isinstance(checkpoint, CheckpointDelta) else checkpoint.message_range.start
+    )
     pending: list[str] = []
     seen_user = False
     tail_calls = 0
@@ -223,13 +230,13 @@ def validate_history(checkpoint: CheckpointPayload, secrets: tuple[str, ...]) ->
                 _sensitive(arguments, secrets)
             except MemoryError:
                 raise SessionStoreError("sensitive_record") from None
-        if index >= checkpoint.message_range.start:
+        if index >= start:
             tail_calls += len(message.tool_calls)
     if pending:
         raise SessionStoreError("invalid_tool_group")
     if tail_calls > MAX_INVOCATIONS:
         raise SessionStoreError("invocation_limit")
-    tail = checkpoint.messages[checkpoint.message_range.start :]
+    tail = checkpoint.messages[start:]
     if tail and (tail[0].role != "user" or any(m.role == "user" for m in tail[1:])):
         raise SessionStoreError("invalid_turn_range")
     if checkpoint.outcome == "completed" and (
@@ -262,6 +269,58 @@ def decode_checkpoint(
     )
     validate_history(checkpoint, sensitive_values)
     return checkpoint
+
+
+def encode_storage_checkpoint(
+    checkpoint: CheckpointPayload,
+    predecessor: CheckpointReceipt | None,
+    *,
+    format_version: int,
+    sensitive_values: tuple[str, ...] = (),
+) -> tuple[bytes, str]:
+    """Encode a validated full host snapshot in the database's chosen format.
+
+    The Store separately verifies exact prefix equality in the current SQL
+    transaction. This function grants no admission or authority.
+    """
+    raw, digest = encode_checkpoint(checkpoint, sensitive_values=sensitive_values)
+    if format_version == 1:
+        return raw, digest
+    if format_version != 2:
+        raise SessionStoreError("format_unsupported")
+    checked = decode_record(CheckpointPayload, raw, limit=MAX_CHECKPOINT_BYTES)
+    delta = CheckpointDelta(
+        **checked.model_dump(exclude={"format_version", "messages"}),
+        messages=checked.messages[checked.message_range.start :],
+        predecessor=predecessor,
+    )
+    raw = encode_record(
+        delta, limit=MAX_CHECKPOINT_BYTES, sensitive_values=sensitive_values
+    )
+    return raw, hashlib.sha256(raw).hexdigest()
+
+
+def decode_storage_checkpoint(
+    raw: bytes,
+    sha256: str,
+    *,
+    format_version: int,
+    sensitive_values: tuple[str, ...] = (),
+) -> CheckpointPayload | CheckpointDelta:
+    if format_version == 1:
+        return decode_checkpoint(raw, sha256, sensitive_values=sensitive_values)
+    if format_version != 2:
+        raise SessionStoreError("format_unsupported")
+    if hashlib.sha256(raw).hexdigest() != sha256:
+        raise SessionStoreError("digest_mismatch")
+    delta = decode_record(
+        CheckpointDelta,
+        raw,
+        limit=MAX_CHECKPOINT_BYTES,
+        sensitive_values=sensitive_values,
+    )
+    validate_history(delta, sensitive_values)
+    return delta
 
 
 def snapshot_messages(messages: Sequence[Message]) -> tuple[StoredMessage, ...]:

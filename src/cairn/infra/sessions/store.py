@@ -12,18 +12,22 @@ from cairn.infra.sessions.codec import (
     canonical,
     decode_checkpoint,
     decode_record,
+    decode_storage_checkpoint,
     encode_checkpoint,
     encode_record,
+    encode_storage_checkpoint,
 )
 from cairn.infra.sessions.ledger import TaskLedgerMixin
 from cairn.infra.sessions.models import (
     MAX_CHECKPOINT_BYTES,
     MAX_DATABASE_BYTES,
     MAX_INTEGER,
+    MAX_MESSAGES,
     MAX_RECORD_BYTES,
     MAX_WAL_BYTES,
     SCHEMA_VERSION,
     AttemptDiagnostics,
+    CheckpointDelta,
     CheckpointPayload,
     CheckpointReceipt,
     HostResolution,
@@ -35,6 +39,7 @@ from cairn.infra.sessions.models import (
     SessionState,
     SessionStoreError,
     SettledTurn,
+    StoredMessage,
     StrictDTO,
     ToolFence,
     TurnIntent,
@@ -102,6 +107,19 @@ _SCHEMA = (
             DEFERRABLE INITIALLY DEFERRED
     )""",
 )
+
+
+# Legacy SQL is retained verbatim for schema 1/2 validation. Schema 3 broadens
+# only the checkpoint format constraint; existing rows/receipts are unchanged.
+_CHECKPOINT_SCHEMA_V3 = (
+    _SCHEMA[-1]
+    .replace("CREATE TABLE checkpoints", 'CREATE TABLE "checkpoints"')
+    .replace("CHECK(format_version=1)", "CHECK(format_version IN (1,2))")
+)
+# SQLite appends rowid to this nonunique index, satisfying per-Session insertion
+# order without sorting all Turn records into a temporary B-tree on every read.
+_TURN_ORDER_INDEX = "CREATE INDEX session_turn_order ON turns(session_id)"
+_SCHEMA_V3 = (*_SCHEMA[:-1], _CHECKPOINT_SCHEMA_V3, _TURN_ORDER_INDEX)
 
 
 _TASK_SCHEMA = (
@@ -233,7 +251,7 @@ class SessionStore(TaskLedgerMixin):
                     raise SessionStoreError("wal_unavailable")
                 conn.execute("PRAGMA synchronous=FULL")
                 conn.execute("BEGIN IMMEDIATE")
-                for statement in (*_SCHEMA, *_TASK_SCHEMA):
+                for statement in (*_SCHEMA_V3, *_TASK_SCHEMA):
                     conn.execute(statement)
                 conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 conn.commit()
@@ -274,7 +292,7 @@ class SessionStore(TaskLedgerMixin):
 
     def _schema(self, conn: sqlite3.Connection) -> None:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (1, SCHEMA_VERSION):
+        if version not in (1, 2, SCHEMA_VERSION):
             raise SessionStoreError("schema_mismatch")
         observed = {
             " ".join(row[0].split())
@@ -282,7 +300,13 @@ class SessionStore(TaskLedgerMixin):
                 "SELECT sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'"
             )
         }
-        expected = _SCHEMA if version == 1 else (*_SCHEMA, *_TASK_SCHEMA)
+        expected = (
+            _SCHEMA
+            if version == 1
+            else (*_SCHEMA, *_TASK_SCHEMA)
+            if version == 2
+            else (*_SCHEMA_V3, *_TASK_SCHEMA)
+        )
         if observed != {" ".join(s.split()) for s in expected}:
             raise SessionStoreError("schema_mismatch")
         if (
@@ -297,7 +321,7 @@ class SessionStore(TaskLedgerMixin):
             ("turns", "diagnostics_json", MAX_RECORD_BYTES, "text"),
             ("checkpoints", "payload", MAX_CHECKPOINT_BYTES, "blob"),
         )
-        if version == 2:
+        if version >= 2:
             bounds += (("tasks", "record_json", MAX_TASK_BYTES, "text"),)
         for table, column, limit, sql_type in bounds:
             if (
@@ -368,7 +392,11 @@ class SessionStore(TaskLedgerMixin):
 
     @contextmanager
     def _write(
-        self, *, recovery: bool = False, idle_after: bool = False
+        self,
+        *,
+        recovery: bool = False,
+        idle_after: bool = False,
+        migration: bool = False,
     ) -> Iterator[sqlite3.Connection]:
         conn: sqlite3.Connection | None = None
         committing = False
@@ -380,11 +408,17 @@ class SessionStore(TaskLedgerMixin):
                     if self._fault and not recovery:
                         raise SessionStoreError("recovery_required")
                     conn = self._conn()
+                    # A failed migration cleanup must never admit recovery writes
+                    # on a connection whose FK enforcement could not be restored.
+                    if conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+                        raise SessionStoreError("sqlite_configuration_unavailable")
                     if self._wal_size() >= MAX_WAL_BYTES:
                         if not self._owned_turns or recovery:
                             self._maintain()
                         if self._wal_size() >= MAX_WAL_BYTES:
                             raise SessionStoreError("wal_admission_limit")
+                    if migration:
+                        conn.execute("PRAGMA foreign_keys=OFF")
                     conn.execute("BEGIN IMMEDIATE")
                     self._schema(conn)
                     yield conn
@@ -396,6 +430,11 @@ class SessionStore(TaskLedgerMixin):
                         with suppress(sqlite3.Error):
                             conn.rollback()
                     raise
+                finally:
+                    if migration and conn is not None:
+                        conn.execute("PRAGMA foreign_keys=ON")
+                        if conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+                            raise SessionStoreError("sqlite_configuration_unavailable")
                 if idle_after:
                     self._maintain()
         except BaseException as exc:
@@ -612,13 +651,19 @@ class SessionStore(TaskLedgerMixin):
             raise SessionStoreError("record_limit")
 
     def _validate_fenced_history(
-        self, record: TurnRecord, checkpoint: CheckpointPayload
+        self, record: TurnRecord, checkpoint: CheckpointPayload | CheckpointDelta
     ) -> None:
+        offset = (
+            checkpoint.message_range.start
+            if isinstance(checkpoint, CheckpointDelta)
+            else 0
+        )
         previous = (-1, -1)
         for fence in record.diagnostics.fences:
-            if fence.assistant_message_index >= len(checkpoint.messages):
+            index = fence.assistant_message_index - offset
+            if not 0 <= index < len(checkpoint.messages):
                 raise SessionStoreError("fenced_history_missing")
-            message = checkpoint.messages[fence.assistant_message_index]
+            message = checkpoint.messages[index]
             position = next(
                 (
                     i
@@ -637,15 +682,18 @@ class SessionStore(TaskLedgerMixin):
                 raise SessionStoreError("invalid_fence")
             previous = (fence.assistant_message_index, position)
 
-    def _checkpoint_row(self, row: sqlite3.Row) -> CheckpointPayload:
+    def _checkpoint_row(self, row: sqlite3.Row) -> CheckpointPayload | CheckpointDelta:
         """Decode one checkpoint row, enforcing its byte bound."""
         if (
             not isinstance(row["payload"], bytes)
             or len(row["payload"]) > MAX_CHECKPOINT_BYTES
         ):
             raise SessionStoreError("record_limit")
-        return decode_checkpoint(
-            row["payload"], row["sha256"], sensitive_values=self.sensitive_values
+        return decode_storage_checkpoint(
+            row["payload"],
+            row["sha256"],
+            format_version=row["format_version"],
+            sensitive_values=self.sensitive_values,
         )
 
     def _validate_checkpoint_identity(
@@ -653,8 +701,8 @@ class SessionStore(TaskLedgerMixin):
         session: _SessionRow,
         session_id: str,
         row: sqlite3.Row,
-        checkpoint: CheckpointPayload,
-        previous: CheckpointPayload | None,
+        checkpoint: CheckpointPayload | CheckpointDelta,
+        previous: CheckpointPayload | CheckpointDelta | None,
     ) -> None:
         """A stored checkpoint must describe the row that carries it, and follow
         its predecessor by exactly one sequence step."""
@@ -678,8 +726,8 @@ class SessionStore(TaskLedgerMixin):
         self,
         revision: Revision,
         session_id: str,
-        checkpoint: CheckpointPayload,
-        previous: CheckpointPayload | None,
+        checkpoint: CheckpointPayload | CheckpointDelta,
+        previous: CheckpointPayload | CheckpointDelta | None,
         receipt: CheckpointReceipt | None,
         row: sqlite3.Row,
         by_turn: dict[str, TurnRecord],
@@ -765,7 +813,7 @@ class SessionStore(TaskLedgerMixin):
         session: _SessionRow,
         revision: Revision,
         unresolved: Sequence[TurnRecord],
-        previous: CheckpointPayload,
+        previous: CheckpointPayload | CheckpointDelta,
     ) -> None:
         """An unresolved turn must continue from the committed head."""
         if not unresolved:
@@ -773,7 +821,7 @@ class SessionStore(TaskLedgerMixin):
         active = unresolved[0]
         if active.intent.base_seq != revision.head_seq:
             raise SessionStoreError("unresolved_turn_base_not_head")
-        if active.intent.message_start != len(previous.messages):
+        if active.intent.message_start != previous.message_range.end:
             raise SessionStoreError("unresolved_turn_message_start_mismatch")
         if active.intent.binding != session.binding:
             raise SessionStoreError("unresolved_turn_binding_mismatch")
@@ -797,10 +845,12 @@ class SessionStore(TaskLedgerMixin):
         session = self._row(conn, revision)
         records = self._records(conn, session_id)
         by_turn = {r.intent.turn_id: r for r in records}
-        previous: CheckpointPayload | None = None
+        previous: CheckpointPayload | CheckpointDelta | None = None
         receipt: CheckpointReceipt | None = None
         committed: set[str] = set()
         bases: dict[int, tuple[int, str]] = {}
+        history: list[StoredMessage] = []
+        history_bytes = 0
         for row in conn.execute(
             "SELECT * FROM checkpoints WHERE session_id=? ORDER BY seq", (session_id,)
         ):
@@ -808,6 +858,28 @@ class SessionStore(TaskLedgerMixin):
             self._validate_checkpoint_identity(
                 session, session_id, row, checkpoint, previous
             )
+            if isinstance(checkpoint, CheckpointDelta):
+                if checkpoint.predecessor != receipt:
+                    raise SessionStoreError("checkpoint_predecessor_mismatch")
+                if checkpoint.message_range.start != len(history):
+                    raise SessionStoreError("invalid_delta_range")
+                new_messages = checkpoint.messages
+            else:
+                # Once incremental storage begins, a full snapshot is a downgrade.
+                if isinstance(previous, CheckpointDelta):
+                    raise SessionStoreError("checkpoint_format_downgrade")
+                history = []
+                history_bytes = 0
+                new_messages = checkpoint.messages
+            history_bytes += sum(
+                len(canonical(m.model_dump(mode="json"))) + 1 for m in new_messages
+            )
+            if (
+                history_bytes > MAX_CHECKPOINT_BYTES
+                or len(history) + len(new_messages) > MAX_MESSAGES
+            ):
+                raise SessionStoreError("record_limit")
+            history.extend(new_messages)
             receipt = self._advance_receipt(
                 revision,
                 session_id,
@@ -820,7 +892,7 @@ class SessionStore(TaskLedgerMixin):
             )
             previous = checkpoint
             bases[checkpoint.seq] = (
-                len(checkpoint.messages),
+                checkpoint.message_range.end,
                 checkpoint.settled_at_utc,
             )
         if previous is None or receipt is None:
@@ -833,12 +905,28 @@ class SessionStore(TaskLedgerMixin):
         self._validate_unresolved_turn(session, unresolved)
         self._validate_record_bases(session, revision, records, committed, bases)
         self._validate_unresolved_intent(session, revision, unresolved, previous)
+        if isinstance(previous, CheckpointDelta):
+            materialized = CheckpointPayload(
+                **previous.model_dump(
+                    exclude={"format_version", "messages", "predecessor"}
+                ),
+                messages=tuple(history),
+            )
+            # Bound the exact full host envelope as well as the incremental bytes.
+            # This single final pass is linear; no repeated materialized prefixes.
+            encode_record(
+                materialized,
+                limit=MAX_CHECKPOINT_BYTES,
+                sensitive_values=self.sensitive_values,
+            )
+        else:
+            materialized = previous
         return RecoveryReport(
             revision=revision,
             state=session.state,
             status=self._recovery_status(session, unresolved),
             binding=session.binding,
-            checkpoint=previous,
+            checkpoint=materialized,
             receipt=receipt,
             attempts=records,
             local_fault=self._fault,
@@ -847,16 +935,20 @@ class SessionStore(TaskLedgerMixin):
     def _settled_relationship(
         self,
         record: TurnRecord,
-        checkpoint: CheckpointPayload,
-        previous: CheckpointPayload,
+        checkpoint: CheckpointPayload | CheckpointDelta,
+        previous: CheckpointPayload | CheckpointDelta,
     ) -> None:
         intent = record.intent
         if (
             checkpoint.seq != intent.base_seq + 1
             or checkpoint.turn_id != intent.turn_id
             or checkpoint.message_range.start != intent.message_start
-            or intent.message_start != len(previous.messages)
-            or checkpoint.messages[: len(previous.messages)] != previous.messages
+            or intent.message_start != previous.message_range.end
+            or (
+                isinstance(checkpoint, CheckpointPayload)
+                and checkpoint.messages[: previous.message_range.end]
+                != previous.messages
+            )
             or checkpoint.started_at_utc != intent.started_at_utc
             or not same_workspace(intent.binding, checkpoint.binding)
             or checkpoint.binding.provider != intent.binding.provider
@@ -868,7 +960,11 @@ class SessionStore(TaskLedgerMixin):
             or record.ended_at_utc != checkpoint.settled_at_utc
         ):
             raise SessionStoreError("invalid_settled_history")
-        tail = checkpoint.messages[intent.message_start :]
+        tail = (
+            checkpoint.messages
+            if isinstance(checkpoint, CheckpointDelta)
+            else checkpoint.messages[intent.message_start :]
+        )
         if tail and (
             # Intent binds the exact host input, without storing it before settlement.
             hashlib.sha256((tail[0].content or "").encode("utf-8")).hexdigest()
@@ -926,9 +1022,14 @@ class SessionStore(TaskLedgerMixin):
     def _validate_sessions(self, conn: sqlite3.Connection) -> None:
         for row in conn.execute("SELECT session_id FROM sessions"):
             self._report(conn, row[0])
+        if conn.execute("PRAGMA user_version").fetchone()[0] >= 2:
+            for row in conn.execute("SELECT session_id,task_id FROM tasks"):
+                self._task(conn, row[0], row[1])
 
-    def _backup_v1(self, conn: sqlite3.Connection) -> Path:
-        path = self._paths.create_backup()
+    def _backup_schema(self, conn: sqlite3.Connection) -> Path:
+        path = self._paths.create_backup(
+            conn.execute("PRAGMA user_version").fetchone()[0]
+        )
         destination = sqlite3.connect(
             path.as_uri() + "?mode=rw", uri=True, isolation_level=None
         )
@@ -955,10 +1056,20 @@ class SessionStore(TaskLedgerMixin):
     def _migrate_v1(self, conn: sqlite3.Connection) -> None:
         for statement in _TASK_SCHEMA:
             conn.execute(statement)
+        conn.execute("PRAGMA user_version=2")
+
+    def _migrate_v2(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            _CHECKPOINT_SCHEMA_V3.replace('"checkpoints"', "checkpoints_upgrade", 1)
+        )
+        conn.execute("INSERT INTO checkpoints_upgrade SELECT * FROM checkpoints")
+        conn.execute("DROP TABLE checkpoints")
+        conn.execute("ALTER TABLE checkpoints_upgrade RENAME TO checkpoints")
+        conn.execute(_TURN_ORDER_INDEX)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def upgrade_schema(self) -> Path:
-        """Explicit trusted-host v1→v2 operation; retain a consistent v1 backup.
+        """Explicit trusted-host schema 1/2→3; retain an unchanged source backup.
 
         The lifetime writer lock is required. No locally owned Turn may be live.
         Existing Session operations remain supported on v1 without this call.
@@ -976,14 +1087,17 @@ class SessionStore(TaskLedgerMixin):
                     raise SessionStoreError("recovery_required")
                 conn = self._conn()
                 self._schema(conn)
-                if conn.execute("PRAGMA user_version").fetchone()[0] != 1:
+                version = conn.execute("PRAGMA user_version").fetchone()[0]
+                if version == SCHEMA_VERSION:
                     raise SessionStoreError("schema_upgrade_not_required")
                 self._validate_sessions(conn)
-                backup = self._backup_v1(conn)
-            with self._write(idle_after=True) as conn:
-                if conn.execute("PRAGMA user_version").fetchone()[0] != 1:
+                backup = self._backup_schema(conn)
+            with self._write(idle_after=True, migration=True) as conn:
+                if conn.execute("PRAGMA user_version").fetchone()[0] != version:
                     raise SessionStoreError("schema_mismatch")
-                self._migrate_v1(conn)
+                if version == 1:
+                    self._migrate_v1(conn)
+                self._migrate_v2(conn)
                 self._schema(conn)
                 self._validate_sessions(conn)
             return backup
@@ -994,7 +1108,7 @@ class SessionStore(TaskLedgerMixin):
             raise SessionStoreError("schema_upgrade_failed") from None
 
     def _tasks_supported(self, conn: sqlite3.Connection) -> None:
-        if conn.execute("PRAGMA user_version").fetchone()[0] != 2:
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 2:
             raise SessionStoreError("schema_upgrade_required")
 
     @contextmanager
@@ -1040,10 +1154,18 @@ class SessionStore(TaskLedgerMixin):
             started_at_utc=None,
             settled_at_utc=binding.observed_at_utc,
         )
-        payload, digest = encode_checkpoint(
-            checkpoint, sensitive_values=self.sensitive_values
+        format_version = 2 if self.schema_version == 3 else 1
+        payload, digest = encode_storage_checkpoint(
+            checkpoint,
+            None,
+            format_version=format_version,
+            sensitive_values=self.sensitive_values,
         )
         with self._write(idle_after=True) as conn:
+            if format_version != (
+                2 if conn.execute("PRAGMA user_version").fetchone()[0] == 3 else 1
+            ):
+                raise VersionConflict()
             conn.execute(
                 "INSERT INTO sessions VALUES (?,?,?,'ready',NULL,?,?,?)",
                 (
@@ -1056,8 +1178,14 @@ class SessionStore(TaskLedgerMixin):
                 ),
             )
             conn.execute(
-                "INSERT INTO checkpoints VALUES (?,0,NULL,1,?,?,?)",
-                (binding.session_id, checkpoint.settled_at_utc, payload, digest),
+                "INSERT INTO checkpoints VALUES (?,0,NULL,?,?,?,?)",
+                (
+                    binding.session_id,
+                    format_version,
+                    checkpoint.settled_at_utc,
+                    payload,
+                    digest,
+                ),
             )
         try:
             self._paths.sync_creation()
@@ -1205,16 +1333,27 @@ class SessionStore(TaskLedgerMixin):
             diagnostic_raw = self._encode(diagnostics)
             self._settled_relationship(terminal, checkpoint, prepared.checkpoint)
             self._validate_record(terminal)
+            format_version = 2 if self.schema_version == 3 else 1
+            payload, digest = encode_storage_checkpoint(
+                checkpoint,
+                prepared.receipt,
+                format_version=format_version,
+                sensitive_values=self.sensitive_values,
+            )
         with self._write(idle_after=True) as conn:
             current = self._current(conn, expected, prepared)
             self._active(current, checkpoint.turn_id or "")
+            if format_version != (
+                2 if conn.execute("PRAGMA user_version").fetchone()[0] == 3 else 1
+            ):
+                raise VersionConflict()
             conn.execute(
                 "INSERT INTO checkpoints VALUES (?,?,?,?,?,?,?)",
                 (
                     checkpoint.session_id,
                     checkpoint.seq,
                     checkpoint.turn_id,
-                    checkpoint.format_version,
+                    format_version,
                     checkpoint.settled_at_utc,
                     payload,
                     digest,

@@ -17,6 +17,7 @@ from cairn.infra.sessions.codec import (
     decode_record,
     encode_checkpoint,
     encode_record,
+    encode_storage_checkpoint,
     restore_messages,
     snapshot_messages,
 )
@@ -656,8 +657,11 @@ class DurableSession(Session):
                     error_code=summary.error_code,
                 ),
             )
-            _, digest = encode_checkpoint(
-                checkpoint, sensitive_values=self._store.sensitive_values
+            _, digest = encode_storage_checkpoint(
+                checkpoint,
+                self._receipt,
+                format_version=2 if self._store.schema_version == 3 else 1,
+                sensitive_values=self._store.sensitive_values,
             )
             self._expected_receipt = CheckpointReceipt(
                 revision=Revision(

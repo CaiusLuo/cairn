@@ -15,6 +15,7 @@ from tests.support.sessions import (
     T4,
     binding,
     intent,
+    legacy_store,
     messages,
     settled,
     store,
@@ -24,9 +25,8 @@ from tests.support.task_ledger import INPUT_DIGEST, TASK
 
 @pytest.fixture
 def legacy(tmp_path: Path) -> Path:
-    # The v1 Session tables and payload format are unchanged. Seed real committed
-    # data, then remove only the empty extension to reproduce the old schema.
-    api = store(tmp_path)
+    # Use the actual historical DDL before writing any V1 records.
+    api = legacy_store(tmp_path, version=1)
     try:
         bind = binding(tmp_path)
         revision = api.create(bind).revision
@@ -35,10 +35,6 @@ def legacy(tmp_path: Path) -> Path:
         api.commit_turn(revision, settled(turn))
     finally:
         api.close()
-    with sqlite3.connect(api.path) as conn:
-        assert conn.execute("SELECT count(*) FROM tasks").fetchone()[0] == 0
-        conn.execute("DROP TABLE tasks")
-        conn.execute("PRAGMA user_version=1")
     return api.path
 
 
@@ -109,7 +105,7 @@ def test_explicit_upgrade_preserves_committed_sessions_and_validated_backup(
         original = api.inspect(SESSION)
         inode = legacy.stat().st_ino
         backup = api.upgrade_schema()
-        assert api.schema_version == 2 and legacy.stat().st_ino == inode
+        assert api.schema_version == 3 and legacy.stat().st_ino == inode
         assert api.inspect(SESSION) == original
         assert_v1_backup(backup, legacy)
         task = api.create_task(
@@ -158,7 +154,7 @@ def test_failed_upgrade_retains_original_database_and_committed_data(
     before = legacy.read_bytes()
     inode = legacy.stat().st_ino
     migrate = api._migrate_v1
-    backup = api._backup_v1
+    backup = api._backup_schema
 
     def fail_backup(conn: sqlite3.Connection) -> Path:
         backup(conn)
@@ -173,9 +169,9 @@ def test_failed_upgrade_retains_original_database_and_committed_data(
         else:
             raise sqlite3.OperationalError("credential-bearing-internal-diagnostic")
 
-    monkeypatch.setattr(api, "_backup_v1", fail_backup)
+    monkeypatch.setattr(api, "_backup_schema", fail_backup)
     if failure != "backup":
-        monkeypatch.setattr(api, "_backup_v1", backup)
+        monkeypatch.setattr(api, "_backup_schema", backup)
         monkeypatch.setattr(api, "_migrate_v1", fail_migration)
     try:
         if failure == "interrupt":
@@ -220,7 +216,7 @@ def test_upgrade_commit_uncertainty_retains_v1_backup_and_reports_actual_schema(
     try:
         with pytest.raises(SessionStoreError, match="commit_uncertain"):
             api.upgrade_schema()
-        assert api.schema_version == (2 if committed else 1)
+        assert api.schema_version == (3 if committed else 1)
         assert api.inspect(SESSION).receipt == original.receipt
         backups = list(legacy.parent.glob("schema-1-backup-*.sqlite3"))
         assert len(backups) == 1
@@ -258,7 +254,7 @@ def test_upgrade_requires_writer_ownership_and_no_live_turn(
             settled(turn, history=restore_messages(report.checkpoint) + messages()),
         )
         api.upgrade_schema()
-        assert api.schema_version == 2
+        assert api.schema_version == 3
     finally:
         api.close()
 

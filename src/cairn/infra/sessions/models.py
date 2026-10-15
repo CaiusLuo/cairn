@@ -23,7 +23,7 @@ MAX_RECORD_BYTES = 64 * 1024
 MAX_DATABASE_BYTES = 256 * 1024 * 1024
 MAX_WAL_BYTES = 32 * 1024 * 1024
 FORMAT_VERSION = 1
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 Counter = Annotated[int, Field(ge=0, le=MAX_INTEGER)]
 Digest = Annotated[str, Field(pattern=r"\A[0-9a-f]{64}\z")]
@@ -400,6 +400,60 @@ class CheckpointReceipt(StrictDTO):
             raise ValueError("Invalid terminal receipt")
         else:
             uuid4_text(self.turn_id)
+        return self
+
+
+class CheckpointDelta(StrictDTO):
+    """Stored V2 record: one settled Turn tail and its exact predecessor receipt.
+
+    CheckpointPayload remains the full, materialized host/runtime interface. A
+    receipt hashes stored bytes, never that reconstructed view.
+    """
+
+    format_version: Literal[2] = 2
+    session_id: str
+    turn_id: str | None
+    seq: Counter
+    binding: SessionBinding
+    messages: tuple[StoredMessage, ...] = Field(max_length=MAX_MESSAGES, repr=False)
+    message_range: MessageRange
+    outcome: Outcome | None
+    started_at_utc: str | None
+    settled_at_utc: str
+    trace: TraceSummary = Field(default_factory=TraceSummary)
+    predecessor: CheckpointReceipt | None
+
+    @field_validator("format_version", mode="before")
+    @classmethod
+    def exact_version(cls, value: object) -> object:
+        if type(value) is not int or value != 2:
+            raise ValueError("Invalid format version")
+        return value
+
+    @model_validator(mode="after")
+    def envelope(self) -> Self:
+        # Reuse the existing time, identity, outcome and group-boundary envelope
+        # on this tail alone; no historical prefixes are materialized here.
+        if self.message_range.end - self.message_range.start != len(self.messages):
+            raise ValueError("Invalid delta range")
+        values = self.model_dump(
+            exclude={"format_version", "predecessor", "message_range"}
+        )
+        CheckpointPayload.model_validate(
+            {
+                **values,
+                "message_range": MessageRange(start=0, end=len(self.messages)),
+            }
+        )
+        if self.seq == 0:
+            if self.predecessor is not None or self.message_range.start != 0:
+                raise ValueError("Invalid initial predecessor")
+        elif (
+            self.predecessor is None
+            or self.predecessor.revision.session_id != self.session_id
+            or self.predecessor.revision.head_seq + 1 != self.seq
+        ):
+            raise ValueError("Invalid predecessor identity")
         return self
 
 

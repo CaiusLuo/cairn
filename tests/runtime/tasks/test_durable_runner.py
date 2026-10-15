@@ -32,7 +32,7 @@ from tests.support.durable_tasks import (
 )
 from tests.support.git import git, initialize_repository
 from tests.support.runtime import SequenceLLM
-from tests.support.sessions import SESSION
+from tests.support.sessions import SESSION, legacy_store
 
 
 @pytest.fixture
@@ -687,12 +687,10 @@ def test_typed_turn_attribution_rejects_mismatches(root: Path, invalid: str) -> 
 
 
 def test_schema_one_rejects_without_implicit_upgrade(root: Path) -> None:
+    legacy_store(root, version=1).close()
     host = make_host(root, SequenceLLM([]))
     path = host.store.path
     host.session.close()
-    with sqlite3.connect(path) as conn:
-        conn.execute("DROP TABLE tasks")
-        conn.execute("PRAGMA user_version=1")
     llm = SequenceLLM([])
     fresh = make_host(root, llm, reopen=True)
     try:

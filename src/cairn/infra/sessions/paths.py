@@ -290,12 +290,12 @@ class StorePaths:
         # second DB descriptor while any SQLite connection may hold locks.
         os.fsync(self.directory_fd)  # DB/WAL/lock entries, after SQLite FULL COMMIT.
 
-    def create_backup(self) -> Path:
+    def create_backup(self, schema_version: int = 1) -> Path:
         """Exclusive private destination, under the same validated storage root."""
         self.check()
         if not self.writer:
             raise SessionStoreError("read_only_store")
-        path = self.directory / f"schema-1-backup-{uuid4().hex}.sqlite3"
+        path = self.directory / f"schema-{schema_version}-backup-{uuid4().hex}.sqlite3"
         fd = os.open(
             path.name,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,

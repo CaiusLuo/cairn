@@ -11,7 +11,7 @@ from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
 from typing import Literal
 
-from cairn.infra.sessions.codec import decode_checkpoint, decode_record
+from cairn.infra.sessions.codec import decode_record, decode_storage_checkpoint
 from cairn.infra.sessions.models import (
     MAX_RECORD_BYTES,
     CheckpointReceipt,
@@ -84,13 +84,16 @@ class TaskLedgerMixin:
         # _report has already verified the entire Session history in this same
         # transaction. Receipts can be historical, but never fabricated heads.
         row = conn.execute(
-            "SELECT payload,sha256 FROM checkpoints WHERE session_id=? AND seq=?",
+            "SELECT payload,sha256,format_version FROM checkpoints WHERE session_id=? AND seq=?",
             (session.revision.session_id, seq),
         ).fetchone()
         if row is None:
             raise SessionStoreError("task_checkpoint_missing")
-        checkpoint = decode_checkpoint(
-            row[0], row[1], sensitive_values=self.sensitive_values
+        checkpoint = decode_storage_checkpoint(
+            row[0],
+            row[1],
+            format_version=row[2],
+            sensitive_values=self.sensitive_values,
         )
         version = 0
         if seq:
