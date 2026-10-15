@@ -5,6 +5,8 @@ admits one Turn at a time and observes settlement of the existing `run_turn`.
 CLI, EvalSuite, TaskRunner, review and workflow callers remain stateless by
 default. No SQLite, checkpoint, recovery, replay or background queue is created.
 
+## Offline example
+
 This executable offline example uses the ordinary client and event interfaces:
 
 ```python
@@ -106,7 +108,7 @@ lifecycle metadata. Callback work must remain synchronous and bounded.
 [M1-C.2 DurableSession](durable-session.md) reuses this owner/admission seam and
 adds its store gate and receipt boundary. In-memory Session does not emit
 `turn_committed`; `turn_settled`, deltas, `agent_finish` and `trace_finish`
-acknowledge no checkpoint. Ordinary Agent.emit cannot forge `turn_committed` on
+acknowledge no checkpoint. Ordinary `Agent.emit` cannot forge `turn_committed` on
 either bound owner. The shared sequence/guard remain held through durable
 acknowledgement delivery when that opt-in owner is used.
 

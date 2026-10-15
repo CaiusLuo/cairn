@@ -9,20 +9,27 @@ WAL/FULL transactions. It never executes the tool or contacts a provider. Run:
 uv run python -m benchmarks.session_checkpoints --output /tmp/checkpoints.json
 ```
 
+## Measurement method
+
 Each size uses seven unprofiled samples. Inspect is measured at exactly 5, 10, 20,
 40 or 80 Turns. Steady writes are the next seven distinct Turns, so the window is
 N+1 through N+7, without mutation replay. Tool-free commits use the following
 N+8 through N+14 window (user plus 1,024-byte assistant), identically before and
-after. The profiled fenced write follows those windows. SQL COMMIT timings are separate from
-full commit admission, encoding and idle WAL maintenance. WAL peak is sampled
-immediately after SQLite COMMIT and before idle maintenance; idle WAL size is
-reported separately. cProfile diagnostics
-are separate inclusive measurements; nested columns must not be added together.
-`tracemalloc` peak captures a separate inspection's Python allocations, excluding
-SQLite native allocations and OS caches. Cold reopen constructs a fresh inspector
-and SQLite connection with the writer closed and WAL absent; it does not flush
-the operating-system page cache. Live reopen measures fresh readers while the
-writer is idle. Neither read path writes source files.
+after.
+
+The profiled fenced write follows those windows. SQL COMMIT timings are separate
+from full commit admission, encoding and idle WAL maintenance. WAL peak is
+sampled immediately after SQLite COMMIT and before idle maintenance; idle WAL
+size is reported separately.
+
+cProfile diagnostics are separate inclusive measurements; nested columns must
+not be added together. `tracemalloc` peak captures a separate inspection's
+Python allocations, excluding SQLite native allocations and OS caches.
+
+Cold reopen constructs a fresh inspector and SQLite connection with the writer
+closed and WAL absent; it does not flush the operating-system page cache. Live
+reopen measures fresh readers while the writer is idle. Neither read path writes
+source files.
 
 The reference timings supplied with the task (5.2/15.0/49.5/200.6/748.4 ms at
 `945776b`) are historical reported observations, not this benchmark's results.

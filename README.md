@@ -101,7 +101,7 @@ rules, credential handling, session selection and local `/model` edits.
 ## CLI commands
 
 These commands apply to the standard Python CLI. The experimental TUI's smaller
-command set is described in its [guide](ui/pi/README.md#interaction).
+command set is described in the [Pi TUI interaction guide](ui/pi/README.md#interaction).
 
 | Command | Purpose |
 | --- | --- |
@@ -149,6 +149,79 @@ and deterministic verification before approved Draft PR publication.
 [RepoGraph](docs/guides/repo-graph.md) provides bounded repository inventory and Python
 structure queries through explicit, read-only snapshots.
 
+## Architecture and flow
+
+Four package areas, with dependencies pointing one way:
+
+```text
+        +---------------------------------------------------------+
+        | terminal   CLI, TUI, slash commands, input and output   |
+        +---------------------------------------------------------+
+                                     |  one way only: a package may use
+                                     |  any package below it; core uses
+                                     |  nothing but core
+                                     v
+        +---------------------------------------------------------+
+        | runtime    assembly, run_turn, model/tool execution     |
+        +---------------------------------------------------------+
+                                     |
+                                     v
+        +---------------------------------------------------------+
+        | infra      providers, tools, git, sessions, traces      |
+        +---------------------------------------------------------+
+                                     |
+                                     v
+        +---------------------------------------------------------+
+        | core       models, state, permissions, budgets          |
+        +---------------------------------------------------------+
+```
+
+One Agent turn, owned by `runtime.loop.run_turn` from admission to settlement:
+
+```text
+        +---------------------------------------------------------+
+        | terminal   read user input, show provisional text       |
+        +---------------------------------------------------------+
+                                     |
+                                     v
+        +---------------------------------------------------------+
+        | run_turn   admit the owning Session, open the trace,    |
+        |            add the user message                         |
+        +---------------------------------------------------------+
+                                     |
+                                     v
+        +---------------------------------------------------------+
+        | step, at most budget.max_steps:                         |
+        |   build system messages, tool schemas, memory           |
+        |   model_executor.execute()      # candidate fallback    |
+        |   add the assistant message; pending = tool calls       |
+        +---------------------------------------------------------+  <--------+
+               no tool calls         |             tool calls                 |
+                     +----------------------------------+                     |
+                     |                                  |                     |
+                     v                                  v                     |
+      +----------------------------+  +----------------------------------+    |
+      | agent_finish: COMPLETED    |  | execute_tool_call, one call each |    |
+      | return the content         |  |   preflight -> permission        |    |
+      +----------------------------+  |   -> execute -> tool message     |    |
+                     |                +----------------------------------+    |
+                     |                                  +---------------------+
+                     |
+                     |                +--------------------------------------+
+                     |                | failure or cancel (any step):        |
+                     |                |   roll back the turn, or answer each |
+                     |                |   pending call with TurnAborted      |
+                     |                +--------------------------------------+
+                     v                                    v
+        +---------------------------------------------------------+
+        | finally   close the turn trace, commit durability,      |
+        |           settle the Session                            |
+        +---------------------------------------------------------+
+```
+
+`run_turn` is the only Agent turn; task, workflow, review and evaluation code
+runs bounded orchestration around it.
+
 ## Source layout
 
 ```text
@@ -161,13 +234,14 @@ src/cairn/
 └── __init__.py
 ```
 
-See [Architecture](docs/architecture.md) for dependency direction, turn and
-scheduling ownership, and guidance for placing new code, or the
+See [Architecture](docs/architecture.md) for turn and scheduling ownership and
+guidance for placing new code, or the
 [documentation index](docs/README.md) for every guide and experiment record.
 
 ## Development
 
-The canonical local check set. Other documents link here instead of repeating it.
+This is the canonical local check set; other documents link here instead of
+repeating it.
 
 ```bash
 uv sync --locked --all-groups

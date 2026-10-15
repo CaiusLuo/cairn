@@ -4,17 +4,8 @@ Cairn uses four package areas to keep contracts, execution, external systems and
 the command line easy to locate. They describe dependency direction, not a
 requirement that every use case pass through an abstract interface.
 
-Arrows point from a package to its allowed dependencies:
-
-```mermaid
-flowchart LR
-    terminal --> runtime
-    terminal --> infra
-    terminal --> core
-    runtime --> infra
-    runtime --> core
-    infra --> core
-```
+A package may use any package below it, and `core` uses nothing but `core`.
+[README.md](../README.md#architecture-and-flow) draws that stack.
 
 `core` owns domain models, policies and interfaces. It may import only other
 `core` modules, and must not import provider SDKs or process, network and

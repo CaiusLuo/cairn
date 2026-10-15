@@ -55,6 +55,7 @@ claim scope; no inference of arbitrary semantic entailment is made. These inputs
 must originate in the trusted workflow, never from coding-model JSON. The human
 approval callback sees the resolved capsule and explicitly approves its binding
 to the statement. Dependencies/HEAD are checked again after human approval.
+
 Verification/review TaskResults must belong to the inspected Workspace: canonical
 workspace paths must match, and a supplied repository root must match the inspected
 Git root. Equal commit/tree IDs do not authorize mixing sibling worktree or clone
@@ -69,10 +70,10 @@ source objects; a bare trace ID cannot stand in for them.
 
 Freshness is computed per checkout and never saved as global lifecycle state:
 
-* **fresh**: all declared dependencies match an attestation at this HEAD.
-* **potentially_stale**: dependencies match, but HEAD has changed.
-* **stale**: a declared dependency's content, existence, type or mode changed.
-* **unknown**: incomplete/manual scope, IO failure, unsupported context or limits.
+- **fresh**: all declared dependencies match an attestation at this HEAD.
+- **potentially_stale**: dependencies match, but HEAD has changed.
+- **stale**: a declared dependency's content, existence, type or mode changed.
+- **unknown**: incomplete/manual scope, IO failure, unsupported context or limits.
 
 Explicit `revalidate` resolves new evidence and obtains another human approval,
 appending an attestation without deleting previous provenance. Initial acceptance

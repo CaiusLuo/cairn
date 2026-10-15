@@ -1,7 +1,7 @@
 # SessionStore and checkpoint codec (M1-C.1)
 
 The concrete [SessionStore](../../src/cairn/infra/sessions/store.py) persists host
-facts in a separate local SQLite database. This slice supplies storage primitives
+facts in a separate local SQLite database. The Store supplies storage primitives
 only. It neither attaches an Agent nor calls a model, tool, permission handler,
 Git command or publisher. [M1-B](session-lifecycle.md) owns the live Session/Turn;
 [M1-C.2 DurableSession](durable-session.md) integrates these primitives at the
@@ -191,6 +191,7 @@ recovery UI must not release early. The Store cannot prove that asynchronous wor
 has stopped. Writer close enforces that no locally owned Turn or Task remains,
 including through cancellation cleanup or after a write fault. Completed cleanup alone does
 not remove ownership; use terminal commit or the explicit faulted Turn release.
+
 Durable TaskRunner retains a separate local Task scope through post-turn repository
 inspection and cleanup; leaving that settled scope changes no persisted facts.
 Abrupt process termination releases the kernel-held lock and leaves the existing

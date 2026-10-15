@@ -1,4 +1,4 @@
-# Retained coding workflows
+# GitHub Issue workflows
 
 These explicit APIs are separate from the interactive CLI. They preserve the
 source working tree and use retained Git Worktrees for inspection and recovery.

@@ -4,6 +4,47 @@
 per-tool sequence inside an already accepted assistant response: schema preflight,
 permission evaluation, execution authority, model-facing tool messages, events and
 per-tool spans.
+
+One call::
+
+    +---------------------------------------------------------+
+    | execute_tool_call(agent, tool_call, turn_span)          |
+    +---------------------------------------------------------+
+                                 |
+                                 v
+    +---------------------------------------------------------+
+    | 1. preflight   get_tool + validate(arguments)           |
+    |    before any approval is requested                     |
+    +---------------------------------------------------------+
+                                 |  ToolNotFound or InvalidArguments:
+                                 +--> tool error message; consume; return
+                                 |
+                                 v
+    +---------------------------------------------------------+
+    | 2. permission   evaluate_permission_policy()            |
+    |    ASK -> handler (no handler fails closed)             |
+    |    DENY or not allowed -> failure; consume; return      |
+    +---------------------------------------------------------+
+                                 |
+                                 v
+    +---------------------------------------------------------+
+    | 3. before_execute(), when the session supplies one      |
+    |    durable admission; a failure escapes to run_turn     |
+    +---------------------------------------------------------+
+                                 |
+                                 v
+    +---------------------------------------------------------+
+    | 4. mark_tool_execution_started(); tool.execute(...)     |
+    +---------------------------------------------------------+
+                                 |
+          +-----------------------+-----------------------+
+          | cancelled             | exception             | result
+          v                       v                       v
+    +----------------------+  +----------------------+  +----------------------+
+    | ToolCancelled        |  | tool error message   |  | JSON tool message    |
+    | message; consume;    |  | and span; consume    |  | consume; then emit   |
+    | re-raise             |  | return               |  | tool_result          |
+    +----------------------+  +----------------------+  +----------------------+
 """
 
 import asyncio

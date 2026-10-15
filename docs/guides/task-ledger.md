@@ -1,4 +1,4 @@
-# Durable Task Ledger
+# M2 Durable Task Ledger
 
 [SessionStore](../../src/cairn/infra/sessions/store.py) persists Task lifecycle
 facts alongside committed Sessions. The Store never executes a Turn, inspects
@@ -109,9 +109,9 @@ old grants authorize nothing.
 
 1. Revalidate TaskSpec, hash its exact UTF-8 prompt, and atomically create
    `running` at the exact current Session revision before model/tool dispatch.
-2. `DurableSession.task_execution(TaskRecord)` binds the exact admitted Task ID,
-   digest and base revision to one intended Turn. It rejects changed attribution
-   or a second Turn; identity never comes from model text. The ordinary
+2. Call `DurableSession.task_execution(TaskRecord)` to bind the exact admitted
+   Task ID, digest and base revision to one intended Turn. It rejects changed
+   attribution or a second Turn; identity never comes from model text. The ordinary
    `run_turn(..., session=session)` owns admission, fences, cleanup and checkpoint.
 3. Verify the actual receipt against that settled Turn and current clean Session,
    then call `commit_task_turn`. A committed Turn still leaves an unfinished Task.
@@ -195,7 +195,9 @@ checkpoint table with identical rows under the broadened format constraint. It
 adds a per-Session Turn traversal index and copies payload blobs and digest
 strings verbatim: Session/Turn/Task references,
 commit versions and original receipts remain unchanged. Only new checkpoints use
-V2. The Store suspends SQLite FK enforcement solely under its exclusive effect
+V2.
+
+The Store suspends SQLite FK enforcement solely under its exclusive effect
 guard for the table rebuild, checks all foreign keys and semantic chains before
 COMMIT, and restores enforcement after either COMMIT or rollback. Ordinary
 mutations retain foreign keys ON. A pre-COMMIT failure rolls back to the original

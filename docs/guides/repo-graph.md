@@ -1,4 +1,4 @@
-# Repository graph
+# RepoGraph
 
 RepoGraph is a bounded, read-only snapshot of a Workspace's files and code
 structure. It uses local filesystem inspection and Python's standard library;
@@ -60,7 +60,7 @@ shallow extraction, not a build-system validator: workspace aggregation,
 conditional dependency evaluation and arbitrary manifest grammar are outside
 the supported scope.
 
-## Bounds and refresh
+## Bounds
 
 Default limits are 10,000 entries, depth 32, 512 KiB per file, 16 MiB total reads,
 128 manifest dependencies, 100 diagnostics, 50,000 AST nodes per file and 10,000
@@ -75,6 +75,8 @@ Git ignore rules are not interpreted. Symlinks, including internal links, are
 never followed; symlink metadata, special files and binary files are explicit
 policy skips. Oversized/unreadable files and resource limits make a build
 incomplete. Unsupported source structure also makes relevant queries incomplete.
+
+## Refresh and retention
 
 `refresh()` and `rebuild()` both perform a full bounded inspection. They return
 the new candidate; check its report before use. Only complete candidates replace

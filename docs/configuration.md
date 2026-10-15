@@ -1,7 +1,7 @@
 # Configuration
 
-Cairn resolves model configuration from one of three layouts. The layout is
-detected from the files you provide; it is never guessed from partial content.
+Cairn resolves model configuration from one of three layouts. It detects the
+layout from the files you provide, and never guesses it from partial content.
 
 ## Layouts
 
@@ -89,7 +89,7 @@ A file that exists but is invalid stops startup rather than falling back to
 - Every configured provider's credential variable is withheld from Bash child
   environments, not just the active provider's.
 
-## Session selection
+## Session selection and switching
 
 Startup uses the first configured provider, its first model group, and that
 group's first model ID. Startup displays the selection and asks for approval,
@@ -102,7 +102,9 @@ stop immediately. Fallback never leaves the active provider and does not change
 selection.
 
 See the [CLI command table](../README.md#cli-commands) for `/model` and
-`/provider` usage. A successful provider switch builds the target runtime
+`/provider` usage.
+
+A successful provider switch builds the target runtime
 completely before committing, so denied approval, a missing credential, or a
 construction failure leaves the previous provider usable with its selection and
 permission grants. A switch resets session tool-permission grants and preserves

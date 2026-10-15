@@ -8,7 +8,7 @@ page is the map for everything else.
 | Document | Covers |
 | --- | --- |
 | [Architecture](architecture.md) | Package ownership, dependency direction, execution lifecycle, and where new code belongs |
-| [Decisions](adr/0001-modular-architecture-baseline.md) | The architectural decisions this foundation rests on, and what they deliberately reject |
+| [ADR 0001: modular architecture baseline](adr/0001-modular-architecture-baseline.md) | The architectural decisions this foundation rests on, and what they deliberately reject |
 
 ## Operating Cairn
 
@@ -25,6 +25,7 @@ page is the map for everything else.
 | [GitHub Issue workflows](guides/github-workflow.md) | Retained worktrees, deterministic verification, and approved Draft PR publication |
 | [RepoGraph](guides/repo-graph.md) | Bounded repository inventory and Python structure queries |
 | [Project Memory](guides/project-memory.md) | Evidence-backed memory candidates, freshness and retrieval |
+| [Session checkpoint performance](performance/session-checkpoints.md) | Checkpoint sizing options, the incremental V2 design, measurements, and verification limits |
 
 ## Experiments
 
@@ -37,7 +38,7 @@ page is the map for everything else.
 
 | Document | Covers |
 | --- | --- |
-| [Project Memory research](research/project-memory-research.md) | Historical comparison against comparable harnesses |
+| [Project Memory research](research/project-memory-research.md) | Historical comparison against comparable harnesses (Chinese) |
 
 ## Contributing
 

@@ -1,4 +1,4 @@
-# DurableSession runtime integration (M1-C.2)
+# M1-C.2 DurableSession
 
 [DurableSession](../../src/cairn/runtime/durable_session.py) opts one fresh Agent
 into the existing [Session lifecycle](session-lifecycle.md) and
@@ -103,9 +103,10 @@ credential objects, provider runtimes or Worktree handles.
 `agent_finish`, `trace_finish`, `turn_settled` and streaming events acknowledge no
 durability. Live sequence counts attempted delivery, starts anew on reopen and
 is not a stored cursor. Callback failure after settlement/commit does not change
-the result, checkpoint or primary exception and never triggers replay. Frozen
-`last_turn` flags identify settlement/commit delivery gaps. Callbacks must remain
-synchronous and bounded, and must not spawn unowned asynchronous work.
+the result, checkpoint or primary exception and never triggers replay.
+
+Frozen `last_turn` flags identify settlement/commit delivery gaps. Callbacks must
+remain synchronous and bounded, and must not spawn unowned asynchronous work.
 
 ## Recovery and failures
 
@@ -127,7 +128,9 @@ synchronous and bounded, and must not spawn unowned asynchronous work.
 Reconciliation requires an idle owner, an exact fresh RecoveryReport and typed
 HostResolution; it cannot bypass a live Turn or cleanup. It restores only that
 report's committed history, explicitly discarding any uncommitted live tail after
-host assessment. It never synthesizes crashed tool results. Abandoned attempts
+host assessment. It never synthesizes crashed tool results.
+
+Abandoned attempts
 produce bounded, sanitized host-built system context (count and up to eight
 recent UUIDs) warning against old prompt/call replay; it is not saved conversation.
 All restored observations are historical, requiring current repository/memory

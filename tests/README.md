@@ -21,10 +21,13 @@ Use small parameter tables for distinct outcomes of one behavior.
 Shared helpers belong in `tests.support` so one test package does not need to
 import another package's test module. The architecture regression in
 `core/test_architecture.py` guards the production dependency direction and the
-`core` import rule: `core` depends only on `core` and must not import provider,
-process, network or persistence modules; `infra` depends on `core` and `infra`;
-`runtime` depends on those plus `runtime`; the terminal may depend on all of
-them.
+`core` import rule:
+
+- `core` depends only on `core`, and must not import provider, process, network
+  or persistence modules.
+- `infra` depends on `core` and `infra`.
+- `runtime` depends on those plus `runtime`.
+- `terminal` may depend on all of them.
 
 Run repository checks from the root; the canonical command list is in
 [README.md](../README.md#development).
@@ -37,10 +40,11 @@ uv run pytest tests/runtime
 uv run pytest tests/terminal/test_input.py
 ```
 
-`tests/docs` validates the documentation itself, and `tests/core/test_architecture.py`
-validates package boundaries and `core` independence. Both are fast and offline.
+`tests/docs` validates the documentation itself, and
+`tests/core/test_architecture.py` validates package boundaries and `core`
+independence. Both are fast and offline.
 
 Native Bash tests require a usable platform sandbox. On macOS, the outer
 environment must permit nested `sandbox-exec`; on Linux, bubblewrap must be
-installed and usable. Existing readiness helpers handle unavailable sandbox
-environments.
+installed and usable. `tests/support/sandbox.py` skips those tests when the host
+has no usable sandbox.

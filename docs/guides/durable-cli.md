@@ -4,6 +4,8 @@ The default `cairn` command remains stateless and opens no SessionStore.
 Durable conversations are opt-in and use the existing DurableSession and
 `run_turn` ownership boundary.
 
+## Commands and storage
+
 ```bash
 cairn session new
 cairn session inspect SESSION_ID
@@ -19,6 +21,8 @@ paths and unsupported storage environments. The database must remain outside
 every Agent-writable root. Inspection opens an existing store read-only, creates
 no Agent and requests no provider approval.
 
+## Approval and observation
+
 Creation, reopen and reconciliation require interactive, fresh provider approval
 before credential resolution or provider runtime construction, including ENV
 configuration. Reopen constructs a fresh Agent and permission handler; committed
@@ -29,6 +33,8 @@ model group, prompt digest and budgets. Invalid registration, Workspace identity
 or clone replacement fails closed. Git reads use the bounded isolated adapter;
 the synchronous observer joins its worker before returning or propagating an
 interrupt. No model or tool executes during reopen or reconciliation.
+
+## Reports and recovery
 
 Reports show the Session ID, last committed checkpoint, recovery state, current
 revision, unfinished Turn and bounded effect-fence ordinals. Fences mean external
@@ -47,6 +53,8 @@ performs its existing CAS reconciliation. `reconcile` exits after resolution;
 `reopen` can then start new turns. Abandonment records resolution without replay
 or rollback of effects that already happened.
 
+## Runtime limits
+
 Streaming text and tool progress are provisional. Only a successful
 CheckpointReceipt produces `Committed checkpoint N (OUTCOME)`. Persistence
 failure or uncertainty stops input admission. Cancellation settles owned turn
@@ -55,9 +63,11 @@ while cleanup is still running. Uncooperative providers/tools can delay shutdown
 In durable mode `/model` and `/provider` commands are rejected: exit, change
 configuration, then reopen with fresh approval and explicit binding confirmation.
 
+## Verification and release limits
+
 Offline regressions use scripted providers, real SQLite, subprocess interruption
 and cancellation barriers. Application-crash recovery is not power-loss evidence.
-SQLite **3.50.4 WAL-reset compatibility remains a release blocker**; this feature
+SQLite **3.50.4** WAL-reset compatibility remains a **release blocker**; this feature
 does not upgrade SQLite or qualify deployment. The [Store release gate](session-store.md#verification-and-release-gate)
 and [runtime limits](durable-session.md#verification-and-release-limits) still apply.
 Task recovery, Worktree adoption and automatic replay remain outside this contract.

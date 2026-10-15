@@ -16,8 +16,8 @@ The historical `repo-intelligence-v1` contract remains explicitly available
 with SHA256
 `b459ce3fd1293e540572a2ebf8ae0c4a10407fd28a4be76f117a776d45e7553f`.
 Its 13-run pilot artifacts and conclusions under
-`docs/evals/repository-intelligence-v1/pilot-20261011` are frozen and must not be
-reinterpreted using the v2 oracle.
+[`docs/evals/repository-intelligence-v1/pilot-20261011`](../repository-intelligence-v1/pilot-20261011)
+are frozen and must not be reinterpreted using the v2 oracle.
 
 Graph discovery now counts a returned dependency target only when the graph
 record is resolved and has a non-null `target_path`. It does not infer paths

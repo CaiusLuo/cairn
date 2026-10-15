@@ -4,6 +4,66 @@
 calls and tool calls, and decides what happens to the conversation when the turn
 ends. Telemetry lives in ``turn_trace``, the per-tool sequence in
 ``tool_execution``, and candidate selection in ``model_executor``.
+
+Turn flow::
+
+    +-----------------------------------------------------------+
+    | run_turn(agent, user_input, budget, session)              |
+    +-----------------------------------------------------------+
+                                  |
+                                  v
+    +-----------------------------------------------------------+
+    | admission   the exact owning Session; stateless callers   |
+    |             skip the guard                                |
+    |             open the turn trace; add the user message     |
+    +-----------------------------------------------------------+
+                                  |
+                                  v
+    +-----------------------------------------------------------+
+    | step, at most budget.max_steps:                           |
+    |   build system messages, tool schemas, memory context     |
+    |   model_executor.execute()      # candidate fallback      |
+    |   add the assistant message; pending = its tool calls     |
+    +-----------------------------------------------------------+  <------+
+           no tool calls          |             tool calls                |
+                 +-----------------------------------+                    |
+                 |                |                  |                    |
+                 v                |                  v                    |
+    +------------------------+    | +--------------------------------+    |
+    | agent_finish           |    | | execute_tool_call, each call:  |    |
+    | COMPLETED; return      |    | |   preflight -> permission      |    |
+    +------------------------+    | |   -> execute -> tool message   |    |
+                 |                | +--------------------------------+    |
+                 | steps exhausted|                  +--------------------+
+                 v                v
+    +-----------------------------------------------------------+
+    | finally   trace.close(); durable commit; session settle   |
+    +-----------------------------------------------------------+
+
+An aborted turn settles the same way for a failure and for a
+cancellation:
+
+    +-------------------------------------------------------------+
+    | the turn raises, or the caller cancels it                   |
+    +-------------------------------------------------------------+
+                                   |
+                                   v
+    +-------------------------------------------------------------+
+    | did tool execution start?                                   |
+    +-------------------------------------------------------------+
+               no |                              yes |
+                  v                                  v
+    +---------------------------+    +-------------------------------+
+    | drop this turn from the   |    | answer every still-pending    |
+    | conversation              |    | call with TurnAborted         |
+    +---------------------------+    +-------------------------------+
+                  +----------------------------------+
+                                   v
+    +-------------------------------------------------------------+
+    | finally   trace.close(); a close failure can also           |
+    |           drop an unexecuted turn; durable commit;          |
+    |           session settle                                    |
+    +-------------------------------------------------------------+
 """
 
 import asyncio
