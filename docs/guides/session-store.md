@@ -277,10 +277,16 @@ filesystems/device synchronization still need validation.
 Local Python 3.12.13 uses SQLite **3.50.4** on macOS with flock. This is a **release
 blocker**, not a supported deployment claim. The reviewed
 [SQLite WAL-reset fix](https://www.sqlite.org/wal.html#walreset) requires 3.51.3+,
-3.50.7/3.44.6 backports or documented equivalent. `sqlite_wal_fix_supported()` exposes
-the version check. This isolated development slice does not upgrade or disable
-the project runtime. Compatible SQLite and target-platform tests are required
-before shipping durable execution. Runtime integration is opt-in through
-DurableSession. Task lifecycle facts and read-only recovery reports are available
-through [Task Ledger](task-ledger.md); Task execution/recovery integration,
+3.50.7/3.44.6 backports or documented equivalent. `sqlite_wal_fix_supported()` is the
+one version check, and the store now enforces it at construction: a runtime without
+the fix is refused with `sqlite_wal_unverified` before any path, lock or database
+effect, unless the host declares it through `CAIRN_ALLOW_UNVERIFIED_SQLITE=1` or
+`allow_unverified=True`. Declaring admits an unverified store that no caller may
+report as supported; `wal_admission` records which one it is. See the
+[SQLite runtime support matrix](../performance/sqlite-runtime-support.md) for the
+verified versions and the current host verdict. This isolated development slice does
+not upgrade or disable the project runtime. Compatible SQLite and target-platform
+tests are required before shipping durable execution. Runtime integration is opt-in
+through DurableSession. Task lifecycle facts and read-only recovery reports are
+available through [Task Ledger](task-ledger.md); Task execution/recovery integration,
 automatic replay, queue and DAG remain outside these storage primitives.

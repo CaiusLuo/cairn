@@ -28,7 +28,7 @@ from cairn.runtime.tasks import CodingTaskRunner
 from cairn.terminal.durable import open_store
 from tests.support.git import initialize_repository
 from tests.support.runtime import SequenceLLM
-from tests.support.sessions import SESSION
+from tests.support.sessions import SESSION, UNVERIFIED_RUNTIME
 
 SPEC = TaskSpec(task_id="durable-task", prompt="Update tracked.txt")
 BUDGET = RunBudget(max_steps=3)
@@ -85,7 +85,12 @@ def make_host(
         event_handler=event_handler,
         tracer=None,
     )
-    api = open_store(root / "store", workspace, sensitive_values=sensitive_values)
+    api = open_store(
+        root / "store",
+        workspace,
+        sensitive_values=sensitive_values,
+        allow_unverified=UNVERIFIED_RUNTIME,
+    )
 
     def observe() -> SessionBinding:
         return SessionBinding(

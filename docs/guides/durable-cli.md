@@ -68,6 +68,10 @@ configuration, then reopen with fresh approval and explicit binding confirmation
 Offline regressions use scripted providers, real SQLite, subprocess interruption
 and cancellation barriers. Application-crash recovery is not power-loss evidence.
 SQLite **3.50.4** WAL-reset compatibility remains a **release blocker**; this feature
-does not upgrade SQLite or qualify deployment. The [Store release gate](session-store.md#verification-and-release-gate)
+does not upgrade SQLite or qualify deployment. A runtime without the fix refuses
+every durable subcommand with `sqlite_wal_unverified` unless the host declares it
+through `CAIRN_ALLOW_UNVERIFIED_SQLITE=1`; stateless commands are unaffected. The
+[Store release gate](session-store.md#verification-and-release-gate),
+[support matrix](../performance/sqlite-runtime-support.md)
 and [runtime limits](durable-session.md#verification-and-release-limits) still apply.
 Task recovery, Worktree adoption and automatic replay remain outside this contract.

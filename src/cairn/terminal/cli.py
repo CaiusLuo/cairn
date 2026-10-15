@@ -22,6 +22,7 @@ from cairn.infra.config import (
 from cairn.infra.observability.sinks import JsonlTraceSink
 from cairn.infra.observability.storage import TraceStore
 from cairn.infra.observability.tracer import Tracer
+from cairn.infra.sessions.models import SessionStoreError
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.assembly import build_agent
@@ -80,6 +81,14 @@ RootsOption = Annotated[
 def _durable_command(options: DurableOptions) -> None:
     try:
         asyncio.run(main(durable=options))
+    except SessionStoreError as refused:
+        # A runtime the store refused is actionable: report why, and never
+        # describe the durable state as rejected.
+        typer.echo(
+            f"Durable execution unavailable: {refused}",
+            err=True,
+        )
+        raise typer.Exit(1) from None
     except Exception:
         typer.echo(
             "Durable session unavailable or binding rejected. Inspect before recovery.",
@@ -105,6 +114,9 @@ def session_inspect(
     """Read bounded recovery metadata without mutation or provider access."""
     try:
         inspect_session(session_id, store, tuple(forbid_root or ()))
+    except SessionStoreError as refused:
+        typer.echo(f"Session inspection unavailable: {refused}", err=True)
+        raise typer.Exit(1) from None
     except Exception:
         typer.echo(
             "Session inspection unavailable; verify ID, store and writable roots.",

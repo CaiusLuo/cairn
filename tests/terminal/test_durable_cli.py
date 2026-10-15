@@ -33,7 +33,11 @@ from cairn.infra.sessions.models import (
     ToolFence,
     TurnIntent,
 )
-from cairn.infra.sessions.store import SessionStore
+from cairn.infra.sessions.store import (
+    UNVERIFIED_SQLITE_DECLARATION,
+    VERIFIED_SQLITE_VERSIONS,
+    SessionStore,
+)
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.assembly import build_agent
@@ -147,6 +151,9 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[Harness]:
         isolated.setenv("CAIRN_LLM_MODEL", "offline/model")
         isolated.setenv("CAIRN_LLM_API_KEY", "test-private-credential")
         isolated.setenv("CAIRN_BASE_URL", "https://example.invalid/v1")
+        # The suite exercises real SQLite on the development interpreter, whose
+        # SQLite may lack the verified WAL-reset fix. Production stays gated.
+        isolated.setenv(UNVERIFIED_SQLITE_DECLARATION, "1")
         isolated.setattr(cli, "dotenv_values", lambda: {})
         isolated.setattr(cli, "print_banner", lambda: None)
         isolated.setattr(cli, "confirm_provider_access", lambda *a, **k: True)
@@ -372,6 +379,30 @@ def test_provider_approval_precedes_credential_even_for_env_layout(
     assert result.exit_code == 1
     assert not harness.directory.exists()
     assert not harness.clients
+
+
+def test_unverified_runtime_reports_the_actionable_refusal(harness: Harness) -> None:
+    """An unverified runtime refuses the durable command with the way forward."""
+    harness.monkeypatch.delenv(UNVERIFIED_SQLITE_DECLARATION, raising=False)
+    harness.monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 50, 4))
+    result = harness.invoke("new")
+    assert result.exit_code == 1
+    assert "sqlite_wal_unverified" in result.output
+    assert VERIFIED_SQLITE_VERSIONS in result.output
+    assert UNVERIFIED_SQLITE_DECLARATION in result.output
+    assert not harness.directory.exists()
+
+
+def test_unverified_runtime_gates_every_store_backed_command(
+    harness: Harness,
+) -> None:
+    """Inspection is store-backed, so it is refused rather than silently opened."""
+    harness.monkeypatch.delenv(UNVERIFIED_SQLITE_DECLARATION, raising=False)
+    harness.monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 50, 4))
+    result = harness.invoke("inspect", "00000000-0000-4000-8000-000000000001")
+    assert result.exit_code == 1
+    assert "sqlite_wal_unverified" in result.output
+    assert not harness.directory.exists()
 
 
 def test_reopen_needs_fresh_provider_approval(harness: Harness) -> None:

@@ -51,6 +51,7 @@ def open_store(
     secret_env_keys: frozenset[str] = frozenset(),
     sensitive_values: tuple[str, ...] = (),
     additional_roots: tuple[Path, ...] = (),
+    allow_unverified: bool = False,
 ) -> SessionStore:
     # Match Bash's effective child environment, rather than raw host variables
     # that credential filtering may remove. Include aliases for path pinning.
@@ -64,6 +65,7 @@ def open_store(
         mode="inspect" if inspect else "writer",
         forbidden_roots=tuple(roots),
         sensitive_values=sensitive_values,
+        allow_unverified=allow_unverified,
     )
 
 

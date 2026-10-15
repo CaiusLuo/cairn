@@ -39,6 +39,7 @@ page is the map for everything else.
 
 | Document | Covers |
 | --- | --- |
+| [SQLite runtime support](performance/sqlite-runtime-support.md) | Measured runtime versions per host, durable admission, and the release verdict |
 | [Project Memory research](research/project-memory-research.md) | Historical comparison against comparable harnesses (Chinese) |
 
 ## Contributing
