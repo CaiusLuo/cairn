@@ -171,6 +171,15 @@ result preserves the stored Turn outcome, including cancellation/failure, and
 uses its nullable trace ID. Repository observations describe current host state;
 they are not deterministic correctness verdicts or publication permission.
 
+The shared Git inspector disables optional index writes and implicit promisor
+fetches, and suppresses hooks/fsmonitor. Before status it rejects effective
+clean/smudge/process filter configuration, including includes/worktree config,
+and any tracked submodule. It requires a complete bounded index-mode listing
+(64 KiB); unavailable objects, unsupported Git options, or incomplete inspection
+leave recovery required. These refusals prevent repository-selected programs
+from running during host inspection. They also apply to ordinary repository
+context/evidence reads; there is no separate recovery Git executor.
+
 ```python
 from datetime import UTC, datetime
 from cairn.infra.sessions.task_models import TaskResolution

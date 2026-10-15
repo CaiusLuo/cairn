@@ -2,6 +2,7 @@
 
 import asyncio
 import multiprocessing
+import os
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -25,9 +26,14 @@ from tests.support.durable_tasks import (
     make_host,
     reconcile_fresh,
 )
-from tests.support.git import git, initialize_repository
+from tests.support.git import (
+    configure_missing_promisor_tree,
+    configure_side_effect_filter,
+    git,
+    initialize_repository,
+)
 from tests.support.runtime import SequenceLLM
-from tests.support.sessions import SESSION
+from tests.support.sessions import SESSION, UNVERIFIED_RUNTIME
 
 
 @pytest.fixture
@@ -235,6 +241,83 @@ def test_fresh_approval_and_binding_are_required_before_inspection(
         host.session.close()
 
 
+def test_recovery_inspection_preserves_stale_index_and_clean_file_bytes(
+    root: Path,
+) -> None:
+    crash(root, "inspecting")
+    host = make_host(root, SequenceLLM([]), reopen=True)
+    tracked = host.workspace.root / "tracked.txt"
+    tracked.write_bytes(b"before\n")
+    stamp = tracked.stat()
+    os.utime(tracked, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 5_000_000_000))
+    reconcile_fresh(host)
+    before = host.store.inspect_task(SESSION, SPEC.task_id)
+    index = host.workspace.root / ".git" / "index"
+    before_index = index.read_bytes()
+    head = git(host.workspace.root, "rev-parse", "HEAD")
+    try:
+        after = recover(host, "inspect_repository")
+        assert after.status == "result_recorded" and after.task.result is not None
+        assert after.task.result.repository is not None
+        assert after.task.result.repository.dirty is False
+        assert after.task.checkpoint == before.task.checkpoint
+        assert tracked.read_bytes() == b"before\n"
+        assert index.read_bytes() == before_index
+        assert git(host.workspace.root, "rev-parse", "HEAD") == head
+    finally:
+        host.session.close()
+
+
+@pytest.mark.parametrize("unsafe", ["filter", "submodule", "promisor"])
+def test_recovery_refuses_git_programs_without_result_or_effects(
+    root: Path, unsafe: str
+) -> None:
+    crash(root, "inspecting")
+    work = root / "work"
+    marker = root / "outside-workspace-effect"
+    if unsafe == "promisor":
+        configure_missing_promisor_tree(work, marker)
+    else:
+        target = work
+        if unsafe == "submodule":
+            source = root / "child-source"
+            source.mkdir()
+            initialize_repository(source)
+            git(
+                work,
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                str(source),
+                "nested",
+            )
+            target = work / "nested"
+        configure_side_effect_filter(target, marker)
+    llm = SequenceLLM([])
+    host = make_host(root, llm, reopen=True)
+    reconcile_fresh(host)
+    before = host.store.inspect_task(SESSION, SPEC.task_id)
+    index = (work / ".git" / "index").read_bytes()
+    head = git(work, "rev-parse", "HEAD")
+    tracked = (work / "tracked.txt").read_bytes()
+    try:
+        assert not marker.exists()
+        with pytest.raises(SessionStoreError, match="task_inspection_unavailable"):
+            recover(host, "inspect_repository")
+        after = host.store.inspect_task(SESSION, SPEC.task_id)
+        assert after.task.result is None and after.task.recovery_required
+        assert after.task.diagnostic == "inspection_failed"
+        assert after.task.checkpoint == before.task.checkpoint
+        assert host.session.inspect().receipt == before.session_checkpoint
+        assert not marker.exists() and llm.calls == []
+        assert (work / ".git" / "index").read_bytes() == index
+        assert git(work, "rev-parse", "HEAD") == head
+        assert (work / "tracked.txt").read_bytes() == tracked
+    finally:
+        host.session.close()
+
+
 @pytest.mark.parametrize("committed", [False, True])
 def test_uncertain_result_commit_reads_actual_facts_without_retry(
     root: Path,
@@ -314,13 +397,20 @@ def test_cancellation_holds_session_and_writer_through_repeated_cleanup(
             with pytest.raises(SessionStoreError, match="task_still_owned"):
                 host.store.close()
             with pytest.raises(SessionStoreError, match="writer_busy"):
-                open_store(root / "store", host.workspace)
+                open_store(
+                    root / "store", host.workspace, allow_unverified=UNVERIFIED_RUNTIME
+                )
             assert not pending.done() and not settled.is_set()
             finish.set()
             with pytest.raises(asyncio.CancelledError):
                 await pending
             assert settled.is_set() and asyncio.all_tasks() == baseline
-            reader = open_store(root / "store", host.workspace, inspect=True)
+            reader = open_store(
+                root / "store",
+                host.workspace,
+                inspect=True,
+                allow_unverified=UNVERIFIED_RUNTIME,
+            )
             try:
                 after = reader.inspect_task(SESSION, SPEC.task_id)
                 assert (

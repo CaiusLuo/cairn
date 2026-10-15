@@ -47,12 +47,20 @@ SessionState = Literal["ready", "executing", "recovery_required"]
 
 
 class SessionStoreError(RuntimeError):
-    """Fixed diagnostics only; callers must not attach raw storage exceptions."""
+    """Fixed diagnostics only; callers must not attach raw storage exceptions.
 
-    def __init__(self, code: str = "storage_unavailable") -> None:
+    ``code`` stays a fixed literal that callers may compare or match. A
+    host-actionable failure may add one fixed-shape ``detail`` string built from
+    host facts the operator needs (a local version, a required range, the
+    declaration to set) and never from storage text, SQL or a payload.
+    """
+
+    def __init__(self, code: str = "storage_unavailable", detail: str = "") -> None:
         # Internal callers select literals, never text from SQLite or a payload.
         self.code = code
-        super().__init__(f"Session store: {code}")
+        self.detail = detail
+        message = f"Session store: {code}"
+        super().__init__(f"{message}: {detail}" if detail else message)
 
 
 class VersionConflict(SessionStoreError):

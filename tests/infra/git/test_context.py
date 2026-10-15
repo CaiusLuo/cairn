@@ -2,7 +2,9 @@ import asyncio
 import os
 import shlex
 import signal
+import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +12,10 @@ import pytest
 
 from cairn.infra.git.context import RepoContextProvider, RepositoryContext
 from cairn.infra.workspace.workspace import Workspace
+from tests.support.git import (
+    configure_missing_promisor_tree,
+    configure_side_effect_filter,
+)
 from tests.support.git import git as _git
 from tests.support.git import initialize_repository as _initialize_repository
 
@@ -125,6 +131,98 @@ def test_prompt_inspection_never_executes_repository_configuration(
     assert marker.exists()
 
 
+@pytest.mark.parametrize("evidence", [False, True])
+def test_inspection_preserves_index_bytes_with_stale_stat_cache(
+    tmp_path: Path, evidence: bool
+) -> None:
+    tracked = _initialize_repository(tmp_path)
+    stamp = tracked.stat()
+    os.utime(tracked, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 5_000_000_000))
+    index = tmp_path / ".git" / "index"
+    before = index.read_bytes()
+    head = _git(tmp_path, "rev-parse", "HEAD")
+    provider = RepoContextProvider(Workspace(tmp_path))
+
+    if evidence:
+        result = asyncio.run(provider.inspect_evidence())
+        assert result.inspection_error is None and result.dirty is False
+    else:
+        assert asyncio.run(provider.inspect()).dirty is False
+    assert tracked.read_bytes() == b"before\n"
+    assert _git(tmp_path, "rev-parse", "HEAD") == head
+    assert index.read_bytes() == before
+    # Ordinary status really does refresh this fixture's index.
+    assert _git(tmp_path, "status", "--porcelain") == ""
+    assert index.read_bytes() != before
+
+
+@pytest.mark.parametrize("evidence", [False, True])
+@pytest.mark.parametrize(
+    "scope", ["local", "include", "worktree", "submodule", "promisor"]
+)
+def test_inspection_refuses_effectful_repository_state(
+    tmp_path: Path, evidence: bool, scope: str
+) -> None:
+    root = tmp_path / "work"
+    root.mkdir()
+    _initialize_repository(root)
+    marker = tmp_path / "inspection-executed"
+    if scope == "promisor":
+        configure_missing_promisor_tree(root, marker)
+    else:
+        target = root
+        if scope == "submodule":
+            source = tmp_path / "child"
+            source.mkdir()
+            _initialize_repository(source)
+            _git(
+                root,
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                str(source),
+                "nested",
+            )
+            target = root / "nested"
+        configure_side_effect_filter(target, marker)
+        if scope in {"include", "worktree"}:
+            command = _git(root, "config", "filter.test-canary.clean")
+            _git(root, "config", "--unset", "filter.test-canary.clean")
+            config = (
+                root
+                / ".git"
+                / ("included" if scope == "include" else "config.worktree")
+            )
+            config.write_text("")
+            _git(
+                root,
+                "config",
+                "--file",
+                str(config),
+                "filter.test-canary.clean",
+                command,
+            )
+            if scope == "include":
+                _git(root, "config", "include.path", str(config))
+            else:
+                _git(root, "config", "extensions.worktreeConfig", "true")
+    provider = RepoContextProvider(Workspace(root))
+    before = (root / ".git" / "index").read_bytes()
+    if evidence:
+        result = asyncio.run(provider.inspect_evidence())
+        assert result.inspection_error is not None and result.dirty is None
+    else:
+        with pytest.raises(RuntimeError):
+            asyncio.run(provider.inspect())
+    assert not marker.exists()
+    assert (root / ".git" / "index").read_bytes() == before
+    # The repository-supplied program is executable without the inspection guard.
+    with suppress(subprocess.CalledProcessError):
+        _git(root, "status", "--porcelain")
+    assert marker.exists()
+
+
 def test_git_children_are_hardened_and_credential_filtered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -149,6 +247,8 @@ def test_git_children_are_hardened_and_credential_filtered(
 
     command, kwargs = captured[0]
     assert command[:2] == ("git", "-C")
+    assert "--no-optional-locks" in command
+    assert "--no-lazy-fetch" in command
     assert "core.hooksPath=/dev/null" in command
     assert "core.fsmonitor=false" in command
     child_env = kwargs["env"]
@@ -166,6 +266,7 @@ def test_inspection_reaps_child_and_readers_under_repeated_cancellation(
     operation: str,
     interruption: str,
 ) -> None:
+    _initialize_repository(tmp_path)
     original_spawn = asyncio.create_subprocess_exec
     processes: list[asyncio.subprocess.Process] = []
     ready = tmp_path / "ready"
@@ -183,6 +284,8 @@ def test_inspection_reaps_child_and_readers_under_repeated_cancellation(
         terminating = asyncio.Event()
 
         async def spawn(*args: Any, **kwargs: Any) -> asyncio.subprocess.Process:
+            if "status" not in args:
+                return await original_spawn(*args, **kwargs)
             process = await original_spawn(
                 sys.executable, "-c", script, str(ready), **kwargs
             )

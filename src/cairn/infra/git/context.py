@@ -133,7 +133,14 @@ class RepoContextProvider:
         # execute a program outside the sandbox with this process's environment.
         # Command-line overrides outrank environment, system, global and local
         # configuration, so these hold in every inspection mode.
-        options = ("-c", f"core.hooksPath={os.devnull}", "-c", "core.fsmonitor=false")
+        options = (
+            "--no-optional-locks",
+            "--no-lazy-fetch",
+            "-c",
+            f"core.hooksPath={os.devnull}",
+            "-c",
+            "core.fsmonitor=false",
+        )
 
         if env is None:
             # No repository inspection needs a credential, and host-level Git
@@ -171,7 +178,8 @@ class RepoContextProvider:
         """Run one bounded Git command in the workspace.
 
         This is the bounded command seam for repository inspection, with
-        hooks/fsmonitor overrides and cancellation cleanup. Callers that
+        hooks/fsmonitor overrides, no optional writes or implicit object fetches,
+        and cancellation cleanup. Callers that
         inspect or mutate anything beyond prompt context must pass the
         environment they intend explicitly; ``env=None`` selects the isolated
         environment this module uses for its own prompt inspection.
@@ -242,6 +250,38 @@ class RepoContextProvider:
     async def _read_status(
         self, *, nul: bool = False, env: Mapping[str, str] | None = None
     ) -> tuple[list[str], bool]:
+        # Status can run clean/process filters, including those in submodules.
+        # Refuse effective drivers and gitlinks instead of executing repository
+        # programs or hiding nested dirt. Match the worktree boundary's filter
+        # refusal; no configuration values are safe diagnostic text.
+        filters = await self.run_git(
+            "config",
+            "--includes",
+            "--name-only",
+            "--get-regexp",
+            r"^filter\..*\.(clean|smudge|process)$",
+            env=env,
+        )
+        if (
+            filters.returncode != 1
+            or filters.stdout_truncated
+            or filters.stderr_truncated
+        ):
+            raise RuntimeError("Git inspection rejects external filter configuration")
+        modes = await self.run_git(
+            "ls-files", "--format=%(objectmode)", "-z", "--", ":/", env=env
+        )
+        if (
+            modes.returncode != 0
+            or modes.stdout_truncated
+            or modes.stderr_truncated
+            or (modes.stdout and not modes.stdout.endswith(b"\0"))
+            or any(
+                mode not in {b"100644", b"100755", b"120000"}
+                for mode in modes.stdout.split(b"\0")[:-1]
+            )
+        ):
+            raise RuntimeError("Git inspection requires a complete non-submodule index")
         spawn = asyncio.create_task(
             self._start_git(
                 "status",

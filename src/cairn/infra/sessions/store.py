@@ -1,6 +1,7 @@
 """Concrete, host-only SQLite store. Facts in this database never dispatch work."""
 
 import hashlib
+import os
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
@@ -164,6 +165,45 @@ def sqlite_wal_fix_supported(version: tuple[int, int, int] | None = None) -> boo
     )
 
 
+#: The one declaration that admits an unverified SQLite runtime for development.
+UNVERIFIED_SQLITE_DECLARATION = "CAIRN_ALLOW_UNVERIFIED_SQLITE"
+
+#: Versions carrying the reviewed WAL-reset fix, as an operator-facing string.
+#: Kept beside ``sqlite_wal_fix_supported``; one test pins both together.
+VERIFIED_SQLITE_VERSIONS = "3.51.3+, 3.50.7+ or 3.44.6+"
+
+
+def _unverified_database_error(version: tuple[int, int, int]) -> SessionStoreError:
+    """Refuse an unverified runtime with the facts an operator needs."""
+    current = ".".join(str(part) for part in version)
+    return SessionStoreError(
+        "sqlite_wal_unverified",
+        f"current={current} requires={VERIFIED_SQLITE_VERSIONS}"
+        f" declare={UNVERIFIED_SQLITE_DECLARATION}=1",
+    )
+
+
+SqliteAdmission = Literal["verified", "unverified", "refused"]
+
+
+def wal_admission(
+    *, allow_unverified: bool = False, version: tuple[int, int, int] | None = None
+) -> SqliteAdmission:
+    """Decide runtime admission once: verified, declared, or refused.
+
+    A verified runtime needs no declaration. An unverified one is refused unless
+    the host declares it, and then stays ``unverified``: admission is never a
+    claim that the runtime is supported.
+    """
+    if type(allow_unverified) is not bool:
+        raise SessionStoreError("invalid_options")
+    if sqlite_wal_fix_supported(version):
+        return "verified"
+    if allow_unverified or os.environ.get(UNVERIFIED_SQLITE_DECLARATION) == "1":
+        return "unverified"
+    return "refused"
+
+
 class SessionStore(TaskLedgerMixin):
     def __init__(
         self,
@@ -172,11 +212,21 @@ class SessionStore(TaskLedgerMixin):
         mode: Literal["writer", "inspect"] = "writer",
         forbidden_roots: tuple[Path, ...],
         sensitive_values: tuple[str, ...] = (),
+        allow_unverified: bool = False,
     ) -> None:
         if mode not in ("writer", "inspect") or any(
             type(s) is not str for s in sensitive_values
         ):
             raise SessionStoreError("invalid_options")
+        # Runtime admission precedes every path, lock and database effect. A
+        # runtime without the verified WAL-reset fix is never admitted silently;
+        # declaring it admits an unverified store that no caller may report as
+        # supported.
+        version = sqlite3.sqlite_version_info
+        admission = wal_admission(allow_unverified=allow_unverified, version=version)
+        if admission == "refused":
+            raise _unverified_database_error(version)
+        self.wal_admission: Literal["verified", "unverified"] = admission
         self.mode = mode
         self.sensitive_values = sensitive_values
         self._connection: sqlite3.Connection | None = None

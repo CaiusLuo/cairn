@@ -32,7 +32,7 @@ from tests.support.durable_tasks import (
 )
 from tests.support.git import git, initialize_repository
 from tests.support.runtime import SequenceLLM
-from tests.support.sessions import SESSION, legacy_store
+from tests.support.sessions import SESSION, UNVERIFIED_RUNTIME, legacy_store
 
 
 @pytest.fixture
@@ -463,13 +463,20 @@ def test_cancellation_retains_writer_until_cleanup_settles(
             with pytest.raises(SessionStoreError, match=r"(turn|task)_still_owned"):
                 host.store.close()
             with pytest.raises(SessionStoreError, match="writer_busy"):
-                open_store(root / "store", host.workspace)
+                open_store(
+                    root / "store", host.workspace, allow_unverified=UNVERIFIED_RUNTIME
+                )
             assert not pending.done() and not settled.is_set()
             finish.set()
             with pytest.raises(asyncio.CancelledError):
                 await pending
             assert settled.is_set() and asyncio.all_tasks() == baseline
-            reader = open_store(root / "store", host.workspace, inspect=True)
+            reader = open_store(
+                root / "store",
+                host.workspace,
+                inspect=True,
+                allow_unverified=UNVERIFIED_RUNTIME,
+            )
             try:
                 report = reader.inspect_task(SESSION, SPEC.task_id)
                 assert (
@@ -784,12 +791,17 @@ def test_process_death_exposes_facts_without_execution_or_automatic_reconciliati
         assert parent.poll(20) and parent.recv() == window
         workspace = Workspace(root / "work")
         with pytest.raises(SessionStoreError, match="writer_busy"):
-            open_store(root / "store", workspace)
+            open_store(root / "store", workspace, allow_unverified=UNVERIFIED_RUNTIME)
         worker.kill()
         worker.join(10)
         assert worker.exitcode is not None
         before = {p.name: p.read_bytes() for p in (root / "store").iterdir()}
-        reader = open_store(root / "store", workspace, inspect=True)
+        reader = open_store(
+            root / "store",
+            workspace,
+            inspect=True,
+            allow_unverified=UNVERIFIED_RUNTIME,
+        )
         try:
             session = reader.inspect(SESSION)
             post_turn = window in (
