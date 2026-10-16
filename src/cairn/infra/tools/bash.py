@@ -42,10 +42,21 @@ def _decode_output(data: bytes, truncated: bool) -> str:
     return decoder.decode(data, final=not truncated)
 
 
+class UnprotectedGitMetadata(RuntimeError):
+    """Bash refused to run because Git metadata could not be pinned read-only.
+
+    The workspace bind is writable, so any Git metadata the sandbox does not
+    explicitly narrow stays mutable. A layout the helper cannot protect is
+    refused instead of executed, rather than silently running with live metadata
+    writable.
+    """
+
+
 def _git_metadata_paths(cwd: Path) -> tuple[Path, ...]:
     """Git metadata a sandboxed command must never be able to write.
 
-    Two shapes exist. A normal checkout has a ``.git`` directory inside the
+    Three shapes are supported. A workspace with no ``.git`` entry has no Git
+    metadata to protect. A normal checkout has a ``.git`` directory inside the
     workspace. A linked worktree has a ``.git`` file holding ``gitdir: <path>``
     that names an admin directory which usually lives outside the workspace.
 
@@ -55,16 +66,25 @@ def _git_metadata_paths(cwd: Path) -> tuple[Path, ...]:
     makes its contents untrusted input, so an external candidate is only mounted
     when Git's own layout confirms the admin directory belongs to this workspace.
 
-    Only paths inside the workspace, or externally verified ones, are returned.
-    A symlinked ``.git`` is not followed at all, because the mount source would
-    resolve outside the workspace. Absent paths are skipped.
+    Any other shape is refused rather than executed. A symlinked ``.git`` is not
+    followed, because the mount source would resolve outside the workspace. A
+    ``.git`` file that is not a registered worktree pointer — including
+    ``git init --separate-git-dir`` — names metadata this helper cannot verify,
+    and that metadata can sit inside the writable workspace. Running anyway would
+    bind the workspace writable with the real metadata unprotected, so the call
+    fails closed instead.
+
+    Raises:
+        UnprotectedGitMetadata: ``cwd/.git`` exists in a shape that cannot be
+            pinned read-only.
     """
     git_path = cwd / ".git"
 
     if git_path.is_symlink():
-        # Following this would mount whatever the link names, outside the
-        # workspace and outside any verification. Leave it to the workspace bind.
-        return ()
+        raise UnprotectedGitMetadata(
+            "cwd/.git is a symbolic link; its target cannot be verified or "
+            "pinned read-only"
+        )
 
     if git_path.is_dir():
         return (git_path,)
@@ -72,24 +92,24 @@ def _git_metadata_paths(cwd: Path) -> tuple[Path, ...]:
     if not git_path.is_file():
         return ()
 
-    candidates: list[Path] = [git_path]
     gitdir = _verified_worktree_gitdir(git_path)
-    if gitdir is not None:
-        candidates.append(gitdir)
-        # The admin directory's ``commondir`` names the shared main Git
-        # directory (objects, refs). Read-only Git commands need it, so it is
-        # mounted too, once it is confirmed to be that admin directory's parent.
-        common = _verified_common_dir(gitdir)
-        if common is not None:
-            candidates.append(common)
+    if gitdir is None:
+        raise UnprotectedGitMetadata(
+            "cwd/.git is a gitdir pointer that is not a registered linked "
+            "worktree; its metadata cannot be verified or pinned read-only"
+        )
 
-    seen: set[Path] = set()
-    unique: list[Path] = []
-    for candidate in candidates:
-        if candidate not in seen and candidate.exists():
-            seen.add(candidate)
-            unique.append(candidate)
-    return tuple(unique)
+    # The admin directory's ``commondir`` names the shared main Git directory
+    # (objects, refs). Read-only Git commands need it, so it is pinned too, once
+    # it is confirmed to be that admin directory's parent.
+    common = _verified_common_dir(gitdir)
+    if common is None:
+        raise UnprotectedGitMetadata(
+            "the linked worktree commondir could not be verified; its shared "
+            "Git metadata cannot be pinned read-only"
+        )
+
+    return (git_path, gitdir, common)
 
 
 def _verified_worktree_gitdir(gitfile: Path) -> Path | None:

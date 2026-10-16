@@ -15,8 +15,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from cairn.core.models import ToolResult
-from cairn.infra.tools.bash import BashTool, _git_metadata_paths
+from cairn.infra.tools.bash import (
+    BashTool,
+    UnprotectedGitMetadata,
+    _git_metadata_paths,
+)
 from cairn.infra.workspace.workspace import Workspace
 from tests.support.sandbox import require_working_sandbox
 
@@ -252,19 +258,17 @@ def _forged_workspace(root: Path, pointer: str) -> Path:
     return workspace
 
 
-def test_git_metadata_paths_reject_a_forged_absolute_gitdir(tmp_path: Path) -> None:
-    """A workspace-authored pointer must not nominate a host directory to mount."""
+def test_git_metadata_paths_refuse_a_forged_absolute_gitdir(tmp_path: Path) -> None:
+    """A workspace-authored pointer must be refused, not silently unprotected."""
     external = tmp_path / "elsewhere"
     external.mkdir()
     workspace = _forged_workspace(tmp_path, f"gitdir: {external}")
 
-    paths = {path.resolve() for path in _git_metadata_paths(workspace)}
-
-    assert external.resolve() not in paths
-    assert paths == {(workspace / ".git").resolve()}
+    with pytest.raises(UnprotectedGitMetadata):
+        _git_metadata_paths(workspace)
 
 
-def test_git_metadata_paths_reject_a_forged_gitdir_with_a_matching_back_pointer(
+def test_git_metadata_paths_refuse_a_forged_gitdir_with_a_matching_back_pointer(
     tmp_path: Path,
 ) -> None:
     """A planted back-pointer still fails the documented worktree layout."""
@@ -274,10 +278,8 @@ def test_git_metadata_paths_reject_a_forged_gitdir_with_a_matching_back_pointer(
     (external / "gitdir").write_text(f"{workspace / '.git'}\n", encoding="utf-8")
     (external / "commondir").write_text("..\n", encoding="utf-8")
 
-    paths = {path.resolve() for path in _git_metadata_paths(workspace)}
-
-    assert external.resolve() not in paths
-    assert paths == {(workspace / ".git").resolve()}
+    with pytest.raises(UnprotectedGitMetadata):
+        _git_metadata_paths(workspace)
 
 
 def test_git_metadata_paths_reject_an_in_workspace_forged_commondir(
@@ -296,6 +298,92 @@ def test_git_metadata_paths_reject_an_in_workspace_forged_commondir(
     assert tmp_path.resolve() not in paths
 
 
+def test_git_metadata_paths_refuse_a_symlinked_git_entry(tmp_path: Path) -> None:
+    """A symlinked .git can point into the writable workspace, so it is refused."""
+    workspace = tmp_path / "symlinked"
+    (workspace / "private-git").mkdir(parents=True)
+    (workspace / ".git").symlink_to(workspace / "private-git")
+
+    with pytest.raises(UnprotectedGitMetadata):
+        _git_metadata_paths(workspace)
+
+
+def test_git_metadata_paths_refuse_a_separate_git_dir(tmp_path: Path) -> None:
+    """`git init --separate-git-dir` is not a worktree admin directory."""
+    workspace = tmp_path / "separate"
+    workspace.mkdir()
+    _git(
+        "init",
+        "-q",
+        "--separate-git-dir",
+        str(workspace / "metadata"),
+        ".",
+        cwd=workspace,
+    )
+    assert (workspace / ".git").is_file()
+
+    with pytest.raises(UnprotectedGitMetadata):
+        _git_metadata_paths(workspace)
+
+
+def test_native_bash_refuses_a_symlinked_git_entry(tmp_path: Path) -> None:
+    """A symlinked .git must not let sandboxed Bash touch the real HEAD."""
+    workspace = tmp_path / "symlinked"
+    real_git = workspace / "private-git"
+    real_git.mkdir(parents=True)
+    _git("init", "-q", "--separate-git-dir", str(real_git), ".", cwd=workspace)
+    (workspace / ".git").unlink()
+    (workspace / ".git").symlink_to(real_git)
+    head = (real_git / "HEAD").read_bytes()
+
+    with pytest.raises(UnprotectedGitMetadata):
+        _run(workspace, "printf corrupted > private-git/HEAD")
+
+    assert (real_git / "HEAD").read_bytes() == head
+
+
+def test_native_bash_refuses_a_separate_git_dir(tmp_path: Path) -> None:
+    """`--separate-git-dir` metadata inside the workspace must not stay writable."""
+    workspace = tmp_path / "separate"
+    workspace.mkdir()
+    _git(
+        "init",
+        "-q",
+        "--separate-git-dir",
+        str(workspace / "metadata"),
+        ".",
+        cwd=workspace,
+    )
+    head = (workspace / "metadata" / "HEAD").read_bytes()
+
+    with pytest.raises(UnprotectedGitMetadata):
+        _run(workspace, "printf corrupted > metadata/HEAD")
+
+    assert (workspace / "metadata" / "HEAD").read_bytes() == head
+    assert (workspace / ".git").read_text(encoding="utf-8").startswith("gitdir:")
+
+
+def test_native_bash_refuses_before_spawning_a_command(tmp_path: Path) -> None:
+    """Refusal is explicit and happens before any sandboxed process runs."""
+    workspace = tmp_path / "separate"
+    workspace.mkdir()
+    _git(
+        "init",
+        "-q",
+        "--separate-git-dir",
+        str(workspace / "metadata"),
+        ".",
+        cwd=workspace,
+    )
+    marker = workspace / "should-not-exist.txt"
+
+    with pytest.raises(UnprotectedGitMetadata) as refusal:
+        _run(workspace, f"printf ran > {marker}")
+
+    assert "pinned read-only" in str(refusal.value)
+    assert not marker.exists()
+
+
 def test_native_bash_cannot_read_a_forged_gitdir_target(tmp_path: Path) -> None:
     """A forged pointer must not widen what the sandbox can read on the host.
 
@@ -307,15 +395,20 @@ def test_native_bash_cannot_read_a_forged_gitdir_target(tmp_path: Path) -> None:
     external = _unmasked_external_root(tmp_path)
     marker = external / "marker.txt"
     marker.write_text(_MARKER_TEXT, encoding="utf-8")
-    workspace = _forged_workspace(tmp_path, f"gitdir: {external}")
+    forged = _forged_workspace(tmp_path, f"gitdir: {external}")
 
-    assert external.resolve() not in {
-        path.resolve() for path in _git_metadata_paths(workspace)
-    }
+    with pytest.raises(UnprotectedGitMetadata):
+        _git_metadata_paths(forged)
+    with pytest.raises(UnprotectedGitMetadata):
+        _run(forged, f"cat {marker}")
+
     if _PLATFORM != "linux":
         return
-
-    require_working_sandbox(Workspace(workspace))
-    result = _run(workspace, f"cat {marker}")
+    # Control: a workspace with no Git metadata runs, and the host directory is
+    # still not mounted, so the marker stays unreadable.
+    control = tmp_path / "control"
+    control.mkdir()
+    require_working_sandbox(Workspace(control))
+    result = _run(control, f"cat {marker}")
 
     assert _MARKER_TEXT not in result.stdout

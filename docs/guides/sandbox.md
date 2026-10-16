@@ -107,11 +107,38 @@ the other alone is forgeable:
    directory and steer `commondir` at an ancestor.
 
 A symlinked `.git` or admin directory is refused outright: the mount source would
-resolve somewhere the checks never inspected. When a pointer fails, the workspace
-loses nothing it had — only the `.git` file itself stays protected, and read-only
-Git simply does not work inside a worktree whose registration cannot be proven.
+resolve somewhere the checks never inspected.
+
+### Unsupported layouts fail closed
+
+The workspace bind is writable, so Git metadata stays mutable unless the sandbox
+explicitly narrows it. A `.git` entry that this helper cannot pin read-only is
+therefore **refused before the command runs**, not skipped. Skipping would leave
+the command executing with the whole workspace writable while the real metadata
+sat inside it.
+
+Three shapes are supported:
+
+| `cwd/.git` | Behaviour |
+| --- | --- |
+| absent | No Git metadata; the command runs normally |
+| a directory | Pinned read-only; the command runs |
+| a file naming a registered `<common>/worktrees/<name>` admin directory | Admin directory and shared Git directory pinned read-only; the command runs |
+| a symbolic link | **Refused** |
+| a file naming anything else, e.g. `git init --separate-git-dir` | **Refused** |
+
+Refusal raises `UnprotectedGitMetadata` before any sandboxed process starts, so
+the command has no effect at all. Both refused shapes can otherwise place live
+metadata inside the writable workspace — a symlink to an in-workspace directory,
+and a `--separate-git-dir` metadata directory created under the workspace — which
+is why they are refused rather than merely left unprotected. Supporting them
+would require mounting metadata the helper cannot verify, which would widen host
+read access, so they stay unsupported.
 
 ## What is not claimed
+
+- A workspace using an unsupported Git layout cannot run sandboxed Bash at all.
+  That is deliberate: refuse rather than run with unprotected metadata.
 
 - The workspace is **not** read-only. A command can modify, create and delete
   source files; that is intended.
