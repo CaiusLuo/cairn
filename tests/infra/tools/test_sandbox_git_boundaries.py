@@ -10,13 +10,34 @@ platform sandbox rather than a reimplementation of its arguments.
 """
 
 import asyncio
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 from cairn.core.models import ToolResult
 from cairn.infra.tools.bash import BashTool, _git_metadata_paths
 from cairn.infra.workspace.workspace import Workspace
 from tests.support.sandbox import require_working_sandbox
+
+_MARKER_TEXT = "cairn-external-marker"
+_PLATFORM: str = sys.platform
+
+
+def _unmasked_external_root(tmp_path: Path) -> Path:
+    """A host directory outside any path the sandbox already hides or shows.
+
+    Linux replaces /tmp with an empty tmpfs, so a directory beside ``tmp_path``
+    is invisible no matter what the mount list contains. A probe that has to
+    discriminate a leaked mount therefore needs a root Linux does not mask.
+    """
+    if _PLATFORM == "linux":
+        root = Path("/var/tmp") / f"cairn-sandbox-external-{os.getpid()}"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    root = tmp_path / "external"
+    root.mkdir()
+    return root
 
 
 def _git(*args: str, cwd: Path) -> None:
@@ -173,8 +194,12 @@ def test_native_bash_keeps_read_only_git_commands_working_in_a_worktree(
     tmp_path: Path,
 ) -> None:
     """Read-only Git needs the external admin directory, which must stay mounted."""
-    _repo, linked = _linked_worktree(tmp_path)
+    repo, linked = _linked_worktree(tmp_path)
     require_working_sandbox(Workspace(linked))
+
+    paths = {path.resolve() for path in _git_metadata_paths(linked)}
+    assert (repo / ".git").resolve() in paths
+    assert (linked / ".git").resolve() in paths
 
     result = _run(linked, "git log --oneline")
 
@@ -188,3 +213,109 @@ def test_git_metadata_paths_ignore_absent_entries(tmp_path: Path) -> None:
     plain.mkdir()
 
     assert _git_metadata_paths(plain) == ()
+
+
+def test_native_bash_cannot_rename_a_linked_worktrees_git_pointer(
+    tmp_path: Path,
+) -> None:
+    _repo, linked = _linked_worktree(tmp_path)
+    require_working_sandbox(Workspace(linked))
+    before = (linked / ".git").read_bytes()
+
+    result = _run(linked, "mv .git moved-git")
+
+    assert result.exit_code != 0, result.stdout
+    assert (linked / ".git").read_bytes() == before
+    assert not (linked / "moved-git").exists()
+
+
+def test_native_bash_cannot_replace_a_linked_worktrees_git_pointer(
+    tmp_path: Path,
+) -> None:
+    """Replacing the pointer with a directory cannot unregister the worktree."""
+    _repo, linked = _linked_worktree(tmp_path)
+    require_working_sandbox(Workspace(linked))
+    before = (linked / ".git").read_bytes()
+
+    result = _run(linked, "rm .git && mkdir .git")
+
+    assert result.exit_code != 0, result.stdout
+    assert (linked / ".git").is_file()
+    assert (linked / ".git").read_bytes() == before
+
+
+def _forged_workspace(root: Path, pointer: str) -> Path:
+    workspace = root / "forged"
+    workspace.mkdir()
+    (workspace / "src.txt").write_text("harmless\n", encoding="utf-8")
+    (workspace / ".git").write_text(pointer + "\n", encoding="utf-8")
+    return workspace
+
+
+def test_git_metadata_paths_reject_a_forged_absolute_gitdir(tmp_path: Path) -> None:
+    """A workspace-authored pointer must not nominate a host directory to mount."""
+    external = tmp_path / "elsewhere"
+    external.mkdir()
+    workspace = _forged_workspace(tmp_path, f"gitdir: {external}")
+
+    paths = {path.resolve() for path in _git_metadata_paths(workspace)}
+
+    assert external.resolve() not in paths
+    assert paths == {(workspace / ".git").resolve()}
+
+
+def test_git_metadata_paths_reject_a_forged_gitdir_with_a_matching_back_pointer(
+    tmp_path: Path,
+) -> None:
+    """A planted back-pointer still fails the documented worktree layout."""
+    external = tmp_path / "elsewhere"
+    external.mkdir()
+    workspace = _forged_workspace(tmp_path, f"gitdir: {external}")
+    (external / "gitdir").write_text(f"{workspace / '.git'}\n", encoding="utf-8")
+    (external / "commondir").write_text("..\n", encoding="utf-8")
+
+    paths = {path.resolve() for path in _git_metadata_paths(workspace)}
+
+    assert external.resolve() not in paths
+    assert paths == {(workspace / ".git").resolve()}
+
+
+def test_git_metadata_paths_reject_an_in_workspace_forged_commondir(
+    tmp_path: Path,
+) -> None:
+    """commondir cannot redirect a mount at the workspace's own parent."""
+    workspace = tmp_path / "inner"
+    admin = workspace / "worktrees" / "mine"
+    admin.mkdir(parents=True)
+    (workspace / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
+    (admin / "gitdir").write_text(f"{workspace / '.git'}\n", encoding="utf-8")
+    (admin / "commondir").write_text("../..\n", encoding="utf-8")
+
+    paths = {path.resolve() for path in _git_metadata_paths(workspace)}
+
+    assert tmp_path.resolve() not in paths
+
+
+def test_native_bash_cannot_read_a_forged_gitdir_target(tmp_path: Path) -> None:
+    """A forged pointer must not widen what the sandbox can read on the host.
+
+    Linux mounts a placeholder over /tmp, so a sibling of tmp_path would be
+    invisible whether or not it leaked into the mount list. The probe therefore
+    lives outside that placeholder on Linux. macOS allows reads by default, so
+    the assertion there only records that the pointer adds no mount.
+    """
+    external = _unmasked_external_root(tmp_path)
+    marker = external / "marker.txt"
+    marker.write_text(_MARKER_TEXT, encoding="utf-8")
+    workspace = _forged_workspace(tmp_path, f"gitdir: {external}")
+
+    assert external.resolve() not in {
+        path.resolve() for path in _git_metadata_paths(workspace)
+    }
+    if _PLATFORM != "linux":
+        return
+
+    require_working_sandbox(Workspace(workspace))
+    result = _run(workspace, f"cat {marker}")
+
+    assert _MARKER_TEXT not in result.stdout

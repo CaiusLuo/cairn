@@ -1,26 +1,40 @@
 # Native Bash sandbox
 
-The `bash` tool runs every command inside a platform sandbox. The sandbox grants
-writes to the workspace so ordinary edits work, and denies everything else. Git
-metadata inside the workspace is the exception that needs an explicit rule: it
-lives under the writable workspace, and a linked worktree's `.git` file points at
-an admin directory that can sit outside it.
+The `bash` tool runs every command inside a platform sandbox. On both platforms
+the sandbox grants writes to the workspace so ordinary edits work and denies
+writes everywhere else. Git metadata inside the workspace needs an explicit rule:
+it lives under the writable workspace, and a linked worktree's `.git` file points
+at an admin directory that can sit outside it.
+
+Read visibility differs by platform, and the difference is real:
+
+| | Linux (bubblewrap) | macOS (`sandbox-exec`) |
+| --- | --- | --- |
+| Host paths visible to the command | Only what is explicitly mounted | Everything the invoking user can read |
+| Workspace outside the mounts | Not visible | Visible |
+| Read restriction mechanism | Mount list (namespace) | None: the profile allows reads by default |
+
+On Linux the sandbox builds a fresh mount namespace, so a path exists inside it
+only because the tool mounted it. On macOS the profile starts from
+`(allow default)` and narrows writes and (unless granted) network; it does not
+narrow reads. A macOS sandboxed command can therefore read host files the user
+can read. Treat write isolation as the guarantee there, not read isolation.
 
 ## What the sandbox enforces
 
-| Boundary | Rule |
-| --- | --- |
-| Workspace source files | Writable: the workspace root is bound read-write |
-| `.git` directory in a checkout | Read-only |
-| `.git` file of a linked worktree | Read-only |
-| Linked worktree admin directory | Read-only, mounted so read-only Git still works |
-| Everything else on the host | Not visible unless it is a system path |
-| Network | Denied unless the caller was granted `network_access` |
-| Credentials | Secret environment keys are stripped before the child starts |
+| Boundary | Linux | macOS |
+| --- | --- | --- |
+| Workspace source files | Writable (workspace bind) | Writable (profile allow) |
+| `.git` directory in a checkout | Read-only | Read-only |
+| `.git` file of a linked worktree | Read-only | Read-only |
+| Linked worktree admin directory | Read-only, mounted so read-only Git still works | Read-only; already readable |
+| Host paths outside the mounts | Not visible | Readable, not writable |
+| Network | Denied unless the caller was granted `network_access` | Denied unless granted |
+| Credentials | Secret environment keys stripped before the child starts | Same |
 
-The workspace stays writable because that is the tool's purpose. Everything the
-sandbox protects is protected by narrowing that grant, not by trusting the
-command.
+Write isolation holds on both platforms. Read isolation is a Linux property of the
+mount namespace, and it is exactly why the mount list is treated as a security
+surface rather than a convenience.
 
 ## Two checkout shapes
 
@@ -72,8 +86,30 @@ so the later deny narrows the earlier allow:
 ```
 
 `_git_metadata_paths()` in `src/cairn/infra/tools/bash.py` resolves the paths for
-both platforms, so the two rules cannot drift apart. Paths that do not exist are
-skipped: naming an absent path never grants access.
+both platforms, so the two rules cannot drift apart.
+
+### Untrusted pointers never widen the mount list
+
+`cwd/.git` is writable by the sandboxed command, so its `gitdir:` text is
+untrusted input. On Linux the mount list *is* the read boundary, which makes a
+forged pointer a read-escalation attempt: naming `/etc` or a home directory would
+otherwise mount it into the namespace.
+
+Two checks therefore gate every external candidate, and each is required because
+the other alone is forgeable:
+
+1. `<admin>/gitdir` must resolve back to this workspace's `.git` file. A planted
+   directory outside the workspace cannot satisfy it unless it was written by Git
+   for this workspace.
+2. The admin directory must sit at `<common>/worktrees/<name>`, and `commondir`
+   must resolve to exactly that `<common>`. Without the layout check, a directory
+   the command creates inside the workspace could present itself as an admin
+   directory and steer `commondir` at an ancestor.
+
+A symlinked `.git` or admin directory is refused outright: the mount source would
+resolve somewhere the checks never inspected. When a pointer fails, the workspace
+loses nothing it had — only the `.git` file itself stays protected, and read-only
+Git simply does not work inside a worktree whose registration cannot be proven.
 
 ## What is not claimed
 
@@ -83,8 +119,11 @@ skipped: naming an absent path never grants access.
   repository tracks still corrupts it.
 - The sandbox constrains file and network effects. It does not impose CPU, memory
   or wall-clock quotas beyond the tool's own timeout.
-- Files outside the workspace and the system paths are not readable, but an
-  operator should not treat the sandbox as a general confidentiality boundary for
+- **Read isolation is a Linux property, not a shared guarantee.** macOS's profile
+  allows reads, so a sandboxed command there can read any host file the invoking
+  user can read. Read isolation on Linux covers what the mount namespace omits,
+  minus the Git admin mounts described above.
+- Neither platform should be treated as a general confidentiality boundary for
   host data.
 - A host without a working sandbox implementation **fails closed**: the test
   helpers skip rather than report success, and `BashTool` raises on Linux when
@@ -94,8 +133,9 @@ skipped: naming an absent path never grants access.
 
 `tests/infra/tools/test_sandbox_git_boundaries.py` drives the real
 `BashTool.execute` path and asserts both directions: the metadata writes are
-refused, and ordinary source writes plus read-only Git keep working. A host with
-no usable sandbox produces SKIP, which is not evidence of enforcement.
+refused, and ordinary source writes plus read-only Git keep working. It also
+covers forged `gitdir` and `commondir` pointers and pointer rename/replacement. A
+host with no usable sandbox produces SKIP, which is not evidence of enforcement.
 
 ```sh
 uv run pytest -q tests/infra/tools/test_sandbox_git_boundaries.py -rs

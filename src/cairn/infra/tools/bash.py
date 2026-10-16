@@ -45,33 +45,43 @@ def _decode_output(data: bytes, truncated: bool) -> str:
 def _git_metadata_paths(cwd: Path) -> tuple[Path, ...]:
     """Git metadata a sandboxed command must never be able to write.
 
-    Two shapes exist. A normal checkout has a ``.git`` directory. A linked
-    worktree has a ``.git`` file holding ``gitdir: <path>``, and that path points
-    into the main repository's admin directory, which usually lives outside the
-    workspace. The admin directory must be mounted too: read-only Git commands
-    need it, and mounting it read-only grants no write authority the workspace
-    bind did not already grant.
+    Two shapes exist. A normal checkout has a ``.git`` directory inside the
+    workspace. A linked worktree has a ``.git`` file holding ``gitdir: <path>``
+    that names an admin directory which usually lives outside the workspace.
 
-    Every candidate is returned unresolved so ``--ro-bind`` can mount it in
-    place. Paths that do not exist are skipped; a caller never gains access by
-    naming a path that is absent.
+    The mount list is also a *read* grant on Linux: Bubblewrap has already hidden
+    every host path outside the workspace and the system directories, so mounting
+    a candidate makes it readable. ``cwd/.git`` is writable by the command, which
+    makes its contents untrusted input, so an external candidate is only mounted
+    when Git's own layout confirms the admin directory belongs to this workspace.
+
+    Only paths inside the workspace, or externally verified ones, are returned.
+    A symlinked ``.git`` is not followed at all, because the mount source would
+    resolve outside the workspace. Absent paths are skipped.
     """
-    candidates: list[Path] = []
     git_path = cwd / ".git"
 
+    if git_path.is_symlink():
+        # Following this would mount whatever the link names, outside the
+        # workspace and outside any verification. Leave it to the workspace bind.
+        return ()
+
     if git_path.is_dir():
-        candidates.append(git_path)
-    elif git_path.is_file():
-        candidates.append(git_path)
-        gitdir = _read_gitdir_pointer(git_path)
-        if gitdir is not None:
-            candidates.append(gitdir)
-            # The admin directory holds a ``commondir`` file naming the shared
-            # main Git directory (objects, refs). Read-only Git commands need it,
-            # so it must be mounted too; leaving it out breaks ``git log``.
-            common = _read_common_dir(gitdir)
-            if common is not None:
-                candidates.append(common)
+        return (git_path,)
+
+    if not git_path.is_file():
+        return ()
+
+    candidates: list[Path] = [git_path]
+    gitdir = _verified_worktree_gitdir(git_path)
+    if gitdir is not None:
+        candidates.append(gitdir)
+        # The admin directory's ``commondir`` names the shared main Git
+        # directory (objects, refs). Read-only Git commands need it, so it is
+        # mounted too, once it is confirmed to be that admin directory's parent.
+        common = _verified_common_dir(gitdir)
+        if common is not None:
+            candidates.append(common)
 
     seen: set[Path] = set()
     unique: list[Path] = []
@@ -80,6 +90,65 @@ def _git_metadata_paths(cwd: Path) -> tuple[Path, ...]:
             seen.add(candidate)
             unique.append(candidate)
     return tuple(unique)
+
+
+def _verified_worktree_gitdir(gitfile: Path) -> Path | None:
+    """Return a worktree admin directory only when Git's own layout confirms it.
+
+    Two independent facts are required, because either alone is forgeable:
+
+    * ``<admin>/gitdir`` names this workspace's ``.git`` file. A forged pointer
+      cannot satisfy that unless the external directory already holds a matching
+      file, which only a registered worktree of this workspace does.
+    * the admin directory sits at ``<common>/worktrees/<name>``. Requiring the
+      documented layout stops an in-workspace directory from presenting itself as
+      an admin directory and steering ``commondir`` at an ancestor.
+
+    A symlinked admin directory is refused: the mount source would resolve
+    somewhere the checks did not cover.
+    """
+    gitdir = _read_gitdir_pointer(gitfile)
+    if gitdir is None or gitdir.is_symlink() or not gitdir.is_dir():
+        return None
+    if gitdir.parent.name != "worktrees":
+        return None
+
+    back_pointer = gitdir / "gitdir"
+    try:
+        raw = back_pointer.read_text(encoding="utf-8", errors="strict").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not raw:
+        return None
+    recorded = Path(raw)
+    if not recorded.is_absolute():
+        recorded = gitdir / recorded
+    try:
+        if recorded.resolve() != gitfile.resolve():
+            return None
+    except OSError:
+        return None
+    return gitdir
+
+
+def _verified_common_dir(gitdir: Path) -> Path | None:
+    """Return the shared Git directory only when it is exactly the admin parent.
+
+    ``commondir`` is a second untrusted pointer read from the same external
+    directory. Git places the admin directory directly under ``<common>/worktrees``,
+    so the resolved value must equal the admin directory's grandparent; accepting
+    only that value keeps the pointer from redirecting a mount at an unrelated
+    host path while still mounting the shared object store Git needs.
+    """
+    common = _read_common_dir(gitdir)
+    if common is None or common.is_symlink() or not common.is_dir():
+        return None
+    try:
+        if common.resolve() != gitdir.parent.parent.resolve():
+            return None
+    except (OSError, ValueError):
+        return None
+    return common
 
 
 def _read_gitdir_pointer(gitfile: Path) -> Path | None:
