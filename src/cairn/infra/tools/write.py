@@ -13,6 +13,29 @@ from cairn.infra.workspace.workspace import Workspace
 WRITE_FILE_MAX_BYTES = 1024 * 1024  # 1 MiB
 
 
+def _read_current_content(path: Path) -> str | None:
+    """Read the whole-file content an ``expected_content`` guard compares against.
+
+    Returns None when the current content cannot be established within the
+    write_file byte limit or is not UTF-8. A guard cannot be satisfied by such a
+    file, so the caller refuses the write instead of overwriting something it
+    could not verify.
+    """
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(WRITE_FILE_MAX_BYTES + 1)
+    except OSError:
+        return None
+
+    if len(data) > WRITE_FILE_MAX_BYTES:
+        return None
+
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
 class WriteTool:
     name = "write_file"
     description = (
@@ -46,6 +69,16 @@ class WriteTool:
                                 "everything already in the file."
                             ),
                         },
+                        "expected_content": {
+                            "type": "string",
+                            "description": (
+                                "Optional anti-overwrite guard: the whole "
+                                "current content this call expects to replace. "
+                                "When the file exists with different content "
+                                "the write is refused and nothing is changed. "
+                                "Ignored when the file does not exist."
+                            ),
+                        },
                     },
                     "required": ["path", "content"],
                     "additionalProperties": False,
@@ -54,7 +87,7 @@ class WriteTool:
         }
 
     def validate(self, arguments: dict[str, Any]) -> None:
-        if arguments.keys() - {"path", "content"}:
+        if arguments.keys() - {"path", "content", "expected_content"}:
             raise InvalidArguments("unexpected write_file argument")
 
         raw_path = arguments.get("path")
@@ -72,6 +105,26 @@ class WriteTool:
         if len(content.encode("utf-8")) > WRITE_FILE_MAX_BYTES:
             raise InvalidArguments(
                 f"content exceeds write_file limit of {WRITE_FILE_MAX_BYTES} bytes"
+            )
+
+        # The guard is opt-in and only concerns an existing file, so a missing
+        # file never blocks a write: a creation stays a creation.
+        if "expected_content" not in arguments:
+            return
+
+        expected_content = arguments["expected_content"]
+        if not isinstance(expected_content, str):
+            raise InvalidArguments("expected_content must be a string")
+
+        path = self.workspace.resolve_path(raw_path)
+        if not path.exists():
+            return
+
+        if _read_current_content(path) != expected_content:
+            relative = path.relative_to(self.workspace.root).as_posix()
+            raise InvalidArguments(
+                f"current content of {relative} does not match "
+                "expected_content; no changes made"
             )
 
     async def execute(
