@@ -24,6 +24,7 @@ page is the map for everything else.
 | [M2 Durable Tasks](guides/task-ledger.md) | Task Ledger, opt-in CodingTaskRunner execution, verified checkpoint references, explicit host-only Task reconciliation and schema upgrade |
 | [GitHub Issue workflows](guides/github-workflow.md) | Retained worktrees, deterministic verification, and approved Draft PR publication |
 | [Offline coding task E2E](guides/offline-coding-e2e.md) | Reproducible scripted coding task, permissions, isolation, final verification and evidence artifacts |
+| [Coding Task summaries](guides/task-metrics.md) | Bounded JSON metrics, trace-derived call counts, verification and missing-data semantics |
 | [RepoGraph](guides/repo-graph.md) | Bounded repository inventory and Python structure queries |
 | [Project Memory](guides/project-memory.md) | Evidence-backed memory candidates, freshness and retrieval |
 | [Session checkpoint performance](performance/session-checkpoints.md) | Checkpoint sizing options, the incremental V2 design, measurements, and verification limits |

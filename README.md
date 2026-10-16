@@ -26,7 +26,8 @@ test, and extend. This is an early-stage learning and engineering project.
 - Interactive CLI and an experimental Pi TUI with keyboard-driven selection,
   tool cards, permission dialogs, and cancellation.
 - Streaming answers and separate provisional thinking from `reasoning_content`.
-- JSONL traces and headless coding evaluations.
+- JSONL traces, [bounded Coding Task summaries](docs/guides/task-metrics.md),
+  and headless coding evaluations.
 
 ## Quick start
 
