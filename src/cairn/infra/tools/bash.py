@@ -42,6 +42,81 @@ def _decode_output(data: bytes, truncated: bool) -> str:
     return decoder.decode(data, final=not truncated)
 
 
+def _git_metadata_paths(cwd: Path) -> tuple[Path, ...]:
+    """Git metadata a sandboxed command must never be able to write.
+
+    Two shapes exist. A normal checkout has a ``.git`` directory. A linked
+    worktree has a ``.git`` file holding ``gitdir: <path>``, and that path points
+    into the main repository's admin directory, which usually lives outside the
+    workspace. The admin directory must be mounted too: read-only Git commands
+    need it, and mounting it read-only grants no write authority the workspace
+    bind did not already grant.
+
+    Every candidate is returned unresolved so ``--ro-bind`` can mount it in
+    place. Paths that do not exist are skipped; a caller never gains access by
+    naming a path that is absent.
+    """
+    candidates: list[Path] = []
+    git_path = cwd / ".git"
+
+    if git_path.is_dir():
+        candidates.append(git_path)
+    elif git_path.is_file():
+        candidates.append(git_path)
+        gitdir = _read_gitdir_pointer(git_path)
+        if gitdir is not None:
+            candidates.append(gitdir)
+            # The admin directory holds a ``commondir`` file naming the shared
+            # main Git directory (objects, refs). Read-only Git commands need it,
+            # so it must be mounted too; leaving it out breaks ``git log``.
+            common = _read_common_dir(gitdir)
+            if common is not None:
+                candidates.append(common)
+
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for candidate in candidates:
+        if candidate not in seen and candidate.exists():
+            seen.add(candidate)
+            unique.append(candidate)
+    return tuple(unique)
+
+
+def _read_gitdir_pointer(gitfile: Path) -> Path | None:
+    """Resolve the ``gitdir:`` target of a linked worktree's ``.git`` file."""
+    try:
+        raw = gitfile.read_text(encoding="utf-8", errors="strict").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    prefix = "gitdir:"
+    if not raw.startswith(prefix):
+        return None
+    target = Path(raw[len(prefix) :].strip())
+    if not target.is_absolute():
+        # Relative pointers are resolved against the directory holding the file.
+        target = (gitfile.parent / target).resolve()
+    return target
+
+
+def _read_common_dir(gitdir: Path) -> Path | None:
+    """Resolve the shared main Git directory a worktree admin directory names.
+
+    ``commondir`` sits inside the worktree's own gitdir and usually holds a
+    relative path such as ``../..`` pointing at the main ``.git``.
+    """
+    pointer = gitdir / "commondir"
+    try:
+        raw = pointer.read_text(encoding="utf-8", errors="strict").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not raw:
+        return None
+    target = Path(raw)
+    if not target.is_absolute():
+        target = (gitdir / target).resolve()
+    return target
+
+
 def _macos_sandbox_profile(
     cwd: Path,
     writable_tmpdir: Path | None,
@@ -53,9 +128,17 @@ def _macos_sandbox_profile(
         if root is not None:
             writable_roots.append(root)
     allowed = " ".join(f"(subpath {json.dumps(str(root))})" for root in writable_roots)
+    # The workspace-wide allow above covers Git metadata inside it. sandbox-exec
+    # evaluates rules in order, so a later deny narrows the earlier allow and
+    # keeps the metadata read-only while ordinary source files stay writable.
+    denied = " ".join(
+        f"(subpath {json.dumps(str(path))})" for path in _git_metadata_paths(cwd)
+    )
+    deny_metadata = f"(deny file-write* {denied}) " if denied else ""
     return (
         "(version 1) (allow default) "
         f'(deny file-write*) (allow file-write* (literal "/dev/null") {allowed}) '
+        + deny_metadata
         + ("" if network_access else "(deny network*)")
     )
 
@@ -254,6 +337,12 @@ class BashTool:
                 if parent != Path("/"):
                     argv.extend(("--dir", str(parent)))
             argv.extend(("--bind", str(cwd), str(cwd), "--chdir", str(cwd)))
+            # The workspace bind above is writable, so the Git metadata inside it
+            # would be writable too. Re-mount each metadata path read-only after
+            # the writable bind: bubblewrap applies mounts in order, so the later
+            # read-only mount shadows the earlier writable one.
+            for metadata in _git_metadata_paths(cwd):
+                argv.extend(("--ro-bind", str(metadata), str(metadata)))
             argv.extend(command_argv)
         else:
             raise RuntimeError(f"BashTool has no sandbox for {sys.platform}")
