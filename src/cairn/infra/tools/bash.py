@@ -42,6 +42,170 @@ def _decode_output(data: bytes, truncated: bool) -> str:
     return decoder.decode(data, final=not truncated)
 
 
+class UnprotectedGitMetadata(RuntimeError):
+    """Bash refused to run because Git metadata could not be pinned read-only.
+
+    The workspace bind is writable, so any Git metadata the sandbox does not
+    explicitly narrow stays mutable. A layout the helper cannot protect is
+    refused instead of executed, rather than silently running with live metadata
+    writable.
+    """
+
+
+def _git_metadata_paths(cwd: Path) -> tuple[Path, ...]:
+    """Git metadata a sandboxed command must never be able to write.
+
+    Three shapes are supported. A workspace with no ``.git`` entry has no Git
+    metadata to protect. A normal checkout has a ``.git`` directory inside the
+    workspace. A linked worktree has a ``.git`` file holding ``gitdir: <path>``
+    that names an admin directory which usually lives outside the workspace.
+
+    The mount list is also a *read* grant on Linux: Bubblewrap has already hidden
+    every host path outside the workspace and the system directories, so mounting
+    a candidate makes it readable. ``cwd/.git`` is writable by the command, which
+    makes its contents untrusted input, so an external candidate is only mounted
+    when Git's own layout confirms the admin directory belongs to this workspace.
+
+    Any other shape is refused rather than executed. A symlinked ``.git`` is not
+    followed, because the mount source would resolve outside the workspace. A
+    ``.git`` file that is not a registered worktree pointer — including
+    ``git init --separate-git-dir`` — names metadata this helper cannot verify,
+    and that metadata can sit inside the writable workspace. Running anyway would
+    bind the workspace writable with the real metadata unprotected, so the call
+    fails closed instead.
+
+    Raises:
+        UnprotectedGitMetadata: ``cwd/.git`` exists in a shape that cannot be
+            pinned read-only.
+    """
+    git_path = cwd / ".git"
+
+    if git_path.is_symlink():
+        raise UnprotectedGitMetadata(
+            "cwd/.git is a symbolic link; its target cannot be verified or "
+            "pinned read-only"
+        )
+
+    if git_path.is_dir():
+        return (git_path,)
+
+    if not git_path.is_file():
+        return ()
+
+    gitdir = _verified_worktree_gitdir(git_path)
+    if gitdir is None:
+        raise UnprotectedGitMetadata(
+            "cwd/.git is a gitdir pointer that is not a registered linked "
+            "worktree; its metadata cannot be verified or pinned read-only"
+        )
+
+    # The admin directory's ``commondir`` names the shared main Git directory
+    # (objects, refs). Read-only Git commands need it, so it is pinned too, once
+    # it is confirmed to be that admin directory's parent.
+    common = _verified_common_dir(gitdir)
+    if common is None:
+        raise UnprotectedGitMetadata(
+            "the linked worktree commondir could not be verified; its shared "
+            "Git metadata cannot be pinned read-only"
+        )
+
+    return (git_path, gitdir, common)
+
+
+def _verified_worktree_gitdir(gitfile: Path) -> Path | None:
+    """Return a worktree admin directory only when Git's own layout confirms it.
+
+    Two independent facts are required, because either alone is forgeable:
+
+    * ``<admin>/gitdir`` names this workspace's ``.git`` file. A forged pointer
+      cannot satisfy that unless the external directory already holds a matching
+      file, which only a registered worktree of this workspace does.
+    * the admin directory sits at ``<common>/worktrees/<name>``. Requiring the
+      documented layout stops an in-workspace directory from presenting itself as
+      an admin directory and steering ``commondir`` at an ancestor.
+
+    A symlinked admin directory is refused: the mount source would resolve
+    somewhere the checks did not cover.
+    """
+    gitdir = _read_gitdir_pointer(gitfile)
+    if gitdir is None or gitdir.is_symlink() or not gitdir.is_dir():
+        return None
+    if gitdir.parent.name != "worktrees":
+        return None
+
+    back_pointer = gitdir / "gitdir"
+    try:
+        raw = back_pointer.read_text(encoding="utf-8", errors="strict").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not raw:
+        return None
+    recorded = Path(raw)
+    if not recorded.is_absolute():
+        recorded = gitdir / recorded
+    try:
+        if recorded.resolve() != gitfile.resolve():
+            return None
+    except OSError:
+        return None
+    return gitdir
+
+
+def _verified_common_dir(gitdir: Path) -> Path | None:
+    """Return the shared Git directory only when it is exactly the admin parent.
+
+    ``commondir`` is a second untrusted pointer read from the same external
+    directory. Git places the admin directory directly under ``<common>/worktrees``,
+    so the resolved value must equal the admin directory's grandparent; accepting
+    only that value keeps the pointer from redirecting a mount at an unrelated
+    host path while still mounting the shared object store Git needs.
+    """
+    common = _read_common_dir(gitdir)
+    if common is None or common.is_symlink() or not common.is_dir():
+        return None
+    try:
+        if common.resolve() != gitdir.parent.parent.resolve():
+            return None
+    except (OSError, ValueError):
+        return None
+    return common
+
+
+def _read_gitdir_pointer(gitfile: Path) -> Path | None:
+    """Resolve the ``gitdir:`` target of a linked worktree's ``.git`` file."""
+    try:
+        raw = gitfile.read_text(encoding="utf-8", errors="strict").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    prefix = "gitdir:"
+    if not raw.startswith(prefix):
+        return None
+    target = Path(raw[len(prefix) :].strip())
+    if not target.is_absolute():
+        # Relative pointers are resolved against the directory holding the file.
+        target = (gitfile.parent / target).resolve()
+    return target
+
+
+def _read_common_dir(gitdir: Path) -> Path | None:
+    """Resolve the shared main Git directory a worktree admin directory names.
+
+    ``commondir`` sits inside the worktree's own gitdir and usually holds a
+    relative path such as ``../..`` pointing at the main ``.git``.
+    """
+    pointer = gitdir / "commondir"
+    try:
+        raw = pointer.read_text(encoding="utf-8", errors="strict").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not raw:
+        return None
+    target = Path(raw)
+    if not target.is_absolute():
+        target = (gitdir / target).resolve()
+    return target
+
+
 def _macos_sandbox_profile(
     cwd: Path,
     writable_tmpdir: Path | None,
@@ -53,9 +217,17 @@ def _macos_sandbox_profile(
         if root is not None:
             writable_roots.append(root)
     allowed = " ".join(f"(subpath {json.dumps(str(root))})" for root in writable_roots)
+    # The workspace-wide allow above covers Git metadata inside it. sandbox-exec
+    # evaluates rules in order, so a later deny narrows the earlier allow and
+    # keeps the metadata read-only while ordinary source files stay writable.
+    denied = " ".join(
+        f"(subpath {json.dumps(str(path))})" for path in _git_metadata_paths(cwd)
+    )
+    deny_metadata = f"(deny file-write* {denied}) " if denied else ""
     return (
         "(version 1) (allow default) "
         f'(deny file-write*) (allow file-write* (literal "/dev/null") {allowed}) '
+        + deny_metadata
         + ("" if network_access else "(deny network*)")
     )
 
@@ -254,6 +426,12 @@ class BashTool:
                 if parent != Path("/"):
                     argv.extend(("--dir", str(parent)))
             argv.extend(("--bind", str(cwd), str(cwd), "--chdir", str(cwd)))
+            # The workspace bind above is writable, so the Git metadata inside it
+            # would be writable too. Re-mount each metadata path read-only after
+            # the writable bind: bubblewrap applies mounts in order, so the later
+            # read-only mount shadows the earlier writable one.
+            for metadata in _git_metadata_paths(cwd):
+                argv.extend(("--ro-bind", str(metadata), str(metadata)))
             argv.extend(command_argv)
         else:
             raise RuntimeError(f"BashTool has no sandbox for {sys.platform}")

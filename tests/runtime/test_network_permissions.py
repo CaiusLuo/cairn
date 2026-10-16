@@ -212,7 +212,19 @@ def test_network_context_changes_only_network_restriction(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
     monkeypatch.setattr("cairn.infra.tools.bash.os.killpg", Mock())
     monkeypatch.setattr("cairn.infra.tools.bash.sys.platform", platform)
-    monkeypatch.setattr(Path, "is_file", lambda self: True)
+    # Only the sandbox launcher has to look installed. Faking every path would
+    # also make the workspace's absent .git entry look present, which the Git
+    # metadata check reads as an unsupported layout.
+    real_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda self: (
+            True
+            if str(self) in ("/usr/bin/bwrap", "/usr/bin/sandbox-exec")
+            else real_is_file(self)
+        ),
+    )
     tool = BashTool(Workspace(tmp_path))
     for allowed in (False, True):
         asyncio.run(
