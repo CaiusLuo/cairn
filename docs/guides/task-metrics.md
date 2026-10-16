@@ -56,6 +56,7 @@ use separate runners when each caller needs its own retained slot.
 | Trace ID and persistence | Existing trace_start/trace_finish; no invented ID when tracing is absent |
 | Elapsed seconds | Runner's monotonic clock, including repository inspection and cancellation settlement; null if unavailable |
 | Model attempts | Count of existing llm.generate spans, including fallback failures; these are runtime attempts, not observed HTTP request counts |
+| Model failures | Existing noncancelled failed llm.generate spans; an observed attempt failure need not be the terminal Task failure |
 | Tool attempts | Existing permission.check plus failed tool.preflight spans, including denied or invalid calls |
 | Tool executions/failures | Existing tool.execute spans and failed preflights; cancellations are not counted as tool failures |
 | Permission denials | Existing permission.check spans with allowed=false |
@@ -72,9 +73,11 @@ complete call counts. No tracer means that final usage event is unavailable even
 if a client internally knew tokens; this API does not create a second usage owner.
 
 `failure_category` uses a fixed vocabulary: `cancelled`, `budget_exhausted`,
-`inspection_failed`, `timeout`, `model_error`, `tool_error`, `permission_error`,
-or `runtime_error`. Trace enrichment can refine a runtime error using its last
-failing child span. A recovered tool failure or denial does not turn a completed
+`inspection_failed`, `timeout`, or `runtime_error`. TaskResult has no typed
+causal link to child spans, so a generic runtime error cannot reliably be
+attributed to a preceding model/tool/permission failure. Observed failures are
+reported separately: the last one may have recovered before an unrelated host
+callback fails. A recovered tool failure or denial does not turn a completed
 Task into a failed Task; its counters still describe the failed operation.
 `timeout_observed` is true only for a caught TimeoutError or a typed tool timeout
 span. It otherwise remains null. Bash's untyped nonzero result and an external

@@ -131,7 +131,10 @@ def test_model_failure_is_classified_without_exception_text(tmp_path: Path) -> N
         require_summary(runner), trace_store=TraceStore(tmp_path / "traces")
     )
     assert result.status is TaskStatus.RUNTIME_ERROR
-    assert summary.status is result.status and summary.failure_category == "model_error"
+    assert (
+        summary.status is result.status and summary.failure_category == "runtime_error"
+    )
+    assert summary.model_failures == 1
     assert summary.model_attempts == 1 and summary.tool_attempts == 0
     assert (
         summary.provider_input_tokens
@@ -166,7 +169,7 @@ def test_exception_secrets_and_typed_timeout(
     assert result.error is not None and SECRET in result.error
     assert SECRET not in summary.to_json()
     assert summary.failure_category == (
-        "timeout" if error_type is TimeoutError else "model_error"
+        "timeout" if error_type is TimeoutError else "runtime_error"
     )
     assert summary.timeout_observed == (True if error_type is TimeoutError else None)
 
@@ -288,7 +291,7 @@ def test_later_failed_model_attempt_invalidates_earlier_usage(tmp_path: Path) ->
         require_summary(runner), trace_store=TraceStore(tmp_path / "traces")
     )
     assert result.status is TaskStatus.RUNTIME_ERROR and summary.model_attempts == 2
-    assert summary.failure_category == "model_error"
+    assert summary.failure_category == "runtime_error" and summary.model_failures == 1
     assert summary.provider_input_tokens is summary.provider_output_tokens is None
 
 
@@ -452,7 +455,8 @@ def test_metrics_failure_is_not_an_execution_dependency(
 
 
 @pytest.mark.parametrize(
-    "damage", ["missing", "no_root", "corrupt", "foreign_id", "duplicate"]
+    "damage",
+    ["missing", "no_root", "corrupt", "foreign_id", "duplicate", "unfinished_child"],
 )
 def test_unavailable_trace_never_becomes_zero_calls(
     tmp_path: Path, damage: str
@@ -465,6 +469,10 @@ def test_unavailable_trace_never_becomes_zero_calls(
     )
     result = asyncio.run(runner.run(SPEC))
     path = trace_root / f"{result.trace_id}.jsonl"
+    previously_observed = summarize_task(
+        require_summary(runner), trace_store=TraceStore(trace_root)
+    )
+    assert previously_observed.model_attempts == 1
     records = [json.loads(line) for line in path.read_text().splitlines()]
     if damage == "missing":
         path.unlink()
@@ -475,13 +483,13 @@ def test_unavailable_trace_never_becomes_zero_calls(
             records[0]["context"]["trace_id"] = "f" * 32
         elif damage == "duplicate":
             records.append(records[0])
+        elif damage == "unfinished_child":
+            records[0]["status"] = "unset"
         path.write_text(
             "\n".join(json.dumps(record) for record in records)
             + ("\nnot-json" if damage == "corrupt" else "\n")
         )
-    summary = summarize_task(
-        require_summary(runner), trace_store=TraceStore(trace_root)
-    )
+    summary = summarize_task(previously_observed, trace_store=TraceStore(trace_root))
     assert (
         summary.model_attempts
         is summary.tool_attempts
@@ -490,6 +498,39 @@ def test_unavailable_trace_never_becomes_zero_calls(
     )
     assert summary.trace_diagnostic in ("unavailable", "incomplete")
     assert result.status is summary.status is TaskStatus.COMPLETED
+
+
+def test_recovered_tool_failure_does_not_explain_a_later_callback_failure(
+    tmp_path: Path,
+) -> None:
+    runner = make_runner(
+        tmp_path,
+        SequenceLLM(
+            [
+                LLMResponse(
+                    tool_calls=[
+                        ToolCall(id="invalid", name="missing-tool", arguments={})
+                    ]
+                )
+            ]
+        ),
+        tracer=Tracer(JsonlTraceSink(tmp_path / "traces")),
+    )
+
+    def on_event(event: Any) -> None:
+        if event.type == "agent_step" and event.data["step"] == 2:
+            raise RuntimeError("host callback failed")
+
+    runner.event_handler = on_event
+    result = asyncio.run(runner.run(SPEC))
+    summary = summarize_task(
+        require_summary(runner), trace_store=TraceStore(tmp_path / "traces")
+    )
+    assert result.status is TaskStatus.RUNTIME_ERROR
+    assert result.error is not None and "host callback failed" in result.error
+    assert summary.failure_category == "runtime_error"
+    assert summary.tool_failures == 1 and summary.model_failures == 0
+    assert "host callback failed" not in summary.to_json()
 
 
 def test_sensitive_content_and_long_ids_never_enter_the_artifact(

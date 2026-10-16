@@ -27,11 +27,8 @@ FailureCategory = Literal[
     "budget_exhausted",
     "cancelled",
     "inspection_failed",
-    "model_error",
-    "permission_error",
     "runtime_error",
     "timeout",
-    "tool_error",
 ]
 TraceDiagnostic = Literal["not_requested", "sink_failed", "unavailable", "incomplete"]
 
@@ -52,6 +49,7 @@ class TaskExecutionSummary(BaseModel):
     cancellation_propagated: bool = False
     elapsed_seconds: float | None = Field(default=None, ge=0)
     model_attempts: int | None = Field(default=None, ge=0, le=MAX_COUNT)
+    model_failures: int | None = Field(default=None, ge=0, le=MAX_COUNT)
     tool_attempts: int | None = Field(default=None, ge=0, le=MAX_COUNT)
     tool_executions: int | None = Field(default=None, ge=0, le=MAX_COUNT)
     tool_failures: int | None = Field(default=None, ge=0, le=MAX_COUNT)
@@ -77,6 +75,22 @@ class TaskExecutionSummary(BaseModel):
 
 def _count(value: object) -> int | None:
     return value if type(value) is int and 0 <= value <= MAX_COUNT else None
+
+
+def _missing_trace(
+    summary: TaskExecutionSummary, diagnostic: TraceDiagnostic
+) -> TaskExecutionSummary:
+    return summary.model_copy(
+        update={
+            "model_attempts": None,
+            "model_failures": None,
+            "tool_attempts": None,
+            "tool_executions": None,
+            "tool_failures": None,
+            "permission_denials": None,
+            "trace_diagnostic": diagnostic,
+        }
+    )
 
 
 class _TaskObservation:
@@ -189,7 +203,7 @@ def _trace_metrics(
         )
         or len({s.context.span_id for s in spans}) != len(spans)
     ):
-        return summary.model_copy(update={"trace_diagnostic": "incomplete"})
+        return _missing_trace(summary, "incomplete")
     root = roots[0]
     relevant = [
         s
@@ -198,29 +212,23 @@ def _trace_metrics(
         in {"llm.generate", "tool.execute", "tool.preflight", "permission.check"}
     ]
     if root.status not in (SpanStatus.OK, SpanStatus.ERROR) or any(
-        s.context.parent_span_id != root.context.span_id for s in relevant
+        s.context.parent_span_id != root.context.span_id
+        or s.status not in (SpanStatus.OK, SpanStatus.ERROR)
+        for s in relevant
     ):
-        return summary.model_copy(update={"trace_diagnostic": "incomplete"})
+        return _missing_trace(summary, "incomplete")
+    models = [s for s in relevant if s.name == "llm.generate"]
     executions = [s for s in relevant if s.name == "tool.execute"]
     preflights = [s for s in relevant if s.name == "tool.preflight"]
     permissions = [s for s in relevant if s.name == "permission.check"]
-    category = summary.failure_category
-    last = max(relevant, key=lambda s: s.end_time or s.start_time, default=None)
-    if (
-        category == "runtime_error"
-        and last is not None
-        and last.status is SpanStatus.ERROR
-    ):
-        categories: dict[str, FailureCategory] = {
-            "llm.generate": "model_error",
-            "tool.execute": "tool_error",
-            "tool.preflight": "tool_error",
-            "permission.check": "permission_error",
-        }
-        category = categories[last.name]
     return summary.model_copy(
         update={
-            "model_attempts": sum(s.name == "llm.generate" for s in relevant),
+            "model_attempts": len(models),
+            "model_failures": sum(
+                s.status is SpanStatus.ERROR
+                and s.attributes.get("cancelled") is not True
+                for s in models
+            ),
             "tool_attempts": len(permissions) + len(preflights),
             "tool_executions": len(executions),
             "tool_failures": sum(
@@ -231,7 +239,6 @@ def _trace_metrics(
             "permission_denials": sum(
                 s.attributes.get("allowed") is False for s in permissions
             ),
-            "failure_category": category,
             "timeout_observed": True
             if any(s.attributes.get("error_type") == "TimeoutError" for s in relevant)
             else summary.timeout_observed,
@@ -251,14 +258,16 @@ def summarize_task(
     Check results must come from actual caller-owned deterministic verification.
     They are reduced to a verdict and count; no check text or metadata is copied.
     """
-    if trace_store is not None and summary.trace_persisted is not False:
+    if summary.trace_persisted is False:
+        summary = _missing_trace(summary, "sink_failed")
+    elif trace_store is not None:
         try:
             if summary.trace_id is None:
-                summary = summary.model_copy(update={"trace_diagnostic": "unavailable"})
+                summary = _missing_trace(summary, "unavailable")
             else:
                 summary = _trace_metrics(summary, trace_store.read(summary.trace_id))
         except Exception:
-            summary = summary.model_copy(update={"trace_diagnostic": "unavailable"})
+            summary = _missing_trace(summary, "unavailable")
     if checks:
         verdict = (
             "error"
