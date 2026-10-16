@@ -25,6 +25,7 @@ page is the map for everything else.
 | [GitHub Issue workflows](guides/github-workflow.md) | Retained worktrees, deterministic verification, and approved Draft PR publication |
 | [Offline coding task E2E](guides/offline-coding-e2e.md) | Reproducible scripted coding task, permissions, isolation, final verification and evidence artifacts |
 | [Native Bash sandbox](guides/sandbox.md) | Workspace write grant, Git metadata protection, per-platform rules and unclaimed limits |
+| [Safe retry](guides/safe-retry.md) | Typed tool failures and the single bounded `read_file` retry slice |
 | [Coding Task summaries](guides/task-metrics.md) | Bounded JSON metrics, trace-derived call counts, verification and missing-data semantics |
 | [RepoGraph](guides/repo-graph.md) | Bounded repository inventory and Python structure queries |
 | [Project Memory](guides/project-memory.md) | Evidence-backed memory candidates, freshness and retrieval |

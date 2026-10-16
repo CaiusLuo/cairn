@@ -102,11 +102,18 @@ def test_malformed_bash_fails_before_permission_or_subprocess(
         next(event for event in events if event.type == "tool_error").data["error_type"]
         == "InvalidArguments"
     )
+    assert (
+        next(event for event in events if event.type == "tool_error").data[
+            "failure_kind"
+        ]
+        == "permanent"
+    )
     assert not [span for span in sink.spans if span.name == "permission.check"]
     preflight_spans = [span for span in sink.spans if span.name == "tool.preflight"]
     assert len(preflight_spans) == 1
     assert preflight_spans[0].status == SpanStatus.ERROR
     assert preflight_spans[0].attributes["error_type"] == "InvalidArguments"
+    assert preflight_spans[0].attributes["failure_kind"] == "permanent"
     assert preflight_spans[0].attributes["tool"] == "bash"
     assert preflight_spans[0].attributes["tool_call_id"] == "call-invalid"
     turn_span = next(span for span in sink.spans if span.name == "agent.turn")
@@ -291,6 +298,12 @@ def test_sudo_policy_denial_skips_permissive_handler_and_execution() -> None:
         for event in events
         if event.type == "tool_denied"
     ] == [("tool_denied", "sudo is not supported")]
+    assert (
+        next(event for event in events if event.type == "tool_denied").data[
+            "failure_kind"
+        ]
+        == "permission_denied"
+    )
     permission_span = next(
         span for span in sink.spans if span.name == "permission.check"
     )

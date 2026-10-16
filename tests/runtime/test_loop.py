@@ -136,6 +136,7 @@ def test_run_turn_cancellation_during_tool_execution_preserves_facts() -> None:
         assert len(tool_spans) == len(turn_spans) == 1
         assert tool_spans[0].status == SpanStatus.ERROR
         assert tool_spans[0].attributes["cancelled"] is True
+        assert tool_spans[0].attributes["failure_kind"] == "cancelled"
         assert turn_spans[0].status == SpanStatus.ERROR
         assert all(span.end_time is not None for span in sink.spans)
         assert len(trace_finish) == 1
@@ -386,6 +387,13 @@ def test_run_turn_records_tool_errors_and_continues() -> None:
     assert len(tool_spans) == 1
     assert tool_spans[0].status == SpanStatus.ERROR
     assert tool_spans[0].error == "RuntimeError: tool failed"
+    assert tool_spans[0].attributes["failure_kind"] == "effect_unknown"
+    assert (
+        next(event for event in events if event.type == "tool_error").data[
+            "failure_kind"
+        ]
+        == "effect_unknown"
+    )
     turn_span = next(span for span in sink.spans if span.name == "agent.turn")
     assert turn_span.status == SpanStatus.OK
 
@@ -412,6 +420,7 @@ def test_run_turn_reports_unknown_tool_as_tool_failure() -> None:
     assert preflight_spans[0].status == SpanStatus.ERROR
     assert preflight_spans[0].error == "ToolNotFound: Tool not found: record"
     assert preflight_spans[0].attributes["error_type"] == "ToolNotFound"
+    assert preflight_spans[0].attributes["failure_kind"] == "permanent"
     assert not [span for span in sink.spans if span.name == "tool.execute"]
     # Existence is not permission: a missing tool never produces an approval
     # request, and the turn itself still succeeds.
