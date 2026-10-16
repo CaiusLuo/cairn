@@ -78,12 +78,32 @@ claim.
 | Host | Interpreter | Linked SQLite | Platform | Admission | Verdict |
 | --- | --- | --- | --- | --- | --- |
 | macOS development | CPython 3.12.13 (uv standalone) | **3.50.4** | macOS 26.3.1 arm64 | **refused** | **BLOCKED** |
-| Linux deployment | not available | not measured | not measured | not exercised | **BLOCKED** |
+| Linux deployment | CPython **3.12.15** (uv standalone) | **3.53.1** | Debian 12, kernel 6.1.0-43-amd64, x86_64, ext4 | **verified** | **PASS** |
+| Linux system Python (same host) | CPython 3.11.2 / 3.12.13 (distro) | **3.40.1** | Debian 12, ext4 | **refused** | **BLOCKED** |
 
-The Linux row is unmeasured: this session has no Linux host, and the acceptance
-requires an actual runtime version rather than a CI guess. It stays BLOCKED until
-someone records a real `python -c "import sqlite3; print(sqlite3.sqlite_version)"`,
-the filesystem and lock configuration, and the durable suites on that host.
+A row is evidence for the interpreter and host it names, not for the platform or
+for every Linux deployment. The Debian host carries two runtimes with opposite
+verdicts, which is the point: the verdict follows the linked SQLite, not the OS.
+
+### Linux deployment host (verified)
+
+Measured 2026-10-16 on Debian GNU/Linux 12 (bookworm), kernel 6.1.0-43-amd64,
+x86_64, ext4 (`rw,relatime,errors=remount-ro`), 4 vCPU.
+
+```
+$ uv run python -c "import sqlite3, sys; print(sys.version, sqlite3.sqlite_version)"
+3.12.15 (main, ...) 3.53.1
+```
+
+`sqlite_wal_fix_supported()` returns `True` and `wal_admission()` returns
+`verified`, so no declaration is involved. The system `python3` and the
+pre-existing project venv on the same host link SQLite 3.40.1 and stay refused;
+they were left untouched. The verified runtime is an independently installed
+uv-managed CPython in its own virtual environment — installing it changed no
+global interpreter or library.
+
+Observed lock configuration on that host: `journal_mode=wal`,
+`locking_mode=normal`, `synchronous=2` (FULL).
 
 ### macOS development host
 
@@ -93,12 +113,18 @@ uv-managed CPython on this host reports a SQLite version carrying the fix, and
 `pysqlite3-binary` publishes no macOS arm64 wheel, so a fixed runtime is not
 available here by installing a package.
 
-### Release verdict: BLOCKED
+### Release verdict
 
-Durable execution is **not** a supported deployment on this host. The blocker is
-the linked SQLite 3.50.4, not the code. Release needs a verified runtime and the
-target filesystem and locking qualification in
-[session store](../guides/session-store.md#verification-and-release-gate).
+Durable execution is **not** a supported deployment on the macOS development host.
+The blocker there is the linked SQLite 3.50.4, not the code.
+
+The Debian host is **PASS** on the interpreter recorded above. That verdict covers
+that interpreter, filesystem and locking configuration only. It does not qualify
+every Linux host, other filesystems, container storage drivers or network
+filesystems, and it does not qualify the system interpreters on the same machine.
+
+The Debian suites were run against the verified runtime without any admission
+declaration; `CAIRN_ALLOW_UNVERIFIED_SQLITE` was unset throughout.
 
 ### Available upgrade path
 
@@ -113,15 +139,26 @@ silently.
 
 ## Evidence
 
+macOS development host, where the suites need the unverified declaration:
+
 ```bash
 uv run python -c "import sqlite3; print(sqlite3.sqlite_version)"
 uv run pytest -q tests/infra/sessions/test_security.py -k unverified
 uv run pytest -q tests/infra/sessions tests/runtime/tasks tests/terminal
 ```
 
-The durable suites run on this host only because the test suite declares the
-unverified runtime; that declaration is not production configuration. What those
-tests do establish, and what they do not, is recorded in
+Debian host, on the verified runtime and with no declaration set:
+
+```bash
+uv run python -c "import sqlite3, sys; print(sys.version); print(sqlite3.sqlite_version)"
+uv run pytest -q tests/infra/sessions tests/runtime/tasks tests/terminal
+uv run pytest -q tests/infra/sessions/test_security.py tests/infra/sessions/test_process.py
+```
+
+The suites ran on the Debian host without the unverified declaration, because the
+runtime is verified there; the macOS host still needs the declaration, and that
+declaration is not production configuration. What those tests do establish, and
+what they do not, is recorded in
 [session store](../guides/session-store.md): real SQLite with spawned process
 barriers, and SIGKILL as application-crash evidence, never as power-loss
 durability.

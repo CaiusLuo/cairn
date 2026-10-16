@@ -284,9 +284,12 @@ effect, unless the host declares it through `CAIRN_ALLOW_UNVERIFIED_SQLITE=1` or
 `allow_unverified=True`. Declaring admits an unverified store that no caller may
 report as supported; `wal_admission` records which one it is. See the
 [SQLite runtime support matrix](../performance/sqlite-runtime-support.md) for the
-verified versions and the current host verdict. This isolated development slice does
-not upgrade or disable the project runtime. Compatible SQLite and target-platform
-tests are required before shipping durable execution. Runtime integration is opt-in
+verified versions and the current host verdict: a Debian 12 host running a
+uv-managed CPython 3.12.15 (SQLite 3.53.1) is recorded there as verified, while
+the macOS development host remains BLOCKED on its linked SQLite 3.50.4. This
+isolated development slice does not upgrade or disable the project runtime.
+Compatible SQLite and target-platform tests are required before shipping durable
+execution. Runtime integration is opt-in
 through DurableSession. Task lifecycle facts and read-only recovery reports are
 available through [Task Ledger](task-ledger.md); Task execution/recovery integration,
 automatic replay, queue and DAG remain outside these storage primitives.
