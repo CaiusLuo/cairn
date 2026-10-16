@@ -539,7 +539,10 @@ def test_runner_passes_an_explicit_request_context_budget(
 ) -> None:
     captured: list[dict[str, Any]] = []
     llm = SequenceLLM([LLMResponse(content="done")])
-    context_budget = ContextBudget(max_tokens=2048, response_tokens=256)
+    # This case verifies that an explicit budget reaches the builder; the run must
+    # also complete. The ceiling therefore has to clear the whole tool schema plus
+    # the turn, or adding an optional tool argument would fail an unrelated test.
+    context_budget = ContextBudget(max_tokens=16384, response_tokens=256)
     runner = _capturing_runner(
         monkeypatch,
         llm,

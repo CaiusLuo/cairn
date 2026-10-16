@@ -72,11 +72,8 @@ class WriteTool:
                         "expected_content": {
                             "type": "string",
                             "description": (
-                                "Optional anti-overwrite guard: the whole "
-                                "current content this call expects to replace. "
-                                "When the file exists with different content "
-                                "the write is refused and nothing is changed. "
-                                "Ignored when the file does not exist."
+                                "Optional guard: the exact current content "
+                                "this call expects. A mismatch refuses the write."
                             ),
                         },
                     },
