@@ -27,6 +27,10 @@ CAIRN_CONFIG_ENV_NAMES = (
     CAIRN_BASE_URL_ENV_NAME,
 )
 
+#: Optional per-run step ceiling. Unset selects the CLI default so a long task
+#: can be admitted without editing source.
+CAIRN_MAX_STEPS_ENV_NAME = "CAIRN_MAX_STEPS"
+
 #: Name of the implicit provider in the .env and legacy single-provider layouts.
 DEFAULT_PROVIDER_NAME = "default"
 

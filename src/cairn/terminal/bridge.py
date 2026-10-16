@@ -16,7 +16,6 @@ from uuid import uuid4
 
 from dotenv import dotenv_values
 
-from cairn.core.budget import RunBudget
 from cairn.core.events import Event, SessionEvent
 from cairn.core.models import ToolCall
 from cairn.core.permissions import (
@@ -42,6 +41,7 @@ from cairn.runtime.provider_runtime import (
     build_provider_runtime,
 )
 from cairn.runtime.session import Session
+from cairn.terminal.cli import DEFAULT_CLI_RUN_BUDGET
 
 MAX_LINE = 65536
 APPROVAL_SECONDS = 120.0
@@ -409,7 +409,7 @@ class Bridge:
                     await run_turn(
                         self.session.agent,
                         user_input=message["text"],
-                        budget=RunBudget(max_steps=50),
+                        budget=DEFAULT_CLI_RUN_BUDGET,
                         session=self.session,
                     )
                 elif op == "model":

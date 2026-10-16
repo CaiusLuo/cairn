@@ -1,5 +1,6 @@
 import asyncio
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated
 
@@ -19,6 +20,7 @@ from cairn.infra.config import (
     resolve_context_budget,
     resolve_provider_api_key,
 )
+from cairn.infra.config_schema import CAIRN_MAX_STEPS_ENV_NAME
 from cairn.infra.observability.sinks import JsonlTraceSink
 from cairn.infra.observability.storage import TraceStore
 from cairn.infra.observability.tracer import Tracer
@@ -61,7 +63,32 @@ app = typer.Typer(
     pretty_exceptions_show_locals=False,
 )
 
-DEFAULT_CLI_RUN_BUDGET = RunBudget(max_steps=50)
+DEFAULT_CLI_MAX_STEPS = 150
+
+
+#: One owner for the per-turn step ceiling. ``CAIRN_MAX_STEPS`` overrides it so a
+#: long task can be admitted without editing source; invalid values fail loudly
+#: instead of silently falling back to a different budget.
+def resolve_cli_run_budget(environ: Mapping[str, str] | None = None) -> RunBudget:
+    source = os.environ if environ is None else environ
+    raw = source.get(CAIRN_MAX_STEPS_ENV_NAME)
+    if raw is None or not raw.strip():
+        return RunBudget(max_steps=DEFAULT_CLI_MAX_STEPS)
+    try:
+        max_steps = int(raw.strip())
+    except ValueError:
+        raise typer.BadParameter(
+            f"{CAIRN_MAX_STEPS_ENV_NAME} must be a positive integer"
+        ) from None
+    if max_steps < 1:
+        raise typer.BadParameter(
+            f"{CAIRN_MAX_STEPS_ENV_NAME} must be a positive integer"
+        )
+    return RunBudget(max_steps=max_steps)
+
+
+#: Resolved once at import so callers and tests observe the same budget object.
+DEFAULT_CLI_RUN_BUDGET = resolve_cli_run_budget()
 
 session_app = typer.Typer(
     help="Create, inspect, reopen or reconcile local conversations."
