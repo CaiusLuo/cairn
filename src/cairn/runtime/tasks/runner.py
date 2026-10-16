@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 from contextlib import ExitStack, suppress
+from time import perf_counter
 
 from cairn.core.budget import RunBudget, RunBudgetExceeded
 from cairn.core.context import ContextBudget, ContextBudgetExceeded, ContextBuilder
@@ -28,6 +29,7 @@ from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.lifecycle import settle_owned
 from cairn.runtime.loop import run_turn
 from cairn.runtime.model_executor import ModelExecutor
+from cairn.runtime.tasks.metrics import TaskExecutionSummary, _TaskObservation
 
 
 class CodingTaskRunner:
@@ -69,6 +71,7 @@ class CodingTaskRunner:
         self.tracer = tracer
         self.model_executor = model_executor
         self.secret_env_keys = secret_env_keys
+        self.last_summary: TaskExecutionSummary | None = None
 
     async def run(
         self,
@@ -77,14 +80,26 @@ class CodingTaskRunner:
         cancellation_event: asyncio.Event | None = None,
         durable_session: DurableSession | None = None,
     ) -> TaskResult:
+        observation: _TaskObservation | None = None
+        started: float | None = None
+        result: TaskResult | None = None
+        cancelled = False
+        self.last_summary = None
+        # Observability is best effort and never admits or owns execution.
+        with suppress(Exception):
+            observation = _TaskObservation(spec.task_id, self.secret_env_keys)
+        with suppress(Exception):
+            started = perf_counter()
         # Shield the owned lifecycle so repeated caller cancellation cannot
         # interrupt its child/process cleanup. This task is always observed.
         worker = asyncio.create_task(
-            self._execute(spec, cancellation_event, durable_session)
+            self._execute(spec, cancellation_event, durable_session, observation)
         )
         try:
-            return await asyncio.shield(worker)
+            result = await asyncio.shield(worker)
+            return result
         except asyncio.CancelledError as primary:
+            cancelled = True
             caller = asyncio.current_task()
             caller_cancelled = caller is not None and caller.cancelling() > 0
             await settle_owned(worker)
@@ -100,6 +115,11 @@ class CodingTaskRunner:
             except Exception as exc:
                 primary.add_note(f"Task cleanup failed: {type(exc).__name__}: {exc}")
             raise primary
+        finally:
+            with suppress(Exception):
+                if observation is not None:
+                    elapsed = perf_counter() - started if started is not None else None
+                    self.last_summary = observation.finish(result, elapsed, cancelled)
 
     async def _turn(
         self,
@@ -254,6 +274,7 @@ class CodingTaskRunner:
         spec: TaskSpec,
         cancellation_event: asyncio.Event | None,
         durable_session: DurableSession | None = None,
+        observation: _TaskObservation | None = None,
     ) -> TaskResult:
         trace_id: str | None = None
         final_response: str | None = None
@@ -265,6 +286,9 @@ class CodingTaskRunner:
 
         def forward_event(event: Event) -> None:
             nonlocal trace_id, final_response
+            with suppress(Exception):
+                if observation is not None:
+                    observation.observe(event)
             if event.type in ("trace_start", "trace_finish"):
                 trace_id = event.data["trace_id"]
             elif event.type == "agent_finish":
@@ -330,6 +354,9 @@ class CodingTaskRunner:
                 )
             except Exception as exc:
                 status = TaskStatus.RUNTIME_ERROR
+                with suppress(Exception):
+                    if observation is not None:
+                        observation.on_error(exc)
                 error = (
                     f"{type(exc).__name__}: {exc}"
                     if durable_session is None
