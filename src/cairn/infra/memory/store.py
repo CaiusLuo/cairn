@@ -24,6 +24,7 @@ from cairn.core.memory.models import (
     VersionConflict,
     check_sensitive,
 )
+from cairn.infra.sqlite_policy import VERIFIED_SQLITE_VERSIONS, wal_admission
 
 SCHEMA_VERSION = 1
 MAX_DATABASE_BYTES = 32 * 1024 * 1024
@@ -51,6 +52,18 @@ class MemoryStore:
             for p in forbidden_roots
         ):
             raise MemoryError("Memory store overlaps a tool-writable root")
+        # Runtime admission precedes every path, lock and database effect, exactly
+        # as it does for SessionStore. This store writes WAL, so it inherits the
+        # same WAL-reset requirement; opening first and checking later would let a
+        # refused runtime create directories or touch an existing database.
+        admission = wal_admission(honor_declaration=False)
+        if admission == "refused":
+            raise MemoryError(
+                "Memory storage runtime unqualified: sqlite "
+                f"{'.'.join(str(part) for part in sqlite3.sqlite_version_info)}"
+                f" is not in {VERIFIED_SQLITE_VERSIONS}"
+            )
+        self.wal_admission = admission
         try:
             self._safe_paths()
             self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)

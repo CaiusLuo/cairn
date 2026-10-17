@@ -1,7 +1,6 @@
 """Concrete, host-only SQLite store. Facts in this database never dispatch work."""
 
 import hashlib
-import os
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
@@ -53,6 +52,48 @@ from cairn.infra.sessions.models import (
 )
 from cairn.infra.sessions.paths import StorePaths
 from cairn.infra.sessions.task_models import MAX_TASK_BYTES, TaskRevision
+from cairn.infra.sqlite_policy import (
+    UNVERIFIED_SQLITE_DECLARATION as UNVERIFIED_SQLITE_DECLARATION,
+)
+from cairn.infra.sqlite_policy import (
+    VERIFIED_SQLITE_VERSIONS as VERIFIED_SQLITE_VERSIONS,
+)
+
+# The WAL-reset judgement lives in one neutral module so Project Memory can
+# share it without importing this package. Re-exported explicitly (``X as X``)
+# because this module has long been the documented import site for the session
+# store's release gate, and existing callers and tests import it from here.
+from cairn.infra.sqlite_policy import (
+    AdmissionOptionError as AdmissionOptionError,
+)
+from cairn.infra.sqlite_policy import (
+    SqliteAdmission as SqliteAdmission,
+)
+from cairn.infra.sqlite_policy import (
+    sqlite_wal_fix_supported as sqlite_wal_fix_supported,
+)
+from cairn.infra.sqlite_policy import (
+    unverified_declared as unverified_declared,
+)
+from cairn.infra.sqlite_policy import (
+    wal_admission as _policy_wal_admission,
+)
+
+
+def wal_admission(
+    *, allow_unverified: bool = False, version: tuple[int, int, int] | None = None
+) -> SqliteAdmission:
+    """Session-store view of the shared policy.
+
+    Reuses the one version judgement while keeping this store's established error
+    contract: a non-boolean option is ``invalid_options`` here, not the policy's
+    neutral option error.
+    """
+    try:
+        return _policy_wal_admission(allow_unverified=allow_unverified, version=version)
+    except AdmissionOptionError:
+        raise SessionStoreError("invalid_options") from None
+
 
 _SCHEMA = (
     """CREATE TABLE sessions (
@@ -155,22 +196,9 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
-def sqlite_wal_fix_supported(version: tuple[int, int, int] | None = None) -> bool:
-    """Release gate, not a runtime upgrade or claim that older SQLite is safe."""
-    v = sqlite3.sqlite_version_info if version is None else version
-    return (
-        v >= (3, 51, 3)
-        or (v[:2] == (3, 50) and v[2] >= 7)
-        or (v[:2] == (3, 44) and v[2] >= 6)
-    )
-
-
-#: The one declaration that admits an unverified SQLite runtime for development.
-UNVERIFIED_SQLITE_DECLARATION = "CAIRN_ALLOW_UNVERIFIED_SQLITE"
-
-#: Versions carrying the reviewed WAL-reset fix, as an operator-facing string.
-#: Kept beside ``sqlite_wal_fix_supported``; one test pins both together.
-VERIFIED_SQLITE_VERSIONS = "3.51.3+, 3.50.7+ or 3.44.6+"
+# The WAL-reset judgement lives in one neutral module so Project Memory can share
+# it without importing this package. Re-exported here because this module has long
+# been the documented import site for the session store's release gate.
 
 
 def _unverified_database_error(version: tuple[int, int, int]) -> SessionStoreError:
@@ -183,27 +211,6 @@ def _unverified_database_error(version: tuple[int, int, int]) -> SessionStoreErr
     )
 
 
-SqliteAdmission = Literal["verified", "unverified", "refused"]
-
-
-def wal_admission(
-    *, allow_unverified: bool = False, version: tuple[int, int, int] | None = None
-) -> SqliteAdmission:
-    """Decide runtime admission once: verified, declared, or refused.
-
-    A verified runtime needs no declaration. An unverified one is refused unless
-    the host declares it, and then stays ``unverified``: admission is never a
-    claim that the runtime is supported.
-    """
-    if type(allow_unverified) is not bool:
-        raise SessionStoreError("invalid_options")
-    if sqlite_wal_fix_supported(version):
-        return "verified"
-    if allow_unverified or os.environ.get(UNVERIFIED_SQLITE_DECLARATION) == "1":
-        return "unverified"
-    return "refused"
-
-
 class SessionStore(TaskLedgerMixin):
     def __init__(
         self,
@@ -214,8 +221,10 @@ class SessionStore(TaskLedgerMixin):
         sensitive_values: tuple[str, ...] = (),
         allow_unverified: bool = False,
     ) -> None:
-        if mode not in ("writer", "inspect") or any(
-            type(s) is not str for s in sensitive_values
+        if (
+            mode not in ("writer", "inspect")
+            or any(type(s) is not str for s in sensitive_values)
+            or type(allow_unverified) is not bool
         ):
             raise SessionStoreError("invalid_options")
         # Runtime admission precedes every path, lock and database effect. A
