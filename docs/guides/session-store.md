@@ -274,20 +274,21 @@ The file-mutating effect double flushes and fsyncs before its crash barrier.
 SIGKILL tests application crashes, **not power-loss durability**. Deployment
 filesystems/device synchronization still need validation.
 
-Local Python 3.12.13 uses SQLite **3.50.4** on macOS with flock. This is a **release
-blocker**, not a supported deployment claim. The reviewed
+The reviewed
 [SQLite WAL-reset fix](https://www.sqlite.org/wal.html#walreset) requires 3.51.3+,
-3.50.7/3.44.6 backports or documented equivalent. `sqlite_wal_fix_supported()` is the
-one version check, and the store now enforces it at construction: a runtime without
-the fix is refused with `sqlite_wal_unverified` before any path, lock or database
-effect, unless the host declares it through `CAIRN_ALLOW_UNVERIFIED_SQLITE=1` or
-`allow_unverified=True`. Declaring admits an unverified store that no caller may
-report as supported; `wal_admission` records which one it is. See the
-[SQLite runtime support matrix](../performance/sqlite-runtime-support.md) for the
-verified versions and the current host verdict: a Debian 12 host running a
-uv-managed CPython 3.12.15 (SQLite 3.53.1) is recorded there as verified, while
-the macOS development host remains BLOCKED on its linked SQLite 3.50.4. This
-isolated development slice does not upgrade or disable the project runtime.
+3.50.7/3.44.6 backports or documented equivalent. `sqlite_wal_fix_supported()` is
+the one version check, and the store enforces it at construction: a runtime
+without the fix is refused with `sqlite_wal_unverified` before any path, lock or
+database effect, unless the host declares it through
+`CAIRN_ALLOW_UNVERIFIED_SQLITE=1` or `allow_unverified=True`. A declaration
+admits an unverified store, not a supported deployment.
+
+The [SQLite runtime support matrix](../performance/sqlite-runtime-support.md)
+records verified runtime/host combinations: Debian 12 with uv-managed CPython
+3.12.15 (SQLite 3.53.1), and macOS 26.3.1 arm64 with explicitly selected
+Homebrew CPython 3.12.15 (SQLite 3.54.0, APFS). The uv-managed macOS Python
+linking SQLite 3.50.4 remains refused. Choosing the Homebrew interpreter does
+not change Cairn's default project `.venv` or override the admission gate.
 Compatible SQLite and target-platform tests are required before shipping durable
 execution. Runtime integration is opt-in
 through DurableSession. Task lifecycle facts and read-only recovery reports are
