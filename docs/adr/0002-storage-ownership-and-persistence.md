@@ -99,7 +99,7 @@ repository: `sqlite_wal_fix_supported` (lines 158–165) admits SQLite 3.51.3+, 
 the 3.50.7+ / 3.44.6+ backports. Declaring an unverified runtime admits a store
 but never makes it supported (lines 168–183).
 
-**Recorded risk — `MemoryStore` claims Strict Durable without this gate.**
+**Resolved divergence — `MemoryStore` claimed Strict Durable without this gate.**
 `MemoryStore._initialize` runs `PRAGMA journal_mode=WAL`
 (`src/cairn/infra/memory/store.py` line 132) and `_safe_paths` already tolerates
 the `-wal`, `-shm` and `-journal` sidecars (line 66), so it opens a WAL database.
@@ -149,20 +149,18 @@ Two remediations were compared.
   107 stops meaning anything), and leaves existing WAL databases needing that
   online conversion.
 
-**Recommendation: (a)**, applied as its own change with a regression test that
-pins "memory refuses an unverified runtime unless declared" beside the existing
-SessionStore admission tests. It removes the divergence at its source, costs no
-data migration, and preserves the one version judgement. Option (b) is rejected
-for now because it trades a gate for a schema-level migration plus a new file
-state, and because the WAL-reset bug is a property of the runtime, not of the
-journal mode chosen per database.
+**Accepted: option (a0)**, ruled by the Owner on 2026-10-17. The policy moves to
+a neutral `infra` module, so the `infra.memory` → `infra.sessions` dependency that
+made option (a) weaker is moot. `MemoryStore` refuses an unverified runtime by
+default, the Session development override is not extended to it, and existing
+memory databases are left byte-for-byte intact. Option (b) is rejected because it
+trades a gate for a schema-level migration plus a new file state, and because the
+WAL-reset bug is a property of the runtime, not of the journal mode chosen per
+database.
 
-The Owner accepted **option (a0)** on 2026-10-17: the policy moves to a neutral
-`infra` module, so the `infra.memory` → `infra.sessions` question is moot. Memory
-refuses an unverified runtime by default, the existing Session development
-override is not extended to it, and existing memory databases are left intact.
-See [Decisions taken](#decisions-taken). The refusal message contract and the
-Journal consumer remain unruled and do not block #63.
+Implementation is #63 and is recorded as a separate change with regression tests.
+The refusal message contract and the first Journal consumer remain unruled; per
+[Decisions taken](#decisions-taken) they do not block #63.
 
 ### D4. The Journal tier is opened with its first consumer, not before
 
@@ -236,15 +234,15 @@ lifecycle.
 ## Consequences
 
 - Every store has one owner and one tier; a new store must state both in review.
-- `D3` is a known defect with a recorded remedy rather than an undocumented
-  divergence. Until it is fixed, `MemoryStore` may open a WAL database on a
-  runtime that carries the WAL-reset bug.
+- The `D3` divergence is resolved by decision, not by this record: `MemoryStore`
+  qualifies the runtime like the session store does, through one neutral policy
+  module. The implementation is #63 with its own regression tests.
 - Nothing in this record changes a schema, a migration step or the recovery API.
   `MemoryStore` schema version stays 1 and the Session store stays at its current
   version.
-- Adopting this record changes documentation only. The implementation change for
-  `D3` (a) needs its own issue, regression test and a read-only-to-Durable
-  re-check on each host.
+- Adopting this record is a documentation change. It authorises exactly one
+  follow-up (#63) and no refactor, storage abstraction, shared database or
+  Journal implementation.
 
 ## Decisions taken
 
