@@ -33,18 +33,36 @@ been changed.
 
 ### D1. Three tiers, and a tier is a promise about a crash, not a place
 
-| Tier | Promise after process death | What may be reported as true |
+Three categories, deliberately distinct, and none of them is "the place a byte
+happens to live":
+
+| Category | Promise after process death | What it owns |
 | --- | --- | --- |
-| Ephemeral | none | progress, live output, in-flight execution |
-| Journal | one owner may replay or abandon an observation; no conversation fact | observed inputs and outputs, with provenance |
-| Strict Durable | a fact exists only if a committed receipt says so | conversation, Task lifecycle, approved claims |
+| **Telemetry / observations** | none | Live progress, span timing, diagnostics. Best-effort: a lost record is lost evidence, never a lost fact that a caller may rely on to resume. |
+| **Journal** | Its **own owner** commits a record; that owner's recovery may replay or abandon it | An independent, lightweight, committed conversation or session log. It may persist confirmed conversation history **without** a SQLite receipt. Its guarantees are strictly weaker than Strict Durable: no external-effect fencing, no cross-store transaction, no approval chain. |
+| **Strict Durable** | A fact exists only if that tier's **own owner-specific commit and evidence contract** says so | Conversation, Task lifecycle and approved claims under the current SQLite design, each committed by its owner. |
 
-A tier is assigned to a *fact*, not to a module. The same module may hold facts in
-two tiers only if each is labelled: `TraceStore` holds Journal evidence, while the
-trace IDs an approval retains are Strict Durable provenance (`D2`).
+A tier is assigned to a *fact*, not to a module, and only if that fact's owner
+satisfies the tier's contract. The same module may hold facts in two tiers only
+when each is labelled.
 
-Consequence: "it is on disk" never upgrades a tier. Only an admission gate, a
-transaction and a receipt do.
+**Strict Durable is not synonymous with "carries a `SessionStore`
+`CheckpointReceipt`."** Each owner commits through its own mechanism and evidence
+contract. `MemoryStore` is the counter-example already in the tree: it commits an
+approved memory through its own SQLite transaction and CAS plus a human
+attestation, and never obtains a `SessionStore` receipt. A durable fact is
+therefore one whose *owning store* can prove the commit; requiring one particular
+store's receipt to exist would exclude a tier member that is already shipping.
+
+**Telemetry is not a Session Journal.** `TraceStore` writes spans on a
+best-effort basis. A `trace_id` retained inside an approval is durable
+*metadata* — a pointer — and is neither durable retention of the trace content
+nor proof that the content still exists once traces are pruned. Treating
+telemetry as recoverable session log would overstate what a crashed run can
+resume.
+
+Consequence: "it is on disk" never upgrades a tier. Only that tier's own
+admission gate, transaction and owner-specific commit evidence do.
 
 ### D2. Each store owns its facts; no store owns another's lifecycle
 
@@ -53,7 +71,7 @@ transaction and a receipt do.
 | `SessionStore` (`src/cairn/infra/sessions/store.py`) | Session rows, checkpoint history, CAS revisions, its own writer lock | Strict Durable | no live Turn decision, no permission, no dispatch |
 | `TaskLedgerMixin` (`src/cairn/infra/sessions/ledger.py`) | independently revised Task records phase `running`/`turn_committed`/`inspecting`/`result_recorded` | Strict Durable | no dispatch, no recovery authority |
 | `MemoryStore` (`src/cairn/infra/memory/store.py`) | approved claims, tombstones, version CAS | Strict Durable | no approval authority (that is `MemoryService` + human callback) |
-| `TraceStore` (`src/cairn/infra/observability/storage.py`) | JSONL spans, the only persistent trace record | Journal | never a substitute for conversation or Task facts |
+| `TraceStore` (`src/cairn/infra/observability/storage.py`) | JSONL spans, the only persistent trace record | **Telemetry / observations** — best-effort, *not* a Journal | never a substitute for conversation or Task facts, and never a resume source |
 | Live Turn facts (`runtime.turn_trace`, `core.state.AgentState`) | conversation, spans, usage | Ephemeral until a checkpoint commits | — |
 
 Ownership is expressed in the API, following ADR 0001 `D3`. `MemoryStore`'s
@@ -65,9 +83,11 @@ connection; it is mixed into `SessionStore` and relies on that class's locking a
 transaction helpers (`src/cairn/infra/sessions/ledger.py` lines 1–7).
 `TraceStore` owns only the trace directory (`storage.py` line 36).
 
-Consequence: a future Journal implementation may read and retain what the Durable
-owner committed, but must never advance a Task phase or a Session revision by
-itself.
+Consequence: a future Journal implementation may read and retain what a Durable
+owner committed, and may keep its **own** committed record of conversation, but
+must never advance a Task phase or a Session revision by itself. Owning a fact
+means owning the commit that makes it true; it does not mean another store's
+receipt must exist first.
 
 ### D3. A persistence tier is claimed only after the runtime safety gate
 
@@ -98,6 +118,14 @@ promise is already made in prose.
 
 Two remediations were compared.
 
+- **(a0) Extract a small neutral `infra` SQLite-policy helper.** Preferred by the
+  architecture review. Move `sqlite_wal_fix_supported` / `wal_admission` /
+  `VERIFIED_SQLITE_VERSIONS` into a policy module under `infra` that both
+  `sessions` and `memory` import, so the one version judgement stays one while
+  `infra.memory` never imports `infra.sessions`. Migration cost: one move plus
+  import rewrites; no schema, no data, no behaviour change. This is a helper, not
+  a driver or backend framework — it holds a version rule and nothing else — and
+  it does not by itself decide whether memory is refused.
 - **(a) Share the SessionStore gate.** Reuse `wal_admission` and
   `sqlite_wal_fix_supported` rather than re-deriving a version check, which keeps
   "one version judgement" true. Migration cost: none for data; `journal_mode`
@@ -107,6 +135,7 @@ Two remediations were compared.
   distinguishable, actionable message. It also introduces an
   `infra.memory` → `infra.sessions` import; the helpers are module-level with no
   store coupling, but that dependency direction needs an explicit decision.
+  Choosing (a0) removes that objection and is the recommended shape.
 - **(b) Migrate `MemoryStore` to a rollback journal.** Measured in this task on
   SQLite 3.50.4: a database whose header is WAL reports `('wal',)` on open, and
   `PRAGMA journal_mode=DELETE` only succeeds when it owns the lock; with the WAL
@@ -140,9 +169,25 @@ by the tracer and a checkpoint may still commit with `persisted=False`
 (`docs/guides/durable-session.md` lines 122–123). `TraceStore` also removes
 derived `summaries/` sidecars as it encounters them (`storage.py` lines 197–212).
 
-A future Journal entry may hold only what a Durable owner already committed,
-plus observations those commits point at. Every entry must link to the receipt
-that authorized it; it may never create a receipt.
+A future Journal may persist **confirmed conversation history on its own
+authority**, without depending on a SQLite `Receipt`. It commits its own record
+through its own owner-specific commit contract, exactly as each Strict Durable
+owner commits through its own. What it must not do is borrow authority it does
+not have: it may never advance a Task phase or a Session revision, and it may
+never assert an external-effect or approval fact that only a Durable owner can
+commit.
+
+Its guarantees are strictly weaker than Strict Durable, and an entry says so: no
+external-effect fencing, no cross-store transaction, no approval chain. A reader
+that needs those guarantees must consult the owning Durable store.
+
+Requiring every Journal entry to link to a SQLite receipt would make a
+lightweight JSONL-only resume profile impossible and would silently commit the
+tier to SQLite — the opposite of what this decision is for. The roadmap postponed
+Journal *implementation*, not its independent semantics.
+
+Telemetry is the weaker still category and is not Journal: a lost span is lost
+evidence, not a recoverable conversation record.
 
 Consequence: the tier exists as an ownership rule, not as a module. Adding an
 in-memory or on-disk journal is a change that cites this decision; it does not
@@ -150,16 +195,21 @@ need a new interface, a registry or an event bus.
 
 ### D5. Strict Durable keeps one writer and human reconciliation
 
-The existing Durable design is preserved unchanged: one writer Store per Session,
-CAS revisions, a lifetime writer lock, and reopening suspended until trusted-host
-reconciliation (`docs/guides/durable-session.md` lines 42–48, 112–132). Task
+The existing Durable design is preserved unchanged: **one writer per Store**,
+CAS revisions, a lifetime writer lock held over the store directory across
+session IDs, and reopening suspended until trusted-host reconciliation
+(`docs/guides/durable-session.md` lines 42–48, 112–132). The lock is scoped to the
+store, not to a Session, so two Sessions in one store are **not** independently
+writable. Task
 recovery stays an explicit host decision against a fresh report
 ([Task Ledger](../guides/task-ledger.md#explicit-trusted-host-task-reconciliation));
 stored records "never execute work or grant recovery/publication authority"
 (`docs/architecture.md` lines 51–63).
 
 Consequence: no storage change may add an automatic replay, a background
-compactor, or a second process permitted to write a Session. A recovery path that
+compactor, or a second process permitted to write the store. Human reconciliation
+remains the only way back from a suspended state, and permission is never
+restored by recovery. A recovery path that
 needs to be faster is a change to the report, not to who may advance the
 lifecycle.
 
@@ -199,21 +249,27 @@ Each item is an open question for the Owner. None is answered by this record.
 1. **Accept (a) for `D3`, in full or deferred?** In full: memory stops working on
    blocked runtimes, matching Sessions. Deferred: memory keeps its current
    coverage but the Strict Durable claim stays untrue there.
-2. **May `infra.memory` import `infra.sessions`?** Yes: one version judgement.
+2. **May `infra.memory` import `infra.sessions`, or should the policy move to a
+   neutral `infra` helper (option a0)?** Recommendation: the neutral helper, so
+   memory depends on a version rule rather than on the session store.
    No: the helpers need a shared, non-package home, which is a boundary change of
    its own.
 3. **What may a refusal reveal?** A fixed `MemoryError` keeps today's coarse
    contract but is hard to act on. A distinct message names the runtime and
    version, at the cost of widening an error contract hosts may pin.
-4. **Does declaring `CAIRN_ALLOW_UNVERIFIED_SQLITE=1` cover `MemoryStore`?** One
-   variable for both stores is simpler to reason about; a memory-specific
-   declaration keeps a dev Session from silently enabling approval storage.
+4. **Does declaring `CAIRN_ALLOW_UNVERIFIED_SQLITE=1` cover `MemoryStore`?**
+   Decide this **before** implementing #63. One variable for both stores is
+   simpler to reason about; recommendation is the opposite — a memory-specific
+   declaration — because the existing one was introduced to admit an unverified
+   *Session* store for development, and reusing it would let a dev override
+   silently authorise approval storage that no one qualified.
 5. **What happens to existing `MemoryStore` databases on a refused runtime?**
    Fail closed and require a qualified interpreter leaves data intact but
    unreadable to those hosts. Any automatic rewrite is out of scope and would
    itself need a migration.
-6. **Who is a Journal consumer?** Naming one now fixes its retention and its link
-   to receipts. Naming none keeps the tier as a rule (`D4`).
+6. **Who is a Journal consumer?** Naming one now fixes its retention policy and
+   its own commit contract. It does not add a dependency on SQLite receipts
+   (`D4`). Naming none keeps the tier as a rule.
 7. **May traces be referenced by an approval when the trace is gone?** Today an
    approval retains typed IDs whose trace may be pruned by `delete_oldest`
    (`storage.py` lines 80–115). Keeping it is honest and documented; strengthening
