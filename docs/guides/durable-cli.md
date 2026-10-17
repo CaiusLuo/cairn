@@ -67,10 +67,12 @@ configuration, then reopen with fresh approval and explicit binding confirmation
 
 Offline regressions use scripted providers, real SQLite, subprocess interruption
 and cancellation barriers. Application-crash recovery is not power-loss evidence.
-SQLite **3.50.4** WAL-reset compatibility remains a **release blocker**; this feature
-does not upgrade SQLite or qualify deployment. A runtime without the fix refuses
-every durable subcommand with `sqlite_wal_unverified` unless the host declares it
-through `CAIRN_ALLOW_UNVERIFIED_SQLITE=1`; stateless commands are unaffected. The
+The uv-managed macOS interpreter linking SQLite **3.50.4** remains blocked for
+Durable commands; the explicitly selected Homebrew CPython 3.12.15 runtime
+linking SQLite 3.54.0 has passed host-specific macOS arm64/APFS qualification.
+Durable commands still refuse unfixed runtimes with `sqlite_wal_unverified`
+unless explicitly declared unverified for development; this never constitutes
+release qualification. Stateless commands are unaffected. The
 [Store release gate](session-store.md#verification-and-release-gate),
 [support matrix](../performance/sqlite-runtime-support.md)
 and [runtime limits](durable-session.md#verification-and-release-limits) still apply.

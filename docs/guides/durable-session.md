@@ -158,11 +158,13 @@ process lock/death probes. Existing stateless Loop/Tool/CLI/Eval/Task tests rema
 compatibility evidence. SIGKILL proves application-crash behavior, not power-loss
 durability. SQLite schema/codec/CAS and nonmutating inspection are unchanged.
 
-Local SQLite **3.50.4** remains a **release blocker**; integration does not upgrade
-or claim deployment support. The [Store release gate](session-store.md#verification-and-release-gate)
-requires a fixed SQLite runtime and target macOS/Linux filesystem/locking
-qualification; the store refuses an unfixed runtime at construction unless the host
-declares it. See the [support matrix](../performance/sqlite-runtime-support.md).
+The pre-existing uv-managed macOS interpreter linking SQLite **3.50.4**
+remains unqualified. A separately tested Homebrew CPython 3.12.15 runtime
+linking SQLite 3.54.0 has passed the macOS 26.3.1 arm64/APFS host qualification.
+The [Store release gate](session-store.md#verification-and-release-gate) still
+requires a fixed SQLite runtime and target host/filesystem verification, and
+refuses unfixed runtimes unless explicitly declared unverified for development.
+See the [support matrix](../performance/sqlite-runtime-support.md).
 Storage is synchronous and cleanup cooperative; an uncooperative
 tool/provider or blocking callback can delay settlement. Task recovery and
 Worktree adoption remain M2.
