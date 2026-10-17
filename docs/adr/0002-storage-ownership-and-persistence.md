@@ -99,27 +99,31 @@ repository: `sqlite_wal_fix_supported` (lines 158–165) admits SQLite 3.51.3+, 
 the 3.50.7+ / 3.44.6+ backports. Declaring an unverified runtime admits a store
 but never makes it supported (lines 168–183).
 
-**Resolved divergence — `MemoryStore` claimed Strict Durable without this gate.**
-`MemoryStore._initialize` runs `PRAGMA journal_mode=WAL`
-(`src/cairn/infra/memory/store.py` line 132) and `_safe_paths` already tolerates
-the `-wal`, `-shm` and `-journal` sidecars (line 66), so it opens a WAL database.
-It imports nothing from `cairn.infra.sessions` (imports at lines 9–26) and calls
-neither `sqlite_wal_fix_supported` nor `wal_admission`. A repository-wide search
-for both names returns hits only in `src/cairn/infra/sessions/store.py`.
+**Baseline defect that motivated this decision (pre-fix state).** The paragraphs
+below describe `MemoryStore` **before** the remediation this ADR rules for. They
+are the historical baseline that made the decision necessary, not a statement
+about the current tree; the ruling itself is unchanged.
 
-The gap is real on a real runtime, not hypothetical. In this task's own venv
-(CPython 3.12.13, SQLite **3.50.4**) `wal_admission()` returns `refused` and
-`sqlite_wal_fix_supported()` returns `False`, yet `MemoryStore` opens that same
+At that baseline, `MemoryStore._initialize` ran `PRAGMA journal_mode=WAL`
+(`src/cairn/infra/memory/store.py` line 132) and `_safe_paths` already tolerated
+the `-wal`, `-shm` and `-journal` sidecars (line 66), so it opened a WAL database.
+It imported nothing from `cairn.infra.sessions` (imports at lines 9–26) and called
+neither `sqlite_wal_fix_supported` nor `wal_admission`. A repository-wide search
+for both names returned hits only in `src/cairn/infra/sessions/store.py`.
+
+The gap was real on a real runtime, not hypothetical. In the authoring venv
+(CPython 3.12.13, SQLite **3.50.4**) `wal_admission()` returned `refused` and
+`sqlite_wal_fix_supported()` returned `False`, yet `MemoryStore` opened that same
 runtime's WAL database without complaint. That interpreter is the macOS
 development runtime already recorded as **BLOCKED** in
 [sqlite-runtime-support.md](../performance/sqlite-runtime-support.md#recorded-environments).
 `docs/guides/project-memory.md` lines 23–26 state that memory "uses WAL", so the
-promise is already made in prose.
+promise was already made in prose.
 
-Two remediations were compared.
+Three options were compared at the time of decision.
 
-- **(a0) Extract a small neutral `infra` SQLite-policy helper.** Preferred by the
-  architecture review. Move `sqlite_wal_fix_supported` / `wal_admission` /
+- **(a0) Extract a small neutral `infra` SQLite-policy helper.** The option the
+  Owner accepted. Move `sqlite_wal_fix_supported` / `wal_admission` /
   `VERIFIED_SQLITE_VERSIONS` into a policy module under `infra` that both
   `sessions` and `memory` import, so the one version judgement stays one while
   `infra.memory` never imports `infra.sessions`. Migration cost: one move plus
@@ -135,7 +139,7 @@ Two remediations were compared.
   distinguishable, actionable message. It also introduces an
   `infra.memory` → `infra.sessions` import; the helpers are module-level with no
   store coupling, but that dependency direction needs an explicit decision.
-  Choosing (a0) removes that objection and is the recommended shape.
+  Choosing (a0) removed that objection, which is why the Owner ruled for it.
 - **(b) Migrate `MemoryStore` to a rollback journal.** Measured in this task on
   SQLite 3.50.4: a database whose header is WAL reports `('wal',)` on open, and
   `PRAGMA journal_mode=DELETE` only succeeds when it owns the lock; with the WAL
