@@ -156,6 +156,22 @@ read access, so they stay unsupported.
   helpers skip rather than report success, and `BashTool` raises on Linux when
   `bwrap` is missing.
 
+### A refused write may look successful inside the sandbox
+
+On Linux the mount namespace gives the command a private view: `/tmp` is a fresh
+`tmpfs` and parents of the workspace are created with `--dir` rather than bound
+from the host. A write to a path outside the workspace can therefore *succeed
+inside that view* (the command sees its own file and exits 0) while the host
+never receives it. The host path is unchanged, which is the guarantee that
+matters, but an exit code is not evidence of enforcement: check the host path,
+not the command's status.
+
+This is why the pilot preflight decides from the host-side marker rather than
+from the command exit code. On this Debian 12 host, `bwrap 0.8.0` reports
+`escape exit=0` for an outside write while the marker stays absent on the host,
+so a preflight that trusted the exit code alone would report the sandbox as
+escaped when it did not.
+
 ## Verifying the boundary
 
 `tests/infra/tools/test_sandbox_git_boundaries.py` drives the real

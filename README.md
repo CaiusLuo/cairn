@@ -34,10 +34,73 @@ test, and extend. This is an early-stage learning and engineering project.
 Requires Python 3.12+, [uv](https://docs.astral.sh/uv/), and macOS `sandbox-exec`
 or Linux `bubblewrap`.
 
+`uv` installs to `~/.local/bin` and that directory is often not on `PATH` on a
+fresh Linux host, so `uv: command not found` usually means `PATH`, not a missing
+install:
+
+```bash
+command -v uv || export PATH="$HOME/.local/bin:$PATH"
+uv --version
+```
+
 ```bash
 uv sync --locked --all-groups
 cp .env.example .env
 ```
+
+`uv sync` needs network access the first time on a host with a cold cache. If it
+fails offline, use a host or cache that already holds the locked wheels; the
+command itself is not the problem.
+
+### Linux sandbox prerequisite
+
+The Bash sandbox is `bubblewrap` on Linux and `sandbox-exec` on macOS. Check the
+Linux tool actually works before relying on it:
+
+```bash
+command -v bwrap && bwrap --version
+```
+
+On Debian/Ubuntu: `sudo apt-get install bubblewrap`. Without it, `BashTool`
+refuses to run commands rather than running them unsandboxed.
+
+### Git version for worktree workflows
+
+The GitHub workflow and coding-task runner create Git worktrees, which need
+**Git >= 2.40**. Check your version before that workflow:
+
+```bash
+git --version
+```
+
+Debian 12 (bookworm) ships **Git 2.39.5** by default, which is below that
+requirement, so a stock Debian 12 needs a newer Git before the worktree and
+Draft-PR workflows will behave. Plain `uv run cairn` and Durable Session do not
+need worktrees.
+
+### The interpreter's SQLite decides Durable mode
+
+Durable mode judges the SQLite version the **running interpreter is actually
+linked against**, not the version reported by a `sqlite3` command-line tool:
+
+```bash
+uv run python -c "import sqlite3; print(sqlite3.sqlite_version)"
+```
+
+That value must be `3.51.3+`, `3.50.7+` or `3.44.6+`. A system without the
+`sqlite3` CLI is fine; only the linked library matters. The same interpreter, or
+a `uv venv` created from one, must be the one that runs Cairn.
+
+### Entry points are not interchangeable
+
+| Entry point | Command | Needs |
+| --- | --- | --- |
+| Standard CLI | `uv run cairn` | Python deps only |
+| Durable Session | `uv run cairn session ...` | Python deps plus a qualified linked SQLite |
+| Experimental Pi TUI | `uv run cairn tui` | Node.js >=22.19, pnpm, and a built frontend |
+
+`python -m cairn` is not an entry point: the package has no `__main__`. Use
+`uv run cairn` or `uv run python -m cairn.terminal.cli`.
 
 Set your provider and budget in `.env`:
 

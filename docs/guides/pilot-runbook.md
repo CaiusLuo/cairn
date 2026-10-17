@@ -94,17 +94,37 @@ install, use the documented packaging check in
 uv build
 ```
 
-Then install the built wheel into a fresh virtual environment and confirm the
-entry point:
+Then install the built wheel into a fresh environment created from the
+interpreter you intend to qualify. Name that interpreter explicitly: `uv venv
+--python` pins which Python (and therefore which linked SQLite) the smoke tests,
+where a bare `python -m venv` silently inherits whichever `python` is on `PATH`.
 
 ```sh
-uv run python -m venv /tmp/cairn-pilot-smoke
-/tmp/cairn-pilot-smoke/bin/pip install dist/cairn-*.whl
+uv build
+
+# Create the venv from the interpreter under test, then confirm what it links.
+uv venv --python /usr/local/bin/python3.12 /tmp/cairn-pilot-smoke
+/tmp/cairn-pilot-smoke/bin/python -c \
+  "import sqlite3; print(sqlite3.sqlite_version)"
+
+# Install the wheel into that venv specifically.
+uv pip install --python /tmp/cairn-pilot-smoke/bin/python dist/cairn-*.whl
+
+# Confirm the entry point comes from the wheel, not the checkout.
 /tmp/cairn-pilot-smoke/bin/cairn --help
 ```
 
+For a venv made by an interpreter you have already qualified (for example the
+uv-managed Python that links SQLite 3.53.1), the same steps apply with that
+path substituted for `--python`.
+
 A passing import is not a durable qualification: repeat the preflight inside the
 new environment before trusting it.
+
+```sh
+uv run --python /tmp/cairn-pilot-smoke/bin/python \
+  python examples/pilot/preflight.py --profile local-durable-pilot
+```
 
 ## Failure drill: SIGKILL, inspect, confirm, reconcile
 
