@@ -66,7 +66,7 @@ fact for hosts and tests, not an enforcement point: nothing in the runtime reads
 it, so a caller that presents an `unverified` store as supported would be wrong
 rather than blocked.
 
-Stateless callers are unaffected: the default CLI, the Pi TUI and every
+Stateless callers are unaffected: the default CLI and every
 EvalRunner or TaskRunner caller that opens no store never construct a
 `SessionStore` and never reach this gate.
 
