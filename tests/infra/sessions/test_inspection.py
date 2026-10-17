@@ -20,6 +20,20 @@ from tests.support.sessions import (
 
 
 def filesystem_state(directory: Path) -> dict[str, tuple[bytes, tuple[int, ...]]]:
+    """Observe everything a read-only inspection must leave untouched.
+
+    The recorded tuple covers the file bytes, its identity and permissions, its
+    link count, its size and its modification time. Those are the facts a data
+    write would move.
+
+    ``st_ctime_ns`` is deliberately excluded. It is inode change time, not data
+    modification time, and the kernel updates it for reasons unrelated to
+    writing: SQLite has to take a POSIX advisory lock on ``-wal`` even when the
+    database is opened read-only for a WAL-index lookup, and ext4 refreshes ctime
+    for that inode operation while APFS does not. Comparing it therefore asserted
+    a filesystem behaviour rather than the inspection contract, and failed on
+    ext4 while the bytes, size and mtime were identical. See issue #57.
+    """
     result: dict[str, tuple[bytes, tuple[int, ...]]] = {}
     for path in directory.iterdir():
         info = path.stat()
@@ -34,7 +48,6 @@ def filesystem_state(directory: Path) -> dict[str, tuple[bytes, tuple[int, ...]]
                 info.st_nlink,
                 info.st_size,
                 info.st_mtime_ns,
-                info.st_ctime_ns,
             ),
         )
     return result
