@@ -24,6 +24,7 @@ page is the map for everything else.
 | [M1-C.3 Durable CLI](guides/durable-cli.md) | Local creation, read-only inspection, fresh reopen and exact human reconciliation |
 | [M2 Durable Tasks](guides/task-ledger.md) | Task Ledger, opt-in CodingTaskRunner execution, verified checkpoint references, explicit host-only Task reconciliation and schema upgrade |
 | [GitHub Issue workflows](guides/github-workflow.md) | Retained worktrees, deterministic verification, and approved Draft PR publication |
+| [GitHub Draft PR smoke preflight](guides/github-smoke-preflight.md) | Authorization list, disposable-repository preparation, and independent remote Draft PR verification |
 | [Offline coding task E2E](guides/offline-coding-e2e.md) | Reproducible scripted coding task, permissions, isolation, final verification and evidence artifacts |
 | [Single-node pilot runbook](guides/pilot-runbook.md) | Offline preflight, per-profile PASS/BLOCKED status, the SIGKILL inspect/confirm/reconcile drill and stop conditions |
 | [Native Bash sandbox](guides/sandbox.md) | Workspace write grant, Git metadata protection, per-platform rules and unclaimed limits |
