@@ -139,10 +139,13 @@ read or written, incomplete records and the existing fault gate remain.
 Unknown COMMIT acknowledgements are resolved by reading actual records without
 retrying the failed mutation. A result may already be recorded even when the
 caller receives a runtime error; inspect the facts before deciding what happened.
-There is no automatic model/tool retry, inspection retry or Task resume. Reopening
-and read-only inspection make no model/tool calls. Manual Task reconciliation is
-described below; Session reconciliation alone never advances Task phases or clears
-Task recovery diagnostics.
+There is no automatic model, Task, Turn, inspection or mutation retry and no Task
+resume. The built-in `read_file` primitive has a separate bounded retry for
+explicit transient-before-effect local read failures; it cannot replay a Task or
+another tool. Reopening and read-only inspection make no model/tool calls. Manual
+Task reconciliation is described below; Session reconciliation alone never
+advances Task phases or clears Task recovery diagnostics. See
+[Safe retry](safe-retry.md).
 
 ## Explicit trusted-host Task reconciliation
 

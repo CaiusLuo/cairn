@@ -1,13 +1,24 @@
+import asyncio
 import codecs
+import errno
+import math
 import os
 import stat
 import tempfile
-from collections.abc import Iterator
+import time
+from collections.abc import Awaitable, Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
 
 from cairn.core.models import ToolResult
-from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
+from cairn.infra.tools.base import (
+    InvalidArguments,
+    ToolExecutionContext,
+    ToolExecutionFailure,
+    ToolFailureKind,
+    ToolFailureOutcome,
+)
 from cairn.infra.workspace.workspace import Workspace
 
 READ_FILE_MAX_LINES = 200
@@ -21,14 +32,92 @@ READ_FILE_CHUNK_SIZE = 4 * 1024
 
 EDIT_FILE_MAX_BYTES = 1024 * 1024  # 1 MiB
 
+READ_FILE_MAX_ATTEMPTS = 3
+READ_FILE_RETRY_DEADLINE_SECONDS = 0.25
+READ_FILE_RETRY_BUDGET_SECONDS = 0.03
+READ_FILE_INITIAL_BACKOFF_SECONDS = 0.01
+READ_FILE_MAX_BACKOFF_SECONDS = 0.02
+
+_TRANSIENT_READ_ERRNOS = frozenset(
+    value
+    for value in (
+        errno.EAGAIN,
+        errno.EINTR,
+        getattr(errno, "EBUSY", None),
+        getattr(errno, "ESTALE", None),
+    )
+    if value is not None
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ReadFileRetryPolicy:
+    """Fixed bounds for the built-in read-only file operation.
+
+    The retry budget limits cumulative backoff independently from the attempt
+    count and the single deadline shared by every attempt. This policy is not a
+    general tool retry contract.
+    """
+
+    max_attempts: int = READ_FILE_MAX_ATTEMPTS
+    deadline_seconds: float = READ_FILE_RETRY_DEADLINE_SECONDS
+    retry_budget_seconds: float = READ_FILE_RETRY_BUDGET_SECONDS
+    initial_backoff_seconds: float = READ_FILE_INITIAL_BACKOFF_SECONDS
+    max_backoff_seconds: float = READ_FILE_MAX_BACKOFF_SECONDS
+
+    def __post_init__(self) -> None:
+        numeric = (
+            self.deadline_seconds,
+            self.retry_budget_seconds,
+            self.initial_backoff_seconds,
+            self.max_backoff_seconds,
+        )
+        if (
+            type(self.max_attempts) is not int
+            or not 1 <= self.max_attempts <= READ_FILE_MAX_ATTEMPTS
+        ):
+            raise ValueError(
+                f"read_file max_attempts must be between 1 and {READ_FILE_MAX_ATTEMPTS}"
+            )
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            for value in numeric
+        ):
+            raise ValueError("read_file retry limits must be finite numbers")
+        if self.deadline_seconds <= 0:
+            raise ValueError("read_file retry deadline must be positive")
+        if self.deadline_seconds > READ_FILE_RETRY_DEADLINE_SECONDS:
+            raise ValueError("read_file retry deadline exceeds the safety cap")
+        if self.retry_budget_seconds < 0:
+            raise ValueError("read_file retry budget must be non-negative")
+        if self.retry_budget_seconds > READ_FILE_RETRY_BUDGET_SECONDS:
+            raise ValueError("read_file retry budget exceeds the safety cap")
+        if self.initial_backoff_seconds <= 0 or self.max_backoff_seconds <= 0:
+            raise ValueError("read_file retry backoff must be positive")
+        if self.max_backoff_seconds > READ_FILE_MAX_BACKOFF_SECONDS:
+            raise ValueError("read_file retry backoff exceeds the safety cap")
+        if self.initial_backoff_seconds > self.max_backoff_seconds:
+            raise ValueError("read_file initial backoff must not exceed its cap")
+
+
+DEFAULT_READ_FILE_RETRY_POLICY = ReadFileRetryPolicy()
+
 
 def _iter_bounded_line_fragments(
     file: BinaryIO,
+    *,
+    check_deadline: Callable[[], None] | None = None,
 ) -> Iterator[tuple[bytes, bool]]:
     pending_carriage_return = False
 
     while True:
+        if check_deadline is not None:
+            check_deadline()
         chunk = file.readline(READ_FILE_CHUNK_SIZE)
+        if check_deadline is not None:
+            check_deadline()
         if not chunk:
             if pending_carriage_return:
                 yield b"\r", True
@@ -83,14 +172,17 @@ def _read_bounded_range(
     start_line: int,
     end_line: int,
     capture_limit: int = READ_FILE_CAPTURE_BYTE_LIMIT,
+    check_deadline: Callable[[], None] | None = None,
 ) -> tuple[bytes, bool, bool]:
     captured = bytearray()
     line_number = 1
     truncated = False
     has_more = False
 
-    fragments = iter(_iter_bounded_line_fragments(file))
+    fragments = iter(_iter_bounded_line_fragments(file, check_deadline=check_deadline))
     for fragment, line_complete in fragments:
+        if check_deadline is not None:
+            check_deadline()
         if start_line <= line_number <= end_line:
             remaining = capture_limit - len(captured)
             if remaining > 0:
@@ -148,8 +240,20 @@ class ReadFileTool:
     name = "read_file"
     description = "Read up to 200 lines of a UTF-8 workspace file."
 
-    def __init__(self, workspace: Workspace) -> None:
+    def __init__(
+        self,
+        workspace: Workspace,
+        *,
+        retry_policy: ReadFileRetryPolicy | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
         self.workspace = workspace
+        self.retry_policy = (
+            retry_policy if retry_policy is not None else DEFAULT_READ_FILE_RETRY_POLICY
+        )
+        self._monotonic = monotonic
+        self._sleep = sleep
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -195,19 +299,54 @@ class ReadFileTool:
         context: ToolExecutionContext | None = None,
     ) -> ToolResult:
         self.validate(arguments)
+        deadline = self._monotonic() + self.retry_policy.deadline_seconds
+        backoff_used = 0.0
+
+        for attempt in range(1, self.retry_policy.max_attempts + 1):
+            try:
+                return self._read_once(arguments, deadline=deadline)
+            except OSError as error:
+                outcome = self._classify_os_error(error)
+                if outcome.kind is not ToolFailureKind.TRANSIENT_BEFORE_EFFECT:
+                    raise
+                if attempt >= self.retry_policy.max_attempts:
+                    raise ToolExecutionFailure(outcome) from None
+
+                delay = min(
+                    self.retry_policy.initial_backoff_seconds * 2 ** (attempt - 1),
+                    self.retry_policy.max_backoff_seconds,
+                )
+                now = self._monotonic()
+                if now + delay > deadline:
+                    raise ToolExecutionFailure(self._deadline_outcome()) from None
+                if backoff_used + delay > self.retry_policy.retry_budget_seconds:
+                    raise ToolExecutionFailure(outcome) from None
+
+                await self._sleep(delay)
+                backoff_used += delay
+
+        raise AssertionError("read_file retry loop exhausted without an outcome")
+
+    def _read_once(self, arguments: dict[str, Any], *, deadline: float) -> ToolResult:
+        self._check_deadline(deadline)
         path = self.workspace.resolve_path(arguments["path"])
         start = arguments.get("start_line", 1)
         end = arguments.get("end_line", start + 199)
-        if not path.is_file():
+        is_file = path.is_file()
+        self._check_deadline(deadline)
+        if not is_file:
             raise FileNotFoundError(f"File not found: {arguments['path']}")
 
         with path.open("rb") as file:
+            self._check_deadline(deadline)
             data, byte_truncated, has_more = _read_bounded_range(
                 file,
                 start_line=start,
                 end_line=end,
+                check_deadline=lambda: self._check_deadline(deadline),
             )
 
+        self._check_deadline(deadline)
         content = _decode_bounded_utf8(data, truncated=byte_truncated)
 
         display_truncated = len(content) > READ_FILE_DISPLAY_CHAR_LIMIT
@@ -225,6 +364,32 @@ class ReadFileTool:
             stdout=content,
             exit_code=0,
             stdout_truncated=truncated,
+        )
+
+    def _check_deadline(self, deadline: float) -> None:
+        if self._monotonic() >= deadline:
+            raise ToolExecutionFailure(self._deadline_outcome())
+
+    @staticmethod
+    def _deadline_outcome() -> ToolFailureOutcome:
+        return ToolFailureOutcome(
+            kind=ToolFailureKind.DEADLINE,
+            error_type="TimeoutError",
+            message="read_file retry deadline exceeded",
+        )
+
+    @staticmethod
+    def _classify_os_error(error: OSError) -> ToolFailureOutcome:
+        if isinstance(error, PermissionError):
+            kind = ToolFailureKind.PERMISSION_DENIED
+        elif error.errno in _TRANSIENT_READ_ERRNOS:
+            kind = ToolFailureKind.TRANSIENT_BEFORE_EFFECT
+        else:
+            kind = ToolFailureKind.PERMANENT
+        return ToolFailureOutcome(
+            kind=kind,
+            error_type=type(error).__name__,
+            message=str(error),
         )
 
 

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Protocol
 
 from cairn.core.models import ToolResult
@@ -19,6 +20,40 @@ class InvalidArguments(ValueError):
     permission policy, so this is a tool failure rather than an authorization
     outcome.
     """
+
+
+class ToolFailureKind(StrEnum):
+    """Effect-aware outcome of one failed tool operation.
+
+    Only ``transient_before_effect`` can be considered for automatic retry, and
+    only by an implementation that independently proves its operation is safe to
+    repeat. The type is diagnostic for every other failure; it grants no retry
+    authority to the generic tool runner.
+    """
+
+    TRANSIENT_BEFORE_EFFECT = "transient_before_effect"
+    PERMANENT = "permanent"
+    PERMISSION_DENIED = "permission_denied"
+    CANCELLED = "cancelled"
+    DEADLINE = "deadline"
+    EFFECT_UNKNOWN = "effect_unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class ToolFailureOutcome:
+    """Sanitized typed failure from an implementation-owned tool attempt."""
+
+    kind: ToolFailureKind
+    error_type: str
+    message: str
+
+
+class ToolExecutionFailure(RuntimeError):
+    """Carry a typed tool outcome without changing the model-facing error."""
+
+    def __init__(self, outcome: ToolFailureOutcome) -> None:
+        self.outcome = outcome
+        super().__init__(outcome.message)
 
 
 @dataclass(frozen=True)

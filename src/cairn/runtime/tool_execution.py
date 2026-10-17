@@ -61,7 +61,13 @@ from cairn.core.permissions import (
     evaluate_permission_policy,
 )
 from cairn.infra.observability.models import Span, SpanStatus
-from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext, ToolNotFound
+from cairn.infra.tools.base import (
+    InvalidArguments,
+    ToolExecutionContext,
+    ToolExecutionFailure,
+    ToolFailureKind,
+    ToolNotFound,
+)
 from cairn.runtime.agent import Agent
 
 
@@ -112,9 +118,16 @@ def _record_tool_error(
     turn_span: Span | None,
     error: Exception,
     tool_span: Span | None = None,
+    *,
+    failure_kind: ToolFailureKind = ToolFailureKind.EFFECT_UNKNOWN,
 ) -> None:
     """Record an expected preflight or execution failure through one path."""
-    failure = ToolFailure(error=str(error), type=type(error).__name__)
+    if isinstance(error, ToolExecutionFailure):
+        outcome = error.outcome
+        failure = ToolFailure(error=outcome.message, type=outcome.error_type)
+        failure_kind = outcome.kind
+    else:
+        failure = ToolFailure(error=str(error), type=type(error).__name__)
 
     agent.state.add_tool_message(
         tool_call_id=tool_call.id,
@@ -132,7 +145,12 @@ def _record_tool_error(
                     "tool_call_id": tool_call.id,
                 },
             )
-        tool_span.attributes["error_type"] = failure.type
+        tool_span.attributes.update(
+            {
+                "error_type": failure.type,
+                "failure_kind": failure_kind.value,
+            }
+        )
         agent.tracer.end_span(
             tool_span,
             status=SpanStatus.ERROR,
@@ -146,6 +164,7 @@ def _record_tool_error(
                 "tool": tool_call.name,
                 "error": failure.error,
                 "error_type": failure.type,
+                "failure_kind": failure_kind.value,
             },
         )
     )
@@ -236,7 +255,13 @@ async def execute_tool_call(
         tool.validate(tool_call.arguments)
     except (ToolNotFound, InvalidArguments) as exc:
         consume_tool_call()
-        _record_tool_error(agent, tool_call, turn_span, exc)
+        _record_tool_error(
+            agent,
+            tool_call,
+            turn_span,
+            exc,
+            failure_kind=ToolFailureKind.PERMANENT,
+        )
         return
 
     permission = _check_tool_permission(agent, tool_call, turn_span)
@@ -257,6 +282,7 @@ async def execute_tool_call(
                     "tool": tool_call.name,
                     "error": failure.error,
                     "error_type": failure.type,
+                    "failure_kind": ToolFailureKind.PERMISSION_DENIED.value,
                 },
             )
         )
@@ -307,7 +333,12 @@ async def execute_tool_call(
         consume_tool_call()
 
         if tool_span is not None and agent.tracer is not None:
-            tool_span.attributes["cancelled"] = True
+            tool_span.attributes.update(
+                {
+                    "cancelled": True,
+                    "failure_kind": ToolFailureKind.CANCELLED.value,
+                }
+            )
             agent.tracer.end_span(
                 tool_span,
                 status=SpanStatus.ERROR,
@@ -317,7 +348,21 @@ async def execute_tool_call(
 
     except Exception as exc:
         consume_tool_call()
-        _record_tool_error(agent, tool_call, turn_span, exc, tool_span)
+        kind = (
+            ToolFailureKind.DEADLINE
+            if isinstance(exc, TimeoutError)
+            else ToolFailureKind.PERMISSION_DENIED
+            if isinstance(exc, PermissionError)
+            else ToolFailureKind.EFFECT_UNKNOWN
+        )
+        _record_tool_error(
+            agent,
+            tool_call,
+            turn_span,
+            exc,
+            tool_span,
+            failure_kind=kind,
+        )
 
         return
     else:

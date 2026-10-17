@@ -71,6 +71,9 @@ unrequested lookup, sink failure, unavailable trace and incomplete trace. A sink
 failure preserves any usage reported by `trace_finish`, but cannot establish
 complete call counts. No tracer means that final usage event is unavailable even
 if a client internally knew tokens; this API does not create a second usage owner.
+The bounded internal attempts of the built-in
+[`read_file` retry](safe-retry.md) remain one logical tool attempt and execution;
+this summary does not expose a separate retry counter.
 
 `failure_category` uses a fixed vocabulary: `cancelled`, `budget_exhausted`,
 `inspection_failed`, `timeout`, or `runtime_error`. TaskResult has no typed

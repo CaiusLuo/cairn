@@ -1,14 +1,19 @@
 import asyncio
+import errno
 import io
 import os
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
+from cairn.infra.tools.base import ToolExecutionFailure, ToolFailureKind
 from cairn.infra.tools.files import (
     EDIT_FILE_MAX_BYTES,
     READ_FILE_CHUNK_SIZE,
     EditFileTool,
+    ReadFileRetryPolicy,
     ReadFileTool,
     _decode_bounded_utf8,
     _read_bounded_range,
@@ -26,6 +31,231 @@ class RecordingBytesIO(io.BytesIO):
             raise AssertionError("readline must use an explicit byte limit")
         self.readline_sizes.append(size)
         return super().readline(size)
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+        self.sleep_started = asyncio.Event()
+        self.block_sleep = False
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.sleeps.append(delay)
+        self.now += delay
+        self.sleep_started.set()
+        if self.block_sleep:
+            await asyncio.Event().wait()
+
+
+def flaky_open(
+    monkeypatch: pytest.MonkeyPatch,
+    path: Path,
+    failures: int,
+    *,
+    on_attempt: Callable[[], None] | None = None,
+) -> list[int]:
+    original = cast(Callable[..., object], Path.open)
+    attempts: list[int] = []
+
+    def open_path(candidate: Path, *args: object, **kwargs: object) -> object:
+        if candidate == path:
+            attempts.append(len(attempts) + 1)
+            if on_attempt is not None:
+                on_attempt()
+            if len(attempts) <= failures:
+                raise OSError(errno.EAGAIN, "injected transient read failure")
+        return original(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_path)
+    return attempts
+
+
+def retrying_reader(
+    tmp_path: Path,
+    clock: FakeClock,
+    *,
+    policy: ReadFileRetryPolicy | None = None,
+) -> ReadFileTool:
+    return ReadFileTool(
+        Workspace(tmp_path),
+        retry_policy=policy,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"max_attempts": 0},
+        {"max_attempts": 4},
+        {"deadline_seconds": float("nan")},
+        {"deadline_seconds": 0},
+        {"deadline_seconds": 0.26},
+        {"retry_budget_seconds": -0.01},
+        {"retry_budget_seconds": 0.04},
+        {"initial_backoff_seconds": 0},
+        {"max_backoff_seconds": 0},
+        {"max_backoff_seconds": 0.03},
+        {"initial_backoff_seconds": 0.02, "max_backoff_seconds": 0.01},
+    ],
+)
+def test_read_file_retry_policy_cannot_exceed_safety_caps(
+    changes: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        ReadFileRetryPolicy(**changes)  # type: ignore[arg-type]
+
+
+def test_read_file_retries_only_transient_failures_with_bounded_backoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "eventually-readable.txt"
+    path.write_text("answer\n", encoding="utf-8")
+    clock = FakeClock()
+    attempts = flaky_open(monkeypatch, path, failures=2)
+
+    result = asyncio.run(retrying_reader(tmp_path, clock).execute({"path": path.name}))
+
+    assert result.stdout == "answer\n"
+    assert attempts == [1, 2, 3]
+    assert clock.sleeps == [0.01, 0.02]
+    assert clock.now == pytest.approx(0.03)
+
+
+def test_read_file_retry_attempts_and_wait_budget_are_independent_bounds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "unavailable.txt"
+    path.write_text("never returned\n", encoding="utf-8")
+    clock = FakeClock()
+    attempts = flaky_open(monkeypatch, path, failures=10)
+    policy = ReadFileRetryPolicy(
+        max_attempts=3,
+        deadline_seconds=0.25,
+        retry_budget_seconds=0.015,
+        initial_backoff_seconds=0.01,
+        max_backoff_seconds=0.02,
+    )
+
+    with pytest.raises(ToolExecutionFailure) as caught:
+        asyncio.run(
+            retrying_reader(tmp_path, clock, policy=policy).execute({"path": path.name})
+        )
+
+    assert caught.value.outcome.kind is ToolFailureKind.TRANSIENT_BEFORE_EFFECT
+    assert attempts == [1, 2]
+    assert clock.sleeps == [0.01]
+    assert clock.now == pytest.approx(0.01)
+
+
+def test_read_file_retry_never_exceeds_max_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "always-unavailable.txt"
+    path.write_text("never returned\n", encoding="utf-8")
+    clock = FakeClock()
+    attempts = flaky_open(monkeypatch, path, failures=10)
+
+    with pytest.raises(ToolExecutionFailure) as caught:
+        asyncio.run(retrying_reader(tmp_path, clock).execute({"path": path.name}))
+
+    assert caught.value.outcome.kind is ToolFailureKind.TRANSIENT_BEFORE_EFFECT
+    assert attempts == [1, 2, 3]
+    assert clock.sleeps == [0.01, 0.02]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        PermissionError(errno.EACCES, "injected permission failure"),
+        OSError(errno.EIO, "injected permanent read failure"),
+    ],
+)
+def test_read_file_does_not_retry_non_transient_io_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: OSError,
+) -> None:
+    path = tmp_path / "non-transient.txt"
+    path.write_text("never returned\n", encoding="utf-8")
+    clock = FakeClock()
+    original = cast(Callable[..., object], Path.open)
+    attempts = 0
+
+    def fail_open(candidate: Path, *args: object, **kwargs: object) -> object:
+        nonlocal attempts
+        if candidate == path:
+            attempts += 1
+            raise error
+        return original(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_open)
+    with pytest.raises(type(error)) as caught:
+        asyncio.run(retrying_reader(tmp_path, clock).execute({"path": path.name}))
+
+    assert caught.value is error
+    assert attempts == 1
+    assert clock.sleeps == []
+
+
+def test_read_file_retry_deadline_stops_before_another_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "deadline.txt"
+    path.write_text("never returned\n", encoding="utf-8")
+    clock = FakeClock()
+    attempts = flaky_open(
+        monkeypatch,
+        path,
+        failures=10,
+        on_attempt=lambda: setattr(clock, "now", clock.now + 0.095),
+    )
+    policy = ReadFileRetryPolicy(
+        max_attempts=3,
+        deadline_seconds=0.1,
+        retry_budget_seconds=0.03,
+        initial_backoff_seconds=0.01,
+        max_backoff_seconds=0.02,
+    )
+
+    with pytest.raises(ToolExecutionFailure) as caught:
+        asyncio.run(
+            retrying_reader(tmp_path, clock, policy=policy).execute({"path": path.name})
+        )
+
+    assert caught.value.outcome.kind is ToolFailureKind.DEADLINE
+    assert attempts == [1]
+    assert clock.sleeps == []
+    assert clock.now == pytest.approx(0.095)
+
+
+def test_read_file_retry_backoff_propagates_cancellation_without_another_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario() -> None:
+        path = tmp_path / "cancelled.txt"
+        path.write_text("never returned\n", encoding="utf-8")
+        clock = FakeClock()
+        clock.block_sleep = True
+        attempts = flaky_open(monkeypatch, path, failures=10)
+        task = asyncio.create_task(
+            retrying_reader(tmp_path, clock).execute({"path": path.name})
+        )
+
+        await clock.sleep_started.wait()
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert attempts == [1]
+        assert clock.sleeps == [0.01]
+
+    asyncio.run(scenario())
 
 
 def test_read_file_returns_requested_lines_and_caps_output(tmp_path: Path) -> None:

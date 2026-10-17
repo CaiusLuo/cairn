@@ -69,6 +69,12 @@ Infrastructure supplies capabilities such as model clients, filesystem/worktree
 operations, GitHub transport and trace storage; it does not decide when a task or
 turn should run.
 
+The one narrower exception is primitive-local recovery that only the effect
+implementation can prove safe. `ReadFileTool` owns its bounded retry for selected
+transient local read errors because partial reads produce no external effect and
+no partial `ToolResult`. The generic tool runner records typed failure outcomes
+but never repeats an arbitrary Tool. See [Safe retry](guides/safe-retry.md).
+
 ## Cancellation
 
 Work the harness owns is allowed to finish its cleanup when the caller cancels,
@@ -145,9 +151,11 @@ task/turn lifecycle.
 - Durable sessions and checkpoint/resume: a turn boundary (`run_turn`) and a
   tool-call boundary (`tool_execution`) already exist to checkpoint around;
   `AgentState` is the conversation owner to serialize.
-- Typed retry, timeout and idempotency: model fallback lives in `ModelExecutor`,
-  task-level cancellation in `lifecycle`, and workflow timeouts at their call
-  sites.
+- Typed retry, timeout and idempotency: one typed, bounded `read_file` retry now
+  lives with that effect implementation. Model fallback remains in
+  `ModelExecutor`, task-level cancellation in `lifecycle`, and workflow timeouts
+  at their call sites. Broader retry still requires independent effect proof or
+  reconciliation rather than a general framework.
 - Task queue and DAG scheduling: `CodingTaskRunner` and the workflow runners own
   their lifecycles; a scheduler should call them rather than duplicate them.
 - MCP and external tools: `infra.tools` and `infra.tools.registry` own tool
