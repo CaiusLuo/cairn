@@ -168,8 +168,9 @@ def check_sandbox(checks: list[Check]) -> None:
         tool = BashTool(Workspace(workspace))
         result = asyncio.run(tool.execute({"command": "printf sandbox-ready"}))
         marker = Path(root) / "escape-marker"
-        # An outside write must be refused by the OS sandbox, not the tool.
-        escape = asyncio.run(tool.execute({"command": f"printf leaked > {marker}"}))
+        # An outside write must not reach the host. The tool's exit code is not
+        # part of the verdict (reason below), but the call has to run either way.
+        asyncio.run(tool.execute({"command": f"printf leaked > {marker}"}))
         # Observe the result while the directory still exists: TemporaryDirectory
         # deletes the marker on exit, so a later check would always look clean
         # and could report PASS for a sandbox that actually let the write through.
@@ -182,17 +183,25 @@ def check_sandbox(checks: list[Check]) -> None:
         )
         return
 
-    # Refusal must be real: a denied write leaves no marker behind. Also require
-    # the escaping command itself to have been reported as failed.
-    enforced = not escaped and escape.exit_code != 0
+    # The decisive property is the host side: an outside write must leave no
+    # marker on the host. That is what the isolation boundary protects, and it is
+    # observed above while the temporary directory still exists.
+    #
+    # The command's own exit code is deliberately NOT part of the verdict. On
+    # Linux the sandbox mounts a private /tmp tmpfs and creates workspace parents
+    # with --dir, so a write outside the workspace can legitimately succeed inside
+    # that private view and exit 0 while the host never sees it. Requiring a
+    # nonzero exit there reported a healthy sandbox as BLOCKED. A real host write
+    # is still caught, because it always creates the host-side marker.
+    enforced = not escaped
     _emit(
         checks,
         Check(
             "bash-sandbox",
             PASS if enforced else BLOCKED,
-            f"{tool_name} runs commands and denies writes outside the workspace"
+            f"{tool_name} runs commands and leaves no write outside the workspace"
             if enforced
-            else f"{tool_name} ran but an outside write succeeded",
+            else f"{tool_name} ran and a write landed outside the workspace",
         ),
     )
     # Read isolation is a Linux property; macOS allows host reads by default.
