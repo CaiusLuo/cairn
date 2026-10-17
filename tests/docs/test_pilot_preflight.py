@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from examples.pilot import preflight
+from scripts.pilot import preflight
 
 from cairn.infra.sessions.store import UNVERIFIED_SQLITE_DECLARATION
 
@@ -135,7 +135,7 @@ def test_state_directory_inside_the_workspace_is_blocked(tmp_path: Path) -> None
 
 def test_preflight_contains_no_provider_or_network_code() -> None:
     """The documented command must stay offline and unpaid."""
-    source = (ROOT / "examples/pilot/preflight.py").read_text(encoding="utf-8")
+    source = (ROOT / "scripts/pilot/preflight.py").read_text(encoding="utf-8")
     for forbidden in ("litellm", "requests", "urllib", "socket", "http.client"):
         assert forbidden not in source, f"preflight references {forbidden}"
 

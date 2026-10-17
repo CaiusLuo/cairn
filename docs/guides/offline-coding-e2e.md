@@ -23,7 +23,7 @@ provider, API credential, network access or GitHub publication is required.
 ## Reused task and oracle
 
 The test selects `single-file-bug-fix` from the existing `coding-smoke` EvalSuite
-in [coding_smoke_cases.py](../../examples/evals/coding_smoke_cases.py). It uses
+in [coding_smoke.py](../../evaluation/cases/coding_smoke.py). It uses
 that case's original prompt, fixture files and `FileContentEqualsCheck` unchanged.
 It does not create a second corpus, eval runner or Agent loop. The isolated task
 runs through the existing [CodingTaskRunner](../../src/cairn/runtime/tasks/runner.py);

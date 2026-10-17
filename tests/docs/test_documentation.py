@@ -19,14 +19,16 @@ DOCUMENTS = (
     ROOT / "AGENTS.md",
     ROOT / "tests" / "README.md",
     *sorted((ROOT / "docs").rglob(f"*{MARKDOWN_SUFFIX}")),
+    ROOT / "evaluation" / "README.md",
+    ROOT / "scripts" / "README.md",
 )
 
 _LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
-_CODE_PATH = re.compile(r"`((?:src|tests|docs|examples)/[^`\s]+)`")
+_CODE_PATH = re.compile(r"`((?:src|tests|docs|examples|evaluation|scripts)/[^`\s]+)`")
 _PYTEST_PATH = re.compile(r"uv run pytest ([^\s`|]+)")
 
 #: Prefixes that name a real repository path rather than illustrative prose.
-_PATH_PREFIXES = ("src/", "tests/", "docs/", "examples/")
+_PATH_PREFIXES = ("src/", "tests/", "docs/", "examples/", "evaluation/", "scripts/")
 
 
 def _documents() -> list[Path]:

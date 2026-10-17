@@ -8,7 +8,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-from examples.evals.coding_smoke_cases import coding_smoke_cases, coding_smoke_suite
+from evaluation.cases.coding_smoke import coding_smoke_cases, coding_smoke_suite
 
 from cairn.core.budget import RunBudget
 from cairn.core.context import ContextBudget, TokenCount
@@ -709,7 +709,7 @@ def test_duplicate_check_names_keep_identity_in_json_and_summary(
     capsys: pytest.CaptureFixture[str],
     checks: tuple[EvalCheck, EvalCheck],
 ) -> None:
-    from examples.evals.run_coding_smoke import print_result
+    from evaluation.runners.run_coding_smoke import print_result
 
     path = tmp_path / "checks.json"
     report = asyncio.run(
@@ -756,7 +756,7 @@ def test_execution_failure_categories_survive_report_sanitizing(
     failure: str,
     category: EvalFailureCategory,
 ) -> None:
-    from examples.evals.run_coding_smoke import print_result
+    from evaluation.runners.run_coding_smoke import print_result
 
     class FailingLLM:
         calls = 0
@@ -833,7 +833,7 @@ def test_check_failure_categories_and_identity_survive_errors(
     capsys: pytest.CaptureFixture[str],
     failure: str,
 ) -> None:
-    from examples.evals.run_coding_smoke import print_result
+    from evaluation.runners.run_coding_smoke import print_result
 
     class ErrorCheck:
         name = "same-name"
@@ -884,7 +884,7 @@ def test_unsafe_builtin_check_target_is_not_persisted_or_printed(
     capsys: pytest.CaptureFixture[str],
     target: str,
 ) -> None:
-    from examples.evals.run_coding_smoke import print_result
+    from evaluation.runners.run_coding_smoke import print_result
 
     path = tmp_path / "unsafe.json"
     report = asyncio.run(
@@ -910,7 +910,7 @@ def test_manual_script_uses_suite_and_returns_aggregate_exit_status(
     capsys: pytest.CaptureFixture[str],
     success: bool,
 ) -> None:
-    from examples.evals import run_coding_smoke
+    from evaluation.runners import run_coding_smoke
 
     monkeypatch.chdir(tmp_path)
     for name, value in {

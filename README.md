@@ -69,7 +69,7 @@ install correctly yet fail to start. The functional test is the pilot preflight,
 which actually runs commands through the sandbox and checks the host side:
 
 ```bash
-uv run python examples/pilot/preflight.py --profile local-stateless
+uv run python scripts/pilot/preflight.py --profile local-stateless
 ```
 
 Read its `bash-sandbox` result, not `bwrap --version`.
@@ -299,11 +299,11 @@ uv run pytest --cov=cairn --cov-report=term-missing
 ```
 
 See [tests/README.md](tests/README.md) for test organization. To run the
-[five-case coding smoke eval](examples/evals/run_coding_smoke.py) with a real
+[five-case coding smoke eval](evaluation/runners/run_coding_smoke.py) with a real
 provider, configure TOML and credentials as above, then run:
 
 ```bash
-uv run python examples/evals/run_coding_smoke.py --report .cairn/eval-reports/coding-smoke.json
+uv run python evaluation/runners/run_coding_smoke.py --report .cairn/eval-reports/coding-smoke.json
 ```
 
 The eval uses the same default provider and its first model ID, with normal TOML

@@ -33,8 +33,8 @@ requires no API credential. It reports one `PASS`, `SKIP` or `BLOCKED` line per
 check and exits non-zero when the selected profile is blocked.
 
 ```sh
-uv run python examples/pilot/preflight.py
-uv run python examples/pilot/preflight.py --profile local-durable-pilot
+uv run python scripts/pilot/preflight.py
+uv run python scripts/pilot/preflight.py --profile local-durable-pilot
 ```
 
 `SKIP` means the check does not apply to this profile; it is not a pass. For
@@ -93,7 +93,7 @@ cannot stand in for the other.
 
 | Check | Question it answers | What it does **not** prove |
 | --- | --- | --- |
-| Repository preflight (`examples/pilot/preflight.py`) | Does *this checkout* import, run, sandbox and admit the runtime correctly? | That the built wheel ships the same code |
+| Repository preflight (`scripts/pilot/preflight.py`) | Does *this checkout* import, run, sandbox and admit the runtime correctly? | That the built wheel ships the same code |
 | Wheel smoke (built artifact installed into a clean environment) | Does the *installed package* import and expose its entry point? | Anything about the repository working tree |
 
 The preflight script resolves imports from the checkout: it inserts the
@@ -153,7 +153,7 @@ with the same interpreter, and read its result as source validation:
 
 ```sh
 cd /path/to/checkout && /tmp/cairn-pilot-smoke/bin/python \
-  examples/pilot/preflight.py --profile local-durable-pilot
+  scripts/pilot/preflight.py --profile local-durable-pilot
 ```
 
 ## Failure drill: SIGKILL, inspect, confirm, reconcile

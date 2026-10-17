@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from examples.github import run_issue_task as script
+from scripts.github import run_issue_task as script
 from tests.support.git import git
 
 from cairn.core.tasks import TaskSpec
