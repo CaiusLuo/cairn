@@ -100,4 +100,3 @@ serializing TaskResult or raw events when only diagnostics are needed.
 This is a snapshot, not a verification receipt or publication authorization.
 Results are not persisted or reconstructed automatically after process death.
 EvalRunner retains its own existing EvalMetrics and verification ownership.
-The API does not add metrics display to the experimental Pi TUI's per-turn UI.

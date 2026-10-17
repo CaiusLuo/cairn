@@ -832,3 +832,14 @@ def test_default_cli_keeps_original_workspace(
     assert result.exit_code == 0
     assert captured == [tmp_path.resolve()]
     assert not (tmp_path / ".git").exists()
+
+
+def test_cli_help_exposes_native_session_commands() -> None:
+    result = runner.invoke(app, ["--help"])
+
+    assert result.exit_code == 0
+    assert "session" in result.stdout
+    assert "tui" not in result.stdout
+    retired = runner.invoke(app, ["tui"])
+    assert retired.exit_code == 2
+    assert "No such command" in retired.output

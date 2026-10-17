@@ -1,13 +1,27 @@
+import asyncio
 import dataclasses
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import pytest
 
+import cairn.runtime.provider_runtime as provider_module
 from cairn.core.context import ContextBudget, ContextBuilder
 from cairn.core.model_manager import ModelConfig, ProviderConfig
-from cairn.core.provider_catalog import NamedProvider
+from cairn.core.models import Message
+from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
+from cairn.core.provider_catalog import NamedProvider, ProviderCatalog
 from cairn.infra.llm.litellm_client import LiteLLMClient
 from cairn.infra.llm.token_counter import LiteLLMTokenCounter
-from cairn.runtime.provider_runtime import ProviderRuntime, build_provider_runtime
+from cairn.infra.tools.registry import ToolRegistry
+from cairn.runtime.agent import Agent
+from cairn.runtime.provider_runtime import (
+    ProviderRuntime,
+    ProviderSession,
+    build_provider_runtime,
+)
+from cairn.runtime.session import Session
 
 BUDGET = ContextBudget(max_tokens=100, response_tokens=20)
 
@@ -111,3 +125,114 @@ def test_provider_runtime_is_immutable() -> None:
         runtime.llm = runtime.llm  # type: ignore[misc]
     with pytest.raises(dataclasses.FrozenInstanceError):
         runtime.provider = make_provider("other")  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("initial", [True, False], ids=["activation", "switch"])
+def test_cancelled_provider_commit_preserves_bindings_and_session(
+    monkeypatch: pytest.MonkeyPatch, initial: bool
+) -> None:
+    """A caller's cancellation fence refuses activation before binding changes."""
+    previous = build_provider_runtime(make_provider(), "first", BUDGET)
+    agent = Agent(
+        previous.llm,
+        ToolRegistry(),
+        context_builder=previous.context_builder,
+        model_executor=previous.model_executor,
+    )
+    session = Session(agent)
+    agent.state.messages.append(Message(role="user", content="keep history"))
+    history = agent.state.messages.copy()
+    permissions = SessionPermissionHandler()
+    observed: list[ProviderRuntime] = []
+
+    def commit(runtime: ProviderRuntime) -> None:
+        observed.append(runtime)
+        permissions.reset_grants()
+
+    cancelled = threading.Event()
+    cancelled.set()
+
+    @contextmanager
+    def cancelled_guard() -> Iterator[None]:
+        if cancelled.is_set():
+            raise asyncio.CancelledError
+        yield
+
+    bindings = (
+        None if initial else ProviderSession(previous, agent=agent, on_commit=commit)
+    )
+    observed.clear()
+    permissions.grants.add(PermissionCapability.NETWORK)
+    with pytest.raises(asyncio.CancelledError):
+        if bindings is None:
+            ProviderSession(
+                previous, agent=agent, on_commit=commit, commit_guard=cancelled_guard
+            )
+        else:
+            candidate = build_provider_runtime(make_provider("other"), "second", BUDGET)
+            monkeypatch.setattr(
+                provider_module, "build_provider_runtime", lambda *a, **kw: candidate
+            )
+            bindings.select_provider(
+                "other",
+                ProviderCatalog((previous.provider, candidate.provider)),
+                confirm=lambda p, m: True,
+                resolve_credential=lambda p: "second",
+                context_budget=BUDGET,
+                commit_guard=cancelled_guard,
+            )
+    assert agent.llm is previous.llm
+    assert agent.context_builder is previous.context_builder
+    assert agent.model_executor is previous.model_executor
+    assert agent.session_owner is session
+    assert agent.state.messages == history
+    assert permissions.grants == {PermissionCapability.NETWORK}
+    assert observed == []
+
+
+def test_provider_cancellation_after_commit_keeps_new_bindings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once committed, late cancellation cannot restore an old runtime."""
+    previous = build_provider_runtime(make_provider(), "first", BUDGET)
+    candidate = build_provider_runtime(make_provider("other"), "second", BUDGET)
+    agent = Agent(
+        previous.llm,
+        ToolRegistry(),
+        context_builder=previous.context_builder,
+        model_executor=previous.model_executor,
+    )
+    session = Session(agent)
+    agent.state.messages.append(Message(role="user", content="keep history"))
+    history = agent.state.messages.copy()
+    observed: list[ProviderRuntime] = []
+
+    def commit(runtime: ProviderRuntime) -> None:
+        observed.append(runtime)
+
+    bindings = ProviderSession(previous, agent=agent, on_commit=commit)
+    monkeypatch.setattr(
+        provider_module, "build_provider_runtime", lambda *a, **kw: candidate
+    )
+
+    @contextmanager
+    def late_cancel_guard() -> Iterator[None]:
+        yield
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        bindings.select_provider(
+            "other",
+            ProviderCatalog((previous.provider, candidate.provider)),
+            confirm=lambda p, m: True,
+            resolve_credential=lambda p: "second",
+            context_budget=BUDGET,
+            commit_guard=late_cancel_guard,
+        )
+    assert agent.llm is candidate.llm
+    assert agent.context_builder is candidate.context_builder
+    assert agent.model_executor is candidate.model_executor
+    assert agent.provider_name == candidate.provider.name
+    assert agent.session_owner is session
+    assert agent.state.messages == history
+    assert observed == [previous, candidate]

@@ -34,7 +34,7 @@ call, push or Draft PR has been performed, and none is claimed.
 ### Entry point and permissions
 
 `examples/github/run_issue_task.py` is the only publication entry point. The public
-CLI (`cairn`) exposes only `tui` and `session`; nothing in the CLI publishes
+CLI (`cairn`) exposes the `session` command group; nothing in the CLI publishes
 implicitly.
 
 The script requires the explicit `--disposable-repository` opt-in before any
