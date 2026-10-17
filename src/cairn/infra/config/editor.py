@@ -18,15 +18,15 @@ from tomlkit.items import Array, Null, Whitespace
 
 from cairn.core.model_manager import ModelConfig, ProviderConfig
 from cairn.core.provider_catalog import NamedProvider
-from cairn.infra.config_schema import (
+from cairn.infra.config.schema import (
     DEFAULT_PROVIDER_NAME,
     _required_string,
     validate_runtime_provider,
 )
-from cairn.infra.config_schema import (
+from cairn.infra.config.schema import (
     parse_model_config as _parse_model_config,
 )
-from cairn.infra.config_schema import (
+from cairn.infra.config.schema import (
     parse_provider_catalog as _parse_provider_catalog,
 )
 from cairn.infra.workspace.paths import resolve_workspace_path

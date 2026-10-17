@@ -68,26 +68,27 @@ def _targets(tree: ast.Module, package_name: str) -> set[str]:
                 targets.update(f"cairn.{alias.name}" for alias in node.names)
             elif base:
                 targets.add(base)
-                # `from . import sibling` may load a sibling module directly.
-                if node.module is None:
-                    targets.update(f"{base}.{alias.name}" for alias in node.names)
+                # A from-import may name a module or an exported value. Module
+                # candidates become graph edges only if that module exists.
+                targets.update(f"{base}.{alias.name}" for alias in node.names)
     return targets
+
+
+def _module_context(path: Path) -> tuple[str, str]:
+    relative = path.relative_to(PACKAGE_ROOT).with_suffix("")
+    parts = ("cairn", *relative.parts[:-1])
+    if path.name != "__init__.py":
+        parts = (*parts, path.stem)
+    module = ".".join(parts)
+    package = module if path.name == "__init__.py" else module.rpartition(".")[0]
+    return module, package
 
 
 def test_package_imports_follow_the_dependency_direction() -> None:
     violations: list[str] = []
     for layer in sorted(LAYERS):
         for path in sorted((PACKAGE_ROOT / layer).rglob("*.py")):
-            relative = path.relative_to(PACKAGE_ROOT).with_suffix("")
-            parts = ("cairn", *relative.parts[:-1])
-            if path.name != "__init__.py":
-                parts = (*parts, path.stem)
-            module_name = ".".join(parts)
-            package_name = (
-                module_name
-                if path.name == "__init__.py"
-                else module_name.rpartition(".")[0]
-            )
+            _, package_name = _module_context(path)
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for target in _targets(tree, package_name):
                 target_layer = _layer_for(target)
@@ -148,16 +149,12 @@ def test_packages_have_no_import_cycles() -> None:
     graph: dict[str, set[str]] = {}
     for layer in sorted(LAYERS):
         for path in sorted((PACKAGE_ROOT / layer).rglob("*.py")):
-            relative = path.relative_to(PACKAGE_ROOT).with_suffix("")
-            parts = ("cairn", *relative.parts[:-1])
-            if path.name != "__init__.py":
-                parts = (*parts, path.stem)
-            module_name = ".".join(parts)
+            module_name, package_name = _module_context(path)
             graph[module_name] = {
                 target
                 for target in _targets(
                     ast.parse(path.read_text(encoding="utf-8"), filename=str(path)),
-                    module_name.rpartition(".")[0],
+                    package_name,
                 )
                 if _layer_for(target) is not None
             }
@@ -175,3 +172,49 @@ def test_packages_have_no_import_cycles() -> None:
         walk(module, module, (module,))
 
     assert not cycles, "Circular Cairn imports:\n" + "\n".join(sorted(set(cycles)))
+
+
+def test_import_targets_include_package_siblings() -> None:
+    tree = ast.parse("from . import schema\nfrom cairn.infra.config import loader")
+    assert _targets(tree, "cairn.infra.config") >= {
+        "cairn.infra.config.schema",
+        "cairn.infra.config.loader",
+    }
+
+
+def test_independent_effect_owners_do_not_import_each_other() -> None:
+    # Local Git and remote GitHub have different safety boundaries. Likewise,
+    # approval storage and session receipts must not borrow another store's
+    # lifecycle. Shared SQLite version policy belongs in infra.sqlite_policy.
+    independent = (
+        ("git", "github"),
+        ("github", "git"),
+        ("memory", "sessions"),
+        ("sessions", "memory"),
+    )
+    violations: list[str] = []
+    for owner, forbidden in independent:
+        prefix = f"cairn.infra.{forbidden}"
+        for path in sorted((PACKAGE_ROOT / "infra" / owner).rglob("*.py")):
+            _, package = _module_context(path)
+            for target in _targets(ast.parse(path.read_text()), package):
+                if target == prefix or target.startswith(prefix + "."):
+                    violations.append(f"{path.relative_to(ROOT)} imports {target}")
+    assert not violations, "Independent effect owners coupled:\n" + "\n".join(
+        violations
+    )
+
+
+def test_effect_owner_guard_resolves_package_relative_imports() -> None:
+    # Package initializers are importers in their own package, not its parent.
+    # All scans must see a forbidden sibling even when it uses relative syntax.
+    path = PACKAGE_ROOT / "infra" / "git" / "__init__.py"
+    module, package = _module_context(path)
+    assert module == package == "cairn.infra.git"
+    targets = _targets(ast.parse("from ..github import transport"), package)
+    assert "cairn.infra.github" in targets
+    assert "cairn.infra.github.transport" in targets
+    assert _module_context(PACKAGE_ROOT / "infra" / "git" / "context.py") == (
+        "cairn.infra.git.context",
+        "cairn.infra.git",
+    )

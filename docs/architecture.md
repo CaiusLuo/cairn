@@ -112,6 +112,45 @@ CLI parsing and presentation in `terminal`. Keep the narrowest useful boundary;
 do not add ports or adapters where a direct dependency is already clear and
 stable.
 
+## Domain and adapter entry points
+
+Core stays organized by domain rather than converting each file into a package.
+`core.state` owns conversation facts over the message/LLM/tool values in
+`core.models`; `core.context` creates bounded request views and owns its token
+budget contracts. `core.budget` separately limits execution steps.
+`core.model_manager` owns session model selection; `core.provider_catalog` holds
+provider declarations. Task/evidence values live in `core.tasks` and
+`core.repository`, communication contracts in `core.events` and `core.llm`, and
+memory values and request evidence in `core.memory`. These owners neither
+persist nor execute effects; `AgentState` is not a store.
+
+`infra.config` is the public configuration API. Its `schema`, `loader`, `secrets`
+and `editor` modules separately own validation, TOML parsing, environment and
+credential resolution, and transactional edits. Parsing project-controlled TOML
+must not resolve secrets. These responsibilities share a package, not a lifecycle.
+
+`infra.tools` exports the Tool contract, execution context and failure types,
+`ToolRegistry` and `build_default_registry`. Concrete tools stay in their effect
+modules. The factory creates fresh instances in stable model-visible order and
+injects the exact Workspace and credential policy. `runtime.assembly` composes
+this registry with repository context; it does not maintain a second tool list.
+Preflight and capability-derived execution authority stay in runtime.
+
+Local `infra.git` and remote `infra.github` do not depend on each other. Session
+and Memory stores also remain independent; they share only neutral SQLite
+runtime qualification in `infra.sqlite_policy`. Trace storage owns telemetry,
+never recovery or approval authority; see [ADR 0002](adr/0002-storage-ownership-and-persistence.md).
+Architecture tests enforce these independent effect boundaries as well as layer
+direction and import cycles, including package-relative imports.
+
+The native Python CLI is the maintained interactive entry point. Retired Pi UI,
+Bridge/TUI and ACP code have no compatibility adapters. Repository experiment
+assets live under `evaluation/` (cases, runners and benchmarks); operational
+GitHub and pilot commands live under `scripts/`. Reusable evaluation sequencing
+stays in `runtime.evals`. Frozen contracts and historical evidence in `docs/evals/`
+retain their original paths and contents; current runnable commands are listed
+in [evaluation/README.md](../evaluation/README.md).
+
 ## Where mutable state lives
 
 | State | Owner |

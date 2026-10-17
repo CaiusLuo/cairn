@@ -13,6 +13,7 @@ from cairn.core.events import Event, EventHandler
 from cairn.core.permissions import SessionPermissionHandler
 from cairn.core.provider_catalog import ProviderCatalog
 from cairn.infra.config import (
+    CAIRN_MAX_STEPS_ENV_NAME,
     ConfigLayout,
     ProjectProviders,
     default_provider,
@@ -20,7 +21,6 @@ from cairn.infra.config import (
     resolve_context_budget,
     resolve_provider_api_key,
 )
-from cairn.infra.config_schema import CAIRN_MAX_STEPS_ENV_NAME
 from cairn.infra.observability.sinks import JsonlTraceSink
 from cairn.infra.observability.storage import TraceStore
 from cairn.infra.observability.tracer import Tracer

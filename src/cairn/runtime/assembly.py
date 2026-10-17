@@ -6,13 +6,7 @@ from cairn.core.llm import LLMClient
 from cairn.core.permissions import PermissionHandler
 from cairn.infra.git.context import RepoContextProvider
 from cairn.infra.observability.tracer import Tracer
-from cairn.infra.tools.bash import BashTool
-from cairn.infra.tools.files import EditFileTool, ReadFileTool
-from cairn.infra.tools.glob import GlobTool
-from cairn.infra.tools.grep import GrepTool
-from cairn.infra.tools.patch import PatchTool
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.infra.tools.write import WriteTool
+from cairn.infra.tools import build_default_registry
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.model_executor import ModelExecutor
@@ -39,15 +33,7 @@ def build_agent(
     and the repository-context provider both keep those names out of the child
     environments they create, so a new consumer cannot silently miss one.
     """
-    registry = ToolRegistry()
-
-    registry.register_tool(BashTool(workspace, secret_env_keys=secret_env_keys))
-    registry.register_tool(ReadFileTool(workspace))
-    registry.register_tool(EditFileTool(workspace))
-    registry.register_tool(WriteTool(workspace))
-    registry.register_tool(PatchTool(workspace))
-    registry.register_tool(GlobTool(workspace))
-    registry.register_tool(GrepTool(workspace))
+    registry = build_default_registry(workspace, secret_env_keys=secret_env_keys)
 
     return Agent(
         llm=llm,
