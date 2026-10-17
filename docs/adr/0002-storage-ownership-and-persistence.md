@@ -1,6 +1,6 @@
 # 2. Storage ownership and persistence tiers
 
-Status: proposed
+Status: accepted
 
 ## Context
 
@@ -157,14 +157,18 @@ for now because it trades a gate for a schema-level migration plus a new file
 state, and because the WAL-reset bug is a property of the runtime, not of the
 journal mode chosen per database.
 
-This decision stays **proposed**: the Owner has not accepted the added
-`infra.memory` → `infra.sessions` dependency, the refusal message contract, or
-the consequence for hosts currently on a blocked runtime (see the checklist).
+The Owner accepted **option (a0)** on 2026-10-17: the policy moves to a neutral
+`infra` module, so the `infra.memory` → `infra.sessions` question is moot. Memory
+refuses an unverified runtime by default, the existing Session development
+override is not extended to it, and existing memory databases are left intact.
+See [Decisions taken](#decisions-taken). The refusal message contract and the
+Journal consumer remain unruled and do not block #63.
 
 ### D4. The Journal tier is opened with its first consumer, not before
 
-No component is a Journal today. `TraceStore` supplies the evidence a Journal
-would retain, but trace records are best-effort: a trace sink failure is captured
+No component is a Journal today, and building one is a later, separate change.
+`TraceStore` supplies evidence a Journal might read, but trace records are
+best-effort and telemetry is not a Journal (`D1`): a trace sink failure is captured
 by the tracer and a checkpoint may still commit with `persisted=False`
 (`docs/guides/durable-session.md` lines 122–123). `TraceStore` also removes
 derived `summaries/` sidecars as it encounters them (`storage.py` lines 197–212).
@@ -242,38 +246,53 @@ lifecycle.
   `D3` (a) needs its own issue, regression test and a read-only-to-Durable
   re-check on each host.
 
-## Decision checklist
+## Decisions taken
 
-Each item is an open question for the Owner. None is answered by this record.
+The Owner accepted this ADR on 2026-10-17. Each item below is the ruling that
+implementation must follow; none is still open.
 
-1. **Accept (a) for `D3`, in full or deferred?** In full: memory stops working on
-   blocked runtimes, matching Sessions. Deferred: memory keeps its current
-   coverage but the Strict Durable claim stays untrue there.
-2. **May `infra.memory` import `infra.sessions`, or should the policy move to a
-   neutral `infra` helper (option a0)?** Recommendation: the neutral helper, so
-   memory depends on a version rule rather than on the session store.
-   No: the helpers need a shared, non-package home, which is a boundary change of
-   its own.
-3. **What may a refusal reveal?** A fixed `MemoryError` keeps today's coarse
-   contract but is hard to act on. A distinct message names the runtime and
-   version, at the cost of widening an error contract hosts may pin.
-4. **Does declaring `CAIRN_ALLOW_UNVERIFIED_SQLITE=1` cover `MemoryStore`?**
-   Decide this **before** implementing #63. One variable for both stores is
-   simpler to reason about; recommendation is the opposite — a memory-specific
-   declaration — because the existing one was introduced to admit an unverified
-   *Session* store for development, and reusing it would let a dev override
-   silently authorise approval storage that no one qualified.
-5. **What happens to existing `MemoryStore` databases on a refused runtime?**
-   Fail closed and require a qualified interpreter leaves data intact but
-   unreadable to those hosts. Any automatic rewrite is out of scope and would
-   itself need a migration.
-6. **Who is a Journal consumer?** Naming one now fixes its retention policy and
-   its own commit contract. It does not add a dependency on SQLite receipts
-   (`D4`). Naming none keeps the tier as a rule.
-7. **May traces be referenced by an approval when the trace is gone?** Today an
-   approval retains typed IDs whose trace may be pruned by `delete_oldest`
-   (`storage.py` lines 80–115). Keeping it is honest and documented; strengthening
-   it changes memory evidence requirements.
+1. **Remediation for `D3`: option (a0), a neutral `infra` SQLite-policy module.**
+   `sqlite_wal_fix_supported`, `wal_admission` and `VERIFIED_SQLITE_VERSIONS` move
+   to a policy module under `infra` that both `sessions` and `memory` import. One
+   version judgement stays one, and `infra.memory` never imports
+   `infra.sessions`. This is a policy holder, not a driver or backend framework:
+   it answers a version question and nothing else.
+2. **`MemoryStore` refuses an unverified runtime by default.** Project Memory
+   stops being silently writable on a BLOCKED runtime. The refusal is the default,
+   not an opt-in.
+3. **The Session development override is not extended automatically.**
+   `CAIRN_ALLOW_UNVERIFIED_SQLITE=1` continues to mean *Session store only*. It
+   must not silently authorise approval storage. If memory ever needs a
+   development override it requires its own explicit decision and its own
+   declaration, so one store's development escape hatch can never widen into
+   another store's data.
+4. **Existing `MemoryStore` databases are left byte-for-byte intact.** No automatic
+   `journal_mode` rewrite, no migration, no silent repair. On a refused runtime the
+   data stays where it is and becomes unreadable to that host until a qualified
+   interpreter is used. A future migration would be its own recorded change.
+5. **A JSONL Journal is a separate, later implementation.** It is not built here,
+   and nothing in this ADR's acceptance requires it. When it is built it owns its
+   own committed conversation history with strictly weaker guarantees than Strict
+   Durable, per `D4`, and it never depends on a SQLite `Receipt`.
+
+Still unruled, and deliberately not blocking #63:
+
+- **What a refusal may reveal.** A fixed `MemoryError` keeps today's coarse
+  contract but is hard to act on; a distinct message names the runtime and version
+  at the cost of widening an error contract hosts may pin.
+- **Who the first Journal consumer is.** Naming one fixes its retention policy and
+  its own commit contract (`D4`); naming none keeps the tier as a rule.
+- **Whether an approval may cite a pruned trace.** Today an approval retains typed
+  IDs whose trace may be pruned by `delete_oldest` (`storage.py` lines 80–115).
+  Keeping it is honest and documented; strengthening it changes memory evidence
+  requirements.
+
+### Acceptance scope
+
+This ADR decision authorises exactly one follow-up change: **#63, the SQLite WAL
+safety-policy convergence for `MemoryStore`**. It does not authorise a project-wide
+refactor, a storage abstraction, a shared database, a Journal implementation, or a
+change to Session admission semantics.
 
 ## References
 
