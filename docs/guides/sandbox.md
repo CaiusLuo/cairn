@@ -166,11 +166,19 @@ never receives it. The host path is unchanged, which is the guarantee that
 matters, but an exit code is not evidence of enforcement: check the host path,
 not the command's status.
 
-This is why the pilot preflight decides from the host-side marker rather than
-from the command exit code. On this Debian 12 host, `bwrap 0.8.0` reports
-`escape exit=0` for an outside write while the marker stays absent on the host,
-so a preflight that trusted the exit code alone would report the sandbox as
-escaped when it did not.
+This is why the pilot preflight decides from the **host-side marker** and not
+from the command exit code. A nonzero exit is not required: writing to a private
+ephemeral mount may legitimately succeed and exit 0 while the host is untouched.
+
+Measured on this Debian 12 host with `bwrap 0.8.0`: an outside write exits **0**
+and the host marker stays **absent**. The isolation property holds, so the
+preflight reports PASS. An earlier preflight also required a nonzero exit and
+therefore reported a healthy sandbox as BLOCKED — a false negative, now fixed.
+
+A genuine host write is still caught, because it always creates the marker. The
+marker is read while the temporary directory still exists; observing it after
+cleanup would see nothing and could report PASS for a sandbox that had actually
+let the write through.
 
 ## Verifying the boundary
 

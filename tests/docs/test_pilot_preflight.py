@@ -175,7 +175,7 @@ def test_a_sandbox_that_allows_an_outside_write_is_blocked(
 
     assert _status(checks, "bash-sandbox") == preflight.BLOCKED
     blocked = next(c for c in checks if c.name == "bash-sandbox")
-    assert "outside write succeeded" in blocked.detail
+    assert "landed outside the workspace" in blocked.detail
 
 
 def test_a_refusing_sandbox_is_reported_as_pass(
@@ -220,3 +220,105 @@ def test_stateless_never_constructs_a_session_store(
     preflight.check_store_admission(checks, durable=False)
 
     assert _status(checks, "session-store-gate") == preflight.SKIP
+
+
+def test_a_private_mount_write_with_exit_zero_is_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write that only lands in the sandbox's private view is not an escape.
+
+    On Linux the mount namespace gives the command a private /tmp tmpfs and
+    creates workspace parents with --dir, so an outside write can succeed inside
+    that view and exit 0 while the host is untouched. The host marker stays
+    absent, which is the property under test, so the verdict is PASS.
+    """
+    from cairn.core.models import ToolResult
+
+    class PrivateViewBashTool:
+        """Write succeeds in the child's private layer; the host never sees it."""
+
+        def __init__(self, _workspace: object) -> None:
+            pass
+
+        async def execute(self, arguments: dict[str, object]) -> ToolResult:
+            if ">" in str(arguments["command"]):
+                # Exit 0 exactly as the real Bubblewrap call does.
+                return ToolResult(stdout="", stderr="", exit_code=0)
+            return ToolResult(stdout="sandbox-ready", stderr="", exit_code=0)
+
+    monkeypatch.setattr(preflight, "BashTool", PrivateViewBashTool)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(Path, "is_file", lambda self: True)
+
+    checks: list[preflight.Check] = []
+    preflight.check_sandbox(checks)
+
+    assert _status(checks, "bash-sandbox") == preflight.PASS
+
+
+@pytest.mark.parametrize("escape_exit", [0, 1, 2])
+def test_a_real_host_write_is_blocked_whatever_the_exit_code(
+    monkeypatch: pytest.MonkeyPatch, escape_exit: int
+) -> None:
+    """A genuine host write must BLOCK regardless of what the command reports."""
+    from cairn.core.models import ToolResult
+
+    class LeakingBashTool:
+        def __init__(self, _workspace: object) -> None:
+            pass
+
+        async def execute(self, arguments: dict[str, object]) -> ToolResult:
+            command = str(arguments["command"])
+            if ">" not in command:
+                return ToolResult(stdout="sandbox-ready", stderr="", exit_code=0)
+            target = command.rsplit(">", 1)[1].strip()
+            Path(target).write_text("leaked", encoding="utf-8")
+            return ToolResult(stdout="", stderr="", exit_code=escape_exit)
+
+    monkeypatch.setattr(preflight, "BashTool", LeakingBashTool)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(Path, "is_file", lambda self: True)
+
+    checks: list[preflight.Check] = []
+    preflight.check_sandbox(checks)
+
+    assert _status(checks, "bash-sandbox") == preflight.BLOCKED
+    assert _status(checks, "sandbox-read-boundary") == preflight.BLOCKED
+
+
+def test_a_sandbox_that_cannot_run_commands_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the sandbox cannot even execute a command, the verdict is BLOCKED."""
+    from cairn.core.models import ToolResult
+
+    class BrokenBashTool:
+        def __init__(self, _workspace: object) -> None:
+            pass
+
+        async def execute(self, arguments: dict[str, object]) -> ToolResult:
+            return ToolResult(stdout="", stderr="bwrap: failed to set up", exit_code=1)
+
+    monkeypatch.setattr(preflight, "BashTool", BrokenBashTool)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(Path, "is_file", lambda self: True)
+
+    checks: list[preflight.Check] = []
+    preflight.check_sandbox(checks)
+
+    assert _status(checks, "bash-sandbox") == preflight.BLOCKED
+    blocked = next(c for c in checks if c.name == "bash-sandbox")
+    assert "bwrap" in blocked.detail
+
+
+def test_a_missing_sandbox_binary_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No sandbox executable means no sandboxed execution at all."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(Path, "is_file", lambda self: False)
+
+    checks: list[preflight.Check] = []
+    preflight.check_sandbox(checks)
+
+    assert _status(checks, "bash-sandbox") == preflight.BLOCKED

@@ -86,44 +86,74 @@ traces. It adds no CLI subcommand.
 
 ### Clean-install smoke
 
-The preflight covers import and `--help` against the working tree. For a wheel
-install, use the documented packaging check in
-[AGENTS.md](../../AGENTS.md#verification):
+### Two different checks, two different things proven
 
-```bash
-uv build
-```
+The repository preflight and the wheel smoke answer different questions, and one
+cannot stand in for the other.
 
-Then install the built wheel into a fresh environment created from the
-interpreter you intend to qualify. Name that interpreter explicitly: `uv venv
---python` pins which Python (and therefore which linked SQLite) the smoke tests,
-where a bare `python -m venv` silently inherits whichever `python` is on `PATH`.
+| Check | Question it answers | What it does **not** prove |
+| --- | --- | --- |
+| Repository preflight (`examples/pilot/preflight.py`) | Does *this checkout* import, run, sandbox and admit the runtime correctly? | That the built wheel ships the same code |
+| Wheel smoke (built artifact installed into a clean environment) | Does the *installed package* import and expose its entry point? | Anything about the repository working tree |
+
+The preflight script resolves imports from the checkout: it inserts the
+repository root at the front of `sys.path` before importing `cairn`, so running
+it can only ever exercise checkout code. Treat its result as **checkout-level
+source validation**, never as wheel validation.
+
+### Wheel smoke
+
+Build once, from the repository root:
 
 ```sh
 uv build
+```
 
-# Create the venv from the interpreter under test, then confirm what it links.
+That single command is the build step; do not run it again inside the smoke
+steps below.
+
+Create a clean environment from the interpreter you intend to qualify. Name that
+interpreter explicitly: `uv venv --python` pins which Python — and therefore
+which linked SQLite — the smoke exercises, whereas a bare `python -m venv`
+silently inherits whichever `python` is on `PATH`.
+
+```sh
 uv venv --python /usr/local/bin/python3.12 /tmp/cairn-pilot-smoke
+
+# What does the chosen interpreter actually link?
 /tmp/cairn-pilot-smoke/bin/python -c \
   "import sqlite3; print(sqlite3.sqlite_version)"
 
-# Install the wheel into that venv specifically.
+# Install the wheel into that environment specifically.
 uv pip install --python /tmp/cairn-pilot-smoke/bin/python dist/cairn-*.whl
-
-# Confirm the entry point comes from the wheel, not the checkout.
-/tmp/cairn-pilot-smoke/bin/cairn --help
 ```
 
-For a venv made by an interpreter you have already qualified (for example the
-uv-managed Python that links SQLite 3.53.1), the same steps apply with that
-path substituted for `--python`.
-
-A passing import is not a durable qualification: repeat the preflight inside the
-new environment before trusting it.
+Verify the wheel from **outside the repository**. Every command below calls the
+installed environment's own binaries by absolute path, so no project environment
+is selected, synced, or implied. `uv run` is deliberately avoided here: run
+inside the project it resolves the *project's* environment, which would make a
+checkout run look like a wheel run.
 
 ```sh
-uv run --python /tmp/cairn-pilot-smoke/bin/python \
-  python examples/pilot/preflight.py --profile local-durable-pilot
+# 1. The entry point exists and runs, from the installed environment.
+/tmp/cairn-pilot-smoke/bin/cairn --help
+
+# 2. The imported package comes from site-packages, not the checkout.
+cd /tmp && /tmp/cairn-pilot-smoke/bin/python -I -c \
+  "import cairn; print(cairn.__file__)"
+```
+
+Step 2 must print a path under `/tmp/cairn-pilot-smoke/lib/`, not a repository
+checkout. `-I` isolates the interpreter from `PYTHONPATH` and user site
+directories, so the printed path reflects what the environment actually
+installed.
+
+A passing import is not a durable qualification. Run the repository preflight
+with the same interpreter, and read its result as source validation:
+
+```sh
+cd /path/to/checkout && /tmp/cairn-pilot-smoke/bin/python \
+  examples/pilot/preflight.py --profile local-durable-pilot
 ```
 
 ## Failure drill: SIGKILL, inspect, confirm, reconcile

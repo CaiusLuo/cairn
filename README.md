@@ -54,8 +54,8 @@ command itself is not the problem.
 
 ### Linux sandbox prerequisite
 
-The Bash sandbox is `bubblewrap` on Linux and `sandbox-exec` on macOS. Check the
-Linux tool actually works before relying on it:
+The Bash sandbox is `bubblewrap` on Linux and `sandbox-exec` on macOS. First
+confirm the tool is installed:
 
 ```bash
 command -v bwrap && bwrap --version
@@ -63,6 +63,17 @@ command -v bwrap && bwrap --version
 
 On Debian/Ubuntu: `sudo apt-get install bubblewrap`. Without it, `BashTool`
 refuses to run commands rather than running them unsandboxed.
+
+That check proves **availability only**, not that the sandbox can function. On a
+VPS or inside a container, user namespaces are often restricted and `bwrap` can
+install correctly yet fail to start. The functional test is the pilot preflight,
+which actually runs commands through the sandbox and checks the host side:
+
+```bash
+uv run python examples/pilot/preflight.py --profile local-stateless
+```
+
+Read its `bash-sandbox` result, not `bwrap --version`.
 
 ### Git version for worktree workflows
 
