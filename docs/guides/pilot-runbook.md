@@ -198,7 +198,7 @@ Stop the pilot and investigate; do not "try again" any of these:
 | A permission request was denied | The capability was not granted. Do not widen it to continue; restart with an explicit grant if the task truly needs it. |
 | SQLite reports an unfixed or unknown version | Durable mode is `BLOCKED`. Continue in stateless mode or select a qualified interpreter. Never declare the runtime verified. |
 | An effect fence or unknown external effect exists | Treat the external state as possibly changed. Inspect before reconciling; never replay. |
-| A trace cannot be written | Persistence or trace uncertainty stops admission. Resolve storage before continuing. |
+| A trace cannot be written | **Operator policy, not a runtime guarantee.** Durable trace writes are best-effort and a failure can coexist with an already committed receipt, so nothing enforces this for you. Treat the missing trace as losing your audit trail and stop until storage is healthy. |
 | You suspect a secret leaked | Stop. Rotate the credential, then inspect traces and Bash child environments. Configured credentials are stripped from Bash children, but files the user can read remain readable. |
 | Git metadata protection is refused (`UnprotectedGitMetadata`) | The workspace layout is unsupported. Move to a supported checkout; do not work around the refusal. |
 
@@ -225,6 +225,15 @@ host, interpreter and filesystem, not a platform or deployment claim.
 | **Stateless** | **PASS** | Preflight `local-stateless` reported no blocking check on this host. Sandbox enforcement, `cairn --help`, writable state directory and JSONL trace output were each verified. |
 | **Durable** | **BLOCKED** | The uv-managed interpreter links SQLite 3.50.4; `wal_admission()` is `refused`, so `SessionStore` refuses and every durable command fails closed. This host is not qualified for durable mode. |
 | **GitHub Publishing** | **BLOCKED** | Not exercised. It requires the separately authorized live smoke in [#50](https://github.com/CaiusLuo/cairn/issues/50); no real Draft PR has been created or verified by this runbook. |
+
+### What the preflight does not cover
+
+The preflight admits a host; it is not the #51 pilot acceptance by itself. It
+does **not** run the offline scripted Agent workflow, and it does **not** run the
+fresh-wheel install described above. Both are separate commands in this runbook
+and neither is implied by a preflight `PASS`. A green preflight means the
+runtime, sandbox, CLI import, state directory, store gate and trace output were
+each observed on this host — nothing more.
 
 ### What is not claimed
 

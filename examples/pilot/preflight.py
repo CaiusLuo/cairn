@@ -91,10 +91,13 @@ def check_python(checks: list[Check]) -> None:
 
 
 def check_sqlite(checks: list[Check], *, durable: bool) -> None:
+    # One version feeds both judgements, so the reported verdict and the store's
+    # own gate can never disagree about which runtime is being described.
+    version_info = sqlite3.sqlite_version_info
     version = sqlite3.sqlite_version
-    supported = sqlite_wal_fix_supported()
+    supported = sqlite_wal_fix_supported(version_info)
     declared = os.environ.get(UNVERIFIED_SQLITE_DECLARATION) == "1"
-    admission = wal_admission()
+    admission = wal_admission(version=version_info)
     detail = (
         f"sqlite {version}; wal_reset_fix={supported}; "
         f"admission={admission}; requires={VERIFIED_SQLITE_VERSIONS}"
@@ -166,7 +169,11 @@ def check_sandbox(checks: list[Check]) -> None:
         result = asyncio.run(tool.execute({"command": "printf sandbox-ready"}))
         marker = Path(root) / "escape-marker"
         # An outside write must be refused by the OS sandbox, not the tool.
-        asyncio.run(tool.execute({"command": f"printf leaked > {marker}"}))
+        escape = asyncio.run(tool.execute({"command": f"printf leaked > {marker}"}))
+        # Observe the result while the directory still exists: TemporaryDirectory
+        # deletes the marker on exit, so a later check would always look clean
+        # and could report PASS for a sandbox that actually let the write through.
+        escaped = marker.exists()
 
     if result.exit_code != 0 or result.stdout != "sandbox-ready":
         _emit(
@@ -175,8 +182,9 @@ def check_sandbox(checks: list[Check]) -> None:
         )
         return
 
-    # Refusal must be real: a denied write leaves no marker behind.
-    enforced = not marker.exists()
+    # Refusal must be real: a denied write leaves no marker behind. Also require
+    # the escaping command itself to have been reported as failed.
+    enforced = not escaped and escape.exit_code != 0
     _emit(
         checks,
         Check(
@@ -298,6 +306,20 @@ def check_store_admission(checks: list[Check], *, durable: bool) -> None:
     path. SessionStore creates its own private (0700) directory, so the parent
     is deliberately not pre-created. Nothing is written when it refuses.
     """
+    if not durable:
+        # A stateless profile never constructs a SessionStore, so opening one
+        # here would both misreport the profile and create SQLite side effects
+        # the mode does not have.
+        _emit(
+            checks,
+            Check(
+                "session-store-gate",
+                SKIP,
+                "stateless mode does not open a SessionStore",
+            ),
+        )
+        return
+
     # SessionStore walks path components without following symlinks, so start
     # from the resolved directory (on macOS /var is a symlink to /private/var).
     base = Path(tempfile.mkdtemp(prefix="cairn-preflight-store-")).resolve()
@@ -344,17 +366,7 @@ def check_store_admission(checks: list[Check], *, durable: bool) -> None:
             admission = store.wal_admission
         finally:
             store.close()
-        if not durable:
-            _emit(
-                checks,
-                Check(
-                    "session-store-gate",
-                    SKIP,
-                    f"store opens with admission={admission}"
-                    " (stateless mode does not use it)",
-                ),
-            )
-        elif admission == "verified":
+        if admission == "verified":
             _emit(
                 checks,
                 Check(
