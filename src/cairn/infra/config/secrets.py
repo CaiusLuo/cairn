@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from cairn.core.context import ContextBudget
 from cairn.core.model_manager import ModelConfig, ProviderConfig
 from cairn.core.provider_catalog import NamedProvider
-from cairn.infra.config_schema import (
+from cairn.infra.config.schema import (
     CAIRN_BASE_URL_ENV_NAME,
     CAIRN_CONFIG_ENV_NAMES,
     CAIRN_LLM_API_KEY_ENV_NAME,

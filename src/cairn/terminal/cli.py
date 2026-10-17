@@ -20,7 +20,7 @@ from cairn.infra.config import (
     resolve_context_budget,
     resolve_provider_api_key,
 )
-from cairn.infra.config_schema import CAIRN_MAX_STEPS_ENV_NAME
+from cairn.infra.config.schema import CAIRN_MAX_STEPS_ENV_NAME
 from cairn.infra.observability.sinks import JsonlTraceSink
 from cairn.infra.observability.storage import TraceStore
 from cairn.infra.observability.tracer import Tracer

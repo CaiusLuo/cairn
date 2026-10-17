@@ -55,9 +55,9 @@ context first.
 
 ### D4. Configuration separates parsing, validation, secrets and edits
 
-`infra/config_schema.py` (shapes and validation), `config_loader.py` (TOML
-parsing and layout detection), `config_secrets.py` (environment and credential
-resolution), `config_editor.py` (transactional model-file edits). `infra/config.py`
+`infra/config/schema.py` (shapes and validation), `infra/config/loader.py` (TOML
+parsing and layout detection), `infra/config/secrets.py` (environment and credential
+resolution), `infra/config/editor.py` (transactional model-file edits). `infra/config/__init__.py`
 remains the single import surface.
 
 Consequence: validating project-controlled routing stays separate from touching

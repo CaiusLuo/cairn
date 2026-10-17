@@ -131,8 +131,8 @@ hot-reload configuration.
 
 | Responsibility | Module |
 | --- | --- |
-| Layout models and validation | `src/cairn/infra/config_schema.py` |
-| TOML parsing and layout detection | `src/cairn/infra/config_loader.py` |
-| Credential and budget resolution | `src/cairn/infra/config_secrets.py` |
-| Transactional model-file edits | `src/cairn/infra/config_editor.py` |
-| Stable import surface | `src/cairn/infra/config.py` |
+| Layout models and validation | `src/cairn/infra/config/schema.py` |
+| TOML parsing and layout detection | `src/cairn/infra/config/loader.py` |
+| Credential and budget resolution | `src/cairn/infra/config/secrets.py` |
+| Transactional model-file edits | `src/cairn/infra/config/editor.py` |
+| Stable import surface | `src/cairn/infra/config/__init__.py` |

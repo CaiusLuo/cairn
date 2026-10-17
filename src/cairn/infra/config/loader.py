@@ -3,7 +3,7 @@
 Parsing is deliberately separate from credential resolution and persistent edits:
 loading project configuration validates project-controlled routing and never
 reads or returns secret values. The ``.env`` layout's implicit provider is built
-by :mod:`cairn.infra.config_secrets`, which owns environment resolution.
+by :mod:`cairn.infra.config.secrets`, which owns environment resolution.
 """
 
 import tomllib
@@ -12,7 +12,7 @@ from pathlib import Path
 
 from cairn.core.model_manager import ProviderConfig
 from cairn.core.provider_catalog import NamedProvider, ProviderCatalog
-from cairn.infra.config_schema import (
+from cairn.infra.config.schema import (
     DEFAULT_PROVIDER_NAME,
     ConfigLayout,
     ProjectProviders,
@@ -20,7 +20,7 @@ from cairn.infra.config_schema import (
     parse_provider_catalog,
     validate_runtime_provider,
 )
-from cairn.infra.config_secrets import environment_provider
+from cairn.infra.config.secrets import environment_provider
 
 
 def load_project_providers(

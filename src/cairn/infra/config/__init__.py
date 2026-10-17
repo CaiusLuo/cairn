@@ -2,31 +2,31 @@
 
 Configuration responsibilities live in focused modules:
 
-* ``config_schema`` — layout models and project-controlled validation;
-* ``config_loader`` — TOML parsing and layout detection;
-* ``config_secrets`` — environment/secret and context-budget resolution,
+* ``schema`` — layout models and project-controlled validation;
+* ``loader`` — TOML parsing and layout detection;
+* ``secrets`` — environment/secret and context-budget resolution,
   including the ``.env`` layout's implicit provider;
-* ``config_editor`` — transactional ``.cairn/models.toml`` edits.
+* ``editor`` — transactional ``.cairn/models.toml`` edits.
 
-This module remains the stable import surface for CLI commands, examples and
+This package remains the stable import surface for CLI commands, examples and
 existing tests.
 """
 
-from cairn.infra.config_editor import add_model_id, move_model_id, remove_model_id
-from cairn.infra.config_loader import (
+from cairn.infra.config.editor import add_model_id, move_model_id, remove_model_id
+from cairn.infra.config.loader import (
     default_provider,
     load_model_config,
     load_project_providers,
     load_provider_catalog,
 )
-from cairn.infra.config_schema import (
+from cairn.infra.config.schema import (
     CAIRN_CONFIG_ENV_NAMES,
     DEFAULT_PROVIDER_NAME,
     ConfigLayout,
     ProjectProviders,
     validate_runtime_provider,
 )
-from cairn.infra.config_secrets import (
+from cairn.infra.config.secrets import (
     environment_provider,
     resolve_cairn_config,
     resolve_context_budget,
