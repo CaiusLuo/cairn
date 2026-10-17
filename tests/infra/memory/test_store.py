@@ -32,19 +32,15 @@ from tests.support.memory import (
 )
 from tests.support.sandbox import require_working_sandbox
 
+
 #: A qualified runtime for this suite. MemoryStore now refuses an unqualified
 #: SQLite before any effect (ADR 0002), so these store-level tests pin the
 #: predicate instead of depending on whichever SQLite the host happens to link.
-QUALIFIED_SQLITE = (3, 53, 1)
-
-
 def _pin_worker_version() -> None:
-    """spawn workers re-import the policy module, so pin it there too."""
-    import cairn.infra.sqlite_policy as policy
+    """Present the qualified version in a spawned worker (see the shared helper)."""
+    from tests.support.sqlite_runtime import pin_worker_runtime
 
-    policy.sqlite_wal_fix_supported = lambda version=None: (
-        (QUALIFIED_SQLITE if version is None else version) >= (3, 51, 3)
-    )
+    pin_worker_runtime()
 
 
 def _propose(root: str, number: int) -> str:

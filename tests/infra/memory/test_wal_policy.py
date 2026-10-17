@@ -14,7 +14,6 @@ from pathlib import Path
 
 import pytest
 
-import cairn.infra.sqlite_policy as _policy
 from cairn.core.memory.models import MemoryError
 from cairn.infra.memory.store import MemoryStore
 from cairn.infra.sqlite_policy import (
@@ -23,23 +22,15 @@ from cairn.infra.sqlite_policy import (
     wal_admission,
 )
 
-#: The unpatched policy decision, captured before any fixture pins it.
-real_wal_admission = _policy.wal_admission
-
 PROJECT = "a" * 64
 
 
 def _pin(monkeypatch: pytest.MonkeyPatch, version: tuple[int, int, int]) -> None:
-    """Drive the real policy with a chosen version.
+    """Present a chosen version to the real policy.
 
-    The suite-wide fixture pins a qualified runtime so store tests do not depend
-    on the host; these admission tests must see the real predicate, so they
-    restore it and inject the version instead.
+    Only the linked version is substituted; both policy functions compute their
+    verdict from it, so these tests exercise the shipped rule rather than a copy.
     """
-    import cairn.infra.sqlite_policy as policy
-
-    monkeypatch.setattr(policy, "sqlite_wal_fix_supported", sqlite_wal_fix_supported)
-    monkeypatch.setattr(policy, "wal_admission", real_wal_admission)
     monkeypatch.setattr(sqlite3, "sqlite_version_info", version)
 
 
