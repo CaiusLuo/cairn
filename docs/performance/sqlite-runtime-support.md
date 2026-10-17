@@ -77,7 +77,8 @@ claim.
 
 | Host | Interpreter | Linked SQLite | Platform | Admission | Verdict |
 | --- | --- | --- | --- | --- | --- |
-| macOS development | CPython 3.12.13 (uv standalone) | **3.50.4** | macOS 26.3.1 arm64 | **refused** | **BLOCKED** |
+| macOS development (uv runtime) | CPython 3.12.13 (uv standalone) | **3.50.4** | macOS 26.3.1 arm64 | **refused** | **BLOCKED** |
+| macOS development (Homebrew runtime) | **CPython 3.12.15** (Homebrew) | **3.54.0** | macOS 26.3.1 arm64, local APFS | **verified** | **PASS** (host-qualified) |
 | Linux deployment | CPython **3.12.15** (uv standalone) | **3.53.1** | Debian 12, kernel 6.1.0-43-amd64, x86_64, ext4 | **verified** | **PASS** |
 | Linux system Python (same host) | CPython 3.11.2 / 3.12.13 (distro) | **3.40.1** | Debian 12, ext4 | **refused** | **BLOCKED** |
 
@@ -105,47 +106,88 @@ global interpreter or library.
 Observed lock configuration on that host: `journal_mode=wal`,
 `locking_mode=normal`, `synchronous=2` (FULL).
 
-### macOS development host
+### macOS development host (qualified 2026-10-17)
 
-The interpreter statically links its own SQLite, so the `sqlite3` CLI on PATH is
-irrelevant to Python: replacing the CLI does not change the runtime. No
-uv-managed CPython on this host reports a SQLite version carrying the fix, and
-`pysqlite3-binary` publishes no macOS arm64 wheel, so a fixed runtime is not
-available here by installing a package.
+**PASS only for the explicitly selected Homebrew CPython 3.12.15 interpreter**
+on macOS 26.3.1 (build 25D771280a), arm64, local APFS, with Homebrew SQLite
+3.54.0. The qualification report was obtained on this host at main
+`6e87a558524b41b295ac8331579b03357f890826`.
+`/opt/homebrew/bin/python3.12` (or its dedicated virtual environment) reports
+`sqlite3.sqlite_version == "3.54.0"`, `wal_admission() == "verified"` without
+`CAIRN_ALLOW_UNVERIFIED_SQLITE`. `otool -L` on its arm64 `_sqlite3` module
+resolves `/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib` to Homebrew's
+`sqlite/3.54.0` keg. The standard-library wrapper supports
+`SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE`, `Connection.setconfig` and
+`Connection.getconfig`, including set/read-back.
+
+A separate live-WAL probe used `os._exit(0)` to preserve a committed WAL.
+Read-only `vfs=unix-none` inspection read the committed row while leaving
+DB/WAL/SHM bytes, identities, size, mode and modification times unchanged.
+The host reported **791 passed, 0 failed, 0 skipped** across
+`tests/infra/sessions` (294), `tests/runtime/tasks` (157),
+`tests/terminal` (265) and three additional runtime Durable/recovery test
+files (75). These are host-run results, not a macOS GitHub Actions job; the
+qualified filesystem and interpreter are part of the evidence.
+
+The pre-existing **uv-managed** CPython 3.12.13/3.13.12/3.14.3/3.15.0a7
+on this host statically link SQLite 3.50.4 and remain **BLOCKED**. Replacing
+the `sqlite3` CLI or using whichever `python3.12` happens to precede
+Homebrew on PATH does not qualify those interpreters. `pysqlite3==0.6.1`
+bundles a fixed SQLite 3.53.4 but lacks the required connection configuration
+interface, so it is not a drop-in alternative. No SessionStore driver change or
+third-party SQLite package was needed.
+
+Homebrew upgrades, changes to the linked SQLite library, OS/filesystem
+changes or interpreter replacement require requalification. Do not silently
+change system Python or a project's default `.venv`.
 
 ### Release verdict
 
-Durable execution is **not** a supported deployment on the macOS development host.
-The blocker there is the linked SQLite 3.50.4, not the code.
-
-The Debian host is **PASS** on the interpreter recorded above. That verdict covers
-that interpreter, filesystem and locking configuration only. It does not qualify
-every Linux host, other filesystems, container storage drivers or network
-filesystems, and it does not qualify the system interpreters on the same machine.
-
-The Debian suites were run against the verified runtime without any admission
-declaration; `CAIRN_ALLOW_UNVERIFIED_SQLITE` was unset throughout.
+The macOS Homebrew interpreter and the Debian uv-managed interpreter listed
+above are **PASS** for the tested host/runtime/filesystem combination only;
+other macOS interpreters on the same machine are still **BLOCKED**. No verdict
+qualifies every macOS/Linux host, every filesystem, network filesystems,
+container storage drivers or power-loss durability. Both PASS suites were run
+without an unverified declaration; `CAIRN_ALLOW_UNVERIFIED_SQLITE` was unset.
 
 ### Available upgrade path
 
-1. Run on a runtime whose SQLite reports a verified version, for example a Linux
-   deployment image built with SQLite 3.51.3 or newer.
-2. Or build CPython against a verified SQLite; the uv-managed standalone builds
-   link their own copy and do not follow the system library.
-3. Re-run the durable suites on that runtime and record its versions here.
+1. On this qualified macOS host, explicitly use Homebrew CPython 3.12.15
+   (`/opt/homebrew/bin/python3.12`) and its dedicated virtual environment;
+   do not rely on an unqualified PATH default.
+2. Elsewhere, use a CPython runtime actually linked to a fixed SQLite (for
+   example the qualified Debian runtime), keeping the stdlib connection API.
+3. Re-run durable suites, read-only inspection and crash recovery on each new
+   host/runtime/filesystem and record its actual library linkage.
 
 Upgrading the global Python or SQLite is out of scope and must not happen
 silently.
 
 ## Evidence
 
-macOS development host, where the suites need the unverified declaration:
+macOS Homebrew runtime, using an isolated virtual environment from the
+repository root (these commands do not modify the existing project `.venv`):
 
 ```bash
-uv run python -c "import sqlite3; print(sqlite3.sqlite_version)"
-uv run pytest -q tests/infra/sessions/test_security.py -k unverified
-uv run pytest -q tests/infra/sessions tests/runtime/tasks tests/terminal
+ROOT="$(mktemp -d /private/tmp/cairn-sqlite-verify.XXXXXX)"
+/opt/homebrew/bin/python3.12 -m venv "$ROOT/venv"
+env -u CAIRN_ALLOW_UNVERIFIED_SQLITE \
+  UV_PROJECT_ENVIRONMENT="$ROOT/venv" UV_LINK_MODE=copy \
+  uv sync --locked --all-groups --python /opt/homebrew/bin/python3.12
+env -u CAIRN_ALLOW_UNVERIFIED_SQLITE "$ROOT/venv/bin/python" -c \
+  'import sqlite3, sys; print(sys.executable, sqlite3.sqlite_version)'
+env -u CAIRN_ALLOW_UNVERIFIED_SQLITE "$ROOT/venv/bin/python" -c \
+  'from cairn.infra.sessions.store import wal_admission; print(wal_admission())'
+env -u CAIRN_ALLOW_UNVERIFIED_SQLITE "$ROOT/venv/bin/python" -m pytest -q \
+  tests/infra/sessions tests/runtime/tasks tests/terminal \
+  tests/runtime/test_durable_session.py \
+  tests/runtime/test_durable_session_recovery.py \
+  tests/runtime/test_loop_recovery.py
 ```
+
+The qualified host reported 791 passing tests for these suites and a separate
+orphan-WAL inspection probe. The above commands provide a reproduction route,
+not a claim that a fresh host has been qualified.
 
 Debian host, on the verified runtime and with no declaration set:
 
@@ -155,10 +197,9 @@ uv run pytest -q tests/infra/sessions tests/runtime/tasks tests/terminal
 uv run pytest -q tests/infra/sessions/test_security.py tests/infra/sessions/test_process.py
 ```
 
-The suites ran on the Debian host without the unverified declaration, because the
-runtime is verified there; the macOS host still needs the declaration, and that
-declaration is not production configuration. What those tests do establish, and
-what they do not, is recorded in
+The qualified Debian and Homebrew macOS runtimes need no unverified declaration;
+unqualified uv-managed macOS runtimes remain refused. What these tests do
+establish, and what they do not, is recorded in
 [session store](../guides/session-store.md): real SQLite with spawned process
 barriers, and SIGKILL as application-crash evidence, never as power-loss
 durability.
