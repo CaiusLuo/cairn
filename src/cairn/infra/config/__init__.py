@@ -21,6 +21,7 @@ from cairn.infra.config.loader import (
 )
 from cairn.infra.config.schema import (
     CAIRN_CONFIG_ENV_NAMES,
+    CAIRN_MAX_STEPS_ENV_NAME,
     DEFAULT_PROVIDER_NAME,
     ConfigLayout,
     ProjectProviders,
@@ -35,6 +36,7 @@ from cairn.infra.config.secrets import (
 
 __all__ = [
     "CAIRN_CONFIG_ENV_NAMES",
+    "CAIRN_MAX_STEPS_ENV_NAME",
     "DEFAULT_PROVIDER_NAME",
     "ConfigLayout",
     "ProjectProviders",

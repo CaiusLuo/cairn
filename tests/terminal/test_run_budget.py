@@ -4,7 +4,7 @@ import pytest
 import typer
 
 import cairn.terminal.cli as cli_module
-from cairn.infra.config.schema import CAIRN_MAX_STEPS_ENV_NAME
+from cairn.infra.config import CAIRN_MAX_STEPS_ENV_NAME
 
 
 def test_unset_env_uses_the_documented_default() -> None:

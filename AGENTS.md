@@ -168,3 +168,24 @@ limitations and blocked checks.
 Return the commit SHA or tested working-tree state; report only observed results.
 Delegate only with task authorization and bounded assignments; the integrating
 agent still owns diff review, validation and this completion gate.
+
+## Module placement and public entry points
+
+- Keep the native Python CLI in `terminal`; retired Pi/Bridge and ACP adapters
+  must not be restored as compatibility layers.
+- Import configuration through `cairn.infra.config`; its `schema`, `loader`,
+  `secrets` and `editor` modules own validation, parsing, credential resolution
+  and transactional edits respectively.
+- `cairn.infra.tools.build_default_registry` owns the ordered built-in tool
+  collection. `runtime.assembly.build_agent` binds it to the Agent and repository
+  context. Registry construction grants no permissions; `run_turn` and
+  `tool_execution` retain admission, preflight and execution authority.
+- Core modules follow domain ownership, not directory symmetry: conversation
+  state, request context, model selection, Task values, LLM/events and memory
+  contracts stay independent of adapters. Do not combine them into shared state.
+- Local Git and remote GitHub must not import one another. Session and Memory
+  stores must not import one another; neutral SQLite qualification belongs in
+  `infra.sqlite_policy`. Trace storage remains telemetry, per ADR 0002.
+- Reusable execution belongs in `runtime.evals`; repository experiment cases,
+  runners and benchmarks belong in `evaluation/`, and operational GitHub/pilot
+  commands in `scripts/`. Frozen `docs/evals/` evidence remains historical.
