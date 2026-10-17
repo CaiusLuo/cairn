@@ -9,6 +9,7 @@ page is the map for everything else.
 | --- | --- |
 | [Architecture](architecture.md) | Package ownership, dependency direction, execution lifecycle, and where new code belongs |
 | [ADR 0001: modular architecture baseline](adr/0001-modular-architecture-baseline.md) | The architectural decisions this foundation rests on, and what they deliberately reject |
+| [ADR 0002: storage ownership and persistence tiers](adr/0002-storage-ownership-and-persistence.md) | Which fact each store owns, what Ephemeral, Journal and Strict Durable promise, and the storage decisions taken |
 
 ## Operating Cairn
 
