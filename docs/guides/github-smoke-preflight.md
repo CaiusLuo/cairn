@@ -224,9 +224,16 @@ means the run does not start; it does not start partially.
 10. The provider and model group to use, and confirmation that project model
     configuration will be present privately at the clone's
     `.cairn/models.toml` (or the `env` layout will be used).
-11. A hard cost ceiling for this run: maximum spend, and the maximum steps. The
-    script fixes `max_steps=20`, so the ceiling must accommodate twenty steps plus
-    a single Draft PR publication.
+11. **An independently enforceable spend limit.** `RunBudget(max_steps=20)` is a
+    *step* limit fixed in the script; it is **not** a money ceiling, and this repo
+    has no runtime USD cap. Stating a dollar figure here does not enforce it, so
+    Phase 2 is conditional on one of:
+    - a provider-account or API-key-side quota/limit set before the run, or
+    - a separate runtime enforcement wired into the harness for this run.
+
+    Record which mechanism is in force and its numeric limit. `max_steps=20` bounds
+    the number of model calls and therefore the *exposure*, but it must not be
+    described as a spend cap.
 12. A ceiling on any retry. Authorize exactly one attempt: there is no automatic
     retry, and a `.publish-attempt` marker blocks reuse of the result.
 
@@ -261,8 +268,11 @@ uv run python examples/github/run_issue_task.py \
   --publish --author-name 'Your Name' --author-email 'you@example.invalid'
 ```
 
-Do not add `--intended-fix` for this gate. A PR that closes its Issue destroys the
-evidence trail, and closing the Issue is out of scope.
+Do not add `--intended-fix` for this gate. The reason is scope, not evidence
+destruction: GitHub closing keywords do **not** close anything while the PR is an
+unmerged Draft, and this gate never merges. Omitting them simply avoids creating an
+unintended Issue–PR linkage that a later merge would activate; closing the Issue
+remains the Owner's explicit decision.
 
 Capture before the run: the source clone's `git rev-parse HEAD`, `git status
 --porcelain`, `git rev-parse main`, and the SHA-1 of `.git/index`. Capture after the
@@ -316,9 +326,25 @@ Fetch the blob SHA from the remote tree, then the blob itself, and reconstruct t
 raw bytes rather than trusting a rendered view:
 
 ```bash
-gh api repos/OWNER/REPO/git/trees/REMOTE_TREE --jq '.tree[] | select(.path=="answer.txt") | .sha'
-gh api repos/OWNER/REPO/git/blobs/BLOB_SHA --jq .content | tr -d '\n' | base64 -d | shasum -a 256
+# Repository-scoped evidence token, not the ambient high-privilege gh session.
+export GH_TOKEN="$DISPOSABLE_GH_TOKEN"
+
+gh api repos/OWNER/REPO/git/trees/REMOTE_TREE \
+  --jq '.tree[] | select(.path=="answer.txt") | .sha'
+
+# Portable decode: `base64 -d` is GNU-only and macOS wants -D, so decode in Python.
+gh api repos/OWNER/REPO/git/blobs/BLOB_SHA --jq .content \
+  | python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))' \
+  | sha256sum 2>/dev/null || \
+  gh api repos/OWNER/REPO/git/blobs/BLOB_SHA --jq .content \
+  | python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))' \
+  | shasum -a 256
 ```
+
+All evidence reads use the **same repository-scoped token** the run used
+(`GH_TOKEN="$DISPOSABLE_GH_TOKEN"`), never `gh auth token` or the operator's ambient
+credential, so verification cannot quietly exercise broader authority than the run
+was authorized for. `sha256sum` exists on Linux; `shasum -a 256` on macOS.
 
 The local file's SHA-256 must match. Compare actual bytes, not a summary. Confirm
 the decoded content is exactly `correct` plus a newline, and that the mode is
@@ -376,10 +402,19 @@ Nothing in this section may be satisfied by the run's own summary.
 ## Offline coverage
 
 `tests/examples/test_github_issue_task.py` exercises the example's argument
-parsing, its permission gating, and the credential-declaration contract without
-network access. It runs the script with the Worktree creation stubbed to capture
-the provider's declared credentials, and separately asserts that a declared token
-is stripped from Git and Bash child environments.
+parsing and the credential-declaration contract without network access. It runs
+the script with the Worktree creation stubbed to capture the provider's declared
+credentials, and separately asserts that a declared token is stripped from Git and
+Bash child environments.
+
+**Scope of these tests, stated precisely.** They establish the *declared-credential
+boundary* — that a declared secret does not reach Git or Bash children — and the
+argument contract. They do **not** exercise the live external permission path: no
+real Issue read, no real publication approval, no REST call and no Draft PR is
+reached, because the transport is never invoked. Neither do they prove that the
+publish path's remote verification works. Treat this as evidence that the
+credential surface is shaped correctly, not as proof of complete permission
+gating; only the authorized Phase 2 run can establish the latter.
 
 Run it with:
 
