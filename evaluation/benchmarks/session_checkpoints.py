@@ -1,4 +1,4 @@
-"""Offline SessionStore scaling probe; run with uv run python -m benchmarks.session_checkpoints.
+"""Offline SessionStore scaling probe; run with uv run python -m evaluation.benchmarks.session_checkpoints.
 
 One process, deterministic four-message Turns (one fenced read), identical sizes,
 real SQLite FULL/WAL transactions. No provider, tool or Git execution. Timings

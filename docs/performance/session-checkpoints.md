@@ -1,12 +1,12 @@
 # Session checkpoint performance
 
-The benchmark in [session_checkpoints.py](../../benchmarks/session_checkpoints.py)
+The benchmark in [session_checkpoints.py](../../evaluation/benchmarks/session_checkpoints.py)
 uses deterministic four-message Turns, one fenced read reference per Turn, 1,024
 ASCII bytes in each tool result and final assistant message, and real SQLite
 WAL/FULL transactions. It never executes the tool or contacts a provider. Run:
 
 ```sh
-uv run python -m benchmarks.session_checkpoints --output /tmp/checkpoints.json
+uv run python -m evaluation.benchmarks.session_checkpoints --output /tmp/checkpoints.json
 ```
 
 ## Measurement method

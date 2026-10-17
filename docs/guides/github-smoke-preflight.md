@@ -33,7 +33,7 @@ call, push or Draft PR has been performed, and none is claimed.
 
 ### Entry point and permissions
 
-`examples/github/run_issue_task.py` is the only publication entry point. The public
+`scripts/github/run_issue_task.py` is the only publication entry point. The public
 CLI (`cairn`) exposes the `session` command group; nothing in the CLI publishes
 implicitly.
 
@@ -258,7 +258,7 @@ means the run does not start; it does not start partially.
 Run from the Cairn checkout, with every placeholder replaced by authorized values:
 
 ```bash
-uv run python examples/github/run_issue_task.py \
+uv run python scripts/github/run_issue_task.py \
   --disposable-repository --owner OWNER --repo REPO --issue NUMBER \
   --source /absolute/path/to/disposable-clone \
   --worktree-parent /absolute/path/outside-the-clone/cairn-tasks \

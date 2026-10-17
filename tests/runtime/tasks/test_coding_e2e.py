@@ -15,7 +15,7 @@ from time import perf_counter
 from typing import Any
 
 import pytest
-from examples.evals.coding_smoke_cases import coding_smoke_suite
+from evaluation.cases.coding_smoke import coding_smoke_suite
 
 from cairn.core.budget import RunBudget
 from cairn.core.events import Event

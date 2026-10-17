@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from examples.evals import run_coding_smoke as script
+from evaluation.runners import run_coding_smoke as script
 
 import cairn.infra.llm.litellm_client as llm_module
 import cairn.infra.llm.token_counter as counter_module

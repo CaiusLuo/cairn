@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from examples.evals.coding_smoke_cases import (
+from evaluation.cases.coding_smoke import (
     FileImportFromCheck,
     coding_smoke_cases,
 )

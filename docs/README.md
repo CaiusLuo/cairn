@@ -35,6 +35,10 @@ page is the map for everything else.
 
 ## Experiments
 
+[Evaluation assets](../evaluation/README.md) contains current cases, runners and
+benchmarks. [Operational scripts](../scripts/README.md) covers GitHub and pilot
+commands; neither directory changes the frozen experiment records below.
+
 | Document | Covers |
 | --- | --- |
 | [Repository Intelligence V2](evals/repository-intelligence-v2/README.md) | The current experiment contract |

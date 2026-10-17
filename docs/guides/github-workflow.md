@@ -109,7 +109,7 @@ and Pull requests write permissions through your private credential mechanism.
 From the Cairn checkout, replace the placeholders and run:
 
 ```bash
-uv run python examples/github/run_issue_task.py \
+uv run python scripts/github/run_issue_task.py \
   --disposable-repository --owner OWNER --repo REPO --issue NUMBER \
   --source /absolute/path/to/disposable-clone \
   --worktree-parent /absolute/path/outside-the-clone/cairn-tasks \

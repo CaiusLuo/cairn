@@ -27,7 +27,7 @@ if not __package__:
     # Support the documented file invocation as well as package imports.
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from examples.evals.coding_smoke_cases import coding_smoke_suite
+from evaluation.cases.coding_smoke import coding_smoke_suite
 
 
 def print_result(result: EvalResult) -> None:

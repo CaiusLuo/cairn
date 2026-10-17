@@ -7,7 +7,7 @@ inspects configuration shape.
 
 Run from the repository root:
 
-    uv run python examples/pilot/preflight.py
+    uv run python scripts/pilot/preflight.py
 
 Exit code is 0 only when every check that this profile requires passed. A check
 this host cannot decide is reported as BLOCKED with the missing evidence, never
@@ -30,8 +30,7 @@ if not __package__:
     # Support the documented file invocation as well as package imports.
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from cairn.infra.config import load_project_providers
-from cairn.infra.config_schema import ConfigLayout
+from cairn.infra.config import ConfigLayout, load_project_providers
 from cairn.infra.observability.models import Span, SpanStatus
 from cairn.infra.observability.sinks import JsonlTraceSink
 from cairn.infra.observability.tracer import Tracer

@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from examples.github import run_issue_task as example
+from scripts.github import run_issue_task as example
 
 from cairn.core.permissions import PermissionChoice, SessionPermissionHandler
 

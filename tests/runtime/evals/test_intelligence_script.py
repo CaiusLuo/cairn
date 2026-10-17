@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 import pytest
-from examples.evals import run_repository_intelligence as script
+from evaluation.runners import run_repository_intelligence as script
 
 
 def test_unavailable_configuration_records_blocked_without_model_calls(
