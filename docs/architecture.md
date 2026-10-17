@@ -119,7 +119,7 @@ stable.
 | Conversation messages | `core.state.AgentState`, held by one `runtime.agent.Agent` |
 | Bound Session and active Turn | `runtime.session.Session`, optionally `runtime.durable_session.DurableSession`; `run_turn` alone admits/settles its guard, and Agent retains the once-only owner after close/failure |
 | Session model selection and grants | `core.model_manager` and `core.permissions.SessionPermissionHandler` |
-| Active provider runtime | `runtime.provider_runtime.ProviderSession`, committed through `commit`; terminal command context observes the committed runtime |
+| Active provider runtime and switch-time grant revocation | `runtime.provider_runtime.ProviderSession`; terminal command context observes committed bindings |
 | Per-model failure notes for `/model list` | `runtime.model_executor.ModelExecutor` |
 | Provisional response assembly | `runtime.response_assembly.ResponseAssembler`, private to one ModelExecutor attempt |
 | Turn spans and usage | `runtime.turn_trace.TurnTrace`, finalized by `run_turn` |

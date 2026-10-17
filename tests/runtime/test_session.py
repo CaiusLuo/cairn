@@ -15,7 +15,11 @@ from cairn.core.events import Event, SessionEvent
 from cairn.core.llm import LLMClient, LLMStreamChunk
 from cairn.core.model_manager import ModelConfig, ModelManager, ProviderConfig
 from cairn.core.models import LLMResponse, ToolCall, ToolResult
-from cairn.core.permissions import PermissionDecision, PermissionResult
+from cairn.core.permissions import (
+    PermissionDecision,
+    PermissionResult,
+    SessionPermissionHandler,
+)
 from cairn.core.provider_catalog import NamedProvider
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.tools.base import ToolExecutionContext
@@ -95,7 +99,9 @@ def test_provider_model_replacement_preserves_the_exact_session_owner() -> None:
     runtime = ProviderRuntime(
         NamedProvider("host", config), manager, executor, first, builder, factory
     )
-    bindings = ProviderSession(runtime, agent=agent)
+    bindings = ProviderSession(
+        runtime, agent=agent, permissions=SessionPermissionHandler()
+    )
     bindings.select_model("second")
     assert agent.session_owner is session and agent.llm is second
     assert (

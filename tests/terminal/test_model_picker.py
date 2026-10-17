@@ -15,7 +15,7 @@ from cairn.infra.observability.storage import TraceStore
 from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.router import CommandRouter
 from cairn.terminal.input import CliInput
-from tests.terminal.test_provider_session import BAILIAN_CREDENTIAL, configure_cli
+from tests.support.cli_harness import BAILIAN_CREDENTIAL, configure_cli
 
 GROUPS = (
     ModelConfig("flash", ("openai/flash", "openai/backup", "openai/last")),

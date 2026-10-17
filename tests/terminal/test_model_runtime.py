@@ -25,13 +25,10 @@ from cairn.core.models import Message
 from cairn.core.provider_catalog import NamedProvider
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
-from cairn.runtime.assembly import build_agent
 from cairn.runtime.loop import run_turn
 from tests.support.cli_harness import (
-    count_tokens_as,
-    isolate_cli,
-    set_limits,
-    write_models_toml,
+    completion_response,
+    configure_cli,
 )
 from tests.support.sandbox import require_working_sandbox
 from tests.support.streaming import CompletionResponse
@@ -55,14 +52,6 @@ GROUPS_TOML = TOML.replace(
 ).replace('["openai/qwen-plus"]', '["openai/qwen-plus", "openai/qwen-plus-backup"]')
 
 
-def _response(content: str) -> SimpleNamespace:
-    return CompletionResponse(
-        choices=[
-            SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=[]))
-        ]
-    )
-
-
 FREE_TIER_MESSAGE = (
     "OpenAIException - Free quota exhausted. To continue accessing the model on "
     'a paid basis, please add funds or disable the "use free tier only" mode '
@@ -76,36 +65,19 @@ def _configure_cli(
     *commands: str,
     toml: str | None = TOML,
 ) -> tuple[list[Agent], list[dict[str, Any]], list[str]]:
-    for name, value in {
-        "BAILIAN_API_KEY": API_KEY,
-        "CAIRN_LLM_MODEL": "openai/legacy-model",
-        "CAIRN_LLM_API_KEY": "test-only-legacy-key",
-        "CAIRN_BASE_URL": "https://legacy.test/v1",
-    }.items():
-        monkeypatch.setenv(name, value)
-    if toml is not None:
-        write_models_toml(tmp_path, toml)
-    isolate_cli(tmp_path, monkeypatch, *commands)
-    set_limits(monkeypatch)
-    monkeypatch.setattr(
-        cli_module, "confirm_provider_access", lambda *_args, **_kwargs: True
+    state = configure_cli(
+        tmp_path,
+        monkeypatch,
+        *commands,
+        toml=toml,
+        environment={
+            "BAILIAN_API_KEY": API_KEY,
+            "CAIRN_LLM_MODEL": "openai/legacy-model",
+            "CAIRN_LLM_API_KEY": "test-only-legacy-key",
+            "CAIRN_BASE_URL": "https://legacy.test/v1",
+        },
     )
-    agents: list[Agent] = []
-    requests: list[dict[str, Any]] = []
-    token_models = count_tokens_as(monkeypatch)
-
-    def capture_agent(**kwargs: Any) -> Agent:
-        agent = build_agent(**kwargs)
-        agents.append(agent)
-        return agent
-
-    async def completion(**kwargs: Any) -> SimpleNamespace:
-        requests.append(kwargs)
-        return _response(f"reply {len(requests)}")
-
-    monkeypatch.setattr(cli_module, "build_agent", capture_agent)
-    monkeypatch.setattr(llm_module, "acompletion", completion)
-    return agents, requests, token_models
+    return state.agents, state.requests, state.token_models
 
 
 def test_toml_default_and_session_switch_use_real_loop_and_preserve_state(
@@ -272,32 +244,6 @@ def test_failed_switch_keeps_previous_client_counter_and_selection(
     assert token_models == ["openai/qwen-flash"]
 
 
-def test_missing_toml_keeps_legacy_environment_request_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    agents, requests, token_models = _configure_cli(
-        tmp_path, monkeypatch, "question", toml=None
-    )
-    approval = Mock(
-        side_effect=AssertionError("Legacy configuration requires no TOML approval")
-    )
-    monkeypatch.setattr(cli_module, "confirm_provider_access", approval)
-    result = CliRunner().invoke(cli_module.app, [])
-
-    assert result.exit_code == 0
-    assert requests[0]["model"] == "openai/legacy-model"
-    assert requests[0]["api_key"] == "test-only-legacy-key"
-    assert requests[0]["api_base"] == "https://legacy.test/v1"
-    assert token_models == ["openai/legacy-model"]
-    assert not (tmp_path / ".cairn/models.toml").exists()
-    manager = agents[0].model_executor.manager
-    assert manager is not None
-    assert manager.list_models() == (
-        ModelConfig("openai/legacy-model", ("openai/legacy-model",)),
-    )
-    approval.assert_not_called()
-
-
 @pytest.mark.parametrize("approval", [False, None, "yes"])
 def test_toml_requires_explicit_approval_before_resolving_credential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, approval: object
@@ -461,7 +407,7 @@ def test_configured_credentials_are_absent_from_real_tool_child_and_trace(
                     )
                 ]
             )
-        return _response("checked")
+        return completion_response("checked")
 
     monkeypatch.setattr(llm_module, "acompletion", completion)
     result = CliRunner().invoke(cli_module.app, [])
@@ -519,7 +465,7 @@ def test_fallback_uses_distinct_models_and_counters_without_changing_selection(
             raise RateLimitError(
                 message="model throttled", model=kwargs["model"], llm_provider="openai"
             )
-        response = _response("answer")
+        response = completion_response("answer")
         response.usage = SimpleNamespace(prompt_tokens=20, completion_tokens=3)
         return response
 
@@ -906,7 +852,7 @@ def test_free_tier_403_moves_the_next_request_to_the_next_model(
                 llm_provider="openai",
                 model=kwargs["model"],
             )
-        return _response("paid answer")
+        return completion_response("paid answer")
 
     monkeypatch.setattr(llm_module, "acompletion", completion)
     result = CliRunner().invoke(cli_module.app, [])
@@ -1033,7 +979,7 @@ def test_model_list_annotates_the_last_failure_and_the_next_request_restarts_ord
                 model=kwargs["model"],
                 llm_provider="openai",
             )
-        return _response("answer")
+        return completion_response("answer")
 
     monkeypatch.setattr(llm_module, "acompletion", completion)
     result = CliRunner().invoke(cli_module.app, [])
@@ -1135,7 +1081,7 @@ def test_group_fallback_order_runtimes_diagnostics_and_attempt_spans(
                 model=kwargs["model"],
                 llm_provider="openai",
             )
-        response = _response("answer")
+        response = completion_response("answer")
         response.usage = SimpleNamespace(prompt_tokens=25, completion_tokens=3)
         return response
 

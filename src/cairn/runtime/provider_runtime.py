@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from cairn.core.context import ContextBudget, ContextBuilder
 from cairn.core.llm import LLMClient
 from cairn.core.model_manager import ModelConfig, ModelManager, ProviderConfig
+from cairn.core.permissions import SessionPermissionHandler
 from cairn.core.provider_catalog import NamedProvider, ProviderCatalog
 from cairn.runtime.model_executor import ModelExecutor
 
@@ -117,10 +118,12 @@ class ProviderSession:
         runtime: ProviderRuntime,
         *,
         agent: "Agent",
+        permissions: SessionPermissionHandler,
         on_commit: Callable[[ProviderRuntime], None] | None = None,
         commit_guard: Callable[[], AbstractContextManager[None]] = nullcontext,
     ) -> None:
         self._agent = agent
+        self._permissions = permissions
         self._on_commit = on_commit
         with commit_guard():
             self.commit(runtime)
@@ -165,19 +168,19 @@ class ProviderSession:
         resolve_credential: Callable[[ProviderConfig], str],
         context_budget: ContextBudget,
         commit_guard: Callable[[], AbstractContextManager[None]] = nullcontext,
-    ) -> bool:
+    ) -> None:
         """Switch this session to another configured provider.
 
         ``confirm`` and ``resolve_credential`` are supplied by the caller, which
         keeps prompting and credential resolution at the presentation boundary.
         The target is built completely before :meth:`commit`, so denied
         approval, a missing credential or a construction failure leaves the
-        current provider usable. Returns ``True`` when a switch committed and
-        ``False`` when ``name`` was already active.
+        current provider usable. Selecting the active provider is a no-op.
 
         A caller's optional ``commit_guard`` linearizes cancellation with the
-        binding change. Only :meth:`commit` runs inside it; approval, credential
-        resolution and construction remain outside that critical section.
+        binding change and revocation of the previous provider's tool grants.
+        Approval, credential resolution and construction remain outside that
+        critical section. Initial attachment and model-only switches keep grants.
         """
         runtime = self._runtime
         target = next(
@@ -188,7 +191,7 @@ class ProviderSession:
             raise ValueError(f"Provider {name!r} is not configured in this session.")
         if target.name == runtime.provider.name:
             # Already active: keep the runtime, selection and grants untouched.
-            return False
+            return
 
         group = target.config.model_config[0]
         if confirm(target, group) is not True:
@@ -206,4 +209,4 @@ class ProviderSession:
             ) from None
         with commit_guard():
             self.commit(candidate)
-        return True
+            self._permissions.reset_grants()

@@ -416,11 +416,12 @@ async def main(
     session = ProviderSession(
         active_runtime,
         agent=agent,
+        permissions=permission_handler,
         on_commit=mirror_committed_runtime,
     )
 
     def select_provider(name: str) -> None:
-        switched = session.select_provider(
+        session.select_provider(
             name,
             catalog,
             confirm=lambda provider, group: (
@@ -431,8 +432,6 @@ async def main(
             ),
             context_budget=context_budget,
         )
-        if switched:
-            permission_handler.reset_grants()
 
     command_context.select_model = session.select_model
     command_context.select_provider = select_provider

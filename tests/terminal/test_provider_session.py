@@ -18,51 +18,27 @@ import cairn.terminal.cli as cli_module
 import cairn.terminal.output as ui_module
 from cairn.core.budget import RunBudget
 from cairn.core.model_manager import ModelConfig, ProviderConfig
-from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
+from cairn.core.permissions import PermissionCapability
 from cairn.core.provider_catalog import NamedProvider, ProviderCatalog
-from cairn.infra.config import resolve_provider_api_key
 from cairn.infra.observability.storage import TraceStore
 from cairn.infra.tools.registry import ToolRegistry
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
-from cairn.runtime.assembly import build_agent
 from cairn.runtime.loop import run_turn
 from cairn.runtime.provider_runtime import build_provider_runtime
 from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.provider import handle_provider
 from tests.support.cli_harness import (
-    count_tokens_as,
-    isolate_cli,
-    set_limits,
-    write_models_toml,
+    BAILIAN_CREDENTIAL,
+    CATALOG_TOML,
+    LEGACY_TOML_CREDENTIAL,
+    LOCAL_CREDENTIAL,
+    completion_response,
+    configure_cli,
 )
 from tests.support.runtime import RecordingTool
 from tests.support.sandbox import require_working_sandbox
 from tests.support.streaming import CompletionResponse
-
-CATALOG_TOML = """\
-[[providers]]
-name = "bailian"
-base_url = "https://bailian.test/v1"
-api_key_env = "BAILIAN_API_KEY"
-
-[[providers.models]]
-name = "flash"
-model_ids = ["openai/qwen-flash"]
-
-[[providers.models]]
-name = "plus"
-model_ids = ["openai/qwen-plus"]
-
-[[providers]]
-name = "local"
-base_url = "http://localhost:8000/v1"
-api_key_env = "LOCAL_API_KEY"
-
-[[providers.models]]
-name = "default"
-model_ids = ["openai/local-model"]
-"""
 
 SINGLE_CATALOG_TOML = """\
 [[providers]]
@@ -87,109 +63,6 @@ api_key_env = "LEGACY_TOML_KEY"
 name = "flash"
 model_ids = ["openai/legacy-toml-model"]
 """
-
-ENVIRONMENT = {
-    "CAIRN_LLM_MODEL": "openai/env-model",
-    "CAIRN_LLM_API_KEY": "env-credential",
-    "CAIRN_BASE_URL": "https://env.test/v1",
-}
-
-BAILIAN_CREDENTIAL = "bailian-only-credential"
-LOCAL_CREDENTIAL = "local-only-credential"
-LEGACY_TOML_CREDENTIAL = "legacy-toml-only-credential"
-
-CREDENTIALS = {
-    "BAILIAN_API_KEY": BAILIAN_CREDENTIAL,
-    "LOCAL_API_KEY": LOCAL_CREDENTIAL,
-    "LEGACY_TOML_KEY": LEGACY_TOML_CREDENTIAL,
-    **ENVIRONMENT,
-}
-
-
-def _response(content: str) -> SimpleNamespace:
-    return CompletionResponse(
-        choices=[
-            SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=[]))
-        ]
-    )
-
-
-def configure_cli(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    *commands: str,
-    toml: str | None = CATALOG_TOML,
-    approve: Any = True,
-    tools: ToolRegistry | None = None,
-) -> SimpleNamespace:
-    """Drive the real CLI with fake provider calls and scripted input."""
-    if toml is not None:
-        write_models_toml(tmp_path, toml)
-    for name in CREDENTIALS:
-        monkeypatch.delenv(name, raising=False)
-    for name, value in CREDENTIALS.items():
-        monkeypatch.setenv(name, value)
-    isolate_cli(tmp_path, monkeypatch, *commands)
-    set_limits(monkeypatch)
-
-    # The session handler is created here so tests can pre-seed grants before
-    # the CLI commits any switch.
-    handler = SessionPermissionHandler(prompt=ui_module.console_permission_prompt)
-    state = SimpleNamespace(
-        agents=[],
-        requests=[],
-        token_models=[],
-        contexts=[],
-        handler=handler,
-        approvals=[],
-        resolved_keys=[],
-        secret_env_keys=None,
-    )
-
-    def confirm_access(
-        provider: NamedProvider, selected_group: Any, *, switching: bool
-    ) -> bool:
-        state.approvals.append((provider.name, selected_group.name, switching))
-        if callable(approve):
-            return bool(approve(provider, selected_group, switching))
-        return bool(approve)
-
-    def capture_agent(**kwargs: Any) -> Agent:
-        agent = build_agent(**kwargs)
-        if tools is not None:
-            agent.tools = tools
-        state.agents.append(agent)
-        assert kwargs["permission_handler"] is state.handler
-        state.secret_env_keys = kwargs["secret_env_keys"]
-        return agent
-
-    real_context = CommandContext
-
-    def capture_context(**kwargs: Any) -> CommandContext:
-        context = real_context(**kwargs)
-        state.contexts.append(context)
-        return context
-
-    real_resolve = resolve_provider_api_key
-
-    def resolve_key(config: Any, host_env: Any, env_file_values: Any) -> str:
-        state.resolved_keys.append(config.api_key_env)
-        return real_resolve(config, host_env, env_file_values)
-
-    async def completion(**kwargs: Any) -> SimpleNamespace:
-        state.requests.append(kwargs)
-        return _response(f"reply {len(state.requests)}")
-
-    monkeypatch.setattr(cli_module, "confirm_provider_access", confirm_access)
-    monkeypatch.setattr(cli_module, "build_agent", capture_agent)
-    monkeypatch.setattr(
-        cli_module, "SessionPermissionHandler", lambda **_kwargs: handler
-    )
-    monkeypatch.setattr(cli_module, "CommandContext", capture_context)
-    monkeypatch.setattr(cli_module, "resolve_provider_api_key", resolve_key)
-    monkeypatch.setattr(llm_module, "acompletion", completion)
-    state.token_models = count_tokens_as(monkeypatch)
-    return state
 
 
 def run_cli() -> Any:
@@ -238,6 +111,13 @@ def test_env_only_startup_keeps_the_legacy_environment_contract(
     assert state.secret_env_keys == frozenset({"CAIRN_LLM_API_KEY"})
     assert "Provider:" not in result.output
     assert not (tmp_path / ".cairn/models.toml").exists()
+    assert state.token_models == ["openai/env-model"]
+    manager = state.agents[0].model_executor.manager
+    assert manager is not None
+    assert manager.list_models() == (
+        ModelConfig("openai/env-model", ("openai/env-model",)),
+    )
+    approval.assert_not_called()
 
 
 def test_legacy_toml_startup_keeps_the_single_provider_approval(
@@ -431,7 +311,7 @@ def test_unselected_provider_credential_is_absent_from_tool_child_and_trace(
                     )
                 ]
             )
-        return _response("checked")
+        return completion_response("checked")
 
     monkeypatch.setattr(llm_module, "acompletion", completion)
 
@@ -705,7 +585,7 @@ def test_history_and_tool_results_survive_a_switch(
                     )
                 ]
             )
-        return _response(f"reply {calls}")
+        return completion_response(f"reply {calls}")
 
     monkeypatch.setattr(llm_module, "acompletion", completion)
 
@@ -849,7 +729,7 @@ def test_failure_diagnostics_are_scoped_to_the_active_provider(
                 model=kwargs["model"],
                 llm_provider="openai",
             )
-        return _response("answer")
+        return completion_response("answer")
 
     monkeypatch.setattr(llm_module, "acompletion", completion)
 
@@ -1052,7 +932,7 @@ def test_model_output_is_never_executed_as_a_provider_switch(
 
     async def completion(**kwargs: Any) -> SimpleNamespace:
         state.requests.append(kwargs)
-        return _response("/provider use local")
+        return completion_response("/provider use local")
 
     monkeypatch.setattr(llm_module, "acompletion", completion)
 
@@ -1084,7 +964,7 @@ def test_provider_rejecting_the_history_keeps_the_session_and_allows_switching_b
         state.requests.append(kwargs)
         if kwargs["api_base"] == "http://localhost:8000/v1":
             raise ValueError("Invalid messages for this provider")
-        return _response(f"reply {len(state.requests)}")
+        return completion_response(f"reply {len(state.requests)}")
 
     monkeypatch.setattr(llm_module, "acompletion", completion)
 

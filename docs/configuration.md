@@ -107,7 +107,8 @@ See the [CLI command table](../README.md#cli-commands) for `/model` and
 A successful provider switch builds the target runtime
 completely before committing, so denied approval, a missing credential, or a
 construction failure leaves the previous provider usable with its selection and
-permission grants. A switch resets session tool-permission grants and preserves
+permission grants. `ProviderSession` commits the switch and resets grants under
+the caller's commit guard, preserving
 conversation history, workspace, tools and traces. Commands run between turns
 only, so a provider never changes mid-turn.
 

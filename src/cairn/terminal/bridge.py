@@ -348,6 +348,7 @@ class Bridge:
         self.providers = ProviderSession(
             runtime,
             agent=agent,
+            permissions=self.permissions,
             on_commit=self.mirror,
             commit_guard=self.provider_commit,
         )
@@ -415,7 +416,7 @@ class Bridge:
                 elif op == "model":
                     self.providers.select_model(message["name"])
                 elif op == "provider":
-                    changed = self.providers.select_provider(
+                    self.providers.select_provider(
                         message["name"],
                         self.catalog,
                         confirm=lambda p, m: self.confirm_provider(p),
@@ -425,8 +426,6 @@ class Bridge:
                         context_budget=resolve_context_budget(os.environ, self.env),
                         commit_guard=self.provider_commit,
                     )
-                    if changed:
-                        self.permissions.reset_grants()
             if op != "prompt":
                 self.status()
         except asyncio.CancelledError:
