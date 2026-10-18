@@ -768,8 +768,10 @@ def test_interpreter_runtime_paths_include_the_venv_and_its_base(
 
     paths = _interpreter_runtime_paths(str(tmp_path / ".venv" / "bin" / "python"))
 
-    assert (tmp_path / ".venv" / "bin") in paths
-    assert base in paths
+    # Whole installation roots, not just bin/: an interpreter needs the standard
+    # library beside it and refuses to start without it.
+    assert (tmp_path / ".venv") in paths
+    assert (tmp_path / "base") in paths
 
 
 def test_shadowed_ancestors_masks_a_home_directory_interpreter() -> None:

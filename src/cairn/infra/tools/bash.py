@@ -272,9 +272,13 @@ def _interpreter_runtime_paths(executable: str | None = None) -> tuple[Path, ...
     that interpreter instead of guessing at a ``python`` command a distribution
     may not ship.
 
+    Whole installation roots are returned, not just their ``bin``: an interpreter
+    needs its standard library beside it and refuses to start with only the
+    executable visible ("Could not find platform independent libraries").
+
     The roots are not always the same directory:
 
-    * the executable's own directory, which holds the venv shim;
+    * the venv root, which holds the executable and ``pyvenv.cfg``;
     * the base installation behind it, where the standard library lives;
     * the ``home`` recorded in ``pyvenv.cfg``, which can name a different patch
       release than the interpreter's real path resolves to.
@@ -284,18 +288,28 @@ def _interpreter_runtime_paths(executable: str | None = None) -> tuple[Path, ...
     resolved = executable if executable is not None else sys.executable
     if not resolved:
         return ()
+    executable_path = Path(resolved)
     real = Path(os.path.realpath(resolved))
-    candidates: list[Path] = [Path(resolved).parent, real.parent]
+    # The venv root is the directory holding bin/, or the install root when the
+    # executable is not inside a venv.
+    venv_root = (
+        executable_path.parent.parent
+        if executable_path.parent.name in ("bin", "Scripts")
+        else executable_path.parent
+    )
+    base_root = real.parent.parent if real.parent.name == "bin" else real.parent
+    candidates: list[Path] = [venv_root, base_root]
     # A venv names its base installation in pyvenv.cfg; that file, not
     # sys.base_prefix, is authoritative when the venv belongs to another project.
-    venv_root = Path(resolved).parent.parent
     config = venv_root / "pyvenv.cfg"
     if config.is_file():
         with suppress(OSError, UnicodeDecodeError):
             for line in config.read_text(encoding="utf-8").splitlines():
                 key, separator, value = line.partition("=")
                 if separator and key.strip() == "home" and value.strip():
-                    candidates.append(Path(value.strip()))
+                    home = Path(value.strip())
+                    # `home` names the base's bin/ directory.
+                    candidates.append(home.parent if home.name == "bin" else home)
     unique: list[Path] = []
     for candidate in candidates:
         with suppress(OSError):
