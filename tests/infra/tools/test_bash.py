@@ -634,14 +634,19 @@ def test_bash_tool_allows_outside_reads_and_confines_writes_to_workspace(
     before = unwritable.read_text(encoding="utf-8") if unwritable.exists() else None
 
     read = asyncio.run(tool.execute({"command": f"cat {readable_path}"}))
-    outside_write = asyncio.run(
-        tool.execute({"command": f"printf data > {unwritable_path}"})
-    )
+    # Attempted, not asserted directly: the outcome differs per platform and the
+    # host effect below is what isolation guarantees.
+    asyncio.run(tool.execute({"command": f"printf data > {unwritable_path}"}))
     inside = asyncio.run(tool.execute({"command": "printf data > inside.txt"}))
 
     assert read.exit_code == 0, read.stderr
     assert read.stdout == readable.read_text(encoding="utf-8")
-    assert outside_write.exit_code != 0
+    # The guarantee is that the host file is untouched, not that the command is
+    # refused. On macOS the write is denied outright; on Linux the home directory
+    # sits under an empty tmpfs that the interpreter mount requires, so the write
+    # succeeds inside it and disappears with the sandbox. Asserting the refusal
+    # pinned one implementation; asserting the host effect is what isolation
+    # actually promises.
     after = unwritable.read_text(encoding="utf-8") if unwritable.exists() else None
     assert after == before
     assert inside.exit_code == 0, inside.stderr
