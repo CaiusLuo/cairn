@@ -221,22 +221,61 @@ def test_permission_denial_and_tool_fields_render_literally(
 
     ui.console_event_handler(
         Event(
-            type="tool_call", data={"tool": "bash", "arguments": {"command": command}}
+            type="tool_call",
+            data={
+                "tool_call_id": "bash-call",
+                "tool": "bash",
+                "arguments": {"command": command},
+            },
         )
     )
     ui.console_event_handler(
         Event(
             type="tool_result",
-            data={"tool": "bash", "exit_code": 1, "stdout": "", "stderr": "[/dim]"},
+            data={
+                "tool_call_id": "bash-call",
+                "tool": "bash",
+                "exit_code": 1,
+                "stdout": "",
+                "stderr": "[/dim]",
+            },
         )
     )
     ui.console_event_handler(
-        Event(type="tool_error", data={"tool": "edit_file", "error": "[/bold red]"})
+        Event(
+            type="tool_call",
+            data={
+                "tool_call_id": "edit-call",
+                "tool": "edit_file",
+                "arguments": {"path": "notes.md"},
+            },
+        )
+    )
+    ui.console_event_handler(
+        Event(
+            type="tool_error",
+            data={
+                "tool_call_id": "edit-call",
+                "tool": "edit_file",
+                "error": "[/bold red]",
+            },
+        )
+    )
+    ui.console_event_handler(
+        Event(
+            type="tool_call",
+            data={
+                "tool_call_id": "denied-call",
+                "tool": "bash",
+                "arguments": {"command": "sudo rm -rf /"},
+            },
+        )
     )
     ui.console_event_handler(
         Event(
             type="tool_denied",
             data={
+                "tool_call_id": "denied-call",
                 "tool": "bash",
                 "error": "sudo is not supported [/bold]",
                 "error_type": "PolicyDenied",
@@ -248,7 +287,9 @@ def test_permission_denial_and_tool_fields_render_literally(
     assert command in rendered
     assert "[/dim]" in rendered
     assert "[/bold red]" in rendered
-    assert "denied: sudo is not supported [/bold]" in rendered
+    # A denied call still says which command was denied.
+    assert "denied-call" not in rendered
+    assert "✗ bash: sudo rm -rf /: sudo is not supported [/bold]" in rendered
 
 
 @pytest.mark.parametrize(
@@ -297,6 +338,7 @@ def test_compact_file_events_hide_contents_and_edit_payloads(
         Event(
             type="tool_call",
             data={
+                "tool_call_id": "ui-call-2",
                 "tool": "read_file",
                 "arguments": {
                     "path": "src/[bold].py",
@@ -310,6 +352,7 @@ def test_compact_file_events_hide_contents_and_edit_payloads(
         Event(
             type="tool_result",
             data={
+                "tool_call_id": "ui-call-2",
                 "tool": "read_file",
                 "exit_code": 0,
                 "stdout": file_contents,
@@ -321,6 +364,7 @@ def test_compact_file_events_hide_contents_and_edit_payloads(
         Event(
             type="tool_call",
             data={
+                "tool_call_id": "ui-call-3",
                 "tool": "edit_file",
                 "arguments": {
                     "path": "src/[bold].py",
@@ -334,6 +378,7 @@ def test_compact_file_events_hide_contents_and_edit_payloads(
         Event(
             type="tool_result",
             data={
+                "tool_call_id": "ui-call-3",
                 "tool": "edit_file",
                 "exit_code": 0,
                 "stdout": "Updated src/[bold].py",
@@ -343,8 +388,8 @@ def test_compact_file_events_hide_contents_and_edit_payloads(
     )
 
     rendered = output.getvalue()
-    assert "→ read_file src/[bold].py lines 1-200" in rendered
-    assert "✓ read_file" in rendered
+    # A call and its result share one line, marked complete.
+    assert "✓ read_file src/[bold].py lines 1-200" in rendered
     assert "✓ Updated src/[bold].py" in rendered
     assert "VERY-LONG-FILE-CONTENTS" not in rendered
     assert edit_payload not in rendered
@@ -356,19 +401,127 @@ def test_compact_bash_hides_success_and_shows_failure_diagnostics(
     output = _capture_console(monkeypatch)
     command = "uv run pytest -q"
 
+    def run(call_id: str, *, exit_code: int, stdout: str, stderr: str) -> None:
+        """Emit one call and its result, as the runtime does for a real call."""
+        ui.console_event_handler(
+            Event(
+                type="tool_call",
+                data={
+                    "tool_call_id": call_id,
+                    "tool": "bash",
+                    "arguments": {"command": command},
+                },
+            )
+        )
+        ui.console_event_handler(
+            Event(
+                type="tool_result",
+                data={
+                    "tool_call_id": call_id,
+                    "tool": "bash",
+                    "exit_code": exit_code,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                },
+            )
+        )
+
+    run(
+        "bash-ok",
+        exit_code=0,
+        stdout="VERY-LARGE-PYTEST-OUTPUT\n" * 100,
+        stderr="warning stays compact",
+    )
+    run(
+        "bash-1",
+        exit_code=1,
+        stdout="stdout fallback diagnostic",
+        stderr="pytest collection failed",
+    )
+    run("bash-2", exit_code=2, stdout="fallback diagnostic", stderr="")
+
+    rendered = output.getvalue()
+    # Success is one line naming the command; its output stays out.
+    assert f"✓ bash: {command}" in rendered
+    assert "VERY-LARGE-PYTEST-OUTPUT" not in rendered
+    assert "warning stays compact" not in rendered
+    # Failure keeps the shape, names the exit code, and shows the diagnostic.
+    assert f"✗ bash: {command} (exit 1)" in rendered
+    assert "pytest collection failed" in rendered
+    assert f"✗ bash: {command} (exit 2)" in rendered
+    # stderr wins over stdout, so a stdout fallback never passes as the cause.
+    assert "stdout fallback diagnostic" not in rendered
+    assert "fallback diagnostic" in rendered
+
+
+def test_repeated_tool_calls_keep_their_own_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each call's result must name that call, not an earlier one.
+
+    The result event carries no arguments, so the display remembers how the call
+    was described. Keying that by tool name would let a second `bash` call be
+    reported with the first one's command; the call id is what separates them.
+    """
+    output = _capture_console(monkeypatch)
+
+    for call_id, command in (
+        ("first", "git status --short"),
+        ("second", "uv run pytest -q"),
+    ):
+        ui.console_event_handler(
+            Event(
+                type="tool_call",
+                data={
+                    "tool_call_id": call_id,
+                    "tool": "bash",
+                    "arguments": {"command": command},
+                },
+            )
+        )
+        ui.console_event_handler(
+            Event(
+                type="tool_result",
+                data={
+                    "tool_call_id": call_id,
+                    "tool": "bash",
+                    "exit_code": 0,
+                    "stdout": "",
+                    "stderr": "",
+                },
+            )
+        )
+
+    rendered = output.getvalue()
+    assert "✓ bash: git status --short" in rendered
+    assert "✓ bash: uv run pytest -q" in rendered
+    assert rendered.count("git status --short") == 1
+
+
+def test_a_result_without_its_call_falls_back_to_the_tool_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No borrowed arguments when the call is gone, as after a replay."""
+    output = _capture_console(monkeypatch)
     ui.console_event_handler(
         Event(
-            type="tool_call", data={"tool": "bash", "arguments": {"command": command}}
+            type="tool_call",
+            data={
+                "tool_call_id": "earlier",
+                "tool": "bash",
+                "arguments": {"command": "rm -rf build"},
+            },
         )
     )
     ui.console_event_handler(
         Event(
             type="tool_result",
             data={
+                "tool_call_id": "earlier",
                 "tool": "bash",
                 "exit_code": 0,
-                "stdout": "VERY-LARGE-PYTEST-OUTPUT\n" * 100,
-                "stderr": "warning stays compact",
+                "stdout": "",
+                "stderr": "",
             },
         )
     )
@@ -376,32 +529,15 @@ def test_compact_bash_hides_success_and_shows_failure_diagnostics(
         Event(
             type="tool_result",
             data={
+                "tool_call_id": "unknown",
                 "tool": "bash",
-                "exit_code": 1,
-                "stdout": "stdout fallback diagnostic",
-                "stderr": "pytest collection failed",
-            },
-        )
-    )
-    ui.console_event_handler(
-        Event(
-            type="tool_result",
-            data={
-                "tool": "bash",
-                "exit_code": 2,
-                "stdout": "fallback diagnostic",
+                "exit_code": 0,
+                "stdout": "",
                 "stderr": "",
             },
         )
     )
 
     rendered = output.getvalue()
-    assert f"→ bash: {command}" in rendered
-    assert "✓ exit 0" in rendered
-    assert "VERY-LARGE-PYTEST-OUTPUT" not in rendered
-    assert "warning stays compact" not in rendered
-    assert "✗ exit 1" in rendered
-    assert "pytest collection failed" in rendered
-    assert "stdout fallback diagnostic" not in rendered
-    assert "✗ exit 2" in rendered
-    assert "fallback diagnostic" in rendered
+    assert rendered.count("rm -rf build") == 1
+    assert "✓ bash\n" in rendered

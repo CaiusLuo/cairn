@@ -243,6 +243,7 @@ async def execute_tool_call(
         Event(
             type="tool_call",
             data={
+                "tool_call_id": tool_call.id,
                 "tool": tool_call.name,
                 "arguments": tool_call.arguments,
             },
@@ -403,6 +404,10 @@ async def execute_tool_call(
         Event(
             type="tool_result",
             data={
+                # Identifies which call this answers. The display pairs a call
+                # with its result, and a tool name alone cannot: the same tool
+                # can run several times in one turn.
+                "tool_call_id": tool_call.id,
                 "tool": tool_call.name,
                 "exit_code": result.exit_code,
                 "stdout": result.stdout,

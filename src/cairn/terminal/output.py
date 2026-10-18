@@ -4,7 +4,6 @@ from importlib.resources import files
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.prompt import Confirm, Prompt
-from rich.text import Text
 
 from cairn.core.events import Event
 from cairn.core.model_manager import ModelConfig
@@ -12,6 +11,12 @@ from cairn.core.permissions import PermissionChoice, PermissionRequest
 from cairn.core.provider_catalog import NamedProvider
 
 console = Console()
+
+# A tool argument long enough to dominate its status line is summarised by the
+# tool name alone; the full value is in the trace.
+MAX_ARGUMENT_CHARS = 120
+# Failure output beyond this many lines moves to the trace instead of the screen.
+MAX_DIAGNOSTIC_LINES = 20
 
 
 def confirm_provider_access(
@@ -74,57 +79,105 @@ def _suffix(value: object, prefix: str = " ") -> str:
     return f"{prefix}{value}" if isinstance(value, str) else ""
 
 
-def _render_tool_call(event: Event) -> None:
+# The label a call was described with, keyed by the call it belongs to. Runtime
+# owns the call/result pairing and reports both ids; this only remembers how the
+# call was worded so its result can repeat it. Entries are removed when their
+# result arrives, and a result without a matching call falls back to the tool
+# name rather than showing another call's arguments.
+_pending_tool_labels: dict[str, str] = {}
+
+
+def _tool_name(event: Event) -> str:
     raw_tool = event.data.get("tool")
-    tool = raw_tool if isinstance(raw_tool, str) else "tool"
+    return raw_tool if isinstance(raw_tool, str) else "tool"
+
+
+def _describe_tool_call(event: Event) -> str:
+    """One line identifying the tool and the argument that explains it."""
+    tool = _tool_name(event)
     raw_arguments = event.data.get("arguments")
     arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
 
     if tool == "read_file":
-        path_suffix = _suffix(arguments.get("path"))
         end = arguments.get("end_line")
-        if end is None or not path_suffix:
-            summary = f"→ read_file{path_suffix}"
-        else:
-            start = arguments.get("start_line", 1)
-            summary = f"→ read_file{path_suffix} lines {start}-{end}"
-    elif tool == "edit_file":
-        summary = f"→ edit_file{_suffix(arguments.get('path'))}"
-    elif tool == "bash":
-        summary = f"→ bash{_suffix(arguments.get('command'), ': ')}"
-    else:
-        summary = f"→ {tool}"
+        if end is None:
+            return f"read_file{_suffix(arguments.get('path'))}"
+        start = arguments.get("start_line", 1)
+        return f"read_file{_suffix(arguments.get('path'))} lines {start}-{end}"
+    if tool == "edit_file":
+        return f"edit_file{_suffix(arguments.get('path'))}"
+    if tool == "bash":
+        return f"bash{_suffix(arguments.get('command'), ': ')}"
+    # Any other tool still has to say what it ran on, or the line identifies
+    # nothing. The first short string argument is the closest thing to a subject.
+    for value in arguments.values():
+        if isinstance(value, str) and value and len(value) <= MAX_ARGUMENT_CHARS:
+            return f"{tool}{_suffix(value, ': ')}"
+    return tool
 
-    console.print(Text(f"\n{summary}", style="bold cyan"))
+
+def _take_tool_label(event: Event) -> str:
+    """The label the matching call was described with, if it is still pending.
+
+    Keyed by the call id runtime reports on both events, so a second call to the
+    same tool cannot be described with the first one's arguments.
+    """
+    call_id = event.data.get("tool_call_id")
+    if not isinstance(call_id, str):
+        return ""
+    return _pending_tool_labels.pop(call_id, "")
 
 
 def _render_tool_result(event: Event) -> None:
-    raw_tool = event.data.get("tool")
-    tool = raw_tool if isinstance(raw_tool, str) else "tool"
+    """Report a finished tool call as one line.
+
+    A call and its result are one fact, so they share a line instead of
+    occupying two with a blank line between them. The exit code stays: a status
+    line that cannot distinguish a normal failure from a killed process is
+    hiding the number a reader needs. Failures add a bounded diagnostic beneath,
+    because that is the part a reader acts on; the full record stays in the trace
+    for `/trace`.
+    """
+    tool = _tool_name(event)
+    label = _take_tool_label(event) or tool
     exit_code = event.data["exit_code"]
     raw_stdout = event.data.get("stdout")
     stdout = raw_stdout if isinstance(raw_stdout, str) else ""
     raw_stderr = event.data.get("stderr")
     stderr = raw_stderr if isinstance(raw_stderr, str) else ""
+    mark = "✓" if exit_code == 0 else "✗"
 
-    if exit_code != 0:
-        console.print(f"✗ exit {exit_code}", style="bold red", markup=False)
-        diagnostic = stderr or stdout
-        if diagnostic:
-            console.print(diagnostic.rstrip(), style="yellow", markup=False)
+    if exit_code == 0 and tool == "edit_file":
+        detail = stdout.strip()
+        if detail:
+            console.print(f"{mark} {detail}", style="green", markup=False)
+            return
+    if exit_code == 0:
+        console.print(f"{mark} {label}", style="green", markup=False)
         return
 
-    if tool == "read_file":
-        summary = "✓ read_file"
-    elif tool == "edit_file":
-        detail = stdout.strip()
-        summary = f"✓ {detail}" if detail else "✓ edit_file"
-    elif tool == "bash":
-        summary = f"✓ exit {exit_code}"
-    else:
-        summary = f"✓ {tool}"
+    console.print(f"{mark} {label} (exit {exit_code})", style="bold red", markup=False)
+    diagnostic = (stderr or stdout).strip()
+    if diagnostic:
+        console.print(_indented(_bounded(diagnostic)), style="yellow", markup=False)
 
-    console.print(summary, style="green", markup=False)
+
+def _bounded(text: str, limit: int = MAX_DIAGNOSTIC_LINES) -> str:
+    """Keep a diagnostic to what a reader can act on.
+
+    A failing command can produce megabytes of stderr; printing all of it pushes
+    the rest of the session out of the scrollback. The trace keeps the full text.
+    """
+    lines = text.splitlines()
+    if len(lines) <= limit:
+        return text
+    omitted = len(lines) - limit
+    return "\n".join([*lines[:limit], f"… {omitted} more lines (see /trace)"])
+
+
+def _indented(text: str) -> str:
+    """Indent a diagnostic so it reads as detail under its own status line."""
+    return "\n".join(f"  {line}" for line in text.splitlines())
 
 
 def _format_token_count(value: object) -> str:
@@ -164,20 +217,26 @@ def console_event_handler(event: Event) -> None:
             )
 
         case "tool_call":
-            _render_tool_call(event)
+            # A call is not a fact on its own; remember how to describe it so the
+            # result can report both on one line. The result event carries no
+            # arguments, so this is the only place they are available.
+            raw_call_id = event.data.get("tool_call_id")
+            if isinstance(raw_call_id, str):
+                _pending_tool_labels[raw_call_id] = _describe_tool_call(event)
 
         case "tool_result":
             _render_tool_result(event)
 
         case "tool_error":
-            tool = event.data["tool"]
-            error = event.data["error"]
-
-            console.print(f"✗ {tool}: {error}", style="bold red", markup=False)
+            label = _take_tool_label(event) or str(event.data["tool"])
+            console.print(
+                f"✗ {label}: {event.data['error']}", style="bold red", markup=False
+            )
 
         case "tool_denied":
+            label = _take_tool_label(event) or str(event.data["tool"])
             console.print(
-                f"✗ denied: {event.data['error']}", style="bold red", markup=False
+                f"✗ {label}: {event.data['error']}", style="bold red", markup=False
             )
 
         case "agent_finish":
@@ -240,11 +299,11 @@ class StreamingDisplay:
                 if self._open:
                     console.print()
                 label = (
-                    "(thinking, provisional)"
+                    "[dim]thinking…[/dim]"
                     if event.type == "model_reasoning_delta"
-                    else "(provisional)"
+                    else ""
                 )
-                console.print(f"[bold]Cairn>[/bold] [dim]{label}[/dim]")
+                console.print(f"[bold]Cairn>[/bold] {label}".rstrip())
                 self._open = True
                 self._channel = event.type
             if event.type == "model_text_delta":
@@ -292,9 +351,9 @@ class StreamingDisplay:
         if self._active:
             self._active = False
             console.print(
-                "[abandoned attempt; provisional output discarded]"
+                "[attempt abandoned; incomplete output discarded]"
                 if abandoned
-                else "[incomplete response; provisional output discarded]",
+                else "[response incomplete; incomplete output discarded]",
                 style="yellow",
                 markup=False,
             )

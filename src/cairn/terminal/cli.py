@@ -196,8 +196,8 @@ def root(ctx: typer.Context) -> None:
 
 def _durable_notices(durable: DurableOptions | None) -> dict[str, str]:
     return {
-        "tool_call": "Provisional tool execution; checkpoint not committed.",
-        "tool_result": "Provisional tool observation; checkpoint not committed.",
+        "tool_call": "Tool execution in progress; checkpoint not committed yet.",
+        "tool_result": "Tool finished; checkpoint not committed yet.",
         "tool_error": "Tool failed; checkpoint not committed.",
         "tool_denied": "Tool permission denied.",
         "agent_finish": "Turn output finished; awaiting durable checkpoint.",

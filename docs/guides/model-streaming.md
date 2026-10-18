@@ -1,13 +1,14 @@
 # M1-A model streaming
 
-Cairn displays model text incrementally with a `(provisional)` label. The final
+Cairn displays model text incrementally under the `Cairn>` header. The final
 answer is printed once. Tool and permission output follows response assembly;
 incomplete tool arguments are never previewed. Streaming text is plain text:
 Rich markup/emoji syntax is literal and C0/C1 terminal controls are filtered
 (newline/tab remain). Generate-only clients keep the existing Markdown rendering.
 
 OpenAI-compatible `delta.reasoning_content` strings are normalized separately as
-`LLMStreamChunk.reasoning_text` and shown under a `(thinking, provisional)` label.
+`LLMStreamChunk.reasoning_text` and shown under a `thinking…` label, so a reader
+can tell reasoning from the answer while it streams.
 Thinking and answer fragments may occur in the same chunk. Thinking is transient:
 it is never merged into the answer, retained in `LLMResponse` or conversation,
 replayed to a provider, or stored in trace/checkpoint data. No provider-specific

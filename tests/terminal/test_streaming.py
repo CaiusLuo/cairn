@@ -73,9 +73,9 @@ def test_real_cli_deltas_visible_before_completion_plain_and_not_duplicated(
         await blocked.entered.wait()
         shown = text.getvalue()
         assert "你好 [bold]literal[/bold] [31mred[0m" in shown
-        assert "(thinking, provisional)" in shown
+        assert "thinking…" in shown
         assert shown.index("先思考") < shown.index("你好")
-        assert "\x1b" not in shown and "(provisional)" in shown
+        assert "\x1b" not in shown
         assert not task.done()
         assert [message.role for message in agents[0].state.messages] == ["user"]
         blocked.release.set()
@@ -131,7 +131,7 @@ def test_public_cli_partial_fallback_labels_abandoned_text(
     shown = text.getvalue()
     assert (
         shown.index("ABANDONED")
-        < shown.index("[abandoned attempt; provisional output discarded]")
+        < shown.index("[attempt abandoned; incomplete output discarded]")
         < shown.index("ACCEPTED")
     )
     assert shown.count("ACCEPTED_THOUGHT") == 1
@@ -176,7 +176,7 @@ def test_cli_cancellation_labels_incomplete_and_never_previews_tool_arguments(
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        assert "[incomplete response; provisional output discarded]" in text.getvalue()
+        assert "[response incomplete; incomplete output discarded]" in text.getvalue()
         assert "unfinished thought" in text.getvalue()
         assert "TOPSECRET" not in text.getvalue()
         assert "Permission required" not in text.getvalue()
@@ -201,7 +201,7 @@ def test_cli_generate_only_client_keeps_markdown_rendering(
     assert result.exit_code == 0, result.output
     assert "LEGACY" in text.getvalue()
     assert "**LEGACY**" not in text.getvalue()
-    assert "(provisional)" not in text.getvalue()
+    assert "thinking…" not in text.getvalue()
     assert agents[0].state.messages[-1].content == "**LEGACY**"
 
 

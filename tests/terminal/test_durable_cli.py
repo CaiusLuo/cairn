@@ -551,10 +551,10 @@ def test_old_network_permissions_never_restored(harness: Harness) -> None:
     old_handler = harness.agents[0].permission_handler
     assert isinstance(old_handler, SessionPermissionHandler)
     assert PermissionCapability.NETWORK in old_handler.grants
-    assert "Provisional tool observation" in result.output
-    assert result.output.index("Provisional tool observation") < result.output.index(
-        "Committed checkpoint"
-    )
+    assert "Tool finished; checkpoint not committed yet." in result.output
+    assert result.output.index(
+        "Tool finished; checkpoint not committed yet."
+    ) < result.output.index("Committed checkpoint")
     session_id = result.output.split("Session: ", 1)[1].splitlines()[0]
     harness.monkeypatch.setattr(
         cli, "console_permission_prompt", lambda request: PermissionChoice.DENY
