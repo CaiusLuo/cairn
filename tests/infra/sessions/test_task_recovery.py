@@ -248,10 +248,10 @@ def test_reconciliation_follows_status_not_the_process_local_fault(
     assert report.status == "recovery_required"
     assert report.local_fault is False
 
-    report = reopened.inspect_task(SESSION, TASK)
+    task_report = reopened.inspect_task(SESSION, TASK)
     with (
         pytest.raises(SessionStoreError) as excinfo,
-        reopened.task_reconciliation(report),
+        reopened.task_reconciliation(task_report),
     ):
         pass  # pragma: no cover - admission rejects before the body
     assert excinfo.value.code == "task_session_not_ready"

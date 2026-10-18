@@ -994,6 +994,9 @@ def test_context_view_trimming_after_a_switch_preserves_full_history(
     state = configure_cli(
         tmp_path, monkeypatch, "first", "/provider use local", "second"
     )
+    # The session also injects its skill index, so the budget must leave room
+    # for it; 100 tokens is below one advertised skill.
+    monkeypatch.setenv("CAIRN_CONTEXT_MAX_TOKENS", "130")
     counted: list[str] = []
 
     def count(**kwargs: Any) -> int:

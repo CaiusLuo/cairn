@@ -8,6 +8,7 @@ from cairn.core.permissions import PermissionHandler
 from cairn.core.state import AgentState
 from cairn.infra.git.context import RepoContextProvider
 from cairn.infra.observability.tracer import Tracer
+from cairn.infra.skills import SkillLibrary
 from cairn.infra.tools.registry import ToolRegistry
 from cairn.runtime.model_executor import ModelExecutor
 
@@ -57,6 +58,7 @@ class Agent:
         model_executor: ModelExecutor | None = None,
         provider_name: str | None = None,
         memory_reader: "MemoryReader | None" = None,
+        skill_library: SkillLibrary | None = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -65,6 +67,7 @@ class Agent:
         self.permission_handler = permission_handler
         self.tracer = tracer
         self.repo_context_provider = repo_context_provider
+        self.skill_library = skill_library
         self.context_builder = (
             context_builder if context_builder is not None else ContextBuilder()
         )

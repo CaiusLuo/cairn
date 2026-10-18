@@ -6,6 +6,7 @@ from cairn.core.llm import LLMClient
 from cairn.core.permissions import PermissionHandler
 from cairn.infra.git.context import RepoContextProvider
 from cairn.infra.observability.tracer import Tracer
+from cairn.infra.skills import SkillLibrary
 from cairn.infra.tools import build_default_registry
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
@@ -26,6 +27,7 @@ def build_agent(
     secret_env_keys: frozenset[str] = frozenset(),
     model_executor: ModelExecutor | None = None,
     memory_reader: "MemoryReader | None" = None,
+    skills: SkillLibrary | None = None,
 ) -> Agent:
     """Build one Agent over a Workspace.
 
@@ -33,7 +35,11 @@ def build_agent(
     and the repository-context provider both keep those names out of the child
     environments they create, so a new consumer cannot silently miss one.
     """
-    registry = build_default_registry(workspace, secret_env_keys=secret_env_keys)
+    # Skills are opt-in: an evaluation or a narrow caller must not inherit an
+    # advertisement it did not ask for, because it spends context every step.
+    registry = build_default_registry(
+        workspace, secret_env_keys=secret_env_keys, skills=skills
+    )
 
     return Agent(
         llm=llm,
@@ -47,4 +53,5 @@ def build_agent(
         context_builder=context_builder,
         model_executor=model_executor,
         memory_reader=memory_reader,
+        skill_library=skills,
     )

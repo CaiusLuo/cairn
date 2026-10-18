@@ -25,6 +25,7 @@ from cairn.infra.observability.sinks import JsonlTraceSink
 from cairn.infra.observability.storage import TraceStore
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.sessions.models import SessionStoreError
+from cairn.infra.skills import builtin_skills
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.assembly import build_agent
@@ -392,6 +393,7 @@ async def main(
         context_builder=active_runtime.context_builder,
         secret_env_keys=secret_env_keys,
         model_executor=active_runtime.model_executor,
+        skills=builtin_skills(),
     )
 
     def mirror_committed_runtime(runtime: ProviderRuntime) -> None:

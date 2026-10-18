@@ -142,6 +142,14 @@ async def run_turn(
                     system_messages.append(
                         Message(role="system", content=repo_context.to_prompt())
                     )
+                if agent.skill_library is not None:
+                    # Advertise names only; each body arrives through read_skill,
+                    # so a large library costs nothing until a skill is used.
+                    skill_lines = agent.skill_library.prompt_lines()
+                    if skill_lines:
+                        system_messages.append(
+                            Message(role="system", content="\n".join(skill_lines))
+                        )
                 tool_schemas = agent.tools.schemas()
                 memory_context = None
                 if agent.memory_reader is not None:
