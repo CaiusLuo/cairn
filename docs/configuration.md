@@ -14,14 +14,17 @@ by `CAIRN_*` values:
 CAIRN_LLM_MODEL=openai/your-model
 CAIRN_LLM_API_KEY=your-api-key
 CAIRN_BASE_URL=https://api.example.com/v1
-CAIRN_CONTEXT_MAX_TOKENS=98304
+CAIRN_CONTEXT_MAX_TOKENS=131072
 CAIRN_RESPONSE_MAX_TOKENS=8192
 ```
 
+Both budget variables are optional and default to `131072` and `8192`, sized for
+a 128K model window. Lower them for a narrower model.
+
 Shell values take precedence over `.env`. The context budget includes the
-response reserve, which is also sent as the provider's output-token limit. Choose
-values that fit every model you intend to use. Older turns may be omitted from
-requests while the full conversation stays in memory.
+response reserve, which is also sent as the provider's output-token limit. Older
+turns may be omitted from requests while the full conversation stays in memory.
+The current turn and its tool results are never trimmed.
 
 ### `.cairn/models.toml`, legacy layout
 

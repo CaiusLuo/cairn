@@ -16,10 +16,18 @@ from cairn.core.models import Message
 OMISSION_NOTICE_PREFIX = "Context notice:"
 
 
+#: Default request budget. Sized for the 128K window that current hosted models
+#: offer: a smaller default fails real tasks before any history is trimmed, which
+#: reads as a harness defect rather than a configuration choice. Callers that talk
+#: to a narrower model must lower it.
+DEFAULT_CONTEXT_MAX_TOKENS = 131072
+DEFAULT_RESPONSE_MAX_TOKENS = 8192
+
+
 @dataclass(frozen=True, slots=True)
 class ContextBudget:
-    max_tokens: int = 32768
-    response_tokens: int = 4096
+    max_tokens: int = DEFAULT_CONTEXT_MAX_TOKENS
+    response_tokens: int = DEFAULT_RESPONSE_MAX_TOKENS
 
     def __post_init__(self) -> None:
         if type(self.max_tokens) is not int or self.max_tokens < 1:

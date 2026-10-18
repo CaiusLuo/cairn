@@ -117,14 +117,20 @@ Set your provider and budget in `.env`:
 CAIRN_LLM_MODEL=openai/your-model
 CAIRN_LLM_API_KEY=your-api-key
 CAIRN_BASE_URL=https://api.example.com/v1
-CAIRN_CONTEXT_MAX_TOKENS=98304
+CAIRN_CONTEXT_MAX_TOKENS=131072
 CAIRN_RESPONSE_MAX_TOKENS=8192
 ```
 
+Both budget variables are optional; the defaults are `131072` and `8192`, sized
+for the 128K window current hosted models offer. Lower them for a narrower
+model — a budget above the model's window is rejected by the provider.
+
 Shell values take precedence over `.env`. The context budget includes the
 response reserve, which is also sent as the provider's output-token limit.
-Choose values that fit every model you intend to use. Older turns may be omitted
-from requests while the full conversation stays in memory.
+Older turns may be omitted from requests while the full conversation stays in
+memory. The current turn and its tool results are never trimmed, so one very
+large tool result can exceed the budget; the error then names the budget and
+the attempt to raise it.
 
 ```bash
 uv run cairn
