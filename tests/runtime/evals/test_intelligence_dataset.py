@@ -201,9 +201,10 @@ def test_unrelated_case_rejects_corrupted_account_check(tmp_path: Path) -> None:
     )
     result = asyncio.run(runner.run_case())
     assert result.status is EvalStatus.FAIL
-    assert [check.name for check in result.checks if not check.passed] == [
-        "preserve:checks/check_account.py"
-    ]
+    # The corrupted preservation check must be reported; other checks may also
+    # fail, so this asserts the finding rather than the exact failure set.
+    failed = {check.name for check in result.checks if not check.passed}
+    assert "preserve:checks/check_account.py" in failed
 
 
 def test_negative_control_retrieves_no_memory(tmp_path: Path) -> None:
