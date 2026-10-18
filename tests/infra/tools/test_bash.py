@@ -15,6 +15,7 @@ from cairn.infra.tools.bash import (
     BashTool,
     _decode_output,
     _interpreter_runtime_paths,
+    _shadowed_ancestors,
     sandbox_python,
 )
 from cairn.infra.tools.capture import PIPE_READ_CHUNK_SIZE, read_bounded
@@ -769,3 +770,22 @@ def test_interpreter_runtime_paths_include_the_venv_and_its_base(
 
     assert (tmp_path / ".venv" / "bin") in paths
     assert base in paths
+
+
+def test_shadowed_ancestors_masks_a_home_directory_interpreter() -> None:
+    """An interpreter under a home directory must not expose the whole home.
+
+    Mounting the runtime creates its ancestors with host permissions, so the
+    sandbox would otherwise see every key and credential under that home.
+    """
+    runtimes = (
+        Path("/srv/project/.venv/bin"),
+        Path("/root/.local/share/uv/python/cpython-3.12/bin"),
+    )
+
+    assert _shadowed_ancestors(runtimes) == (Path("/root"),)
+
+
+def test_shadowed_ancestors_leaves_system_runtimes_unmasked() -> None:
+    """A runtime outside a home directory needs no masking."""
+    assert _shadowed_ancestors((Path("/usr/bin"), Path("/usr/lib"))) == ()

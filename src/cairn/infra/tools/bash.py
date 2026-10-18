@@ -234,6 +234,35 @@ def sandbox_python(workspace_root: Path | None = None) -> str:
     return sys.executable if sys.executable else ""
 
 
+def _shadowed_ancestors(paths: tuple[Path, ...]) -> tuple[Path, ...]:
+    """Directories that must be masked so mounting ``paths`` reveals nothing else.
+
+    Mounting a path makes bubblewrap create its ancestors, and a created
+    directory keeps the host's permission bits. When the path sits under a home
+    directory, the sandbox would then see that whole home — including keys and
+    credentials — merely because the interpreter lives below it. Shielding the
+    ancestor with an empty tmpfs keeps the interpreter reachable while the rest
+    of the tree stops existing for the command.
+
+    Only ancestors that are not already inside another mounted directory are
+    returned, outermost first, so the caller can mount them before the specific
+    paths they contain.
+    """
+    protected = (Path("/root"), Path.home(), Path("/home"), Path("/Users"))
+    shadowed: list[Path] = []
+    for path in paths:
+        for ancestor in protected:
+            if path == ancestor or ancestor not in path.parents:
+                continue
+            if any(root == ancestor for root in paths):
+                continue
+            if any(root in ancestor.parents for root in shadowed):
+                continue
+            if ancestor not in shadowed:
+                shadowed.append(ancestor)
+    return tuple(sorted(shadowed, key=lambda item: len(item.parts)))
+
+
 def _interpreter_runtime_paths(executable: str | None = None) -> tuple[Path, ...]:
     """Directories a sandboxed command needs to run an interpreter.
 
@@ -494,9 +523,18 @@ class BashTool:
             # The project interpreter can live in a virtual environment outside
             # those directories. Mount its runtime read-only so a sandboxed
             # command can invoke it rather than a `python` name the distribution
-            # may not provide.
-            interpreter = sandbox_python(cwd)
-            for runtime in _interpreter_runtime_paths(interpreter or None):
+            # may not provide. Mounting a path creates its ancestors, and a
+            # created ancestor keeps the host's permissions, so a home-directory
+            # interpreter would expose the whole home. Mask those ancestors with
+            # empty tmpfs mounts first; the later read-only binds then place only
+            # the interpreter runtime inside them.
+            runtime_paths = _interpreter_runtime_paths(sandbox_python(cwd) or None)
+            for masked in _shadowed_ancestors(runtime_paths):
+                argv.extend(("--tmpfs", str(masked)))
+                for parent in reversed(masked.parents):
+                    if parent not in (Path("/"), Path(".")):
+                        argv.extend(("--dir", str(parent)))
+            for runtime in runtime_paths:
                 argv.extend(("--ro-bind", str(runtime), str(runtime)))
             for parent in reversed(cwd.parents):
                 if parent != Path("/"):
