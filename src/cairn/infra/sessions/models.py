@@ -466,6 +466,16 @@ class CheckpointDelta(StrictDTO):
 
 
 class RecoveryReport(StrictDTO):
+    """One inspection of a Session and its attempt records.
+
+    ``status`` is the readiness answer and already covers ``local_fault``:
+    a latched store reports ``recovery_required``, so a check written as
+    ``status != "clean"`` needs no separate fault test. ``local_fault`` stays
+    because it names *where* the fault is (this process, not the stored row)
+    and is used on its own where a notice or release decision needs that
+    distinction.
+    """
+
     revision: Revision
     state: SessionState
     status: Literal["clean", "executing", "effects_unknown", "recovery_required"]

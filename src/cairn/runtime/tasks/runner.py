@@ -508,7 +508,6 @@ class CodingTaskRunner:
         last = session.last_turn
         if (
             report.status != "clean"
-            or report.local_fault
             or receipt != report.receipt
             or last is None
             or receipt.turn_id != str(last.turn_id)

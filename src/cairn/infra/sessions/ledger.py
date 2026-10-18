@@ -270,7 +270,9 @@ class TaskLedgerMixin:
             raise VersionConflict()
         if self._task_report(task, session) != expected:
             raise SessionStoreError("task_recovery_mismatch")
-        if session.status != "clean" or session.local_fault:
+        # ``status`` already reports recovery_required whenever the store is
+        # latched, because ``_report`` folds ``_fault`` into it.
+        if session.status != "clean":
             raise SessionStoreError("task_session_not_ready")
         return task, session
 
@@ -419,11 +421,7 @@ class TaskLedgerMixin:
             raise SessionStoreError("task_still_owned")
         with self._read() as conn:
             task, session = self._task_current(conn, expected, "running")
-            if (
-                session.status != "clean"
-                or session.local_fault
-                or task.base_revision != session.revision
-            ):
+            if session.status != "clean" or task.base_revision != session.revision:
                 raise SessionStoreError("task_session_not_ready")
         self._owned_tasks.add(key)
         try:

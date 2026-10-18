@@ -131,7 +131,8 @@ class DurableSession(Session):
             session._report = report
             session._revision = report.revision
             session._receipt = report.receipt
-            session._recovery = report.status != "clean" or report.local_fault
+            # status already reports the store-wide latch; see RecoveryReport.
+            session._recovery = report.status != "clean"
             agent.state.messages = restore_messages(report.checkpoint)
             return session
         except BaseException:
@@ -422,7 +423,6 @@ class DurableSession(Session):
         if (
             report.revision != self._revision
             or report.status != "clean"
-            or report.local_fault
             or report.binding != self._binding
         ):
             raise SessionAdmissionError("Durable Session requires reconciliation.")
