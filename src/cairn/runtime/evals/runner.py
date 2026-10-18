@@ -155,25 +155,55 @@ class EvalRunner:
         self.secret_env_keys = secret_env_keys
         self._running = False
 
-    def _bind_metrics(self, metrics: EvalMetrics) -> None:
+    # The four extension points below are this class's lifecycle contract: a
+    # subclass observes one case through them and is never expected to override
+    # ``run``. ``run`` owns their order and guarantees, so a subclass may rely on
+    # them and nothing else:
+    #
+    # * ``bind_metrics`` runs after the metrics record is reset to defaults and
+    #   before any case work; the record it receives is the one that will be
+    #   finalized, and it must be bound before observations are possible.
+    # * ``prepare_workspace`` runs once per case on an empty temporary workspace
+    #   whose lifetime the base class owns; it may add fixtures but not dispose
+    #   of it.
+    # * ``build_agent`` runs once per case after the workspace exists and before
+    #   the turn starts, so instrumentation must be attached there.
+    # * ``finalize_metrics`` runs after owned work settles, including when the
+    #   case failed, and even when an earlier step raised; it must release
+    #   subclass-owned resources and must not assume the case succeeded.
+    #
+    # A subclass owns only what these hooks identify: the case-specific
+    # observation adapters and any resources it allocates for them.
+
+    def bind_metrics(self, metrics: EvalMetrics) -> None:
         """Bind case-specific observation adapters before any case work starts."""
 
-    def _finalize_metrics(self, metrics: EvalMetrics) -> None:
+    def finalize_metrics(self, metrics: EvalMetrics) -> None:
         """Release case resources and finalize observations after work settles."""
 
-    async def _prepare_workspace(self, workspace: Workspace, case: EvalCase) -> None:
+    async def prepare_workspace(self, workspace: Workspace, case: EvalCase) -> None:
+        """Materialize a case's fixtures into its fresh workspace."""
         for raw_path, text in case.files.items():
             path = workspace.resolve_path(raw_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
 
-    def _build_agent(
+    def measured_context_builder(self, metrics: EvalMetrics) -> ContextBuilder:
+        """The metrics-recording Context builder this runner installs.
+
+        Declared as ``ContextBuilder`` so an override can return its own
+        implementation instead of depending on this class's private one.
+        """
+        return _MeasuredContextBuilder(metrics, self.context_budget, self.token_counter)
+
+    def build_agent(
         self,
         workspace: Workspace,
         llm: LLMClient,
         metrics: EvalMetrics,
         event_handler: EventHandler,
     ) -> Agent:
+        """Assemble one case's Agent; subclasses wrap it to instrument it."""
         return build_agent(
             workspace=workspace,
             llm=llm,
@@ -181,9 +211,7 @@ class EvalRunner:
             event_handler=event_handler,
             tracer=self.tracer,
             secret_env_keys=self.secret_env_keys,
-            context_builder=_MeasuredContextBuilder(
-                metrics, self.context_budget, self.token_counter
-            ),
+            context_builder=self.measured_context_builder(metrics),
             memory_reader=self.memory_reader,
         )
 
@@ -210,11 +238,11 @@ class EvalRunner:
         started = perf_counter()
         self._running = True
         try:
-            self._bind_metrics(metrics)
+            self.bind_metrics(metrics)
             result = await self._run(case, checks=checks, metrics=metrics)
         finally:
             try:
-                self._finalize_metrics(metrics)
+                self.finalize_metrics(metrics)
             finally:
                 # Also available to suite reporting after cancellation cleanup.
                 metrics.elapsed_seconds = perf_counter() - started
@@ -251,7 +279,7 @@ class EvalRunner:
                     prefix="cairn-eval-", dir=self.temp_root
                 ) as root:
                     workspace = Workspace(Path(root))
-                    await self._prepare_workspace(workspace, case)
+                    await self.prepare_workspace(workspace, case)
 
                     deadline = asyncio.timeout(self.run_timeout_seconds)
                     try:
@@ -262,9 +290,7 @@ class EvalRunner:
                         output_limit = getattr(llm, "max_output_tokens", None)
                         if type(output_limit) is int and output_limit > 0:
                             metrics.provider_max_output_tokens = output_limit
-                        agent = self._build_agent(
-                            workspace, llm, metrics, capture_trace
-                        )
+                        agent = self.build_agent(workspace, llm, metrics, capture_trace)
                         async with deadline:
                             await run_turn(agent, case.prompt, budget=self.budget)
                     except Exception as exc:

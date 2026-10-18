@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 from time import perf_counter
 from typing import Any, Literal
 
-from cairn.core.context import ContextRequest
+from cairn.core.context import ContextBuilder, ContextRequest
 from cairn.core.events import Event, EventHandler
 from cairn.core.llm import LLMClient
 from cairn.core.memory.context import MemoryContext
@@ -36,7 +36,7 @@ from cairn.runtime.evals.intelligence.models import (
     IntelligenceMetrics,
 )
 from cairn.runtime.evals.models import EvalCase, EvalCheck, EvalMetrics, EvalResult
-from cairn.runtime.evals.runner import EvalRunner, _MeasuredContextBuilder
+from cairn.runtime.evals.runner import EvalRunner
 from cairn.runtime.memory.freshness import FreshnessChecker
 from cairn.runtime.memory.retrieval import MemoryReader
 
@@ -180,13 +180,26 @@ class ObservedMemoryReader(MemoryReader):
             self.metrics.memory_retrieval_freshness_seconds += perf_counter() - started
 
 
-class ObservedContextBuilder(_MeasuredContextBuilder):
+class ObservedContextBuilder(ContextBuilder):
+    """Delegate to the runner's measured builder and add Memory/Context counters.
+
+    Composition, not inheritance: the measured builder is an implementation the
+    base class chooses through ``measured_context_builder``, so the observations
+    added here do not depend on that concrete class staying subclassable.
+    """
+
     def __init__(
-        self, runner: "IntelligenceRunner", metrics: IntelligenceMetrics
+        self,
+        runner: "IntelligenceRunner",
+        metrics: IntelligenceMetrics,
+        measured: ContextBuilder,
     ) -> None:
-        super().__init__(metrics, runner.context_budget, runner.token_counter)
+        # The measured builder already applies the budget and counter contract;
+        # mirror them so anything reading this builder sees the same policy.
+        super().__init__(budget=measured.budget, counter=measured.counter)
         self.observed = metrics
         self.runner = runner
+        self.measured = measured
 
     def build(
         self,
@@ -197,7 +210,9 @@ class ObservedContextBuilder(_MeasuredContextBuilder):
         tools: list[dict[str, Any]],
         project_memory: MemoryContext | None = None,
     ) -> ContextRequest:
-        request = super().build(
+        # The measured builder records the base Context counters; this class only
+        # adds the observations it owns.
+        request = self.measured.build(
             system_messages=system_messages,
             history=history,
             current_turn_start=current_turn_start,
@@ -296,7 +311,7 @@ class IntelligenceRunner(EvalRunner):
             metrics=self.observations if metrics is None else metrics,
         )
 
-    def _bind_metrics(self, metrics: EvalMetrics) -> None:
+    def bind_metrics(self, metrics: EvalMetrics) -> None:
         assert isinstance(metrics, IntelligenceMetrics)
         self.observations = metrics
         self.read_paths.clear()
@@ -305,7 +320,7 @@ class IntelligenceRunner(EvalRunner):
         if self.tracer is not None and isinstance(self.tracer.sink, SafeTraceSink):
             self.tracer.sink.metrics = metrics
 
-    def _finalize_metrics(self, metrics: EvalMetrics) -> None:
+    def finalize_metrics(self, metrics: EvalMetrics) -> None:
         assert isinstance(metrics, IntelligenceMetrics)
         try:
             self._release_memory_directory()
@@ -337,9 +352,9 @@ class IntelligenceRunner(EvalRunner):
             self.spec.item.case, checks=checks, metrics=self.observations
         )
 
-    async def _prepare_workspace(self, workspace: Workspace, case: EvalCase) -> None:
+    async def prepare_workspace(self, workspace: Workspace, case: EvalCase) -> None:
         started = perf_counter()
-        await super()._prepare_workspace(workspace, case)
+        await super().prepare_workspace(workspace, case)
         await initialize_git(workspace)
         identity = await ProjectIdentity.inspect(workspace)
         self.observations.project_id = identity.project_id
@@ -397,7 +412,14 @@ class IntelligenceRunner(EvalRunner):
             self.read_paths.add(path)
             self._discover((path,), "read_file")
 
-    def _build_agent(
+    def measured_context_builder(self, metrics: EvalMetrics) -> ContextBuilder:
+        """Wrap the base builder so Memory decisions are observed per request."""
+        assert isinstance(metrics, IntelligenceMetrics)
+        return ObservedContextBuilder(
+            self, metrics, super().measured_context_builder(metrics)
+        )
+
+    def build_agent(
         self,
         workspace: Workspace,
         llm: LLMClient,
@@ -451,7 +473,7 @@ class IntelligenceRunner(EvalRunner):
         # exactly one provider observer and bind it to this case's canonical one.
         while isinstance(llm, ObservedLLM):
             llm = llm.client
-        agent = super()._build_agent(
+        agent = super().build_agent(
             workspace, ObservedLLM(llm, self.observations), metrics, observe
         )
         bash = agent.tools.get_tool("bash")
@@ -459,7 +481,6 @@ class IntelligenceRunner(EvalRunner):
         bash.timeout = self.tool_timeout_seconds
         read = agent.tools.get_tool("read_file")
         agent.tools.override_tool(ObservedTool(read, self._observe_read))
-        agent.context_builder = ObservedContextBuilder(self, self.observations)
         if self.arm.graph:
             graph_tool = RepoGraphQueryTool(workspace, observer=self._observe_graph)
             graph_tool.initialize()

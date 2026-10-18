@@ -497,3 +497,83 @@ def test_builtin_check_timeout_closes_stream_and_runner_cleans_workspace(
     assert workspace_roots[0].parent == parent
     assert not workspace_roots[0].exists()
     assert_parent_preserved(parent, sentinel, sibling)
+
+
+def test_extension_hooks_run_in_documented_order_and_survive_failure(
+    tmp_path: Path,
+) -> None:
+    """A subclass observes a case only through the protected hooks."""
+    events: list[str] = []
+
+    class ObservingRunner(EvalRunner):
+        def bind_metrics(self, metrics: Any) -> None:
+            events.append("bind")
+
+        async def prepare_workspace(self, workspace: Workspace, case: EvalCase) -> None:
+            events.append("prepare")
+            await super().prepare_workspace(workspace, case)
+
+        def measured_context_builder(self, metrics: Any) -> Any:
+            events.append("context_builder")
+            return super().measured_context_builder(metrics)
+
+        def build_agent(
+            self, workspace: Workspace, llm: LLMClient, metrics: Any, event_handler: Any
+        ) -> Any:
+            events.append("build_agent")
+            return super().build_agent(workspace, llm, metrics, event_handler)
+
+        def finalize_metrics(self, metrics: Any) -> None:
+            events.append("finalize")
+
+    runner = ObservingRunner(
+        lambda: SuccessfulLLM(),
+        budget=TEST_BUDGET,
+        run_timeout_seconds=10,
+        check_timeout_seconds=2,
+        temp_root=tmp_path,
+    )
+    result = asyncio.run(
+        runner.run(
+            EvalCase(name="observed", prompt="finish", files={"a.txt": "x"}),
+            checks=[PassingCheck()],
+        )
+    )
+
+    assert result.status is EvalStatus.PASS
+    # build_agent chooses the Context builder, so it precedes that factory.
+    assert events == ["bind", "prepare", "build_agent", "context_builder", "finalize"]
+
+
+def test_finalize_runs_even_when_the_case_fails(tmp_path: Path) -> None:
+    """Subclass resources are released after a failed case, not only a passing one."""
+    events: list[str] = []
+
+    class ObservingRunner(EvalRunner):
+        def bind_metrics(self, metrics: Any) -> None:
+            events.append("bind")
+
+        def finalize_metrics(self, metrics: Any) -> None:
+            events.append("finalize")
+
+        def build_agent(
+            self, workspace: Workspace, llm: LLMClient, metrics: Any, event_handler: Any
+        ) -> Any:
+            raise RuntimeError("instrumentation failed")
+
+    runner = ObservingRunner(
+        lambda: SuccessfulLLM(),
+        budget=TEST_BUDGET,
+        run_timeout_seconds=10,
+        check_timeout_seconds=2,
+        temp_root=tmp_path,
+    )
+    result = asyncio.run(
+        runner.run(
+            EvalCase(name="failing-build", prompt="finish", files={}),
+            checks=[PassingCheck()],
+        )
+    )
+
+    assert result.status is EvalStatus.ERROR
+    assert events == ["bind", "finalize"]

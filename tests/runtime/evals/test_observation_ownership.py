@@ -416,11 +416,11 @@ def test_repeated_cancel_preserves_completed_and_active_suite_observations(
                 return LLMResponse(content="unreachable")
 
         class CapturingRunner(IntelligenceRunner):
-            async def _prepare_workspace(
+            async def prepare_workspace(
                 self, workspace: Workspace, case: EvalCase
             ) -> None:
                 directories.append(workspace.root)
-                await super()._prepare_workspace(workspace, case)
+                await super().prepare_workspace(workspace, case)
                 assert self.memory_directory is not None
                 directories.append(Path(self.memory_directory.name))
 
@@ -607,10 +607,8 @@ def test_cleanup_failure_still_finalizes_observed_metrics(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class CleanupFailureRunner(IntelligenceRunner):
-        async def _prepare_workspace(
-            self, workspace: Workspace, case: EvalCase
-        ) -> None:
-            await super()._prepare_workspace(workspace, case)
+        async def prepare_workspace(self, workspace: Workspace, case: EvalCase) -> None:
+            await super().prepare_workspace(workspace, case)
             assert self.memory_directory is not None
             cleanup = self.memory_directory.cleanup
 

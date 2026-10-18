@@ -329,11 +329,9 @@ def test_cancellation_cleans_workspace_and_memory(tmp_path: Path) -> None:
             return LLMResponse(content="unreachable")
 
     class CapturingRunner(IntelligenceRunner):
-        async def _prepare_workspace(
-            self, workspace: Workspace, case: EvalCase
-        ) -> None:
+        async def prepare_workspace(self, workspace: Workspace, case: EvalCase) -> None:
             directories.append(workspace.root)
-            await super()._prepare_workspace(workspace, case)
+            await super().prepare_workspace(workspace, case)
             assert self.memory_directory is not None
             directories.append(Path(self.memory_directory.name))
 

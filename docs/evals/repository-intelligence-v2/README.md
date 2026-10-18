@@ -41,6 +41,32 @@ both entry points finalize derived metrics after owned work settles and release
 temporary resources. Supplied metrics remain live for interrupted reporting;
 returned results and completed report entries hold detached snapshots.
 
+### Extension contract
+
+`EvalRunner.run` owns the case lifecycle and its ordering. A subclass observes one
+case through four protected methods and never overrides `run`:
+
+* `bind_metrics(metrics)` runs after the metrics record is reset to defaults and
+  before any case work, so the record it receives is the one that is finalized.
+* `prepare_workspace(workspace, case)` runs once per case on an empty temporary
+  workspace whose lifetime `run` owns; it may add fixtures but must not dispose of
+  it.
+* `build_agent(...)` assembles the case Agent after the workspace exists and
+  before the turn starts; instrumentation is attached here. It asks
+  `measured_context_builder(metrics)` for the metrics-recording Context builder,
+  which is the supported way to observe Context assembly.
+* `finalize_metrics(metrics)` runs after owned work settles, including when the
+  case failed and when an earlier step raised. It releases subclass-owned
+  resources and must not assume the case succeeded.
+
+The observed order per case is `bind_metrics`, `prepare_workspace`,
+`build_agent`, `measured_context_builder`, then `finalize_metrics`.
+
+A subclass owns the case-specific observation adapters and any resources it
+allocates for them, and nothing else. These methods are the stable surface:
+`_MeasuredContextBuilder` and the other private members of `runner.py` are
+implementation detail, reachable through the factory above rather than by import.
+
 Report schemas remain at version 1. `EvalResult.metrics` and generic suite metrics
 persist the declared `EvalMetrics` fields, including estimate flags and actual
 trace usage; Intelligence-only counters and discovery evidence are omitted there.
