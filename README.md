@@ -177,6 +177,23 @@ just the active one; credential values never appear in prompts, traces or CLI
 output. Accessible credential files can still be read by tools, so this is not
 complete secret-file isolation.
 
+## Skills
+
+A skill is a directory holding `SKILL.md`: YAML frontmatter with a `name` and a
+`description`, then a Markdown body. Only those two fields are read, so a skill
+written for another harness loads unchanged.
+
+Skills are advertised, not inlined. Each step shows one line per skill — its
+name and description — and the body is absent until the agent calls the
+`read_skill` tool for it. A library therefore costs a few hundred tokens until
+something in it is used, instead of the full text on every request. Reading a
+skill is an ordinary tool call, so it appears in traces with its arguments.
+
+Cairn ships the `diagrams` skill, which says when a flow diagram is worth
+drawing and when it is not. Skills are opt-in at assembly: the CLI enables the
+packaged library, while evaluations and other callers start with none so a
+measurement never inherits prompt text it did not ask for.
+
 ## Isolated workspaces
 
 Local Git worktrees provide isolated workspaces for coding tasks, with automatic
@@ -278,6 +295,7 @@ src/cairn/
 ├── infra/     # Providers, tools, filesystem/Git, GitHub, traces, and config
 ├── terminal/  # CLI entrypoint, input/output, and slash commands
 ├── resources/ # Packaged terminal assets
+├── skills/    # Packaged skills, loaded on demand rather than up front
 └── __init__.py
 ```
 
