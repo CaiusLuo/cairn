@@ -310,6 +310,7 @@ def format_status_line(
     context_fraction: float | None = None,
     cached_fraction: float | None = None,
     reasoning_tokens: int | None = None,
+    trace_id: str | None = None,
 ) -> Text:
     """One quiet line describing what the turn is doing.
 
@@ -335,6 +336,11 @@ def format_status_line(
 
     if reasoning_tokens:
         parts.append(Text(f"  {reasoning_tokens} reasoning", style="dim"))
+
+    if trace_id:
+        # The prefix of the turn's trace, so an identifier is visible without
+        # printing a whole line for it. `/trace` accepts the same prefix.
+        parts.append(Text(f"  {trace_id[:8]}", style="dim"))
 
     return Text.assemble(*parts)
 
@@ -459,6 +465,7 @@ class StreamingDisplay:
         self._output_tokens = 0
         self._cached_tokens = 0
         self._reasoning_tokens: int | None = None
+        self._trace_id: str | None = None
         self._context_used: int | None = None
         self._context_limit: int | None = None
         self._status_painted = 0.0
@@ -485,6 +492,7 @@ class StreamingDisplay:
             self._output_tokens = 0
             self._cached_tokens = 0
             self._reasoning_tokens = None
+            self._trace_id = None
             self._active = True
             return True
         if event.type in ("model_text_delta", "model_reasoning_delta"):
@@ -512,6 +520,8 @@ class StreamingDisplay:
         if event.type == "trace_finish":
             # The turn's totals arrive once, at the end; the status line already
             # shows live progress from the counters it accumulated per delta.
+            raw_trace_id = event.data.get("trace_id")
+            self._trace_id = raw_trace_id if isinstance(raw_trace_id, str) else None
             usage = event.data.get("usage")
             if isinstance(usage, dict):
                 self._input_tokens = _count(usage.get("input_tokens"))
@@ -663,6 +673,7 @@ class StreamingDisplay:
             context_fraction=context_fraction,
             cached_fraction=cached_fraction,
             reasoning_tokens=self._reasoning_tokens,
+            trace_id=self._trace_id,
         )
 
     def _close_live(self) -> None:

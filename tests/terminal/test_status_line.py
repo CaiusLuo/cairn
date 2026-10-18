@@ -61,3 +61,15 @@ def test_ascii_glyphs_are_available_for_a_plain_terminal() -> None:
     assert ui.ASCII_GLYPHS.bar_full.isascii()
     assert ui.ASCII_GLYPHS.spinner.isascii()
     assert ui.ASCII_GLYPHS.reasoning.isascii()
+
+
+def test_the_trace_prefix_is_shown_so_an_id_is_discoverable() -> None:
+    """The full trace line is gone, so its identifier lives here instead."""
+    rendered = render(active=False, trace_id="a5da4753b98f71b5")
+
+    assert "a5da4753" in rendered
+    assert "b98f71b5" not in rendered
+
+
+def test_no_trace_prefix_without_a_trace() -> None:
+    assert "a5da4753" not in render(active=True, trace_id=None)
