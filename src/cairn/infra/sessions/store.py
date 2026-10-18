@@ -755,70 +755,6 @@ class SessionStore(TaskLedgerMixin):
             sensitive_values=self.sensitive_values,
         )
 
-    def _validate_checkpoint_identity(
-        self,
-        session: _SessionRow,
-        session_id: str,
-        row: sqlite3.Row,
-        checkpoint: CheckpointPayload | CheckpointDelta,
-        previous: CheckpointPayload | CheckpointDelta | None,
-    ) -> None:
-        """A stored checkpoint must describe the row that carries it, and follow
-        its predecessor by exactly one sequence step."""
-        if checkpoint.session_id != session_id:
-            raise SessionStoreError("checkpoint_session_mismatch")
-        if checkpoint.seq != row["seq"]:
-            raise SessionStoreError("checkpoint_seq_mismatch")
-        if checkpoint.turn_id != row["turn_id"]:
-            raise SessionStoreError("checkpoint_turn_mismatch")
-        if row["format_version"] != checkpoint.format_version:
-            raise SessionStoreError("checkpoint_format_version_mismatch")
-        if row["created_at_utc"] != checkpoint.settled_at_utc:
-            raise SessionStoreError("checkpoint_settled_time_mismatch")
-        expected_seq = 0 if previous is None else previous.seq + 1
-        if checkpoint.seq != expected_seq:
-            raise SessionStoreError("checkpoint_sequence_gap")
-        if not same_workspace(session.binding, checkpoint.binding):
-            raise SessionStoreError("checkpoint_binding_mismatch")
-
-    def _advance_receipt(
-        self,
-        revision: Revision,
-        session_id: str,
-        checkpoint: CheckpointPayload | CheckpointDelta,
-        previous: CheckpointPayload | CheckpointDelta | None,
-        receipt: CheckpointReceipt | None,
-        row: sqlite3.Row,
-        by_turn: dict[str, TurnRecord],
-        committed: set[str],
-    ) -> CheckpointReceipt:
-        """Validate the settled relationship for a later checkpoint and return
-        the receipt it advances to."""
-        commit_version = 0
-        if previous is not None:
-            record = by_turn.get(checkpoint.turn_id or "")
-            if record is None:
-                raise SessionStoreError("checkpoint_without_turn_record")
-            self._settled_relationship(record, checkpoint, previous)
-            commit_version = record.diagnostics.commit_version or 0
-            if receipt is None:
-                raise SessionStoreError("checkpoint_receipt_missing")
-            if commit_version <= receipt.revision.version:
-                raise SessionStoreError("checkpoint_commit_version_not_advancing")
-            if commit_version > revision.version:
-                raise SessionStoreError("checkpoint_commit_version_ahead_of_head")
-            committed.add(record.intent.turn_id)
-        return CheckpointReceipt(
-            revision=Revision(
-                session_id=session_id,
-                version=commit_version,
-                head_seq=checkpoint.seq,
-            ),
-            turn_id=checkpoint.turn_id,
-            sha256=row["sha256"],
-            outcome=checkpoint.outcome,
-        )
-
     def _validate_unresolved_turn(
         self, session: _SessionRow, unresolved: Sequence[TurnRecord]
     ) -> None:
@@ -867,33 +803,6 @@ class SessionStore(TaskLedgerMixin):
             if settled:
                 expected_base += 1
 
-    def _validate_unresolved_intent(
-        self,
-        session: _SessionRow,
-        revision: Revision,
-        unresolved: Sequence[TurnRecord],
-        previous: CheckpointPayload | CheckpointDelta,
-    ) -> None:
-        """An unresolved turn must continue from the committed head."""
-        if not unresolved:
-            return
-        active = unresolved[0]
-        if active.intent.base_seq != revision.head_seq:
-            raise SessionStoreError("unresolved_turn_base_not_head")
-        if active.intent.message_start != previous.message_range.end:
-            raise SessionStoreError("unresolved_turn_message_start_mismatch")
-        if active.intent.binding != session.binding:
-            raise SessionStoreError("unresolved_turn_binding_mismatch")
-
-    def _recovery_status(
-        self, session: _SessionRow, unresolved: Sequence[TurnRecord]
-    ) -> Literal["clean", "executing", "effects_unknown", "recovery_required"]:
-        if session.state == "recovery_required" or self._fault:
-            return "recovery_required"
-        if not unresolved:
-            return "clean"
-        return "effects_unknown" if unresolved[0].diagnostics.fences else "executing"
-
     def _report(self, conn: sqlite3.Connection, session_id: str) -> RecoveryReport:
         raw = conn.execute(
             "SELECT version,head_seq FROM sessions WHERE session_id=?", (session_id,)
@@ -914,9 +823,22 @@ class SessionStore(TaskLedgerMixin):
             "SELECT * FROM checkpoints WHERE session_id=? ORDER BY seq", (session_id,)
         ):
             checkpoint = self._checkpoint_row(row)
-            self._validate_checkpoint_identity(
-                session, session_id, row, checkpoint, previous
-            )
+            # Validate row identity before following the checkpoint chain.
+            if checkpoint.session_id != session_id:
+                raise SessionStoreError("checkpoint_session_mismatch")
+            if checkpoint.seq != row["seq"]:
+                raise SessionStoreError("checkpoint_seq_mismatch")
+            if checkpoint.turn_id != row["turn_id"]:
+                raise SessionStoreError("checkpoint_turn_mismatch")
+            if row["format_version"] != checkpoint.format_version:
+                raise SessionStoreError("checkpoint_format_version_mismatch")
+            if row["created_at_utc"] != checkpoint.settled_at_utc:
+                raise SessionStoreError("checkpoint_settled_time_mismatch")
+            expected_seq = 0 if previous is None else previous.seq + 1
+            if checkpoint.seq != expected_seq:
+                raise SessionStoreError("checkpoint_sequence_gap")
+            if not same_workspace(session.binding, checkpoint.binding):
+                raise SessionStoreError("checkpoint_binding_mismatch")
             if isinstance(checkpoint, CheckpointDelta):
                 if checkpoint.predecessor != receipt:
                     raise SessionStoreError("checkpoint_predecessor_mismatch")
@@ -939,15 +861,30 @@ class SessionStore(TaskLedgerMixin):
             ):
                 raise SessionStoreError("record_limit")
             history.extend(new_messages)
-            receipt = self._advance_receipt(
-                revision,
-                session_id,
-                checkpoint,
-                previous,
-                receipt,
-                row,
-                by_turn,
-                committed,
+            # A receipt must agree with its settled Turn and prior receipt.
+            commit_version = 0
+            if previous is not None:
+                record = by_turn.get(checkpoint.turn_id or "")
+                if record is None:
+                    raise SessionStoreError("checkpoint_without_turn_record")
+                self._settled_relationship(record, checkpoint, previous)
+                commit_version = record.diagnostics.commit_version or 0
+                if receipt is None:
+                    raise SessionStoreError("checkpoint_receipt_missing")
+                if commit_version <= receipt.revision.version:
+                    raise SessionStoreError("checkpoint_commit_version_not_advancing")
+                if commit_version > revision.version:
+                    raise SessionStoreError("checkpoint_commit_version_ahead_of_head")
+                committed.add(record.intent.turn_id)
+            receipt = CheckpointReceipt(
+                revision=Revision(
+                    session_id=session_id,
+                    version=commit_version,
+                    head_seq=checkpoint.seq,
+                ),
+                turn_id=checkpoint.turn_id,
+                sha256=row["sha256"],
+                outcome=checkpoint.outcome,
             )
             previous = checkpoint
             bases[checkpoint.seq] = (
@@ -963,7 +900,14 @@ class SessionStore(TaskLedgerMixin):
         ]
         self._validate_unresolved_turn(session, unresolved)
         self._validate_record_bases(session, revision, records, committed, bases)
-        self._validate_unresolved_intent(session, revision, unresolved, previous)
+        if unresolved:
+            active = unresolved[0]
+            if active.intent.base_seq != revision.head_seq:
+                raise SessionStoreError("unresolved_turn_base_not_head")
+            if active.intent.message_start != previous.message_range.end:
+                raise SessionStoreError("unresolved_turn_message_start_mismatch")
+            if active.intent.binding != session.binding:
+                raise SessionStoreError("unresolved_turn_binding_mismatch")
         if isinstance(previous, CheckpointDelta):
             materialized = CheckpointPayload(
                 **previous.model_dump(
@@ -980,10 +924,19 @@ class SessionStore(TaskLedgerMixin):
             )
         else:
             materialized = previous
+        status: Literal["clean", "executing", "effects_unknown", "recovery_required"]
+        if session.state == "recovery_required" or self._fault:
+            status = "recovery_required"
+        elif unresolved:
+            status = (
+                "effects_unknown" if unresolved[0].diagnostics.fences else "executing"
+            )
+        else:
+            status = "clean"
         return RecoveryReport(
             revision=revision,
             state=session.state,
-            status=self._recovery_status(session, unresolved),
+            status=status,
             binding=session.binding,
             checkpoint=materialized,
             receipt=receipt,
