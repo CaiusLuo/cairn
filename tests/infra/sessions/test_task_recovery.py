@@ -220,3 +220,39 @@ def test_decision_cannot_invent_a_receipt_discard_one_or_skip_acknowledgement(
         api.reconcile_task(report, resolution)
     assert api.inspect_task(SESSION, TASK).task == task
     api.close()
+
+
+def test_reconciliation_follows_status_not_the_process_local_fault(
+    tmp_path: Path,
+) -> None:
+    """Recovery admission reads ``status``, never the per-process fault latch.
+
+    A Session with an unresolved Turn is not "clean" even when this process
+    never latched the store. Guarding on ``local_fault`` alone would admit
+    recovery work against it, so the two predicates genuinely differ here.
+    """
+    api = store(tmp_path)
+    api.create(binding(tmp_path))
+    base = api.inspect(SESSION).revision
+    api.create_task(base, task_id=TASK, input_digest=INPUT_DIGEST)
+    # Leave an unresolved Turn behind, then drop local ownership so a later
+    # store instance can observe it: stored state, no process-local fault.
+    turn = intent(binding(tmp_path), base).model_copy(update={"task_id": TASK})
+    active = api.begin_turn(base, turn)
+    api.require_recovery(active, "storage_failed")
+    api.release_turn(api.inspect(SESSION).revision, turn.turn_id)
+    api.close()
+
+    reopened = store(tmp_path)
+    report = reopened.inspect(SESSION)
+    assert report.status == "recovery_required"
+    assert report.local_fault is False
+
+    report = reopened.inspect_task(SESSION, TASK)
+    with (
+        pytest.raises(SessionStoreError) as excinfo,
+        reopened.task_reconciliation(report),
+    ):
+        pass  # pragma: no cover - admission rejects before the body
+    assert excinfo.value.code == "task_session_not_ready"
+    reopened.close()
