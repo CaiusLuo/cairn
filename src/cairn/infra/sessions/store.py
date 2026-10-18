@@ -211,6 +211,38 @@ def _unverified_database_error(version: tuple[int, int, int]) -> SessionStoreErr
     )
 
 
+# Session state transitions
+# -----------------------------------------------------------------------
+#
+#  ┌─────────────────────┐
+#  │        ready        │
+#  └─────────────────────┘
+#             │              begin_turn
+#             v
+#  ┌─────────────────────┐  require_recovery      ┌─────────────────────┐
+#  │      executing      │───────────────────────>│  recovery_required  │
+#  └─────────────────────┘                        └─────────────────────┘
+#             │                                              │
+#             │  commit_turn                                 │
+#             │  (any outcome)                               │
+#             │                                              │
+#             v                                              │
+#  ┌─────────────────────┐                                   │
+#  │        ready        │                                   │
+#  └─────────────────────┘                                   │
+#             ^  reconcile                                   │
+#             ┌──────────────────────────────────────────────┘
+#
+# Every arrow is one CAS on ``sessions.version``; no arrow writes a
+# terminal Session. ``recovery_required`` is the only guarded state and
+# it is left only through an explicit trusted-host resolution.
+#
+# ``active_turn_id`` is written by the same CAS as the state: None for
+# ready, the Turn for executing. A recovery_required Session keeps
+# whatever the faulted attempt left there until the host reconciles it.
+# -----------------------------------------------------------------------
+
+
 class SessionStore(TaskLedgerMixin):
     def __init__(
         self,
@@ -1210,6 +1242,31 @@ class SessionStore(TaskLedgerMixin):
             sha256=digest,
             outcome=None,
         )
+
+    # Turn state transitions
+    # ----------------------------------------------------------------------
+    #
+    # ┌─────────────────┐            ┌─────────────────┐      ┌─────────────────┐
+    # │    executing    │──commit───>│    completed    │      │   interrupted   │
+    # └─────────────────┘            └─────────────────┘      └─────────────────┘
+    #          │                                                       ^
+    #          └─outcome != completed──────────────────────────────────┘
+    #          │
+    #          │ require_recovery
+    #          v
+    # ┌─────────────────┐            ┌─────────────────┐
+    # │recovery_required│───────────>│    abandoned    │
+    # └─────────────────┘            └─────────────────┘
+    #                     reconcile
+    #
+    # ``fence_tool`` keeps the Turn in ``executing``; it records that one
+    # tool effect may exist. A fenced unresolved Turn reports
+    # ``effects_unknown`` until the host reconciles it.
+    #
+    # Exactly one terminal transition per Turn: completed/interrupted from
+    # commit_turn, abandoned from reconcile. release_turn only drops local
+    # execution ownership and never mutates stored state.
+    # ----------------------------------------------------------------------
 
     def begin_turn(self, expected: Revision, intent: TurnIntent) -> Revision:
         self._begin(expected, Revision)

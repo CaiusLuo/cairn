@@ -442,6 +442,49 @@ class DurableSession(Session):
             raise SessionAdmissionError("Run budget binding mismatch.")
         return report
 
+    # Turn admission stages and failure ownership
+    # ------------------------------------------------------------------------
+    #
+    # ┌────────────────────────┐
+    # │     _admit_durable     │
+    # └────────────────────────┘
+    #              │
+    #              v
+    # ┌────────────────────────┐
+    # │ super()._admit (guard) │
+    # └────────────────────────┘
+    #              │
+    #              v
+    # ┌────────────────────────┐
+    # │  _check_binding_stage  │  <- fail -> suspended
+    # └────────────────────────┘
+    #              │
+    #              v
+    # ┌────────────────────────┐
+    # │ _validate_input_stage  │  <- fail -> guard released
+    # └────────────────────────┘
+    #              │
+    #              v
+    # ┌────────────────────────┐
+    # │   _begin_turn_stage    │  <- fail -> recovery
+    # └────────────────────────┘
+    #              │
+    #              v
+    # ┌────────────────────────┐
+    # │       executing        │
+    # └────────────────────────┘
+    #
+    # Ownership rules:
+    #   * The in-memory Turn guard is released on every path, including
+    #     cancellation.
+    #   * A cancelled caller keeps its own error; an ordinary exception is
+    #     replaced by the fixed durability error with no cause attached,
+    #     because store text can carry host paths and credentials.
+    #   * ``_owned`` tracks this process's execution ownership only. A stored
+    #     record never acquires it, and release_turn additionally requires the
+    #     store to be in the faulted state.
+    # ------------------------------------------------------------------------
+
     def _admit_durable(self, agent: Agent, user_input: str, budget: RunBudget) -> None:
         """Reserve durable admission, then begin the Turn.
 
@@ -661,6 +704,44 @@ class DurableSession(Session):
         if isinstance(exc, Exception):
             return SessionDurabilityError()
         return None
+
+    # Commit, settle and release
+    # ------------------------------------------------------------------------
+    #
+    # ┌──────────────────────┐
+    # │   _commit(outcome)   │  # summary is None -> recovery
+    # └──────────────────────┘
+    #             │
+    #             v
+    # ┌──────────────────────┐
+    # │   build checkpoint   │  # encode + predict receipt
+    # └──────────────────────┘
+    #             │
+    #             v
+    # ┌──────────────────────┐
+    # │  store.commit_turn   │  # CAS on sessions.version
+    # └──────────────────────┘
+    #             │
+    #             v
+    # ┌──────────────────────┐
+    # │ receipt == expected? │  # no -> durability error
+    # └──────────────────────┘
+    #             │
+    #             v
+    # ┌──────────────────────┐
+    # │     _settle(...)     │  # notify, cleanup_settled
+    # └──────────────────────┘
+    #             │
+    #             v
+    # ┌──────────────────────┐
+    # │   release or close   │  # finally: _finish_turn
+    # └──────────────────────┘
+    #
+    # Only run_turn calls ``_settle``, after execution, rollback and trace
+    # close. It keeps the guard until both notifications and any faulted
+    # release finish, and ``_finish_turn`` runs in a finally block so the
+    # guard is never left installed.
+    # ------------------------------------------------------------------------
 
     def _commit(self, outcome: TurnOutcome, summary: TurnTraceSummary | None) -> None:
         if summary is None:

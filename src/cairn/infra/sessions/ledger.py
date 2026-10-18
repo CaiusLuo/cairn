@@ -33,6 +33,47 @@ from cairn.infra.sessions.task_models import (
     TaskRevision,
 )
 
+# Task phase transitions
+# ---------------------------------------------------------------------------
+#
+#   ┌───────────────────┐
+#   │       (none)      │
+#   └───────────────────┘
+#             │  create_task
+#             v
+#   ┌───────────────────┐
+#   │      running      │
+#   └───────────────────┘
+#             │  commit_task_turn
+#             v
+#   ┌───────────────────┐
+#   │   turn_committed  │
+#   └───────────────────┘
+#             │  start_task_inspection
+#             v
+#   ┌───────────────────┐
+#   │     inspecting    │
+#   └───────────────────┘
+#             │  record_task_result
+#             v
+#   ┌───────────────────┐
+#   │  result_recorded  │
+#   └───────────────────┘
+#
+# Recovery edges, each also bumping ``tasks.version``:
+#
+#   running          --reconcile(abandon_without_replay)--> abandoned
+#   running          --reconcile(acknowledge_checkpoint)--> turn_committed
+#   turn_committed   --reconcile(inspect_repository)-----> inspecting
+#   any non-terminal --require_task_recovery------------> (same phase)
+#
+# ``recovery_required`` is a flag on the record, not a phase: it can be
+# set on any non-terminal phase and is cleared by a checkpoint
+# acknowledgement. ``abandoned`` is a TaskRecoveryReport status derived
+# from an ``abandon_without_replay`` resolution, not a stored phase.
+# ``result_recorded`` is terminal: no transition leaves it.
+# ---------------------------------------------------------------------------
+
 
 class TaskLedgerMixin:
     """Task-record reads, transitions and recovery checks.
