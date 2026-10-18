@@ -206,6 +206,75 @@ def _read_common_dir(gitdir: Path) -> Path | None:
     return target
 
 
+def sandbox_python(workspace_root: Path | None = None) -> str:
+    """The interpreter a sandboxed command should run, by descending priority.
+
+    The funnel, most specific first:
+
+    1. the workspace's ``.venv`` — the environment the project declares. ``uv``
+       and the project's own instructions create it, so it is what the project
+       means by "Python" regardless of how Cairn itself was launched;
+    2. the interpreter running this process, for a workspace that has no venv.
+
+    ``sys.executable`` alone is not enough: launching Cairn through a system
+    Python makes it name that Python rather than the project's environment.
+
+    Returns an empty string when no interpreter exists; the caller decides
+    whether that is fatal.
+    """
+    if workspace_root is not None:
+        for relative in (
+            Path(".venv") / "bin" / "python",
+            Path(".venv") / "bin" / "python3",
+            Path(".venv") / "Scripts" / "python.exe",
+        ):
+            candidate = workspace_root / relative
+            if candidate.is_file():
+                return str(candidate)
+    return sys.executable if sys.executable else ""
+
+
+def _interpreter_runtime_paths(executable: str | None = None) -> tuple[Path, ...]:
+    """Directories a sandboxed command needs to run an interpreter.
+
+    A virtual environment lives outside the directories the Linux sandbox mounts,
+    so a command that runs Python inside the workspace could not find the
+    interpreter the project declares. Mounting these read-only lets a caller name
+    that interpreter instead of guessing at a ``python`` command a distribution
+    may not ship.
+
+    The roots are not always the same directory:
+
+    * the executable's own directory, which holds the venv shim;
+    * the base installation behind it, where the standard library lives;
+    * the ``home`` recorded in ``pyvenv.cfg``, which can name a different patch
+      release than the interpreter's real path resolves to.
+
+    Only existing directories are returned; the caller mounts what it gets.
+    """
+    resolved = executable if executable is not None else sys.executable
+    if not resolved:
+        return ()
+    real = Path(os.path.realpath(resolved))
+    candidates: list[Path] = [Path(resolved).parent, real.parent]
+    # A venv names its base installation in pyvenv.cfg; that file, not
+    # sys.base_prefix, is authoritative when the venv belongs to another project.
+    venv_root = Path(resolved).parent.parent
+    config = venv_root / "pyvenv.cfg"
+    if config.is_file():
+        with suppress(OSError, UnicodeDecodeError):
+            for line in config.read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition("=")
+                if separator and key.strip() == "home" and value.strip():
+                    candidates.append(Path(value.strip()))
+    unique: list[Path] = []
+    for candidate in candidates:
+        with suppress(OSError):
+            if candidate.is_dir() and candidate not in unique:
+                unique.append(candidate)
+    return tuple(unique)
+
+
 def _macos_sandbox_profile(
     cwd: Path,
     writable_tmpdir: Path | None,
@@ -422,6 +491,13 @@ class BashTool:
             for path in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"):
                 if Path(path).exists():
                     argv.extend(("--ro-bind", path, path))
+            # The project interpreter can live in a virtual environment outside
+            # those directories. Mount its runtime read-only so a sandboxed
+            # command can invoke it rather than a `python` name the distribution
+            # may not provide.
+            interpreter = sandbox_python(cwd)
+            for runtime in _interpreter_runtime_paths(interpreter or None):
+                argv.extend(("--ro-bind", str(runtime), str(runtime)))
             for parent in reversed(cwd.parents):
                 if parent != Path("/"):
                     argv.extend(("--dir", str(parent)))

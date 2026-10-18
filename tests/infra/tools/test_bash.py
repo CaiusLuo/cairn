@@ -11,7 +11,12 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from cairn.infra.tools.bash import BashTool, _decode_output
+from cairn.infra.tools.bash import (
+    BashTool,
+    _decode_output,
+    _interpreter_runtime_paths,
+    sandbox_python,
+)
 from cairn.infra.tools.capture import PIPE_READ_CHUNK_SIZE, read_bounded
 from cairn.infra.tools.sandbox import resolve_tmpdir, resolve_uv_cache_dir
 from cairn.infra.workspace.workspace import Workspace
@@ -704,3 +709,63 @@ def test_bounded_output_never_requests_unbounded_read() -> None:
         )
 
     asyncio.run(scenario())
+
+
+def _make_venv_python(root: Path, name: str = "python") -> Path:
+    directory = root / ".venv" / "bin"
+    directory.mkdir(parents=True, exist_ok=True)
+    executable = directory / name
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    return executable
+
+
+def test_sandbox_python_prefers_the_workspace_venv(tmp_path: Path) -> None:
+    """The project's own environment wins over however Cairn was launched."""
+    executable = _make_venv_python(tmp_path)
+
+    assert sandbox_python(tmp_path) == str(executable)
+
+
+def test_sandbox_python_falls_back_to_python3_in_the_venv(tmp_path: Path) -> None:
+    """A venv that only ships `python3` is still the project's environment."""
+    executable = _make_venv_python(tmp_path, "python3")
+
+    assert sandbox_python(tmp_path) == str(executable)
+
+
+def test_sandbox_python_uses_the_running_interpreter_without_a_venv(
+    tmp_path: Path,
+) -> None:
+    """With no project environment the funnel reaches the running process."""
+    assert not (tmp_path / ".venv").exists()
+
+    assert sandbox_python(tmp_path) == sys.executable
+
+
+def test_sandbox_python_prefers_the_venv_over_the_running_interpreter(
+    tmp_path: Path,
+) -> None:
+    """Both exist: the ordering, not just the presence, is what is asserted."""
+    executable = _make_venv_python(tmp_path)
+
+    selected = sandbox_python(tmp_path)
+
+    assert selected == str(executable)
+    assert selected != sys.executable
+
+
+def test_interpreter_runtime_paths_include_the_venv_and_its_base(
+    tmp_path: Path,
+) -> None:
+    """Linux must mount both the venv shim and the stdlib installation."""
+    base = tmp_path / "base" / "bin"
+    base.mkdir(parents=True)
+    (tmp_path / ".venv" / "bin").mkdir(parents=True)
+    (tmp_path / ".venv" / "pyvenv.cfg").write_text(
+        f"home = {base}\nversion_info = 3.12\n", encoding="utf-8"
+    )
+
+    paths = _interpreter_runtime_paths(str(tmp_path / ".venv" / "bin" / "python"))
+
+    assert (tmp_path / ".venv" / "bin") in paths
+    assert base in paths
