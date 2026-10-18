@@ -2,6 +2,7 @@ import sys
 from importlib.resources import files
 
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.prompt import Confirm, Prompt
 
@@ -17,6 +18,11 @@ console = Console()
 MAX_ARGUMENT_CHARS = 120
 # Failure output beyond this many lines moves to the trace instead of the screen.
 MAX_DIAGNOSTIC_LINES = 20
+# How many trailing reasoning lines stay on screen. The model can reason for
+# thousands of tokens; a reader wants the current thread, not the transcript.
+MAX_THINKING_LINES = 6
+# The marker that sets reasoning apart from the answer it precedes.
+THINKING_PREFIX = "⋮ "
 
 
 def confirm_provider_access(
@@ -198,6 +204,42 @@ def _usage_suffix(event: Event) -> str:
     return f" · tokens: input {input_tokens}, output {output_tokens}"
 
 
+def _split_blocks(text: str) -> tuple[str, str]:
+    """Split Markdown into finished blocks and the trailing partial one.
+
+    A block ends at a blank line that is not inside a fenced code block, because
+    a blank line inside ``` does not end the code. Separating them lets the caller
+    print every finished block once and redraw only the tail still being written.
+    """
+    fence = False
+    last_end = 0
+    index = 0
+    lines = text.splitlines(keepends=True)
+    while index < len(lines):
+        line = lines[index]
+        if line.lstrip().startswith("```"):
+            fence = not fence
+        elif not fence and not line.strip() and index + 1 < len(lines):
+            last_end = sum(len(item) for item in lines[: index + 1])
+        index += 1
+    return text[:last_end], text[last_end:]
+
+
+def _plain_text(event: Event) -> str:
+    """Model text stripped of anything that could drive the terminal.
+
+    Rich markup and C0/C1 control characters have no authority over display.
+    Newline and tab survive, as does printable Unicode including multibyte
+    fragments split across deltas.
+    """
+    text = str(event.data["text"])
+    return "".join(
+        char
+        for char in text
+        if char in "\n\t" or not (ord(char) < 32 or 127 <= ord(char) <= 159)
+    )
+
+
 def console_event_handler(event: Event) -> None:
     match event.type:
         case "agent_step":
@@ -272,12 +314,27 @@ def console_event_handler(event: Event) -> None:
 
 
 class StreamingDisplay:
-    """Per-CLI transient display state; it never advances an Agent lifecycle."""
+    """Per-CLI transient display state; it never advances an Agent lifecycle.
+
+    Reasoning and answer text arrive as separate deltas. Reasoning is shown as a
+    short block of trailing lines under a dim marker and is replaced as it grows,
+    so a long chain of thought does not fill the scrollback.
+
+    Answer text streams as Markdown. Completed blocks are printed once and stay
+    in the scrollback; only the block still being written is redrawn. That is
+    what makes the answer readable while it arrives instead of after: a finished
+    paragraph keeps its formatting, and the live region costs one paragraph, not
+    the whole message.
+    """
 
     def __init__(self) -> None:
         self.final_text_visible = False
-        self._open = False
-        self._channel: str | None = None
+        self._reasoning: list[str] = []
+        self._reasoning_open = False
+        self._answer: list[str] = []
+        self._settled_blocks = 0
+        self._settled_chars = 0
+        self._live: Live | None = None
         self._text_seen = False
         self._active = False
         self._completed_text_step: int | None = None
@@ -291,49 +348,31 @@ class StreamingDisplay:
         if event.type == "model_stream_start":
             self._completed_text_step = None
             self._text_seen = False
-            self._channel = None
+            self._reasoning = []
+            self._reasoning_open = False
+            self._answer = []
+            self._settled_blocks = 0
+            self._settled_chars = 0
             self._active = True
             return True
         if event.type in ("model_text_delta", "model_reasoning_delta"):
-            if not self._open or self._channel != event.type:
-                if self._open:
-                    console.print()
-                label = (
-                    "[dim]thinking…[/dim]"
-                    if event.type == "model_reasoning_delta"
-                    else ""
-                )
-                console.print(f"[bold]Cairn>[/bold] {label}".rstrip())
-                self._open = True
-                self._channel = event.type
             if event.type == "model_text_delta":
                 self._text_seen = True
-            text = str(event.data["text"])
-            # Rich markup and C0/C1 terminal controls have no authority. Preserve
-            # newline/tab and printable Unicode, including multibyte fragments.
-            plain = "".join(
-                char
-                for char in text
-                if char in "\n\t" or not (ord(char) < 32 or 127 <= ord(char) <= 159)
-            )
-            console.print(
-                plain,
-                end="",
-                markup=False,
-                highlight=False,
-                emoji=False,
-                soft_wrap=True,
-            )
+                self._answer.append(_plain_text(event))
+                self._render_answer_progress()
+                return True
+            self._reasoning.append(_plain_text(event))
+            self._print_reasoning()
             return True
         if event.type == "model_stream_end":
             status = event.data["status"]
             if status == "completed":
                 self._active = False
+                self._close_reasoning()
                 if self._text_seen:
                     self._completed_text_step = event.data.get("step")
-                if self._open:
-                    console.print()
-                    self._open = False
+                    self.final_text_visible = True
+                    self._render_answer()
             else:
                 self.close_incomplete(abandoned=status == "abandoned")
             return True
@@ -344,10 +383,127 @@ class StreamingDisplay:
             )
         return False
 
+    def _print_reasoning(self) -> None:
+        """Redraw the trailing reasoning lines in place.
+
+        The block is rewritten on every delta instead of appended to, so the
+        screen shows the current thread rather than the whole transcript. A
+        terminal cursor move expresses that without a full- screen renderer.
+        """
+        if self._reasoning_open:
+            console.file.write(f"\x1b[{self._reasoning_height()}A")
+            console.file.write("\x1b[J")
+        else:
+            self._reasoning_open = True
+        for line in self._visible_reasoning():
+            console.print(f"[dim]{THINKING_PREFIX}{line}[/dim]", highlight=False)
+        console.file.flush()
+
+    def _reasoning_height(self) -> int:
+        return len(self._visible_reasoning())
+
+    def _visible_reasoning(self) -> list[str]:
+        """The last few complete lines of reasoning, wrapped to the terminal."""
+        text = "".join(self._reasoning)
+        lines: list[str] = []
+        width = max(20, console.width - len(THINKING_PREFIX))
+        for raw in text.splitlines():
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            while len(stripped) > width:
+                lines.append(stripped[:width])
+                stripped = stripped[width:]
+            lines.append(stripped)
+        return lines[-MAX_THINKING_LINES:]
+
+    def _close_reasoning(self) -> None:
+        if not self._reasoning_open:
+            return
+        # The last render already shows the final lines; only clear the cursor
+        # bookkeeping so the next block starts below them.
+        self._reasoning_open = False
+        console.print()
+
+    def _render_answer_progress(self) -> None:
+        """Print each finished Markdown block once; redraw only the last one.
+
+        A block ends at a blank line outside a fenced code block. Printing a
+        block the moment it is complete keeps finished prose formatted and in the
+        scrollback, while the live region carries only the paragraph still being
+        written, so the redraw cost does not grow with the answer.
+
+        `_settled_chars` records how much of the answer has already been printed.
+        Without it every delta would reprint the finished prefix, because the
+        split would keep reporting the same completed blocks.
+        """
+        text = "".join(self._answer)
+        settled, pending = _split_blocks(text)
+        if len(settled) > self._settled_chars:
+            fresh = settled[self._settled_chars :]
+            self._settled_chars = len(settled)
+            self._close_live()
+            if not self._settled_blocks:
+                console.print("[bold]Cairn>[/bold]")
+            console.print(Markdown(fresh))
+            self._settled_blocks += 1
+        if not pending.strip():
+            self._close_live()
+            return
+        if self._live is None:
+            # transient: the block is redrawn here, then printed once for good
+            # when it settles, so the live copy must not survive the stop.
+            self._live = Live(
+                Markdown(pending),
+                console=console,
+                refresh_per_second=8,
+                vertical_overflow="visible",
+                transient=True,
+            )
+            self._live.start()
+        else:
+            self._live.update(Markdown(pending))
+
+    def _close_live(self) -> None:
+        if self._live is None:
+            return
+        self._live.stop()
+        self._live = None
+
+    def _render_answer(self) -> None:
+        """Finish the answer: settle the last block and close the live region."""
+        text = "".join(self._answer).strip()
+        if not text:
+            return
+        _, pending = _split_blocks("".join(self._answer))
+        if pending.strip():
+            self._close_live()
+            if not self._settled_blocks:
+                console.print("[bold]Cairn>[/bold]")
+            console.print(Markdown(pending))
+            return
+        self._close_live()
+        if not self._settled_blocks:
+            console.print("[bold]Cairn>[/bold]")
+            console.print(Markdown(text))
+
     def close_incomplete(self, *, abandoned: bool = False) -> None:
-        if self._open:
+        """Abandon an attempt: drop partial output and say so.
+
+        An unfinished markdown block is discarded rather than printed, because a
+        half-written table or code fence reads as corruption once it stops
+        changing.
+        """
+        self._close_live()
+        # Discard the attempt completely: a retry after this must start from an
+        # empty answer, not believe some of it is already on screen.
+        self._answer = []
+        self._reasoning = []
+        self._settled_blocks = 0
+        self._settled_chars = 0
+        if self._reasoning_open:
             console.print()
-            self._open = False
+            self._reasoning_open = False
         if self._active:
             self._active = False
             console.print(
