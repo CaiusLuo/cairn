@@ -109,6 +109,33 @@ def test_load_provider_catalog_supports_the_default_path(
     assert [provider.name for provider in catalog.providers] == ["bailian", "local"]
 
 
+def test_by_name_returns_the_declared_provider(tmp_path: Path) -> None:
+    catalog = load_provider_catalog(write_config(tmp_path, CATALOG_TOML))
+
+    local = catalog.by_name("local")
+
+    assert local is not None
+    assert local.config.base_url == "http://localhost:8000/v1"
+
+
+def test_by_name_returns_none_for_an_unknown_or_absent_provider() -> None:
+    assert ProviderCatalog(providers=()).by_name("local") is None
+
+    catalog = ProviderCatalog(
+        providers=(
+            NamedProvider(
+                name="bailian",
+                config=ProviderConfig(
+                    base_url="https://example.com/v1",
+                    api_key_env="BAILIAN_API_KEY",
+                    model_config=(ModelConfig("flash", ("openai/model-a",)),),
+                ),
+            ),
+        )
+    )
+    assert catalog.by_name("local") is None
+
+
 def test_catalog_types_are_immutable(tmp_path: Path) -> None:
     catalog = load_provider_catalog(write_config(tmp_path, CATALOG_TOML))
 

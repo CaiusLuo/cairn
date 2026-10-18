@@ -16,3 +16,10 @@ class ProviderCatalog:
     """Providers in declaration order, as loaded from multi-provider TOML."""
 
     providers: tuple[NamedProvider, ...]
+
+    def by_name(self, name: str) -> NamedProvider | None:
+        """The provider declared under ``name``, or ``None`` when absent."""
+        return next(
+            (provider for provider in self.providers if provider.name == name),
+            None,
+        )

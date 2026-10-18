@@ -373,9 +373,8 @@ async def main(
     command_context = CommandContext(trace_store=TraceStore(trace_root))
     permission_handler = SessionPermissionHandler(prompt=console_permission_prompt)
     # The .env layout declares no catalog; its implicit provider is the only one.
-    catalog = ProviderCatalog(
-        providers=project.providers or (active_runtime.provider,)
-    )  # Every configured credential variable is withheld from Bash children,
+    catalog = ProviderCatalog(providers=project.providers or (active_runtime.provider,))
+    # Every configured credential variable is withheld from Bash children,
     # including providers this session has not selected.
     secret_env_keys = frozenset(named.config.api_key_env for named in catalog.providers)
 

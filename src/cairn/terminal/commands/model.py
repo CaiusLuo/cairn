@@ -34,8 +34,9 @@ def _print_current(context: CommandContext, model: ModelConfig) -> None:
 def _select(context: CommandContext, name: str) -> None:
     manager = context.model_manager
     assert manager is not None
-    if name == manager.current_model().name:
-        _print_current(context, manager.current_model())
+    current = manager.current_model()
+    if name == current.name:
+        _print_current(context, current)
         return
     assert context.select_model is not None
     try:
@@ -85,8 +86,9 @@ def handle_model(
     elif args == ["list"]:
         print(f"Provider: {context.active_provider_name or 'unknown'}")
         print("Model groups (* current; candidate order shown below):")
+        current = manager.current_model()
         for model in manager.list_models():
-            marker = "*" if model == manager.current_model() else " "
+            marker = "*" if model == current else " "
             print(f"{marker} {model.name}")
             for position, model_id in enumerate(model.model_ids, start=1):
                 role = "primary" if position == 1 else f"fallback {position - 1}"

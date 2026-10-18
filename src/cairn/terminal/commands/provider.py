@@ -9,14 +9,7 @@ def _active_provider(context: CommandContext) -> NamedProvider | None:
     catalog = context.provider_catalog
     if catalog is None or context.active_provider_name is None:
         return None
-    return next(
-        (
-            provider
-            for provider in catalog.providers
-            if provider.name == context.active_provider_name
-        ),
-        None,
-    )
+    return catalog.by_name(context.active_provider_name)
 
 
 def _current_model(context: CommandContext) -> ModelConfig | None:

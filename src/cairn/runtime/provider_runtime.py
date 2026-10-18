@@ -180,10 +180,7 @@ class ProviderSession:
         resolution and construction remain outside that critical section.
         """
         runtime = self._runtime
-        target = next(
-            (provider for provider in catalog.providers if provider.name == name),
-            None,
-        )
+        target = catalog.by_name(name)
         if target is None:
             raise ValueError(f"Provider {name!r} is not configured in this session.")
         if target.name == runtime.provider.name:
