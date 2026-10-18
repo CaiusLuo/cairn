@@ -535,10 +535,9 @@ def test_fallback_uses_distinct_models_and_counters_without_changing_selection(
             assert len(attempts) == 1
             assert root["attributes"]["input_tokens"] == 20
             assert root["attributes"]["output_tokens"] == 3
-    assert (
-        " ".join(result.output.split()).count("tokens: input unknown, output unknown")
-        == 2
-    )
+    # Usage is no longer printed per turn; it is recorded on the trace, which is
+    # what the fallback assertions above already check.
+    assert "tokens:" not in result.output
     assert API_KEY not in repr(traces) + result.output
 
 

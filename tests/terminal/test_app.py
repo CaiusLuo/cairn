@@ -423,9 +423,9 @@ def test_interactive_trace_uses_latest_completed_turn(
     assert result.exit_code == 0
     assert "agent.turn" in result.stdout
     assert "step 1/1" in result.stdout
-    assert result.stdout.index("done") < result.stdout.index("trace:")
-    assert result.stdout.count("trace:") == 1
-    assert result.stdout.count("tokens: input 30, output 5") == 1
+    # The per-turn trace line is gone; the identifier stays reachable through
+    # `/trace`, so nothing about the trace is printed on a normal turn.
+    assert "trace:" not in result.stdout
 
 
 def test_interactive_trace_persistence_failure_is_not_saved_as_latest(

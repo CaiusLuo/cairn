@@ -1,10 +1,14 @@
+import os
 import sys
+from dataclasses import dataclass
 from importlib.resources import files
+from time import perf_counter
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.prompt import Confirm, Prompt
+from rich.text import Text
 
 from cairn.core.events import Event
 from cairn.core.model_manager import ModelConfig
@@ -21,8 +25,76 @@ MAX_DIAGNOSTIC_LINES = 20
 # How many trailing reasoning lines stay on screen. The model can reason for
 # thousands of tokens; a reader wants the current thread, not the transcript.
 MAX_THINKING_LINES = 6
-# The marker that sets reasoning apart from the answer it precedes.
-THINKING_PREFIX = "⋮ "
+# The live region never grows past this many rows, so a long paragraph cannot
+# turn every redraw into a full-screen repaint.
+MAX_LIVE_ROWS = 8
+# Bar segments in the context meter.
+_BAR_WIDTH = 8
+# Status updates are painted at this rate at most. A token stream can deliver
+# dozens of deltas a second; repainting per delta costs far more than a reader
+# can perceive.
+STATUS_INTERVAL_SECONDS = 0.1
+
+
+@dataclass(frozen=True)
+class Glyphs:
+    """The characters this terminal can render.
+
+    A terminal without a Unicode font shows box-drawing and geometric shapes as
+    replacement characters, so every symbol has an ASCII fallback. The choice is
+    made once from the environment rather than per render.
+    """
+
+    reasoning: str
+    tick: str
+    cross: str
+    spinner: str
+    bar_full: str
+    bar_empty: str
+
+
+UNICODE_GLYPHS = Glyphs(
+    reasoning="⋮ ",
+    tick="✓",
+    cross="✗",
+    spinner="⟳",
+    bar_full="▓",
+    bar_empty="░",
+)
+ASCII_GLYPHS = Glyphs(
+    reasoning=": ",
+    tick="+",
+    cross="!",
+    spinner="*",
+    bar_full="#",
+    bar_empty="-",
+)
+
+
+def _declares_unicode() -> bool:
+    """Whether the environment claims a UTF-8 capable terminal."""
+    for name in ("LC_ALL", "LC_CTYPE", "LANG"):
+        value = os.environ.get(name)
+        if value:
+            return "utf" in value.lower()
+    return False
+
+
+GLYPHS = UNICODE_GLYPHS if _declares_unicode() else ASCII_GLYPHS
+THINKING_PREFIX = GLYPHS.reasoning
+
+
+def supports_live_display() -> bool:
+    """Whether an in-place live region is safe to draw.
+
+    A redirected or piped stream has no cursor to move, and `rich` will not
+    repaint there. Callers fall back to printing each block once, which is also
+    what makes the non-interactive path behave predictably in tests.
+    """
+    try:
+        return console.is_terminal and sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
 
 
 def confirm_provider_access(
@@ -205,24 +277,73 @@ def _usage_suffix(event: Event) -> str:
 
 
 def _split_blocks(text: str) -> tuple[str, str]:
-    """Split Markdown into finished blocks and the trailing partial one.
+    """Split Markdown into what can be printed for good and what is still open.
 
-    A block ends at a blank line that is not inside a fenced code block, because
-    a blank line inside ``` does not end the code. Separating them lets the caller
-    print every finished block once and redraw only the tail still being written.
+    Two things end a block: a blank line that is not inside a fenced code block,
+    and a fence that has opened but not closed. A blank line inside ``` does not
+    end the code, and a code block must not stay in the live region: its height
+    changes on every line appended, so redrawing it repaints the whole block each
+    frame. Printing it as it arrives costs one unstyled flash and stops the
+    repaint.
     """
+    lines = text.splitlines(keepends=True)
     fence = False
     last_end = 0
-    index = 0
-    lines = text.splitlines(keepends=True)
-    while index < len(lines):
-        line = lines[index]
+    offset = 0
+    for index, line in enumerate(lines):
         if line.lstrip().startswith("```"):
             fence = not fence
         elif not fence and not line.strip() and index + 1 < len(lines):
-            last_end = sum(len(item) for item in lines[: index + 1])
-        index += 1
+            last_end = offset + len(line)
+        offset += len(line)
+    if fence:
+        # Everything from the opening fence onwards is printed on arrival: it is
+        # already longer than one line and only grows.
+        return text, ""
     return text[:last_end], text[last_end:]
+
+
+def format_status_line(
+    *,
+    active: bool,
+    tokens_per_second: float | None = None,
+    context_fraction: float | None = None,
+    cached_fraction: float | None = None,
+    reasoning_tokens: int | None = None,
+) -> Text:
+    """One quiet line describing what the turn is doing.
+
+    Only the signals a reader acts on appear, and each is omitted rather than
+    shown as a placeholder when it has no value: a dash where a number belongs
+    is noise that never changes. Color is never the only signal — the spinner
+    and the filled bar segments carry the same information in text.
+    """
+    parts: list[Text] = []
+    spinner = GLYPHS.spinner if active else GLYPHS.tick
+    parts.append(Text(spinner, style="green" if not active else "cyan"))
+
+    if tokens_per_second is not None and tokens_per_second > 0:
+        parts.append(Text(f" {tokens_per_second:.0f} tok/s", style="dim"))
+
+    if context_fraction is not None:
+        filled = round(max(0.0, min(1.0, context_fraction)) * _BAR_WIDTH)
+        bar = GLYPHS.bar_full * filled + GLYPHS.bar_empty * (_BAR_WIDTH - filled)
+        parts.append(Text(f"  ctx {bar} {context_fraction * 100:.0f}%", style="dim"))
+
+    if cached_fraction is not None and cached_fraction > 0:
+        parts.append(Text(f"  {cached_fraction * 100:.0f}% cached", style="dim"))
+
+    if reasoning_tokens:
+        parts.append(Text(f"  {reasoning_tokens} reasoning", style="dim"))
+
+    return Text.assemble(*parts)
+
+
+def _count(value: object) -> int:
+    """Read a non-negative integer count, defaulting to zero."""
+    if type(value) is int and value >= 0:
+        return value
+    return 0
 
 
 def _plain_text(event: Event) -> str:
@@ -298,18 +419,14 @@ def console_event_handler(event: Event) -> None:
                 )
 
         case "trace_finish":
-            trace_id = event.data["trace_id"]
-            status = event.data["status"]
-            persisted = event.data.get("persisted", True)
-            usage_suffix = _usage_suffix(event)
-
-            if persisted:
-                console.print(f"[dim]trace: {trace_id} ({status}){usage_suffix}[/dim]")
-            else:
+            # The identifier and usage are on every turn; printing them made the
+            # scrollback read like a log. `/trace` lists them on demand, so only a
+            # turn whose trace could not be stored speaks up here.
+            if not event.data.get("persisted", True):
                 error = event.data.get("persistence_error")
                 console.print(
                     f"[yellow]trace unavailable: persistence failed ({error})"
-                    f"{usage_suffix}[/yellow]"
+                    f"{_usage_suffix(event)}[/yellow]"
                 )
 
 
@@ -335,6 +452,16 @@ class StreamingDisplay:
         self._settled_blocks = 0
         self._settled_chars = 0
         self._live: Live | None = None
+        # Counters for the status line. Updated on every delta; the line itself
+        # is repainted on a timer, so a burst of deltas costs one repaint.
+        self._turn_started: float | None = None
+        self._input_tokens = 0
+        self._output_tokens = 0
+        self._cached_tokens = 0
+        self._reasoning_tokens: int | None = None
+        self._context_used: int | None = None
+        self._context_limit: int | None = None
+        self._status_painted = 0.0
         self._text_seen = False
         self._active = False
         self._completed_text_step: int | None = None
@@ -353,6 +480,11 @@ class StreamingDisplay:
             self._answer = []
             self._settled_blocks = 0
             self._settled_chars = 0
+            self._turn_started = perf_counter()
+            self._input_tokens = 0
+            self._output_tokens = 0
+            self._cached_tokens = 0
+            self._reasoning_tokens = None
             self._active = True
             return True
         if event.type in ("model_text_delta", "model_reasoning_delta"):
@@ -363,6 +495,7 @@ class StreamingDisplay:
                 return True
             self._reasoning.append(_plain_text(event))
             self._print_reasoning()
+            self._refresh_status()
             return True
         if event.type == "model_stream_end":
             status = event.data["status"]
@@ -376,12 +509,40 @@ class StreamingDisplay:
             else:
                 self.close_incomplete(abandoned=status == "abandoned")
             return True
+        if event.type == "trace_finish":
+            # The turn's totals arrive once, at the end; the status line already
+            # shows live progress from the counters it accumulated per delta.
+            usage = event.data.get("usage")
+            if isinstance(usage, dict):
+                self._input_tokens = _count(usage.get("input_tokens"))
+                self._output_tokens = _count(usage.get("output_tokens"))
+                self._cached_tokens = _count(usage.get("cached_tokens"))
+                reasoning = _count(usage.get("reasoning_tokens"))
+                self._reasoning_tokens = reasoning or None
+            self._active = False
+            self._refresh_status()
+            return True
         if event.type == "agent_finish":
             self.final_text_visible = (
                 self._completed_text_step == event.data.get("step")
                 and self._completed_text_step is not None
             )
         return False
+
+    def _refresh_status(self) -> None:
+        """Repaint the live region if it is showing.
+
+        Called on the events that change what the status line says, not per
+        delta: a token stream can deliver dozens of updates a second and each
+        repaint costs a full region redraw.
+        """
+        if self._live is None:
+            return
+        now = perf_counter()
+        if now - self._status_painted < STATUS_INTERVAL_SECONDS:
+            return
+        self._status_painted = now
+        self._live.update(self._live_renderable())
 
     def _print_reasoning(self) -> None:
         """Redraw the trailing reasoning lines in place.
@@ -450,11 +611,15 @@ class StreamingDisplay:
         if not pending.strip():
             self._close_live()
             return
+        if not supports_live_display():
+            # A redirected stream has no cursor to move. Emit finished blocks
+            # only, so a reader of a log file sees each block once.
+            return
         if self._live is None:
             # transient: the block is redrawn here, then printed once for good
             # when it settles, so the live copy must not survive the stop.
             self._live = Live(
-                Markdown(pending),
+                self._live_renderable(),
                 console=console,
                 refresh_per_second=8,
                 vertical_overflow="visible",
@@ -462,7 +627,43 @@ class StreamingDisplay:
             )
             self._live.start()
         else:
-            self._live.update(Markdown(pending))
+            self._live.update(self._live_renderable())
+
+    def _live_renderable(self) -> Group:
+        """The block still being written, with the status line under it.
+
+        One renderable, not two live regions: `rich` only paints the top of its
+        live stack, so a second Live for the status line would never appear.
+        """
+        body = Markdown("".join(self._answer)[self._settled_chars :])
+        return Group(body, Text(""), self._status_line())
+
+    def _status_line(self) -> Text:
+        elapsed = (
+            max(0.0, perf_counter() - self._turn_started) if self._turn_started else 0.0
+        )
+        tps = (
+            self._output_tokens / elapsed
+            if elapsed > 0 and self._output_tokens
+            else None
+        )
+        context_fraction = (
+            self._context_used / self._context_limit
+            if self._context_limit and self._context_used is not None
+            else None
+        )
+        cached_fraction = (
+            self._cached_tokens / self._input_tokens
+            if self._input_tokens and self._cached_tokens
+            else None
+        )
+        return format_status_line(
+            active=self._active,
+            tokens_per_second=tps,
+            context_fraction=context_fraction,
+            cached_fraction=cached_fraction,
+            reasoning_tokens=self._reasoning_tokens,
+        )
 
     def _close_live(self) -> None:
         if self._live is None:

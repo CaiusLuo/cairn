@@ -68,6 +68,24 @@ def to_llm_message(message: Message) -> dict[str, Any]:
     return result
 
 
+def _nested_count(usage: object, container: str, field: str) -> int | None:
+    """Read a token count from a provider's nested usage details.
+
+    Providers report prompt-cache hits and reasoning tokens in nested objects
+    that are present only when the feature applies, so a missing path means "not
+    reported" rather than zero. Values are checked rather than trusted: a
+    provider that sends a string or a negative number must not corrupt the
+    counters.
+    """
+    details = getattr(usage, container, None)
+    if details is None:
+        return None
+    value = getattr(details, field, None)
+    if type(value) is not int or value < 0:
+        return None
+    return value
+
+
 def _parse_usage(response: object) -> LLMUsage | None:
     usage = getattr(response, "usage", None)
     if usage is None:
@@ -81,6 +99,10 @@ def _parse_usage(response: object) -> LLMUsage | None:
     return LLMUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        cached_tokens=_nested_count(usage, "prompt_tokens_details", "cached_tokens"),
+        reasoning_tokens=_nested_count(
+            usage, "completion_tokens_details", "reasoning_tokens"
+        ),
     )
 
 

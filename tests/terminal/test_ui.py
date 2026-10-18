@@ -127,40 +127,30 @@ def test_print_provider_selection_shows_provider_group_and_ids(
     assert "openai/qwen-plus" in rendered
 
 
-@pytest.mark.parametrize("status", ["ok", "error"])
-@pytest.mark.parametrize(
-    ("usage", "expected"),
-    [
-        (None, "input unknown, output unknown"),
-        ("invalid", "input unknown, output unknown"),
-        ({}, "input unknown, output unknown"),
-        ({"input_tokens": 30}, "input 30, output unknown"),
-        ({"output_tokens": 5}, "input unknown, output 5"),
-        ({"input_tokens": 0, "output_tokens": 0}, "input 0, output 0"),
-        ({"input_tokens": 30, "output_tokens": 5}, "input 30, output 5"),
-        ({"input_tokens": True, "output_tokens": -1}, "input unknown, output unknown"),
-        ({"input_tokens": "30", "output_tokens": 1.5}, "input unknown, output unknown"),
-    ],
-)
-def test_trace_footer_renders_known_or_unknown_usage(
-    monkeypatch: pytest.MonkeyPatch, usage: object, expected: str, status: str
+def test_a_stored_trace_is_not_announced(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A normal turn stays quiet: the trace is available through `/trace`."""
     output = _capture_console(monkeypatch)
-    event = Event(type="trace_finish", data={"trace_id": "trace-id", "status": status})
-    if usage is not None:
-        event.data["usage"] = usage
-
-    ui.console_event_handler(event)
-
-    assert (
-        output.getvalue().strip() == f"trace: trace-id ({status}) · tokens: {expected}"
+    ui.console_event_handler(
+        Event(
+            type="trace_finish",
+            data={
+                "trace_id": "trace-id",
+                "status": "ok",
+                "persisted": True,
+                "usage": {"input_tokens": 12, "output_tokens": 3},
+            },
+        )
     )
 
+    assert output.getvalue() == ""
 
-@pytest.mark.parametrize("persisted", [True, False])
-def test_failed_trace_footer_shows_unknown_usage(
-    monkeypatch: pytest.MonkeyPatch, persisted: bool
+
+def test_an_unstored_trace_reports_why(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The one case a reader must act on: the trace could not be stored."""
     output = _capture_console(monkeypatch)
     ui.console_event_handler(
         Event(
@@ -168,20 +158,15 @@ def test_failed_trace_footer_shows_unknown_usage(
             data={
                 "trace_id": "failed-trace",
                 "status": "error",
-                "persisted": persisted,
+                "persisted": False,
                 "persistence_error": "OSError: write failed",
             },
         )
     )
 
     rendered = output.getvalue()
-    assert rendered.count("tokens: input unknown, output unknown") == 1
-    if persisted:
-        assert "trace: failed-trace (error)" in rendered
-    else:
-        assert (
-            "trace unavailable: persistence failed (OSError: write failed)" in rendered
-        )
+    assert "trace unavailable: persistence failed (OSError: write failed)" in rendered
+    assert "tokens: input unknown, output unknown" in rendered
 
 
 def test_context_trimmed_explains_request_omission(

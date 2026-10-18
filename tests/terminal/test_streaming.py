@@ -84,12 +84,8 @@ def test_real_cli_deltas_visible_before_completion_plain_and_not_duplicated(
         await task
         assert text.getvalue().count("你好") == 1
         assert " 🌳" in text.getvalue()
-        assert "tokens: input 17, output 3" in text.getvalue()
-        assert (
-            text.getvalue().index("🌳")
-            < text.getvalue().index("✓ done")
-            < text.getvalue().index("trace:")
-        )
+        assert text.getvalue().index("🌳") < text.getvalue().index("✓ done")
+        assert "trace:" not in text.getvalue()
         assert (
             agents[0].state.messages[-1].content
             == "你好 [bold]literal[/bold] \x1b[31mred\x1b[0m 🌳"

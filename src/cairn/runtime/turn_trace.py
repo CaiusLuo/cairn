@@ -59,6 +59,8 @@ class TurnTrace:
         self._reported_omitted_turns = 0
         self._input_tokens: int | None = 0
         self._output_tokens: int | None = 0
+        self._cached_tokens: int | None = 0
+        self._reasoning_tokens: int | None = 0
         self._summary: TurnTraceSummary | None = None
 
     @property
@@ -179,6 +181,8 @@ class TurnTrace:
         self._attempt_started = False
         self._input_tokens = None
         self._output_tokens = None
+        self._cached_tokens = None
+        self._reasoning_tokens = None
         if self._llm_span is not None and self._agent.tracer is not None:
             if isinstance(exc, asyncio.CancelledError):
                 self._llm_span.attributes["cancelled"] = True
@@ -204,6 +208,18 @@ class TurnTrace:
                 self._output_tokens = None
             else:
                 self._output_tokens += response.usage.output_tokens
+        # Cache hits and reasoning tokens are reported only by some providers;
+        # a turn where no response reported one keeps None rather than zero, so
+        # the display can omit the figure instead of implying a real measurement.
+        for field in ("cached_tokens", "reasoning_tokens"):
+            current = getattr(self, f"_{field}")
+            if current is None:
+                continue
+            value = None if response.usage is None else getattr(response.usage, field)
+            if value is None:
+                setattr(self, f"_{field}", None)
+            else:
+                setattr(self, f"_{field}", current + value)
 
         if self._llm_span is None or self._agent.tracer is None:
             return
@@ -251,6 +267,12 @@ class TurnTrace:
             usage["input_tokens"] = input_tokens
         if output_tokens is not None:
             usage["output_tokens"] = output_tokens
+        cached_tokens = self._cached_tokens if self._response_count else None
+        if cached_tokens is not None:
+            usage["cached_tokens"] = cached_tokens
+        reasoning_tokens = self._reasoning_tokens if self._response_count else None
+        if reasoning_tokens is not None:
+            usage["reasoning_tokens"] = reasoning_tokens
         if usage:
             trace_finish_data["usage"] = usage
 

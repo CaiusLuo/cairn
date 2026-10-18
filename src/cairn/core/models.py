@@ -26,6 +26,11 @@ class Message(BaseModel):
 class LLMUsage(BaseModel):
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
+    # Tokens the provider served from its prompt cache. Providers report this
+    # only when caching applies, so None means "not reported", not "zero".
+    cached_tokens: int | None = Field(default=None, ge=0)
+    # Tokens spent on reasoning, when the provider separates them from the answer.
+    reasoning_tokens: int | None = Field(default=None, ge=0)
 
 
 class LLMResponse(BaseModel):
