@@ -75,8 +75,9 @@ class GlobTool:
 
         # A pattern naming only the root or a separator is not a search: pathlib
         # raises IndexError or AttributeError from inside glob() instead of
-        # reporting a result, so reject it as an argument error here.
-        if not any(part.strip(".") for part in pattern.split("/")):
+        # reporting a result, so reject it as an argument error here. A component
+        # of "...", like any other real name, is a legitimate pattern.
+        if all(part in ("", ".", "..") for part in pattern.split("/")):
             raise InvalidArguments("pattern must select a name below the workspace")
 
         # First containment layer: a pattern that can leave the Workspace is an
