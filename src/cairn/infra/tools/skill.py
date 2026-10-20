@@ -6,6 +6,7 @@ from typing import Any
 
 from cairn.core.models import ToolResult
 from cairn.infra.skills import SkillLibrary
+from cairn.infra.tools.arguments import function_schema, reject_unknown_keys
 from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
 
 
@@ -29,31 +30,27 @@ class ReadSkillTool:
         self.library = library
 
     def schema(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": (
-                                "Skill name exactly as listed in the system message."
-                            ),
-                        },
+        return function_schema(
+            self.name,
+            self.description,
+            {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "Skill name exactly as listed in the system message."
+                        ),
                     },
-                    "required": ["name"],
-                    "additionalProperties": False,
                 },
+                "required": ["name"],
+                "additionalProperties": False,
             },
-        }
+        )
 
     def validate(self, arguments: dict[str, Any]) -> None:
         """Check the name argument without reading any skill."""
-        if arguments.keys() - {"name"}:
-            raise InvalidArguments("unexpected read_skill tool argument")
+        reject_unknown_keys(arguments, {"name"}, tool_label="read_skill tool")
         name = arguments.get("name")
         if not isinstance(name, str) or not name.strip():
             raise InvalidArguments("name must be a non-empty string")

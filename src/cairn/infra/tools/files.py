@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from cairn.core.models import ToolResult
+from cairn.infra.tools.arguments import (
+    function_schema,
+    reject_unknown_keys,
+    workspace_path,
+)
 from cairn.infra.tools.base import (
     InvalidArguments,
     ToolExecutionContext,
@@ -222,20 +227,6 @@ def _decode_bounded_utf8(data: bytes, *, truncated: bool) -> str:
     return decoder.decode(data, final=not truncated)
 
 
-def _validate_file_path(
-    workspace: Workspace, arguments: dict[str, Any], accepted: set[str]
-) -> None:
-    if arguments.keys() - accepted:
-        raise InvalidArguments("unexpected file tool argument")
-    raw_path = arguments.get("path")
-    if isinstance(raw_path, str) and "\0" in raw_path:
-        raise InvalidArguments("path must not contain NUL")
-    try:
-        workspace.resolve_path(raw_path)
-    except ValueError as exc:
-        raise InvalidArguments(str(exc)) from exc
-
-
 class ReadFileTool:
     name = "read_file"
     description = "Read up to 200 lines of a UTF-8 workspace file."
@@ -256,31 +247,31 @@ class ReadFileTool:
         self._sleep = sleep
 
     def schema(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Workspace-relative path.",
-                        },
-                        "start_line": {"type": "integer", "minimum": 1},
-                        "end_line": {"type": "integer", "minimum": 1},
+        return function_schema(
+            self.name,
+            self.description,
+            {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative path.",
                     },
-                    "required": ["path"],
-                    "additionalProperties": False,
+                    "start_line": {"type": "integer", "minimum": 1},
+                    "end_line": {"type": "integer", "minimum": 1},
                 },
+                "required": ["path"],
+                "additionalProperties": False,
             },
-        }
+        )
 
     def validate(self, arguments: dict[str, Any]) -> None:
-        _validate_file_path(
-            self.workspace, arguments, {"path", "start_line", "end_line"}
+        reject_unknown_keys(
+            arguments,
+            {"path", "start_line", "end_line"},
+            tool_label="file tool",
         )
+        workspace_path(self.workspace, arguments)
         start = arguments.get("start_line", 1)
         end = arguments.get("end_line", start + 199 if isinstance(start, int) else 0)
         if (
@@ -404,39 +395,39 @@ class EditFileTool:
         self.workspace = workspace
 
     def schema(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Workspace-relative path.",
-                        },
-                        "old_text": {"type": "string"},
-                        "new_text": {"type": "string"},
-                        "replace_all": {
-                            "type": "boolean",
-                            "default": False,
-                            "description": (
-                                "Replace every occurrence of old_text instead of "
-                                "exactly one. Unsupported when creating a file."
-                            ),
-                        },
+        return function_schema(
+            self.name,
+            self.description,
+            {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative path.",
                     },
-                    "required": ["path", "old_text", "new_text"],
-                    "additionalProperties": False,
+                    "old_text": {"type": "string"},
+                    "new_text": {"type": "string"},
+                    "replace_all": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Replace every occurrence of old_text instead of "
+                            "exactly one. Unsupported when creating a file."
+                        ),
+                    },
                 },
+                "required": ["path", "old_text", "new_text"],
+                "additionalProperties": False,
             },
-        }
+        )
 
     def validate(self, arguments: dict[str, Any]) -> None:
-        _validate_file_path(
-            self.workspace, arguments, {"path", "old_text", "new_text", "replace_all"}
+        reject_unknown_keys(
+            arguments,
+            {"path", "old_text", "new_text", "replace_all"},
+            tool_label="file tool",
         )
+        workspace_path(self.workspace, arguments)
         if not isinstance(arguments.get("old_text"), str) or not isinstance(
             arguments.get("new_text"), str
         ):

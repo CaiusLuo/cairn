@@ -7,7 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from cairn.core.models import ToolResult
+from cairn.infra.tools.arguments import (
+    function_schema,
+    reject_unknown_keys,
+    workspace_path,
+)
 from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
+from cairn.infra.workspace.paths import contained_candidate
 from cairn.infra.workspace.workspace import Workspace
 
 DEFAULT_LIMIT = 100
@@ -34,73 +40,70 @@ class GrepTool:
         self.workspace = workspace
 
     def schema(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {
-                            "type": "string",
-                            "description": (
-                                "Regular expression to search for. Uses Python "
-                                "'re' syntax; set 'literal' for an exact match."
-                            ),
-                        },
-                        "path": {
-                            "type": "string",
-                            "description": (
-                                "Workspace-relative file or directory to search. "
-                                "Defaults to the whole workspace."
-                            ),
-                        },
-                        "include": {
-                            "type": "string",
-                            "description": (
-                                "Glob pattern that a candidate file's name must "
-                                "match, such as '*.py' or 'test_*.py'."
-                            ),
-                        },
-                        "literal": {
-                            "type": "boolean",
-                            "default": False,
-                            "description": (
-                                "Treat 'pattern' as a literal string rather "
-                                "than a regular expression."
-                            ),
-                        },
-                        "case_sensitive": {
-                            "type": "boolean",
-                            "default": True,
-                            "description": "Match case exactly when set.",
-                        },
-                        "context_lines": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "default": DEFAULT_CONTEXT_LINES,
-                            "description": (
-                                "Lines of surrounding context to include on "
-                                "each side of a match."
-                            ),
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "default": DEFAULT_LIMIT,
-                            "description": (
-                                "Maximum number of matching lines to return. "
-                                "When more matches exist, output is marked "
-                                "truncated."
-                            ),
-                        },
+        return function_schema(
+            self.name,
+            self.description,
+            {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": (
+                            "Regular expression to search for. Uses Python "
+                            "'re' syntax; set 'literal' for an exact match."
+                        ),
                     },
-                    "required": ["pattern"],
-                    "additionalProperties": False,
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Workspace-relative file or directory to search. "
+                            "Defaults to the whole workspace."
+                        ),
+                    },
+                    "include": {
+                        "type": "string",
+                        "description": (
+                            "Glob pattern that a candidate file's name must "
+                            "match, such as '*.py' or 'test_*.py'."
+                        ),
+                    },
+                    "literal": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Treat 'pattern' as a literal string rather "
+                            "than a regular expression."
+                        ),
+                    },
+                    "case_sensitive": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Match case exactly when set.",
+                    },
+                    "context_lines": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": DEFAULT_CONTEXT_LINES,
+                        "description": (
+                            "Lines of surrounding context to include on "
+                            "each side of a match."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "default": DEFAULT_LIMIT,
+                        "description": (
+                            "Maximum number of matching lines to return. "
+                            "When more matches exist, output is marked "
+                            "truncated."
+                        ),
+                    },
                 },
+                "required": ["pattern"],
+                "additionalProperties": False,
             },
-        }
+        )
 
     _ARGUMENTS = frozenset(
         {
@@ -122,8 +125,7 @@ class GrepTool:
         pattern is an ``InvalidArguments`` tool failure, never an authorization
         decision.
         """
-        if arguments.keys() - self._ARGUMENTS:
-            raise InvalidArguments("unexpected grep tool argument")
+        reject_unknown_keys(arguments, self._ARGUMENTS, tool_label="grep tool")
 
         pattern = arguments.get("pattern")
         if not isinstance(pattern, str) or not pattern.strip():
@@ -131,14 +133,8 @@ class GrepTool:
         if "\0" in pattern:
             raise InvalidArguments("pattern must not contain NUL")
 
-        raw_path = arguments.get("path")
-        if raw_path is not None:
-            if not isinstance(raw_path, str) or "\0" in raw_path:
-                raise InvalidArguments("path must be a string without NUL")
-            try:
-                self.workspace.resolve_path(raw_path)
-            except ValueError as exc:
-                raise InvalidArguments(str(exc)) from exc
+        if arguments.get("path") is not None:
+            workspace_path(self.workspace, arguments)
 
         include = arguments.get("include")
         if include is not None and (
@@ -222,14 +218,10 @@ class GrepTool:
                 path for path in candidates if fnmatch.fnmatch(path.name, include)
             ]
 
-        # Symlinks are rejected everywhere else in the workspace contract, so a
-        # symlinked path is not a task result either.
+        # Match results obey the same containment rule as a direct tool path:
+        # a symlinked candidate and a `.git` entry are not task results either.
         return sorted(
-            path
-            for path in candidates
-            if not path.is_symlink()
-            and path.is_relative_to(root)
-            and ".git" not in path.relative_to(root).parts
+            path for path in candidates if contained_candidate(root, path) is not None
         )
 
     def _read_lines(self, path: Path) -> list[str] | None:
