@@ -20,6 +20,7 @@ from cairn.runtime.turn.compaction import (
     RequestCompactor,
     compact,
 )
+from cairn.runtime.turn.context import build_system_messages
 from cairn.runtime.turn_trace import TurnTrace
 
 
@@ -47,7 +48,7 @@ async def run_compaction(
 
     outcome = await _reduce(
         agent,
-        system_messages=await _system_messages(agent),
+        system_messages=await build_system_messages(agent),
         tools=agent.tools.schemas(),
         turn_start=_current_turn_start(agent.state.messages),
         summarize_budget=summarize_budget,
@@ -80,15 +81,6 @@ def _current_turn_start(messages: list[Message]) -> int:
         if messages[index].role == "user":
             return index
     return len(messages)
-
-
-async def _system_messages(agent: Agent) -> list[Message]:
-    """The system context the next request would carry, for an accurate measure."""
-    system_messages = [Message(role="system", content=agent.system_prompt)]
-    if agent.repo_context_provider is not None:
-        repo_context = await agent.repo_context_provider.inspect()
-        system_messages.append(Message(role="system", content=repo_context.to_prompt()))
-    return system_messages
 
 
 def reusable_record(agent: Agent, history: list[Message]) -> CompactionRecord | None:

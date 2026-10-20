@@ -77,11 +77,12 @@ from cairn.core.budget import (
 from cairn.core.context import ContextBudgetExceeded
 from cairn.core.events import Event
 from cairn.core.memory.context import MemoryContext
-from cairn.core.models import Message, ToolCall, ToolFailure
+from cairn.core.models import ToolCall, ToolFailure
 from cairn.runtime.agent import Agent
 from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.session import Session, SessionAdmissionError, TurnOutcome
 from cairn.runtime.tool_execution import execute_tool_call
+from cairn.runtime.turn.context import build_system_messages
 from cairn.runtime.turn.hook import (
     compact_before_next_step,
     reusable_record,
@@ -136,24 +137,7 @@ async def run_turn(
                     )
                 )
 
-                system_messages = [Message(role="system", content=agent.system_prompt)]
-                if durable is not None and durable.recovery_notice is not None:
-                    system_messages.append(
-                        Message(role="system", content=durable.recovery_notice)
-                    )
-                if agent.repo_context_provider is not None:
-                    repo_context = await agent.repo_context_provider.inspect()
-                    system_messages.append(
-                        Message(role="system", content=repo_context.to_prompt())
-                    )
-                if agent.skill_library is not None:
-                    # Advertise names only; each body arrives through read_skill,
-                    # so a large library costs nothing until a skill is used.
-                    skill_lines = agent.skill_library.prompt_lines()
-                    if skill_lines:
-                        system_messages.append(
-                            Message(role="system", content="\n".join(skill_lines))
-                        )
+                system_messages = await build_system_messages(agent)
                 tool_schemas = agent.tools.schemas()
                 memory_context = None
                 if agent.memory_reader is not None:

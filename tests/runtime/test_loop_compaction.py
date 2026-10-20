@@ -10,7 +10,7 @@ import asyncio
 from typing import Any
 
 from cairn.core.compaction.summarizer import SummaryResult
-from cairn.core.context import ContextBudget, ContextBuilder, TokenCount
+from cairn.core.context import ContextBudget, ContextBuilder
 from cairn.core.models import LLMResponse, Message, ToolCall, ToolResult
 from cairn.infra.observability.models import SpanStatus
 from cairn.infra.observability.tracer import Tracer
@@ -26,28 +26,6 @@ from tests.support.runtime import (
     RecordingTool,
     SequenceLLM,
 )
-
-
-class CharCounter:
-    def count(self, messages: list[Message], tools: list[dict[str, Any]]) -> TokenCount:
-        return TokenCount(
-            tokens=sum(len(message.content or "") for message in messages),
-            is_estimate=False,
-        )
-
-
-class CountingSummarizer:
-    """Records how many times it was asked to summarize."""
-
-    def __init__(self, summary: str = "short summary") -> None:
-        self.summary = summary
-        self.calls = 0
-
-    async def summarize(
-        self, messages: list[Message], *, max_tokens: int
-    ) -> SummaryResult:
-        self.calls += 1
-        return SummaryResult(text=self.summary)
 
 
 class ExplodingSummarizer:
