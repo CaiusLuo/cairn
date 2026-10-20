@@ -14,8 +14,9 @@ from cairn.infra.workspace.workspace import Workspace
 
 DEFAULT_LIMIT = 100
 
-# Bound the scan itself, not just the reported matches. A pattern that matches
-# nothing can otherwise walk an unbounded tree before the caller learns that.
+# Bound the number of accepted matches a single search may collect, so a pattern
+# matching a huge tree stops early instead of materializing every path. The
+# iteration itself is bounded by pathlib's walk, not by this constant.
 MAX_SCAN_CANDIDATES = 50_000
 
 
@@ -71,6 +72,12 @@ class GlobTool:
         pattern = arguments.get("pattern")
         if not isinstance(pattern, str) or not pattern.strip() or "\0" in pattern:
             raise InvalidArguments("pattern must be a non-empty string without NUL")
+
+        # A pattern naming only the root or a separator is not a search: pathlib
+        # raises IndexError or AttributeError from inside glob() instead of
+        # reporting a result, so reject it as an argument error here.
+        if not any(part.strip(".") for part in pattern.split("/")):
+            raise InvalidArguments("pattern must select a name below the workspace")
 
         # First containment layer: a pattern that can leave the Workspace is an
         # argument error, so the model is told the pattern is refused instead of

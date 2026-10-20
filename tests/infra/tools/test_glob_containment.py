@@ -103,6 +103,24 @@ def test_absolute_pattern_is_rejected_as_an_argument(
         tool.validate({"pattern": pattern})
 
 
+@pytest.mark.parametrize("pattern", [".", "./", ".//", "..", "//", "./."])
+def test_pattern_naming_only_the_root_is_rejected_as_an_argument(
+    escape_layout: Path, pattern: str
+) -> None:
+    """A root-only pattern is an argument error, not an internal crash.
+
+    pathlib raises IndexError or AttributeError from inside ``glob`` for these
+    patterns, which would surface to the model as an unclassified tool fault
+    rather than a refused search.
+    """
+    tool = GlobTool(Workspace(escape_layout))
+
+    with pytest.raises(InvalidArguments):
+        tool.validate({"pattern": pattern})
+    with pytest.raises(InvalidArguments):
+        asyncio.run(tool.execute({"pattern": pattern}))
+
+
 def test_literal_pattern_prefix_through_a_symlink_is_rejected(
     escape_layout: Path,
 ) -> None:
