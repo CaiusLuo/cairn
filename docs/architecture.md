@@ -34,6 +34,14 @@ pending when a turn aborts.
 each candidate, builds that candidate's request, and returns `(request, response)`.
 It does not own turn tracing, turn error finalization or turn lifecycle.
 
+`runtime.turn.context.build_system_messages` is the single owner of the request's
+system prefix: the Agent's system prompt, then a durable recovery notice, the
+repository context and the advertised skills, in the order the model receives
+them. `run_turn` sends that prefix and the manual `/compact` entry measures the
+same one, so a compaction decision is made against the request the model actually
+receives rather than a smaller subset. Each contributing capability is read once
+per request; `runtime.turn.hook` still owns when a reduction runs.
+
 For a streaming client it owns one provisional `ResponseAssembler` per attempt.
 Only a validated response after provider finish, clean exhaustion and stream
 cleanup crosses the existing `(request, response)` boundary. Text deltas go to
@@ -136,6 +144,27 @@ injects the exact Workspace and credential policy. `runtime.assembly` composes
 this registry with repository context; it does not maintain a second tool list.
 Preflight and capability-derived execution authority stay in runtime.
 
+`infra.tools.arguments` owns the argument checks every model-facing file tool
+shares: undeclared keys, a NUL or escaping `path`, and the function-schema
+envelope. Tools call it from their own `validate` and keep their tool-specific
+policy (line ranges, patch shape, content size, pattern syntax) beside the tool
+that declares it. Argument validity is therefore checked once, before runtime
+evaluates permissions. `infra.workspace.paths` is the single owner of "is this
+path inside the Workspace": `resolve_workspace_path` answers it for a direct
+path, and `validate_workspace_pattern`/`contained_candidate` apply the same rule
+to a glob pattern and to each expanded candidate, so a search can never name a
+path that a direct tool call would refuse.
+
+That containment rule is observable in the tool contract, not only inside it.
+`glob` refuses a pattern that can leave the Workspace — an absolute pattern, a
+`..` component, a `.git` component, or a literal prefix naming a symlink — as an
+`InvalidArguments` failure rather than answering with an empty result, because a
+caller must be able to tell a refused search from one that found nothing.
+Candidates an otherwise valid pattern expands into are re-checked after
+resolution, which is what stops a pattern whose wildcard precedes a symlinked
+directory. Accepted patterns keep their previous result, ordering and truncation
+behaviour.
+
 Local `infra.git` and remote `infra.github` do not depend on each other. Session
 and Memory stores also remain independent; they share only neutral SQLite
 runtime qualification in `infra.sqlite_policy`. Trace storage owns telemetry,
@@ -176,6 +205,8 @@ in [evaluation/README.md](../evaluation/README.md).
 | Run a coding Task | `runtime.tasks.CodingTaskRunner.run` owns task state around the same Turn boundary |
 | Verify a change | `runtime.workflow.verification.FixedChecksVerifier.verify` evaluates host-supplied checks; the workflow binds evidence to its Git snapshot and rechecks drift |
 | Execute review | `runtime.review.workflow.ReviewWorkflow.run` owns bounded verification, review and repair progress |
+| Build a request's system prefix | `runtime.turn.context.build_system_messages` assembles it for both `run_turn` and the manual compaction entry |
+| Check a tool argument | `infra.tools.arguments` owns the shared file-tool preflight; `infra.workspace.paths` decides whether a path or glob match stays inside the Workspace |
 | Read repository facts | `infra.repo_graph.RepoGraphBuilder` returns bounded candidates and retains complete historical snapshots |
 | Read/write Project Memory | `runtime.memory.retrieval.MemoryReader` retrieves scoped evidence; `runtime.memory.service.MemoryService` owns transitions behind trusted-host approval |
 | Run an EvalSuite | `runtime.evals.suite.EvalSuiteRunner.run` owns the report; `EvalRunner` owns each temporary workspace and deterministic checks |
@@ -220,6 +251,11 @@ task/turn lifecycle.
 - `runtime/review/git.py` and `runtime/workflow/git.py` each compute a
   filesystem identity tuple. The duplication is nine mechanical lines; making it
   public would widen an API for no second behaviour.
+- `infra.tools.arguments` owns the preflight for the file tools. `bash` and
+  `runtime.evals.intelligence.graph_tool` keep their own: Bash rejects a NUL in a
+  command string rather than a path and names every unexpected key, and the graph
+  tool accepts a per-operation key set. Sharing one helper there would change a
+  model-facing error for no safety gain, so the duplication is deliberate.
 
 ## References
 
