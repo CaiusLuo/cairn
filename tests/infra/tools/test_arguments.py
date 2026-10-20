@@ -203,8 +203,17 @@ def test_absolute_path_is_rejected(spec: ToolSpec, workspace_root: Path) -> None
 
 
 @pytest.mark.parametrize("spec", PATH_TOOLS, ids=_ids(PATH_TOOLS))
-def test_git_metadata_path_is_rejected(spec: ToolSpec, workspace_root: Path) -> None:
-    _rejected(spec, workspace_root, spec.arguments() | {"path": ".git/config"})
+@pytest.mark.parametrize("metadata", [".git/config", ".GIT/config", ".Git/config"])
+def test_git_metadata_path_is_rejected(
+    spec: ToolSpec, workspace_root: Path, metadata: str
+) -> None:
+    """Git metadata stays unreachable whatever case the filesystem folds.
+
+    A case-insensitive filesystem resolves ``.GIT/config`` to the same file as
+    ``.git/config``, so an exact-case comparison would let a tool edit the
+    metadata the sandbox is required to protect.
+    """
+    _rejected(spec, workspace_root, spec.arguments() | {"path": metadata})
 
     assert (workspace_root / ".git" / "config").read_text(encoding="utf-8") == "keep"
 

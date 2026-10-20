@@ -41,6 +41,20 @@ def _reject_symlink_pattern_prefix(root: Path, relative: Path) -> None:
             raise ValueError("symlink targets are not supported")
 
 
+def _is_git_part(part: str) -> bool:
+    """Whether this path component names Git metadata, whatever its case.
+
+    A case-insensitive filesystem resolves ``.GIT/config`` to the same file as
+    ``.git/config``, so an exact-case comparison would let a tool edit the very
+    metadata the sandbox is required to protect.
+    """
+    return part.casefold() == ".git"
+
+
+def _has_git_part(parts: "tuple[str, ...] | list[str]") -> bool:
+    return any(_is_git_part(part) for part in parts)
+
+
 def _relative_parts(raw: object) -> Path:
     """Split a workspace-relative argument into parts, rejecting an escape.
 
@@ -53,7 +67,11 @@ def _relative_parts(raw: object) -> Path:
 
     relative = Path(raw)
 
-    if relative.is_absolute() or ".." in relative.parts or ".git" in relative.parts:
+    if (
+        relative.is_absolute()
+        or ".." in relative.parts
+        or _has_git_part(relative.parts)
+    ):
         raise ValueError("path must stay inside the workspace")
 
     return relative
@@ -71,7 +89,7 @@ def resolve_workspace_path(root: Path, raw: object) -> Path:
 
     resolved_relative = path.relative_to(root)
 
-    if ".git" in resolved_relative.parts:
+    if _has_git_part(resolved_relative.parts):
         raise ValueError("path must stay outside .git")
 
     return path
@@ -122,7 +140,7 @@ def contained_candidate(
     if not str(candidate).startswith(root_prefix):
         return None
 
-    if candidate.name == ".git":
+    if _is_git_part(candidate.name):
         return None
 
     resolved_parent = _contained_directory(root, candidate.parent, directory_cache)
@@ -167,7 +185,7 @@ def _contained_directory(
     else:
         if not relative.parts:
             result = root
-        elif ".git" in relative.parts or directory.is_symlink():
+        elif _has_git_part(relative.parts) or directory.is_symlink():
             # A link or a .git component anywhere on the path invalidates every
             # candidate beneath it, so one answer covers the whole subtree.
             result = None
