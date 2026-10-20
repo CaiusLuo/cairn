@@ -46,6 +46,12 @@ def _owning_durable_session(agent: Agent) -> DurableSession | None:
     recovery notice belongs to that request. The Session is already the Agent's
     one owner, so read the notice from it instead of asking the command caller to
     pass the same binding again.
+
+    This relies on ``run_turn``'s admission invariant: an Agent's owner is the
+    exact Session a turn was admitted with, and a stateless turn leaves the owner
+    unset. A future Session kind that carries a recovery notice must extend
+    ``DurableSession`` (or be given an owner here) rather than assume its notice
+    is applied, because it would not be.
     """
     owner = agent.session_owner
     return owner if isinstance(owner, DurableSession) else None
