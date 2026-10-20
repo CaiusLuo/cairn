@@ -201,24 +201,10 @@ class ObservedContextBuilder(ContextBuilder):
         self.runner = runner
         self.measured = measured
 
-    def build(
-        self,
-        *,
-        system_messages: list[Message],
-        history: list[Message],
-        current_turn_start: int,
-        tools: list[dict[str, Any]],
-        project_memory: MemoryContext | None = None,
-    ) -> ContextRequest:
+    def build(self, **kwargs: Any) -> ContextRequest:
         # The measured builder records the base Context counters; this class only
-        # adds the observations it owns.
-        request = self.measured.build(
-            system_messages=system_messages,
-            history=history,
-            current_turn_start=current_turn_start,
-            tools=tools,
-            project_memory=project_memory,
-        )
+        # adds the observations it owns, so it forwards the whole admission.
+        request = self.measured.build(**kwargs)
         metrics = self.observed
         metrics.request_token_counts.append(request.tokens_after)
         metrics.request_tokens_total += request.tokens_after.tokens

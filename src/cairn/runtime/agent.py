@@ -1,6 +1,8 @@
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from cairn.core.compaction import ReusableCompaction
+from cairn.core.compaction.summarizer import Summarizer
 from cairn.core.context import ContextBuilder
 from cairn.core.events import Event, EventHandler
 from cairn.core.llm import LLMClient
@@ -59,6 +61,7 @@ class Agent:
         provider_name: str | None = None,
         memory_reader: "MemoryReader | None" = None,
         skill_library: SkillLibrary | None = None,
+        summarizer: Summarizer | None = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -86,6 +89,14 @@ class Agent:
         ):
             raise ValueError("Memory reader must use the Agent Workspace")
         self.memory_reader = memory_reader
+        # Supplied by the composition root; ``None`` means this Agent does not
+        # compact. The Agent never builds one, so a caller that needs compaction
+        # switched off (a scripted test client, an eval) says so explicitly.
+        self.summarizer = summarizer
+        # The last accepted compaction, reused while the history prefix it
+        # replaced is unchanged. Compaction never edits history, so dropping this
+        # value costs one repeated summary and nothing else.
+        self.compaction: ReusableCompaction | None = None
         self._session_owner: object | None = None
         self._session_attribution: Callable[[Event], Event] | None = None
         # Only the loop advances this count. It prevents attachment midway

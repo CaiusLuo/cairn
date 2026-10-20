@@ -4,50 +4,41 @@ import json
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
+from cairn.core.compaction import CompactionRecord, apply_replacement
+from cairn.core.compaction.budget_values import (
+    DEFAULT_CONTEXT_MAX_TOKENS,
+    DEFAULT_RESPONSE_MAX_TOKENS,
+    ContextBudget,
+    TokenCount,
+)
+from cairn.core.compaction.replacement import folded_placeholder
 from cairn.core.memory.context import (
     MEMORY_DATA_POLICY,
     MemoryContext,
     MemoryContextItem,
     render_memory,
 )
-from cairn.core.models import Message
+from cairn.core.models import Message, ToolCall
+
+__all__ = [
+    # Budget values now live beside the compaction policy. Re-exported here so
+    # the context view keeps one import site for callers that only need budget.
+    "DEFAULT_CONTEXT_MAX_TOKENS",
+    "DEFAULT_RESPONSE_MAX_TOKENS",
+    "OMISSION_NOTICE_PREFIX",
+    "CompactionRecord",
+    "ContextBudget",
+    "ContextBudgetExceeded",
+    "ContextBuilder",
+    "ContextRequest",
+    "ConversationHistoryError",
+    "EstimatedTokenCounter",
+    "TokenCount",
+    "TokenCounter",
+]
 
 #: Marker used by tests and callers to recognise the omission notice.
 OMISSION_NOTICE_PREFIX = "Context notice:"
-
-
-#: Default request budget. Sized for the 128K window that current hosted models
-#: offer: a smaller default fails real tasks before any history is trimmed, which
-#: reads as a harness defect rather than a configuration choice. Callers that talk
-#: to a narrower model must lower it.
-DEFAULT_CONTEXT_MAX_TOKENS = 131072
-DEFAULT_RESPONSE_MAX_TOKENS = 8192
-
-
-@dataclass(frozen=True, slots=True)
-class ContextBudget:
-    max_tokens: int = DEFAULT_CONTEXT_MAX_TOKENS
-    response_tokens: int = DEFAULT_RESPONSE_MAX_TOKENS
-
-    def __post_init__(self) -> None:
-        if type(self.max_tokens) is not int or self.max_tokens < 1:
-            raise ValueError("max_tokens must be a positive integer")
-        if type(self.response_tokens) is not int or self.response_tokens < 1:
-            raise ValueError("response_tokens must be a positive integer")
-        if self.response_tokens >= self.max_tokens:
-            raise ValueError("response_tokens must be smaller than max_tokens")
-
-
-@dataclass(frozen=True, slots=True)
-class TokenCount:
-    tokens: int
-    is_estimate: bool
-
-    def __post_init__(self) -> None:
-        if type(self.tokens) is not int or self.tokens < 0:
-            raise ValueError("tokens must be a nonnegative integer")
-        if type(self.is_estimate) is not bool:
-            raise ValueError("is_estimate must be a boolean")
 
 
 class TokenCounter(Protocol):
@@ -95,6 +86,17 @@ class EstimatedTokenCounter:
         return TokenCount(tokens=tokens, is_estimate=True)
 
 
+def _shift(current_turn_start: int, record: CompactionRecord) -> int:
+    """Where the current turn lands after the summary replaces an earlier range.
+
+    Only messages strictly before the current turn can be summarized, so the
+    turn moves earlier by however many messages the substitution removed.
+    """
+    if current_turn_start < record.retained_from:
+        raise ValueError("compaction must not reach into the current turn")
+    return current_turn_start - record.retained_from + 1
+
+
 @dataclass(frozen=True, slots=True)
 class ContextRequest:
     messages: list[Message]
@@ -106,6 +108,14 @@ class ContextRequest:
     memory_included_ids: tuple[str, ...] = ()
     memory_dropped_ids: tuple[str, ...] = ()
     memory_tokens: int = 0
+    #: Whether a compaction record replaced part of the history in this view.
+    compacted: bool = False
+    #: Messages removed from this view by the substitution, not by turn trimming.
+    compacted_messages: int = 0
+    #: Tokens this view would have carried without the substitution.
+    compaction_tokens_saved: int = 0
+    #: Tool results shortened by rule folding, inside the current turn.
+    folded_tool_results: int = 0
 
 
 class ConversationHistoryError(ValueError):
@@ -201,6 +211,36 @@ def _tool_group_error(messages: list[Message]) -> str | None:
     return None
 
 
+def _foldable_results(history: list[Message], current_turn_start: int) -> list[int]:
+    """Indices of settled tool results inside the current turn, oldest first.
+
+    Only results at or after ``current_turn_start`` are candidates here, because
+    every older turn has already been omitted. Oldest-first order is what keeps the
+    newest output readable for as long as possible: folding stops as soon as the
+    request fits, so the latest result is only shortened when nothing else worked.
+    """
+    return [
+        index
+        for index in range(current_turn_start, len(history))
+        if history[index].role == "tool" and _is_settled(history, index)
+    ]
+
+
+def _is_settled(history: list[Message], index: int) -> bool:
+    """Whether a tool result's own group is complete and cannot still be pending."""
+    call_id = history[index].tool_call_id
+    if call_id is None:
+        return False
+    return any(call_id == call.id for call in _preceding_calls(history, index))
+
+
+def _preceding_calls(history: list[Message], index: int) -> list[ToolCall]:
+    for position in range(index - 1, -1, -1):
+        if history[position].tool_calls:
+            return list(history[position].tool_calls)
+    return []
+
+
 def _omission_notice(omitted_turns: int, omitted_messages: int) -> Message:
     return Message(
         role="system",
@@ -211,6 +251,14 @@ def _omission_notice(omitted_turns: int, omitted_messages: int) -> Message:
             "do not assume earlier tool actions did not happen."
         ),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _Omission:
+    """How much older history a view already leaves out."""
+
+    turns: int
+    messages: int
 
 
 class ContextBuilder:
@@ -267,13 +315,55 @@ class ContextBuilder:
         current_turn_start: int,
         tools: list[dict[str, Any]],
         project_memory: MemoryContext | None = None,
+        compaction: CompactionRecord | None = None,
     ) -> ContextRequest:
-        baseline = self._build_baseline(
-            system_messages=system_messages,
-            history=history,
-            current_turn_start=current_turn_start,
-            tools=tools,
+        """Build the request view, substituting a settled range when compacted.
+
+        Compaction is applied first and only to the request view. Turn trimming
+        then runs over the substituted history, so a compacted conversation still
+        drops whole old turns exactly as before. ``history`` is never mutated.
+        """
+        source = (
+            history if compaction is None else apply_replacement(history, compaction)
         )
+        turn_start = (
+            current_turn_start
+            if compaction is None
+            else _shift(current_turn_start, compaction)
+        )
+        baseline = self._with_memory(
+            self._build_baseline(
+                system_messages=system_messages,
+                history=source,
+                current_turn_start=turn_start,
+                tools=tools,
+            ),
+            project_memory,
+            system_messages,
+            tools,
+        )
+        if compaction is None:
+            return baseline
+        # Measured against the conversation as recorded, so the saving is the
+        # whole benefit of the substitution rather than the part turn trimming
+        # happened to leave behind.
+        uncompacted = self._count([*system_messages, *history], tools)
+        return replace(
+            baseline,
+            compacted=True,
+            compacted_messages=compaction.retained_from,
+            compaction_tokens_saved=max(
+                0, uncompacted.tokens - baseline.tokens_after.tokens
+            ),
+        )
+
+    def _with_memory(
+        self,
+        baseline: ContextRequest,
+        project_memory: MemoryContext | None,
+        system_messages: list[Message],
+        tools: list[dict[str, Any]],
+    ) -> ContextRequest:
         if project_memory is None or not project_memory.items:
             return baseline
         # Preserve the measured baseline history suffix. Optional evidence can
@@ -307,6 +397,53 @@ class ContextBuilder:
             memory_tokens=max(0, count.tokens - baseline.tokens_after.tokens),
         )
 
+    def _build_folded(
+        self,
+        *,
+        system_messages: list[Message],
+        history: list[Message],
+        current_turn_start: int,
+        tools: list[dict[str, Any]],
+        omission: _Omission,
+        tokens_before: TokenCount,
+    ) -> ContextRequest | None:
+        """Fold current-turn tool output until the request fits, or give up.
+
+        This is the only reduction left once every old turn has been omitted. It
+        folds the oldest settled tool results first and stops as soon as a view
+        fits, so the most recent output stays readable. A tool result is never
+        dropped, only shortened, which keeps every call paired.
+
+        Returns ``None`` when folding cannot make the request fit; the caller then
+        reports the budget error it would have reported before.
+        """
+        folded = list(history)
+        notice = (
+            []
+            if omission.turns == 0
+            else [_omission_notice(omission.turns, omission.messages)]
+        )
+        folded_count = 0
+        for index in _foldable_results(history, current_turn_start):
+            original = folded[index]
+            folded[index] = original.model_copy(
+                update={"content": folded_placeholder(len(original.content or ""))}
+            )
+            folded_count += 1
+            view = [*system_messages, *notice, *folded]
+            count = self._count(view, tools)
+            if not self._fits(count):
+                continue
+            return ContextRequest(
+                messages=view,
+                tokens_before=tokens_before,
+                tokens_after=count,
+                omitted_turns=omission.turns,
+                omitted_messages=omission.messages,
+                folded_tool_results=folded_count,
+            )
+        return None
+
     def _build_baseline(
         self,
         *,
@@ -333,6 +470,18 @@ class ContextBuilder:
         if not old_turn_ends:
             if full_history_error is not None:
                 raise ConversationHistoryError(full_history_error)
+            # A first-turn overflow has no old turn to omit, so folding this
+            # turn's settled tool output is the only reduction available.
+            folded = self._build_folded(
+                system_messages=system_messages,
+                history=history,
+                current_turn_start=current_turn_start,
+                tools=tools,
+                omission=_Omission(turns=0, messages=0),
+                tokens_before=tokens_before,
+            )
+            if folded is not None:
+                return folded
             raise ContextBudgetExceeded(
                 tokens=tokens_before,
                 budget=self.budget,
@@ -380,6 +529,21 @@ class ContextBuilder:
 
         minimal_tokens = view_for(max_omitted)[1]
         if not self._fits(minimal_tokens):
+            # Nothing is left to omit, so the only remaining reduction is to fold
+            # settled tool output inside the current turn. Whole groups stay
+            # paired and the user's own message is untouched.
+            folded = self._build_folded(
+                system_messages=system_messages,
+                history=history,
+                current_turn_start=current_turn_start,
+                tools=tools,
+                omission=_Omission(
+                    turns=max_omitted, messages=old_turn_ends[max_omitted - 1]
+                ),
+                tokens_before=tokens_before,
+            )
+            if folded is not None:
+                return folded
             raise ContextBudgetExceeded(
                 tokens=minimal_tokens,
                 budget=self.budget,

@@ -1,8 +1,22 @@
 from cairn.infra.observability.storage import TraceDeleteResult
 from cairn.terminal.commands.context import CommandContext
-from cairn.terminal.commands.help import handle_help
 from cairn.terminal.trace_output import print_trace, print_trace_list
 
+TRACE_USAGE = (
+    "/trace | /trace TRACE_ID | /trace list [N] | /trace count "
+    "| /trace del TRACE_ID | /trace del --tail N"
+)
+TRACE_SUMMARY = "Show, count, or delete stored traces."
+TRACE_DETAIL = (
+    "Show the trace with the given TRACE_ID (full ID or unique prefix).\n"
+    "If no TRACE_ID is provided, the last trace will be shown.\n"
+    "/trace list shows the 10 most recent completed traces.\n"
+    "/trace list N shows the N most recent completed traces (1 <= N <= 100).\n"
+    "/trace count prints how many traces are stored.\n"
+    "/trace del TRACE_ID deletes that trace.\n"
+    "/trace del --tail N deletes the N oldest traces, i.e. the end of\n"
+    "/trace list. Traces that cannot be read are skipped with a warning."
+)
 TRACE_LIST_LIMIT = 10
 TRACE_LIST_USAGE = "Usage: /trace list [N] (1 <= N <= 100)"
 TRACE_COUNT_USAGE = "Usage: /trace count"
@@ -53,7 +67,7 @@ def _show_trace(context: CommandContext, trace_id: str | None) -> None:
         # A mistyped subcommand is not a trace ID; answer with the usage instead
         # of a misleading "Trace not found".
         print(f"Unknown trace command: {trace_id}")
-        handle_help(["trace"])
+        print(f"Usage: {TRACE_USAGE}")
         return
 
     try:

@@ -12,6 +12,26 @@ MODEL_USAGE = (
     " | /model remove <group> <model-id>"
     " | /model move <group> <model-id> <position>"
 )
+MODEL_SUMMARY = "Show or select a session model, or edit local model IDs."
+MODEL_DETAIL = (
+    "In a terminal, /model opens an inline model-group selector.\n"
+    "Use Up/Down and Enter to select; Esc or Ctrl+C cancels.\n"
+    "Without a terminal, /model prints the current group and candidate IDs.\n"
+    "/model list shows primary/fallback IDs (* marks the current group).\n"
+    "/model use selects a group by name for subsequent requests.\n"
+    "Selection preserves conversation history and does not modify configuration.\n"
+    "A listed model that failed recently shows its most recent failure.\n"
+    "Models and groups belong to the active provider; /provider switches it.\n"
+    "/model add appends an ID to an existing group in .cairn/models.toml.\n"
+    "/model remove deletes an existing ID, but cannot remove a group's final ID.\n"
+    "/model move reorders an ID within its group at a 1-based position.\n"
+    "Other IDs keep their relative order; a no-op does not rewrite the file.\n"
+    "In a [[providers]] catalog only the active provider's group is edited.\n"
+    "Edits preserve comments; unsupported move formatting is rejected.\n"
+    "Restart and normal provider approval\n"
+    "are required to load changes; the current session is not reloaded.\n"
+    "Create TOML first if using legacy .env configuration."
+)
 
 
 def _failure_note(context: CommandContext, model_id: str) -> str:

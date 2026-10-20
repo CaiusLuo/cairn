@@ -82,6 +82,10 @@ from cairn.runtime.agent import Agent
 from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.session import Session, SessionAdmissionError, TurnOutcome
 from cairn.runtime.tool_execution import execute_tool_call
+from cairn.runtime.turn.hook import (
+    compact_before_next_step,
+    reusable_record,
+)
 from cairn.runtime.turn_trace import AttemptContext, TurnTrace
 
 
@@ -186,6 +190,7 @@ async def run_turn(
                         current_turn_start=turn_start,
                         tools=tool_schemas,
                         project_memory=memory_context,
+                        compaction=reusable_record(agent, agent.state.messages),
                         on_request=trace.on_request,
                         on_fallback=trace.on_failure,
                         on_stream=on_stream,
@@ -243,6 +248,18 @@ async def run_turn(
                         consume_tool_call=consume_tool_call,
                         before_execute=before_execute if durable is not None else None,
                     )
+
+                # Every call in this batch has settled, so the conversation is
+                # whole and the next request is the first one that can be
+                # reduced. Compaction is an optimisation: a failure here leaves
+                # the conversation untouched and must not end the turn.
+                await compact_before_next_step(
+                    agent,
+                    system_messages=system_messages,
+                    tool_schemas=tool_schemas,
+                    turn_start=turn_start,
+                    trace=trace,
+                )
 
             agent.emit(
                 Event(

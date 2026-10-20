@@ -4,6 +4,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
+from cairn.core.compaction import CompactionRecord
 from cairn.core.context import ContextBudget, ContextBuilder, ContextRequest
 from cairn.core.events import Event
 from cairn.core.llm import LLMClient, StreamingLLMClient, StreamProtocolError
@@ -166,6 +167,7 @@ class ModelExecutor:
         current_turn_start: int,
         tools: list[dict[str, Any]],
         project_memory: MemoryContext | None = None,
+        compaction: "CompactionRecord | None" = None,
         on_request: Callable[
             [ContextRequest, ContextBudget, ModelConfig | None, str | None, int], None
         ]
@@ -186,12 +188,15 @@ class ModelExecutor:
             for model_id in model_ids:
                 llm, builder = self._runtime_for(primary_runtime, model, model_id)
                 # Admission failures are not provider failures and must not retry.
+                # Every candidate is admitted against the same substitution, so a
+                # fallback model reads the conversation the primary one would have.
                 request = builder.build(
                     system_messages=system_messages,
                     history=history,
                     current_turn_start=current_turn_start,
                     tools=tools,
                     project_memory=project_memory,
+                    compaction=compaction,
                 )
                 attempt += 1
                 if on_request is not None:

@@ -1,6 +1,7 @@
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from cairn.terminal.commands.compact import handle_compact
 from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.help import handle_help, print_available_commands
 from cairn.terminal.commands.model import handle_model
@@ -42,6 +43,11 @@ class CommandRouter:
         if command == "/provider":
             handle_provider(context, args)
             return CommandResult(handled=True)
+
+        if command == "/compact":
+            return CommandResult(
+                handled=True, interaction=handle_compact(context.compact_now)
+            )
 
         if command == "/help":
             handle_help(args)

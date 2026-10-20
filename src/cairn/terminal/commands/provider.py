@@ -3,6 +3,18 @@ from cairn.core.provider_catalog import NamedProvider
 from cairn.terminal.commands.context import CommandContext
 
 PROVIDER_USAGE = "Usage: /provider | /provider list | /provider use <name>"
+PROVIDER_SUMMARY = "Show or switch the active provider."
+PROVIDER_DETAIL = (
+    "Show the active provider, its endpoint, credential variable and\n"
+    "current model group.\n"
+    "/provider list lists configured providers (* marks the active one).\n"
+    "/provider use displays the target endpoint, credential variable and\n"
+    "models, then requires explicit approval before resolving its credential.\n"
+    "Switching transfers the conversation history to the new provider,\n"
+    "starts at its first model group and resets session tool-permission\n"
+    "grants; history, workspace and traces are preserved.\n"
+    "A denied, unavailable or failed switch keeps the current provider."
+)
 
 
 def _active_provider(context: CommandContext) -> NamedProvider | None:

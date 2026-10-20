@@ -1,10 +1,12 @@
 from typing import TYPE_CHECKING
 
+from cairn.core.compaction.summarizer import Summarizer
 from cairn.core.context import ContextBuilder
 from cairn.core.events import EventHandler
 from cairn.core.llm import LLMClient
 from cairn.core.permissions import PermissionHandler
 from cairn.infra.git.context import RepoContextProvider
+from cairn.infra.llm.compaction_summarizer import LLMCompactionSummarizer
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.skills import SkillLibrary
 from cairn.infra.tools import build_default_registry
@@ -28,6 +30,8 @@ def build_agent(
     model_executor: ModelExecutor | None = None,
     memory_reader: "MemoryReader | None" = None,
     skills: SkillLibrary | None = None,
+    summarize: bool = True,
+    summarizer: Summarizer | None = None,
 ) -> Agent:
     """Build one Agent over a Workspace.
 
@@ -54,4 +58,17 @@ def build_agent(
         model_executor=model_executor,
         memory_reader=memory_reader,
         skill_library=skills,
+        summarizer=summarizer
+        if summarizer is not None
+        else _default_summarizer(llm, enabled=summarize),
     )
+
+
+def _default_summarizer(llm: LLMClient, *, enabled: bool) -> Summarizer | None:
+    """Build the session's summarizer: the same client, same model, same routing.
+
+    This is the composition root's decision, not the Agent's: the Agent cannot
+    import an adapter, and a caller that must not spend an extra request (a
+    scripted test, an eval run) turns compaction off here or injects its own.
+    """
+    return LLMCompactionSummarizer(llm) if enabled else None

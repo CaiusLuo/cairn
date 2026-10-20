@@ -14,16 +14,19 @@ what a completed turn reported; that answer lives here.
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from cairn.core.budget import RunBudget
 from cairn.core.context import ContextBudget, ContextRequest
 from cairn.core.events import Event
 from cairn.core.memory.context import MemoryContext
 from cairn.core.model_manager import ModelConfig
-from cairn.core.models import LLMResponse
+from cairn.core.models import LLMResponse, LLMUsage
 from cairn.infra.observability.models import Span, SpanStatus
 from cairn.runtime.agent import Agent
+
+if TYPE_CHECKING:
+    from cairn.runtime.turn.compaction import CompactionOutcome
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +59,7 @@ class TurnTrace:
         self._attempt: AttemptContext | None = None
         self._attempt_started = False
         self._response_count = 0
+        self._compaction_outcomes = 0
         self._reported_omitted_turns = 0
         self._input_tokens: int | None = 0
         self._output_tokens: int | None = 0
@@ -147,6 +151,10 @@ class TurnTrace:
             "context_count_is_estimate": request.tokens_after.is_estimate,
             "context_max_tokens": context_budget.max_tokens,
             "context_response_tokens": context_budget.response_tokens,
+            "context_compacted": request.compacted,
+            "context_compacted_messages": request.compacted_messages,
+            "context_compaction_tokens_saved": request.compaction_tokens_saved,
+            "context_folded_tool_results": request.folded_tool_results,
             "context_omitted_turns": request.omitted_turns,
             "context_omitted_messages": request.omitted_messages,
             **self._provider_attributes(),
@@ -233,6 +241,45 @@ class TurnTrace:
                     response.usage.output_tokens
                 )
         self._agent.tracer.end_span(self._llm_span, status=SpanStatus.OK)
+
+    def on_compaction(self, outcome: "CompactionOutcome") -> None:
+        """Record that this turn reduced its request, and account for its cost.
+
+        Only statuses, counts and token figures are recorded; the summary text
+        lives in the compaction record and never reaches the trace. A summary
+        request is a real provider call, so its usage joins the turn total rather
+        than disappearing.
+        """
+        self._compaction_outcomes += 1
+        if outcome.usage is not None:
+            self._add_usage(outcome.usage)
+        if self._turn_span is None or self._agent.tracer is None:
+            return
+        attributes = self._turn_span.attributes
+        attributes["compaction_count"] = self._compaction_outcomes
+        attributes["compaction_last_step"] = outcome.step.value
+        attributes["compaction_last_status"] = (
+            outcome.status.value if outcome.status is not None else "ok"
+        )
+        attributes["compaction_messages_folded"] = outcome.folded_messages
+        attributes["compaction_tokens_before"] = outcome.tokens_before
+        attributes["compaction_tokens_after"] = outcome.tokens_after
+
+    def _add_usage(self, usage: LLMUsage) -> None:
+        for field, attribute in (
+            ("input_tokens", "_input_tokens"),
+            ("output_tokens", "_output_tokens"),
+            ("cached_tokens", "_cached_tokens"),
+            ("reasoning_tokens", "_reasoning_tokens"),
+        ):
+            current = getattr(self, attribute)
+            if current is None:
+                continue
+            value = getattr(usage, field)
+            if value is None:
+                setattr(self, attribute, None)
+            else:
+                setattr(self, attribute, current + value)
 
     def close(self, trace_error: str | None) -> None:
         """Finalize the turn span, its usage and the ``trace_finish`` event.

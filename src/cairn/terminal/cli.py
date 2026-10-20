@@ -1,6 +1,6 @@
 import asyncio
 import os
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from pathlib import Path
 from typing import Annotated
 
@@ -38,6 +38,8 @@ from cairn.runtime.provider_runtime import (
     build_provider_runtime,
 )
 from cairn.runtime.session import SessionState
+from cairn.runtime.turn.compaction import CompactionOutcome
+from cairn.runtime.turn.hook import run_compaction
 from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.router import CommandRouter
 from cairn.terminal.durable import (
@@ -425,6 +427,14 @@ async def main(
         if switched:
             permission_handler.reset_grants()
 
+    def compact_now() -> Awaitable[CompactionOutcome]:
+        """Compact the live Agent on the user's explicit request."""
+        return run_compaction(agent)
+
+    # Only a session that actually summarizes can compact; an Agent built without
+    # a summarizer leaves the command unavailable rather than silently doing
+    # nothing.
+    command_context.compact_now = compact_now if agent.summarizer is not None else None
     command_context.select_model = session.select_model
     command_context.select_provider = select_provider
     command_context.provider_catalog = catalog

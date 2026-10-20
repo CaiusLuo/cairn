@@ -16,8 +16,6 @@ from cairn.core.context import (
 )
 from cairn.core.events import Event, EventHandler
 from cairn.core.llm import LLMClient
-from cairn.core.memory.context import MemoryContext
-from cairn.core.models import Message
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
@@ -76,22 +74,10 @@ class _MeasuredContextBuilder(ContextBuilder):
             f"{counter_type.__module__}.{counter_type.__qualname__}"
         )
 
-    def build(
-        self,
-        *,
-        system_messages: list[Message],
-        history: list[Message],
-        current_turn_start: int,
-        tools: list[dict[str, Any]],
-        project_memory: MemoryContext | None = None,
-    ) -> ContextRequest:
-        request = super().build(
-            system_messages=system_messages,
-            history=history,
-            current_turn_start=current_turn_start,
-            tools=tools,
-            project_memory=project_memory,
-        )
+    def build(self, **kwargs: Any) -> ContextRequest:
+        # Forward every admission argument unchanged: this subclass observes the
+        # base builder, it does not narrow what a caller may ask for.
+        request = super().build(**kwargs)
         self.metrics.request_token_counts_estimated = (
             self.metrics.request_token_counts_estimated is True
             or request.tokens_after.is_estimate

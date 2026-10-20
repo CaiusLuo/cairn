@@ -82,6 +82,9 @@ def make_context_agent(
         context_builder=ContextBuilder(budget=budget, counter=counter),
         event_handler=None if events is None else lambda event: events.append(event),
         tracer=None if sink is None else Tracer(sink),
+        # These cases pin turn trimming against a scripted client whose response
+        # sequence has no room for a summarization request.
+        summarizer=None,
     )
 
 
@@ -142,6 +145,12 @@ def test_request_budget_includes_schema_and_reserve_and_records_trim(
         "context_response_tokens": RESPONSE_RESERVE,
         "context_omitted_turns": 1,
         "context_omitted_messages": 2,
+        # Compaction telemetry is always present, so a reader can tell
+        # "did not compact" from "compaction unavailable".
+        "context_compacted": False,
+        "context_compacted_messages": 0,
+        "context_compaction_tokens_saved": 0,
+        "context_folded_tool_results": 0,
         "tool_call_count": 0,
         "has_content": True,
     }

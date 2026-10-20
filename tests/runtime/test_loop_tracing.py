@@ -132,15 +132,9 @@ def test_run_turn_marks_usage_unknown_when_later_llm_call_fails(
     assert "input_tokens" not in turn_span.attributes
     assert "output_tokens" not in turn_span.attributes
     assert "usage" not in events[-1].data
-    assert (
-        output.getvalue()
-        .strip()
-        .endswith(
-            f"trace: {turn_span.context.trace_id} (error) "
-            "· tokens: input unknown, output unknown"
-        )
-    )
-    assert output.getvalue().count("tokens:") == 1
+    # A successfully persisted trace prints no per-turn line, so a failed turn
+    # must not print a usage figure either: silence is the consistent outcome.
+    assert "tokens:" not in output.getvalue()
 
 
 @pytest.mark.parametrize("completed_first_call", [False, True])
@@ -205,15 +199,9 @@ def test_run_turn_cancelled_llm_shows_unknown_usage_footer(
         assert events[-1].type == "trace_finish"
         assert events[-1].data["status"] == "error"
         assert "usage" not in events[-1].data
-        assert (
-            output.getvalue()
-            .strip()
-            .endswith(
-                f"trace: {turn_span.context.trace_id} (error) "
-                "· tokens: input unknown, output unknown"
-            )
-        )
-        assert output.getvalue().count("tokens:") == 1
+        # An unmeasurable turn prints no tokens figure rather than implying a
+        # measurement it does not have.
+        assert "tokens:" not in output.getvalue()
 
     asyncio.run(scenario())
 
