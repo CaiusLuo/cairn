@@ -123,7 +123,7 @@ def contained_candidate(
     instead of raising, because one uncontained candidate is dropped from a
     search rather than turned into a failed search.
 
-    Returns the resolved path, or ``None`` when the candidate is not provably
+    Returns the contained path, or ``None`` when the candidate is not provably
     inside the Workspace. Failing closed matters here: this is the layer that
     stops ``glob`` from naming files outside the sandbox.
 
@@ -167,11 +167,13 @@ def _contained_directory(
     directory: Path,
     cache: dict[Path, Path | None] | None,
 ) -> Path | None:
-    """Resolved form of ``directory`` if it is provably inside ``root``.
+    """The contained form of ``directory``, or ``None`` when it is not provable.
 
     This walks the ancestors once per directory and memoises the answer, so the
     symlink and containment checks are applied to each directory component
-    exactly once per search.
+    exactly once per search. The result is built from validated components
+    rather than by resolving again: a symlink anywhere on the path is rejected
+    above, so the lexical path and the resolved path agree.
     """
     if cache is not None:
         cached = cache.get(directory)
