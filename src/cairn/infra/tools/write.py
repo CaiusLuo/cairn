@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from cairn.core.models import ToolResult
+from cairn.infra.tools.arguments import (
+    function_schema,
+    reject_unknown_keys,
+    workspace_path,
+)
 from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
 from cairn.infra.workspace.workspace import Workspace
 
@@ -47,53 +52,46 @@ class WriteTool:
         self.workspace = workspace
 
     def schema(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": (
-                                "Workspace-relative path of the file to create "
-                                "or overwrite."
-                            ),
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": (
-                                "Complete UTF-8 content to write. This replaces "
-                                "everything already in the file."
-                            ),
-                        },
-                        "expected_content": {
-                            "type": "string",
-                            "description": (
-                                "Optional guard: the exact current content "
-                                "this call expects. A mismatch refuses the write."
-                            ),
-                        },
+        return function_schema(
+            self.name,
+            self.description,
+            {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Workspace-relative path of the file to create "
+                            "or overwrite."
+                        ),
                     },
-                    "required": ["path", "content"],
-                    "additionalProperties": False,
+                    "content": {
+                        "type": "string",
+                        "description": (
+                            "Complete UTF-8 content to write. This replaces "
+                            "everything already in the file."
+                        ),
+                    },
+                    "expected_content": {
+                        "type": "string",
+                        "description": (
+                            "Optional guard: the exact current content "
+                            "this call expects. A mismatch refuses the write."
+                        ),
+                    },
                 },
+                "required": ["path", "content"],
+                "additionalProperties": False,
             },
-        }
+        )
 
     def validate(self, arguments: dict[str, Any]) -> None:
-        if arguments.keys() - {"path", "content", "expected_content"}:
-            raise InvalidArguments("unexpected write_file argument")
-
-        raw_path = arguments.get("path")
-        if isinstance(raw_path, str) and "\0" in raw_path:
-            raise InvalidArguments("path must not contain NUL")
-        try:
-            self.workspace.resolve_path(raw_path)
-        except ValueError as exc:
-            raise InvalidArguments(str(exc)) from exc
+        reject_unknown_keys(
+            arguments,
+            {"path", "content", "expected_content"},
+            tool_label="write_file",
+        )
+        path = workspace_path(self.workspace, arguments)
 
         content = arguments.get("content")
         if not isinstance(content, str):
@@ -113,7 +111,6 @@ class WriteTool:
         if not isinstance(expected_content, str):
             raise InvalidArguments("expected_content must be a string")
 
-        path = self.workspace.resolve_path(raw_path)
         if not path.exists():
             return
 

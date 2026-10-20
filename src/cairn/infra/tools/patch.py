@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from cairn.core.models import ToolResult
+from cairn.infra.tools.arguments import (
+    function_schema,
+    reject_unknown_keys,
+    workspace_path,
+)
 from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
 from cairn.infra.workspace.workspace import Workspace
 
@@ -29,54 +34,43 @@ class PatchTool:
         self.workspace = workspace
 
     def schema(self) -> dict[str, Any]:
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Workspace-relative path of the file to patch.",
-                        },
-                        "patches": {
-                            "type": "array",
-                            "description": (
-                                "Replacements to apply, each against the result "
-                                "of the previous one. Every 'old_text' must "
-                                "occur exactly once in the file at the time it "
-                                "is applied."
-                            ),
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "old_text": {"type": "string"},
-                                    "new_text": {"type": "string"},
-                                },
-                                "required": ["old_text", "new_text"],
-                                "additionalProperties": False,
+        return function_schema(
+            self.name,
+            self.description,
+            {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative path of the file to patch.",
+                    },
+                    "patches": {
+                        "type": "array",
+                        "description": (
+                            "Replacements to apply, each against the result "
+                            "of the previous one. Every 'old_text' must "
+                            "occur exactly once in the file at the time it "
+                            "is applied."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_text": {"type": "string"},
+                                "new_text": {"type": "string"},
                             },
+                            "required": ["old_text", "new_text"],
+                            "additionalProperties": False,
                         },
                     },
-                    "required": ["path", "patches"],
-                    "additionalProperties": False,
                 },
+                "required": ["path", "patches"],
+                "additionalProperties": False,
             },
-        }
+        )
 
     def validate(self, arguments: dict[str, Any]) -> None:
-        if arguments.keys() - {"path", "patches"}:
-            raise InvalidArguments("unexpected patch_file argument")
-
-        raw_path = arguments.get("path")
-        if isinstance(raw_path, str) and "\0" in raw_path:
-            raise InvalidArguments("path must not contain NUL")
-        try:
-            self.workspace.resolve_path(raw_path)
-        except ValueError as exc:
-            raise InvalidArguments(str(exc)) from exc
+        reject_unknown_keys(arguments, {"path", "patches"}, tool_label="patch_file")
+        workspace_path(self.workspace, arguments)
 
         patches = arguments.get("patches")
         if not isinstance(patches, list) or not patches:

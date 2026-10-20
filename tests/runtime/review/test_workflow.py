@@ -225,6 +225,62 @@ def test_invalid_completed_adapter_result_cannot_approve_or_start_fixer(
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("kind", ["subclass", "wrong-tree"])
+def test_fabricated_review_object_cannot_approve(
+    provider: WorktreeProvider, kind: str
+) -> None:
+    """The adapter's return value is revalidated, never merely trusted by type.
+
+    A review that does not describe exactly this staged tree, or that is not
+    exactly a ReviewResult, must not reach the approving path or start a fixer.
+    """
+
+    class FabricatedReview(ReviewResult):
+        pass
+
+    class FabricatedReviewer(FreshReviewer):
+        async def review(
+            self,
+            task: TaskSpec,
+            snapshot: GitSnapshot,
+            verification: VerificationResult | None,
+        ) -> ReviewResult:
+            payload = {
+                "status": "completed",
+                "reviewed_tree": (
+                    "0" * 40 if kind == "wrong-tree" else snapshot.tree_revision
+                ),
+                "trace_id": "1" * 32,
+                "findings": [],
+            }
+            if kind == "subclass":
+                return FabricatedReview.model_validate_json(json.dumps(payload))
+            return ReviewResult.model_validate_json(json.dumps(payload))
+
+    async def scenario() -> None:
+        owned, snapshot, verified = await proposal(provider)
+        review_llm = SequenceLLM([])
+        fix_llm = SequenceLLM([])
+        verifier = RecordingVerifier()
+        result = await ReviewWorkflow(
+            owned,
+            FabricatedReviewer(
+                owned, review_llm, budget=RunBudget(max_steps=1), timeout_seconds=5
+            ),
+            verifier,
+            max_fix_iterations=1,
+            fixer_llm=fix_llm,
+        ).run(TASK, snapshot, verified)
+        assert result.status is ReviewWorkflowStatus.REVIEW_ERROR
+        assert result.failure is ReviewWorkflowFailure.REVIEW_FAILED
+        assert not result.fix_results and not fix_llm.calls
+        assert not verifier.snapshots and not review_llm.calls
+        assert not result.rounds
+        assert result.recovery_path.exists()
+
+    asyncio.run(scenario())
+
+
 def test_blocker_runs_fresh_fixer_then_verifies_new_tree_and_reviews_from_clean_history(
     provider: WorktreeProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:

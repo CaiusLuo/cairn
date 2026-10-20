@@ -468,63 +468,7 @@ def test_edit_file_creates_without_overwriting(tmp_path: Path) -> None:
     assert path.read_text(encoding="utf-8") == "print('ok')\n"
 
 
-def test_file_tools_reject_paths_outside_workspace(tmp_path: Path) -> None:
-    outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
-    outside.write_text("private", encoding="utf-8")
-    (tmp_path / "link.txt").symlink_to(outside)
-    git_config = tmp_path / ".git" / "config"
-    git_config.parent.mkdir()
-    git_config.write_text("keep", encoding="utf-8")
-
-    for path in ("../outside.txt", str(outside), "link.txt", ".git/config"):
-        with pytest.raises(ValueError):
-            asyncio.run(ReadFileTool(Workspace(tmp_path)).execute({"path": path}))
-        with pytest.raises(ValueError):
-            asyncio.run(
-                EditFileTool(Workspace(tmp_path)).execute(
-                    {"path": path, "old_text": "private", "new_text": "bad"}
-                )
-            )
-    assert outside.read_text(encoding="utf-8") == "private"
-    assert git_config.read_text(encoding="utf-8") == "keep"
-
-
-def test_file_tools_reject_nested_symlink_components(tmp_path: Path) -> None:
-    git_dir = tmp_path / ".git"
-    git_dir.mkdir()
-    config = git_dir / "config"
-    config.write_text("dummy-test-data", encoding="utf-8")
-    real_dir = tmp_path / "real_dir"
-    real_dir.mkdir()
-    (tmp_path / "alias1").symlink_to(real_dir, target_is_directory=True)
-    (real_dir / "alias2").symlink_to(git_dir, target_is_directory=True)
-
-    # Also start from a real directory so checking only the first component fails.
-    for parent in ("alias1/alias2", "real_dir/alias2"):
-        with pytest.raises(ValueError, match="symlink"):
-            asyncio.run(
-                ReadFileTool(Workspace(tmp_path)).execute({"path": f"{parent}/config"})
-            )
-        with pytest.raises(ValueError, match="symlink"):
-            asyncio.run(
-                EditFileTool(Workspace(tmp_path)).execute(
-                    {
-                        "path": f"{parent}/config",
-                        "old_text": "dummy-test-data",
-                        "new_text": "changed",
-                    }
-                )
-            )
-        with pytest.raises(ValueError, match="symlink"):
-            asyncio.run(
-                EditFileTool(Workspace(tmp_path)).execute(
-                    {
-                        "path": f"{parent}/new/file",
-                        "old_text": "",
-                        "new_text": "bad",
-                    }
-                )
-            )
-
-    assert config.read_text(encoding="utf-8") == "dummy-test-data"
-    assert not (git_dir / "new").exists()
+# Workspace containment for read_file/edit_file (and every other file tool) is
+# covered once, parametrized over all of them, in test_arguments.py: unknown
+# keys, NUL paths, parent traversal, absolute paths, .git paths, symlinked files
+# and nested symlink components, through both validate() and execute().

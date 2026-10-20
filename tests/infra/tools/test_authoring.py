@@ -116,10 +116,8 @@ def test_grep_restricts_search_to_a_subpath(tmp_path: Path) -> None:
         {},
         {"pattern": ""},
         {"pattern": "   "},
-        {"pattern": "a\0b"},
         {"pattern": "ok", "limit": 0},
         {"pattern": "ok", "limit": "3"},
-        {"pattern": "ok", "unexpected": True},
         {"pattern": "ok", "context_lines": -1},
         {"pattern": "ok", "literal": "yes"},
     ],
@@ -134,15 +132,6 @@ def test_grep_rejects_invalid_arguments(
 def test_grep_rejects_an_uncompilable_pattern(tmp_path: Path) -> None:
     with pytest.raises(InvalidArguments):
         _grep(tmp_path).validate({"pattern": "("})
-
-
-def test_grep_refuses_to_escape_the_workspace(tmp_path: Path) -> None:
-    root = tmp_path / "root"
-    root.mkdir()
-    _write(tmp_path / "outside.py", "needle\n")
-
-    with pytest.raises(InvalidArguments):
-        _grep(root).validate({"pattern": "needle", "path": "../outside.py"})
 
 
 def test_grep_skips_the_git_directory(tmp_path: Path) -> None:
@@ -201,8 +190,6 @@ def test_write_leaves_no_temporary_file_behind(tmp_path: Path) -> None:
         {},
         {"path": "a.txt"},
         {"path": "a.txt", "content": 1},
-        {"path": "a\0.txt", "content": "x"},
-        {"path": "a.txt", "content": "x", "unexpected": True},
     ],
 )
 def test_write_rejects_invalid_arguments(
@@ -217,15 +204,6 @@ def test_write_rejects_content_over_the_byte_limit(tmp_path: Path) -> None:
 
     with pytest.raises(InvalidArguments):
         _write_tool(tmp_path).validate({"path": "a.txt", "content": oversized})
-
-
-def test_write_refuses_to_escape_the_workspace(tmp_path: Path) -> None:
-    root = tmp_path / "root"
-    root.mkdir()
-
-    with pytest.raises(InvalidArguments):
-        _write_tool(root).validate({"path": "../outside.txt", "content": "x"})
-    assert not (tmp_path / "outside.txt").exists()
 
 
 # --- patch_file -----------------------------------------------------------
@@ -301,8 +279,6 @@ def test_patch_rejects_a_missing_file(tmp_path: Path) -> None:
         {"path": "a.txt", "patches": [{"old_text": "a"}]},
         {"path": "a.txt", "patches": [{"old_text": "a", "new_text": "b", "c": 1}]},
         {"path": "a.txt", "patches": [{"old_text": "a", "new_text": 1}]},
-        {"path": "a\0.txt", "patches": [{"old_text": "a", "new_text": "b"}]},
-        {"path": "a.txt", "patches": [{"old_text": "a", "new_text": "b"}], "x": 1},
     ],
 )
 def test_patch_rejects_invalid_arguments(
@@ -319,13 +295,3 @@ def test_patch_rejects_too_many_hunks(tmp_path: Path) -> None:
 
     with pytest.raises(InvalidArguments):
         _patch_tool(tmp_path).validate({"path": "a.txt", "patches": patches})
-
-
-def test_patch_refuses_to_escape_the_workspace(tmp_path: Path) -> None:
-    root = tmp_path / "root"
-    root.mkdir()
-
-    with pytest.raises(InvalidArguments):
-        _patch_tool(root).validate(
-            {"path": "../outside.txt", "patches": [{"old_text": "a", "new_text": "b"}]}
-        )

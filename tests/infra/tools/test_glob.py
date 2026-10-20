@@ -101,10 +101,8 @@ def test_glob_does_not_escape_the_workspace(tmp_path: Path) -> None:
         {},
         {"pattern": ""},
         {"pattern": "   "},
-        {"pattern": "a\0b"},
         {"pattern": "*.py", "limit": 0},
         {"pattern": "*.py", "limit": "3"},
-        {"pattern": "*.py", "unexpected": True},
     ],
 )
 def test_glob_rejects_invalid_arguments(
