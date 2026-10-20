@@ -460,8 +460,8 @@ class ReviewWorkflow:
                 progress.phase = "verifying"
                 progress.save()
                 reverified = await self._reverify(snapshot, progress)
-                if isinstance(reverified, ReviewWorkflowResult):
-                    return reverified
+                if reverified is None:
+                    return progress.result()
                 snapshot, verification = reverified.snapshot, reverified.verification
         except asyncio.CancelledError as primary:
             try:
@@ -543,18 +543,25 @@ class ReviewWorkflow:
 
     async def _reverify(
         self, prior: GitSnapshot, progress: _Progress
-    ) -> _Reverified | ReviewWorkflowResult:
-        """Stage and independently verify the repaired tree, or report why not."""
+    ) -> _Reverified | None:
+        """Stage and independently verify the repaired tree.
+
+        Returns the new evidence, or ``None`` when the repair must stop; a
+        ``None`` return has already finalized ``progress``, so the caller only
+        reports it. ``progress.snapshot`` records only a tree that the repair is
+        still pursuing, never a staging result that was rejected.
+        """
         assert self.verifier is not None
         async with asyncio.timeout(self.verification_timeout_seconds):
             updated = await self.git.stage()
-            progress.snapshot = updated
-            progress.save()
             if updated.tree_revision == prior.tree_revision:
-                return progress.finish(
+                progress.finish(
                     ReviewWorkflowStatus.NEEDS_HUMAN_REVIEW,
                     ReviewWorkflowFailure.NO_PROGRESS,
                 )
+                return None
+            progress.snapshot = updated
+            progress.save()
             verification = await self.verifier.verify(
                 self.git.handle.workspace, updated
             )
@@ -562,9 +569,10 @@ class ReviewWorkflow:
             await assert_snapshot_unchanged(self.git, updated)
             progress.verification = resolved
             if not resolved.passed:
-                return progress.finish(
+                progress.finish(
                     ReviewWorkflowStatus.VERIFICATION_FAILED,
                     ReviewWorkflowFailure.VERIFICATION_FAILED,
                 )
+                return None
             progress.save()
         return _Reverified(updated, resolved)
