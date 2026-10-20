@@ -13,8 +13,8 @@ import pytest
 
 from cairn.core.compaction import CompactionStatus
 from cairn.core.compaction.summarizer import FAILURE_EMPTY, SummaryResult
-from cairn.core.context import ContextBudget, TokenCount
-from cairn.core.models import LLMUsage, Message, ToolCall
+from cairn.core.context import ContextBudget
+from cairn.core.models import Message
 from cairn.runtime.turn.compaction import (
     CompactionInput,
     CompactionOutcome,
@@ -22,62 +22,26 @@ from cairn.runtime.turn.compaction import (
     RequestCompactor,
     compact,
 )
-
-
-class CharCounter:
-    """One token per character: enough to make the thresholds predictable."""
-
-    def count(self, messages: list[Message], tools: list[dict[str, Any]]) -> TokenCount:
-        return TokenCount(
-            tokens=sum(len(message.content or "") for message in messages),
-            is_estimate=False,
-        )
-
-
-class StubSummarizer:
-    def __init__(
-        self, summary: str | None = None, error: BaseException | None = None
-    ) -> None:
-        self.summary = summary
-        self.error = error
-        self.calls: list[tuple[list[Message], int]] = []
-
-    async def summarize(
-        self, messages: list[Message], *, max_tokens: int
-    ) -> SummaryResult:
-        self.calls.append((messages, max_tokens))
-        if self.error is not None:
-            raise self.error
-        return SummaryResult(
-            text=self.summary or "", usage=LLMUsage(input_tokens=10, output_tokens=5)
-        )
-
-
-def user(content: str = "u") -> Message:
-    return Message(role="user", content=content)
-
-
-def assistant(content: str = "a") -> Message:
-    return Message(role="assistant", content=content)
-
-
-def tool_call(call_id: str) -> Message:
-    return Message(
-        role="assistant",
-        content=None,
-        tool_calls=[ToolCall(id=call_id, name="bash", arguments={"command": "x"})],
-    )
-
-
-def tool_result(call_id: str, size: int = 400) -> Message:
-    return Message(role="tool", tool_call_id=call_id, content="x" * size)
+from tests.support.compaction import (
+    CharacterCounter,
+    StubSummarizer,
+    assistant,
+    tool_call,
+    tool_result,
+    user,
+)
 
 
 def history(groups: int = 2, size: int = 400) -> list[Message]:
+    """Settled tool groups followed by the current turn.
+
+    The tool name and arguments are incidental here: these cases never execute a
+    tool, and only the call id pairs a call with its result.
+    """
     messages: list[Message] = [user("first task")]
     for index in range(groups):
-        messages.append(tool_call(f"c{index}"))
-        messages.append(tool_result(f"c{index}", size))
+        messages.append(tool_call(f"c{index}", name="bash", arguments={"command": "x"}))
+        messages.append(tool_result(f"c{index}", content="x" * size))
         messages.append(assistant(f"done {index}"))
     messages.append(user("current task"))
     return messages
@@ -96,7 +60,7 @@ def source(
 
 def compactor(budget_tokens: int, *, keep_groups: int = 1) -> RequestCompactor:
     return RequestCompactor(
-        counter=CharCounter(),
+        counter=CharacterCounter(),
         budget=ContextBudget(max_tokens=budget_tokens, response_tokens=100),
         keep_groups=keep_groups,
     )
@@ -201,7 +165,7 @@ class TestFailureChain:
             compact(
                 source=source(history(groups=6, size=2_000), budget_tokens=3_000),
                 compactor=compactor(3_000),
-                summarizer=StubSummarizer("   "),
+                summarizer=StubSummarizer(failure=FAILURE_EMPTY),
                 summarize_budget=500,
             )
         )

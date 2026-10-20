@@ -565,6 +565,8 @@ def test_context_omissions_match_actual_request_trace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class CharacterCounter:
+        # Deliberately not the shared exact counter: this case exists to prove an
+        # estimated count is reported as estimated, so the flag is the assertion.
         def count(
             self, messages: list[Message], tools: list[dict[str, Any]]
         ) -> TokenCount:

@@ -5,8 +5,6 @@ It must never move the summary to the end, mutate the conversation it read, or
 leave a tool result whose call the summary swallowed.
 """
 
-from typing import Any
-
 import pytest
 
 from cairn.core.compaction import (
@@ -15,32 +13,20 @@ from cairn.core.compaction import (
     ReplacementError,
     apply_replacement,
 )
-from cairn.core.context import ContextBudget, ContextBuilder, TokenCount
-from cairn.core.models import Message, ToolCall
+from cairn.core.context import ContextBudget, ContextBuilder
+from cairn.core.models import Message
+from tests.support.compaction import CharacterCounter, assistant, user
+from tests.support.compaction import group as shared_group
 
-
-def user(content: str = "u") -> Message:
-    return Message(role="user", content=content)
-
-
-def assistant(content: str = "a") -> Message:
-    return Message(role="assistant", content=content)
-
-
-def tool_call(call_id: str) -> Message:
-    return Message(
-        role="assistant",
-        content=None,
-        tool_calls=[ToolCall(id=call_id, name="read_file", arguments={"path": "a"})],
-    )
-
-
-def tool_result(call_id: str, content: str = "x" * 50) -> Message:
-    return Message(role="tool", tool_call_id=call_id, content=content)
+#: This module's fixtures are sized so the summary is unambiguously shorter than
+#: the range it replaces. The shared default result body is a single character,
+#: which would make ``SUMMARY_PREFIX`` alone larger than the replaced prefix, so
+#: every group here carries a body that is clearly worth summarizing.
+RESULT_BODY = "x" * 50
 
 
 def group(call_id: str) -> list[Message]:
-    return [tool_call(call_id), tool_result(call_id)]
+    return shared_group(call_id, result_content=RESULT_BODY)
 
 
 def conversation() -> list[Message]:
@@ -142,21 +128,11 @@ class TestReplacementIsInPlace:
             apply_replacement(conversation(), record(99))
 
 
-class SizeCounter:
-    """Deterministic exact counter: one token per character."""
-
-    def count(self, messages: list[Message], tools: list[dict[str, Any]]) -> TokenCount:
-        return TokenCount(
-            tokens=sum(len(message.content or "") for message in messages),
-            is_estimate=False,
-        )
-
-
 class TestContextBuilderAppliesCompaction:
     def _builder(self, limit: int) -> ContextBuilder:
         return ContextBuilder(
             budget=ContextBudget(max_tokens=limit, response_tokens=10),
-            counter=SizeCounter(),
+            counter=CharacterCounter(),
         )
 
     def test_request_is_shorter_and_reports_the_substitution(self) -> None:

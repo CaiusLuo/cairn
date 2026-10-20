@@ -23,32 +23,8 @@ from cairn.core.compaction.rules import (
     summarizer_reserve,
 )
 from cairn.core.context import TokenCount
-from cairn.core.models import Message, ToolCall
-
-
-def user(content: str = "u") -> Message:
-    return Message(role="user", content=content)
-
-
-def assistant(content: str = "a") -> Message:
-    return Message(role="assistant", content=content)
-
-
-def tool_call(call_id: str) -> Message:
-    return Message(
-        role="assistant",
-        content=None,
-        tool_calls=[ToolCall(id=call_id, name="read_file", arguments={"path": "a"})],
-    )
-
-
-def tool_result(call_id: str, content: str = "x") -> Message:
-    return Message(role="tool", tool_call_id=call_id, content=content)
-
-
-def group(call_id: str) -> list[Message]:
-    """One complete tool interaction: the call and its result."""
-    return [tool_call(call_id), tool_result(call_id)]
+from cairn.core.models import Message
+from tests.support.compaction import assistant, group, tool_call, user
 
 
 def window(budget: ContextBudget | None = None) -> RetentionWindow:
