@@ -13,6 +13,7 @@ from typing import Any
 from cairn.core.compaction import CompactionRecord, ReusableCompaction, StaleCompaction
 from cairn.core.models import Message
 from cairn.runtime.agent import Agent
+from cairn.runtime.session import Session
 from cairn.runtime.turn.compaction import (
     CompactionInput,
     CompactionOutcome,
@@ -28,6 +29,7 @@ async def run_compaction(
     agent: Agent,
     *,
     summarize_budget: int | None = None,
+    session: Session | None = None,
 ) -> CompactionOutcome:
     """Compact the conversation on a caller's explicit request.
 
@@ -35,6 +37,11 @@ async def run_compaction(
     for a reduction at any time. It still refuses to act while a tool call is
     pending, because the tool groups would not be whole and the request that
     folds them does not exist yet.
+
+    ``session`` is the binding this Agent's next request would run under, and it
+    contributes the same system context ``run_turn`` would send. A caller that
+    compacts between turns passes its Session explicitly rather than leaving the
+    measurement to infer one.
 
     Repeating the command is idempotent: while the accepted compaction still
     matches the conversation it is reused, so asking twice costs nothing and
@@ -48,7 +55,7 @@ async def run_compaction(
 
     outcome = await _reduce(
         agent,
-        system_messages=await build_system_messages(agent),
+        system_messages=await build_system_messages(agent, session=session),
         tools=agent.tools.schemas(),
         turn_start=_current_turn_start(agent.state.messages),
         summarize_budget=summarize_budget,

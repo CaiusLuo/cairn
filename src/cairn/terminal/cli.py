@@ -429,7 +429,9 @@ async def main(
 
     def compact_now() -> Awaitable[CompactionOutcome]:
         """Compact the live Agent on the user's explicit request."""
-        return run_compaction(agent)
+        # The command runs between turns, so the durable binding already exists
+        # and this measurement must carry the same system context the turn does.
+        return run_compaction(agent, session=durable_session)
 
     # Only a session that actually summarizes can compact; an Agent built without
     # a summarizer leaves the command unavailable rather than silently doing

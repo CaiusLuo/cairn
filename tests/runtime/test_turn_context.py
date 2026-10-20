@@ -25,6 +25,7 @@ from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.loop import run_turn
+from cairn.runtime.turn.context import build_system_messages
 from cairn.runtime.turn.hook import run_compaction
 from tests.support.compaction import CharacterCounter, StubSummarizer
 from tests.support.durable_sessions import create_session, resolution
@@ -164,11 +165,19 @@ def measured_request(rig: Rig) -> list[Message]:
 
 
 def assert_hook_measured_the_sent_request(
-    rig: Rig, *, sent_system: list[Message], history: list[Message]
+    rig: Rig,
+    *,
+    sent_system: list[Message],
+    history: list[Message],
+    session: DurableSession | None = None,
 ) -> None:
-    """The manual compaction counted exactly the request the loop sent."""
+    """The manual compaction counted exactly the request the loop sent.
+
+    ``session`` is the binding the caller compacts under, passed explicitly the
+    way the CLI does, so the measurement cannot infer a different one.
+    """
     rig.counter.calls.clear()
-    outcome = asyncio.run(run_compaction(rig.agent))
+    outcome = asyncio.run(run_compaction(rig.agent, session=session))
 
     measured = measured_request(rig)
     assert measured[: len(sent_system)] == sent_system
@@ -230,9 +239,9 @@ def test_skills_and_repository_context_are_both_in_the_measured_request(
 def test_a_durable_recovery_notice_is_measured_by_the_hook(tmp_path: Path) -> None:
     """A durable notice is in the request, so compaction must count it too.
 
-    The notice sits between the prompt and the repository context. A manual
-    compaction that is not given the Session still has one owner to read it
-    from: the Agent's owning Session.
+    The notice sits between the prompt and the repository context. The binder is
+    passed explicitly, exactly as the CLI does, rather than inferred from the
+    Agent's owner.
     """
     work = tmp_path / "work"
     work.mkdir()
@@ -282,6 +291,7 @@ def test_a_durable_recovery_notice_is_measured_by_the_hook(tmp_path: Path) -> No
             reopened_rig,
             sent_system=sent_system,
             history=reopened_rig.agent.state.messages,
+            session=reopened,
         )
     finally:
         reopened.close()
@@ -297,3 +307,73 @@ def test_one_repository_inspection_per_request(tmp_path: Path) -> None:
 
     asyncio.run(run_compaction(rig.agent))
     assert rig.provider.calls == 2, "one further request, one further inspection"
+
+
+def test_the_session_binding_is_taken_from_the_caller_not_the_agent(
+    tmp_path: Path,
+) -> None:
+    """The notice comes from the Session the caller names, not the Agent's owner.
+
+    Compaction measures a request the caller is about to make, so the binding is
+    an input rather than something inferred from the Agent. Passing no binding
+    measures a request without a recovery notice even while the Agent is still
+    attached to a durable Session.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    first = make_rig(tmp_path, repo_context=True, skills=True, workspace=work)
+    api, session = create_session(tmp_path, first.agent)
+
+    try:
+        assert (
+            asyncio.run(
+                run_turn(first.agent, "first task", budget=TEST_BUDGET, session=session)
+            )
+            == "done"
+        )
+        saved = api.inspect(SESSION)
+    finally:
+        session.close()
+
+    reopened_rig = make_rig(tmp_path, repo_context=True, skills=True, workspace=work)
+    reopened = DurableSession.reopen(
+        store(tmp_path), SESSION, agent=reopened_rig.agent, binding=saved.binding
+    )
+    try:
+        report = reopened.recovery_report
+        reopened.reconcile(report, host_resolution=resolution(report))
+        assert reopened.recovery_notice is not None
+
+        # With the binding, the notice is measured. The Agent is attached to that
+        # same Session, so this case alone would also pass if it were inferred.
+        with_binding = [
+            message.content
+            for message in asyncio.run(
+                _system_messages_for(reopened_rig.agent, session=reopened)
+            )
+        ]
+
+        # Without it, the measurement is the caller's request, not the owner's.
+        without_binding = [
+            message.content
+            for message in asyncio.run(_system_messages_for(reopened_rig.agent))
+        ]
+    finally:
+        reopened.close()
+
+    assert reopened.recovery_notice in with_binding
+    assert through_notice(without_binding) is False
+
+
+def through_notice(contents: list[str | None]) -> bool:
+    """Whether a recovered-session notice appears among these messages."""
+    return any(
+        content is not None and "Restored tool observations are historical" in content
+        for content in contents
+    )
+
+
+async def _system_messages_for(
+    agent: Agent, *, session: DurableSession | None = None
+) -> list[Message]:
+    return await build_system_messages(agent, session=session)

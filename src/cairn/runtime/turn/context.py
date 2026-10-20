@@ -13,18 +13,24 @@ compaction hook still owns when a reduction runs.
 from cairn.core.models import Message
 from cairn.runtime.agent import Agent
 from cairn.runtime.durable_session import DurableSession
+from cairn.runtime.session import Session
 
 
-async def build_system_messages(agent: Agent) -> list[Message]:
+async def build_system_messages(
+    agent: Agent, *, session: Session | None = None
+) -> list[Message]:
     """The system messages the next request carries, in provider order.
 
-    Each contributing capability is read once: the durable notice is a property
-    over the Session's last recovery report, and the repository context is one
-    bounded inspection, never a second one for the same request.
+    ``session`` is the binding the request would run under, passed explicitly by
+    the caller that owns it. Only a durable Session contributes a recovery
+    notice; a stateless or plain session request carries the other messages.
+
+    Each contributing capability is read once: the notice is a property over the
+    Session's last recovery report, and the repository context is one bounded
+    inspection, never a second one for the same request.
     """
     messages = [Message(role="system", content=agent.system_prompt)]
-    durable = _owning_durable_session(agent)
-    notice = None if durable is None else durable.recovery_notice
+    notice = session.recovery_notice if isinstance(session, DurableSession) else None
     if notice is not None:
         messages.append(Message(role="system", content=notice))
     if agent.repo_context_provider is not None:
@@ -37,21 +43,3 @@ async def build_system_messages(agent: Agent) -> list[Message]:
         if skill_lines:
             messages.append(Message(role="system", content="\n".join(skill_lines)))
     return messages
-
-
-def _owning_durable_session(agent: Agent) -> DurableSession | None:
-    """The durable Session that owns this Agent, when one does.
-
-    A manual compaction is asked to measure the next request, and a durable
-    recovery notice belongs to that request. The Session is already the Agent's
-    one owner, so read the notice from it instead of asking the command caller to
-    pass the same binding again.
-
-    This relies on ``run_turn``'s admission invariant: an Agent's owner is the
-    exact Session a turn was admitted with, and a stateless turn leaves the owner
-    unset. A future Session kind that carries a recovery notice must extend
-    ``DurableSession`` (or be given an owner here) rather than assume its notice
-    is applied, because it would not be.
-    """
-    owner = agent.session_owner
-    return owner if isinstance(owner, DurableSession) else None

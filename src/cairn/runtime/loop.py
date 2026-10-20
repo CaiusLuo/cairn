@@ -137,7 +137,7 @@ async def run_turn(
                     )
                 )
 
-                system_messages = await build_system_messages(agent)
+                system_messages = await build_system_messages(agent, session=session)
                 tool_schemas = agent.tools.schemas()
                 memory_context = None
                 if agent.memory_reader is not None:
