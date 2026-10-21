@@ -257,13 +257,12 @@ task/turn lifecycle.
   tool accepts a per-operation key set. Sharing one helper there would change a
   model-facing error for no safety gain, so the duplication is deliberate.
 - `terminal.output.StreamingDisplay._settled_blocks` counts settled blocks but
-  its only reader asks whether the `Cairn>` header has been printed yet. Its
-  name also covers the reasoning and answer buffers that `reset()` and
-  `close_incomplete()` each clear by hand. Nothing a reader can observe depends
-  on the count itself; a shared reset helper and an honest flag would touch
-  every streaming path to remove a duplication of ten lines. Revisit this when a
-  third buffer joins the display or when `reset()` and `close_incomplete()` stop
-  agreeing on what to clear.
+  its only reader asks whether the `Cairn>` header has been printed yet, and the
+  count is reset by `_forget_attempt` and `_discard_attempt_output` without being
+  read. Nothing a reader can observe depends on the value itself; renaming it to
+  a flag would touch every streaming path to remove a duplication of a few lines.
+  Revisit this when a third buffer joins the display or when the two reset paths
+  stop agreeing on what to clear.
 
 ## References
 

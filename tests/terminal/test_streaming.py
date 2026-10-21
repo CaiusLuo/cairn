@@ -497,3 +497,78 @@ def test_a_durable_turn_reports_a_failed_trace_in_its_own_words(
     )
 
     assert text.getvalue() == ""
+
+
+def test_an_aborted_attempt_keeps_the_log_free_of_blank_lines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A redirected stream ends its reasoning with a newline already, and its
+    # warning goes to the console, so a separating blank line would only add
+    # noise to a log a reader is scanning for evidence.
+    from cairn.core.events import Event
+
+    _answer, log, display = _plain_display(monkeypatch)
+    display.observe(Event(type="model_stream_start", data={"step": 1, "attempt": 1}))
+    display.observe(Event(type="model_reasoning_delta", data={"text": "cut short\n"}))
+
+    display.close_incomplete()
+
+    assert log.getvalue() == "⋮ cut short\n"
+
+
+def test_an_aborted_attempt_separates_the_warning_on_a_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # On a terminal the reasoning may still be the last thing on screen, so the
+    # warning needs one blank line between it and what precedes it.
+    from cairn.core.events import Event
+
+    monkeypatch.setattr(output_module, "supports_live_display", lambda: True)
+    text = StringIO()
+    monkeypatch.setattr(
+        output_module,
+        "console",
+        Console(file=text, width=80, color_system=None, force_terminal=False),
+    )
+    monkeypatch.setattr(sys, "stdout", StringIO())
+    display = output_module.StreamingDisplay()
+    recorded: list[bool] = []
+
+    class _RecordingLive:
+        def start(self) -> None:
+            recorded.append(True)
+
+        def update(self, renderable: Any) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    monkeypatch.setattr(output_module, "Live", lambda *args, **kwargs: _RecordingLive())
+    display.observe(Event(type="model_stream_start", data={"step": 1, "attempt": 1}))
+    display.observe(Event(type="model_reasoning_delta", data={"text": "cut short\n"}))
+
+    display.close_incomplete()
+
+    assert recorded
+    assert text.getvalue().startswith("\n")
+    assert "[response incomplete; incomplete output discarded]" in text.getvalue()
+
+
+def test_the_abort_paths_own_disjoint_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `_discard_attempt_output` drops what the attempt produced and keeps what
+    # the turn knows; `_forget_attempt` drops both. A cancel must not forget the
+    # completed step the caller still reports.
+    from cairn.core.events import Event
+
+    _answer, _log, display = _plain_display(monkeypatch)
+    display.observe(Event(type="model_stream_start", data={"step": 3, "attempt": 1}))
+    display.observe(Event(type="model_text_delta", data={"text": "partial\n"}))
+    display.observe(
+        Event(type="model_stream_end", data={"step": 3, "status": "incomplete"})
+    )
+
+    assert display._answer == [] and display._reasoning == []
+    assert not display._active

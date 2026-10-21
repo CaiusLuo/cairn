@@ -885,25 +885,44 @@ class StreamingDisplay:
         changing.
         """
         self._close_live()
-        # Discard the attempt completely: a retry after this must start from an
-        # empty answer, not believe some of it is already on screen.
+        self._discard_attempt_output()
+        self._say_attempt_failed(abandoned=abandoned)
+
+    def _discard_attempt_output(self) -> None:
+        """Drop what the attempt produced, keeping what the turn knows.
+
+        `_forget_attempt` is the other half: it also forgets the turn's counters.
+        This one keeps the active flag and the completed step, because the caller
+        still has to report the outcome it just established.
+        """
         self._answer = []
         self._reasoning = []
         self._settled_blocks = 0
         self._settled_chars = 0
-        if self._reasoning_open:
-            console.print()
-            self._reasoning_open = False
-        if self._active:
-            self._active = False
-            console.print(
-                "[attempt abandoned; incomplete output discarded]"
-                if abandoned
-                else "[response incomplete; incomplete output discarded]",
-                style="yellow",
-                markup=False,
-            )
         self._completed_text_step = None
+
+    def _say_attempt_failed(self, *, abandoned: bool) -> None:
+        """Separate the warning from the reasoning it follows, then report it.
+
+        Only a terminal needs the separation: there the reasoning may still be
+        the last thing on screen. A redirected stream already ended its reasoning
+        with a newline, and its warning goes to a different channel, so a blank
+        line there is noise in a log.
+        """
+        if self._reasoning_open:
+            self._reasoning_open = False
+            if supports_live_display():
+                console.print()
+        if not self._active:
+            return
+        self._active = False
+        console.print(
+            "[attempt abandoned; incomplete output discarded]"
+            if abandoned
+            else "[response incomplete; incomplete output discarded]",
+            style="yellow",
+            markup=False,
+        )
 
 
 # Streaming event type -> the method that presents it. A table keeps the
