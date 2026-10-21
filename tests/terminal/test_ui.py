@@ -166,7 +166,9 @@ def test_an_unstored_trace_reports_why(
 
     rendered = output.getvalue()
     assert "trace unavailable: persistence failed (OSError: write failed)" in rendered
-    assert "tokens: input unknown, output unknown" in rendered
+    # A turn that never measured tokens says nothing about them: a second
+    # unknown beside the one fact that matters is noise, not a diagnostic.
+    assert "tokens:" not in rendered
 
 
 def test_context_trimmed_explains_request_omission(

@@ -22,9 +22,14 @@ console = Console()
 MAX_ARGUMENT_CHARS = 120
 # Failure output beyond this many lines moves to the trace instead of the screen.
 MAX_DIAGNOSTIC_LINES = 20
-# How many trailing reasoning lines stay on screen. The model can reason for
-# thousands of tokens; a reader wants the current thread, not the transcript.
+# The most trailing reasoning lines that stay on screen. The model can reason
+# for thousands of tokens; a reader wants the current thread, not the transcript.
 MAX_THINKING_LINES = 6
+# The fewest, so the thread never loses its shape on a short screen.
+MIN_THINKING_LINES = 2
+# A quarter of the screen is reasoning at most; the answer and the status line
+# need the rest. Short screens therefore show fewer lines than MAX_THINKING.
+THINKING_SCREEN_SHARE = 4
 # Bar segments in the context meter.
 _BAR_WIDTH = 8
 # Status updates are painted at this rate at most. A token stream can deliver
@@ -262,9 +267,15 @@ def _format_token_count(value: object) -> str:
 
 
 def _usage_suffix(event: Event) -> str:
+    """The turn's token totals, or nothing when the trace carries no usage.
+
+    An absent `usage` key means the turn never measured tokens. Spelling that
+    out as "input unknown" beside a failure note adds a second unknown to a line
+    whose one fact is the failure.
+    """
     usage = event.data.get("usage")
-    if not isinstance(usage, dict):
-        usage = {}
+    if not isinstance(usage, dict) or not usage:
+        return ""
 
     raw_input_tokens = usage.get("input_tokens")
     raw_output_tokens = usage.get("output_tokens")
@@ -273,15 +284,91 @@ def _usage_suffix(event: Event) -> str:
     return f" · tokens: input {input_tokens}, output {output_tokens}"
 
 
+def _reasoning_line(text: str, *, growing: bool, width: int) -> str:
+    """One printable piece of reasoning; a growing line erases itself first.
+
+    The last line of a running stream is still being written, so the next delta
+    extends it. Rewriting it in place is what this display stopped doing with
+    hand-drawn cursor moves; padding it to the full width and returning to column
+    zero is the one move that needs no row arithmetic. It stays on the line it
+    drew, so it cannot reach a neighbour, and the next delta overwrites what is
+    there. A file reads the padding as blank space.
+    """
+    line = text.strip()
+    if growing:
+        return f"{line:<{width}}\r"
+    return line
+
+
+def _reasoning_lines(chunks: list[str], *, final: bool) -> list[str]:
+    """Every reasoning line from the accumulated deltas, wrapped to the width.
+
+    Wrapping here rather than leaving it to the console is what makes a line and
+    a rendered row the same thing, so a log and the on-screen window agree on
+    what "a line" is. Only a `final` stream settles its last line; while it runs,
+    that line is the partial the next delta extends.
+    """
+    text = "".join(chunks)
+    lines = text.splitlines()
+    width = max(20, console.width - len(THINKING_PREFIX))
+    rendered: list[str] = []
+    for index, raw in enumerate(lines):
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        growing = (
+            not final and index == len(lines) - 1 and not text.endswith(("\n", "\r"))
+        )
+        while stripped and len(stripped) > width:
+            rendered.append(stripped[:width])
+            stripped = stripped[width:]
+        if stripped:
+            rendered.append(_reasoning_line(stripped, growing=growing, width=width))
+    return rendered
+
+
+def _write_reasoning_lines(lines: list[str]) -> int:
+    """Write reasoning to a redirected stream; return how many lines landed.
+
+    This path exists for readers of a file or a pipe: no live region will ever
+    repaint it, so the bytes have to stand on their own. It is plain text on
+    stdout beside the answer, and guarded, because a closed stream is a reader's
+    choice and not a display failure the turn must clean up after.
+    """
+    if not lines:
+        return 0
+    try:
+        sys.stdout.write("".join(f"{THINKING_PREFIX}{line}\n" for line in lines))
+        sys.stdout.flush()
+    except (BrokenPipeError, ValueError):
+        return 0
+    return len(lines)
+
+
+def _reasoning_window() -> int:
+    """How many trailing reasoning lines the screen can carry.
+
+    A fixed count either crowds a short terminal, where the answer stops being
+    visible while the model thinks, or wastes a tall one. The window is a share
+    of the screen, bounded so it neither collapses nor grows without limit.
+    """
+    height = console.height
+    if height <= 0:
+        return MAX_THINKING_LINES
+    return min(
+        MAX_THINKING_LINES, max(MIN_THINKING_LINES, height // THINKING_SCREEN_SHARE)
+    )
+
+
 def _split_blocks(text: str) -> tuple[str, str]:
     """Split Markdown into what can be printed for good and what is still open.
 
-    Two things end a block: a blank line that is not inside a fenced code block,
-    and a fence that has opened but not closed. A blank line inside ``` does not
-    end the code, and a code block must not stay in the live region: its height
-    changes on every line appended, so redrawing it repaints the whole block each
-    frame. Printing it as it arrives costs one unstyled flash and stops the
-    repaint.
+    Only a blank line outside ``` ends a block. A blank line inside a fence does
+    not, and neither does a fence, open or closed: a code block that has closed
+    is printable as a whole, but an open one keeps changing height with every
+    line appended, so redrawing it repaints the whole block each frame. It
+    therefore stays in the pending tail until it closes, while the prose before
+    it keeps settling.
     """
     lines = text.splitlines(keepends=True)
     fence = False
@@ -293,11 +380,6 @@ def _split_blocks(text: str) -> tuple[str, str]:
         elif not fence and not line.strip() and index + 1 < len(lines):
             last_end = offset + len(line)
         offset += len(line)
-    if fence:
-        # An open fence must not settle: every appended line re-heights the
-        # rendered code block, so settling it mid-stream would reprint it on
-        # the next delta. It waits in the pending tail until it closes.
-        return text[:last_end], text[last_end:]
     return text[:last_end], text[last_end:]
 
 
@@ -365,7 +447,12 @@ def _plain_text(event: Event) -> str:
     )
 
 
-def console_event_handler(event: Event) -> None:
+def console_event_handler(event: Event, *, report_trace_failure: bool = True) -> None:
+    """Render the events the streaming display leaves to the console.
+
+    `report_trace_failure` is the one policy a caller owns: a durable turn
+    reports an unstored trace itself, and this handler must not repeat it.
+    """
     match event.type:
         case "agent_step":
             step = event.data.get("step")
@@ -426,7 +513,7 @@ def console_event_handler(event: Event) -> None:
             # The identifier and usage are on every turn; printing them made the
             # scrollback read like a log. `/trace` lists them on demand, so only a
             # turn whose trace could not be stored speaks up here.
-            if not event.data.get("persisted", True):
+            if report_trace_failure and not event.data.get("persisted", True):
                 error = event.data.get("persistence_error")
                 console.print(
                     f"[yellow]trace unavailable: persistence failed ({error})"
@@ -457,6 +544,9 @@ class StreamingDisplay:
         self.final_text_visible = False
         self._reasoning: list[str] = []
         self._reasoning_open = False
+        # Off terminal, reasoning is appended rather than redrawn. This counts
+        # the lines already written so a delta adds only what is new.
+        self._reasoning_printed = 0
         self._answer: list[str] = []
         self._settled_blocks = 0
         self._settled_chars = 0
@@ -477,10 +567,18 @@ class StreamingDisplay:
         self._completed_text_step: int | None = None
 
     def reset(self) -> None:
+        """Return to a clean slate between turns.
+
+        Closing the live region first matters: a cancelled attempt can leave one
+        open, and a region nobody stopped would keep repainting over the next
+        turn's output.
+        """
+        self._close_live()
         self.final_text_visible = False
         self._completed_text_step = None
         self._reasoning = []
         self._reasoning_open = False
+        self._reasoning_printed = 0
         self._answer = []
         self._settled_blocks = 0
         self._settled_chars = 0
@@ -495,6 +593,7 @@ class StreamingDisplay:
             self._text_seen = False
             self._reasoning = []
             self._reasoning_open = False
+            self._reasoning_printed = 0
             self._answer = []
             self._settled_blocks = 0
             self._settled_chars = 0
@@ -565,51 +664,51 @@ class StreamingDisplay:
         self._live.update(self._live_renderable())
 
     def _render_reasoning(self) -> None:
-        """Show the trailing reasoning lines; live where a live region is safe.
+        """Show the reasoning; live where a live region is safe, else a log.
 
         In a terminal the block rides the shared live region, whose row count
         `rich` computes from the actual render, so a repaint erases exactly
-        what it drew and interleaved tool output cannot shift the target. Off
-        terminal there is no cursor to move, so each delta's trailing lines
-        are appended once instead: a log shows the reasoning in order without
-        cursor artifacts.
+        what it drew and interleaved tool output cannot shift the target.
+
+        Off terminal there is nothing to repaint, and a redraw would mean escape
+        bytes in a file. Each line is written once, when it settles, and the one
+        line still being written overwrites itself in place.
         """
+        self._reasoning_open = True
         if supports_live_display():
-            self._reasoning_open = True
             if self._live is None:
                 self._start_live()
             else:
                 self._refresh_status()
             return
-        for line in self._visible_reasoning():
-            console.print(f"[dim]{THINKING_PREFIX}{line}[/dim]", highlight=False)
+        lines = _reasoning_lines(self._reasoning, final=False)
+        self._reasoning_printed += _write_reasoning_lines(
+            lines[self._reasoning_printed :]
+        )
 
-    def _visible_reasoning(self) -> list[str]:
-        """The last few complete lines of reasoning, wrapped to the terminal."""
-        text = "".join(self._reasoning)
-        lines: list[str] = []
-        width = max(20, console.width - len(THINKING_PREFIX))
-        for raw in text.splitlines():
-            stripped = raw.strip()
-            if not stripped:
-                continue
-            while len(stripped) > width:
-                lines.append(stripped[:width])
-                stripped = stripped[width:]
-            lines.append(stripped)
-        return lines[-MAX_THINKING_LINES:]
+    def _visible_reasoning(self, *, final: bool = False) -> list[str]:
+        """The trailing settled reasoning lines that fit beside the answer."""
+        return _reasoning_lines(self._reasoning, final=final)[-_reasoning_window() :]
 
     def _close_reasoning(self) -> None:
         if not self._reasoning_open:
             return
-        # The live copy is transient; reprint the final trailing lines once so
-        # they stay in the scrollback after the region clears.
-        lines = self._visible_reasoning()
+        # The live copy is transient, and settling a block stops the region, so
+        # by the time the stream ends the reasoning may no longer be on screen.
+        # Reprint the trailing lines once, here, so they survive in the
+        # scrollback. Off terminal nothing was redrawn: the log holds every line
+        # already, and only the one that never settled is still missing.
+        live_shown = self._live is not None
+        lines = self._visible_reasoning(final=True) if live_shown else []
         self._close_live()
-        for line in lines:
-            console.print(f"[dim]{THINKING_PREFIX}{line}[/dim]", highlight=False)
+        if live_shown:
+            if _write_reasoning_lines(lines):
+                # Separate the replayed block from whatever follows it.
+                _write_reasoning_lines([""])
+        else:
+            settled = _reasoning_lines(self._reasoning, final=True)
+            _write_reasoning_lines(settled[self._reasoning_printed :])
         self._reasoning_open = False
-        console.print()
 
     def _render_answer_progress(self) -> None:
         """Print each finished Markdown block once; redraw only the last one.

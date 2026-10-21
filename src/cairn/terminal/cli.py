@@ -230,6 +230,12 @@ def _make_event_handler(
                 command_context.last_trace_id = event.data["trace_id"]
             else:
                 command_context.last_trace_id = None
+            # The display reads the turn's totals from this event, so it is
+            # offered before the turn loop files it away for the closed turn.
+            # A durable turn reports an unstored trace in its own words, so the
+            # console handler must not say it again.
+            streaming_display.observe(event)
+            console_event_handler(event, report_trace_failure=durable is None)
             pending_trace_finish[0] = event
             return
         if not streaming_display.observe(event):

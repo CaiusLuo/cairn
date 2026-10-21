@@ -1,4 +1,5 @@
 import asyncio
+import sys
 from io import StringIO
 from typing import Any
 
@@ -20,9 +21,29 @@ from tests.support.runtime import SequenceLLM
 from tests.support.streaming import ProviderStream, StreamBarrier, provider_chunk
 
 
+def isolate_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[StringIO, StringIO]:
+    """Put both output channels of a redirected run in memory.
+
+    A redirected turn writes settled blocks through the console and reasoning
+    as plain lines on stdout, because no live region will ever repaint them.
+    """
+    answer = StringIO()
+    reasoning = StringIO()
+    monkeypatch.setattr(
+        output_module,
+        "console",
+        Console(file=answer, width=200, force_terminal=False, color_system=None),
+    )
+    monkeypatch.setattr(sys, "stdout", reasoning)
+    return answer, reasoning
+
+
 def configure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
-) -> tuple[StringIO, list[Agent]]:
+) -> tuple[StringIO, list[Agent], StringIO]:
+    """Configure a streaming CLI turn; the third item is its reasoning log."""
     for key, value in {
         "CAIRN_LLM_MODEL": "openai/test",
         "CAIRN_LLM_API_KEY": "TOPSECRET",
@@ -32,12 +53,7 @@ def configure(
     isolate_cli(tmp_path, monkeypatch, "hello")
     set_limits(monkeypatch)
     monkeypatch.setattr(counter_module, "token_counter", lambda **kwargs: 10)
-    text = StringIO()
-    monkeypatch.setattr(
-        output_module,
-        "console",
-        Console(file=text, width=200, force_terminal=False, color_system=None),
-    )
+    text, reasoning = isolate_stream(monkeypatch)
     agents: list[Agent] = []
 
     async def capture(agent: Agent, user_input: str, *, budget: RunBudget) -> str:
@@ -45,13 +61,13 @@ def configure(
         return await run_turn(agent, user_input, budget=budget)
 
     monkeypatch.setattr(cli_module, "run_turn", capture)
-    return text, agents
+    return text, agents, reasoning
 
 
 def test_real_cli_deltas_visible_before_completion_plain_and_not_duplicated(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
-    text, agents = configure(monkeypatch, tmp_path)
+    text, agents, notes = configure(monkeypatch, tmp_path)
 
     async def scenario() -> None:
         blocked = StreamBarrier(asyncio.Event(), asyncio.Event())
@@ -71,13 +87,12 @@ def test_real_cli_deltas_visible_before_completion_plain_and_not_duplicated(
         monkeypatch.setattr(llm_module, "acompletion", completion)
         task = asyncio.create_task(cli_module.main())
         await blocked.entered.wait()
-        shown = text.getvalue()
-        # Reasoning streams visibly; the answer is still being assembled and
-        # arrives as one Markdown block when the attempt settles.
-        assert shown.lstrip().startswith("step") or True
-        assert "先思考" in shown
-        assert "⋮" in shown
-        assert "\x1b" not in shown
+        # Reasoning streams visibly as plain lines; the answer is still being
+        # assembled and arrives as one Markdown block when the attempt settles.
+        assert "先思考" in notes.getvalue()
+        assert "⋮" in notes.getvalue()
+        assert "\x1b" not in notes.getvalue()
+        assert "你好" not in notes.getvalue()
         assert not task.done()
         assert [message.role for message in agents[0].state.messages] == ["user"]
         blocked.release.set()
@@ -98,7 +113,7 @@ def test_real_cli_deltas_visible_before_completion_plain_and_not_duplicated(
 def test_public_cli_partial_fallback_labels_abandoned_text(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
-    text, agents = configure(monkeypatch, tmp_path)
+    text, agents, _notes = configure(monkeypatch, tmp_path)
     (tmp_path / ".cairn").mkdir()
     (tmp_path / ".cairn/models.toml").write_text(
         'base_url = "https://example.test/v1"\napi_key_env = "CAIRN_LLM_API_KEY"\n[[models]]\nname = "chat"\nmodel_ids = ["openai/one", "openai/two"]\n'
@@ -127,12 +142,17 @@ def test_public_cli_partial_fallback_labels_abandoned_text(
     result = CliRunner().invoke(cli_module.app, [])
     assert result.exit_code == 0, result.output
     shown = text.getvalue()
-    assert (
-        shown.index("ABANDONED")
-        < shown.index("[attempt abandoned; incomplete output discarded]")
-        < shown.index("ACCEPTED")
-    )
-    assert shown.count("ACCEPTED_THOUGHT") == 1
+    # Prose goes through the console channel; reasoning is plain lines, which
+    # CliRunner collects into the command's own output. Either way a reader of
+    # the two channels sees each thought once.
+    reasoning_shown = result.output
+    assert reasoning_shown.count("ACCEPTED_THOUGHT") == 1
+    # The abandoned attempt's reasoning is already on screen before the label
+    # that explains why its answer was dropped, and that answer never prints.
+    assert "ABANDONED_THOUGHT" in reasoning_shown
+    assert "[attempt abandoned; incomplete output discarded]" in shown
+    assert "ABANDONED\n" not in shown
+    assert "ACCEPTED" in shown
     assert [line.strip() for line in shown.splitlines()].count("ACCEPTED") == 1
     assert "TOPSECRET" not in shown
     assert calls == ["openai/one", "openai/two"]
@@ -143,7 +163,7 @@ def test_public_cli_partial_fallback_labels_abandoned_text(
 def test_cli_cancellation_labels_incomplete_and_never_previews_tool_arguments(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
-    text, agents = configure(monkeypatch, tmp_path)
+    text, agents, notes = configure(monkeypatch, tmp_path)
 
     async def scenario() -> None:
         blocked = StreamBarrier(asyncio.Event(), asyncio.Event())
@@ -175,8 +195,11 @@ def test_cli_cancellation_labels_incomplete_and_never_previews_tool_arguments(
         with pytest.raises(asyncio.CancelledError):
             await task
         assert "[response incomplete; incomplete output discarded]" in text.getvalue()
-        assert "unfinished thought" in text.getvalue()
+        # Reasoning that already reached the screen stays there: a cancelled
+        # attempt discards its answer, not what the reader has already seen.
+        assert "unfinished thought" in notes.getvalue()
         assert "TOPSECRET" not in text.getvalue()
+        assert "TOPSECRET" not in notes.getvalue()
         assert "Permission required" not in text.getvalue()
         assert agents[0].state.messages == []
         assert stream.closed
@@ -187,7 +210,7 @@ def test_cli_cancellation_labels_incomplete_and_never_previews_tool_arguments(
 def test_cli_generate_only_client_keeps_markdown_rendering(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
-    text, agents = configure(monkeypatch, tmp_path)
+    text, agents, _notes = configure(monkeypatch, tmp_path)
 
     async def non_streaming(agent: Agent, user_input: str, *, budget: RunBudget) -> str:
         agents.append(agent)
@@ -229,17 +252,21 @@ def test_stream_display_does_not_interpret_emoji_aliases(
     assert not any(control in text.getvalue() for control in ("\r", "\b", "\x9b"))
 
 
-def _plain_display(monkeypatch: pytest.MonkeyPatch) -> tuple[StringIO, Any]:
-    """A StreamingDisplay over an in-memory, non-terminal console."""
+def _plain_display(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[StringIO, StringIO, Any]:
+    """A StreamingDisplay over in-memory, non-terminal console and stdout."""
     from cairn.terminal.output import StreamingDisplay
 
-    text = StringIO()
+    answer = StringIO()
+    log = StringIO()
     monkeypatch.setattr(
         output_module,
         "console",
-        Console(file=text, width=200, color_system=None, force_terminal=False),
+        Console(file=answer, width=200, color_system=None, force_terminal=False),
     )
-    return text, StreamingDisplay()
+    monkeypatch.setattr(sys, "stdout", log)
+    return answer, log, StreamingDisplay()
 
 
 def _feed(display: Any, chunks: list[str], *, step: int = 1) -> None:
@@ -259,7 +286,7 @@ def test_open_code_fence_settles_once_instead_of_parking(
     # A fence still open when the stream ends prints its content exactly once;
     # parking the whole answer in the pending tail used to drop it entirely.
     # (Rich renders the code block itself, so no literal ``` fences survive.)
-    text, display = _plain_display(monkeypatch)
+    text, _log, display = _plain_display(monkeypatch)
     _feed(display, ["intro\n\n```python\nprint('hi')\n"])
     shown = text.getvalue()
     assert "intro" in shown
@@ -273,20 +300,87 @@ def test_reasoning_streams_without_cursor_escape_sequences(
     # Reasoning redraws go through the live region, which owns cursor math;
     # nothing hand-moves the cursor anymore, so a repaint cannot erase lines
     # that belong to output printed above the reasoning block.
-    text, display = _plain_display(monkeypatch)
+    text, log, display = _plain_display(monkeypatch)
     from cairn.core.events import Event
 
     display.observe(Event(type="model_stream_start", data={"step": 1, "attempt": 1}))
-    for thought in ("plan the change", "revise the plan"):
+    for thought in ("plan the change\n", "revise the plan\n"):
         display.observe(Event(type="model_reasoning_delta", data={"text": thought}))
     display.observe(
         Event(type="model_stream_end", data={"step": 1, "status": "completed"})
     )
-    shown = text.getvalue()
+    shown = log.getvalue()
     assert "plan the change" in shown
     assert "revise the plan" in shown
     assert shown.index("plan the change") < shown.index("revise the plan")
+    assert "\x1b[" not in text.getvalue()
     assert "\x1b[" not in shown
+
+
+def test_reasoning_is_appended_once_per_line_off_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A redirected stream has no cursor to redraw, so each line is written when
+    # it becomes a line and never again. Reprinting the whole trailing window on
+    # every delta turned four thoughts into ten lines with repeats.
+    _answer, log, display = _plain_display(monkeypatch)
+    from cairn.core.events import Event
+
+    display.observe(Event(type="model_stream_start", data={"step": 1, "attempt": 1}))
+    for thought in ("one", "two", "three", "four"):
+        display.observe(
+            Event(type="model_reasoning_delta", data={"text": f"{thought}\n"})
+        )
+
+    shown = [line for line in log.getvalue().splitlines()]
+    assert shown == [f"⋮ {word}" for word in ("one", "two", "three", "four")]
+
+
+def test_reasoning_window_fits_the_screen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The trailing window is a share of the screen rather than a fixed count, so
+    # a short terminal keeps the answer visible while the model thinks.
+    import cairn.terminal.output as output
+
+    monkeypatch.setattr(output.console, "height", 16, raising=False)
+    assert output._reasoning_window() == 4
+    monkeypatch.setattr(output.console, "height", 8, raising=False)
+    assert output._reasoning_window() == output.MIN_THINKING_LINES
+    monkeypatch.setattr(output.console, "height", 80, raising=False)
+    assert output._reasoning_window() == output.MAX_THINKING_LINES
+
+
+def test_reset_closes_a_live_region_left_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A cancelled attempt can leave the terminal's live region running. The next
+    # turn's reset must stop it, or a region nobody owns keeps repainting.
+    from cairn.core.events import Event
+
+    text, _log, display = _plain_display(monkeypatch)
+    stopped: list[bool] = []
+
+    class _RecordingLive:
+        def start(self) -> None:
+            stopped.append(False)
+
+        def update(self, renderable: Any) -> None:
+            stopped.append(False)
+
+        def stop(self) -> None:
+            stopped.append(True)
+
+    monkeypatch.setattr(output_module, "supports_live_display", lambda: True)
+    monkeypatch.setattr(output_module, "Live", lambda *args, **kwargs: _RecordingLive())
+    display.observe(Event(type="model_stream_start", data={"step": 1, "attempt": 1}))
+    display.observe(Event(type="model_reasoning_delta", data={"text": "thinking"}))
+    assert stopped.count(True) == 0
+
+    display.reset()
+
+    assert stopped[-1] is True
+    assert text.getvalue() == ""
 
 
 def test_reset_clears_stream_state_between_turns(
@@ -295,14 +389,111 @@ def test_reset_clears_stream_state_between_turns(
     # Reasoning shown before reset is already on screen (off-terminal each
     # delta prints once); reset must keep it from leaking into the *next*
     # turn's display state, so the next answer renders alone.
-    text, display = _plain_display(monkeypatch)
+    text, log, display = _plain_display(monkeypatch)
     from cairn.core.events import Event
 
     display.observe(Event(type="model_stream_start", data={"step": 1, "attempt": 1}))
-    display.observe(Event(type="model_reasoning_delta", data={"text": "STALE"}))
+    display.observe(Event(type="model_reasoning_delta", data={"text": "STALE\n"}))
     display.reset()
-    assert not display._reasoning and not display._answer
     _feed(display, ["FRESH"], step=2)
+    reasoning_shown = log.getvalue()
+    assert reasoning_shown.count("STALE") == 1
+    assert "STALE" not in reasoning_shown.partition("STALE")[2]
+    assert text.getvalue().count("FRESH") == 1
+    assert "FRESH" not in reasoning_shown
+
+
+def test_a_closed_code_fence_settles_mid_stream_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The failure this guards: an open fence used to park the whole answer, so
+    # prose before the block froze and everything landed at once at stream end.
+    # A fence that closes mid-stream must print once, in the answer's order.
+    text, _log, display = _plain_display(monkeypatch)
+    _feed(display, ["Here is the code:\n\n```python\nprint('hi')\n```\n", "\nAfter.\n"])
+
     shown = text.getvalue()
-    assert shown.count("FRESH") == 1
-    assert shown.index("STALE") < shown.index("FRESH")
+    assert shown.count("print('hi')") == 1
+    assert shown.index("Here is the code") < shown.index("print('hi')")
+    assert shown.index("print('hi')") < shown.index("After.")
+
+
+def test_open_fence_keeps_settling_the_prose_before_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # While a fence stays open, completed prose above it is still printable:
+    # only the fence itself waits in the pending tail.
+    from cairn.terminal.output import _split_blocks
+
+    settled, pending = _split_blocks("Prose.\n\n```py\nx = 1\n")
+    assert settled == "Prose.\n\n"
+    assert pending == "```py\nx = 1\n"
+    assert _split_blocks("Prose.\n\n```py\nx = 1\n```\n\nAfter\n")[0].endswith(
+        "```\n\n"
+    )
+
+
+def test_trace_finish_reaches_the_display_and_the_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The CLI used to swallow trace_finish before the display and the console
+    # handler saw it, so the status line never learned the turn's trace and
+    # `/trace` always answered "No trace available yet.".
+    from cairn.core.events import Event
+
+    _answer, _log, display = _plain_display(monkeypatch)
+
+    handled = display.observe(
+        Event(type="trace_finish", data={"trace_id": "abc123def456", "persisted": True})
+    )
+
+    assert handled
+    assert "abc123de" in display._status_line().plain
+
+
+def test_a_failed_trace_says_nothing_about_absent_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A turn that measured no usage has nothing to report about tokens; the
+    # unknown-input/unknown-output suffix belonged to no real measurement.
+    from cairn.core.events import Event
+
+    text = StringIO()
+    monkeypatch.setattr(
+        output_module,
+        "console",
+        Console(file=text, width=200, color_system=None, force_terminal=False),
+    )
+    output_module.console_event_handler(
+        Event(
+            type="trace_finish",
+            data={"trace_id": "x", "persisted": False, "persistence_error": "OSError"},
+        )
+    )
+
+    assert "trace unavailable: persistence failed (OSError)" in text.getvalue()
+    assert "tokens:" not in text.getvalue()
+
+
+def test_a_durable_turn_reports_a_failed_trace_in_its_own_words(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Durable mode prints its own "Trace unavailable" line at the turn boundary;
+    # the console handler must not add a second one.
+    from cairn.core.events import Event
+
+    text = StringIO()
+    monkeypatch.setattr(
+        output_module,
+        "console",
+        Console(file=text, width=200, color_system=None, force_terminal=False),
+    )
+    output_module.console_event_handler(
+        Event(
+            type="trace_finish",
+            data={"trace_id": "x", "persisted": False, "persistence_error": "OSError"},
+        ),
+        report_trace_failure=False,
+    )
+
+    assert text.getvalue() == ""

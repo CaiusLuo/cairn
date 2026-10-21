@@ -6,6 +6,35 @@ incomplete tool arguments are never previewed. Streaming text is plain text:
 Rich markup/emoji syntax is literal and C0/C1 terminal controls are filtered
 (newline/tab remain). Generate-only clients keep the existing Markdown rendering.
 
+## The terminal display
+
+The streaming display keeps one live region per turn, owned by
+`terminal.output.StreamingDisplay`. The pending Markdown block, the status line
+and the trailing reasoning share it, because Rich paints only the top of its
+live stack: a second region for the status line would never appear, and two
+hand-positioned redraw areas cannot stay aligned once tool output interleaves.
+Rich therefore owns the cursor arithmetic and a repaint erases exactly what it
+drew. Repaints are throttled by `STATUS_INTERVAL_SECONDS`.
+
+A completed Markdown block settles and is printed once, so it survives in the
+scrollback with its formatting. A code fence that is still open waits in the
+pending tail instead of settling: every appended line changes its height, so
+settling it mid-stream would reprint the block. Prose above it keeps settling.
+
+The reasoning block shows trailing complete lines only. Its window is a quarter
+of the terminal height, bounded by `MIN_THINKING_LINES` and `MAX_THINKING_LINES`,
+so a short screen keeps the answer visible while the model thinks. On close the
+trailing lines are reprinted once, because the live region is transient and they
+would otherwise disappear with it.
+
+A redirected or piped stream has no cursor to repaint, so nothing is redrawn
+there. Settled blocks go through the console once, and reasoning is written as
+plain lines on stdout beside the answer: a delta appends each line when it
+settles, and the one line still being written overwrites itself in place. A log
+or a pipe therefore contains every thought exactly once and no cursor motion.
+
+## Reasoning text
+
 OpenAI-compatible `delta.reasoning_content` strings are normalized separately as
 `LLMStreamChunk.reasoning_text` and shown under a `thinking…` label, so a reader
 can tell reasoning from the answer while it streams.
