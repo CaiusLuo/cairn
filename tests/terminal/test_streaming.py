@@ -227,3 +227,82 @@ def test_stream_display_does_not_interpret_emoji_aliases(
     )
     assert ":rocket: [link=https://example.test]literal[/link]" in text.getvalue()
     assert not any(control in text.getvalue() for control in ("\r", "\b", "\x9b"))
+
+
+def _plain_display(monkeypatch: pytest.MonkeyPatch) -> tuple[StringIO, Any]:
+    """A StreamingDisplay over an in-memory, non-terminal console."""
+    from cairn.terminal.output import StreamingDisplay
+
+    text = StringIO()
+    monkeypatch.setattr(
+        output_module,
+        "console",
+        Console(file=text, width=200, color_system=None, force_terminal=False),
+    )
+    return text, StreamingDisplay()
+
+
+def _feed(display: Any, chunks: list[str], *, step: int = 1) -> None:
+    from cairn.core.events import Event
+
+    display.observe(Event(type="model_stream_start", data={"step": step, "attempt": 1}))
+    for chunk in chunks:
+        display.observe(Event(type="model_text_delta", data={"text": chunk}))
+    display.observe(
+        Event(type="model_stream_end", data={"step": step, "status": "completed"})
+    )
+
+
+def test_open_code_fence_settles_once_instead_of_parking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A fence still open when the stream ends prints its content exactly once;
+    # parking the whole answer in the pending tail used to drop it entirely.
+    # (Rich renders the code block itself, so no literal ``` fences survive.)
+    text, display = _plain_display(monkeypatch)
+    _feed(display, ["intro\n\n```python\nprint('hi')\n"])
+    shown = text.getvalue()
+    assert "intro" in shown
+    assert shown.count("print('hi')") == 1
+    assert display.final_text_visible
+
+
+def test_reasoning_streams_without_cursor_escape_sequences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Reasoning redraws go through the live region, which owns cursor math;
+    # nothing hand-moves the cursor anymore, so a repaint cannot erase lines
+    # that belong to output printed above the reasoning block.
+    text, display = _plain_display(monkeypatch)
+    from cairn.core.events import Event
+
+    display.observe(Event(type="model_stream_start", data={"step": 1, "attempt": 1}))
+    for thought in ("plan the change", "revise the plan"):
+        display.observe(Event(type="model_reasoning_delta", data={"text": thought}))
+    display.observe(
+        Event(type="model_stream_end", data={"step": 1, "status": "completed"})
+    )
+    shown = text.getvalue()
+    assert "plan the change" in shown
+    assert "revise the plan" in shown
+    assert shown.index("plan the change") < shown.index("revise the plan")
+    assert "\x1b[" not in shown
+
+
+def test_reset_clears_stream_state_between_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Reasoning shown before reset is already on screen (off-terminal each
+    # delta prints once); reset must keep it from leaking into the *next*
+    # turn's display state, so the next answer renders alone.
+    text, display = _plain_display(monkeypatch)
+    from cairn.core.events import Event
+
+    display.observe(Event(type="model_stream_start", data={"step": 1, "attempt": 1}))
+    display.observe(Event(type="model_reasoning_delta", data={"text": "STALE"}))
+    display.reset()
+    assert not display._reasoning and not display._answer
+    _feed(display, ["FRESH"], step=2)
+    shown = text.getvalue()
+    assert shown.count("FRESH") == 1
+    assert shown.index("STALE") < shown.index("FRESH")

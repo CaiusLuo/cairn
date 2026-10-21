@@ -25,9 +25,6 @@ MAX_DIAGNOSTIC_LINES = 20
 # How many trailing reasoning lines stay on screen. The model can reason for
 # thousands of tokens; a reader wants the current thread, not the transcript.
 MAX_THINKING_LINES = 6
-# The live region never grows past this many rows, so a long paragraph cannot
-# turn every redraw into a full-screen repaint.
-MAX_LIVE_ROWS = 8
 # Bar segments in the context meter.
 _BAR_WIDTH = 8
 # Status updates are painted at this rate at most. A token stream can deliver
@@ -297,9 +294,10 @@ def _split_blocks(text: str) -> tuple[str, str]:
             last_end = offset + len(line)
         offset += len(line)
     if fence:
-        # Everything from the opening fence onwards is printed on arrival: it is
-        # already longer than one line and only grows.
-        return text, ""
+        # An open fence must not settle: every appended line re-heights the
+        # rendered code block, so settling it mid-stream would reprint it on
+        # the next delta. It waits in the pending tail until it closes.
+        return text[:last_end], text[last_end:]
     return text[:last_end], text[last_end:]
 
 
@@ -448,6 +446,11 @@ class StreamingDisplay:
     what makes the answer readable while it arrives instead of after: a finished
     paragraph keeps its formatting, and the live region costs one paragraph, not
     the whole message.
+
+    Both live threads share one Live region, because `rich` only paints the top
+    of its live stack and hand-drawn cursor moves cannot keep two redraw areas
+    aligned once other output interleaves. The same rate limit that throttles
+    the status line throttles the reasoning repaint.
     """
 
     def __init__(self) -> None:
@@ -476,6 +479,14 @@ class StreamingDisplay:
     def reset(self) -> None:
         self.final_text_visible = False
         self._completed_text_step = None
+        self._reasoning = []
+        self._reasoning_open = False
+        self._answer = []
+        self._settled_blocks = 0
+        self._settled_chars = 0
+        self._status_painted = 0.0
+        self._text_seen = False
+        self._active = False
 
     def observe(self, event: Event) -> bool:
         """Return True only for handled streaming events; legacy output stays put."""
@@ -502,8 +513,7 @@ class StreamingDisplay:
                 self._render_answer_progress()
                 return True
             self._reasoning.append(_plain_text(event))
-            self._print_reasoning()
-            self._refresh_status()
+            self._render_reasoning()
             return True
         if event.type == "model_stream_end":
             status = event.data["status"]
@@ -554,24 +564,25 @@ class StreamingDisplay:
         self._status_painted = now
         self._live.update(self._live_renderable())
 
-    def _print_reasoning(self) -> None:
-        """Redraw the trailing reasoning lines in place.
+    def _render_reasoning(self) -> None:
+        """Show the trailing reasoning lines; live where a live region is safe.
 
-        The block is rewritten on every delta instead of appended to, so the
-        screen shows the current thread rather than the whole transcript. A
-        terminal cursor move expresses that without a full- screen renderer.
+        In a terminal the block rides the shared live region, whose row count
+        `rich` computes from the actual render, so a repaint erases exactly
+        what it drew and interleaved tool output cannot shift the target. Off
+        terminal there is no cursor to move, so each delta's trailing lines
+        are appended once instead: a log shows the reasoning in order without
+        cursor artifacts.
         """
-        if self._reasoning_open:
-            console.file.write(f"\x1b[{self._reasoning_height()}A")
-            console.file.write("\x1b[J")
-        else:
+        if supports_live_display():
             self._reasoning_open = True
+            if self._live is None:
+                self._start_live()
+            else:
+                self._refresh_status()
+            return
         for line in self._visible_reasoning():
             console.print(f"[dim]{THINKING_PREFIX}{line}[/dim]", highlight=False)
-        console.file.flush()
-
-    def _reasoning_height(self) -> int:
-        return len(self._visible_reasoning())
 
     def _visible_reasoning(self) -> list[str]:
         """The last few complete lines of reasoning, wrapped to the terminal."""
@@ -591,8 +602,12 @@ class StreamingDisplay:
     def _close_reasoning(self) -> None:
         if not self._reasoning_open:
             return
-        # The last render already shows the final lines; only clear the cursor
-        # bookkeeping so the next block starts below them.
+        # The live copy is transient; reprint the final trailing lines once so
+        # they stay in the scrollback after the region clears.
+        lines = self._visible_reasoning()
+        self._close_live()
+        for line in lines:
+            console.print(f"[dim]{THINKING_PREFIX}{line}[/dim]", highlight=False)
         self._reasoning_open = False
         console.print()
 
@@ -626,27 +641,41 @@ class StreamingDisplay:
             # only, so a reader of a log file sees each block once.
             return
         if self._live is None:
-            # transient: the block is redrawn here, then printed once for good
-            # when it settles, so the live copy must not survive the stop.
-            self._live = Live(
-                self._live_renderable(),
-                console=console,
-                refresh_per_second=8,
-                vertical_overflow="visible",
-                transient=True,
-            )
-            self._live.start()
+            self._start_live()
         else:
             self._live.update(self._live_renderable())
 
+    def _start_live(self) -> None:
+        """Open the one live region this turn: pending block, status, reasoning.
+
+        transient: each block is redrawn here, then printed once for good when
+        it settles, so the live copy must not survive the stop.
+        """
+        self._live = Live(
+            self._live_renderable(),
+            console=console,
+            refresh_per_second=8,
+            vertical_overflow="visible",
+            transient=True,
+        )
+        self._live.start()
+        self._status_painted = perf_counter()
+
     def _live_renderable(self) -> Group:
-        """The block still being written, with the status line under it.
+        """The block still being written, the status line, and trailing reasoning.
 
         One renderable, not two live regions: `rich` only paints the top of its
         live stack, so a second Live for the status line would never appear.
         """
         body = Markdown("".join(self._answer)[self._settled_chars :])
-        return Group(body, Text(""), self._status_line())
+        return Group(body, Text(""), self._status_line(), self._reasoning_renderable())
+
+    def _reasoning_renderable(self) -> Text:
+        """The trailing reasoning lines as one dim block, empty when not streaming."""
+        return Text(
+            "\n".join(f"{THINKING_PREFIX}{line}" for line in self._visible_reasoning()),
+            style="dim",
+        )
 
     def _status_line(self) -> Text:
         elapsed = (
