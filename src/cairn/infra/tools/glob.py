@@ -27,8 +27,14 @@ class GlobTool:
         "'**/*.py'. Returns workspace-relative paths."
     )
 
-    def __init__(self, workspace: Workspace) -> None:
+    def __init__(
+        self, workspace: Workspace, *, max_matches: int = MAX_SCAN_CANDIDATES
+    ) -> None:
         self.workspace = workspace
+        # Bound the accepted matches this search may collect. Injectable so a
+        # test can prove the limit without materializing a 50k-file tree; the
+        # default is the production bound.
+        self.max_matches = max_matches
 
     def schema(self) -> dict[str, Any]:
         return function_schema(
@@ -115,7 +121,7 @@ class GlobTool:
         contained_directories: dict[Path, Path | None] = {}
 
         for candidate in root.glob(pattern):
-            if len(matches) > MAX_SCAN_CANDIDATES:
+            if len(matches) > self.max_matches:
                 scan_exhausted = False
                 break
 

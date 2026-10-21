@@ -1177,11 +1177,18 @@ class SessionStore(TaskLedgerMixin):
     def _current(
         self, conn: sqlite3.Connection, expected: Revision, prepared: RecoveryReport
     ) -> RecoveryReport:
+        """Re-read the row inside the write transaction and confirm nothing moved.
+
+        `_prepare` already read `prepared` and proved its revision equals
+        `expected`; `_row` re-reads the stored row and raises `VersionConflict`
+        unless the revision still matches. `_cas` is the only writer of
+        `version`/`head_seq` and advances both on every mutation, so an unchanged
+        revision proves the body `prepared` describes is still on disk. Rebuilding
+        the whole report here would re-decode every attempt record on each
+        mutation for the same answer.
+        """
         self._row(conn, expected)
-        current = self._report(conn, expected.session_id)
-        if current != prepared:
-            raise VersionConflict()
-        return current
+        return prepared
 
     def create(self, binding: SessionBinding) -> CheckpointReceipt:
         self._mutation_session = binding.session_id

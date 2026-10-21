@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+import cairn.infra.sessions.codec as codec_module
 from cairn.core.models import Message, ToolCall
 from cairn.infra.sessions.codec import (
     canonical,
@@ -16,7 +17,6 @@ from cairn.infra.sessions.codec import (
     validate_record,
 )
 from cairn.infra.sessions.models import (
-    MAX_CHECKPOINT_BYTES,
     MAX_MESSAGE_BYTES,
     MAX_MESSAGES,
     MAX_RECORD_BYTES,
@@ -273,37 +273,46 @@ def test_exact_message_and_record_byte_bounds() -> None:
         )
 
 
-def test_exact_checkpoint_bytes_message_count_and_invocation_bounds(
-    tmp_path: Path,
+def test_encode_checkpoint_applies_the_checkpoint_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # `encode_checkpoint` must enforce MAX_CHECKPOINT_BYTES itself, not just pass
+    # the caller's limit through. Shrinking the ceiling proves the real contract
+    # ("payload at the ceiling passes, one byte over is rejected") without
+    # building and encoding an 8 MiB payload three times.
     turn = intent(
         binding(tmp_path), Revision(session_id=SESSION, version=0, head_seq=0)
     )
-    base = [
-        Message(role="user", content="hello"),
-        *[Message(role="assistant", content="x" * 900_000) for _ in range(9)],
-        Message(role="assistant", content=""),
-    ]
-    checkpoint = settled(turn, history=base).checkpoint
+    checkpoint = settled(
+        turn,
+        history=[
+            Message(role="user", content="hello"),
+            Message(role="assistant", content=""),
+        ],
+    ).checkpoint
     raw, _ = encode_checkpoint(checkpoint)
-    padding = MAX_CHECKPOINT_BYTES - len(raw)
-    base[-1].content = (base[-1].content or "") + "x" * padding
-    checkpoint = settled(turn, history=base).checkpoint
-    assert len(encode_checkpoint(checkpoint)[0]) == MAX_CHECKPOINT_BYTES
-    base[-1].content += "x"
+    ceiling = len(raw)
+    monkeypatch.setattr(codec_module, "MAX_CHECKPOINT_BYTES", ceiling)
+    assert encode_checkpoint(checkpoint)[0] == raw
+    monkeypatch.setattr(codec_module, "MAX_CHECKPOINT_BYTES", ceiling - 1)
     with pytest.raises(SessionStoreError, match="limit"):
-        encode_checkpoint(settled(turn, history=base).checkpoint)
+        encode_checkpoint(checkpoint)
+
+
+def test_checkpoint_message_and_invocation_counts_are_bounded(tmp_path: Path) -> None:
+    turn = intent(
+        binding(tmp_path), Revision(session_id=SESSION, version=0, head_seq=0)
+    )
+    # The maximum message count is accepted; one more fails validation outright.
     history = [
         Message(role="user", content="hello"),
         *[Message(role="assistant", content="") for _ in range(MAX_MESSAGES - 1)],
     ]
-    assert (
-        len(encode_checkpoint(settled(turn, history=history).checkpoint)[0])
-        < MAX_CHECKPOINT_BYTES
-    )
+    assert encode_checkpoint(settled(turn, history=history).checkpoint)
     history.append(Message(role="assistant", content=""))
     with pytest.raises(ValidationError):
         settled(turn, history=history)
+    # A turn may fence 256 tool calls; a 257th is rejected at encode time.
     calls = [ToolCall(id=str(i), name="read_file", arguments={}) for i in range(256)]
     history = [
         Message(role="user", content="hello"),

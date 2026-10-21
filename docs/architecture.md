@@ -263,6 +263,14 @@ task/turn lifecycle.
   a flag would touch every streaming path to remove a duplication of a few lines.
   Revisit this when a third buffer joins the display or when the two reset paths
   stop agreeing on what to clear.
+- Appending a tool fence rewrites the whole `turns.diagnostics_json` column. That
+  column holds every fence of the active turn, so one turn with N tool calls costs
+  O(N) encode, decode and write per append and O(N²) over the turn: 256 fences
+  take seconds. The per-mutation report rebuild and the redundant full-record
+  rescan are gone, but the quadratic term remains because a single JSON column is
+  the storage shape. Removing it needs fences as their own table (one row per
+  fence), which is a schema change with migration and recovery consequences. Left
+  as is until a turn's tool-call count makes the latency matter in practice.
 
 ## References
 

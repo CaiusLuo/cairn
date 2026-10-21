@@ -60,15 +60,24 @@ def test_glob_marks_output_truncated_at_the_limit(tmp_path: Path) -> None:
     assert result.stdout_truncated is True
 
 
-def test_glob_bounds_the_scan_itself(tmp_path: Path) -> None:
-    for index in range(MAX_SCAN_CANDIDATES + 20):
+def test_glob_stops_after_the_match_cap(tmp_path: Path) -> None:
+    # The cap bounds accepted matches, so a small injectable bound proves the same
+    # contract without materializing the 50k-file production tree. The loop stops
+    # once the count passes the cap, so it collects one past it before bailing.
+    for index in range(6):
         _write(tmp_path / "many" / f"f{index}.py", "x")
-    tool = GlobTool(Workspace(tmp_path))
+    tool = GlobTool(Workspace(tmp_path), max_matches=2)
 
-    result = asyncio.run(tool.execute({"pattern": "many/*.py", "limit": 1}))
+    result = asyncio.run(tool.execute({"pattern": "many/*.py", "limit": 10}))
 
     assert result.stdout_truncated is True
-    assert len(result.stdout.splitlines()) == 1
+    assert len(result.stdout.splitlines()) == 3  # two at the cap, a third triggers it
+
+
+def test_glob_defaults_to_the_production_match_cap(tmp_path: Path) -> None:
+    # The injectable bound must default to the real constant, so a caller that
+    # does not opt in still gets the production ceiling.
+    assert GlobTool(Workspace(tmp_path)).max_matches == MAX_SCAN_CANDIDATES
 
 
 def test_glob_omits_directories_and_git(tmp_path: Path) -> None:
