@@ -143,10 +143,12 @@ def test_public_cli_partial_fallback_labels_abandoned_text(
     assert result.exit_code == 0, result.output
     shown = text.getvalue()
     # Prose goes through the console channel; reasoning is plain lines, which
-    # CliRunner collects into the command's own output. Either way a reader of
-    # the two channels sees each thought once.
+    # CliRunner collects into the command's own output. A thought reaches a
+    # redirected log twice by design: once while it is still growing (padded and
+    # rewritten in place) and once settled. What must not happen is a repeat of
+    # the settled form.
     reasoning_shown = result.output
-    assert reasoning_shown.count("ACCEPTED_THOUGHT") == 1
+    assert reasoning_shown.count("⋮ ACCEPTED_THOUGHT\n") == 1
     # The abandoned attempt's reasoning is already on screen before the label
     # that explains why its answer was dropped, and that answer never prints.
     assert "ABANDONED_THOUGHT" in reasoning_shown
@@ -572,3 +574,30 @@ def test_the_abort_paths_own_disjoint_state(
 
     assert display._answer == [] and display._reasoning == []
     assert not display._active
+
+
+def test_logging_reasoning_does_not_rescan_the_whole_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A delta used to rewrap every settled line, so a long chain of thought cost
+    # quadratic time on the log path. Counting the lines the writer touches is a
+    # deterministic stand-in for that: each delta must add work for its own line
+    # only.
+    from cairn.core.events import Event
+
+    _answer, _log, display = _plain_display(monkeypatch)
+    calls: list[int] = []
+    original = output_module._rows_for_lines
+
+    def counting(lines: list[str], *, growing: bool) -> list[tuple[str, bool]]:
+        calls.append(len(lines))
+        return original(lines, growing=growing)
+
+    monkeypatch.setattr(output_module, "_rows_for_lines", counting)
+    display.observe(Event(type="model_stream_start", data={"step": 1, "attempt": 1}))
+    for index in range(40):
+        display.observe(
+            Event(type="model_reasoning_delta", data={"text": f"thought {index}\n"})
+        )
+
+    assert max(calls) == 1, calls

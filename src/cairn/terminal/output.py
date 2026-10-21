@@ -299,30 +299,39 @@ def _wrap(line: str, width: int) -> list[str]:
     return rows
 
 
-def _reasoning_rows(chunks: list[str], *, final: bool) -> list[tuple[str, bool]]:
-    """The reasoning as (text, still_growing) rows, wrapped to the terminal.
+def _reasoning_text_lines(chunks: list[str]) -> list[str]:
+    """The reasoning as logical lines, before wrapping to the terminal."""
+    return "".join(chunks).splitlines()
+
+
+def _rows_for_lines(lines: list[str], *, growing: bool) -> list[tuple[str, bool]]:
+    """Rows for these lines, wrapped; a trailing growing line is marked so.
 
     Wrapping here rather than leaving it to the console is what makes a line and
     a rendered row the same thing, so a log and the on-screen window agree on
-    what "a line" is.
-
-    While the stream runs, its last line is still being written: the next delta
-    extends it, so the last row is marked as growing. A final reasoning settles
-    every row.
+    what "a line" is. Only the trailing line can still be written, so only it is
+    ever marked growing.
     """
-    text = "".join(chunks)
-    lines = text.splitlines()
-    last = len(lines) - 1
-    unterminated = not text.endswith(("\n", "\r"))
     width = _reasoning_width()
     rows: list[tuple[str, bool]] = []
     for index, line in enumerate(lines):
         wrapped = _wrap(line, width)
         if not wrapped:
             continue
-        growing = index == last and unterminated and not final
+        is_growing = growing and index == len(lines) - 1
         rows.extend((row, False) for row in wrapped[:-1])
-        rows.append((wrapped[-1], growing))
+        rows.append((wrapped[-1], is_growing))
+    return rows
+
+
+def _reasoning_rows(chunks: list[str], *, final: bool) -> list[tuple[str, bool]]:
+    """The whole reasoning as rows, for the window that renders it live."""
+    lines = _reasoning_text_lines(chunks)
+    unterminated = not "".join(chunks).endswith(("\n", "\r"))
+    settled = lines if final or not unterminated else lines[:-1]
+    rows = _rows_for_lines(settled, growing=False)
+    if unterminated and not final:
+        rows.extend(_rows_for_lines(lines[-1:], growing=True))
     return rows
 
 
@@ -572,8 +581,8 @@ class StreamingDisplay:
         self._reasoning: list[str] = []
         self._reasoning_open = False
         # Off terminal, reasoning is appended rather than redrawn. This counts
-        # the lines already written so a delta adds only what is new.
-        self._reasoning_printed = 0
+        # the logical lines already written so a delta adds only what is new.
+        self._logged_lines = 0
         self._answer: list[str] = []
         self._settled_blocks = 0
         self._settled_chars = 0
@@ -613,7 +622,7 @@ class StreamingDisplay:
         self._completed_text_step = None
         self._reasoning = []
         self._reasoning_open = False
-        self._reasoning_printed = 0
+        self._logged_lines = 0
         self._answer = []
         self._settled_blocks = 0
         self._settled_chars = 0
@@ -726,11 +735,26 @@ class StreamingDisplay:
             self._refresh_status()
 
     def _log_new_reasoning(self, *, final: bool = False) -> None:
-        """Append the reasoning rows a redirected stream has not seen yet."""
-        rows = _reasoning_rows(self._reasoning, final=final)
-        self._reasoning_printed += _write_reasoning_rows(
-            rows[self._reasoning_printed :]
-        )
+        """Write the reasoning a redirected stream has not seen yet.
+
+        Only the lines past `_logged_lines` are wrapped and written. Wrapping the
+        whole reasoning on every delta would make a long chain of thought
+        quadratic on the log path. The line still being written is rewritten in
+        place by `_render_row`'s padding, then settled once when it ends.
+        """
+        lines = _reasoning_text_lines(self._reasoning)
+        # A trailing newline leaves no empty final element, so a line is still
+        # being written only when the text does not end with one.
+        unterminated = not "".join(self._reasoning).endswith(("\n", "\r"))
+        settled = lines if final or not unterminated else lines[:-1]
+        if len(settled) > self._logged_lines:
+            fresh = settled[self._logged_lines :]
+            _write_reasoning_rows(_rows_for_lines(fresh, growing=False))
+            self._logged_lines = len(settled)
+        if unterminated and not final:
+            # The line in flight is rewritten in place on every delta, so it is
+            # not settled here: only its final form goes to the log.
+            _write_reasoning_rows(_rows_for_lines(lines[-1:], growing=True))
 
     def _visible_reasoning(self) -> list[str]:
         """The trailing reasoning text that fits beside the answer."""
