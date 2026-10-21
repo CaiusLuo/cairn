@@ -1,5 +1,6 @@
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.resources import files
 from time import perf_counter
@@ -284,65 +285,81 @@ def _usage_suffix(event: Event) -> str:
     return f" · tokens: input {input_tokens}, output {output_tokens}"
 
 
-def _reasoning_line(text: str, *, growing: bool, width: int) -> str:
-    """One printable piece of reasoning; a growing line erases itself first.
-
-    The last line of a running stream is still being written, so the next delta
-    extends it. Rewriting it in place is what this display stopped doing with
-    hand-drawn cursor moves; padding it to the full width and returning to column
-    zero is the one move that needs no row arithmetic. It stays on the line it
-    drew, so it cannot reach a neighbour, and the next delta overwrites what is
-    there. A file reads the padding as blank space.
-    """
-    line = text.strip()
-    if growing:
-        return f"{line:<{width}}\r"
-    return line
+def _reasoning_width() -> int:
+    """The columns one reasoning line occupies beside its marker."""
+    return max(20, console.width - len(THINKING_PREFIX))
 
 
-def _reasoning_lines(chunks: list[str], *, final: bool) -> list[str]:
-    """Every reasoning line from the accumulated deltas, wrapped to the width.
+def _wrap(line: str, width: int) -> list[str]:
+    """Split one reasoning line into the rows it occupies."""
+    stripped = line.strip()
+    if not stripped:
+        return []
+    rows = [stripped[start : start + width] for start in range(0, len(stripped), width)]
+    return rows
+
+
+def _reasoning_rows(chunks: list[str], *, final: bool) -> list[tuple[str, bool]]:
+    """The reasoning as (text, still_growing) rows, wrapped to the terminal.
 
     Wrapping here rather than leaving it to the console is what makes a line and
     a rendered row the same thing, so a log and the on-screen window agree on
-    what "a line" is. Only a `final` stream settles its last line; while it runs,
-    that line is the partial the next delta extends.
+    what "a line" is.
+
+    While the stream runs, its last line is still being written: the next delta
+    extends it, so the last row is marked as growing. A final reasoning settles
+    every row.
     """
     text = "".join(chunks)
     lines = text.splitlines()
-    width = max(20, console.width - len(THINKING_PREFIX))
-    rendered: list[str] = []
-    for index, raw in enumerate(lines):
-        stripped = raw.strip()
-        if not stripped:
+    last = len(lines) - 1
+    unterminated = not text.endswith(("\n", "\r"))
+    width = _reasoning_width()
+    rows: list[tuple[str, bool]] = []
+    for index, line in enumerate(lines):
+        wrapped = _wrap(line, width)
+        if not wrapped:
             continue
-        growing = (
-            not final and index == len(lines) - 1 and not text.endswith(("\n", "\r"))
-        )
-        while stripped and len(stripped) > width:
-            rendered.append(stripped[:width])
-            stripped = stripped[width:]
-        if stripped:
-            rendered.append(_reasoning_line(stripped, growing=growing, width=width))
-    return rendered
+        growing = index == last and unterminated and not final
+        rows.extend((row, False) for row in wrapped[:-1])
+        rows.append((wrapped[-1], growing))
+    return rows
 
 
-def _write_reasoning_lines(lines: list[str]) -> int:
-    """Write reasoning to a redirected stream; return how many lines landed.
+def _render_row(text: str, *, growing: bool) -> str:
+    """One printable reasoning row; a growing row erases itself first.
+
+    Rewriting a growing row in place is what this display stopped doing with
+    hand-drawn cursor moves. Padding it to the full width and returning to
+    column zero is the one move that needs no row arithmetic: it stays on the
+    row it drew, so it cannot reach a neighbour, and the next delta overwrites
+    what is there. A file reads the padding as blank space.
+    """
+    if not growing:
+        return text
+    return f"{text:<{_reasoning_width()}}\r"
+
+
+def _write_reasoning_rows(rows: list[tuple[str, bool]]) -> int:
+    """Write reasoning rows to a redirected stream; say how many landed.
 
     This path exists for readers of a file or a pipe: no live region will ever
     repaint it, so the bytes have to stand on their own. It is plain text on
     stdout beside the answer, and guarded, because a closed stream is a reader's
     choice and not a display failure the turn must clean up after.
     """
-    if not lines:
+    if not rows:
         return 0
+    rendered = "".join(
+        f"{THINKING_PREFIX}{_render_row(text, growing=growing)}\n"
+        for text, growing in rows
+    )
     try:
-        sys.stdout.write("".join(f"{THINKING_PREFIX}{line}\n" for line in lines))
+        sys.stdout.write(rendered)
         sys.stdout.flush()
     except (BrokenPipeError, ValueError):
         return 0
-    return len(lines)
+    return len(rows)
 
 
 def _reasoning_window() -> int:
@@ -370,17 +387,27 @@ def _split_blocks(text: str) -> tuple[str, str]:
     therefore stays in the pending tail until it closes, while the prose before
     it keeps settling.
     """
+    end = _last_settled_offset(text)
+    return text[:end], text[end:]
+
+
+def _last_settled_offset(text: str) -> int:
+    """Where the printable prefix ends: after the last blank line outside a fence.
+
+    The final line does not count even when blank: a block is only settled once
+    something follows it.
+    """
     lines = text.splitlines(keepends=True)
-    fence = False
-    last_end = 0
+    fenced = False
+    end = 0
     offset = 0
     for index, line in enumerate(lines):
         if line.lstrip().startswith("```"):
-            fence = not fence
-        elif not fence and not line.strip() and index + 1 < len(lines):
-            last_end = offset + len(line)
+            fenced = not fenced
+        elif not fenced and not line.strip() and index + 1 < len(lines):
+            end = offset + len(line)
         offset += len(line)
-    return text[:last_end], text[last_end:]
+    return end
 
 
 def format_status_line(
@@ -574,6 +601,14 @@ class StreamingDisplay:
         turn's output.
         """
         self._close_live()
+        self._forget_attempt()
+
+    def _forget_attempt(self) -> None:
+        """Drop everything the display knows about the attempt so far.
+
+        One owner for that state: `reset()` and a new stream start both need it,
+        and a field that only one of them cleared would leak into the next turn.
+        """
         self.final_text_visible = False
         self._completed_text_step = None
         self._reasoning = []
@@ -588,65 +623,68 @@ class StreamingDisplay:
 
     def observe(self, event: Event) -> bool:
         """Return True only for handled streaming events; legacy output stays put."""
-        if event.type == "model_stream_start":
-            self._completed_text_step = None
-            self._text_seen = False
-            self._reasoning = []
-            self._reasoning_open = False
-            self._reasoning_printed = 0
-            self._answer = []
-            self._settled_blocks = 0
-            self._settled_chars = 0
-            self._turn_started = perf_counter()
-            self._input_tokens = 0
-            self._output_tokens = 0
-            self._cached_tokens = 0
-            self._reasoning_tokens = None
-            self._trace_id = None
-            self._active = True
-            return True
-        if event.type in ("model_text_delta", "model_reasoning_delta"):
-            if event.type == "model_text_delta":
-                self._text_seen = True
-                self._answer.append(_plain_text(event))
-                self._render_answer_progress()
-                return True
-            self._reasoning.append(_plain_text(event))
-            self._render_reasoning()
-            return True
-        if event.type == "model_stream_end":
-            status = event.data["status"]
-            if status == "completed":
-                self._active = False
-                self._close_reasoning()
-                if self._text_seen:
-                    self._completed_text_step = event.data.get("step")
-                    self.final_text_visible = True
-                    self._render_answer()
-            else:
-                self.close_incomplete(abandoned=status == "abandoned")
-            return True
-        if event.type == "trace_finish":
-            # The turn's totals arrive once, at the end; the status line already
-            # shows live progress from the counters it accumulated per delta.
-            raw_trace_id = event.data.get("trace_id")
-            self._trace_id = raw_trace_id if isinstance(raw_trace_id, str) else None
-            usage = event.data.get("usage")
-            if isinstance(usage, dict):
-                self._input_tokens = _count(usage.get("input_tokens"))
-                self._output_tokens = _count(usage.get("output_tokens"))
-                self._cached_tokens = _count(usage.get("cached_tokens"))
-                reasoning = _count(usage.get("reasoning_tokens"))
-                self._reasoning_tokens = reasoning or None
-            self._active = False
-            self._refresh_status()
-            return True
-        if event.type == "agent_finish":
-            self.final_text_visible = (
-                self._completed_text_step == event.data.get("step")
-                and self._completed_text_step is not None
-            )
-        return False
+        handler = _STREAMING_HANDLERS.get(event.type)
+        if handler is None:
+            self._note_agent_finish(event)
+            return False
+        handler(self, event)
+        return True
+
+    def _open_stream(self, event: Event) -> None:
+        """Start a fresh attempt: nothing from the previous one may survive."""
+        self._forget_attempt()
+        self._turn_started = perf_counter()
+        self._input_tokens = 0
+        self._output_tokens = 0
+        self._cached_tokens = 0
+        self._reasoning_tokens = None
+        self._trace_id = None
+        self._active = True
+
+    def _show_text_delta(self, event: Event) -> None:
+        self._text_seen = True
+        self._answer.append(_plain_text(event))
+        self._render_answer_progress()
+
+    def _show_reasoning_delta(self, event: Event) -> None:
+        self._reasoning.append(_plain_text(event))
+        self._render_reasoning()
+
+    def _finish_stream(self, event: Event) -> None:
+        status = event.data["status"]
+        if status != "completed":
+            self.close_incomplete(abandoned=status == "abandoned")
+            return
+        self._active = False
+        self._close_reasoning()
+        if not self._text_seen:
+            return
+        self._completed_text_step = event.data.get("step")
+        self.final_text_visible = True
+        self._render_answer()
+
+    def _record_turn_totals(self, event: Event) -> None:
+        """Take the turn's final totals; the status line then stops spinning."""
+        raw_trace_id = event.data.get("trace_id")
+        self._trace_id = raw_trace_id if isinstance(raw_trace_id, str) else None
+        usage = event.data.get("usage")
+        if isinstance(usage, dict):
+            self._input_tokens = _count(usage.get("input_tokens"))
+            self._output_tokens = _count(usage.get("output_tokens"))
+            self._cached_tokens = _count(usage.get("cached_tokens"))
+            reasoning = _count(usage.get("reasoning_tokens"))
+            self._reasoning_tokens = reasoning or None
+        self._active = False
+        self._refresh_status()
+
+    def _note_agent_finish(self, event: Event) -> None:
+        """Remember whether this step's text is already on screen."""
+        if event.type != "agent_finish":
+            return
+        self.final_text_visible = (
+            self._completed_text_step is not None
+            and self._completed_text_step == event.data.get("step")
+        )
 
     def _refresh_status(self) -> None:
         """Repaint the live region if it is showing.
@@ -676,39 +714,51 @@ class StreamingDisplay:
         """
         self._reasoning_open = True
         if supports_live_display():
-            if self._live is None:
-                self._start_live()
-            else:
-                self._refresh_status()
+            self._show_live_reasoning()
             return
-        lines = _reasoning_lines(self._reasoning, final=False)
-        self._reasoning_printed += _write_reasoning_lines(
-            lines[self._reasoning_printed :]
+        self._log_new_reasoning()
+
+    def _show_live_reasoning(self) -> None:
+        """Redraw the reasoning inside the one live region this turn owns."""
+        if self._live is None:
+            self._start_live()
+        else:
+            self._refresh_status()
+
+    def _log_new_reasoning(self, *, final: bool = False) -> None:
+        """Append the reasoning rows a redirected stream has not seen yet."""
+        rows = _reasoning_rows(self._reasoning, final=final)
+        self._reasoning_printed += _write_reasoning_rows(
+            rows[self._reasoning_printed :]
         )
 
-    def _visible_reasoning(self, *, final: bool = False) -> list[str]:
-        """The trailing settled reasoning lines that fit beside the answer."""
-        return _reasoning_lines(self._reasoning, final=final)[-_reasoning_window() :]
+    def _visible_reasoning(self) -> list[str]:
+        """The trailing reasoning text that fits beside the answer."""
+        rows = _reasoning_rows(self._reasoning, final=True)
+        return [text for text, _ in rows[-_reasoning_window() :]]
 
     def _close_reasoning(self) -> None:
         if not self._reasoning_open:
             return
         # The live copy is transient, and settling a block stops the region, so
         # by the time the stream ends the reasoning may no longer be on screen.
-        # Reprint the trailing lines once, here, so they survive in the
-        # scrollback. Off terminal nothing was redrawn: the log holds every line
+        # Reprint the trailing rows once, here, so they survive in the
+        # scrollback. Off terminal nothing was redrawn: the log holds every row
         # already, and only the one that never settled is still missing.
-        live_shown = self._live is not None
-        lines = self._visible_reasoning(final=True) if live_shown else []
+        replayed = self._replay_reasoning() if self._live is not None else False
         self._close_live()
-        if live_shown:
-            if _write_reasoning_lines(lines):
-                # Separate the replayed block from whatever follows it.
-                _write_reasoning_lines([""])
-        else:
-            settled = _reasoning_lines(self._reasoning, final=True)
-            _write_reasoning_lines(settled[self._reasoning_printed :])
+        if not replayed:
+            self._log_new_reasoning(final=True)
         self._reasoning_open = False
+
+    def _replay_reasoning(self) -> bool:
+        """Write the trailing reasoning to the log; say whether anything went."""
+        rows = [(text, False) for text in self._visible_reasoning()]
+        if not _write_reasoning_rows(rows):
+            return False
+        # Separate the replayed block from whatever follows it.
+        _write_reasoning_rows([("", False)])
+        return True
 
     def _render_answer_progress(self) -> None:
         """Print each finished Markdown block once; redraw only the last one.
@@ -854,6 +904,17 @@ class StreamingDisplay:
                 markup=False,
             )
         self._completed_text_step = None
+
+
+# Streaming event type -> the method that presents it. A table keeps the
+# dispatch readable and lets every event type name its one handler.
+_STREAMING_HANDLERS: dict[str, Callable[["StreamingDisplay", Event], None]] = {
+    "model_stream_start": StreamingDisplay._open_stream,
+    "model_text_delta": StreamingDisplay._show_text_delta,
+    "model_reasoning_delta": StreamingDisplay._show_reasoning_delta,
+    "model_stream_end": StreamingDisplay._finish_stream,
+    "trace_finish": StreamingDisplay._record_turn_totals,
+}
 
 
 def console_permission_prompt(request: PermissionRequest) -> PermissionChoice:
