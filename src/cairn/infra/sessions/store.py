@@ -174,9 +174,12 @@ _TOOL_FENCE_SCHEMA = (
         session_id TEXT NOT NULL,
         turn_id TEXT NOT NULL,
         ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 1 AND 256),
-        assistant_message_index INTEGER NOT NULL CHECK(assistant_message_index >= 0),
-        call_id TEXT NOT NULL CHECK(length(call_id) BETWEEN 1 AND 256),
-        tool_name TEXT NOT NULL CHECK(length(tool_name) BETWEEN 1 AND 256),
+        assistant_message_index INTEGER NOT NULL
+            CHECK(assistant_message_index >= 0 AND assistant_message_index < 10000),
+        call_id TEXT NOT NULL
+            CHECK(length(CAST(call_id AS BLOB)) BETWEEN 1 AND 1024),
+        tool_name TEXT NOT NULL
+            CHECK(length(CAST(tool_name AS BLOB)) BETWEEN 1 AND 1024),
         observed_at_utc TEXT NOT NULL,
         PRIMARY KEY(session_id,turn_id,ordinal),
         UNIQUE(session_id,turn_id,assistant_message_index,call_id),
@@ -441,8 +444,8 @@ class SessionStore(TaskLedgerMixin):
         if version >= 2:
             bounds += (("tasks", "record_json", MAX_TASK_BYTES, "text"),)
         if version >= 4:
-            bounds += (("tool_fences", "call_id", 256, "text"),)
-            bounds += (("tool_fences", "tool_name", 256, "text"),)
+            bounds += (("tool_fences", "call_id", 1024, "text"),)
+            bounds += (("tool_fences", "tool_name", 1024, "text"),)
         for table, column, limit, sql_type in bounds:
             if (
                 conn.execute(
@@ -691,10 +694,11 @@ class SessionStore(TaskLedgerMixin):
             row["diagnostics_json"].encode(),
             sensitive_values=self.sensitive_values,
         )
-        if with_fences:
+        if with_fences and self._has_fence_table(conn):
+            # At V4 the table is the only fence source. On a legacy schema there
+            # is no table and the JSON copy is the only one, so it stands.
             fences = self._fences_for(conn, row["session_id"], row["turn_id"])
-            if fences:
-                diagnostics = diagnostics.model_copy(update={"fences": fences})
+            diagnostics = diagnostics.model_copy(update={"fences": fences})
         return TurnRecord(
             intent=TurnIntent(
                 session_id=row["session_id"],
@@ -733,20 +737,27 @@ class SessionStore(TaskLedgerMixin):
             "SELECT * FROM tool_fences WHERE session_id=? AND turn_id=? ORDER BY ordinal",
             (session_id, turn_id),
         ).fetchall()
-        if not rows:
-            return ()
-        return tuple(
-            ToolFence(
-                session_id=row["session_id"],
-                turn_id=row["turn_id"],
-                ordinal=row["ordinal"],
-                assistant_message_index=row["assistant_message_index"],
-                call_id=row["call_id"],
-                tool_name=row["tool_name"],
-                observed_at_utc=row["observed_at_utc"],
+        fences: list[ToolFence] = []
+        for row in rows:
+            # Decode through the record codec so the sensitive-value and
+            # credential screens that every stored record passes also run here.
+            # Constructing the DTO directly would let a row that was written by
+            # an older build (or a bypass) come back unscreened.
+            raw = canonical(
+                {
+                    "session_id": row["session_id"],
+                    "turn_id": row["turn_id"],
+                    "ordinal": row["ordinal"],
+                    "assistant_message_index": row["assistant_message_index"],
+                    "call_id": row["call_id"],
+                    "tool_name": row["tool_name"],
+                    "observed_at_utc": row["observed_at_utc"],
+                }
             )
-            for row in rows
-        )
+            fences.append(
+                decode_record(ToolFence, raw, sensitive_values=self.sensitive_values)
+            )
+        return tuple(fences)
 
     def _validate_record(self, record: TurnRecord) -> None:
         intent, diagnostic = record.intent, record.diagnostics
@@ -1265,7 +1276,7 @@ class SessionStore(TaskLedgerMixin):
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def upgrade_schema(self) -> Path:
-        """Explicit trusted-host schema 1/2→3; retain an unchanged source backup.
+        """Explicit trusted-host upgrade to the current schema; keep a backup.
 
         The lifetime writer lock is required. No locally owned Turn may be live.
         Existing Session operations remain supported on v1 without this call.
@@ -1538,17 +1549,31 @@ class SessionStore(TaskLedgerMixin):
     def _fence_target(
         self, conn: sqlite3.Connection, expected: Revision, turn_id: str
     ) -> TurnRecord:
-        """The locally-owned executing Turn this fence would extend."""
-        self._row(conn, expected)
+        """The locally-owned executing Turn this fence would extend.
+
+        `_prepare` used to rebuild the whole RecoveryReport here, which is what
+        rejected a corrupt Turn before any fence was written. The append path
+        reads only this Turn, so it re-states the checks that report performed
+        and that this Turn's row can answer: the Session must agree with the
+        Turn's binding and active id, and the Turn must be the one executing.
+        Anything a full report would reject must not be admitted here either.
+        """
+        session = self._row(conn, expected)
         record = self._turn_record_by_id(
             conn, expected.session_id, turn_id, with_fences=False
         )
-        if (
-            record is None
-            or record.state != "executing"
-            or (expected.session_id, turn_id) not in self._owned_turns
-        ):
+        if record is None or record.state != "executing":
             raise SessionStoreError("live_turn_required")
+        if (expected.session_id, turn_id) not in self._owned_turns:
+            raise SessionStoreError("live_turn_required")
+        if session.active_turn_id != turn_id:
+            raise SessionStoreError("unresolved_turn_not_active")
+        if session.state != "executing":
+            raise SessionStoreError("unresolved_turn_state_mismatch")
+        if not same_workspace(session.binding, record.intent.binding):
+            raise SessionStoreError("record_binding_mismatch")
+        if record.intent.base_seq > expected.head_seq:
+            raise SessionStoreError("record_base_ahead_of_head")
         return record
 
     def _turn_record_by_id(

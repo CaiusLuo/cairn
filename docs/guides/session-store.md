@@ -67,8 +67,8 @@ an endpoint or prove checkout freshness.
 
 ## Codec and transactions
 
-[SessionStore](../../src/cairn/infra/sessions/store.py) creates schema **3** and
-continues to read and write schemas **1** and **2** without implicit migration.
+[SessionStore](../../src/cairn/infra/sessions/store.py) creates schema **4** and
+continues to read schemas **1**, **2** and **3** without implicit migration.
 The [codec](../../src/cairn/infra/sessions/codec.py) distinguishes the full host
 `CheckpointPayload` (format 1) from stored `CheckpointDelta` (format 2).
 The host supplies full AgentState history, never ContextBuilder's trimmed request.
@@ -120,9 +120,12 @@ terminal foreign keys, unique Session/Turn checkpoint and one unresolved attempt
 per Session. Schemas 2/3 additionally have the bounded `tasks` table described in
 [Task Ledger](task-ledger.md#schema-compatibility-and-explicit-upgrade). Schema 3
 broadens the SQL checkpoint constraint to formats 1/2 and indexes Turns by
-Session/insertion order to avoid a temporary sort during validation. `upgrade_schema()` is the
-explicit trusted-host operation from schema 1/2 to 3; read-only inspection never
-upgrades. Existing durable CLI Sessions remain usable on their original schema.
+Session/insertion order to avoid a temporary sort during validation. Schema 4
+moves every admitted tool fence out of `turns.diagnostics_json` into the
+append-only `tool_fences` table. `upgrade_schema()` is the explicit trusted-host
+operation that walks 1 -> 2 -> 3 -> 4; read-only inspection never upgrades.
+Existing durable CLI Sessions remain usable on their original schema until a
+durable Turn fences a tool, which needs schema 4.
 Bounded `diagnostics_json` stores
 start binding/message boundary, ordered fences, fixed reason, nullable resolution
 and commit version; no tool

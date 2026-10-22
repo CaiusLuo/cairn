@@ -117,3 +117,122 @@ def test_a_legacy_schema_cannot_fence_before_upgrade(tmp_path: Path) -> None:
         # The refused fence latches the store and leaves the Turn owned.
         with pytest.raises(SessionStoreError, match="turn_still_owned"):
             api.close()
+
+
+def test_a_corrupt_turn_cannot_be_fenced(tmp_path: Path) -> None:
+    """The append fast path rejects what a full report rejects.
+
+    `_prepare` used to rebuild the RecoveryReport here, which caught a Turn whose
+    stored binding disagreed with the Session. Reading only the Turn must not
+    accept it, or a fence would bless a corrupt record and the CAS would copy the
+    corrupt binding onto the Session.
+    """
+    import json
+
+    api = store(tmp_path)
+    try:
+        bind = binding(tmp_path)
+        revision = api.create(bind).revision
+        turn = intent(bind, revision)
+        revision = api.begin_turn(revision, turn)
+        conn = api._conn()
+        diagnostics = json.loads(
+            conn.execute("SELECT diagnostics_json FROM turns").fetchone()[0]
+        )
+        diagnostics["binding"]["workspace"]["root"]["path"] = "/somewhere/else"
+        diagnostics["binding"]["workspace"]["root"]["inode"] = 999_999
+        conn.execute(
+            "UPDATE turns SET diagnostics_json=?",
+            (json.dumps(diagnostics, separators=(",", ":"), sort_keys=True),),
+        )
+        conn.commit()
+        with pytest.raises(SessionStoreError, match="record_binding_mismatch"):
+            api.fence_tool(revision, fence(bind))
+    finally:
+        api._owned_turns.clear()
+        api.close()
+
+
+def test_a_session_without_its_active_turn_cannot_be_fenced(tmp_path: Path) -> None:
+    """A Session that no longer names the executing Turn must reject a fence."""
+    api = store(tmp_path)
+    try:
+        bind = binding(tmp_path)
+        revision = api.create(bind).revision
+        turn = intent(bind, revision)
+        revision = api.begin_turn(revision, turn)
+        conn = api._conn()
+        conn.execute("UPDATE sessions SET state='ready', active_turn_id=NULL")
+        conn.commit()
+        with pytest.raises(SessionStoreError, match="unresolved_turn_not_active"):
+            api.fence_tool(revision, fence(bind))
+    finally:
+        api._owned_turns.clear()
+        api.close()
+
+
+def test_migration_moves_every_fence_and_keeps_the_report(tmp_path: Path) -> None:
+    """A genuine V3 database upgrades to V4 without changing logical state."""
+    api = store(tmp_path)
+    bind = binding(tmp_path)
+    revision = api.create(bind).revision
+    turn = intent(bind, revision)
+    revision = api.begin_turn(revision, turn)
+    revision = api.fence_tool(revision, fence(bind))
+    api.commit_turn(revision, settled(turn))
+    api.close()
+    _downgrade_to_v3(api.path, turn.turn_id)
+
+    legacy = store(tmp_path)
+    before = legacy.inspect(SESSION)
+    assert legacy.schema_version == 3
+    assert len(before.attempts[0].diagnostics.fences) == 1
+    backup = legacy.upgrade_schema()
+    after = legacy.inspect(SESSION)
+    assert legacy.schema_version == SCHEMA_VERSION
+    assert backup.name.startswith("schema-3-backup-")
+    # Logical content is identical; only the storage shape moved.
+    assert after.receipt == before.receipt
+    assert after.revision == before.revision
+    assert after.attempts[0].diagnostics.fences == before.attempts[0].diagnostics.fences
+    rows = (
+        legacy._conn()
+        .execute("SELECT ordinal, call_id FROM tool_fences ORDER BY ordinal")
+        .fetchall()
+    )
+    assert [tuple(row) for row in rows] == [(1, "call-1")]
+    legacy.close()
+
+
+def test_migration_failure_leaves_the_v3_database_intact(tmp_path: Path) -> None:
+    """A fault during the V3->V4 step must not partially migrate the database."""
+    api = store(tmp_path)
+    bind = binding(tmp_path)
+    revision = api.create(bind).revision
+    turn = intent(bind, revision)
+    revision = api.begin_turn(revision, turn)
+    revision = api.fence_tool(revision, fence(bind))
+    api.commit_turn(revision, settled(turn))
+    api.close()
+    _downgrade_to_v3(api.path, turn.turn_id)
+
+    legacy = store(tmp_path)
+    assert legacy.inspect(SESSION).attempts[0].diagnostics.fences
+
+    def fail(conn: sqlite3.Connection) -> None:
+        raise sqlite3.OperationalError("migration interrupted")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(type(legacy), "_migrate_v3", fail)
+        with pytest.raises(SessionStoreError):
+            legacy.upgrade_schema()
+    legacy.close()
+
+    # A fresh read-only inspector sees the untouched V3 database.
+    reader = store(tmp_path)
+    try:
+        assert reader.schema_version == 3
+        assert len(reader.inspect(SESSION).attempts[0].diagnostics.fences) == 1
+        assert reader._has_fence_table(reader._conn()) is False
+    finally:
+        reader.close()

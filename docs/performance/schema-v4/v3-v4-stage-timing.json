@@ -69,58 +69,58 @@
     "rows": [
       {
         "fences": 16,
-        "total_s": 0.0727,
+        "total_s": 0.0721,
         "prepare_s": 0.0,
-        "codec_s": 0.0122,
+        "codec_s": 0.012,
         "validate_s": 0.0,
-        "write_s": 0.0643,
-        "commit_s": 0.0299,
-        "total_max_s": 0.0764,
-        "total_min_s": 0.0713
+        "write_s": 0.0638,
+        "commit_s": 0.0293,
+        "total_max_s": 0.0738,
+        "total_min_s": 0.0688
       },
       {
         "fences": 32,
-        "total_s": 0.145,
+        "total_s": 0.1458,
         "prepare_s": 0.0,
-        "codec_s": 0.0246,
+        "codec_s": 0.0244,
         "validate_s": 0.0,
-        "write_s": 0.128,
-        "commit_s": 0.0579,
-        "total_max_s": 0.1555,
-        "total_min_s": 0.1435
+        "write_s": 0.1291,
+        "commit_s": 0.0605,
+        "total_max_s": 0.1658,
+        "total_min_s": 0.144
       },
       {
         "fences": 64,
-        "total_s": 0.2949,
+        "total_s": 0.2925,
         "prepare_s": 0.0,
-        "codec_s": 0.0487,
+        "codec_s": 0.0488,
         "validate_s": 0.0,
-        "write_s": 0.2609,
+        "write_s": 0.2592,
         "commit_s": 0.1221,
-        "total_max_s": 0.3053,
-        "total_min_s": 0.2927
+        "total_max_s": 0.2979,
+        "total_min_s": 0.2895
       },
       {
         "fences": 128,
-        "total_s": 0.5982,
+        "total_s": 0.5806,
         "prepare_s": 0.0,
-        "codec_s": 0.0996,
+        "codec_s": 0.0977,
         "validate_s": 0.0,
-        "write_s": 0.5303,
-        "commit_s": 0.2458,
-        "total_max_s": 0.6076,
-        "total_min_s": 0.594
+        "write_s": 0.5135,
+        "commit_s": 0.2392,
+        "total_max_s": 0.5877,
+        "total_min_s": 0.5767
       },
       {
         "fences": 256,
-        "total_s": 1.2069,
+        "total_s": 1.2193,
         "prepare_s": 0.0,
-        "codec_s": 0.1996,
+        "codec_s": 0.1989,
         "validate_s": 0.0,
-        "write_s": 1.0701,
-        "commit_s": 0.4955,
-        "total_max_s": 1.2352,
-        "total_min_s": 1.1851
+        "write_s": 1.0821,
+        "commit_s": 0.5078,
+        "total_max_s": 1.2324,
+        "total_min_s": 1.1955
       }
     ]
   },
@@ -128,52 +128,72 @@
     {
       "fences": 16,
       "v3_total_s": 0.1249,
-      "v4_total_s": 0.0727,
-      "speedup": 1.72,
+      "v4_total_s": 0.0721,
+      "speedup": 1.73,
       "v3_ms_per_fence": 7.81,
-      "v4_ms_per_fence": 4.54,
+      "v4_ms_per_fence": 4.51,
       "v3_prepare_s": 0.0661,
-      "v4_prepare_s": 0.0
+      "v4_prepare_s": 0.0,
+      "v3_write_s": 0.0499,
+      "v4_write_s": 0.0638,
+      "v3_commit_s": 0.0284,
+      "v4_commit_s": 0.0293
     },
     {
       "fences": 32,
       "v3_total_s": 0.304,
-      "v4_total_s": 0.145,
-      "speedup": 2.1,
+      "v4_total_s": 0.1458,
+      "speedup": 2.09,
       "v3_ms_per_fence": 9.5,
-      "v4_ms_per_fence": 4.53,
+      "v4_ms_per_fence": 4.56,
       "v3_prepare_s": 0.1761,
-      "v4_prepare_s": 0.0
+      "v4_prepare_s": 0.0,
+      "v3_write_s": 0.1071,
+      "v4_write_s": 0.1291,
+      "v3_commit_s": 0.0622,
+      "v4_commit_s": 0.0605
     },
     {
       "fences": 64,
       "v3_total_s": 0.7542,
-      "v4_total_s": 0.2949,
-      "speedup": 2.56,
+      "v4_total_s": 0.2925,
+      "speedup": 2.58,
       "v3_ms_per_fence": 11.78,
-      "v4_ms_per_fence": 4.61,
+      "v4_ms_per_fence": 4.57,
       "v3_prepare_s": 0.5066,
-      "v4_prepare_s": 0.0
+      "v4_prepare_s": 0.0,
+      "v3_write_s": 0.2123,
+      "v4_write_s": 0.2592,
+      "v3_commit_s": 0.1226,
+      "v4_commit_s": 0.1221
     },
     {
       "fences": 128,
       "v3_total_s": 2.1478,
-      "v4_total_s": 0.5982,
-      "speedup": 3.59,
+      "v4_total_s": 0.5806,
+      "speedup": 3.7,
       "v3_ms_per_fence": 16.78,
-      "v4_ms_per_fence": 4.67,
+      "v4_ms_per_fence": 4.54,
       "v3_prepare_s": 1.6486,
-      "v4_prepare_s": 0.0
+      "v4_prepare_s": 0.0,
+      "v3_write_s": 0.4295,
+      "v4_write_s": 0.5135,
+      "v3_commit_s": 0.2483,
+      "v4_commit_s": 0.2392
     },
     {
       "fences": 256,
       "v3_total_s": 7.1006,
-      "v4_total_s": 1.2069,
-      "speedup": 5.88,
+      "v4_total_s": 1.2193,
+      "speedup": 5.82,
       "v3_ms_per_fence": 27.74,
-      "v4_ms_per_fence": 4.71,
+      "v4_ms_per_fence": 4.76,
       "v3_prepare_s": 5.9114,
-      "v4_prepare_s": 0.0
+      "v4_prepare_s": 0.0,
+      "v3_write_s": 1.0416,
+      "v4_write_s": 1.0821,
+      "v3_commit_s": 0.6612,
+      "v4_commit_s": 0.5078
     }
   ]
 }

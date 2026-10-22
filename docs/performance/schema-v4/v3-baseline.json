@@ -1,15 +1,54 @@
 {
   "abandoned": {
-    "error": "turn_still_owned",
-    "kind": "abandoned"
+    "kind": "abandoned",
+    "revision": "session_id='00000000-0000-4000-8000-000000000001' version=4 head_seq=0",
+    "status": "clean"
   },
   "completed": {
-    "error": "turn_still_owned",
-    "kind": "completed"
+    "fences": [
+      [
+        "00000000-0000-4000-8000-000000000001",
+        "00000000-0000-4000-8000-000000000002",
+        1,
+        1,
+        "call-1",
+        "read_file",
+        "2020-01-01T00:00:02Z"
+      ]
+    ],
+    "kind": "completed",
+    "receipt": {
+      "outcome": "completed",
+      "revision": {
+        "head_seq": 1,
+        "session_id": "00000000-0000-4000-8000-000000000001",
+        "version": 3
+      },
+      "sha256": "995b33f17461640e17032904e3c459d7e99bda3f212ce453823e24d819abc64f",
+      "turn_id": "00000000-0000-4000-8000-000000000002"
+    },
+    "revision": "session_id='00000000-0000-4000-8000-000000000001' version=3 head_seq=1",
+    "status": "clean",
+    "tables": {
+      "checkpoints": "03b116c685852aaccb643738460c4e160f6db32b8a1d3599d1f2a23de80c4fb7",
+      "turns": "009ebf66393e71f4c27520acbdd64de29d7458a33d8b7925e2a4fdf58ef3b2a8"
+    }
   },
   "executing": {
-    "error": "turn_still_owned",
-    "kind": "executing"
+    "fences": [
+      [
+        "00000000-0000-4000-8000-000000000001",
+        "00000000-0000-4000-8000-000000000002",
+        1,
+        1,
+        "c1",
+        "read_file",
+        "2020-01-01T00:00:02Z"
+      ]
+    ],
+    "kind": "executing",
+    "revision": "session_id='00000000-0000-4000-8000-000000000001' version=2 head_seq=0",
+    "status": "effects_unknown"
   },
   "no_fence": {
     "kind": "no_fence",
@@ -20,7 +59,7 @@
         "session_id": "00000000-0000-4000-8000-000000000001",
         "version": 2
       },
-      "sha256": "934adccd3c5c0d9b93e0c9f9f67585676578fd0e67179d6658ee59f24d18d919",
+      "sha256": "ae034e5816015ef8d34556fef0cb4f8145f0590494bb4b769e1b2974848db9ac",
       "turn_id": "00000000-0000-4000-8000-000000000002"
     },
     "revision": "session_id='00000000-0000-4000-8000-000000000001' version=2 head_seq=1",
@@ -29,43 +68,56 @@
   "performance": [
     {
       "fences": 16,
-      "max_s": 0.13536519184708595,
-      "median_ms_per_fence": 7.94361368753016,
-      "median_s": 0.12709781900048256,
-      "min_s": 0.12551960162818432
+      "max_s": 0.07886149547994137,
+      "median_ms_per_fence": 4.879261017777026,
+      "median_s": 0.07806817628443241,
+      "min_s": 0.07587664388120174
     },
     {
       "fences": 32,
-      "max_s": 0.3020190801471472,
-      "median_ms_per_fence": 9.29774483665824,
-      "median_s": 0.29752783477306366,
-      "min_s": 0.2902489332482219
+      "max_s": 0.159554373472929,
+      "median_ms_per_fence": 4.8753085429780185,
+      "median_s": 0.1560098733752966,
+      "min_s": 0.15392761677503586
     },
     {
       "fences": 64,
-      "max_s": 0.7789355963468552,
-      "median_ms_per_fence": 12.158688201452605,
-      "median_s": 0.7781560448929667,
-      "min_s": 0.7537902100011706
+      "max_s": 0.3062474727630615,
+      "median_ms_per_fence": 4.718790063634515,
+      "median_s": 0.30200256407260895,
+      "min_s": 0.29809538647532463
     },
     {
       "fences": 128,
-      "max_s": 2.2340589435771108,
-      "median_ms_per_fence": 17.26059331849683,
-      "median_s": 2.2093559447675943,
-      "min_s": 2.185872634872794
+      "max_s": 0.6127123050391674,
+      "median_ms_per_fence": 4.699518962297589,
+      "median_s": 0.6015384271740913,
+      "min_s": 0.5927794389426708
     },
     {
       "fences": 256,
-      "max_s": 7.165765846148133,
-      "median_ms_per_fence": 27.86668799308245,
-      "median_s": 7.133872126229107,
-      "min_s": 6.96196598187089
+      "max_s": 1.247899854555726,
+      "median_ms_per_fence": 4.797071575012524,
+      "median_s": 1.228050323203206,
+      "min_s": 1.2081169933080673
     }
   ],
   "recovery": {
-    "error": "turn_still_owned",
-    "kind": "recovery"
+    "fences": [
+      [
+        "00000000-0000-4000-8000-000000000001",
+        "00000000-0000-4000-8000-000000000002",
+        1,
+        1,
+        "c1",
+        "read_file",
+        "2020-01-01T00:00:02Z"
+      ]
+    ],
+    "kind": "recovery_required",
+    "marked_version": 3,
+    "revision": "session_id='00000000-0000-4000-8000-000000000001' version=3 head_seq=0",
+    "status": "recovery_required"
   },
-  "store_path": "/tmp/cairn-baseline-nd5emjv5"
+  "store_path": "/tmp/cairn-baseline-50ja8678"
 }

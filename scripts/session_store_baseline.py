@@ -52,6 +52,17 @@ def _table_digest(path: Path, table: str) -> str:
     return hashlib.sha256(repr(rows).encode()).hexdigest()
 
 
+def _close_quietly(api: Any) -> None:
+    """Close a store whose Turn may still be owned by this script.
+
+    The baseline deliberately leaves Turns unresolved (executing, recovery
+    required); `close()` refusing an owned Turn is expected, not a failure of the
+    scenario.
+    """
+    with contextlib.suppress(SessionStoreError):
+        api.close()
+
+
 def _fence_tuple(fence_value: ToolFence) -> tuple[Any, ...]:
     return (
         fence_value.session_id,
@@ -64,12 +75,47 @@ def _fence_tuple(fence_value: ToolFence) -> tuple[Any, ...]:
     )
 
 
-def _diagnostics_fences(row: dict[str, Any]) -> tuple[tuple[Any, ...], ...]:
-    raw = row.get("diagnostics_json")
-    if not isinstance(raw, str):
+def _diagnostics_fences(
+    path: Path, session_id: str, turn_id: str
+) -> tuple[tuple[Any, ...], ...]:
+    """The Turn's fences, from the table when it exists, else from the JSON."""
+    with sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True) as conn:
+        conn.row_factory = sqlite3.Row
+        has_table = (
+            conn.execute(
+                "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='tool_fences'"
+            ).fetchone()
+            is not None
+        )
+        if has_table:
+            rows = conn.execute(
+                "SELECT * FROM tool_fences WHERE session_id=? AND turn_id=? ORDER BY ordinal",
+                (session_id, turn_id),
+            ).fetchall()
+            return tuple(
+                (
+                    row["session_id"],
+                    row["turn_id"],
+                    row["ordinal"],
+                    row["assistant_message_index"],
+                    row["call_id"],
+                    row["tool_name"],
+                    row["observed_at_utc"],
+                )
+                for row in rows
+            )
+        row = conn.execute(
+            "SELECT diagnostics_json FROM turns WHERE session_id=? AND turn_id=?",
+            (session_id, turn_id),
+        ).fetchone()
+    if row is None:
         return ()
-    decoded = AttemptDiagnostics.model_validate(json.loads(raw))
-    return tuple(_fence_tuple(item) for item in decoded.fences)
+    return tuple(
+        _fence_tuple(item)
+        for item in AttemptDiagnostics.model_validate_json(
+            row["diagnostics_json"]
+        ).fences
+    )
 
 
 def scenario_completed(tmp: Path) -> dict[str, Any]:
@@ -80,8 +126,7 @@ def scenario_completed(tmp: Path) -> dict[str, Any]:
         revision = api.create(bind).revision
         turn = intent(bind, revision)
         revision = api.begin_turn(revision, turn)
-        revision = api.fence_tool(revision, fence(bind, ordinal=1, call_id="c1"))
-        revision = api.fence_tool(revision, fence(bind, ordinal=2, call_id="c2"))
+        revision = api.fence_tool(revision, fence(bind))
         receipt = api.commit_turn(revision, settled(turn))
         report = api.inspect(SESSION)
         return {
@@ -89,13 +134,11 @@ def scenario_completed(tmp: Path) -> dict[str, Any]:
             "revision": str(report.revision),
             "status": report.status,
             "receipt": receipt.model_dump(mode="json"),
-            "fences": _diagnostics_fences(
-                _session_row(api.path, SESSION) | _turn_row(api.path, SESSION)
-            ),
+            "fences": _diagnostics_fences(api.path, SESSION, turn.turn_id),
             "tables": {t: _table_digest(api.path, t) for t in ("turns", "checkpoints")},
         }
     finally:
-        api.close()
+        _close_quietly(api)
 
 
 def _turn_row(path: Path, session_id: str) -> dict[str, Any]:
@@ -121,10 +164,10 @@ def scenario_executing(tmp: Path) -> dict[str, Any]:
             "kind": "executing",
             "revision": str(report.revision),
             "status": report.status,
-            "fences": _diagnostics_fences(_turn_row(api.path, SESSION)),
+            "fences": _diagnostics_fences(api.path, SESSION, turn.turn_id),
         }
     finally:
-        api.close()
+        _close_quietly(api)
 
 
 def scenario_recovery(tmp: Path) -> dict[str, Any]:
@@ -143,11 +186,11 @@ def scenario_recovery(tmp: Path) -> dict[str, Any]:
             "kind": "recovery_required",
             "revision": str(after.revision),
             "status": after.status,
-            "fences": _diagnostics_fences(_turn_row(api.path, SESSION)),
+            "fences": _diagnostics_fences(api.path, SESSION, turn.turn_id),
             "marked_version": marked.version,
         }
     finally:
-        api.close()
+        _close_quietly(api)
 
 
 def scenario_abandoned(tmp: Path) -> dict[str, Any]:
@@ -159,6 +202,8 @@ def scenario_abandoned(tmp: Path) -> dict[str, Any]:
         turn = intent(bind, revision)
         revision = api.begin_turn(revision, turn)
         revision = api.fence_tool(revision, fence(bind, ordinal=1, call_id="c1"))
+        # Simulate the owner dying: drop local ownership, then reopen.
+        api._owned_turns.clear()
         api.close()
         api = store(tmp)
         report = api.inspect(SESSION)
@@ -180,7 +225,7 @@ def scenario_abandoned(tmp: Path) -> dict[str, Any]:
             "status": after.status,
         }
     finally:
-        api.close()
+        _close_quietly(api)
 
 
 def scenario_no_fence(tmp: Path) -> dict[str, Any]:
@@ -199,7 +244,7 @@ def scenario_no_fence(tmp: Path) -> dict[str, Any]:
             "receipt": receipt.model_dump(mode="json"),
         }
     finally:
-        api.close()
+        _close_quietly(api)
 
 
 def measure(path_root: Path, counts: tuple[int, ...]) -> list[dict[str, float]]:
