@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from cairn.core.models import ToolResult
-from cairn.core.permissions import CapabilityRequest, PermissionCapability
 from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
 from cairn.infra.tools.capture import read_bounded
 from cairn.infra.tools.credential_env import SECRET_ENV_KEYS
+from cairn.infra.tools.filesystem_access import normalize_access_root
 from cairn.infra.tools.sandbox import resolve_tmpdir, resolve_uv_cache_dir
 from cairn.infra.workspace.workspace import Workspace
 
@@ -331,12 +331,13 @@ def _macos_sandbox_profile(
         if root is not None:
             writable_roots.append(root)
     allowed = " ".join(f"(subpath {json.dumps(str(root))})" for root in writable_roots)
-    # The workspace-wide allow above covers Git metadata inside it. sandbox-exec
-    # evaluates rules in order, so a later deny narrows the earlier allow and
-    # keeps the metadata read-only while ordinary source files stay writable.
-    denied = " ".join(
-        f"(subpath {json.dumps(str(path))})" for path in _git_metadata_paths(cwd)
-    )
+    # Git metadata is read-only under the workspace and under any granted root.
+    # sandbox-exec evaluates rules in order, so the later deny narrows the
+    # earlier allow and keeps ordinary source files writable.
+    metadata = [*_git_metadata_paths(cwd)]
+    for root in extra_writable_roots:
+        metadata.extend(_git_metadata_paths(root))
+    denied = " ".join(f"(subpath {json.dumps(str(path))})" for path in metadata)
     deny_metadata = f"(deny file-write* {denied}) " if denied else ""
     return (
         "(version 1) (allow default) "
@@ -479,10 +480,13 @@ class BashTool:
         extra_roots = arguments.get("extra_writable_roots", [])
         if not isinstance(extra_roots, list):
             raise InvalidArguments("extra_writable_roots must be an array of strings")
-        if any(not isinstance(root, str) or not root.strip() for root in extra_roots):
-            raise InvalidArguments(
-                "extra_writable_roots must be absolute directory paths"
-            )
+        for root in extra_roots:
+            if not isinstance(root, str) or not root.strip():
+                raise InvalidArguments("extra_writable_roots must be non-empty strings")
+            if not Path(root).is_absolute():
+                raise InvalidArguments(
+                    "extra_writable_roots must be absolute directory paths"
+                )
         if network_access and extra_roots:
             raise InvalidArguments(
                 "request network_access or extra_writable_roots, not both in one call"
@@ -497,29 +501,19 @@ class BashTool:
                 "network_access or extra_writable_roots requires a justification"
             )
 
-    def requested_capability(
-        self, arguments: dict[str, Any]
-    ) -> CapabilityRequest | None:
-        """Report the bash capability this validated call needs.
+        # Validate each requested root now, at preflight, so an unusable path is
+        # a tool error the model sees and can correct rather than an exception
+        # that aborts the whole turn during permission approval.
+        if extra_roots:
+            self._validate_extra_roots(extra_roots)
 
-        Network and filesystem requests are mutually exclusive per call so the
-        approval prompt names exactly one capability. ``validate`` rejects an
-        unapproved shape; this only reports the capability the call asked for.
-        """
-        justification = arguments.get("justification", "")
-        roots = arguments.get("extra_writable_roots") or []
-        if roots:
-            return CapabilityRequest(
-                capability=PermissionCapability.FILESYSTEM_ACCESS,
-                paths=tuple(roots),
-                justification=justification,
-            )
-        if arguments.get("network_access") is True:
-            return CapabilityRequest(
-                capability=PermissionCapability.NETWORK,
-                justification=justification,
-            )
-        return None
+    def _validate_extra_roots(self, roots: list[str]) -> None:
+        protected = (self.workspace.root, Path.home())
+        for root in roots:
+            try:
+                normalize_access_root(root, protected=protected)
+            except ValueError as exc:
+                raise InvalidArguments(str(exc)) from None
 
     async def _collect_output(
         self, process: asyncio.subprocess.Process

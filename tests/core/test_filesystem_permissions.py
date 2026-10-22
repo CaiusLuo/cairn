@@ -1,5 +1,6 @@
 """Filesystem-access capability: path validation and approval semantics."""
 
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -12,10 +13,11 @@ from cairn.core.permissions import (
     PermissionRequest,
     PermissionSource,
     SessionPermissionHandler,
+    _bash_capability_request,
     evaluate_permission_policy,
-    normalize_granted_root,
-    requested_capability,
 )
+from cairn.infra.tools import filesystem_access
+from cairn.infra.tools.filesystem_access import normalize_access_root
 
 
 def _fs_call(*roots: str, justification: str = "clean temp") -> ToolCall:
@@ -39,8 +41,14 @@ def _request(paths: tuple[str, ...]) -> PermissionRequest:
     )
 
 
+def _handler(
+    prompt: Callable[[PermissionRequest], PermissionChoice] | None,
+) -> SessionPermissionHandler:
+    return SessionPermissionHandler(prompt, root_normalizer=normalize_access_root)
+
+
 def test_bash_extra_roots_request_filesystem_capability() -> None:
-    request = requested_capability(_fs_call("/var/tmp/scratch"))
+    request = _bash_capability_request(_fs_call("/var/tmp/scratch"))
 
     assert request is not None
     assert request.capability is PermissionCapability.FILESYSTEM_ACCESS
@@ -53,12 +61,12 @@ def test_network_and_no_request_still_separate() -> None:
         name="bash",
         arguments={"command": "curl x", "network_access": True, "justification": "j"},
     )
-    network_request = requested_capability(network)
+    network_request = _bash_capability_request(network)
     assert network_request is not None
     assert network_request.capability is PermissionCapability.NETWORK
 
     plain = ToolCall(id="p", name="bash", arguments={"command": "git status"})
-    assert requested_capability(plain) is None
+    assert _bash_capability_request(plain) is None
 
 
 def test_policy_asks_for_extra_roots_and_allows_baseline() -> None:
@@ -74,33 +82,47 @@ def test_normalize_rejects_system_and_unsafe_paths(tmp_path: Path) -> None:
 
     for blocked in ("/", "/etc", "/usr", "/proc", "/dev"):
         with pytest.raises(ValueError):
-            normalize_granted_root(blocked)
+            normalize_access_root(blocked)
 
     with pytest.raises(ValueError):
-        normalize_granted_root("relative/path")
+        normalize_access_root("relative/path")
 
     with pytest.raises(ValueError):
-        normalize_granted_root(str(tmp_path / "missing"))
-
-    a_file = tmp_path / "file.txt"
-    a_file.write_text("x")
-    with pytest.raises(ValueError):
-        normalize_granted_root(str(a_file))
+        normalize_access_root(str(tmp_path / "missing"))
 
     with pytest.raises(ValueError):
-        normalize_granted_root(str(workspace), protected=(workspace,))
+        normalize_access_root(str(tmp_path / "file.txt"))
 
     with pytest.raises(ValueError):
-        normalize_granted_root(str(tmp_path), protected=(workspace,))
+        normalize_access_root(str(workspace), protected=(workspace,))
 
     with pytest.raises(ValueError):
-        normalize_granted_root(str(tmp_path / ".git"))
+        normalize_access_root(str(tmp_path), protected=(workspace,))
+
+    with pytest.raises(ValueError):
+        normalize_access_root(str(tmp_path / ".git"))
+
+
+def test_normalize_rejects_a_directory_inside_a_blocked_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    blocked = tmp_path / "system"
+    (blocked / "sub").mkdir(parents=True)
+    monkeypatch.setattr(
+        filesystem_access, "_BLOCKED_SYSTEM_ROOTS", frozenset({blocked})
+    )
+
+    with pytest.raises(ValueError, match="protected system"):
+        normalize_access_root(str(blocked / "sub"))
+    # The blocked root itself is still refused.
+    with pytest.raises(ValueError, match="protected system"):
+        normalize_access_root(str(blocked))
 
 
 def test_normalize_accepts_a_normal_directory(tmp_path: Path) -> None:
     data = tmp_path / "data"
     data.mkdir()
-    assert normalize_granted_root(str(data)) == data.resolve()
+    assert normalize_access_root(str(data)) == data.resolve()
 
 
 def test_handler_session_grant_reuse_and_subset(tmp_path: Path) -> None:
@@ -115,7 +137,7 @@ def test_handler_session_grant_reuse_and_subset(tmp_path: Path) -> None:
         prompts.append(request)
         return PermissionChoice.ALLOW_SESSION
 
-    handler = SessionPermissionHandler(prompt)
+    handler = _handler(prompt)
 
     first = handler.authorize(_request((str(root),)))
     assert first.allowed and first.prompted
@@ -133,25 +155,25 @@ def test_handler_allow_once_does_not_persist(tmp_path: Path) -> None:
     root = tmp_path / "data"
     root.mkdir()
 
-    handler = SessionPermissionHandler(lambda request: PermissionChoice.ALLOW_ONCE)
+    handler = _handler(lambda request: PermissionChoice.ALLOW_ONCE)
     first = handler.authorize(_request((str(root),)))
     second = handler.authorize(_request((str(root),)))
 
     assert first.allowed and first.prompted
     assert second.prompted
-    assert handler.filesystem_roots() == ()
+    assert handler.granted_roots == set()
 
 
 def test_handler_deny_grants_nothing(tmp_path: Path) -> None:
     root = tmp_path / "data"
     root.mkdir()
 
-    handler = SessionPermissionHandler(lambda request: PermissionChoice.DENY)
+    handler = _handler(lambda request: PermissionChoice.DENY)
     result = handler.authorize(_request((str(root),)))
 
     assert not result.allowed
     assert result.source is PermissionSource.USER_DENIED
-    assert handler.filesystem_roots() == ()
+    assert handler.granted_roots == set()
 
 
 def test_handler_rejects_a_protected_ancestor(tmp_path: Path) -> None:
@@ -161,6 +183,7 @@ def test_handler_rejects_a_protected_ancestor(tmp_path: Path) -> None:
     handler = SessionPermissionHandler(
         lambda request: PermissionChoice.ALLOW_SESSION,
         workspace_root=workspace,
+        root_normalizer=normalize_access_root,
     )
     with pytest.raises(ValueError):
         # tmp_path is an ancestor of the workspace; granting it would expose it.
@@ -170,18 +193,27 @@ def test_handler_rejects_a_protected_ancestor(tmp_path: Path) -> None:
 def test_handler_invalid_choice_fails_closed(tmp_path: Path) -> None:
     root = tmp_path / "data"
     root.mkdir()
-    handler = SessionPermissionHandler(Mock(return_value="allow_session"))
+    handler = _handler(Mock(return_value="allow_session"))
 
     with pytest.raises(ValueError, match="Invalid permission choice"):
         handler.authorize(_request((str(root),)))
-    assert handler.filesystem_roots() == ()
+    assert handler.granted_roots == set()
 
 
 def test_handler_without_prompt_fails_closed(tmp_path: Path) -> None:
     root = tmp_path / "data"
     root.mkdir()
-    handler = SessionPermissionHandler()
+    handler = _handler(None)
     result = handler.authorize(_request((str(root),)))
 
     assert not result.allowed
     assert result.source is PermissionSource.NO_HANDLER
+
+
+def test_handler_without_normalizer_fails_closed(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    root.mkdir()
+    handler = SessionPermissionHandler(lambda request: PermissionChoice.ALLOW_ONCE)
+
+    with pytest.raises(ValueError, match="no root validator"):
+        handler.authorize(_request((str(root),)))

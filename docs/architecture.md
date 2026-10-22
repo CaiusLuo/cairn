@@ -241,8 +241,9 @@ task/turn lifecycle.
   a capability (`network_access`, `extra_writable_roots`), and owns the filesystem
   path rule a `filesystem_access` grant must satisfy. This is a deliberate, narrow
   guardrail that runs after the tool validates its arguments, so the coupling is
-  documented rather than removed. A tool that reaches outside the workspace can
-  instead report its own request through `Tool.requested_capability`.
+  documented rather than removed. The filesystem *effect* of proving a granted
+  directory is real and unprotected lives in `infra.tools.filesystem_access` and
+  is injected into the handler, so `core` never touches the filesystem.
 - `core.events.Event.data` is an untyped mapping rendered and consumed by string
   key. A typed payload per event would be a real improvement, but no consumer
   needs it yet.

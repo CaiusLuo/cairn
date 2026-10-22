@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core.permissions import PermissionCapability
 from cairn.infra.tools.base import InvalidArguments
 from cairn.infra.tools.bash import BashTool
 from cairn.infra.workspace.workspace import Workspace
@@ -12,7 +11,7 @@ from cairn.infra.workspace.workspace import Workspace
 
 def _tool(tmp_path: Path) -> BashTool:
     workspace = tmp_path / "ws"
-    workspace.mkdir()
+    workspace.mkdir(exist_ok=True)
     return BashTool(Workspace(workspace))
 
 
@@ -51,19 +50,26 @@ def test_unknown_argument_rejected(tmp_path: Path) -> None:
         _tool(tmp_path).validate({"command": "true", "extra_writable_root": ["x"]})
 
 
-def test_requested_capability_reports_filesystem(tmp_path: Path) -> None:
+def test_extra_roots_are_validated_at_preflight(tmp_path: Path) -> None:
+    """An unusable root fails as a tool error, not as an aborted turn."""
+    for bad in ("relative/path", "/", "/etc", str(tmp_path / "missing")):
+        with pytest.raises(InvalidArguments):
+            _tool(tmp_path).validate(
+                {
+                    "command": "true",
+                    "extra_writable_roots": [bad],
+                    "justification": "j",
+                }
+            )
+
+
+def test_extra_roots_inside_the_workspace_are_rejected(tmp_path: Path) -> None:
     tool = _tool(tmp_path)
-    request = tool.requested_capability(
-        {
-            "command": "true",
-            "extra_writable_roots": [str(tmp_path)],
-            "justification": "j",
-        }
-    )
-    assert request is not None
-    assert request.capability is PermissionCapability.FILESYSTEM_ACCESS
-    assert request.paths == (str(tmp_path),)
-
-
-def test_requested_capability_none_for_plain_call(tmp_path: Path) -> None:
-    assert _tool(tmp_path).requested_capability({"command": "git status"}) is None
+    with pytest.raises(InvalidArguments):
+        tool.validate(
+            {
+                "command": "true",
+                "extra_writable_roots": [str(tool.workspace.root)],
+                "justification": "j",
+            }
+        )

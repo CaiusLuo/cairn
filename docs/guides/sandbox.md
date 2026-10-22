@@ -202,8 +202,9 @@ widened silently.
 - `bash` advertises `extra_writable_roots`: an array of absolute directories, with
   a required `justification`. Requesting network access and extra roots in the same
   call is rejected, so one approval always names one capability.
-- The tool reports the request from its own validated arguments
-  (`Tool.requested_capability`); the runtime turns it into a permission `ASK`. The
+- `bash` validates each requested root at preflight (`infra.tools.filesystem_access`),
+  so an unusable path is a tool error the model can correct instead of an
+  exception during approval. The request then becomes a permission `ASK`, and the
   user sees every absolute path and the reason before approving.
 - Approval is scope-limited: a grant is a set of normalized, per-session
   directories and is never written to disk. `allow once` covers that execution;

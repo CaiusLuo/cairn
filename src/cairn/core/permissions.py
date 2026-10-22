@@ -14,14 +14,14 @@ capability at a time.
 
 Two capabilities can widen the fixed sandbox, and both follow the same rule:
 authority comes only from a granted capability, never from a model-provided
-argument. ``NETWORK`` lifts the network namespace restriction; ``FILESYSTEM_ACCESS``
-adds read/write access to specific absolute directories outside the workspace.
-A filesystem grant is a set of normalized, per-session roots; the tool receives
-them only after approval and re-validates every target against them.
+argument. ``NETWORK`` lifts the network namespace restriction;
+``FILESYSTEM_ACCESS`` adds read/write access to specific absolute directories
+outside the workspace. Proving a directory is real and unprotected is a
+filesystem effect, so this module delegates it to an injected normalizer and
+never touches the filesystem itself.
 """
 
-import os
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
@@ -29,30 +29,6 @@ from typing import Protocol
 from pydantic import BaseModel
 
 from cairn.core.models import ToolCall
-
-#: Absolute directories that may never be granted, even with approval. These
-#: are either the filesystem root, a home/system tree that would expose
-#: credentials or the whole machine, or a pseudo-filesystem. A grant is scoped
-#: to a project-adjacent data directory, never to one of these.
-_BLOCKED_SYSTEM_ROOTS: frozenset[Path] = frozenset(
-    {
-        Path("/"),
-        Path("/home"),
-        Path("/root"),
-        Path("/Users"),
-        Path("/etc"),
-        Path("/usr"),
-        Path("/lib"),
-        Path("/lib32"),
-        Path("/lib64"),
-        Path("/bin"),
-        Path("/sbin"),
-        Path("/boot"),
-        Path("/dev"),
-        Path("/proc"),
-        Path("/sys"),
-    }
-)
 
 
 class PermissionCapability(StrEnum):
@@ -88,19 +64,6 @@ class PermissionSource(StrEnum):
     NO_HANDLER = "no_handler"
 
 
-class CapabilityRequest(BaseModel):
-    """One capability a validated tool call asks for.
-
-    ``paths`` is non-empty only for ``FILESYSTEM_ACCESS`` and holds the absolute
-    directories the call wants to reach outside the workspace. The tool derives
-    them during its own preflight; they are never read from a trusted context.
-    """
-
-    capability: PermissionCapability
-    paths: tuple[str, ...] = ()
-    justification: str = ""
-
-
 class PermissionRequest(BaseModel):
     capability: PermissionCapability
     justification: str
@@ -130,6 +93,12 @@ class CapabilityPermissionHandler(Protocol):
     def authorize(self, request: PermissionRequest) -> PermissionResult: ...
 
 
+#: Validates one requested root and returns its resolved directory, raising
+#: ``ValueError`` when it cannot be granted. Implemented in ``infra``; injected
+#: so this module performs no filesystem work.
+RootNormalizer = Callable[..., Path]
+
+
 def _is_sudo_guardrail(tool_call: ToolCall) -> bool:
     """Best-effort action guardrail for commands whose first token is ``sudo``.
 
@@ -149,65 +118,17 @@ def _is_sudo_guardrail(tool_call: ToolCall) -> bool:
     return bool(stripped) and stripped.split(maxsplit=1)[0] == "sudo"
 
 
-def _bash_extra_roots(tool_call: ToolCall) -> tuple[str, ...]:
-    """Absolute extra roots a bash call declared, or an empty tuple.
-
-    Shape was already validated by the tool; this only extracts the strings so
-    the policy can see that a filesystem capability is being requested.
-    """
-    raw = tool_call.arguments.get("extra_writable_roots")
-    if not isinstance(raw, list):
-        return ()
-    return tuple(value for value in raw if isinstance(value, str) and value)
-
-
-def requested_capability(tool_call: ToolCall) -> CapabilityRequest | None:
-    """Return the capability a bash call requests, or ``None``.
-
-    Only the core-visible bash capabilities are derived here because only their
-    request lives in the tool call arguments. A file tool that reaches outside
-    the workspace reports its own request through the tool protocol, which the
-    runtime merges with this result.
-    """
-    if tool_call.name != "bash":
-        return None
-
-    if tool_call.arguments.get("network_access") is True:
-        return CapabilityRequest(
-            capability=PermissionCapability.NETWORK,
-            justification=_justification(tool_call),
-        )
-
-    roots = _bash_extra_roots(tool_call)
-    if roots:
-        return CapabilityRequest(
-            capability=PermissionCapability.FILESYSTEM_ACCESS,
-            paths=roots,
-            justification=_justification(tool_call),
-        )
-
-    return None
-
-
-def _justification(tool_call: ToolCall) -> str:
-    raw = tool_call.arguments.get("justification")
-    return raw if isinstance(raw, str) else ""
-
-
-def evaluate_permission_policy(
-    tool_call: ToolCall,
-    request: CapabilityRequest | None = None,
-) -> PermissionResult:
+def evaluate_permission_policy(tool_call: ToolCall) -> PermissionResult:
     """Pure baseline policy: intent guardrails only.
 
     * the sudo guardrail is hard denied before execution;
-    * an explicit capability request (from the tool protocol, or derived from a
-      bash call) asks for approval;
+    * a ``bash`` call that requests a capability asks for approval;
     * every other call is a normal operation inside the fixed sandbox.
 
-    ``request`` lets the runtime hand in a tool-owned request that core cannot
-    derive itself (a file tool reaching outside the workspace). When it is
-    omitted the policy falls back to the bash-visible request.
+    Only ``bash`` requests are visible here because their request lives in the
+    tool call arguments. A file tool that reaches outside the workspace reports
+    its own request through ``Tool.requested_capability``; the runtime asks the
+    tool and calls the handler directly, so it never depends on this function.
     """
     if _is_sudo_guardrail(tool_call):
         return PermissionResult(
@@ -217,10 +138,7 @@ def evaluate_permission_policy(
             reason="sudo is not supported",
         )
 
-    if request is None:
-        request = requested_capability(tool_call)
-
-    if request is not None:
+    if _bash_capability_request(tool_call) is not None:
         return PermissionResult(
             policy_decision=PermissionDecision.ASK,
             allowed=False,
@@ -232,64 +150,6 @@ def evaluate_permission_policy(
     )
 
 
-def normalize_granted_root(
-    raw: object,
-    *,
-    protected: Iterable[Path] = (),
-) -> Path:
-    """Validate one requested filesystem root and return its normalized form.
-
-    A root must be an absolute path to an existing directory that is not a
-    blocked system tree and does not contain ``.git``. Symlinks anywhere along
-    it are rejected because the mount source would resolve somewhere the checks
-    never inspected. ``protected`` adds caller-specific forbidden roots (the
-    workspace and the user's home), including their ancestors.
-
-    Raises:
-        ValueError: the value cannot be granted.
-    """
-    if not isinstance(raw, str) or not raw.strip():
-        raise ValueError("filesystem path must be a non-empty string")
-    if os.sep != "/":
-        # The sandbox implementation this capability targets is POSIX-only.
-        raise ValueError("filesystem capability requires a POSIX path")
-
-    candidate = Path(raw)
-    if not candidate.is_absolute():
-        raise ValueError("filesystem path must be absolute")
-
-    try:
-        resolved = candidate.resolve(strict=True)
-    except (OSError, RuntimeError):
-        raise ValueError("filesystem path does not exist") from None
-
-    if not resolved.is_dir():
-        raise ValueError("filesystem path must be a directory")
-
-    if resolved in _BLOCKED_SYSTEM_ROOTS:
-        raise ValueError("filesystem path is a protected system location")
-
-    for forbidden in protected:
-        # Reject a grant that is, contains, or sits inside a protected root, so
-        # neither the project nor the user's home is ever handed out wholesale
-        # and no grant is smuggled in by naming one of their ancestors.
-        if (
-            resolved == forbidden
-            or forbidden in resolved.parents
-            or resolved in forbidden.parents
-        ):
-            raise ValueError("filesystem path overlaps a protected root")
-
-    if any(part.casefold() == ".git" for part in resolved.parts):
-        raise ValueError("filesystem path may not include Git metadata")
-
-    return resolved
-
-
-def _covered_by(resolved: Path, roots: Collection[Path]) -> bool:
-    return any(resolved == root or root in resolved.parents for root in roots)
-
-
 class SessionPermissionHandler:
     """Stateful capability approval for ASK decisions.
 
@@ -297,11 +157,11 @@ class SessionPermissionHandler:
     never on disk. A fresh instance (a fresh Cairn process) starts with no
     grants. Baseline ALLOW and hard DENY never reach this handler.
 
-    ``workspace_root`` and ``home`` are optional and only widen the *deny*
-    checks: when supplied, no grant may contain them (or an ancestor), so a
-    filesystem approval can never hand out the project or the user's home by
-    mistake. Production passes both; a bare handler still enforces the fixed
-    system-root denials.
+    ``workspace_root`` and ``home`` narrow the *deny* checks for a filesystem
+    grant: no grant may be, contain, or sit inside them, so the project or the
+    user's home is never handed out by naming it or an ancestor. ``root_normalizer``
+    performs the path validation (a ``core``-independent ``infra`` effect); it is
+    required only if ``FILESYSTEM_ACCESS`` is ever requested.
     """
 
     def __init__(
@@ -310,10 +170,12 @@ class SessionPermissionHandler:
         *,
         workspace_root: Path | None = None,
         home: Path | None = None,
+        root_normalizer: RootNormalizer | None = None,
     ) -> None:
         self.prompt = prompt
         self.grants: set[PermissionCapability] = set()
         self.granted_roots: set[Path] = set()
+        self._root_normalizer = root_normalizer
         self._protected = tuple(
             root for root in (workspace_root, home) if isinstance(root, Path)
         )
@@ -328,18 +190,17 @@ class SessionPermissionHandler:
         self.granted_roots.clear()
 
     def __call__(self, tool_call: ToolCall) -> PermissionResult:
-        request = requested_capability(tool_call)
-        if request is None:
-            return evaluate_permission_policy(tool_call)
+        """Approve a capability a ``bash`` call requested through its arguments.
 
-        return self.authorize(
-            PermissionRequest(
-                capability=request.capability,
-                justification=request.justification,
-                tool_call=tool_call,
-                paths=request.paths,
-            )
-        )
+        File tools that reach outside the workspace do not go through here; the
+        runtime asks their ``Tool.requested_capability`` and calls ``authorize``
+        with the parsed request directly.
+        """
+        if tool_call.name == "bash":
+            request = _bash_capability_request(tool_call)
+            if request is not None:
+                return self.authorize(request)
+        return evaluate_permission_policy(tool_call)
 
     def authorize(self, request: PermissionRequest) -> PermissionResult:
         """Approve an explicit request without changing model tool policy.
@@ -353,89 +214,66 @@ class SessionPermissionHandler:
         # StrEnum equality also accepts strings; only the actual capability
         # member authorizes, including when model validation was bypassed.
         if capability is PermissionCapability.NETWORK:
-            return self._authorize_network(request)
+            if capability in self.grants:
+                return self._granted(capability, source=PermissionSource.SESSION_GRANT)
+            return self._prompt_and_grant(request, roots=None)
         if capability is PermissionCapability.FILESYSTEM_ACCESS:
             return self._authorize_filesystem(request)
         raise ValueError("Invalid permission capability")
 
-    def _authorize_network(self, request: PermissionRequest) -> PermissionResult:
-        capability = PermissionCapability.NETWORK
-        if capability in self.grants:
-            return self._granted(capability, source=PermissionSource.SESSION_GRANT)
-
-        if self.prompt is None:
-            return self._no_handler()
-
-        choice = self.prompt(request)
-        self._record_choice(capability, choice)
-        if choice is PermissionChoice.DENY:
-            return self._denied()
-        if choice is PermissionChoice.ALLOW_SESSION:
-            self.grants.add(capability)
-        return self._granted(capability, source=self._source_for(choice), prompted=True)
-
     def _authorize_filesystem(self, request: PermissionRequest) -> PermissionResult:
         capability = PermissionCapability.FILESYSTEM_ACCESS
-
         if not request.paths:
             raise ValueError("filesystem request must name at least one path")
-        roots = tuple(
-            normalize_granted_root(path, protected=self._protected)
-            for path in request.paths
-        )
+        roots = tuple(self._normalize(path) for path in request.paths)
 
         if all(_covered_by(root, self.granted_roots) for root in roots):
             return self._granted(
-                capability,
-                source=PermissionSource.SESSION_GRANT,
-                roots=roots,
+                capability, source=PermissionSource.SESSION_GRANT, roots=roots
             )
+        return self._prompt_and_grant(request, roots=roots)
 
+    def _prompt_and_grant(
+        self, request: PermissionRequest, *, roots: tuple[Path, ...] | None
+    ) -> PermissionResult:
+        """Prompt once, validate the choice, and grant the requested capability.
+
+        Network passes ``roots=None``; filesystem passes its normalized roots.
+        A session grant records them so a later covered request is reused.
+        """
+        capability = request.capability
         if self.prompt is None:
             return self._no_handler()
 
         choice = self.prompt(request)
-        self._record_choice(capability, choice)
+        # Only an actual PermissionChoice member authorizes. StrEnum equality
+        # also matches a plain string or a foreign StrEnum, so identity is
+        # required; raise before recording any grant so none is half-applied.
+        if not any(choice is member for member in PermissionChoice):
+            raise ValueError(f"Invalid permission choice: {choice!r}")
         if choice is PermissionChoice.DENY:
             return self._denied()
 
         if choice is PermissionChoice.ALLOW_SESSION:
-            self.granted_roots.update(roots)
-            scope = tuple(sorted(self.granted_roots))
-        else:
-            scope = roots
+            self.grants.add(capability)
+            if roots is not None:
+                self.granted_roots.update(roots)
 
         return self._granted(
             capability,
-            source=self._source_for(choice),
-            roots=scope,
+            source=(
+                PermissionSource.USER_SESSION
+                if choice is PermissionChoice.ALLOW_SESSION
+                else PermissionSource.USER_ONCE
+            ),
+            roots=roots if roots is not None else (),
             prompted=True,
         )
 
-    def filesystem_roots(self) -> tuple[Path, ...]:
-        """Directories approved for this session, for a caller that replays them.
-
-        The agent loop consults this when a tool re-validates a call it has
-        already received approval for; it is never read from model arguments.
-        """
-        return tuple(sorted(self.granted_roots))
-
-    def _record_choice(
-        self, capability: PermissionCapability, choice: PermissionChoice
-    ) -> None:
-        # Only an actual PermissionChoice member authorizes. StrEnum equality
-        # also matches a plain string or a foreign StrEnum with the same value,
-        # so identity is required here; an unknown value raises before any
-        # grant is recorded and can never leave a half-applied grant behind.
-        if not any(choice is member for member in PermissionChoice):
-            raise ValueError(f"Invalid permission choice: {choice!r}")
-
-    def _source_for(self, choice: PermissionChoice) -> PermissionSource:
-        return (
-            PermissionSource.USER_SESSION
-            if choice is PermissionChoice.ALLOW_SESSION
-            else PermissionSource.USER_ONCE
-        )
+    def _normalize(self, path: str) -> Path:
+        if self._root_normalizer is None:
+            raise ValueError("filesystem access is unavailable: no root validator")
+        return self._root_normalizer(path, protected=self._protected)
 
     def _granted(
         self,
@@ -468,3 +306,38 @@ class SessionPermissionHandler:
             allowed=False,
             source=PermissionSource.NO_HANDLER,
         )
+
+
+def _bash_capability_request(tool_call: ToolCall) -> PermissionRequest | None:
+    """The capability a ``bash`` call asked for, derived from its arguments.
+
+    Only the bash request lives in the tool call arguments, so only bash is
+    derived here. Network and filesystem access are mutually exclusive per call
+    (the bash tool rejects a call requesting both), so the order is unambiguous.
+    """
+    if tool_call.name != "bash":
+        return None
+
+    justification = tool_call.arguments.get("justification")
+    reason = justification if isinstance(justification, str) else ""
+
+    roots = tool_call.arguments.get("extra_writable_roots")
+    if isinstance(roots, list) and roots:
+        return PermissionRequest(
+            capability=PermissionCapability.FILESYSTEM_ACCESS,
+            justification=reason,
+            tool_call=tool_call,
+            paths=tuple(root for root in roots if isinstance(root, str)),
+        )
+
+    if tool_call.arguments.get("network_access") is True:
+        return PermissionRequest(
+            capability=PermissionCapability.NETWORK,
+            justification=reason,
+            tool_call=tool_call,
+        )
+    return None
+
+
+def _covered_by(resolved: Path, roots: set[Path]) -> bool:
+    return any(resolved == root or root in resolved.parents for root in roots)

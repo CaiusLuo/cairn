@@ -2,6 +2,9 @@
 
 import asyncio
 import json
+import shutil
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
@@ -16,11 +19,27 @@ from cairn.core.permissions import (
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.tools.base import ToolExecutionContext
 from cairn.infra.tools.bash import BashTool, _filesystem_mounts
+from cairn.infra.tools.filesystem_access import normalize_access_root
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.assembly import build_agent
 from cairn.runtime.loop import run_turn
 from tests.support.runtime import TEST_BUDGET, RecordingSink, SequenceLLM
 from tests.support.sandbox import require_working_sandbox
+
+
+@pytest.fixture
+def outside_dir() -> Iterator[Path]:
+    """A real directory under /tmp, not under TMPDIR.
+
+    Neither sandbox grants it by default (macOS denies writes outside the
+    workspace and TMPDIR; Linux hides /tmp behind an empty tmpfs), so an
+    approved grant is the only way a write there can succeed on either host.
+    """
+    path = Path(tempfile.mkdtemp(prefix="fsx-outside-", dir="/tmp"))
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _fake_process() -> AsyncMock:
@@ -128,19 +147,19 @@ def test_filesystem_mounts_bind_root_and_protect_git(tmp_path: Path) -> None:
     assert git_index > bind
 
 
-def test_filesystem_grant_lets_the_sandbox_write_outside(tmp_path: Path) -> None:
+def test_filesystem_grant_lets_the_sandbox_write_outside(
+    tmp_path: Path, outside_dir: Path
+) -> None:
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    outside = tmp_path / "data"
-    outside.mkdir()
     require_working_sandbox(Workspace(workspace))
 
     tool = BashTool(Workspace(workspace))
-    target = outside / "hello.txt"
+    target = outside_dir / "hello.txt"
     result = asyncio.run(
         tool.execute(
             {"command": f"printf hi > {target}"},
-            context=ToolExecutionContext(accessible_roots=(outside.resolve(),)),
+            context=ToolExecutionContext(accessible_roots=(outside_dir.resolve(),)),
         )
     )
 
@@ -148,14 +167,29 @@ def test_filesystem_grant_lets_the_sandbox_write_outside(tmp_path: Path) -> None
     assert target.read_text() == "hi"
 
 
+def test_filesystem_capability_is_absent_without_grant(
+    tmp_path: Path, outside_dir: Path
+) -> None:
+    """Without a grant the same outside write is refused; the boundary holds."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    require_working_sandbox(Workspace(workspace))
+    tool = BashTool(Workspace(workspace))
+
+    result = asyncio.run(tool.execute({"command": f"printf hi > {outside_dir}/x"}))
+
+    assert result.exit_code != 0
+    assert not (outside_dir / "x").exists()
+
+
 @pytest.mark.parametrize("choice", list(PermissionChoice))
-def test_filesystem_end_to_end(tmp_path: Path, choice: PermissionChoice) -> None:
+def test_filesystem_end_to_end(
+    tmp_path: Path, outside_dir: Path, choice: PermissionChoice
+) -> None:
     require_working_sandbox(Workspace(tmp_path))
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    outside = tmp_path / "data"
-    outside.mkdir()
-    target = outside / "out.txt"
+    target = outside_dir / "out.txt"
 
     prompts: list[object] = []
 
@@ -163,14 +197,18 @@ def test_filesystem_end_to_end(tmp_path: Path, choice: PermissionChoice) -> None
         prompts.append(request)
         return choice
 
-    handler = SessionPermissionHandler(prompt, workspace_root=workspace)
+    handler = SessionPermissionHandler(
+        prompt,
+        workspace_root=workspace,
+        root_normalizer=normalize_access_root,
+    )
     calls = [
         ToolCall(
             id=str(index),
             name="bash",
             arguments={
                 "command": f"printf hi > {target}",
-                "extra_writable_roots": [str(outside)],
+                "extra_writable_roots": [str(outside_dir)],
                 "justification": "write a data file",
             },
         )
@@ -190,8 +228,7 @@ def test_filesystem_end_to_end(tmp_path: Path, choice: PermissionChoice) -> None
     messages = [
         json.loads(m.content or "") for m in agent.state.messages if m.role == "tool"
     ]
-    denied = choice is PermissionChoice.DENY
-    if denied:
+    if choice is PermissionChoice.DENY:
         for message in messages:
             assert message == {
                 "error": "Permission denied by user.",
@@ -206,7 +243,7 @@ def test_filesystem_end_to_end(tmp_path: Path, choice: PermissionChoice) -> None
 
     spans = [s for s in sink.spans if s.name == "permission.check"]
     assert spans[0].attributes["granted_capabilities"] == ["filesystem_access"]
-    assert spans[0].attributes["granted_roots"] == [str(outside.resolve())]
+    assert spans[0].attributes["granted_roots"] == [str(outside_dir.resolve())]
     reused = choice is PermissionChoice.ALLOW_SESSION
     # A session grant is reused for the second identical-root request.
     assert len(prompts) == (1 if reused else 2)
@@ -215,18 +252,3 @@ def test_filesystem_end_to_end(tmp_path: Path, choice: PermissionChoice) -> None
         if reused
         else PermissionSource.USER_ONCE.value
     )
-
-
-def test_filesystem_capability_is_absent_without_grant(tmp_path: Path) -> None:
-    """The denied path leaves the workspace write boundary unchanged."""
-    require_working_sandbox(Workspace(tmp_path))
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    outside = tmp_path / "data"
-    outside.mkdir()
-    tool = BashTool(Workspace(workspace))
-
-    result = asyncio.run(tool.execute({"command": f"printf hi > {outside}/x"}))
-
-    assert result.exit_code != 0
-    assert not (outside / "x").exists()

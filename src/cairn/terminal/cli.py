@@ -26,6 +26,7 @@ from cairn.infra.observability.storage import TraceStore
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.sessions.models import SessionStoreError
 from cairn.infra.skills import builtin_skills
+from cairn.infra.tools.filesystem_access import normalize_access_root
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.assembly import build_agent
@@ -384,6 +385,7 @@ async def main(
         prompt=console_permission_prompt,
         workspace_root=workspace.root,
         home=Path.home(),
+        root_normalizer=normalize_access_root,
     )
     # The .env layout declares no catalog; its implicit provider is the only one.
     catalog = ProviderCatalog(providers=project.providers or (active_runtime.provider,))

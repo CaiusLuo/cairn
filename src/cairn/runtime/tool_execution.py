@@ -51,15 +51,12 @@ import asyncio
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
 
 from cairn.core.events import Event
 from cairn.core.models import ToolCall, ToolFailure
 from cairn.core.permissions import (
-    CapabilityRequest,
     PermissionCapability,
     PermissionDecision,
-    PermissionRequest,
     PermissionResult,
     PermissionSource,
     evaluate_permission_policy,
@@ -67,7 +64,6 @@ from cairn.core.permissions import (
 from cairn.infra.observability.models import Span, SpanStatus
 from cairn.infra.tools.base import (
     InvalidArguments,
-    Tool,
     ToolExecutionContext,
     ToolExecutionFailure,
     ToolFailureKind,
@@ -76,55 +72,18 @@ from cairn.infra.tools.base import (
 from cairn.runtime.agent import Agent
 
 
-def _tool_capability_request(
-    tool: Tool, tool_call: ToolCall
-) -> CapabilityRequest | None:
-    """Ask a validated tool which capability its arguments need.
-
-    Capability reporting is optional: a tool that cannot leave the sandbox does
-    not define it. A broken report must never widen authority, so any exception
-    degrades to "no capability" and the call stays in the fixed sandbox.
-    """
-    report = getattr(tool, "requested_capability", None)
-    if not callable(report):
-        return None
-    try:
-        return cast("CapabilityRequest | None", report(tool_call.arguments))
-    except Exception:
-        return None
-
-
-def _ask_for_approval(
-    agent: Agent,
-    tool_call: ToolCall,
-    request: CapabilityRequest | None,
-) -> PermissionResult:
+def _ask_for_approval(agent: Agent, tool_call: ToolCall) -> PermissionResult:
     """Ask the approval handler for the requested capability.
 
     Without a handler the call fails closed: there is nobody who could grant the
-    authority the command asked for. A handler that supports explicit
-    authorization receives the full request, including filesystem paths the core
-    policy cannot derive from the tool call arguments alone.
+    authority the command asked for. The handler derives the capability from the
+    tool call's validated arguments, so authority never crosses from here.
     """
     if agent.permission_handler is None:
         return PermissionResult(
             policy_decision=PermissionDecision.ASK,
             allowed=False,
             source=PermissionSource.NO_HANDLER,
-        )
-
-    authorize = getattr(agent.permission_handler, "authorize", None)
-    if request is not None and callable(authorize):
-        return cast(
-            PermissionResult,
-            authorize(
-                PermissionRequest(
-                    capability=request.capability,
-                    justification=request.justification,
-                    tool_call=tool_call,
-                    paths=request.paths,
-                )
-            ),
         )
 
     return agent.permission_handler(tool_call)
@@ -228,7 +187,6 @@ def _check_tool_permission(
     agent: Agent,
     tool_call: ToolCall,
     turn_span: Span | None,
-    request: CapabilityRequest | None = None,
 ) -> PermissionResult:
     # A span exists only when a tracer does, so one local binding is enough.
     tracer = agent.tracer
@@ -248,9 +206,9 @@ def _check_tool_permission(
     try:
         # Pure policy first. Baseline ALLOW and hard DENY never reach a handler,
         # so a permissive handler can never re-authorize a policy denial.
-        permission = evaluate_permission_policy(tool_call, request)
+        permission = evaluate_permission_policy(tool_call)
         if permission.policy_decision is PermissionDecision.ASK:
-            permission = _ask_for_approval(agent, tool_call, request)
+            permission = _ask_for_approval(agent, tool_call)
 
         if permission_span is not None and tracer is not None:
             permission_span.attributes.update(
@@ -321,9 +279,7 @@ async def execute_tool_call(
         )
         return
 
-    # Only a validated call may report a capability, and only after preflight.
-    request = _tool_capability_request(tool, tool_call)
-    permission = _check_tool_permission(agent, tool_call, turn_span, request)
+    permission = _check_tool_permission(agent, tool_call, turn_span)
 
     if permission.policy_decision is PermissionDecision.DENY or not permission.allowed:
         failure = _permission_failure(permission)
