@@ -227,11 +227,12 @@ admission or qualify either schema for a new deployment.
 
 ## Schema compatibility and explicit upgrade
 
-New databases use schema **3**, accepting both historical V1 full snapshots and
+New databases use schema **4**, accepting both historical V1 full snapshots and
 V2 incremental checkpoints. Task records and CheckpointReceipts keep their exact
-meaning and bytes. Schemas 1/2 remain readable and writable without migration;
-schema 1 still requires an explicit upgrade for Task APIs. Old Cairn versions
-that do not support schema 3 reject it; there is no downgrade or reset operation.
+meaning and bytes. Schemas 1/2/3 remain readable without migration; schema 1
+still requires an explicit upgrade for Task APIs, and fencing a tool needs the
+schema 4 fence table. Old Cairn versions that do not support schema 4 reject it;
+there is no downgrade or reset operation.
 See [SessionStore](session-store.md#codec-and-transactions) for the format matrix.
 
 Upgrading is an explicit trusted-host operation, independent of Agent execution:
@@ -239,7 +240,7 @@ Upgrading is an explicit trusted-host operation, independent of Agent execution:
 1. Stop every writer and wait for owned Task/Turn work and cleanup to finish.
 2. Open the existing Store as a writer with the actual effective sandbox-writable
    roots and known sensitive values, as described in [SessionStore](session-store.md).
-3. Call `upgrade_schema()` once if `schema_version in (1, 2)`; retain its returned
+3. Call `upgrade_schema()` once if `schema_version < SCHEMA_VERSION`; retain its returned
    backup path. An inspector, another writer or a locally owned Task/Turn cannot
    perform this operation.
 4. Verify the schema version and committed Sessions before using incremental checkpoints.
@@ -249,15 +250,16 @@ Workspace, `/tmp`, effective temporary and uv cache roots:
 
 ```python
 from pathlib import Path
+from cairn.infra.sessions.models import SCHEMA_VERSION
 from cairn.infra.workspace.workspace import Workspace
 from cairn.terminal.durable import open_store
 
 store = open_store(None, Workspace(Path.cwd()))
 try:
-    if store.schema_version in (1, 2):
+    if store.schema_version < SCHEMA_VERSION:
         backup = store.upgrade_schema()
         print(f"Retained source-schema backup: {backup}")
-    assert store.schema_version == 3
+    assert store.schema_version == SCHEMA_VERSION
 finally:
     store.close()
 ```

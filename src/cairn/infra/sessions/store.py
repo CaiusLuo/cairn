@@ -1179,6 +1179,23 @@ class SessionStore(TaskLedgerMixin):
         with self._read() as conn:
             return int(conn.execute("PRAGMA user_version").fetchone()[0])
 
+    def _logical_reports(
+        self, conn: sqlite3.Connection
+    ) -> dict[str, tuple[Revision, tuple[TurnRecord, ...], CheckpointReceipt]]:
+        """The Session state that must not change across a migration.
+
+        Fences move from `diagnostics_json` to `tool_fences`; their *content* is
+        what has to survive, so the reports are compared as the host sees them,
+        not as rows.
+        """
+        reports: dict[
+            str, tuple[Revision, tuple[TurnRecord, ...], CheckpointReceipt]
+        ] = {}
+        for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"):
+            report = self._report(conn, row[0])
+            reports[row[0]] = (report.revision, report.attempts, report.receipt)
+        return reports
+
     def _validate_sessions(self, conn: sqlite3.Connection) -> None:
         for row in conn.execute("SELECT session_id FROM sessions"):
             self._report(conn, row[0])
@@ -1298,6 +1315,10 @@ class SessionStore(TaskLedgerMixin):
                 if version == SCHEMA_VERSION:
                     raise SessionStoreError("schema_upgrade_not_required")
                 self._validate_sessions(conn)
+                # D4 step 1: fix the logical state before anything moves. The
+                # post-migration reports are compared with these, so a copy bug
+                # cannot commit a schema bump that silently lost fence evidence.
+                before = self._logical_reports(conn)
                 backup = self._backup_schema(conn)
             with self._write(idle_after=True, migration=True) as conn:
                 if conn.execute("PRAGMA user_version").fetchone()[0] != version:
@@ -1309,6 +1330,9 @@ class SessionStore(TaskLedgerMixin):
                 self._migrate_v3(conn)
                 self._schema(conn)
                 self._validate_sessions(conn)
+                # D4 step 5: the same Sessions must read back identically.
+                if self._logical_reports(conn) != before:
+                    raise SessionStoreError("schema_upgrade_failed")
             return backup
         except SessionStoreError:
             raise
@@ -1570,10 +1594,25 @@ class SessionStore(TaskLedgerMixin):
             raise SessionStoreError("unresolved_turn_not_active")
         if session.state != "executing":
             raise SessionStoreError("unresolved_turn_state_mismatch")
-        if not same_workspace(session.binding, record.intent.binding):
-            raise SessionStoreError("record_binding_mismatch")
-        if record.intent.base_seq > expected.head_seq:
-            raise SessionStoreError("record_base_ahead_of_head")
+        # `_report` compares the whole binding, not just the workspace: a Turn
+        # that drifted in provider or observation time is corruption too, and
+        # the CAS below would copy it onto the Session.
+        if record.intent.binding != session.binding:
+            raise SessionStoreError("unresolved_turn_binding_mismatch")
+        # The Turn must be the base the Session points at, not merely not ahead.
+        if record.intent.base_seq != expected.head_seq:
+            raise SessionStoreError("record_base_chain_gap")
+        # The executing-state invariants `_validate_record` enforces. Fences are
+        # append-only evidence; admitting one onto a malformed Turn would bless
+        # the malformation.
+        if (
+            record.ended_at_utc is not None
+            or record.settled_seq is not None
+            or record.diagnostics.reason is not None
+            or record.diagnostics.resolution is not None
+            or record.diagnostics.commit_version is not None
+        ):
+            raise SessionStoreError("invalid_relationship")
         return record
 
     def _turn_record_by_id(

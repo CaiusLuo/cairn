@@ -7,6 +7,7 @@ import pytest
 
 from cairn.infra.sessions.models import (
     SCHEMA_VERSION,
+    SessionBinding,
     SessionStoreError,
 )
 from tests.support.sessions import (
@@ -146,7 +147,7 @@ def test_a_corrupt_turn_cannot_be_fenced(tmp_path: Path) -> None:
             (json.dumps(diagnostics, separators=(",", ":"), sort_keys=True),),
         )
         conn.commit()
-        with pytest.raises(SessionStoreError, match="record_binding_mismatch"):
+        with pytest.raises(SessionStoreError, match="unresolved_turn_binding_mismatch"):
             api.fence_tool(revision, fence(bind))
     finally:
         api._owned_turns.clear()
@@ -236,3 +237,93 @@ def test_migration_failure_leaves_the_v3_database_intact(tmp_path: Path) -> None
         assert reader._has_fence_table(reader._conn()) is False
     finally:
         reader.close()
+
+
+def _with_provider(bind: SessionBinding, provider: str) -> SessionBinding:
+    from cairn.infra.sessions.models import ProviderReference
+
+    reference = ProviderReference(
+        provider=provider,
+        model_group="group",
+        model_ids=("model",),
+        config_digest="0" * 64,
+        system_prompt_digest="0" * 64,
+        context_budget=100,
+        output_reserve=10,
+        max_steps=1,
+    )
+    return bind.model_copy(update={"provider": reference})
+
+
+def test_a_provider_only_binding_drift_cannot_be_fenced(tmp_path: Path) -> None:
+    """`same_workspace` ignores the provider; the append path must not.
+
+    A Turn whose stored binding drifted only in provider still differs from the
+    Session, and fencing it would let the CAS copy the forged binding onto the
+    Session.
+    """
+    import json
+
+    api = store(tmp_path)
+    try:
+        bind = _with_provider(binding(tmp_path), "trusted")
+        revision = api.create(bind).revision
+        turn = intent(bind, revision)
+        revision = api.begin_turn(revision, turn)
+        conn = api._conn()
+        diagnostics = json.loads(
+            conn.execute("SELECT diagnostics_json FROM turns").fetchone()[0]
+        )
+        diagnostics["binding"]["provider"]["provider"] = "forged"
+        conn.execute(
+            "UPDATE turns SET diagnostics_json=?",
+            (json.dumps(diagnostics, separators=(",", ":"), sort_keys=True),),
+        )
+        conn.commit()
+        with pytest.raises(SessionStoreError, match="unresolved_turn_binding_mismatch"):
+            api.fence_tool(revision, fence(bind))
+    finally:
+        api._owned_turns.clear()
+        api.close()
+
+
+def test_a_lossy_migration_is_refused(tmp_path: Path) -> None:
+    """A `_migrate_v3` that drops a fence must not commit the schema bump.
+
+    The post-migration report is compared with the pre-migration one, so a copy
+    bug surfaces as a failed upgrade rather than silent evidence loss.
+    """
+    api = store(tmp_path)
+    bind = binding(tmp_path)
+    revision = api.create(bind).revision
+    turn = intent(bind, revision)
+    revision = api.begin_turn(revision, turn)
+    revision = api.fence_tool(revision, fence(bind))
+    api.commit_turn(revision, settled(turn))
+    api.close()
+    _downgrade_to_v3(api.path, turn.turn_id)
+
+    legacy = store(tmp_path)
+
+    def lossy(conn: sqlite3.Connection) -> None:
+        import json
+
+        from cairn.infra.sessions.store import _TOOL_FENCE_SCHEMA
+
+        for statement in _TOOL_FENCE_SCHEMA:
+            conn.execute(statement)
+        # Deliberately never copy the fence, and strip it from the JSON: the
+        # upgrade must notice that the Turn lost evidence.
+        row = conn.execute("SELECT diagnostics_json FROM turns").fetchone()
+        diagnostics = json.loads(row[0])
+        diagnostics["fences"] = []
+        conn.execute(
+            "UPDATE turns SET diagnostics_json=?",
+            (json.dumps(diagnostics, separators=(",", ":"), sort_keys=True),),
+        )
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(type(legacy), "_migrate_v3", lossy)
+        with pytest.raises(SessionStoreError):
+            legacy.upgrade_schema()
+    legacy.close()
