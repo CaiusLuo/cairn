@@ -110,8 +110,11 @@ _SOURCE_LANGUAGES = frozenset(
         Language.RUST,
     }
 )
-_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+# POSIX-only flags; a missing one reads as 0 so this module stays importable.
+_DIRECTORY_FLAGS = (
+    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+)
+_FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
 _READ_CHUNK_BYTES = 64 * 1024
 
 

@@ -133,8 +133,8 @@ class StorePaths:
             self.access_fd = os.open(
                 self.access_path.name,
                 (os.O_RDWR | os.O_CREAT if writer else os.O_RDONLY)
-                | os.O_NOFOLLOW
-                | os.O_CLOEXEC,
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
                 0o600,
                 dir_fd=self.directory_fd,
             )
@@ -176,7 +176,10 @@ class StorePaths:
 
         self.lock_fd = os.open(
             self.lock_path.name,
-            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+            os.O_RDWR
+            | os.O_CREAT
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
             0o600,
             dir_fd=self.directory_fd,
         )
@@ -307,7 +310,11 @@ class StorePaths:
         path = self.directory / f"schema-{schema_version}-backup-{uuid4().hex}.sqlite3"
         fd = os.open(
             path.name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
             0o600,
             dir_fd=self.directory_fd,
         )

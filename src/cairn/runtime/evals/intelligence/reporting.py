@@ -54,7 +54,7 @@ LIMITATIONS = (
     "Bash discovery counts calls containing rg/grep/find/ls/tree tokens; this heuristic is not complete semantic search intent.",
     "Memory counts are retrieval/admission events and can count an entry repeatedly. Stale recall denominator is observed non-fresh candidates; no eligible denominator means null.",
     "Memory fixtures are human-authorized, host-allowlisted facts, with exact independent source checks; arbitrary statement truth still requires human judgment.",
-    "Tool sandbox is the existing OS backend with network denied and no approval handler. Host Git/Memory setup uses trusted code, outside evaluated model authority.",
+    "Tools run locally with no OS sandbox and no approval handler, so a shell is refused. Host Git/Memory setup uses trusted code, outside evaluated model authority.",
     "End-to-end timing includes fixture setup, deterministic checks and cleanup; Agent timing and feature/setup overhead are separate. Memory timing includes an extra bounded measurement freshness check.",
     "Actual provider usage may be partial after provider failure; request totals count constructed requests, even if transport fails. Completed responses are recorded separately.",
     "EvalRunner reports ERROR on budget exhaustion even when every workspace check passes. Overall task-success and final-workspace check success are reported separately; finishing within the step budget is part of the former.",

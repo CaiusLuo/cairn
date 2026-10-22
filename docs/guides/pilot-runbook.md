@@ -266,7 +266,7 @@ host, interpreter and filesystem, not a platform or deployment claim.
 | Interpreter used for preflight | CPython 3.12.13 (uv-managed project `.venv`) |
 | Linked SQLite | 3.50.4 |
 | `wal_admission()` | `refused` (no declaration set) |
-| Sandbox | `/usr/bin/sandbox-exec`, writes outside the workspace refused |
+| Shell | local `/bin/bash`; no OS sandbox, no isolation claimed |
 
 ### Per-mode status
 

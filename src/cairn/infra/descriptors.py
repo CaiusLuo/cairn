@@ -11,7 +11,11 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+# POSIX-only flags. Reading a missing one as 0 keeps this module importable on a
+# host that lacks it (Windows); the callers that need the protection refuse there.
+_DIRECTORY_FLAGS = (
+    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+)
 
 
 @dataclass(frozen=True, slots=True)

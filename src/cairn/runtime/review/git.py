@@ -137,7 +137,7 @@ async def _workspace_state(git: WorkflowGit) -> bytes:
             elif stat.S_ISLNK(before.st_mode):
                 digest.update(os.fsencode(os.readlink(path)) + b"\0")
             elif stat.S_ISREG(before.st_mode):
-                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
                 with os.fdopen(fd, "rb") as stream:
                     if _identity(os.fstat(stream.fileno())) != _identity(before):
                         raise SnapshotDriftError(

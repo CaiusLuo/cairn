@@ -980,7 +980,14 @@ def console_permission_prompt(request: PermissionRequest) -> PermissionChoice:
         "[3] Deny",
         markup=False,
     )
-    choice = Prompt.ask("Choice", choices=["1", "2", "3"], default="3", console=console)
+    try:
+        choice = Prompt.ask(
+            "Choice", choices=["1", "2", "3"], default="3", console=console
+        )
+    except EOFError:
+        # No interactive input left: deny rather than let EOF escape as an
+        # exception and abort the turn.
+        return PermissionChoice.DENY
     return {
         "1": PermissionChoice.ALLOW_ONCE,
         "2": PermissionChoice.ALLOW_SESSION,

@@ -159,9 +159,10 @@ def test_local_shell_check_reports_a_working_shell(
 ) -> None:
     """The pilot needs a shell that starts in the Workspace, not a sandbox."""
     from cairn.core.models import ToolResult
+    from cairn.infra.workspace.workspace import Workspace
 
     class WorkingBashTool:
-        def __init__(self, workspace: object) -> None:
+        def __init__(self, workspace: Workspace) -> None:
             self.workspace = workspace
 
         async def execute(self, arguments: dict[str, object]) -> ToolResult:

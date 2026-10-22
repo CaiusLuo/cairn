@@ -132,7 +132,9 @@ class FileObserver:
                     )
                 next_fd = os.open(
                     component,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
                     dir_fd=parent,
                 )
                 os.close(parent)
@@ -148,9 +150,13 @@ class FileObserver:
                     path=path, kind=file_kind, mode=stat.S_IMODE(before.st_mode)
                 )
             identity = StatIdentity.from_stat(before)
-            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0)
+            )
             if file_kind is PathKind.DIRECTORY:
-                flags |= os.O_DIRECTORY
+                flags |= getattr(os, "O_DIRECTORY", 0)
             fd = os.open(name, flags, dir_fd=parent)
             try:
                 if identity != StatIdentity.from_stat(os.fstat(fd)):

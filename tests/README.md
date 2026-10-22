@@ -44,7 +44,6 @@ uv run pytest tests/terminal/test_input.py
 `tests/core/test_architecture.py` validates package boundaries and `core`
 independence. Both are fast and offline.
 
-Native Bash tests require a usable platform sandbox. On macOS, the outer
-environment must permit nested `sandbox-exec`; on Linux, bubblewrap must be
-installed and usable. `tests/support/sandbox.py` skips those tests when the host
-has no usable sandbox.
+Native Bash tests require a usable local shell, not a platform sandbox. They are
+skipped when `/bin/bash` is absent or the host is Windows. `tests/support/sandbox.py`
+provides that readiness check (the module keeps its historical name).

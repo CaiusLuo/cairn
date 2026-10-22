@@ -21,6 +21,7 @@ from cairn.core.budget import RunBudget
 from cairn.core.events import Event
 from cairn.core.models import LLMResponse, LLMUsage, Message, ToolCall
 from cairn.core.permissions import (
+    PermissionCapability,
     PermissionChoice,
     PermissionRequest,
     SessionPermissionHandler,
@@ -139,7 +140,12 @@ def test_offline_coding_task_e2e(
 
         def deny(request: PermissionRequest) -> PermissionChoice:
             approvals.append(request)
-            return PermissionChoice.DENY
+            # The scenario refuses the shell command that would write a file, but
+            # the verification command has to run for the task to be judged.
+            command = request.tool_call.arguments.get("command", "")
+            if "printf forbidden" in command:
+                return PermissionChoice.DENY
+            return PermissionChoice.ALLOW_SESSION
 
         def capture(event: Event) -> None:
             events.append(event)
@@ -279,13 +285,24 @@ def test_offline_coding_task_e2e(
                 "PermissionDenied" if handler_present else "PermissionRequired"
             )
             assert observed["escape"]["type"] == "InvalidArguments"
-            assert len(approvals) == (1 if handler_present else 0)
+            # The shell is asked for both of its calls; the escape edit is
+            # refused at preflight, so it never reaches the approval path.
+            assert len(approvals) == (2 if handler_present else 0)
+            assert all(
+                request.capability is PermissionCapability.LOCAL_SHELL
+                for request in approvals
+            )
             assert not (work / "denied.txt").exists()
             assert outside.read_bytes() == b"outside boundary\n"
             repaired = mode not in ("edit_failure", "claim_only")
-            assert observed["check"]["exit_code"] == (0 if repaired else 1)
-            if repaired:
-                assert observed["check"]["stdout"] == "verified\n"
+            if handler_present:
+                assert observed["check"]["exit_code"] == (0 if repaired else 1)
+                if repaired:
+                    assert observed["check"]["stdout"] == "verified\n"
+            else:
+                # With no approval path a local shell fails closed, so the
+                # verification command never runs and the task is not verified.
+                assert observed["check"]["type"] == "PermissionRequired"
             if mode == "edit_failure":
                 assert observed["edit"]["type"] == "ValueError"
 
@@ -337,9 +354,13 @@ def test_offline_coding_task_e2e(
                 and s.attributes["tool_call_id"] == "escape"
                 for s in spans
             )
-            assert any(
-                s.name == "tool.execute" and s.attributes["tool_call_id"] == "check"
-                for s in spans
+            # The verification command only runs when a shell can be approved.
+            assert (
+                any(
+                    s.name == "tool.execute" and s.attributes["tool_call_id"] == "check"
+                    for s in spans
+                )
+                is handler_present
             )
             usage_data = finish.data.get("usage", {})
             if (

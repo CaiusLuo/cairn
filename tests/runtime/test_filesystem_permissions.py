@@ -6,6 +6,7 @@ boundary: a path outside the Workspace is refused unless the session approved a
 ``FILESYSTEM_ACCESS`` grant covering it.
 """
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,9 @@ def _tool_call(path: Path) -> ToolCall:
     return ToolCall(id="fs", name="read_file", arguments={"path": str(path)})
 
 
-def _handler(prompt) -> SessionPermissionHandler:
+def _handler(
+    prompt: Callable[[PermissionRequest], PermissionChoice] | None,
+) -> SessionPermissionHandler:
     return SessionPermissionHandler(prompt, root_normalizer=normalize_access_root)
 
 

@@ -259,13 +259,16 @@ def _edit_model_id(
     edit_target.revalidate(tomllib.loads(updated))
 
     # Anchor all writes to the checked directory, even if its pathname changes.
-    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    directory = os.open(
+        path.parent,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
     temporary = f".cairn-models-{uuid4().hex}"
     created = False
     try:
         fd = os.open(
             temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
             0o600,
             dir_fd=directory,
         )
