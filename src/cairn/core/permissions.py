@@ -79,6 +79,7 @@ class PermissionRequest(BaseModel):
     justification: str
     tool_call: ToolCall
     paths: tuple[str, ...] = ()
+    access: "AccessKind | None" = None
 
 
 class CapabilityRequest(BaseModel):
@@ -86,12 +87,14 @@ class CapabilityRequest(BaseModel):
 
     A tool derives this from its own arguments during preflight, so the runtime
     can approve a concrete request. ``paths`` is non-empty only for
-    ``FILESYSTEM_ACCESS`` and names the directories the call wants to write.
+    ``FILESYSTEM_ACCESS`` and names the directories the call wants to write, and
+    ``access`` says whether the tool intends to read or write them.
     """
 
     capability: PermissionCapability
     paths: tuple[str, ...] = ()
     justification: str = ""
+    access: "AccessKind | None" = None
 
 
 class AccessKind(StrEnum):
@@ -228,12 +231,20 @@ class SessionPermissionHandler:
         )
 
     def reset_grants(self) -> None:
-        """Drop every session-scoped grant, e.g. after switching providers.
+        """Drop provider/location grants, e.g. after switching providers.
 
         The global permission policy is untouched: the next ASK decision is
         prompted again instead of reusing a grant made for another provider.
+
+        ``WORKSPACE_TRUST`` survives: it is the directory trust the user granted
+        at startup for this session, not something a provider switch changes, and
+        the switch does not re-run the startup prompt to re-earn it.
         """
-        self.grants.clear()
+        self.grants = {
+            capability
+            for capability in self.grants
+            if capability is PermissionCapability.WORKSPACE_TRUST
+        }
         self.granted_roots.clear()
 
     def __call__(self, tool_call: ToolCall) -> PermissionResult:

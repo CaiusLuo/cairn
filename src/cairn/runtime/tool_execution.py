@@ -142,6 +142,7 @@ def _tool_access_request(tool: Tool, tool_call: ToolCall) -> PermissionRequest |
         justification=request.justification,
         tool_call=tool_call,
         paths=request.paths,
+        access=request.access,
     )
 
 
@@ -157,13 +158,14 @@ def _file_tool_decision(
     decide = getattr(handler, "access_decision", None)
     if not callable(decide):
         return None
-    # The tool reports the file it wants to write; the handler grants the
+    # The tool reports the file and the access it wants; the handler grants the
     # containing directory so one approval covers that subtree.
+    access = request.access if request.access is not None else AccessKind.WRITE
     return cast(
         PermissionResult,
         decide(
             outside=True,
-            access=AccessKind.WRITE,
+            access=access,
             path=Path(request.paths[0]),
         ),
     )

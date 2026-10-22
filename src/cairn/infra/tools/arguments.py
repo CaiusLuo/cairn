@@ -98,6 +98,7 @@ def access_request(
         capability=PermissionCapability.FILESYSTEM_ACCESS,
         paths=(str(resolved),),
         justification=f"Write to {resolved} outside the workspace.",
+        access=access,
     )
 
 

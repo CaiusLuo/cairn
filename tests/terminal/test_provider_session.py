@@ -557,7 +557,9 @@ def test_successful_switch_resets_session_permission_grants(
 
     assert result.exit_code == 0, result.output
     assert state.approvals == [("bailian", "flash", False), ("local", "default", True)]
-    assert handler.grants == set()
+    # The provider-scoped NETWORK grant is dropped; the startup workspace trust
+    # is not a provider grant and survives the switch.
+    assert handler.grants == {PermissionCapability.WORKSPACE_TRUST}
     assert state.contexts[0].active_provider_name == "local"
     assert state.requests[0]["api_base"] == "http://localhost:8000/v1"
 

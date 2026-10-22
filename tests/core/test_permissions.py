@@ -152,6 +152,19 @@ def test_reset_grants_drops_session_grants_and_prompts_again() -> None:
     assert len(prompts) == 2
 
 
+def test_reset_grants_keeps_the_workspace_trust() -> None:
+    """A provider switch must not revoke the startup directory trust."""
+
+    handler = SessionPermissionHandler()
+    handler.grants.add(PermissionCapability.WORKSPACE_TRUST)
+    handler.grants.add(PermissionCapability.LOCAL_SHELL)
+
+    handler.reset_grants()
+
+    # The location trust survives; a per-provider capability does not.
+    assert handler.grants == {PermissionCapability.WORKSPACE_TRUST}
+
+
 def test_reset_grants_keeps_the_global_policy_unchanged() -> None:
     handler = SessionPermissionHandler()
     handler.reset_grants()
