@@ -389,15 +389,11 @@ async def main(
         root_normalizer=normalize_access_root,
     )
     # A local Cairn edits the directory it was started in, so that directory is
-    # trusted explicitly before the first turn. The `.env` layout keeps its
-    # existing no-dialogue behaviour; denial or no interactive terminal stops
-    # here rather than starting a session it cannot use.
-    if project.layout is ConfigLayout.ENV:
-        permission_handler.grants.add(PermissionCapability.WORKSPACE_TRUST)
-    else:
-        if confirm_workspace_trust(workspace.root) is not True:
-            raise ValueError("Workspace access was not approved for this session.")
-        permission_handler.grants.add(PermissionCapability.WORKSPACE_TRUST)
+    # trusted explicitly before the first turn. Denial — or no interactive
+    # terminal — stops here rather than starting a session it cannot use.
+    if confirm_workspace_trust(workspace.root) is not True:
+        raise ValueError("Workspace access was not approved for this session.")
+    permission_handler.grants.add(PermissionCapability.WORKSPACE_TRUST)
     # The .env layout declares no catalog; its implicit provider is the only one.
     catalog = ProviderCatalog(providers=project.providers or (active_runtime.provider,))
     # Every configured credential variable is withheld from Bash children,

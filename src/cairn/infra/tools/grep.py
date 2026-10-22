@@ -225,10 +225,15 @@ class GrepTool:
                 path for path in candidates if fnmatch.fnmatch(path.name, include)
             ]
 
-        # Match results obey the same containment rule as a direct tool path:
-        # a symlinked candidate and a `.git` entry are not task results either.
+        # A candidate inside the Workspace obeys the containment rule: a
+        # symlinked entry and a `.git` entry are not task results. A path the
+        # caller named outside the Workspace was already resolved by tool_path,
+        # and reading outside needs no grant, so those stay.
         return sorted(
-            path for path in candidates if contained_candidate(root, path) is not None
+            path
+            for path in candidates
+            if not path.is_relative_to(root)
+            or contained_candidate(root, path) is not None
         )
 
     def _read_lines(self, path: Path) -> list[str] | None:

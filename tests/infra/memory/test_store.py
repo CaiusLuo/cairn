@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from cairn.core.memory.models import Candidate, Lifecycle, MemoryError, VersionConflict
 from cairn.infra.memory.identity import ProjectIdentity
 from cairn.infra.memory.store import MemoryStore
-from cairn.infra.tools.base import InvalidArguments
+from cairn.infra.tools.base import InvalidArguments, PermissionRefused
 from cairn.infra.tools.files import EditFileTool
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.memory.service import (
@@ -256,7 +256,7 @@ def test_normal_tools_cannot_write_external_store(
     before = api.store.path.read_bytes()
     # A local shell is not sandboxed: it can write outside the workspace. What
     # must still hold is that the *file tools* refuse a path outside it.
-    with pytest.raises((ValueError, InvalidArguments)):
+    with pytest.raises((ValueError, InvalidArguments, PermissionRefused)):
         asyncio.run(
             EditFileTool(workspace).execute(
                 {"path": str(api.store.path), "old_text": "", "new_text": "changed"}

@@ -61,6 +61,8 @@ def configure(
         return await run_turn(agent, user_input, budget=budget)
 
     monkeypatch.setattr(cli_module, "run_turn", capture)
+    # No interactive terminal in a test: trust the directory as a user would.
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     return text, agents, reasoning
 
 

@@ -24,7 +24,7 @@ from cairn.infra.tools.arguments import (
     reject_unknown_keys,
     workspace_path,
 )
-from cairn.infra.tools.base import InvalidArguments
+from cairn.infra.tools.base import InvalidArguments, PermissionRefused
 from cairn.infra.tools.files import EditFileTool, ReadFileTool
 from cairn.infra.tools.glob import GlobTool
 from cairn.infra.tools.grep import GrepTool
@@ -214,7 +214,7 @@ def test_absolute_outside_path_is_a_tool_target_not_a_preflight_rejection(
     tool.validate(arguments)
 
     if tool.requested_capability(arguments) is not None:
-        with pytest.raises(InvalidArguments, match="requires approval"):
+        with pytest.raises(PermissionRefused, match="requires approval"):
             asyncio.run(tool.execute(arguments))
 
     assert outside.read_text(encoding="utf-8") == "private"

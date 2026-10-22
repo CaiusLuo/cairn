@@ -129,6 +129,14 @@ class CapabilityPermissionHandler(Protocol):
 RootNormalizer = Callable[..., Path]
 
 
+#: Tools that take a ``path`` and can therefore reach outside the Workspace.
+#: Their arguments decide whether a capability is actually needed, so the policy
+#: asks rather than assuming either way.
+FILE_TOOL_NAMES = frozenset(
+    {"read_file", "write_file", "edit_file", "patch_file", "grep", "glob"}
+)
+
+
 def _is_sudo_guardrail(tool_call: ToolCall) -> bool:
     """Best-effort action guardrail for commands whose first token is ``sudo``.
 
@@ -169,6 +177,15 @@ def evaluate_permission_policy(tool_call: ToolCall) -> PermissionResult:
         )
 
     if tool_call.name == "bash":
+        return PermissionResult(
+            policy_decision=PermissionDecision.ASK,
+            allowed=False,
+        )
+
+    # A file tool may need approval for a path outside the Workspace. Only the
+    # tool can decide that, from its own validated arguments, so the runtime asks
+    # it (``Tool.requested_capability``) whenever a file tool runs.
+    if tool_call.name in FILE_TOOL_NAMES:
         return PermissionResult(
             policy_decision=PermissionDecision.ASK,
             allowed=False,
@@ -320,11 +337,15 @@ class SessionPermissionHandler:
                 source=PermissionSource.BASELINE,
             )
 
-        if is_within_granted(path, self.granted_roots):
+        covering = self.covering_root(path)
+        if covering is not None:
+            # Report the covering directory, not the file: the tool checks that
+            # the target's parent is inside a granted root, so returning the file
+            # itself would refuse the very write the grant already allows.
             return self._granted(
                 PermissionCapability.FILESYSTEM_ACCESS,
                 source=PermissionSource.SESSION_GRANT,
-                roots=(path,),
+                roots=(covering,),
             )
         # The grant is on the containing directory, so approving one file also
         # covers its siblings for the rest of the session.
@@ -340,6 +361,13 @@ class SessionPermissionHandler:
                 paths=(str(path.parent),),
             )
         )
+
+    def covering_root(self, path: Path) -> Path | None:
+        """The approved directory that already covers ``path``, if any."""
+        for root in sorted(self.granted_roots):
+            if path == root or root in path.parents:
+                return root
+        return None
 
     def _authorize_filesystem(self, request: PermissionRequest) -> PermissionResult:
         capability = PermissionCapability.FILESYSTEM_ACCESS
@@ -444,11 +472,6 @@ def _shell_justification(tool_call: ToolCall) -> str:
         f"{detail} on this machine as your user. A local shell is not sandboxed: "
         "it can reach the network and any file you can."
     )
-
-
-def is_within_granted(path: Path, roots: set[Path]) -> bool:
-    """Whether ``path`` is already covered by an approved directory grant."""
-    return _covered_by(path, roots)
 
 
 def _covered_by(resolved: Path, roots: set[Path]) -> bool:

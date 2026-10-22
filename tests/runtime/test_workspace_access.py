@@ -21,7 +21,11 @@ from cairn.core.permissions import (
     PermissionRequest,
     SessionPermissionHandler,
 )
-from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
+from cairn.infra.tools.base import (
+    InvalidArguments,
+    PermissionRefused,
+    ToolExecutionContext,
+)
 from cairn.infra.tools.files import EditFileTool, ReadFileTool
 from cairn.infra.tools.filesystem_access import normalize_access_root
 from cairn.infra.tools.write import WriteTool
@@ -32,9 +36,11 @@ def _handler(
     workspace: Path,
     prompt: Callable[[PermissionRequest], PermissionChoice] | None = None,
 ) -> SessionPermissionHandler:
+    # Resolve the root: the grant validator compares canonical paths, so an
+    # unresolved root would never match the resolved workspace.
     return SessionPermissionHandler(
         prompt,
-        workspace_root=workspace,
+        workspace_root=workspace.resolve(),
         root_normalizer=normalize_access_root,
     )
 
@@ -131,7 +137,7 @@ def test_writing_outside_the_workspace_requires_a_grant(tmp_path: Path) -> None:
         outside=True, access=AccessKind.WRITE, path=outside / "a.txt"
     ).allowed
 
-    with pytest.raises(InvalidArguments, match="requires approval"):
+    with pytest.raises(PermissionRefused, match="requires approval"):
         asyncio.run(
             WriteTool(Workspace(workspace)).execute(
                 {"path": str(outside / "a.txt"), "content": "x"}
@@ -204,7 +210,7 @@ def test_edit_outside_needs_a_grant_and_works_once_given(tmp_path: Path) -> None
     target.write_text("old", encoding="utf-8")
 
     tool = EditFileTool(Workspace(workspace))
-    with pytest.raises(InvalidArguments, match="requires approval"):
+    with pytest.raises(PermissionRefused, match="requires approval"):
         asyncio.run(
             tool.execute({"path": str(target), "old_text": "old", "new_text": "new"})
         )
@@ -220,3 +226,116 @@ def test_edit_outside_needs_a_grant_and_works_once_given(tmp_path: Path) -> None
 
 def _context(roots: tuple[Path, ...]) -> ToolExecutionContext:
     return ToolExecutionContext(accessible_roots=roots)
+
+
+def test_run_turn_prompts_for_an_outside_write_and_then_allows_it(
+    tmp_path: Path,
+) -> None:
+    """The whole path works through run_turn, not only a hand-built context.
+
+    This is the contract the feature exists for: a file tool's outside write
+    reaches the handler, the operator approves the directory, and the write then
+    happens.
+    """
+    import json
+
+    # The granted directory must be a real sibling tree, not an ancestor of the
+    # workspace: granting an ancestor would hand out the project itself, which
+    # the validator refuses.
+    import tempfile
+
+    from cairn.core.models import LLMResponse, ToolCall
+    from cairn.infra.observability.tracer import Tracer
+    from cairn.runtime.assembly import build_agent
+    from cairn.runtime.loop import run_turn
+    from tests.support.runtime import TEST_BUDGET, RecordingSink, SequenceLLM
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    outside = Path(tempfile.mkdtemp(prefix="cairn-outside-"))
+    target = outside / "written.txt"
+    prompts: list[PermissionRequest] = []
+
+    def prompt(request: PermissionRequest) -> PermissionChoice:
+        prompts.append(request)
+        return PermissionChoice.ALLOW_SESSION
+
+    handler = _handler(workspace, prompt)
+    handler.grants.add(PermissionCapability.WORKSPACE_TRUST)
+    calls = [
+        ToolCall(
+            id=str(index),
+            name="write_file",
+            arguments={"path": str(target), "content": f"v{index}"},
+        )
+        for index in range(2)
+    ]
+    sink = RecordingSink()
+    agent = build_agent(
+        workspace=Workspace(workspace),
+        event_handler=None,
+        llm=SequenceLLM([LLMResponse(tool_calls=calls), LLMResponse(content="done")]),
+        permission_handler=handler,
+        tracer=Tracer(sink),
+    )
+
+    assert asyncio.run(run_turn(agent, "write", budget=TEST_BUDGET)) == "done"
+
+    messages = [
+        json.loads(m.content or "") for m in agent.state.messages if m.role == "tool"
+    ]
+    assert all(message.get("exit_code") == 0 for message in messages), messages
+    assert target.read_text(encoding="utf-8") == "v1"
+    # One approval covered the directory, so the second write did not ask again.
+    assert len(prompts) == 1
+    assert prompts[0].capability is PermissionCapability.FILESYSTEM_ACCESS
+    import shutil
+
+    shutil.rmtree(outside, ignore_errors=True)
+
+
+def test_run_turn_allows_an_inside_read_without_prompting(tmp_path: Path) -> None:
+    """A file tool with nothing to report never reaches the operator."""
+    import json
+
+    from cairn.core.models import LLMResponse, ToolCall
+    from cairn.runtime.assembly import build_agent
+    from cairn.runtime.loop import run_turn
+    from tests.support.runtime import TEST_BUDGET, SequenceLLM
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "notes.txt").write_text("inside", encoding="utf-8")
+    prompts: list[PermissionRequest] = []
+
+    def prompt(request: PermissionRequest) -> PermissionChoice:
+        prompts.append(request)
+        return PermissionChoice.DENY
+
+    handler = _handler(workspace, prompt)
+    handler.grants.add(PermissionCapability.WORKSPACE_TRUST)
+    agent = build_agent(
+        workspace=Workspace(workspace),
+        event_handler=None,
+        llm=SequenceLLM(
+            [
+                LLMResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="read",
+                            name="read_file",
+                            arguments={"path": "notes.txt"},
+                        )
+                    ]
+                ),
+                LLMResponse(content="done"),
+            ]
+        ),
+        permission_handler=handler,
+        tracer=None,
+    )
+
+    assert asyncio.run(run_turn(agent, "read", budget=TEST_BUDGET)) == "done"
+    message = json.loads(agent.state.messages[2].content or "")
+    assert message["stdout"] == "inside"
+    assert prompts == []

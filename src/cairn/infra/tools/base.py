@@ -23,6 +23,15 @@ class InvalidArguments(ValueError):
     """
 
 
+class PermissionRefused(PermissionError):
+    """The tool was not authorized for this target.
+
+    Distinct from ``InvalidArguments``: the arguments were well formed and the
+    path is legitimate, but the session has not approved this access. The model
+    is told a permission is missing, not that its call was malformed.
+    """
+
+
 class ToolFailureKind(StrEnum):
     """Effect-aware outcome of one failed tool operation.
 

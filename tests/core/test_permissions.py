@@ -27,10 +27,8 @@ def shell_call(command: str = "curl example.com") -> ToolCall:
 @pytest.mark.parametrize(
     "name, arguments",
     [
-        ("read_file", {"path": "README.md"}),
-        ("edit_file", {"path": "README.md"}),
-        ("write_file", {"path": "README.md", "content": "x"}),
-        ("glob", {"pattern": "**/*.py"}),
+        ("list_directory", {"path": "."}),
+        ("unknown_tool", {}),
     ],
 )
 def test_baseline_without_prompt(name: str, arguments: dict[str, object]) -> None:

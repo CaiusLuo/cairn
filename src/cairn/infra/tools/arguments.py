@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from cairn.core.permissions import AccessKind, CapabilityRequest, PermissionCapability
-from cairn.infra.tools.base import InvalidArguments
+from cairn.infra.tools.base import InvalidArguments, PermissionRefused
 from cairn.infra.workspace.paths import is_within, resolve_tool_path
 from cairn.infra.workspace.workspace import Workspace
 
@@ -96,7 +96,7 @@ def access_request(
         return None
     return CapabilityRequest(
         capability=PermissionCapability.FILESYSTEM_ACCESS,
-        paths=(str(resolved.parent),),
+        paths=(str(resolved),),
         justification=f"Write to {resolved} outside the workspace.",
     )
 
@@ -135,5 +135,5 @@ def tool_path(
     # same canonical form, or a symlinked parent (e.g. /tmp on macOS) never matches.
     approved = frozenset(root.resolve() for root in granted_roots)
     if not is_within(resolved.parent.resolve(), approved):
-        raise InvalidArguments("write outside the workspace requires approval")
+        raise PermissionRefused("write outside the workspace requires approval")
     return resolved

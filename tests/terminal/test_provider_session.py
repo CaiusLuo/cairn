@@ -90,6 +90,12 @@ def observe_agent(state: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> li
         )
         return await run_turn(agent, user_input, budget=budget)
 
+    # A CLI test has no interactive terminal: trust the directory as a
+
+    # real user answering the startup prompt would.
+
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
+
     monkeypatch.setattr(cli_module, "run_turn", observing_run_turn)
     return observed
 

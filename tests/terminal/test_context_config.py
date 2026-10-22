@@ -37,6 +37,9 @@ def _configure_cli(
         **host_values,
     }.items():
         monkeypatch.setenv(name, value)
+    # A CLI test has no interactive terminal: trust the directory as a
+    # real user answering the startup prompt would.
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     monkeypatch.setattr(cli_module, "dotenv_values", lambda: file_values)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     monkeypatch.setattr(cli_module, "CliInput", ExitInput)

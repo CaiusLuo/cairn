@@ -98,6 +98,7 @@ def _write_env_file(tmp_path: Path, contents: str) -> Path:
 
 def _run_main_capturing_llm(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     _set_cli_inputs(monkeypatch, "/exit")
     captured: dict[str, Any] = {}
 
@@ -175,6 +176,7 @@ def test_cli_ignores_blank_input_and_runs_normal_turn(
 ) -> None:
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     submitted_prompt = "  hello\nworld  "
     _set_cli_inputs(monkeypatch, "", " \t\n ", submitted_prompt, "/quit")
     turns: list[str] = []
@@ -207,6 +209,7 @@ def test_cli_bracketed_paste_starts_one_turn_only_after_explicit_submit(
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     monkeypatch.setattr(cli_module, "print_assistant_response", lambda _text: None)
     pasted = '```python\nif ready:\n    print("hello")\n```'
     turns: list[str] = []
@@ -251,6 +254,7 @@ def test_cli_bracketed_paste_starts_one_turn_only_after_explicit_submit(
 def test_cli_continues_after_failed_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     _set_cli_inputs(monkeypatch, "first", "second", "/quit")
     turns: list[str] = []
 
@@ -292,6 +296,7 @@ def test_cli_ctrl_c_and_eof_never_start_a_turn(
 ) -> None:
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     reader = _set_cli_inputs(monkeypatch, *input_values)
 
     _forbid_model_calls(monkeypatch, "Cancelled input reached the model")
@@ -317,6 +322,7 @@ def test_interactive_commands_do_not_call_model(
 ) -> None:
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     _set_cli_inputs(monkeypatch, command, "/QUIT")
 
     _forbid_model_calls(monkeypatch, "Interactive command reached the model")
@@ -332,6 +338,7 @@ def test_interactive_unknown_command_lists_commands_with_usage(
 ) -> None:
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     _set_cli_inputs(monkeypatch, "/unknown", "/quit")
 
     _forbid_model_calls(monkeypatch, "Unknown command reached the model")
@@ -355,6 +362,7 @@ def test_interactive_unknown_trace_subcommand_shows_trace_usage(
 ) -> None:
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     _set_cli_inputs(monkeypatch, "/trace lsit", "/quit")
 
     _forbid_model_calls(monkeypatch, "Unknown trace command reached the model")
@@ -372,6 +380,7 @@ def test_interactive_help_for_unknown_command_lists_commands(
 ) -> None:
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     _set_cli_inputs(monkeypatch, "/help nope", "/quit")
 
     _forbid_model_calls(monkeypatch, "Help command reached the model")
@@ -389,6 +398,7 @@ def test_interactive_trace_uses_latest_completed_turn(
     monkeypatch.chdir(tmp_path)
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     _set_cli_inputs(monkeypatch, "hello", "/trace", "/quit")
 
     async def fake_run_turn(
@@ -435,6 +445,7 @@ def test_interactive_trace_persistence_failure_is_not_saved_as_latest(
     monkeypatch.chdir(tmp_path)
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     _set_cli_inputs(monkeypatch, "hello", "/trace", "/quit")
 
     async def fake_run_turn(
@@ -510,6 +521,7 @@ def test_interactive_trace_list_shows_requested_recent_summaries(
     monkeypatch.chdir(tmp_path)
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     trace_root = tmp_path / ".cairn" / "traces"
     trace_count = max(12, expected_limit + 1)
     trace_ids = [
@@ -569,6 +581,7 @@ def test_interactive_trace_list_invalid_count_keeps_session_available(
     monkeypatch.chdir(tmp_path)
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     _set_cli_inputs(monkeypatch, f"/trace list {arguments}", "/help", "/quit")
 
     def unexpected_list_traces(*_args: object, **_kwargs: object) -> TraceListResult:
@@ -592,6 +605,7 @@ def test_interactive_trace_count_reports_stored_traces(
     monkeypatch.chdir(tmp_path)
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     trace_root = tmp_path / ".cairn" / "traces"
     for index in range(3):
         _write_completed_trace(trace_root, index)
@@ -612,6 +626,7 @@ def test_interactive_trace_del_tail_removes_oldest_and_echoes_ids(
     monkeypatch.chdir(tmp_path)
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     trace_root = tmp_path / ".cairn" / "traces"
     trace_ids = [_write_completed_trace(trace_root, index) for index in range(3)]
     _set_cli_inputs(monkeypatch, "/trace del --tail 2", "/trace count", "/quit")
@@ -633,6 +648,7 @@ def test_interactive_trace_delete_clears_the_session_latest_trace(
     monkeypatch.chdir(tmp_path)
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     trace_root = tmp_path / ".cairn" / "traces"
     trace_id = _write_completed_trace(trace_root, 0)
     _set_cli_inputs(
@@ -683,6 +699,7 @@ def test_interactive_trace_storage_usage_errors_keep_session_available(
     monkeypatch.chdir(tmp_path)
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     _write_completed_trace(tmp_path / ".cairn" / "traces", 0)
     _set_cli_inputs(monkeypatch, command, "/help", "/quit")
 
@@ -703,6 +720,7 @@ def test_interactive_trace_del_tail_reports_unreadable_traces(
     monkeypatch.chdir(tmp_path)
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     trace_root = tmp_path / ".cairn" / "traces"
     trace_root.mkdir(parents=True)
     corrupt = trace_root / "corrupt.jsonl"
@@ -728,6 +746,7 @@ def test_interactive_trace_commands_route_without_model(
     monkeypatch.chdir(tmp_path)
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     captured: dict[str, Agent] = {}
     original_build_agent = build_agent
 
@@ -780,6 +799,7 @@ def test_interactive_trace_read_errors_keep_session_available(
     monkeypatch.chdir(tmp_path)
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     if failure == "corrupt-jsonl":
         trace_root = tmp_path / ".cairn" / "traces"
         trace_root.mkdir(parents=True)
@@ -819,6 +839,7 @@ def test_default_cli_keeps_original_workspace(
     _set_environment(monkeypatch, ENVIRONMENT)
     _set_cli_inputs(monkeypatch, "/quit")
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     captured: list[Path] = []
 
     def capture_agent(**kwargs: Any) -> Agent:

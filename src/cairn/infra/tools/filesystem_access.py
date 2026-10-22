@@ -58,11 +58,14 @@ def normalize_access_root(raw: object, *, protected: tuple[Path, ...] = ()) -> P
     if not candidate.is_absolute():
         raise ValueError("filesystem path must be absolute")
 
-    try:
-        resolved = candidate.resolve(strict=True)
-    except (OSError, RuntimeError):
-        raise ValueError("filesystem path does not exist") from None
-
+    # A grant names the directory a write will land in. That directory may not
+    # exist yet (writing a new nested path creates it), so an existing ancestor
+    # is acceptable — but a path that exists and is not a directory is not.
+    if candidate.is_file():
+        raise ValueError("filesystem path must be a directory")
+    resolved = _resolve_existing_ancestor(candidate)
+    if resolved is None:
+        raise ValueError("filesystem path does not exist")
     if not resolved.is_dir():
         raise ValueError("filesystem path must be a directory")
 
@@ -80,10 +83,33 @@ def normalize_access_root(raw: object, *, protected: tuple[Path, ...] = ()) -> P
         ):
             raise ValueError("filesystem path overlaps a protected root")
 
-    if any(part.casefold() == ".git" for part in resolved.parts):
+    # Check the requested path too: a not-yet-created `.git` component would
+    # disappear from the resolved ancestor and slip through otherwise.
+    if any(
+        part.casefold() == ".git"
+        for path in (candidate, resolved)
+        for part in path.parts
+    ):
         raise ValueError("filesystem path may not include Git metadata")
 
     return resolved
+
+
+def _resolve_existing_ancestor(candidate: Path) -> Path | None:
+    """Resolve ``candidate``, walking up until a component exists.
+
+    Returns the resolved existing ancestor, or ``None`` when nothing on the path
+    exists. Symlinks are followed, so the answer is a real host location.
+    """
+    current = candidate
+    for _ in range(64):
+        try:
+            return current.resolve(strict=True)
+        except (OSError, RuntimeError):
+            if current.parent == current:
+                return None
+            current = current.parent
+    return None
 
 
 def _reject_blocked(path: Path) -> None:

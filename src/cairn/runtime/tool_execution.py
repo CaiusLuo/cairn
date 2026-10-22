@@ -93,6 +93,34 @@ def _ask_for_approval(agent: Agent, tool_call: ToolCall) -> PermissionResult:
     return agent.permission_handler(tool_call)
 
 
+def _resolve_ask(
+    agent: Agent, tool: Tool | None, tool_call: ToolCall
+) -> PermissionResult:
+    """Turn one ASK decision into a concrete answer.
+
+    A tool reports the capability its arguments need. When it reports one, the
+    handler decides that concrete request; when it reports none, the call is an
+    ordinary operation inside the Workspace and is allowed without a prompt. A
+    ``bash`` call reports nothing because its capability is the shell itself.
+    """
+    request = _tool_access_request(tool, tool_call) if tool is not None else None
+    if request is not None:
+        decided = _file_tool_decision(agent, request)
+        if decided is not None:
+            return decided
+        return _ask_for_approval(agent, tool_call)
+
+    if tool_call.name == "bash":
+        return _ask_for_approval(agent, tool_call)
+
+    # A file tool with nothing to report stays inside the Workspace.
+    return PermissionResult(
+        policy_decision=PermissionDecision.ASK,
+        allowed=True,
+        source=PermissionSource.BASELINE,
+    )
+
+
 def _tool_access_request(tool: Tool, tool_call: ToolCall) -> PermissionRequest | None:
     """The filesystem request a validated file tool reports, if any.
 
@@ -129,6 +157,8 @@ def _file_tool_decision(
     decide = getattr(handler, "access_decision", None)
     if not callable(decide):
         return None
+    # The tool reports the file it wants to write; the handler grants the
+    # containing directory so one approval covers that subtree.
     return cast(
         PermissionResult,
         decide(
@@ -259,17 +289,7 @@ def _check_tool_permission(
         # so a permissive handler can never re-authorize a policy denial.
         permission = evaluate_permission_policy(tool_call)
         if permission.policy_decision is PermissionDecision.ASK:
-            # A file tool that reaches outside the Workspace reports the write it
-            # needs; the handler decides that path, not the tool name.
-            request = (
-                _tool_access_request(tool, tool_call) if tool is not None else None
-            )
-            decided = (
-                _file_tool_decision(agent, request) if request is not None else None
-            )
-            permission = (
-                decided if decided is not None else _ask_for_approval(agent, tool_call)
-            )
+            permission = _resolve_ask(agent, tool, tool_call)
 
         if permission_span is not None and tracer is not None:
             permission_span.attributes.update(

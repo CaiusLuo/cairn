@@ -43,10 +43,14 @@ def _handler(
     return SessionPermissionHandler(prompt, root_normalizer=normalize_access_root)
 
 
-def test_policy_does_not_ask_for_a_file_tool_by_itself() -> None:
-    """A file tool's request reaches the handler, not the baseline policy."""
+def test_policy_asks_for_a_file_tool_so_its_path_is_consulted() -> None:
+    """The policy cannot know whether a path is outside, so it asks.
+
+    The runtime then asks the tool for its capability: a tool that reports none
+    is an ordinary in-workspace operation and is allowed without a prompt.
+    """
     result = evaluate_permission_policy(_fs_call("/var/tmp/x"))
-    assert result.allowed is True
+    assert result.policy_decision.value == "ask"
 
 
 def test_policy_asks_for_a_local_shell() -> None:
@@ -65,11 +69,16 @@ def test_normalize_rejects_system_and_unsafe_paths(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         normalize_access_root("relative/path")
 
-    with pytest.raises(ValueError):
-        normalize_access_root(str(tmp_path / "missing"))
+    # A not-yet-created directory resolves to its nearest existing ancestor: a
+    # grant must be approvable before the directory it names exists.
+    assert normalize_access_root(str(tmp_path / "missing")) == tmp_path.resolve()
 
+    # A grant names a directory. A path that resolves to an existing file is not
+    # a directory, so it is refused rather than silently granting its parent.
+    a_file = tmp_path / "file.txt"
+    a_file.write_text("x", encoding="utf-8")
     with pytest.raises(ValueError):
-        normalize_access_root(str(tmp_path / "file.txt"))
+        normalize_access_root(str(a_file))
 
     with pytest.raises(ValueError):
         normalize_access_root(str(workspace), protected=(workspace,))
