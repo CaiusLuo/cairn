@@ -323,7 +323,11 @@ def legacy_store(root: Path, *, version: int = 2) -> SessionStore:
 
     Never relabel or rewrite V2 facts as V1 fixtures. Production has no downgrade.
     """
-    from cairn.infra.sessions.store import _SCHEMA
+    from cairn.infra.sessions.store import (
+        _CHECKPOINT_SCHEMA_V3,
+        _SCHEMA,
+        _TURN_ORDER_INDEX,
+    )
 
     api = store(root)
     api.close()
@@ -331,11 +335,18 @@ def legacy_store(root: Path, *, version: int = 2) -> SessionStore:
         assert conn.execute("SELECT count(*) FROM checkpoints").fetchone()[0] == 0
         conn.execute("DROP TABLE checkpoints")
         conn.execute("DROP INDEX session_turn_order")
-        conn.execute(_SCHEMA[-1])
+        # Version 3 broadens only the checkpoint format constraint and adds the
+        # Turn order index; versions 1/2 keep the original checkpoint DDL.
+        if version >= 3:
+            conn.execute(_CHECKPOINT_SCHEMA_V3)
+            conn.execute(_TURN_ORDER_INDEX)
+        else:
+            conn.execute(_SCHEMA[-1])
         # A store created by this build starts at V4 and therefore already has
-        # `tool_fences`; a V1/V2 fixture must not carry a table its version never
-        # defined, or the exact-schema check rejects it.
-        conn.execute("DROP TABLE IF EXISTS tool_fences")
+        # `tool_fences`; a fixture for an earlier version must not carry a table
+        # that version never defined, or the exact-schema check rejects it.
+        if version < 4:
+            conn.execute("DROP TABLE IF EXISTS tool_fences")
         if version == 1:
             conn.execute("DROP TABLE tasks")
         conn.execute(f"PRAGMA user_version={version}")

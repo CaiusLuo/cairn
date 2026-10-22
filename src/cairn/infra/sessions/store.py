@@ -477,13 +477,26 @@ class SessionStore(TaskLedgerMixin):
     def _without_fences(diagnostics: AttemptDiagnostics) -> AttemptDiagnostics:
         """A diagnostics record with the fence tuple emptied.
 
-        `tool_fences` is the only fence of record. Every write to
+        `tool_fences` is the only fence of record at schema V4. Every write to
         `turns.diagnostics_json` goes through here so the JSON column can never
         hold a second copy that drifts from the table.
         """
         if not diagnostics.fences:
             return diagnostics
         return diagnostics.model_copy(update={"fences": ()})
+
+    def _diagnostics_for_json(
+        self, conn: sqlite3.Connection, diagnostics: AttemptDiagnostics
+    ) -> AttemptDiagnostics:
+        """The diagnostics this database stores in JSON.
+
+        Only a schema that has `tool_fences` may drop the fences, because there
+        the table is their source of truth. A legacy schema keeps them inline:
+        emptying the tuple there would delete the Turn's only fence evidence.
+        """
+        if self._has_fence_table(conn):
+            return self._without_fences(diagnostics)
+        return diagnostics
 
     def _begin(self, expected: Revision | TaskRevision, kind: type[StrictDTO]) -> None:
         """Attribute a later fault to this caller's session, then validate.
@@ -1655,7 +1668,6 @@ class SessionStore(TaskLedgerMixin):
                     "diagnostics": diagnostics,
                 }
             )
-            diagnostic_raw = self._encode(self._without_fences(diagnostics))
             self._settled_relationship(terminal, checkpoint, prepared.checkpoint)
             self._validate_record(terminal)
             format_version = 2 if self.schema_version >= 3 else 1
@@ -1668,6 +1680,7 @@ class SessionStore(TaskLedgerMixin):
         with self._write(idle_after=True) as conn:
             current = self._current(conn, expected, prepared)
             self._active(current, checkpoint.turn_id or "")
+            diagnostic_raw = self._encode(self._diagnostics_for_json(conn, diagnostics))
             if format_version != (
                 2 if conn.execute("PRAGMA user_version").fetchone()[0] >= 3 else 1
             ):
@@ -1722,19 +1735,21 @@ class SessionStore(TaskLedgerMixin):
             raise SessionStoreError("invalid_reason")
         with self._prepare(expected, recovery=True) as prepared:
             record = prepared.unresolved
-            raw: bytes | None = None
-            if record is not None:
-                diagnostics = self._without_fences(
-                    record.diagnostics.model_copy(update={"reason": reason_code})
-                )
-                raw = self._encode(diagnostics)
         with self._write(recovery=True) as conn:
             self._current(conn, expected, prepared)
             session = self._row(conn, expected)
-            if record is not None and raw is not None:
+            if record is not None:
+                diagnostics = self._diagnostics_for_json(
+                    conn,
+                    record.diagnostics.model_copy(update={"reason": reason_code}),
+                )
                 conn.execute(
                     "UPDATE turns SET state='recovery_required',diagnostics_json=? WHERE session_id=? AND turn_id=?",
-                    (raw.decode(), expected.session_id, record.intent.turn_id),
+                    (
+                        self._encode(diagnostics).decode(),
+                        expected.session_id,
+                        record.intent.turn_id,
+                    ),
                 )
             revision = self._cas(
                 conn,
@@ -1805,28 +1820,33 @@ class SessionStore(TaskLedgerMixin):
                 raise SessionStoreError("reconciliation_rejected")
             if any(sid == expected.session_id for sid, _ in self._owned_turns):
                 raise SessionStoreError("turn_still_owned")
-            raw: bytes | None = None
             if record is not None:
-                diagnostics = self._without_fences(
-                    record.diagnostics.model_copy(update={"resolution": resolution})
+                # Validation keeps the fences; only the JSON encoding drops them,
+                # and only where the fence table exists.
+                diagnostics = record.diagnostics.model_copy(
+                    update={"resolution": resolution}
                 )
-                abandoned = record.model_copy(
-                    update={
-                        "state": "abandoned",
-                        "ended_at_utc": resolution.resolved_at_utc,
-                        "diagnostics": diagnostics,
-                    }
+                self._validate_record(
+                    record.model_copy(
+                        update={
+                            "state": "abandoned",
+                            "ended_at_utc": resolution.resolved_at_utc,
+                            "diagnostics": diagnostics,
+                        }
+                    )
                 )
-                raw = self._encode(diagnostics)
-                self._validate_record(abandoned)
         with self._write(recovery=True, idle_after=True) as conn:
             self._current(conn, expected, prepared)
-            if record is not None and raw is not None:
+            if record is not None:
+                stored = self._diagnostics_for_json(
+                    conn,
+                    record.diagnostics.model_copy(update={"resolution": resolution}),
+                )
                 conn.execute(
                     "UPDATE turns SET state='abandoned',ended_at_utc=?,diagnostics_json=? WHERE session_id=? AND turn_id=?",
                     (
                         resolution.resolved_at_utc,
-                        raw.decode(),
+                        self._encode(stored).decode(),
                         expected.session_id,
                         record.intent.turn_id,
                     ),

@@ -76,7 +76,13 @@ the DB-level twin of `_validate_record`'s `references` set, and the
 Both live in the table so they hold even if a future writer bypasses the model
 validator. The call/tool-name length checks mirror `reference_text`; the no-control-
 character half of `reference_text` cannot be expressed as a plain CHECK and stays
-in the codec.
+in the codec, enforced when the `ToolFence` model is built. A writer that bypasses
+the model and INSERTs directly is not covered by that check — the table's CHECKs
+and the read path's decode still reject the row on inspection, so the failure is
+fail-closed rather than silent. So does the cumulative fence budget: the JSON
+record's `MAX_RECORD_BYTES` no longer bounds a Turn's fences, and only
+`MAX_DATABASE_BYTES` does. That is the intended trade, stated here so it is not
+mistaken for an oversight.
 
 ### D2. Append is one transaction: INSERT, then CAS
 
