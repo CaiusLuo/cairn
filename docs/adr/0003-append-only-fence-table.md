@@ -17,7 +17,7 @@ execute the tool. The current write therefore rewrites the entire column:
 diagnostics = record.diagnostics.model_copy(
     update={"fences": (*record.diagnostics.fences, fence)}
 )
-diagnostic_raw = self._encode(diagnostics)   # whole record, whole history
+diagnostic_raw = self._encode(diagnostics)  # whole record, whole history
 ```
 
 Measured on the Linux host, with `MAX_RECORD_BYTES = 65_536` and
