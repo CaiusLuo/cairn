@@ -244,7 +244,8 @@ def findings(report: ExperimentReport, summary: dict[str, Any]) -> str:
         f"Model: `{config.model_identifier}`; provider: `{config.provider_name or 'unavailable'}`; seed: `{config.seed}`; repetitions: {config.repetitions}.",
         f"Dataset: `{config.dataset_version}` / `{config.dataset_sha256}`; code: `{config.source_revision or 'unavailable'}`.",
         f"Budget: {config.settings.run_budget.max_steps} steps/run, {config.settings.context_budget.max_tokens} request tokens including {config.settings.context_budget.response_tokens} response reserve; run/check/tool timeouts {config.settings.run_timeout_seconds}/{config.settings.check_timeout_seconds}/{config.tool_timeout_seconds}s.",
-        f"Sandbox: {config.sandbox}; network: {config.network_policy}.",
+        f"Shell execution: {config.shell_execution} (local-first; no OS sandbox, "
+        f"so a granted shell can reach the network and any file the user can).",
         "",
         "| Arm | Runs | PASS / FAIL / ERROR | Success | Mean tools | Mean reads | Mean Bash discovery | Mean Graph queries | Provider input / output totals | Request-count total | Mean seconds |",
         "| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |",

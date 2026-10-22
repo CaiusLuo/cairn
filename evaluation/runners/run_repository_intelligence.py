@@ -76,11 +76,9 @@ async def main(directory: Path, *, repetitions: int = 1, seed: int = 230028) -> 
         repetitions=repetitions,
         seed=seed,
         settings=settings,
-        sandbox="macos-sandbox-exec"
-        if sys.platform == "darwin"
-        else "linux-bubblewrap"
-        if sys.platform == "linux"
-        else "unsupported",
+        # The report states whether a shell was actually granted, not a guess
+        # from the OS. The eval runner refuses a shell unless it opts in.
+        shell_execution="refused",
     )
     try:
         env_values = dotenv_values(Path(".env"))

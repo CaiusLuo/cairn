@@ -41,6 +41,20 @@ from cairn.runtime.evals.models import (
 )
 from cairn.runtime.evals.suite import EvalSuiteRunner, write_suite_report
 from tests.support.runtime import SequenceLLM
+from tests.support.sqlite_runtime import pin_qualified_runtime
+
+
+@pytest.fixture(autouse=True)
+def _qualified_sqlite(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate the host SQLite version from this module's assertions.
+
+    These tests check metric ownership, snapshot isolation and lifecycle, not
+    WAL admission. A store that refuses an unqualified runtime is an unrelated
+    environment fact, so a qualified version is presented to the real policy
+    (only ``sqlite_version_info`` is substituted; the rule is untouched). Real
+    admission still refuses an unqualified runtime — that is covered elsewhere.
+    """
+    pin_qualified_runtime(monkeypatch)
 
 
 def intelligence_case() -> IntelligenceCase:
@@ -562,7 +576,7 @@ def test_v1_reports_preserve_declared_metrics_and_exclude_unknown_subclass_field
             model_identifier="offline-model",
             case_names=(spec.item.case.name,),
             settings=settings,
-            sandbox="test",
+            shell_execution="refused",
         ),
         state="interrupted",
         runs=[

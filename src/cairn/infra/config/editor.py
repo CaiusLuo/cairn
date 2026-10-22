@@ -18,6 +18,7 @@ from tomlkit.items import Array, Null, Whitespace
 
 from cairn.core.model_manager import ModelConfig, ProviderConfig
 from cairn.core.provider_catalog import NamedProvider
+from cairn.infra import platform
 from cairn.infra.config.schema import (
     DEFAULT_PROVIDER_NAME,
     _required_string,
@@ -259,16 +260,22 @@ def _edit_model_id(
     edit_target.revalidate(tomllib.loads(updated))
 
     # Anchor all writes to the checked directory, even if its pathname changes.
-    directory = os.open(
-        path.parent,
-        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-    )
+    # Refuse before any effect when the host cannot hold that anchor.
+    try:
+        platform.require_dir_fd()
+        directory_flags = platform.open_flags("O_DIRECTORY", "O_NOFOLLOW")
+    except platform.CapabilityMissing as error:
+        raise ValueError(
+            "This host cannot edit models.toml safely: a required filesystem "
+            "capability is missing."
+        ) from error
+    directory = os.open(path.parent, directory_flags)
     temporary = f".cairn-models-{uuid4().hex}"
     created = False
     try:
         fd = os.open(
             temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | platform.flag("O_NOFOLLOW"),
             0o600,
             dir_fd=directory,
         )

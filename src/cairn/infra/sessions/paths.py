@@ -10,19 +10,19 @@ from pathlib import Path
 from threading import get_ident
 from uuid import uuid4
 
+from cairn.infra import platform
 from cairn.infra.sessions.models import MAX_DATABASE_BYTES, SessionStoreError
 
-# POSIX-only open flags. Windows lacks O_DIRECTORY/O_NOFOLLOW/O_CLOEXEC, and
-# evaluating them at import would make even `cairn --help` fail there. Missing
-# flags read as 0 so the module imports everywhere; the Durable store still
-# refuses an unsupported host explicitly when it is actually opened.
-_DIRECTORY = (
-    os.O_RDONLY
-    | getattr(os, "O_DIRECTORY", 0)
-    | getattr(os, "O_NOFOLLOW", 0)
-    | getattr(os, "O_CLOEXEC", 0)
-)
-_FILE = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+
+# POSIX-only open flags, resolved inside the operations that use them. Reading
+# them at import would make `cairn --help` fail on a host that lacks one; a
+# function keeps import safe while still refusing the operation that needs it.
+def _directory_flags() -> int:
+    return platform.open_flags("O_DIRECTORY", "O_NOFOLLOW", "O_CLOEXEC")
+
+
+def _file_flags() -> int:
+    return platform.open_flags("O_NOFOLLOW", "O_CLOEXEC")
 
 
 def _identity(info: os.stat_result) -> tuple[int, int]:
@@ -117,7 +117,7 @@ class StorePaths:
                 try:
                     fd = os.open(
                         self.path.name,
-                        _FILE | os.O_CREAT | os.O_EXCL,
+                        _file_flags() | os.O_CREAT | os.O_EXCL,
                         0o600,
                         dir_fd=self.directory_fd,
                     )
@@ -133,8 +133,8 @@ class StorePaths:
             self.access_fd = os.open(
                 self.access_path.name,
                 (os.O_RDWR | os.O_CREAT if writer else os.O_RDONLY)
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_CLOEXEC", 0),
+                | platform.flag("O_NOFOLLOW")
+                | platform.flag("O_CLOEXEC"),
                 0o600,
                 dir_fd=self.directory_fd,
             )
@@ -149,20 +149,27 @@ class StorePaths:
             raise SessionStoreError("unsafe_path_or_lock") from None
 
     def _open_directory(self, *, create: bool) -> None:
-        fd = os.open(self.directory.anchor, _DIRECTORY)
+        # Refuse before any filesystem effect when the host cannot anchor the
+        # walk to a descriptor or refuse a replaced symlink.
+        try:
+            platform.require_dir_fd()
+            platform.require_no_follow_stat()
+        except platform.CapabilityMissing as error:
+            raise SessionStoreError("unsupported_locking") from error
+        fd = os.open(self.directory.anchor, _directory_flags())
         current = Path(self.directory.anchor)
         self._components[current] = _identity(os.fstat(fd))
         try:
             for name in self.directory.parts[1:]:
                 current /= name
                 try:
-                    next_fd = os.open(name, _DIRECTORY, dir_fd=fd)
+                    next_fd = os.open(name, _directory_flags(), dir_fd=fd)
                 except FileNotFoundError:
                     if not create:
                         raise
                     os.mkdir(name, 0o700, dir_fd=fd)
                     os.fsync(fd)  # Synchronize every newly created parent entry.
-                    next_fd = os.open(name, _DIRECTORY, dir_fd=fd)
+                    next_fd = os.open(name, _directory_flags(), dir_fd=fd)
                 os.close(fd)
                 fd = next_fd
                 self._components[current] = _identity(os.fstat(fd))
@@ -178,8 +185,8 @@ class StorePaths:
             self.lock_path.name,
             os.O_RDWR
             | os.O_CREAT
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
+            | platform.flag("O_NOFOLLOW")
+            | platform.flag("O_CLOEXEC"),
             0o600,
             dir_fd=self.directory_fd,
         )
@@ -313,8 +320,8 @@ class StorePaths:
             os.O_WRONLY
             | os.O_CREAT
             | os.O_EXCL
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
+            | platform.flag("O_NOFOLLOW")
+            | platform.flag("O_CLOEXEC"),
             0o600,
             dir_fd=self.directory_fd,
         )
@@ -334,7 +341,7 @@ class StorePaths:
         self.check()
         if path not in self._backups:
             raise SessionStoreError("invalid_backup")
-        fd = os.open(path.name, _FILE, dir_fd=self.directory_fd)
+        fd = os.open(path.name, _file_flags(), dir_fd=self.directory_fd)
         try:
             if _identity(os.fstat(fd)) != self._files[path]:
                 raise SessionStoreError("path_identity_changed")

@@ -89,8 +89,10 @@ class ExperimentConfig(BaseModel):
     case_names: tuple[str, ...]
     settings: EvalSuiteConfig
     tool_timeout_seconds: float = Field(default=10, gt=0, le=30)
-    sandbox: str
-    network_policy: Literal["baseline-deny-no-approval"] = "baseline-deny-no-approval"
+    # Execution facts, recorded as observed. ``shell`` says whether the session
+    # granted local shell access; it is not inferred from the OS. A shell that was
+    # not granted is not network isolation — a shell that runs is not isolated.
+    shell_execution: Literal["granted", "refused", "unknown"] = "unknown"
 
 
 class ExperimentRun(BaseModel):

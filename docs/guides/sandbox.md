@@ -37,10 +37,11 @@ bounded, and a cleanup failure never replaces the primary outcome.
 - **No `.git` write protection.** Git metadata is only protected for the *file
   tools*, which still refuse paths inside `.git`.
 
-The file tools keep their own, independent boundary: `infra.workspace.paths`
-rejects absolute paths, `..`, `.git` components and symlinked components, so
-`read_file`/`write_file`/`edit_file`/`patch`/`glob`/`grep` cannot leave the
-Workspace.
+The file tools keep their own, independent boundary. A path inside the Workspace
+obeys `infra.workspace.paths`: no `..`, no `.git` component, no symlinked
+component. A path outside it is handled by the trust and grant rules below, and
+`glob` has no `path` argument, so its search root and candidate filtering stay
+inside the Workspace: `glob` never searches outside.
 
 ## Workspace trust and outside writes
 
@@ -62,8 +63,9 @@ A path **outside** it is handled differently:
 
 | Access | Outside the Workspace |
 | --- | --- |
-| Read (`read_file`, `grep`, `glob`) | Allowed, no approval |
+| Read (`read_file`, `grep` with an explicit `path`) | Allowed, no approval |
 | Write (`write_file`, `edit_file`, `patch_file`) | Needs a grant on the containing directory |
+| `glob` | Not supported — its search root and candidates stay inside the Workspace |
 
 An approved directory covers its whole subtree for the rest of the session, so
 approving `/tmp/data` once covers `/tmp/data/a.txt` and `/tmp/data/b.txt`. `.git`

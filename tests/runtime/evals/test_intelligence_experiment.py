@@ -36,7 +36,7 @@ def config(*, real: bool = False) -> ExperimentConfig:
             run_timeout_seconds=10,
             check_timeout_seconds=2,
         ),
-        sandbox="test",
+        shell_execution="refused",
     )
 
 

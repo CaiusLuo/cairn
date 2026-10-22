@@ -7,6 +7,7 @@ from collections import Counter
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
+from cairn.infra import platform
 from cairn.infra.descriptors import StatIdentity, open_root
 from cairn.infra.repo_graph.graph import RepoGraph
 from cairn.infra.repo_graph.manifests import parse_manifest
@@ -110,11 +111,18 @@ _SOURCE_LANGUAGES = frozenset(
         Language.RUST,
     }
 )
-# POSIX-only flags; a missing one reads as 0 so this module stays importable.
-_DIRECTORY_FLAGS = (
-    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-)
-_FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+
+
+# POSIX-only flags, resolved inside the operations that use them so import stays
+# safe on a host that lacks one, while the operation that needs it refuses.
+def _directory_flags() -> int:
+    return platform.open_flags("O_DIRECTORY", "O_NOFOLLOW")
+
+
+def _file_flags() -> int:
+    return platform.open_flags("O_NOFOLLOW", "O_NONBLOCK")
+
+
 _READ_CHUNK_BYTES = 64 * 1024
 
 
@@ -326,7 +334,7 @@ class RepoGraphBuilder:
         try:
             for name in path.split("/"):
                 walked.append(name)
-                child_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=fd)
+                child_fd = os.open(name, _directory_flags(), dir_fd=fd)
                 os.close(fd)
                 fd = child_fd
                 if (
@@ -452,7 +460,7 @@ class RepoGraphBuilder:
             self._issue(IssueReason.IO_LIMIT, path)
         else:
             try:
-                fd = os.open(name, _FILE_FLAGS, dir_fd=parent_fd)
+                fd = os.open(name, _file_flags(), dir_fd=parent_fd)
             except OSError:
                 try:
                     actual = StatIdentity.from_stat(

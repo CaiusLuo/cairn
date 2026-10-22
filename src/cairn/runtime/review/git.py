@@ -7,6 +7,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
+from cairn.infra import platform
 from cairn.infra.git.worktree import WorktreeError
 from cairn.runtime.review.models import ReviewStatus
 from cairn.runtime.workflow.git import SnapshotDriftError, WorkflowGit
@@ -137,7 +138,13 @@ async def _workspace_state(git: WorkflowGit) -> bytes:
             elif stat.S_ISLNK(before.st_mode):
                 digest.update(os.fsencode(os.readlink(path)) + b"\0")
             elif stat.S_ISREG(before.st_mode):
-                fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                # Refuse rather than open a symlink-followable descriptor when the
+                # host cannot refuse one.
+                try:
+                    no_follow = platform.flag("O_NOFOLLOW")
+                except platform.CapabilityMissing as error:
+                    raise ReviewInputError(ReviewStatus.INCOMPLETE) from error
+                fd = os.open(path, os.O_RDONLY | no_follow)
                 with os.fdopen(fd, "rb") as stream:
                     if _identity(os.fstat(stream.fileno())) != _identity(before):
                         raise SnapshotDriftError(

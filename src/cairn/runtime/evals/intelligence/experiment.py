@@ -69,6 +69,14 @@ async def run_experiment(
         or config.case_names != tuple(spec.item.case.name for spec in cases)
     ):
         raise ValueError("Experiment configuration does not match the frozen dataset")
+    # The report must state what actually happens. IntelligenceRunner never
+    # grants the shell (trust_local_shell defaults False), so a config claiming
+    # otherwise is inconsistent and must not be recorded as fact.
+    if config.shell_execution == "granted":
+        raise ValueError(
+            "Experiment config claims a granted shell, but this runner refuses "
+            "the shell; report the real execution fact, not a claim."
+        )
     report = ExperimentReport(config=config)
     plan = execution_plan(cases, config.seed, config.repetitions)
     persist(report, directory)

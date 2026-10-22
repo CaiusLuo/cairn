@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cairn.core.memory.models import Fingerprint, MemoryError, PathKind, safe_path
+from cairn.infra import platform
 from cairn.infra.descriptors import StatIdentity, open_root
 
 
@@ -116,6 +117,13 @@ class FileObserver:
     ) -> Fingerprint:
         safe_path(path)
         check()
+        # Refuse before opening anything when the host cannot inspect a name
+        # without following it, or open relative to a verified parent.
+        try:
+            platform.require_no_follow_stat()
+            platform.require_dir_fd()
+        except platform.CapabilityMissing as error:
+            raise MemoryError(str(error)) from error
         parent = os.dup(root_fd)
         try:
             parts = path.split("/")
@@ -132,9 +140,7 @@ class FileObserver:
                     )
                 next_fd = os.open(
                     component,
-                    os.O_RDONLY
-                    | getattr(os, "O_DIRECTORY", 0)
-                    | getattr(os, "O_NOFOLLOW", 0),
+                    platform.open_flags("O_DIRECTORY", "O_NOFOLLOW"),
                     dir_fd=parent,
                 )
                 os.close(parent)
@@ -150,13 +156,9 @@ class FileObserver:
                     path=path, kind=file_kind, mode=stat.S_IMODE(before.st_mode)
                 )
             identity = StatIdentity.from_stat(before)
-            flags = (
-                os.O_RDONLY
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_NONBLOCK", 0)
-            )
+            flags = platform.open_flags("O_NOFOLLOW", "O_NONBLOCK")
             if file_kind is PathKind.DIRECTORY:
-                flags |= getattr(os, "O_DIRECTORY", 0)
+                flags |= platform.flag("O_DIRECTORY")
             fd = os.open(name, flags, dir_fd=parent)
             try:
                 if identity != StatIdentity.from_stat(os.fstat(fd)):

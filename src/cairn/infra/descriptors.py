@@ -11,11 +11,13 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-# POSIX-only flags. Reading a missing one as 0 keeps this module importable on a
-# host that lacks it (Windows); the callers that need the protection refuse there.
-_DIRECTORY_FLAGS = (
-    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-)
+from cairn.infra import platform
+
+
+# POSIX-only flags, resolved inside ``open_root`` so import stays safe on a host
+# that lacks one while the walk itself refuses.
+def _directory_flags() -> int:
+    return platform.open_flags("O_DIRECTORY", "O_NOFOLLOW")
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,10 +52,15 @@ def open_root(root: Path) -> int:
     ``OSError`` instead of redirecting the caller; callers fail closed. The
     caller owns and must close the returned descriptor.
     """
-    fd = os.open(root.anchor, _DIRECTORY_FLAGS)
+    # Refuse before opening anything when the host cannot anchor the walk to a
+    # descriptor or cannot refuse a replaced symlink. ``OSError`` keeps the
+    # callers' existing failure handling.
+    platform.require_dir_fd()
+    platform.require_no_follow_stat()
+    fd = os.open(root.anchor, _directory_flags())
     try:
         for component in root.parts[1:]:
-            child_fd = os.open(component, _DIRECTORY_FLAGS, dir_fd=fd)
+            child_fd = os.open(component, _directory_flags(), dir_fd=fd)
             os.close(fd)
             fd = child_fd
         return fd
