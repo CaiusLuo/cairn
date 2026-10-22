@@ -212,8 +212,6 @@ def test_failed_or_denied_tool_does_not_fabricate_task_failure(
     arguments = (
         {
             "command": "must-never-execute",
-            "network_access": True,
-            "justification": "denied offline",
         }
         if tool == "bash"
         else {"path": "missing.txt"}

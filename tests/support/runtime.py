@@ -122,17 +122,16 @@ def tool_response() -> LLMResponse:
     )
 
 
-def network_tool_response() -> LLMResponse:
+def shell_tool_response() -> LLMResponse:
+    """One plain shell call: a local shell needs no per-call capability argument."""
     return LLMResponse(
         tool_calls=[
             ToolCall(
-                id="call-1",
-                name="bash",
-                arguments={
-                    "command": "curl example.com",
-                    "network_access": True,
-                    "justification": "fetch example.com",
-                },
+                id="call-1", name="bash", arguments={"command": "curl example.com"}
             )
         ]
     )
+
+
+#: Historical name kept so existing call sites read unchanged.
+network_tool_response = shell_tool_response

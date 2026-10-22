@@ -67,10 +67,11 @@ class ToolExecutionContext:
 
     ``accessible_roots`` holds the normalized absolute directories a
     ``FILESYSTEM_ACCESS`` grant approved for this execution. It is empty for an
-    ordinary call, so a tool outside the workspace with no grant stays refused.
+    ordinary call, so a file tool outside the workspace with no grant stays
+    refused. A local shell needs no per-execution authority: it is approved once
+    per session, before any command runs.
     """
 
-    network_access: bool = False
     accessible_roots: tuple[Path, ...] = ()
 
 

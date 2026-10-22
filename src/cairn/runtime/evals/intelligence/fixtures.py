@@ -16,7 +16,6 @@ from cairn.infra.git.context import RepoContextProvider
 from cairn.infra.git.environment import build_git_env
 from cairn.infra.memory.identity import ProjectIdentity
 from cairn.infra.memory.store import MemoryStore
-from cairn.infra.tools.sandbox import resolve_tmpdir, resolve_uv_cache_dir
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.evals.checks import FileContentEqualsCheck
 from cairn.runtime.evals.models import EvalSuiteCase
@@ -71,11 +70,13 @@ async def initialize_git(workspace: Workspace) -> None:
 
 
 def writable_roots(workspace: Workspace) -> tuple[Path, ...]:
-    roots = [workspace.root, Path("/tmp").resolve()]
-    for root in (resolve_tmpdir(os.environ), resolve_uv_cache_dir(os.environ)):
-        if root is not None:
-            roots.append(root)
-    return tuple(roots)
+    """Directories a fixture command may write.
+
+    There is no OS sandbox, so this only names the workspace and the shared
+    temporary directory a fixture is allowed to touch; it is not an isolation
+    boundary.
+    """
+    return (workspace.root, Path("/tmp").resolve())
 
 
 async def approve_fixtures(

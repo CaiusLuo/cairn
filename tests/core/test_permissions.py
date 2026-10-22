@@ -19,12 +19,9 @@ def bash_call(command: str, **extra: object) -> ToolCall:
     return ToolCall(id="1", name="bash", arguments={"command": command, **extra})
 
 
-def network_call(command: str = "curl example.com") -> ToolCall:
-    return bash_call(
-        command,
-        network_access=True,
-        justification="needed",
-    )
+def shell_call(command: str = "curl example.com") -> ToolCall:
+    """A plain shell call: the local shell capability needs no extra argument."""
+    return bash_call(command)
 
 
 @pytest.mark.parametrize(
@@ -32,9 +29,8 @@ def network_call(command: str = "curl example.com") -> ToolCall:
     [
         ("read_file", {"path": "README.md"}),
         ("edit_file", {"path": "README.md"}),
-        ("bash", {"command": "git status --short"}),
-        ("bash", {"command": "uv run pytest"}),
-        ("bash", {"command": "printf x > README.md"}),
+        ("write_file", {"path": "README.md", "content": "x"}),
+        ("glob", {"pattern": "**/*.py"}),
     ],
 )
 def test_baseline_without_prompt(name: str, arguments: dict[str, object]) -> None:
@@ -63,20 +59,17 @@ def test_session_grant_is_scoped_and_resets_for_new_handler() -> None:
         return PermissionChoice.ALLOW_SESSION
 
     handler = SessionPermissionHandler(prompt)
-    first = handler(network_call())
-    second = handler(network_call("python other.py"))
+    first = handler(shell_call())
+    second = handler(shell_call("python other.py"))
     assert first.source == PermissionSource.USER_SESSION
     assert second.source == PermissionSource.SESSION_GRANT
     assert first.prompted
     assert not second.prompted
     assert len(prompts) == 1
     assert first.allowed and second.allowed
-    assert first.granted_capabilities == frozenset({PermissionCapability.NETWORK})
-    assert second.granted_capabilities == frozenset({PermissionCapability.NETWORK})
-
-    local = handler(bash_call("curl example.com", network_access=False))
-    assert local.allowed and not local.prompted and not local.granted_capabilities
-    assert SessionPermissionHandler(prompt)(network_call()).prompted
+    assert first.granted_capabilities == frozenset({PermissionCapability.LOCAL_SHELL})
+    assert second.granted_capabilities == frozenset({PermissionCapability.LOCAL_SHELL})
+    assert SessionPermissionHandler(prompt)(shell_call()).prompted
 
 
 def test_allow_once_grants_only_the_current_execution() -> None:
@@ -88,12 +81,12 @@ def test_allow_once_grants_only_the_current_execution() -> None:
 
     handler = SessionPermissionHandler(prompt)
 
-    first = handler(network_call())
-    second = handler(network_call("python other.py"))
+    first = handler(shell_call())
+    second = handler(shell_call("python other.py"))
 
     assert first.allowed and first.prompted
     assert first.source == PermissionSource.USER_ONCE
-    assert first.granted_capabilities == frozenset({PermissionCapability.NETWORK})
+    assert first.granted_capabilities == frozenset({PermissionCapability.LOCAL_SHELL})
     assert second.allowed and second.prompted
     assert second.source == PermissionSource.USER_ONCE
     assert len(prompts) == 2
@@ -103,7 +96,7 @@ def test_allow_once_grants_only_the_current_execution() -> None:
 def test_deny_does_not_grant_capability() -> None:
     handler = SessionPermissionHandler(lambda request: PermissionChoice.DENY)
 
-    result = handler(network_call())
+    result = handler(shell_call())
 
     assert not result.allowed
     assert result.prompted
@@ -131,11 +124,11 @@ class _AlternatePermissionChoice(StrEnum):
     ],
 )
 def test_invalid_choice_fails_closed(choice: object) -> None:
-    """Anything outside PermissionChoice must never grant NETWORK authority."""
+    """Anything outside PermissionChoice must never grant shell authority."""
     handler = SessionPermissionHandler(Mock(return_value=choice))
 
     with pytest.raises(ValueError, match="Invalid permission choice"):
-        handler(network_call())
+        handler(shell_call())
 
     assert handler.grants == set()
 
@@ -148,14 +141,14 @@ def test_reset_grants_drops_session_grants_and_prompts_again() -> None:
         return PermissionChoice.ALLOW_SESSION
 
     handler = SessionPermissionHandler(prompt)
-    assert handler(network_call()).source == PermissionSource.USER_SESSION
-    assert handler.grants == {PermissionCapability.NETWORK}
+    assert handler(shell_call()).source == PermissionSource.USER_SESSION
+    assert handler.grants == {PermissionCapability.LOCAL_SHELL}
 
     handler.reset_grants()
 
     assert handler.grants == set()
     # The next ASK decision is prompted again instead of reusing the grant.
-    after_reset = handler(network_call())
+    after_reset = handler(shell_call())
     assert after_reset.source == PermissionSource.USER_SESSION
     assert after_reset.prompted
     assert len(prompts) == 2
@@ -168,6 +161,8 @@ def test_reset_grants_keeps_the_global_policy_unchanged() -> None:
     denied = handler(bash_call("sudo rm -rf /"))
     assert not denied.allowed
     assert denied.source == PermissionSource.POLICY_DENY
-    allowed = handler(bash_call("git status --short"))
-    assert allowed.allowed
-    assert allowed.source == PermissionSource.BASELINE
+    # With no prompt handler a normal command cannot be approved, so it is not
+    # allowed: a local shell always needs explicit trust.
+    unapproved = handler(bash_call("git status --short"))
+    assert not unapproved.allowed
+    assert unapproved.source == PermissionSource.NO_HANDLER

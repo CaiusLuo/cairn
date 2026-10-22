@@ -13,23 +13,19 @@ from cairn.core.permissions import (
     PermissionRequest,
     PermissionSource,
     SessionPermissionHandler,
-    _bash_capability_request,
     evaluate_permission_policy,
 )
 from cairn.infra.tools import filesystem_access
 from cairn.infra.tools.filesystem_access import normalize_access_root
 
 
-def _fs_call(*roots: str, justification: str = "clean temp") -> ToolCall:
-    return ToolCall(
-        id="fs",
-        name="bash",
-        arguments={
-            "command": "rm -rf /tmp/scratch",
-            "extra_writable_roots": list(roots),
-            "justification": justification,
-        },
-    )
+def _fs_call(*roots: str) -> ToolCall:
+    """A file-tool call that reached outside the workspace.
+
+    Bash no longer carries ``extra_writable_roots``: a local shell needs no
+    per-directory grant. External filesystem access is a file-tool concern.
+    """
+    return ToolCall(id="fs", name="read_file", arguments={"path": roots[0]})
 
 
 def _request(paths: tuple[str, ...]) -> PermissionRequest:
@@ -47,33 +43,15 @@ def _handler(
     return SessionPermissionHandler(prompt, root_normalizer=normalize_access_root)
 
 
-def test_bash_extra_roots_request_filesystem_capability() -> None:
-    request = _bash_capability_request(_fs_call("/var/tmp/scratch"))
-
-    assert request is not None
-    assert request.capability is PermissionCapability.FILESYSTEM_ACCESS
-    assert request.paths == ("/var/tmp/scratch",)
+def test_policy_does_not_ask_for_a_file_tool_by_itself() -> None:
+    """A file tool's request reaches the handler, not the baseline policy."""
+    result = evaluate_permission_policy(_fs_call("/var/tmp/x"))
+    assert result.allowed is True
 
 
-def test_network_and_no_request_still_separate() -> None:
-    network = ToolCall(
-        id="n",
-        name="bash",
-        arguments={"command": "curl x", "network_access": True, "justification": "j"},
-    )
-    network_request = _bash_capability_request(network)
-    assert network_request is not None
-    assert network_request.capability is PermissionCapability.NETWORK
-
-    plain = ToolCall(id="p", name="bash", arguments={"command": "git status"})
-    assert _bash_capability_request(plain) is None
-
-
-def test_policy_asks_for_extra_roots_and_allows_baseline() -> None:
-    assert evaluate_permission_policy(_fs_call("/var/tmp/x")).allowed is False
-
-    baseline = ToolCall(id="b", name="bash", arguments={"command": "git status"})
-    assert evaluate_permission_policy(baseline).allowed is True
+def test_policy_asks_for_a_local_shell() -> None:
+    shell = ToolCall(id="b", name="bash", arguments={"command": "git status"})
+    assert evaluate_permission_policy(shell).allowed is False
 
 
 def test_normalize_rejects_system_and_unsafe_paths(tmp_path: Path) -> None:

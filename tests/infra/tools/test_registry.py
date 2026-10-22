@@ -53,7 +53,7 @@ def test_registry_exposes_schemas_and_executes_tools() -> None:
     tool = EchoTool()
     registry.register_tool(tool)
 
-    context = ToolExecutionContext(network_access=True)
+    context = ToolExecutionContext()
     result = asyncio.run(
         registry.execute(
             "echo",

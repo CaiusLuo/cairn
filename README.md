@@ -30,8 +30,8 @@ test, and extend. This is an early-stage learning and engineering project.
 
 ## Quick start
 
-Requires Python 3.12+, [uv](https://docs.astral.sh/uv/), and macOS `sandbox-exec`
-or Linux `bubblewrap`.
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). No OS sandbox is
+needed: the Bash tool runs commands locally, as you.
 
 `uv` installs to `~/.local/bin` and that directory is often not on `PATH` on a
 fresh Linux host, so `uv: command not found` usually means `PATH`, not a missing
@@ -50,29 +50,6 @@ cp .env.example .env
 `uv sync` needs network access the first time on a host with a cold cache. If it
 fails offline, use a host or cache that already holds the locked wheels; the
 command itself is not the problem.
-
-### Linux sandbox prerequisite
-
-The Bash sandbox is `bubblewrap` on Linux and `sandbox-exec` on macOS. First
-confirm the tool is installed:
-
-```bash
-command -v bwrap && bwrap --version
-```
-
-On Debian/Ubuntu: `sudo apt-get install bubblewrap`. Without it, `BashTool`
-refuses to run commands rather than running them unsandboxed.
-
-That check proves **availability only**, not that the sandbox can function. On a
-VPS or inside a container, user namespaces are often restricted and `bwrap` can
-install correctly yet fail to start. The functional test is the pilot preflight,
-which actually runs commands through the sandbox and checks the host side:
-
-```bash
-uv run python scripts/pilot/preflight.py --profile local-stateless
-```
-
-Read its `bash-sandbox` result, not `bwrap --version`.
 
 ### Git version for worktree workflows
 
@@ -175,9 +152,10 @@ with `cairn session reopen SESSION_ID`. Interrupted turns require explicit
 `cairn session reconcile SESSION_ID`. See the [durable CLI guide](docs/guides/durable-cli.md)
 for approval, storage and release limits; approvals are always fresh.
 
-Bash commands run inside an OS sandbox with network access denied by default;
-extra network access requires explicit approval. Filesystem boundaries differ
-by platform, and host reads are broadly available on macOS. Configured API keys
+Bash commands run locally as your user and are **not** sandboxed: they can reach
+the network and any file you can. A local shell is a host-level capability, so the
+first command in a session asks for approval and, once trusted, later commands run
+without repeating it. Configured API keys
 are removed from Bash child environments, for every configured provider and not
 just the active one; credential values never appear in prompts, traces or CLI
 output. Accessible credential files can still be read by tools, so this is not

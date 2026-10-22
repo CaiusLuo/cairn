@@ -9,6 +9,7 @@ import pytest
 
 from cairn.core.events import Event
 from cairn.core.models import LLMResponse, ToolCall, ToolResult
+from cairn.core.permissions import PermissionChoice, SessionPermissionHandler
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.tools.base import (
     ToolExecutionContext,
@@ -154,7 +155,16 @@ def test_generic_tool_execution_never_retries_an_effectful_or_unknown_tool(
     def handle_event(event: Event) -> None:
         events.append(event)
 
-    agent = Agent(llm=llm, tools=registry, event_handler=handle_event)
+    agent = Agent(
+        llm=llm,
+        tools=registry,
+        event_handler=handle_event,
+        # A local shell is approved once per session; without an approval the
+        # command would never run and the retry contract could not be observed.
+        permission_handler=SessionPermissionHandler(
+            lambda request: PermissionChoice.ALLOW_SESSION
+        ),
+    )
 
     assert asyncio.run(run_turn(agent, "write", budget=TEST_BUDGET)) == "stopped"
 

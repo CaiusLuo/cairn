@@ -56,8 +56,8 @@ The checks are:
 | --- | --- |
 | `python-version` | CPython is at least 3.12 and the exact interpreter is printed |
 | `sqlite-wal-admission` | `sqlite_wal_fix_supported()` and `wal_admission()` for the linked SQLite, with the required versions |
-| `bash-sandbox` | `sandbox-exec` (macOS) or `bwrap` (Linux) actually runs a command **and** an outside write is refused |
-| `sandbox-read-boundary` | States the real read boundary: write-jailed on both platforms, read isolation only on Linux |
+| `bash-shell` | A local command actually runs, and it starts in the Workspace |
+| `bash-isolation` | States plainly that a local shell claims no filesystem or network isolation |
 | `cli-import` | The `cairn` package imports and `cairn --help` lists its commands |
 | `state-directory` | The state directory exists and is writable |
 | `state-directory-permissions` | The observed mode; world-readable is reported, not hidden |
@@ -79,8 +79,8 @@ traces. It adds no CLI subcommand.
   select an interpreter whose linked SQLite carries the reviewed WAL-reset fix.
   Do not set `CAIRN_ALLOW_UNVERIFIED_SQLITE=1` for a pilot: a declaration admits
   a store but is never a supported deployment.
-- **`bash-sandbox` is `BLOCKED`** — do not run Bash-dependent pilot tasks. The
-  sandbox fails closed; a host without one must not be treated as isolated.
+- **`bash-shell` is `BLOCKED`** — the host cannot run a local command, so do not
+  run Bash-dependent pilot tasks.
 - **`provider-config` is `BLOCKED`** — fix the configuration before starting.
   Invalid TOML never falls back to the environment silently.
 
@@ -250,7 +250,7 @@ Stop the pilot and investigate; do not "try again" any of these:
 | An effect fence or unknown external effect exists | Treat the external state as possibly changed. Inspect before reconciling; never replay. |
 | A trace cannot be written | **Operator policy, not a runtime guarantee.** Durable trace writes are best-effort and a failure can coexist with an already committed receipt, so nothing enforces this for you. Treat the missing trace as losing your audit trail and stop until storage is healthy. |
 | You suspect a secret leaked | Stop. Rotate the credential, then inspect traces and Bash child environments. Configured credentials are stripped from Bash children, but files the user can read remain readable. |
-| Git metadata protection is refused (`UnprotectedGitMetadata`) | The workspace layout is unsupported. Move to a supported checkout; do not work around the refusal. |
+| A pilot task needs filesystem or network isolation | A local shell provides none. Treat the host as trusted, or run the pilot somewhere you are willing to expose. |
 
 Interrupted work is never auto-resumed. There is no automatic model, Task, Turn,
 inspection or mutation retry.

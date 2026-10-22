@@ -50,8 +50,6 @@ def _network_response() -> LLMResponse:
                 name="bash",
                 arguments={
                     "command": "touch network-side-effect",
-                    "network_access": True,
-                    "justification": "request an external resource",
                 },
             )
         ]

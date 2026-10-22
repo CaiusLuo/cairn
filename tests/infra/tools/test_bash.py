@@ -1,7 +1,5 @@
 import asyncio
 import os
-import shlex
-import shutil
 import signal
 import sys
 from contextlib import suppress
@@ -14,12 +12,9 @@ import pytest
 from cairn.infra.tools.bash import (
     BashTool,
     _decode_output,
-    _interpreter_runtime_paths,
-    _shadowed_ancestors,
-    sandbox_python,
+    workspace_python,
 )
 from cairn.infra.tools.capture import PIPE_READ_CHUNK_SIZE, read_bounded
-from cairn.infra.tools.sandbox import resolve_tmpdir, resolve_uv_cache_dir
 from cairn.infra.workspace.workspace import Workspace
 
 _CREATE_SUBPROCESS_EXEC = asyncio.create_subprocess_exec
@@ -226,80 +221,6 @@ def test_bash_sandbox_wrapper_cleans_descendants(
     asyncio.run(scenario())
 
 
-def test_resolve_tmpdir_fails_closed_for_invalid_roots(tmp_path: Path) -> None:
-    file_path = tmp_path / "not-a-directory"
-    file_path.write_text("data", encoding="utf-8")
-    invalid = (
-        None,
-        "",
-        "relative/tmp",
-        "/",
-        "//",
-        str(tmp_path / "missing"),
-        str(file_path),
-    )
-
-    for value in invalid:
-        env = {} if value is None else {"TMPDIR": value}
-        assert resolve_tmpdir(env) is None, value
-
-
-def test_resolve_tmpdir_normalizes_directory_and_symlink(tmp_path: Path) -> None:
-    real = tmp_path / "real"
-    real.mkdir()
-    alias = tmp_path / "alias"
-    alias.symlink_to(real, target_is_directory=True)
-
-    assert resolve_tmpdir({"TMPDIR": str(real)}) == real.resolve()
-    assert resolve_tmpdir({"TMPDIR": str(alias)}) == real.resolve()
-
-
-def test_resolve_uv_cache_dir_precedence_and_normalization(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    xdg = tmp_path / "xdg"
-    explicit = tmp_path / "explicit" / "uv"
-    real = tmp_path / "real-cache"
-    real.mkdir()
-    alias = tmp_path / "cache-alias"
-    alias.symlink_to(real, target_is_directory=True)
-
-    assert (
-        resolve_uv_cache_dir(
-            {
-                "UV_CACHE_DIR": str(explicit),
-                "XDG_CACHE_HOME": str(xdg),
-                "HOME": str(home),
-            }
-        )
-        == explicit.resolve()
-    )
-    assert (
-        resolve_uv_cache_dir({"XDG_CACHE_HOME": str(xdg), "HOME": str(home)})
-        == (xdg / "uv").resolve()
-    )
-    assert (
-        resolve_uv_cache_dir({"XDG_CACHE_HOME": "relative", "HOME": str(home)})
-        == (home / ".cache" / "uv").resolve()
-    )
-    assert (
-        resolve_uv_cache_dir({"HOME": str(home)}) == (home / ".cache" / "uv").resolve()
-    )
-    assert resolve_uv_cache_dir({"UV_CACHE_DIR": str(alias)}) == real.resolve()
-
-
-def test_resolve_uv_cache_dir_fails_closed_for_invalid_explicit_values(
-    tmp_path: Path,
-) -> None:
-    fallbacks = {
-        "XDG_CACHE_HOME": str(tmp_path / "xdg"),
-        "HOME": str(tmp_path / "home"),
-    }
-    invalid = ("", "   ", "relative/cache", "/", "//")
-
-    for value in invalid:
-        assert resolve_uv_cache_dir({**fallbacks, "UV_CACHE_DIR": value}) is None, value
-
-
 def test_bash_tool_child_inherits_host_env_and_keeps_workspace_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -321,147 +242,6 @@ def test_bash_tool_child_inherits_host_env_and_keeps_workspace_cwd(
 
     assert result.exit_code == 0, result.stderr
     assert result.stdout == f"{tmp_path}|/host/home|/host/tmp||preserved"
-
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS sandbox-exec")
-def test_macos_sandbox_denies_local_network_bind(tmp_path: Path) -> None:
-    python = tmp_path / "python"
-    python.symlink_to(Path(sys.executable).resolve())
-    script = (
-        "import socket\n"
-        'print("python-started", flush=True)\n'
-        "with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:\n"
-        '    sock.bind(("127.0.0.1", 0))\n'
-    )
-
-    result = asyncio.run(
-        BashTool(Workspace(tmp_path)).execute(
-            {"command": f"{shlex.quote(str(python))} -c {shlex.quote(script)}"}
-        )
-    )
-
-    assert result.exit_code != 0
-    assert result.stdout == "python-started\n"
-
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS sandbox-exec")
-def test_macos_sandbox_allows_writes_to_workspace_and_host_tmpdir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    workspace_root = tmp_path / "workspace"
-    workspace_root.mkdir()
-    host_tmpdir = tmp_path / "host-tmp"
-    host_tmpdir.mkdir()
-    outside = tmp_path / "outside.txt"
-    outside.write_text("private", encoding="utf-8")
-    monkeypatch.setenv("TMPDIR", str(host_tmpdir))
-    tool = BashTool(Workspace(workspace_root))
-    outside_path = shlex.quote(str(outside))
-    tmpdir_path = shlex.quote(str(host_tmpdir / "scratch.txt"))
-
-    read = asyncio.run(tool.execute({"command": f"cat {outside_path}"}))
-    outside_write = asyncio.run(
-        tool.execute({"command": f"printf data > {outside_path}"})
-    )
-    inside_write = asyncio.run(tool.execute({"command": "printf data > inside.txt"}))
-    tmpdir_write = asyncio.run(
-        tool.execute({"command": f"printf data > {tmpdir_path}"})
-    )
-
-    assert inside_write.exit_code == 0, inside_write.stderr
-    assert (workspace_root / "inside.txt").read_text(encoding="utf-8") == "data"
-    assert tmpdir_write.exit_code == 0, tmpdir_write.stderr
-    assert (host_tmpdir / "scratch.txt").read_text(encoding="utf-8") == "data"
-    assert outside_write.exit_code != 0
-    assert outside.read_text(encoding="utf-8") == "private"
-    assert read.exit_code == 0, read.stderr
-    assert read.stdout == "private"
-
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS sandbox-exec")
-@pytest.mark.parametrize("cache_exists", [True, False], ids=["exists", "missing"])
-def test_macos_sandbox_allows_writes_to_effective_uv_cache_dir(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cache_exists: bool,
-) -> None:
-    host_tmpdir = tmp_path / "host-tmp"
-    host_tmpdir.mkdir()
-    workspace_root = tmp_path / "workspace"
-    workspace_root.mkdir()
-    cache_dir = tmp_path / "uv-cache"
-    if cache_exists:
-        cache_dir.mkdir()
-    monkeypatch.setenv("TMPDIR", str(host_tmpdir))
-    monkeypatch.setenv("UV_CACHE_DIR", str(cache_dir))
-    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
-
-    result = asyncio.run(
-        BashTool(Workspace(workspace_root)).execute(
-            {
-                "command": (
-                    'mkdir -p "$UV_CACHE_DIR/sdists-v9" && '
-                    'printf cached > "$UV_CACHE_DIR/sdists-v9/entry"'
-                )
-            }
-        )
-    )
-
-    assert result.exit_code == 0, result.stderr
-    assert (cache_dir / "sdists-v9" / "entry").read_text(encoding="utf-8") == "cached"
-
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS sandbox-exec")
-def test_macos_sandbox_denies_home_writes_outside_uv_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    home = Path.home()
-    other_cache_file = home / ".cache" / "cairn-sandbox-denied" / "entry"
-    home_file = home / "cairn-sandbox-denied.txt"
-    workspace_root = tmp_path / "workspace"
-    workspace_root.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.delenv("UV_CACHE_DIR", raising=False)
-    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
-    tool = BashTool(Workspace(workspace_root))
-    other_cache_path = shlex.quote(str(other_cache_file))
-    home_path = shlex.quote(str(home_file))
-
-    try:
-        other_cache_write = asyncio.run(
-            tool.execute({"command": f"printf data > {other_cache_path}"})
-        )
-        home_write = asyncio.run(
-            tool.execute({"command": f"printf data > {home_path}"})
-        )
-    finally:
-        shutil.rmtree(home / ".cache" / "cairn-sandbox-denied", ignore_errors=True)
-        home_file.unlink(missing_ok=True)
-
-    assert other_cache_write.exit_code != 0
-    assert home_write.exit_code != 0
-    assert not other_cache_file.exists()
-    assert not home_file.exists()
-
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS sandbox-exec")
-def test_macos_sandbox_runs_uv_with_real_host_environment(tmp_path: Path) -> None:
-    if shutil.which("uv") is None:
-        pytest.skip("uv is not installed")
-
-    workspace_root = tmp_path / "workspace"
-    workspace_root.mkdir()
-    # Deliberately no UV_CACHE_DIR/XDG_CACHE_HOME/HOME override: this must work
-    # with the user's real uv cache under the default host environment.
-    result = asyncio.run(
-        BashTool(Workspace(workspace_root), timeout=90.0).execute(
-            {"command": "uv run --no-sync python --version"}
-        )
-    )
-
-    assert result.exit_code == 0, result.stderr
-    assert "Python" in result.stdout
-    assert list(workspace_root.glob("uv-*.lock")) == []
 
 
 def test_bash_tool_preserves_command_text_and_decodes_output(
@@ -610,49 +390,6 @@ def test_bash_pipeline_preserves_upstream_failure_exit_code(tmp_path: Path) -> N
     assert result.stderr == ""
 
 
-def test_bash_tool_allows_outside_reads_and_confines_writes_to_workspace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The writable roots differ per sandbox: macOS confines writes to the
-    # workspace plus TMPDIR, while Linux bubblewrap also exposes a private /tmp
-    # tmpfs and only reaches the host through read-only system binds. Keep the
-    # effective TMPDIR narrow on macOS and probe a host path that bubblewrap does
-    # not mount on Linux.
-    host_tmpdir = tmp_path / "host-tmp"
-    host_tmpdir.mkdir()
-    monkeypatch.setenv("TMPDIR", str(host_tmpdir))
-    if sys.platform == "linux":
-        readable = Path("/etc/os-release")
-        unwritable = Path.home() / ".cairn-sandbox-outside-probe"
-    else:
-        readable = tmp_path.parent / f"{tmp_path.name}-outside.txt"
-        readable.write_text("private", encoding="utf-8")
-        unwritable = readable
-    tool = BashTool(workspace=Workspace(tmp_path))
-    readable_path = shlex.quote(str(readable))
-    unwritable_path = shlex.quote(str(unwritable))
-    before = unwritable.read_text(encoding="utf-8") if unwritable.exists() else None
-
-    read = asyncio.run(tool.execute({"command": f"cat {readable_path}"}))
-    # Attempted, not asserted directly: the outcome differs per platform and the
-    # host effect below is what isolation guarantees.
-    asyncio.run(tool.execute({"command": f"printf data > {unwritable_path}"}))
-    inside = asyncio.run(tool.execute({"command": "printf data > inside.txt"}))
-
-    assert read.exit_code == 0, read.stderr
-    assert read.stdout == readable.read_text(encoding="utf-8")
-    # The guarantee is that the host file is untouched, not that the command is
-    # refused. On macOS the write is denied outright; on Linux the home directory
-    # sits under an empty tmpfs that the interpreter mount requires, so the write
-    # succeeds inside it and disappears with the sandbox. Asserting the refusal
-    # pinned one implementation; asserting the host effect is what isolation
-    # actually promises.
-    after = unwritable.read_text(encoding="utf-8") if unwritable.exists() else None
-    assert after == before
-    assert inside.exit_code == 0, inside.stderr
-    assert (tmp_path / "inside.txt").read_text(encoding="utf-8") == "data"
-
-
 def test_bash_drains_large_stdout_and_stderr_without_deadlock(
     tmp_path: Path,
 ) -> None:
@@ -725,74 +462,36 @@ def _make_venv_python(root: Path, name: str = "python") -> Path:
     return executable
 
 
-def test_sandbox_python_prefers_the_workspace_venv(tmp_path: Path) -> None:
+def test_workspace_python_prefers_the_workspace_venv(tmp_path: Path) -> None:
     """The project's own environment wins over however Cairn was launched."""
     executable = _make_venv_python(tmp_path)
 
-    assert sandbox_python(tmp_path) == str(executable)
+    assert workspace_python(tmp_path) == str(executable)
 
 
-def test_sandbox_python_falls_back_to_python3_in_the_venv(tmp_path: Path) -> None:
+def test_workspace_python_falls_back_to_python3_in_the_venv(tmp_path: Path) -> None:
     """A venv that only ships `python3` is still the project's environment."""
     executable = _make_venv_python(tmp_path, "python3")
 
-    assert sandbox_python(tmp_path) == str(executable)
+    assert workspace_python(tmp_path) == str(executable)
 
 
-def test_sandbox_python_uses_the_running_interpreter_without_a_venv(
+def test_workspace_python_uses_the_running_interpreter_without_a_venv(
     tmp_path: Path,
 ) -> None:
     """With no project environment the funnel reaches the running process."""
     assert not (tmp_path / ".venv").exists()
 
-    assert sandbox_python(tmp_path) == sys.executable
+    assert workspace_python(tmp_path) == sys.executable
 
 
-def test_sandbox_python_prefers_the_venv_over_the_running_interpreter(
+def test_workspace_python_prefers_the_venv_over_the_running_interpreter(
     tmp_path: Path,
 ) -> None:
     """Both exist: the ordering, not just the presence, is what is asserted."""
     executable = _make_venv_python(tmp_path)
 
-    selected = sandbox_python(tmp_path)
+    selected = workspace_python(tmp_path)
 
     assert selected == str(executable)
     assert selected != sys.executable
-
-
-def test_interpreter_runtime_paths_include_the_venv_and_its_base(
-    tmp_path: Path,
-) -> None:
-    """Linux must mount both the venv shim and the stdlib installation."""
-    base = tmp_path / "base" / "bin"
-    base.mkdir(parents=True)
-    (tmp_path / ".venv" / "bin").mkdir(parents=True)
-    (tmp_path / ".venv" / "pyvenv.cfg").write_text(
-        f"home = {base}\nversion_info = 3.12\n", encoding="utf-8"
-    )
-
-    paths = _interpreter_runtime_paths(str(tmp_path / ".venv" / "bin" / "python"))
-
-    # Whole installation roots, not just bin/: an interpreter needs the standard
-    # library beside it and refuses to start without it.
-    assert (tmp_path / ".venv") in paths
-    assert (tmp_path / "base") in paths
-
-
-def test_shadowed_ancestors_masks_a_home_directory_interpreter() -> None:
-    """An interpreter under a home directory must not expose the whole home.
-
-    Mounting the runtime creates its ancestors with host permissions, so the
-    sandbox would otherwise see every key and credential under that home.
-    """
-    runtimes = (
-        Path("/srv/project/.venv/bin"),
-        Path("/root/.local/share/uv/python/cpython-3.12/bin"),
-    )
-
-    assert _shadowed_ancestors(runtimes) == (Path("/root"),)
-
-
-def test_shadowed_ancestors_leaves_system_runtimes_unmasked() -> None:
-    """A runtime outside a home directory needs no masking."""
-    assert _shadowed_ancestors((Path("/usr/bin"), Path("/usr/lib"))) == ()

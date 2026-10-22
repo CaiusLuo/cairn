@@ -34,7 +34,7 @@ from cairn.runtime.evals import FileContentEqualsCheck
 from cairn.runtime.tasks import CodingTaskRunner, TaskResult, TaskSpec, TaskStatus
 from tests.support.git import git, initialize_repository
 from tests.support.runtime import SequenceLLM
-from tests.support.sandbox import require_working_sandbox, sandbox_python
+from tests.support.sandbox import require_local_shell, sandbox_python
 
 SECRET_NAME = "CAIRN_ISSUE44_TEST_SECRET"
 SECRET_VALUE = "fixture-secret-must-not-reach-child-or-artifacts"
@@ -120,7 +120,7 @@ def test_offline_coding_task_e2e(
     before = repository_state(source)
     refs = git(source, "show-ref")
     registrations = git(source, "worktree", "list", "--porcelain")
-    require_working_sandbox(Workspace(source))
+    require_local_shell()
     provider = WorktreeProvider(
         Workspace(source),
         tmp_path / "worktrees",
@@ -176,8 +176,6 @@ def test_offline_coding_task_e2e(
                         name="bash",
                         arguments={
                             "command": "printf forbidden > denied.txt",
-                            "network_access": True,
-                            "justification": "Scripted denied capability probe",
                         },
                     ),
                     ToolCall(

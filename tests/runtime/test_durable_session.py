@@ -287,7 +287,7 @@ def test_only_authorized_valid_calls_get_fences_before_execution(
             report = api.inspect(SESSION)
             assert report.unresolved is not None
             assert len(report.unresolved.diagnostics.fences) == 1
-            assert context is not None and context.network_access
+            assert context is not None
             return await super().execute(arguments, context=context)
 
     tool = ObservedTool()
@@ -446,7 +446,7 @@ def test_reopened_permissions_cannot_reuse_an_old_network_grant(tmp_path: Path) 
     api, session = create_session(tmp_path, agent)
     asyncio.run(run_turn(agent, "old", budget=TEST_BUDGET, session=session))
     report = api.inspect(SESSION)
-    assert handler.grants == {PermissionCapability.NETWORK}
+    assert handler.grants == {PermissionCapability.LOCAL_SHELL}
     session.close()
     reused = make_agent(SequenceLLM([]))
     reused.permission_handler = handler

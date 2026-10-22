@@ -19,7 +19,11 @@ import cairn.infra.llm.litellm_client as llm_module
 import cairn.infra.llm.token_counter as counter_module
 import cairn.terminal.cli as cli_module
 import cairn.terminal.output as ui_module
-from cairn.core.permissions import SessionPermissionHandler
+from cairn.core.permissions import (
+    PermissionCapability,
+    PermissionChoice,
+    SessionPermissionHandler,
+)
 from cairn.core.provider_catalog import NamedProvider
 from cairn.infra.config import resolve_provider_api_key
 from cairn.infra.tools.registry import ToolRegistry
@@ -102,7 +106,14 @@ def configure_cli(
 
     # The session handler is created here so tests can pre-seed grants before
     # the CLI commits any switch.
-    handler = SessionPermissionHandler(prompt=ui_module.console_permission_prompt)
+    def prompt(request: Any) -> PermissionChoice:
+        # A local shell is approved for the session: these tests exercise the
+        # command and its environment, not the approval dialogue itself.
+        if request.capability is PermissionCapability.LOCAL_SHELL:
+            return PermissionChoice.ALLOW_SESSION
+        return ui_module.console_permission_prompt(request)
+
+    handler = SessionPermissionHandler(prompt=prompt)
     state = SimpleNamespace(
         agents=[],
         requests=[],

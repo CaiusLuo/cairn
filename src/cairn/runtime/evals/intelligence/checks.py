@@ -3,7 +3,7 @@
 import shlex
 from dataclasses import dataclass
 
-from cairn.infra.tools.bash import BashTool, sandbox_python
+from cairn.infra.tools.bash import BashTool, workspace_python
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.evals.models import CheckResult
 
@@ -19,7 +19,7 @@ class BehaviorCheck:
             raise ValueError("Benchmark check script limit exceeded")
         # Prefer the workspace's own environment, then the running interpreter.
         # Never a bare `python`: Debian and Ubuntu ship only `python3` (PEP 394).
-        interpreter = sandbox_python(workspace.root)
+        interpreter = workspace_python(workspace.root)
         if not interpreter:
             return CheckResult(
                 name=self.name,

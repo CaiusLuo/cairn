@@ -12,9 +12,11 @@ from cairn.core.events import Event
 from cairn.core.models import LLMResponse, ToolCall, ToolResult
 from cairn.core.permissions import (
     PermissionCapability,
+    PermissionChoice,
     PermissionDecision,
     PermissionResult,
     PermissionSource,
+    SessionPermissionHandler,
 )
 from cairn.infra.observability.models import SpanStatus
 from cairn.infra.observability.tracer import Tracer
@@ -31,19 +33,17 @@ from tests.support.runtime import (
     make_agent,
     network_tool_response,
 )
-from tests.support.sandbox import require_working_sandbox
+from tests.support.sandbox import require_local_shell
 
 
 @pytest.mark.parametrize(
     "arguments",
     [
         {},
-        {"command": 123, "network_access": True, "justification": "required"},
+        {"command": 123, "justification": "required"},
         {"command": "pwd\0"},
         {
             "command": "curl example.com",
-            "network_access": True,
-            "justification": "valid",
             "unexpected": "x",
         },
         {"command": "pwd", "network_access": "true"},
@@ -51,7 +51,6 @@ from tests.support.sandbox import require_working_sandbox
         {"command": "curl example.com", "network_access": True},
         {
             "command": "curl example.com",
-            "network_access": True,
             "justification": 123,
         },
     ],
@@ -228,7 +227,7 @@ def test_shell_syntax_error_is_reported_by_bash_inside_native_sandbox(
     tmp_path: Path,
 ) -> None:
     workspace = Workspace(tmp_path)
-    require_working_sandbox(workspace)
+    require_local_shell()
     events: list[Event] = []
     sink = RecordingSink()
     llm = SequenceLLM(
@@ -247,6 +246,11 @@ def test_shell_syntax_error_is_reported_by_bash_inside_native_sandbox(
     )
     agent = make_agent(llm, BashTool(workspace), events)
     agent.tracer = Tracer(sink)
+    # A local shell is approved once per session; the shell then reports its own
+    # syntax error rather than the tool preflight rejecting the command.
+    agent.permission_handler = SessionPermissionHandler(
+        lambda request: PermissionChoice.ALLOW_SESSION
+    )
 
     assert asyncio.run(
         run_turn(agent, "try invalid shell syntax", budget=TEST_BUDGET)
@@ -259,7 +263,7 @@ def test_shell_syntax_error_is_reported_by_bash_inside_native_sandbox(
     permission_span = next(
         span for span in sink.spans if span.name == "permission.check"
     )
-    assert permission_span.attributes["policy_decision"] == "allow"
+    assert permission_span.attributes["policy_decision"] == "ask"
     assert not [event for event in events if event.type == "tool_error"]
     tool_span = next(span for span in sink.spans if span.name == "tool.execute")
     assert tool_span.status == SpanStatus.ERROR
@@ -316,19 +320,18 @@ def test_sudo_policy_denial_skips_permissive_handler_and_execution() -> None:
     "source", [PermissionSource.USER_ONCE, PermissionSource.USER_DENIED]
 )
 @pytest.mark.parametrize("granted", [False, True])
-def test_provenance_does_not_determine_network_authority(
+def test_provenance_does_not_determine_filesystem_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     source: PermissionSource,
     granted: bool,
 ) -> None:
+    """A grant's provenance never decides authority; only the capability does."""
     call = ToolCall(
-        id="network",
+        id="shell",
         name="bash",
         arguments={
             "command": "true",
-            "network_access": True,
-            "justification": "test",
         },
     )
     tool = BashTool(Workspace(tmp_path))
@@ -345,11 +348,15 @@ def test_provenance_does_not_determine_network_authority(
             allowed=True,
             source=source,
             granted_capabilities=(
-                frozenset({PermissionCapability.NETWORK}) if granted else frozenset()
+                frozenset({PermissionCapability.FILESYSTEM_ACCESS})
+                if granted
+                else frozenset()
             ),
+            granted_roots=frozenset({str(tmp_path)}) if granted else frozenset(),
         )
 
     agent.permission_handler = approve
     asyncio.run(run_turn(agent, "test", budget=TEST_BUDGET))
     execute.assert_awaited_once()
-    assert execute.call_args.kwargs["context"].network_access is granted
+    roots = execute.call_args.kwargs["context"].accessible_roots
+    assert roots == ((tmp_path.resolve(),) if granted else ())

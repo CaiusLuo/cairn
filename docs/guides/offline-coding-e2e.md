@@ -15,7 +15,7 @@ uv run pytest tests/runtime/tasks/test_coding_e2e.py -q --basetemp=/tmp/cairn-is
 ```
 
 Pytest recreates its `--basetemp` directory. Use a dedicated disposable path.
-The test uses [native sandbox readiness checks](../../tests/support/sandbox.py);
+The test uses [local-shell readiness checks](../../tests/support/sandbox.py);
 an unavailable sandbox produces SKIP, not evidence of successful execution.
 macOS needs a usable `sandbox-exec`; Linux needs usable bubblewrap. No configured
 provider, API credential, network access or GitHub publication is required.

@@ -16,6 +16,7 @@ from cairn.core.context import (
 )
 from cairn.core.events import Event, EventHandler
 from cairn.core.llm import LLMClient
+from cairn.core.permissions import PermissionChoice, SessionPermissionHandler
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
@@ -91,6 +92,15 @@ class _MeasuredContextBuilder(ContextBuilder):
         return request
 
 
+def _trusted_local_shell() -> SessionPermissionHandler:
+    """A handler that trusts the local shell for one automated evaluation run.
+
+    An evaluation has no operator, so no approval dialogue can exist. A runner
+    that needs shell access must say so explicitly; the default stays fail-closed.
+    """
+    return SessionPermissionHandler(lambda request: PermissionChoice.ALLOW_SESSION)
+
+
 class EvalRunner:
     """Run one case with fresh runtime state and judge its final workspace.
 
@@ -120,6 +130,7 @@ class EvalRunner:
         temp_root: Path | None = None,
         token_counter: TokenCounter | None = None,
         secret_env_keys: frozenset[str] = frozenset(),
+        trust_local_shell: bool = False,
     ) -> None:
         for name, value in (
             ("run_timeout_seconds", run_timeout_seconds),
@@ -137,6 +148,9 @@ class EvalRunner:
         self.check_timeout_seconds = check_timeout_seconds
         self.tracer = tracer
         self.temp_root = temp_root
+        # Fail closed: an evaluation has no operator to approve a shell, so the
+        # capability is granted only when the caller explicitly opts in.
+        self.trust_local_shell = trust_local_shell
         self.token_counter = token_counter
         self.secret_env_keys = secret_env_keys
         self._running = False
@@ -189,11 +203,18 @@ class EvalRunner:
         metrics: EvalMetrics,
         event_handler: EventHandler,
     ) -> Agent:
-        """Assemble one case's Agent; subclasses wrap it to instrument it."""
+        """Assemble one case's Agent; subclasses wrap it to instrument it.
+
+        An evaluation is a trusted, non-interactive harness operation: there is
+        nobody to answer a prompt, so the shell capability is granted up front
+        for the case instead of being silently denied.
+        """
         return build_agent(
             workspace=workspace,
             llm=llm,
-            permission_handler=None,
+            permission_handler=(
+                _trusted_local_shell() if self.trust_local_shell else None
+            ),
             event_handler=event_handler,
             tracer=self.tracer,
             secret_env_keys=self.secret_env_keys,

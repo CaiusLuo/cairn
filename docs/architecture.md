@@ -237,13 +237,14 @@ task/turn lifecycle.
   `exit_code`). Non-shell tools must fit it, and a richer structured result has no
   core representation yet. Changing this touches every tool and is deferred until
   a tool actually needs it.
-- `core.permissions` knows the `bash` tool name and the argument keys that request
-  a capability (`network_access`, `extra_writable_roots`), and owns the filesystem
-  path rule a `filesystem_access` grant must satisfy. This is a deliberate, narrow
-  guardrail that runs after the tool validates its arguments, so the coupling is
-  documented rather than removed. The filesystem *effect* of proving a granted
-  directory is real and unprotected lives in `infra.tools.filesystem_access` and
-  is injected into the handler, so `core` never touches the filesystem.
+- `core.permissions` knows the `bash` tool name, because a local shell is a
+  host-level capability that must be asked for by name rather than inferred from
+  arguments. It also owns the filesystem path rule a `filesystem_access` grant
+  must satisfy. This is a deliberate, narrow guardrail that runs after the tool
+  validates its arguments, so the coupling is documented rather than removed. The
+  filesystem *effect* of proving a granted directory is real and unprotected lives
+  in `infra.tools.filesystem_access` and is injected into the handler, so `core`
+  never touches the filesystem.
 - `core.events.Event.data` is an untyped mapping rendered and consumed by string
   key. A typed payload per event would be a real improvement, but no consumer
   needs it yet.

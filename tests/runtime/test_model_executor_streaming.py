@@ -268,7 +268,7 @@ def test_generate_selected_route_keeps_tool_permission_and_state_semantics(
             *,
             context: ToolExecutionContext | None = None,
         ) -> ToolResult:
-            assert context is not None and context.network_access
+            assert context is not None
             order.append("execute")
             return await super().execute(arguments, context=context)
 
@@ -284,7 +284,7 @@ def test_generate_selected_route_keeps_tool_permission_and_state_semantics(
                                     id="call",
                                     function=CompletionResponse(
                                         name="bash",
-                                        arguments='{"command":"curl example.com","network_access":true,"justification":"fetch"}',
+                                        arguments='{"command":"curl example.com","network_access":true}',
                                     ),
                                 )
                             ],
