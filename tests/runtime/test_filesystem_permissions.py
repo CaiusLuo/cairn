@@ -1,254 +1,111 @@
-"""Filesystem-access capability through the bash tool and the agent turn."""
+"""External filesystem access belongs to the file tools, not the shell.
 
-import asyncio
-import json
-import shutil
-import tempfile
-from collections.abc import Iterator
+A local shell runs as the user, so it needs no per-directory grant and this
+module no longer asserts anything about mounts. What still holds is the file-tool
+boundary: a path outside the Workspace is refused unless the session approved a
+``FILESYSTEM_ACCESS`` grant covering it.
+"""
+
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from cairn.core.models import LLMResponse, ToolCall
+from cairn.core.models import ToolCall
 from cairn.core.permissions import (
+    PermissionCapability,
     PermissionChoice,
+    PermissionRequest,
     PermissionSource,
     SessionPermissionHandler,
 )
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.tools.base import ToolExecutionContext
-from cairn.infra.tools.bash import BashTool, _filesystem_mounts
 from cairn.infra.tools.filesystem_access import normalize_access_root
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.assembly import build_agent
-from cairn.runtime.loop import run_turn
-from tests.support.runtime import TEST_BUDGET, RecordingSink, SequenceLLM
-from tests.support.sandbox import require_working_sandbox
+from cairn.infra.workspace.paths import resolve_workspace_path
 
 
-@pytest.fixture
-def outside_dir() -> Iterator[Path]:
-    """A real directory under /tmp, not under TMPDIR.
-
-    Neither sandbox grants it by default (macOS denies writes outside the
-    workspace and TMPDIR; Linux hides /tmp behind an empty tmpfs), so an
-    approved grant is the only way a write there can succeed on either host.
-    """
-    path = Path(tempfile.mkdtemp(prefix="fsx-outside-", dir="/tmp"))
-    try:
-        yield path
-    finally:
-        shutil.rmtree(path, ignore_errors=True)
+def _tool_call(path: Path) -> ToolCall:
+    return ToolCall(id="fs", name="read_file", arguments={"path": str(path)})
 
 
-def _fake_process() -> AsyncMock:
-    process = AsyncMock()
-    process.pid = 12345
-    process.wait.return_value = 0
-    for name in ("stdout", "stderr"):
-        stream = AsyncMock(spec=asyncio.StreamReader)
-        stream.read.return_value = b""
-        setattr(process, name, stream)
-    return process
+def _handler(prompt) -> SessionPermissionHandler:
+    return SessionPermissionHandler(prompt, root_normalizer=normalize_access_root)
 
 
-def _capture_argv(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-    """Record the argv of each sandbox launch, faking only the launcher."""
-    create = AsyncMock(return_value=_fake_process())
-    calls: list[list[str]] = []
-
-    async def record(*args: object, **kwargs: object) -> object:
-        calls.append([str(token) for token in args])
-        return await create(*args, **kwargs)
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", record)
-    monkeypatch.setattr("cairn.infra.tools.bash.os.killpg", Mock())
-    monkeypatch.setattr("cairn.infra.tools.bash.sys.platform", "linux")
-    real_is_file = Path.is_file
-    monkeypatch.setattr(
-        Path,
-        "is_file",
-        lambda self: True if str(self) == "/usr/bin/bwrap" else real_is_file(self),
-    )
-    return calls
-
-
-def _has_bind(argv: list[str], path: str) -> bool:
-    return any(
-        argv[index : index + 3] == ["--bind", path, path]
-        for index in range(len(argv) - 2)
+def _request(path: Path) -> PermissionRequest:
+    return PermissionRequest(
+        capability=PermissionCapability.FILESYSTEM_ACCESS,
+        justification="read a data file",
+        tool_call=_tool_call(path),
+        paths=(str(path),),
     )
 
 
-def test_extra_roots_arguments_alone_do_not_bind(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A model argument can request a root but never mounts it without a grant."""
-    calls = _capture_argv(monkeypatch)
+def test_workspace_path_rule_still_refuses_an_outside_path(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     workspace.mkdir()
     outside = tmp_path / "data"
     outside.mkdir()
 
-    tool = BashTool(Workspace(workspace))
-    # The argument names the root, but the execution context carries no grant.
-    asyncio.run(
-        tool.execute(
-            {
-                "command": "true",
-                "extra_writable_roots": [str(outside)],
-                "justification": "clean temp",
-            }
-        )
+    with pytest.raises(ValueError):
+        resolve_workspace_path(workspace, str(outside))
+
+    assert (
+        resolve_workspace_path(workspace, "src/main.py")
+        == (workspace / "src/main.py").resolve()
     )
 
-    assert not _has_bind(calls[0], str(outside))
 
-
-def test_filesystem_context_adds_only_extra_binds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls = _capture_argv(monkeypatch)
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
+def test_grant_is_required_before_an_outside_path_is_usable(tmp_path: Path) -> None:
     outside = tmp_path / "data"
     outside.mkdir()
-    tool = BashTool(Workspace(workspace))
+    handler = _handler(lambda request: PermissionChoice.DENY)
 
-    asyncio.run(tool.execute({"command": "true"}))
-    asyncio.run(
-        tool.execute(
-            {"command": "true"},
-            context=ToolExecutionContext(accessible_roots=(outside.resolve(),)),
-        )
-    )
+    result = handler.authorize(_request(outside))
 
-    plain, granted = calls
-    assert not _has_bind(plain, str(outside))
-    assert _has_bind(granted, str(outside))
+    assert not result.allowed
+    assert result.source is PermissionSource.USER_DENIED
+    assert handler.granted_roots == set()
 
 
-def test_filesystem_mounts_bind_root_and_protect_git(tmp_path: Path) -> None:
-    root = tmp_path / "data"
-    (root / ".git").mkdir(parents=True)
+def test_session_grant_is_reused_for_a_covered_path(tmp_path: Path) -> None:
+    outside = tmp_path / "data"
+    (outside / "child").mkdir(parents=True)
+    prompts: list[PermissionRequest] = []
 
-    argv = list(_filesystem_mounts((root.resolve(),)))
-
-    bind = argv.index("--bind")
-    assert argv[bind : bind + 3] == ["--bind", str(root), str(root)]
-    git_index = argv.index("--ro-bind")
-    assert argv[git_index : git_index + 3] == [
-        "--ro-bind",
-        str(root / ".git"),
-        str(root / ".git"),
-    ]
-    # Git metadata is pinned read-only after the writable bind.
-    assert git_index > bind
-
-
-def test_filesystem_grant_lets_the_sandbox_write_outside(
-    tmp_path: Path, outside_dir: Path
-) -> None:
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    require_working_sandbox(Workspace(workspace))
-
-    tool = BashTool(Workspace(workspace))
-    target = outside_dir / "hello.txt"
-    result = asyncio.run(
-        tool.execute(
-            {"command": f"printf hi > {target}"},
-            context=ToolExecutionContext(accessible_roots=(outside_dir.resolve(),)),
-        )
-    )
-
-    assert result.exit_code == 0, result.stderr
-    assert target.read_text() == "hi"
-
-
-def test_filesystem_capability_is_absent_without_grant(
-    tmp_path: Path, outside_dir: Path
-) -> None:
-    """Without a grant the same outside write is refused; the boundary holds."""
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    require_working_sandbox(Workspace(workspace))
-    tool = BashTool(Workspace(workspace))
-
-    result = asyncio.run(tool.execute({"command": f"printf hi > {outside_dir}/x"}))
-
-    assert result.exit_code != 0
-    assert not (outside_dir / "x").exists()
-
-
-@pytest.mark.parametrize("choice", list(PermissionChoice))
-def test_filesystem_end_to_end(
-    tmp_path: Path, outside_dir: Path, choice: PermissionChoice
-) -> None:
-    require_working_sandbox(Workspace(tmp_path))
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    target = outside_dir / "out.txt"
-
-    prompts: list[object] = []
-
-    def prompt(request: object) -> PermissionChoice:
+    def prompt(request: PermissionRequest) -> PermissionChoice:
         prompts.append(request)
-        return choice
+        return PermissionChoice.ALLOW_SESSION
 
+    handler = _handler(prompt)
+    first = handler.authorize(_request(outside))
+    second = handler.authorize(_request(outside / "child"))
+
+    assert first.allowed and first.prompted
+    assert second.allowed and not second.prompted
+    assert second.source is PermissionSource.SESSION_GRANT
+    assert len(prompts) == 1
+
+
+def test_grant_cannot_cover_the_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
     handler = SessionPermissionHandler(
-        prompt,
+        lambda request: PermissionChoice.ALLOW_SESSION,
         workspace_root=workspace,
         root_normalizer=normalize_access_root,
     )
-    calls = [
-        ToolCall(
-            id=str(index),
-            name="bash",
-            arguments={
-                "command": f"printf hi > {target}",
-                "extra_writable_roots": [str(outside_dir)],
-                "justification": "write a data file",
-            },
-        )
-        for index in range(2)
-    ]
-    sink = RecordingSink()
-    agent = build_agent(
-        workspace=Workspace(workspace),
-        event_handler=None,
-        llm=SequenceLLM([LLMResponse(tool_calls=calls), LLMResponse(content="done")]),
-        permission_handler=handler,
-        tracer=Tracer(sink),
-    )
 
-    assert asyncio.run(run_turn(agent, "test", budget=TEST_BUDGET)) == "done"
+    with pytest.raises(ValueError):
+        handler.authorize(_request(tmp_path))
 
-    messages = [
-        json.loads(m.content or "") for m in agent.state.messages if m.role == "tool"
-    ]
-    if choice is PermissionChoice.DENY:
-        for message in messages:
-            assert message == {
-                "error": "Permission denied by user.",
-                "type": "PermissionDenied",
-            }
-        assert not target.exists()
-        return
 
-    assert target.read_text() == "hi"
-    for message in messages:
-        assert message["exit_code"] == 0
+def test_grant_cannot_name_a_system_tree() -> None:
+    handler = _handler(lambda request: PermissionChoice.ALLOW_SESSION)
+    for blocked in ("/", "/etc", "/usr", "/proc"):
+        with pytest.raises(ValueError):
+            handler.authorize(_request(Path(blocked)))
 
-    spans = [s for s in sink.spans if s.name == "permission.check"]
-    assert spans[0].attributes["granted_capabilities"] == ["filesystem_access"]
-    assert spans[0].attributes["granted_roots"] == [str(outside_dir.resolve())]
-    reused = choice is PermissionChoice.ALLOW_SESSION
-    # A session grant is reused for the second identical-root request.
-    assert len(prompts) == (1 if reused else 2)
-    assert spans[1].attributes["source"] == (
-        PermissionSource.SESSION_GRANT.value
-        if reused
-        else PermissionSource.USER_ONCE.value
-    )
+
+def test_shell_needs_no_directory_grant() -> None:
+    """A shell call carries no path arguments at all any more."""
+    shell = ToolCall(id="s", name="bash", arguments={"command": "ls /tmp"})
+    assert "extra_writable_roots" not in shell.arguments

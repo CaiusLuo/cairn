@@ -537,11 +537,7 @@ def test_old_network_permissions_never_restored(harness: Harness) -> None:
                 ToolCall(
                     id="net",
                     name="bash",
-                    arguments={
-                        "command": "curl example.invalid",
-                        "network_access": True,
-                        "justification": "offline test",
-                    },
+                    arguments={"command": "curl example.invalid"},
                 )
             ]
         ),
@@ -553,7 +549,7 @@ def test_old_network_permissions_never_restored(harness: Harness) -> None:
     assert len(tools[0].calls) == 1
     old_handler = harness.agents[0].permission_handler
     assert isinstance(old_handler, SessionPermissionHandler)
-    assert PermissionCapability.NETWORK in old_handler.grants
+    assert PermissionCapability.LOCAL_SHELL in old_handler.grants
     assert "Tool finished; checkpoint not committed yet." in result.output
     assert result.output.index(
         "Tool finished; checkpoint not committed yet."
@@ -573,9 +569,12 @@ def test_old_network_permissions_never_restored(harness: Harness) -> None:
     assert "Committed checkpoint 2" in result.output
 
 
-def test_linux_tmp_store_layout_rejects_with_exact_reason(harness: Harness) -> None:
+def test_tmp_store_is_refused_when_tmpdir_covers_it(harness: Harness) -> None:
+    """A store under the effective TMPDIR is refused: it can be wiped live."""
     with TemporaryDirectory(prefix="cairn-durable-rejected-", dir="/tmp") as parent:
         directory = Path(parent) / "store"
+        # /tmp is this host's TMPDIR, so the store sits inside a scratch root.
+        harness.monkeypatch.setenv("TMPDIR", "/tmp")
         with pytest.raises(SessionStoreError) as failure:
             durable.open_store(directory, Workspace(harness.root / "work"))
         assert failure.value.code == "writable_root_overlap"

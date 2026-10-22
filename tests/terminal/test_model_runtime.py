@@ -23,14 +23,13 @@ from cairn.core.context import ContextBudget
 from cairn.core.model_manager import ModelConfig
 from cairn.core.models import Message
 from cairn.core.provider_catalog import NamedProvider
-from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.loop import run_turn
 from tests.support.cli_harness import (
     completion_response,
     configure_cli,
 )
-from tests.support.sandbox import require_working_sandbox
+from tests.support.sandbox import require_local_shell
 from tests.support.streaming import CompletionResponse
 
 API_KEY = "test-only-provider-credential"
@@ -378,7 +377,7 @@ def test_missing_toml_credential_is_clear_and_does_not_use_legacy_key(
 def test_configured_credentials_are_absent_from_real_tool_child_and_trace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    require_working_sandbox(Workspace(tmp_path))
+    require_local_shell()
     _, requests, _ = _configure_cli(tmp_path, monkeypatch, "inspect environment")
     monkeypatch.setenv("CAIRN_TEST_PASSTHROUGH", "preserved")
 

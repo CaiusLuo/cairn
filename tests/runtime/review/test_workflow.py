@@ -10,6 +10,7 @@ import pytest
 from cairn.core.budget import RunBudget
 from cairn.core.events import Event
 from cairn.core.models import LLMResponse, Message, ToolCall
+from cairn.core.permissions import PermissionChoice, SessionPermissionHandler
 from cairn.infra.git import WorktreeProvider, WorktreeState
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.workspace.workspace import Workspace
@@ -39,7 +40,7 @@ from tests.runtime.review.test_reviewer import TASK, finding, proposal
 from tests.runtime.workflow.test_local import edit, git
 from tests.runtime.workflow.test_local import provider as provider
 from tests.support.runtime import FailingLLM, RecordingSink, SequenceLLM
-from tests.support.sandbox import require_working_sandbox
+from tests.support.sandbox import require_local_shell
 
 
 class TreeReviewLLM:
@@ -819,7 +820,7 @@ def test_pre_cancelled_workflow_never_starts_a_model(
 def test_provider_declared_secrets_are_inherited_by_real_fixer_children(
     provider: WorktreeProvider, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    require_working_sandbox(provider.source)
+    require_local_shell()
     secrets = {
         "CUSTOM_SERVICE_TOKEN": "fake-custom-service-credential",
         # Git permits LANG normally: this catches loss of the declared names
@@ -881,6 +882,10 @@ def test_provider_declared_secrets_are_inherited_by_real_fixer_children(
             max_fix_iterations=1,
             fixer_llm=fix_llm,
             event_handler=record_event,
+            # The fixer runs a real shell command; a local shell needs approval.
+            permission_handler=SessionPermissionHandler(
+                lambda request: PermissionChoice.ALLOW_SESSION
+            ),
         ).run(TASK, snapshot, verified)
         assert result.status is ReviewWorkflowStatus.REVIEW_PASSED
         assert len(result.fix_results) == 1

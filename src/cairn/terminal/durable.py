@@ -23,8 +23,11 @@ from cairn.infra.sessions.models import (
     same_workspace,
 )
 from cairn.infra.sessions.store import SessionStore
-from cairn.infra.tools.bash import build_command_env
-from cairn.infra.tools.sandbox import resolve_tmpdir, resolve_uv_cache_dir
+from cairn.infra.tools.bash import (
+    build_command_env,
+    resolve_tmpdir,
+    resolve_uv_cache_dir,
+)
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.durable_session import DurableSession
@@ -53,10 +56,12 @@ def open_store(
     additional_roots: tuple[Path, ...] = (),
     allow_unverified: bool = False,
 ) -> SessionStore:
-    # Match Bash's effective child environment, rather than raw host variables
-    # that credential filtering may remove. Include aliases for path pinning.
+    # A store inside a scratch or cache directory can be deleted under a live
+    # session, so those roots are refused regardless of the shell's sandboxing.
+    # Match the child environment rather than raw host variables, because
+    # credential filtering may have removed some of them.
     env = build_command_env(os.environ, secret_env_keys)
-    roots = [workspace.root, Path("/tmp"), *additional_roots]
+    roots = [workspace.root, *additional_roots]
     for path in (resolve_tmpdir(env), resolve_uv_cache_dir(env)):
         if path is not None:
             roots.append(path)

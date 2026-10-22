@@ -12,13 +12,16 @@ inspects whether arguments are well formed. It decides intent guardrails only;
 the sandbox enforces authority, and approval can expand authority by one
 capability at a time.
 
-Two capabilities can widen the fixed sandbox, and both follow the same rule:
-authority comes only from a granted capability, never from a model-provided
-argument. ``NETWORK`` lifts the network namespace restriction;
-``FILESYSTEM_ACCESS`` adds read/write access to specific absolute directories
-outside the workspace. Proving a directory is real and unprotected is a
-filesystem effect, so this module delegates it to an injected normalizer and
-never touches the filesystem itself.
+Cairn is local-first, so a shell command runs as the invoking user with no OS
+sandbox. ``LOCAL_SHELL`` is therefore a host-level capability: running any
+command needs it, and it is asked for explicitly once per session. It cannot be
+narrowed to "no network" or "workspace only", because a local process can reach
+both; the schema says so instead of implying an isolation this module cannot
+enforce.
+
+``NETWORK`` remains for harness operations that perform their own network calls
+(GitHub publication). It is not used for shell commands, where it could not be
+enforced.
 """
 
 from collections.abc import Callable
@@ -32,7 +35,11 @@ from cairn.core.models import ToolCall
 
 
 class PermissionCapability(StrEnum):
+    #: A harness operation performs its own network request.
     NETWORK = "network"
+    #: The user trusts this session with a local, unsandboxed shell.
+    LOCAL_SHELL = "local_shell"
+    #: Read/write access to specific directories outside the workspace.
     FILESYSTEM_ACCESS = "filesystem_access"
 
 
@@ -122,13 +129,13 @@ def evaluate_permission_policy(tool_call: ToolCall) -> PermissionResult:
     """Pure baseline policy: intent guardrails only.
 
     * the sudo guardrail is hard denied before execution;
-    * a ``bash`` call that requests a capability asks for approval;
-    * every other call is a normal operation inside the fixed sandbox.
+    * a ``bash`` call asks for ``LOCAL_SHELL``, because a local command is a
+      host-level action with no sandbox behind it;
+    * every other call is an ordinary tool operation.
 
-    Only ``bash`` requests are visible here because their request lives in the
-    tool call arguments. A file tool that reaches outside the workspace reports
-    its own request through ``Tool.requested_capability``; the runtime asks the
-    tool and calls the handler directly, so it never depends on this function.
+    A file tool that needs something outside the workspace reports its own
+    request through ``Tool.requested_capability``; the runtime asks the tool and
+    calls the handler directly, so it never depends on this function.
     """
     if _is_sudo_guardrail(tool_call):
         return PermissionResult(
@@ -138,7 +145,7 @@ def evaluate_permission_policy(tool_call: ToolCall) -> PermissionResult:
             reason="sudo is not supported",
         )
 
-    if _bash_capability_request(tool_call) is not None:
+    if tool_call.name == "bash":
         return PermissionResult(
             policy_decision=PermissionDecision.ASK,
             allowed=False,
@@ -190,17 +197,30 @@ class SessionPermissionHandler:
         self.granted_roots.clear()
 
     def __call__(self, tool_call: ToolCall) -> PermissionResult:
-        """Approve a capability a ``bash`` call requested through its arguments.
+        """Approve the capability this call needs.
 
-        File tools that reach outside the workspace do not go through here; the
-        runtime asks their ``Tool.requested_capability`` and calls ``authorize``
+        A ``bash`` call needs ``LOCAL_SHELL``: there is no sandbox, so the shell
+        is a host-level action. Every other call is ordinary tool policy. A file
+        tool that reaches outside the workspace does not come through here; the
+        runtime asks its ``Tool.requested_capability`` and calls ``authorize``
         with the parsed request directly.
         """
+        # Policy first: a hard DENY (sudo) must never be re-authorizable by a
+        # prompt, and a baseline ALLOW never needs one.
+        policy = evaluate_permission_policy(tool_call)
+        if policy.policy_decision is not PermissionDecision.ASK:
+            # Baseline ALLOW or hard DENY: the handler must not touch either.
+            return policy
+
         if tool_call.name == "bash":
-            request = _bash_capability_request(tool_call)
-            if request is not None:
-                return self.authorize(request)
-        return evaluate_permission_policy(tool_call)
+            return self.authorize(
+                PermissionRequest(
+                    capability=PermissionCapability.LOCAL_SHELL,
+                    justification=_shell_justification(tool_call),
+                    tool_call=tool_call,
+                )
+            )
+        return policy
 
     def authorize(self, request: PermissionRequest) -> PermissionResult:
         """Approve an explicit request without changing model tool policy.
@@ -213,7 +233,10 @@ class SessionPermissionHandler:
         capability = request.capability
         # StrEnum equality also accepts strings; only the actual capability
         # member authorizes, including when model validation was bypassed.
-        if capability is PermissionCapability.NETWORK:
+        if capability in (
+            PermissionCapability.NETWORK,
+            PermissionCapability.LOCAL_SHELL,
+        ):
             if capability in self.grants:
                 return self._granted(capability, source=PermissionSource.SESSION_GRANT)
             return self._prompt_and_grant(request, roots=None)
@@ -308,35 +331,22 @@ class SessionPermissionHandler:
         )
 
 
-def _bash_capability_request(tool_call: ToolCall) -> PermissionRequest | None:
-    """The capability a ``bash`` call asked for, derived from its arguments.
+def _shell_justification(tool_call: ToolCall) -> str:
+    """The approval text shown when a session asks for local shell access.
 
-    Only the bash request lives in the tool call arguments, so only bash is
-    derived here. Network and filesystem access are mutually exclusive per call
-    (the bash tool rejects a call requesting both), so the order is unambiguous.
+    The command is included so the operator approves a concrete action, not an
+    abstract capability.
     """
-    if tool_call.name != "bash":
-        return None
-
-    justification = tool_call.arguments.get("justification")
-    reason = justification if isinstance(justification, str) else ""
-
-    roots = tool_call.arguments.get("extra_writable_roots")
-    if isinstance(roots, list) and roots:
-        return PermissionRequest(
-            capability=PermissionCapability.FILESYSTEM_ACCESS,
-            justification=reason,
-            tool_call=tool_call,
-            paths=tuple(root for root in roots if isinstance(root, str)),
-        )
-
-    if tool_call.arguments.get("network_access") is True:
-        return PermissionRequest(
-            capability=PermissionCapability.NETWORK,
-            justification=reason,
-            tool_call=tool_call,
-        )
-    return None
+    command = tool_call.arguments.get("command")
+    detail = (
+        f"Run `{command}`"
+        if isinstance(command, str) and command.strip()
+        else ("Run a shell command")
+    )
+    return (
+        f"{detail} on this machine as your user. A local shell is not sandboxed: "
+        "it can reach the network and any file you can."
+    )
 
 
 def _covered_by(resolved: Path, roots: set[Path]) -> bool:

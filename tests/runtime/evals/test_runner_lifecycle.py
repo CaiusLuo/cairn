@@ -19,7 +19,7 @@ from cairn.runtime.evals.models import (
 )
 from cairn.runtime.evals.runner import EvalRunner
 from tests.support.runtime import TEST_BUDGET, SequenceLLM
-from tests.support.sandbox import require_working_sandbox
+from tests.support.sandbox import require_local_shell
 
 
 class PassingCheck:
@@ -57,6 +57,7 @@ def make_runner(
     temp_root: Path | None = None,
     run_timeout_seconds: float = 1,
     check_timeout_seconds: float = 1,
+    trust_local_shell: bool = False,
 ) -> EvalRunner:
     return EvalRunner(
         llm_factory,
@@ -64,6 +65,7 @@ def make_runner(
         run_timeout_seconds=run_timeout_seconds,
         check_timeout_seconds=check_timeout_seconds,
         temp_root=temp_root,
+        trust_local_shell=trust_local_shell,
     )
 
 
@@ -347,7 +349,7 @@ def test_run_timeout_cancels_real_bash_and_waits_for_cleanup(
     monkeypatch: pytest.MonkeyPatch,
     owned_eval_parent: tuple[Path, Path, Path],
 ) -> None:
-    require_working_sandbox(Workspace(tmp_path))
+    require_local_shell()
     root, sentinel, sibling = owned_eval_parent
     cleanup_finished = asyncio.Event()
     case_roots: list[Path] = []
@@ -391,6 +393,7 @@ def test_run_timeout_cancels_real_bash_and_waits_for_cleanup(
             lambda: llm,
             temp_root=root,
             run_timeout_seconds=0.75,
+            trust_local_shell=True,
         ).run(
             EvalCase(name="bash-timeout", prompt="run the command"),
             checks=[CleanupObservedCheck()],

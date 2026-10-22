@@ -328,10 +328,6 @@ async def execute_tool_call(
             # Authority comes only from the approved capability, never from the
             # model-provided arguments.
             context=ToolExecutionContext(
-                network_access=(
-                    tool_call.name == "bash"
-                    and PermissionCapability.NETWORK in permission.granted_capabilities
-                ),
                 accessible_roots=_accessible_roots(permission),
             ),
         )

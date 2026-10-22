@@ -1,6 +1,24 @@
+"""Execute shell commands on the host, from the Workspace root.
+
+Cairn is local-first: a command runs as the invoking user, with the invoking
+user's environment, in the Workspace directory. There is no OS sandbox, so this
+module makes no isolation claim. It owns exactly the guarantees a local process
+can keep:
+
+* the child starts in the Workspace and inherits the host environment minus
+  Cairn-owned credentials;
+* stdout/stderr are captured with a fixed byte ceiling and a fixed timeout;
+* the whole process group is killed on timeout or cancellation, and the group is
+  always reaped before ``execute`` returns;
+* a cancelled or failed command still reports what it observed.
+
+Authority is not granted here. Whether a shell may run at all is decided before
+``execute`` by the approval path in ``core.permissions``; a local shell is a
+host-level capability, so it is asked for explicitly once per session.
+"""
+
 import asyncio
 import codecs
-import json
 import os
 import signal
 import sys
@@ -13,12 +31,13 @@ from cairn.core.models import ToolResult
 from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
 from cairn.infra.tools.capture import read_bounded
 from cairn.infra.tools.credential_env import SECRET_ENV_KEYS
-from cairn.infra.tools.filesystem_access import normalize_access_root
-from cairn.infra.tools.sandbox import resolve_tmpdir, resolve_uv_cache_dir
 from cairn.infra.workspace.workspace import Workspace
 
 DEFAULT_STDOUT_CAPTURE_LIMIT = 64 * 1024
 DEFAULT_STDERR_CAPTURE_LIMIT = 64 * 1024
+
+#: Commands a caller may name directly instead of going through the shell.
+_DIRECT_COMMANDS = frozenset({"pwd", "ls"})
 
 
 def build_command_env(
@@ -43,185 +62,29 @@ def _decode_output(data: bytes, truncated: bool) -> str:
     return decoder.decode(data, final=not truncated)
 
 
-class UnprotectedGitMetadata(RuntimeError):
-    """Bash refused to run because Git metadata could not be pinned read-only.
+def _command_argv(command: str) -> list[str]:
+    """The argv that runs ``command`` through the host shell.
 
-    The workspace bind is writable, so any Git metadata the sandbox does not
-    explicitly narrow stays mutable. A layout the helper cannot protect is
-    refused instead of executed, rather than silently running with live metadata
-    writable.
+    POSIX hosts use ``bash -o pipefail`` so a failing stage still fails the
+    pipeline, matching what the model was previously told. A host without that
+    shell runs the command through the platform default, which keeps the tool
+    usable off POSIX at the cost of ``pipefail``.
     """
+    stripped = command.strip()
+    if stripped in _DIRECT_COMMANDS and Path(f"/bin/{stripped}").is_file():
+        return [f"/bin/{stripped}"]
+    if sys.platform != "win32" and Path("/bin/bash").is_file():
+        return ["/bin/bash", "-o", "pipefail", "-c", command]
+    return [command]
 
 
-def _git_metadata_paths(cwd: Path) -> tuple[Path, ...]:
-    """Git metadata a sandboxed command must never be able to write.
+def workspace_python(workspace_root: Path | None = None) -> str:
+    """The interpreter a command in this workspace should run, by priority.
 
-    Three shapes are supported. A workspace with no ``.git`` entry has no Git
-    metadata to protect. A normal checkout has a ``.git`` directory inside the
-    workspace. A linked worktree has a ``.git`` file holding ``gitdir: <path>``
-    that names an admin directory which usually lives outside the workspace.
-
-    The mount list is also a *read* grant on Linux: Bubblewrap has already hidden
-    every host path outside the workspace and the system directories, so mounting
-    a candidate makes it readable. ``cwd/.git`` is writable by the command, which
-    makes its contents untrusted input, so an external candidate is only mounted
-    when Git's own layout confirms the admin directory belongs to this workspace.
-
-    Any other shape is refused rather than executed. A symlinked ``.git`` is not
-    followed, because the mount source would resolve outside the workspace. A
-    ``.git`` file that is not a registered worktree pointer — including
-    ``git init --separate-git-dir`` — names metadata this helper cannot verify,
-    and that metadata can sit inside the writable workspace. Running anyway would
-    bind the workspace writable with the real metadata unprotected, so the call
-    fails closed instead.
-
-    Raises:
-        UnprotectedGitMetadata: ``cwd/.git`` exists in a shape that cannot be
-            pinned read-only.
-    """
-    git_path = cwd / ".git"
-
-    if git_path.is_symlink():
-        raise UnprotectedGitMetadata(
-            "cwd/.git is a symbolic link; its target cannot be verified or "
-            "pinned read-only"
-        )
-
-    if git_path.is_dir():
-        return (git_path,)
-
-    if not git_path.is_file():
-        return ()
-
-    gitdir = _verified_worktree_gitdir(git_path)
-    if gitdir is None:
-        raise UnprotectedGitMetadata(
-            "cwd/.git is a gitdir pointer that is not a registered linked "
-            "worktree; its metadata cannot be verified or pinned read-only"
-        )
-
-    # The admin directory's ``commondir`` names the shared main Git directory
-    # (objects, refs). Read-only Git commands need it, so it is pinned too, once
-    # it is confirmed to be that admin directory's parent.
-    common = _verified_common_dir(gitdir)
-    if common is None:
-        raise UnprotectedGitMetadata(
-            "the linked worktree commondir could not be verified; its shared "
-            "Git metadata cannot be pinned read-only"
-        )
-
-    return (git_path, gitdir, common)
-
-
-def _verified_worktree_gitdir(gitfile: Path) -> Path | None:
-    """Return a worktree admin directory only when Git's own layout confirms it.
-
-    Two independent facts are required, because either alone is forgeable:
-
-    * ``<admin>/gitdir`` names this workspace's ``.git`` file. A forged pointer
-      cannot satisfy that unless the external directory already holds a matching
-      file, which only a registered worktree of this workspace does.
-    * the admin directory sits at ``<common>/worktrees/<name>``. Requiring the
-      documented layout stops an in-workspace directory from presenting itself as
-      an admin directory and steering ``commondir`` at an ancestor.
-
-    A symlinked admin directory is refused: the mount source would resolve
-    somewhere the checks did not cover.
-    """
-    gitdir = _read_gitdir_pointer(gitfile)
-    if gitdir is None or gitdir.is_symlink() or not gitdir.is_dir():
-        return None
-    if gitdir.parent.name != "worktrees":
-        return None
-
-    back_pointer = gitdir / "gitdir"
-    try:
-        raw = back_pointer.read_text(encoding="utf-8", errors="strict").strip()
-    except (OSError, UnicodeDecodeError):
-        return None
-    if not raw:
-        return None
-    recorded = Path(raw)
-    if not recorded.is_absolute():
-        recorded = gitdir / recorded
-    try:
-        if recorded.resolve() != gitfile.resolve():
-            return None
-    except OSError:
-        return None
-    return gitdir
-
-
-def _verified_common_dir(gitdir: Path) -> Path | None:
-    """Return the shared Git directory only when it is exactly the admin parent.
-
-    ``commondir`` is a second untrusted pointer read from the same external
-    directory. Git places the admin directory directly under ``<common>/worktrees``,
-    so the resolved value must equal the admin directory's grandparent; accepting
-    only that value keeps the pointer from redirecting a mount at an unrelated
-    host path while still mounting the shared object store Git needs.
-    """
-    common = _read_common_dir(gitdir)
-    if common is None or common.is_symlink() or not common.is_dir():
-        return None
-    try:
-        if common.resolve() != gitdir.parent.parent.resolve():
-            return None
-    except (OSError, ValueError):
-        return None
-    return common
-
-
-def _read_gitdir_pointer(gitfile: Path) -> Path | None:
-    """Resolve the ``gitdir:`` target of a linked worktree's ``.git`` file."""
-    try:
-        raw = gitfile.read_text(encoding="utf-8", errors="strict").strip()
-    except (OSError, UnicodeDecodeError):
-        return None
-    prefix = "gitdir:"
-    if not raw.startswith(prefix):
-        return None
-    target = Path(raw[len(prefix) :].strip())
-    if not target.is_absolute():
-        # Relative pointers are resolved against the directory holding the file.
-        target = (gitfile.parent / target).resolve()
-    return target
-
-
-def _read_common_dir(gitdir: Path) -> Path | None:
-    """Resolve the shared main Git directory a worktree admin directory names.
-
-    ``commondir`` sits inside the worktree's own gitdir and usually holds a
-    relative path such as ``../..`` pointing at the main ``.git``.
-    """
-    pointer = gitdir / "commondir"
-    try:
-        raw = pointer.read_text(encoding="utf-8", errors="strict").strip()
-    except (OSError, UnicodeDecodeError):
-        return None
-    if not raw:
-        return None
-    target = Path(raw)
-    if not target.is_absolute():
-        target = (gitdir / target).resolve()
-    return target
-
-
-def sandbox_python(workspace_root: Path | None = None) -> str:
-    """The interpreter a sandboxed command should run, by descending priority.
-
-    The funnel, most specific first:
-
-    1. the workspace's ``.venv`` — the environment the project declares. ``uv``
-       and the project's own instructions create it, so it is what the project
-       means by "Python" regardless of how Cairn itself was launched;
-    2. the interpreter running this process, for a workspace that has no venv.
-
-    ``sys.executable`` alone is not enough: launching Cairn through a system
-    Python makes it name that Python rather than the project's environment.
-
-    Returns an empty string when no interpreter exists; the caller decides
-    whether that is fatal.
+    The workspace's own ``.venv`` wins: ``uv`` and the project's instructions
+    create it, so it is what the project means by "Python". A workspace without
+    a venv falls back to the interpreter running Cairn. Returns an empty string
+    when neither exists; the caller decides whether that is fatal.
     """
     if workspace_root is not None:
         for relative in (
@@ -235,152 +98,16 @@ def sandbox_python(workspace_root: Path | None = None) -> str:
     return sys.executable if sys.executable else ""
 
 
-def _shadowed_ancestors(paths: tuple[Path, ...]) -> tuple[Path, ...]:
-    """Directories that must be masked so mounting ``paths`` reveals nothing else.
-
-    Mounting a path makes bubblewrap create its ancestors, and a created
-    directory keeps the host's permission bits. When the path sits under a home
-    directory, the sandbox would then see that whole home — including keys and
-    credentials — merely because the interpreter lives below it. Shielding the
-    ancestor with an empty tmpfs keeps the interpreter reachable while the rest
-    of the tree stops existing for the command.
-
-    Only ancestors that are not already inside another mounted directory are
-    returned, outermost first, so the caller can mount them before the specific
-    paths they contain.
-    """
-    protected = (Path("/root"), Path.home(), Path("/home"), Path("/Users"))
-    shadowed: list[Path] = []
-    for path in paths:
-        for ancestor in protected:
-            if path == ancestor or ancestor not in path.parents:
-                continue
-            if any(root == ancestor for root in paths):
-                continue
-            if any(root in ancestor.parents for root in shadowed):
-                continue
-            if ancestor not in shadowed:
-                shadowed.append(ancestor)
-    return tuple(sorted(shadowed, key=lambda item: len(item.parts)))
-
-
-def _interpreter_runtime_paths(executable: str | None = None) -> tuple[Path, ...]:
-    """Directories a sandboxed command needs to run an interpreter.
-
-    A virtual environment lives outside the directories the Linux sandbox mounts,
-    so a command that runs Python inside the workspace could not find the
-    interpreter the project declares. Mounting these read-only lets a caller name
-    that interpreter instead of guessing at a ``python`` command a distribution
-    may not ship.
-
-    Whole installation roots are returned, not just their ``bin``: an interpreter
-    needs its standard library beside it and refuses to start with only the
-    executable visible ("Could not find platform independent libraries").
-
-    The roots are not always the same directory:
-
-    * the venv root, which holds the executable and ``pyvenv.cfg``;
-    * the base installation behind it, where the standard library lives;
-    * the ``home`` recorded in ``pyvenv.cfg``, which can name a different patch
-      release than the interpreter's real path resolves to.
-
-    Only existing directories are returned; the caller mounts what it gets.
-    """
-    resolved = executable if executable is not None else sys.executable
-    if not resolved:
-        return ()
-    executable_path = Path(resolved)
-    real = Path(os.path.realpath(resolved))
-    # The venv root is the directory holding bin/, or the install root when the
-    # executable is not inside a venv.
-    venv_root = (
-        executable_path.parent.parent
-        if executable_path.parent.name in ("bin", "Scripts")
-        else executable_path.parent
-    )
-    base_root = real.parent.parent if real.parent.name == "bin" else real.parent
-    candidates: list[Path] = [venv_root, base_root]
-    # A venv names its base installation in pyvenv.cfg; that file, not
-    # sys.base_prefix, is authoritative when the venv belongs to another project.
-    config = venv_root / "pyvenv.cfg"
-    if config.is_file():
-        with suppress(OSError, UnicodeDecodeError):
-            for line in config.read_text(encoding="utf-8").splitlines():
-                key, separator, value = line.partition("=")
-                if separator and key.strip() == "home" and value.strip():
-                    home = Path(value.strip())
-                    # `home` names the base's bin/ directory.
-                    candidates.append(home.parent if home.name == "bin" else home)
-    unique: list[Path] = []
-    for candidate in candidates:
-        with suppress(OSError):
-            if candidate.is_dir() and candidate not in unique:
-                unique.append(candidate)
-    return tuple(unique)
-
-
-def _macos_sandbox_profile(
-    cwd: Path,
-    writable_tmpdir: Path | None,
-    writable_uv_cache: Path | None,
-    network_access: bool = False,
-    extra_writable_roots: tuple[Path, ...] = (),
-) -> str:
-    writable_roots = [cwd, *extra_writable_roots]
-    for root in (writable_tmpdir, writable_uv_cache):
-        if root is not None:
-            writable_roots.append(root)
-    allowed = " ".join(f"(subpath {json.dumps(str(root))})" for root in writable_roots)
-    # Git metadata is read-only under the workspace and under any granted root.
-    # sandbox-exec evaluates rules in order, so the later deny narrows the
-    # earlier allow and keeps ordinary source files writable.
-    metadata = [*_git_metadata_paths(cwd)]
-    for root in extra_writable_roots:
-        metadata.extend(_git_metadata_paths(root))
-    denied = " ".join(f"(subpath {json.dumps(str(path))})" for path in metadata)
-    deny_metadata = f"(deny file-write* {denied}) " if denied else ""
-    return (
-        "(version 1) (allow default) "
-        f'(deny file-write*) (allow file-write* (literal "/dev/null") {allowed}) '
-        + deny_metadata
-        + ("" if network_access else "(deny network*)")
-    )
-
-
-def _filesystem_mounts(roots: tuple[Path, ...]) -> tuple[str, ...]:
-    """bubblewrap mounts that expose each approved root read-write in one namespace.
-
-    The Linux sandbox starts from an empty mount namespace, so a granted root is
-    useless unless its ancestors exist as directories and the root itself is
-    bound. Ancestors are created first (``--dir``); a root already created by an
-    earlier mount is a harmless duplicate. Roots are deduplicated and ordered so
-    a parent mount is never shadowed by a later child bind, and Git metadata
-    inside a granted root is re-mounted read-only afterwards.
-    """
-    ordered = sorted(set(roots), key=lambda path: (len(path.parts), str(path)))
-    argv: list[str] = []
-    for root in ordered:
-        for parent in reversed(root.parents):
-            if parent != Path("/"):
-                argv.extend(("--dir", str(parent)))
-        argv.extend(("--bind", str(root), str(root)))
-    for root in ordered:
-        for metadata in _git_metadata_paths(root):
-            argv.extend(("--ro-bind", str(metadata), str(metadata)))
-    return tuple(argv)
-
-
 class BashTool:
     name = "bash"
     description = (
-        "Execute a shell command. Commands start at the workspace root; do not prepend "
-        "`cd <workspace>`. Only change directory when intentionally entering a workspace "
-        "subdirectory. Preserve command failure status when running verification commands. "
-        "Network is denied by default. Set network_access=true only when the command "
-        "requires network and provide a concise justification; do not request network "
-        "preemptively for local commands. To read or write a directory outside the "
-        "workspace, pass extra_writable_roots with its absolute path and a justification; "
-        "the user must approve before the directory is exposed."
+        "Execute a shell command on this machine. Commands start at the workspace "
+        "root; do not prepend `cd <workspace>`. Only change directory when "
+        "intentionally entering a workspace subdirectory. Preserve command failure "
+        "status when running verification commands. The command runs as you, with "
+        "your environment, and is not sandboxed: it can reach anything you can, "
+        "including the network and files outside the workspace. It is executed only "
+        "after the session is trusted with local shell access."
     )
 
     def __init__(
@@ -416,33 +143,6 @@ class BashTool:
                             "type": "string",
                             "description": "The shell command to execute.",
                         },
-                        "network_access": {
-                            "type": "boolean",
-                            "default": False,
-                            "description": (
-                                "Request the NETWORK capability for this command. "
-                                "Denied by default; requires user approval and a "
-                                "justification."
-                            ),
-                        },
-                        "extra_writable_roots": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": (
-                                "Absolute directories outside the workspace this "
-                                "command needs to read and write. Each requires "
-                                "user approval and a justification; granting a "
-                                "directory also exposes its subtree."
-                            ),
-                        },
-                        "justification": {
-                            "type": "string",
-                            "description": (
-                                "Why this command needs network access or extra "
-                                "writable roots. Required when either is "
-                                "requested; shown to the user."
-                            ),
-                        },
                     },
                     "required": ["command"],
                     "additionalProperties": False,
@@ -462,58 +162,11 @@ class BashTool:
         if not isinstance(command, str) or not command.strip() or "\0" in command:
             raise InvalidArguments("command must be a non-empty string without NUL")
 
-        unexpected = arguments.keys() - {
-            "command",
-            "network_access",
-            "extra_writable_roots",
-            "justification",
-        }
+        unexpected = arguments.keys() - {"command"}
         if unexpected:
             raise InvalidArguments(
                 f"unexpected bash command argument: {sorted(unexpected)}"
             )
-
-        network_access = arguments.get("network_access", False)
-        if not isinstance(network_access, bool):
-            raise InvalidArguments("network_access must be a boolean")
-
-        extra_roots = arguments.get("extra_writable_roots", [])
-        if not isinstance(extra_roots, list):
-            raise InvalidArguments("extra_writable_roots must be an array of strings")
-        for root in extra_roots:
-            if not isinstance(root, str) or not root.strip():
-                raise InvalidArguments("extra_writable_roots must be non-empty strings")
-            if not Path(root).is_absolute():
-                raise InvalidArguments(
-                    "extra_writable_roots must be absolute directory paths"
-                )
-        if network_access and extra_roots:
-            raise InvalidArguments(
-                "request network_access or extra_writable_roots, not both in one call"
-            )
-
-        justification = arguments.get("justification", "")
-        if not isinstance(justification, str):
-            raise InvalidArguments("justification must be a string")
-
-        if (network_access or extra_roots) and not justification.strip():
-            raise InvalidArguments(
-                "network_access or extra_writable_roots requires a justification"
-            )
-
-        # Validate each requested root now, at preflight, so an unusable path is
-        # a tool error the model sees and can correct rather than an exception
-        # that aborts the whole turn during permission approval.
-        if extra_roots:
-            self._validate_extra_roots(extra_roots)
-
-    def _validate_extra_roots(self, roots: list[str]) -> None:
-        protected = (self.workspace.root, Path.home())
-        for root in roots:
-            try:
-                normalize_access_root(root, protected=protected)
-            except ValueError as exc:
-                raise InvalidArguments(str(exc)) from None
 
     async def _collect_output(
         self, process: asyncio.subprocess.Process
@@ -537,7 +190,13 @@ class BashTool:
         return stdout, stdout_truncated, stderr, stderr_truncated, exit_code
 
     async def _cleanup_process(self, process: asyncio.subprocess.Process) -> None:
-        with suppress(ProcessLookupError):
+        """Kill the whole process group, then reap it within a fixed budget.
+
+        A shell command can leave descendants behind. Signalling the group is what
+        stops them; waiting bounded is what keeps a stuck child from hanging the
+        turn.
+        """
+        with suppress(ProcessLookupError, PermissionError, OSError):
             os.killpg(process.pid, signal.SIGKILL)
 
         with suppress(TimeoutError):
@@ -572,83 +231,10 @@ class BashTool:
     ) -> ToolResult:
         self.validate(arguments)
         command = arguments["command"]
-        network_access = context is not None and context.network_access
-        # Granted filesystem roots come only from the approval context, never
-        # from the model-provided arguments.
-        extra_roots: tuple[Path, ...] = (
-            context.accessible_roots if context is not None else ()
-        )
 
         cwd = self.workspace.root
         env = build_command_env(os.environ, self.secret_env_keys)
-        command_argv = (
-            [f"/bin/{command.strip()}"]
-            if command.strip() in {"pwd", "ls"}
-            else ["/bin/bash", "-o", "pipefail", "-c", command]
-        )
-
-        if sys.platform == "darwin":
-            profile = _macos_sandbox_profile(
-                cwd,
-                resolve_tmpdir(env),
-                resolve_uv_cache_dir(env),
-                network_access=network_access,
-                extra_writable_roots=extra_roots,
-            )
-            argv = ["/usr/bin/sandbox-exec", "-p", profile, *command_argv]
-        elif sys.platform == "linux":
-            bwrap = Path("/usr/bin/bwrap")
-            if not bwrap.is_file():
-                raise RuntimeError("BashTool requires bubblewrap on Linux")
-            argv = [
-                str(bwrap),
-                "--die-with-parent",
-                *([] if network_access else ["--unshare-net"]),
-                "--unshare-pid",
-                "--dev",
-                "/dev",
-                "--proc",
-                "/proc",
-                "--tmpfs",
-                "/tmp",
-            ]
-            for path in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"):
-                if Path(path).exists():
-                    argv.extend(("--ro-bind", path, path))
-            # The project interpreter can live in a virtual environment outside
-            # those directories. Mount its runtime read-only so a sandboxed
-            # command can invoke it rather than a `python` name the distribution
-            # may not provide. Mounting a path creates its ancestors, and a
-            # created ancestor keeps the host's permissions, so a home-directory
-            # interpreter would expose the whole home. Mask those ancestors with
-            # empty tmpfs mounts first; the later read-only binds then place only
-            # the interpreter runtime inside them.
-            runtime_paths = _interpreter_runtime_paths(sandbox_python(cwd) or None)
-            for masked in _shadowed_ancestors(runtime_paths):
-                argv.extend(("--tmpfs", str(masked)))
-                for parent in reversed(masked.parents):
-                    if parent not in (Path("/"), Path(".")):
-                        argv.extend(("--dir", str(parent)))
-            for runtime in runtime_paths:
-                argv.extend(("--ro-bind", str(runtime), str(runtime)))
-            for parent in reversed(cwd.parents):
-                if parent != Path("/"):
-                    argv.extend(("--dir", str(parent)))
-            argv.extend(("--bind", str(cwd), str(cwd), "--chdir", str(cwd)))
-            # The workspace bind above is writable, so the Git metadata inside it
-            # would be writable too. Re-mount each metadata path read-only after
-            # the writable bind: bubblewrap applies mounts in order, so the later
-            # read-only mount shadows the earlier writable one.
-            for metadata in _git_metadata_paths(cwd):
-                argv.extend(("--ro-bind", str(metadata), str(metadata)))
-            # Approved roots outside the workspace are bound read-write here,
-            # after the workspace and interpreter mounts, so a granted directory
-            # (e.g. a data or temp directory) becomes visible and writable while
-            # everything else outside the mounts stays absent.
-            argv.extend(_filesystem_mounts(extra_roots))
-            argv.extend(command_argv)
-        else:
-            raise RuntimeError(f"BashTool has no sandbox for {sys.platform}")
+        argv = _command_argv(command)
 
         process = await asyncio.create_subprocess_exec(
             *argv,
@@ -688,3 +274,44 @@ class BashTool:
                 await self._cleanup_process(process)
             finally:
                 await self._settle_collection(collection)
+
+
+def _resolve_writable_root(raw_path: str | None) -> Path | None:
+    """Resolve a candidate root, rejecting values that could only widen access.
+
+    Returns ``None`` for an empty, relative, nonexistent or filesystem-root
+    value, so a malformed setting can never broaden what it describes.
+    """
+    if not raw_path or not raw_path.strip():
+        return None
+    candidate = Path(raw_path)
+    if not candidate.is_absolute():
+        return None
+    try:
+        resolved = candidate.resolve()
+    except (OSError, RuntimeError):
+        return None
+    if resolved == Path(resolved.anchor):
+        return None
+    return resolved
+
+
+def resolve_tmpdir(env: Mapping[str, str]) -> Path | None:
+    """The effective TMPDIR, when it names a real directory."""
+    raw = env.get("TMPDIR")
+    resolved = _resolve_writable_root(raw)
+    return resolved if resolved is not None and resolved.is_dir() else None
+
+
+def resolve_uv_cache_dir(env: Mapping[str, str]) -> Path | None:
+    """uv's effective cache root, mirroring uv's own lookup order."""
+    explicit = env.get("UV_CACHE_DIR")
+    if explicit is not None:
+        return _resolve_writable_root(explicit) if explicit.strip() else None
+    xdg = env.get("XDG_CACHE_HOME")
+    if xdg and Path(xdg).is_absolute():
+        return _resolve_writable_root(str(Path(xdg) / "uv"))
+    home = env.get("HOME")
+    if home and home.strip():
+        return _resolve_writable_root(str(Path(home) / ".cache" / "uv"))
+    return None

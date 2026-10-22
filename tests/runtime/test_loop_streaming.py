@@ -103,7 +103,7 @@ def test_accepted_group_keeps_preflight_and_capability_authority(allowed: bool) 
             *,
             context: ToolExecutionContext | None = None,
         ) -> ToolResult:
-            assert context is not None and context.network_access is True
+            assert context is not None
             order.append("execute")
             return await super().execute(arguments, context=context)
 
@@ -116,7 +116,7 @@ def test_accepted_group_keeps_preflight_and_capability_authority(allowed: bool) 
                         0,
                         "call",
                         "bash",
-                        '{"command":"curl example.com","network_access":true,"justification":"fetch"}',
+                        '{"command":"curl example.com"}',
                     ),
                 )
             ),
@@ -133,7 +133,7 @@ def test_accepted_group_keeps_preflight_and_capability_authority(allowed: bool) 
         return PermissionResult(
             policy_decision=PermissionDecision.ASK,
             allowed=allowed,
-            granted_capabilities=frozenset({PermissionCapability.NETWORK})
+            granted_capabilities=frozenset({PermissionCapability.LOCAL_SHELL})
             if allowed
             else frozenset(),
         )

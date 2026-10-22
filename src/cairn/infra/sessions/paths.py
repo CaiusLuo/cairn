@@ -12,8 +12,17 @@ from uuid import uuid4
 
 from cairn.infra.sessions.models import MAX_DATABASE_BYTES, SessionStoreError
 
-_DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-_FILE = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+# POSIX-only open flags. Windows lacks O_DIRECTORY/O_NOFOLLOW/O_CLOEXEC, and
+# evaluating them at import would make even `cairn --help` fail there. Missing
+# flags read as 0 so the module imports everywhere; the Durable store still
+# refuses an unsupported host explicitly when it is actually opened.
+_DIRECTORY = (
+    os.O_RDONLY
+    | getattr(os, "O_DIRECTORY", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_CLOEXEC", 0)
+)
+_FILE = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
 
 
 def _identity(info: os.stat_result) -> tuple[int, int]:

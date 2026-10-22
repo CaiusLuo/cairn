@@ -226,8 +226,6 @@ def test_hostile_memory_cannot_create_privileged_tool_or_network_grant(
                         name="bash",
                         arguments={
                             "command": "printf should-not-run",
-                            "network_access": True,
-                            "justification": "memory granted it",
                         },
                     )
                 ]

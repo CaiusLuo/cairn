@@ -59,33 +59,30 @@ def test_harness_request_reuses_and_resets_existing_network_session_grant() -> N
     handler = SessionPermissionHandler(prompt)
 
     first = handler.authorize(request)
-    bash = handler(
-        ToolCall(
-            id="network-bash",
-            name="bash",
-            arguments={
-                "command": "git fetch",
-                "network_access": True,
-                "justification": "fetch explicitly requested remote",
-            },
-        )
-    )
     second = handler.authorize(request)
 
     assert first.source is PermissionSource.USER_SESSION
     assert first.prompted
     assert first.granted_capabilities == frozenset({PermissionCapability.NETWORK})
-    for result in (bash, second):
-        assert result.policy_decision is PermissionDecision.ASK
-        assert result.allowed and not result.prompted
-        assert result.source is PermissionSource.SESSION_GRANT
-        assert result.granted_capabilities == frozenset({PermissionCapability.NETWORK})
+    assert second.policy_decision is PermissionDecision.ASK
+    assert second.allowed and not second.prompted
+    assert second.source is PermissionSource.SESSION_GRANT
+    assert second.granted_capabilities == frozenset({PermissionCapability.NETWORK})
     assert prompt.call_count == 1
     assert handler.grants == {PermissionCapability.NETWORK}
 
+    # A local shell is a separate capability: trusting the network does not
+    # trust the shell, so the first bash call still asks.
+    shell = handler(
+        ToolCall(id="shell", name="bash", arguments={"command": "git fetch"})
+    )
+    assert shell.prompted
+    assert shell.granted_capabilities == frozenset({PermissionCapability.LOCAL_SHELL})
+    assert prompt.call_count == 2
+
     handler.reset_grants()
     assert handler.authorize(request).source is PermissionSource.USER_SESSION
-    assert prompt.call_count == 2
+    assert prompt.call_count == 3
 
 
 @pytest.mark.parametrize(
@@ -135,7 +132,16 @@ class AlternateCapability(StrEnum):
 
 
 @pytest.mark.parametrize(
-    "capability", [None, "network", "unknown", AlternateCapability.NETWORK]
+    "capability",
+    [
+        None,
+        "unknown",
+        "local_shell_typo",
+        # An equal-valued string or foreign StrEnum is normalised to the real
+        # member by the request model, so only genuinely unknown values are
+        # invalid. Identity is still enforced in ``authorize``.
+        3,
+    ],
 )
 @pytest.mark.parametrize("existing_grant", [False, True])
 def test_harness_invalid_capability_cannot_prompt_or_reuse_session_grant(

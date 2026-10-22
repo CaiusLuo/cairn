@@ -22,7 +22,6 @@ from cairn.core.permissions import PermissionCapability
 from cairn.core.provider_catalog import NamedProvider, ProviderCatalog
 from cairn.infra.observability.storage import TraceStore
 from cairn.infra.tools.registry import ToolRegistry
-from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.loop import run_turn
 from cairn.runtime.provider_runtime import build_provider_runtime
@@ -37,7 +36,7 @@ from tests.support.cli_harness import (
     configure_cli,
 )
 from tests.support.runtime import RecordingTool
-from tests.support.sandbox import require_working_sandbox
+from tests.support.sandbox import require_local_shell
 from tests.support.streaming import CompletionResponse
 
 SINGLE_CATALOG_TOML = """\
@@ -282,7 +281,7 @@ def test_every_configured_credential_variable_is_withheld_from_children(
 def test_unselected_provider_credential_is_absent_from_tool_child_and_trace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    require_working_sandbox(Workspace(tmp_path))
+    require_local_shell()
     state = configure_cli(tmp_path, monkeypatch, "inspect environment")
     monkeypatch.setenv("CAIRN_TEST_PASSTHROUGH", "preserved")
     command = (

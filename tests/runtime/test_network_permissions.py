@@ -1,8 +1,14 @@
+"""Local shell approval: a command runs only after the session is trusted.
+
+Cairn no longer sandboxes shell commands, so it makes no network-isolation
+claim. What still holds is the approval contract: a ``bash`` call is an ASK, a
+denial runs nothing, and an approval lets the command actually reach the host.
+"""
+
 import asyncio
 import json
 import shlex
 import socket
-import sys
 from collections.abc import Iterator
 from enum import StrEnum
 from pathlib import Path
@@ -12,6 +18,7 @@ import pytest
 
 from cairn.core.models import LLMResponse, ToolCall
 from cairn.core.permissions import (
+    PermissionCapability,
     PermissionChoice,
     PermissionRequest,
     PermissionSource,
@@ -19,7 +26,6 @@ from cairn.core.permissions import (
 )
 from cairn.infra.observability.models import SpanStatus
 from cairn.infra.observability.tracer import Tracer
-from cairn.infra.tools.base import ToolExecutionContext
 from cairn.infra.tools.bash import BashTool
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.assembly import build_agent
@@ -28,13 +34,9 @@ from tests.support.runtime import (
     TEST_BUDGET,
     RecordingSink,
     SequenceLLM,
-    network_tool_response,
+    shell_tool_response,
 )
-from tests.support.sandbox import (
-    require_working_sandbox,
-    sandbox_python,
-    skip_without_sandbox,
-)
+from tests.support.sandbox import require_local_shell, sandbox_python
 
 
 class AlternatePermissionChoice(StrEnum):
@@ -42,7 +44,7 @@ class AlternatePermissionChoice(StrEnum):
     ALLOW_SESSION = "allow_session"
 
 
-def socket_command(port: int) -> str:
+def host_connection_command(port: int) -> str:
     python = shlex.quote(sandbox_python())
     script = (
         "import socket; print('started', flush=True); "
@@ -53,32 +55,20 @@ def socket_command(port: int) -> str:
 
 
 @pytest.fixture
-def host_network_command(tmp_path: Path) -> Iterator[str]:
-    require_working_sandbox(Workspace(tmp_path))
-    # A Linux network namespace can bind its own loopback sockets. Connecting
-    # to a listener outside the sandbox proves access to the host's network.
+def host_network_command() -> Iterator[str]:
+    require_local_shell()
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
-        # These tests open at most two connections; the listening backlog is
-        # sufficient without a background accept thread.
         listener.listen(8)
-        yield socket_command(listener.getsockname()[1])
+        yield host_connection_command(listener.getsockname()[1])
 
 
-@pytest.mark.parametrize("requested", [None, False, True])
-def test_arguments_cannot_grant_network(
-    tmp_path: Path, requested: bool | None, host_network_command: str
-) -> None:
-    arguments: dict[str, object] = {"command": host_network_command}
-    if requested is not None:
-        arguments.update(network_access=requested, justification="host TCP listener")
-    result = asyncio.run(BashTool(Workspace(tmp_path)).execute(arguments))
-    assert result.exit_code != 0
-    assert result.stdout == "started\n"
+def shell_call(index: int, command: str) -> ToolCall:
+    return ToolCall(id=str(index), name="bash", arguments={"command": command})
 
 
 @pytest.mark.parametrize("choice", list(PermissionChoice))
-def test_network_end_to_end(
+def test_shell_runs_only_after_approval(
     tmp_path: Path, choice: PermissionChoice, host_network_command: str
 ) -> None:
     prompts: list[PermissionRequest] = []
@@ -89,16 +79,8 @@ def test_network_end_to_end(
 
     handler = SessionPermissionHandler(prompt)
     calls = [
-        ToolCall(
-            id=str(index),
-            name="bash",
-            arguments={
-                "command": host_network_command,
-                "network_access": requested,
-                "justification": "host TCP listener",
-            },
-        )
-        for index, requested in enumerate((True, True, False))
+        shell_call(0, host_network_command),
+        shell_call(1, host_network_command),
     ]
     sink = RecordingSink()
     agent = build_agent(
@@ -109,46 +91,52 @@ def test_network_end_to_end(
         tracer=Tracer(sink),
     )
     assert asyncio.run(run_turn(agent, "test", budget=TEST_BUDGET)) == "done"
+
     messages = [
         json.loads(m.content or "") for m in agent.state.messages if m.role == "tool"
     ]
     spans = [s for s in sink.spans if s.name == "permission.check"]
-    assert len(prompts) == (1 if choice == PermissionChoice.ALLOW_SESSION else 2)
-    for index in (0, 1):
-        denied = choice == PermissionChoice.DENY
-        if denied:
-            assert messages[index] == {
+
+    if choice is PermissionChoice.DENY:
+        for message in messages:
+            assert message == {
                 "error": "Permission denied by user.",
                 "type": "PermissionDenied",
             }
-        else:
-            assert messages[index]["exit_code"] == 0
-            assert messages[index]["stdout"] == "started\nconnected\n"
-        assert spans[index].attributes["policy_decision"] == "ask"
-        assert spans[index].attributes["allowed"] is (not denied)
-        assert spans[index].attributes["prompted"] is (
-            index == 0 or choice != PermissionChoice.ALLOW_SESSION
-        )
-        expected_source = {
-            PermissionChoice.DENY: PermissionSource.USER_DENIED,
-            PermissionChoice.ALLOW_ONCE: PermissionSource.USER_ONCE,
-            PermissionChoice.ALLOW_SESSION: (
-                PermissionSource.USER_SESSION
-                if index == 0
-                else PermissionSource.SESSION_GRANT
-            ),
-        }[choice]
-        assert spans[index].attributes["source"] == expected_source
-        assert spans[index].attributes["granted_capabilities"] == (
-            [] if denied else ["network"]
-        )
-    assert messages[2]["exit_code"] != 0
-    assert messages[2]["stdout"] == "started\n"
-    assert spans[2].attributes["source"] == "baseline"
-    assert spans[2].attributes["granted_capabilities"] == []
-    assert not spans[2].attributes["prompted"]
-    if choice == PermissionChoice.DENY:
-        assert len([s for s in sink.spans if s.name == "tool.execute"]) == 1
+        assert len([s for s in sink.spans if s.name == "tool.execute"]) == 0
+        return
+
+    # An approved shell really reaches the host network: no isolation is claimed.
+    for message in messages:
+        assert message["exit_code"] == 0
+        assert message["stdout"] == "started\nconnected\n"
+
+    assert spans[0].attributes["granted_capabilities"] == ["local_shell"]
+    reused = choice is PermissionChoice.ALLOW_SESSION
+    assert len(prompts) == (1 if reused else 2)
+    assert spans[1].attributes["source"] == (
+        PermissionSource.SESSION_GRANT.value
+        if reused
+        else PermissionSource.USER_ONCE.value
+    )
+
+
+def test_session_trust_prompts_once_for_every_later_command(tmp_path: Path) -> None:
+    prompts: list[PermissionRequest] = []
+
+    def prompt(request: PermissionRequest) -> PermissionChoice:
+        prompts.append(request)
+        return PermissionChoice.ALLOW_SESSION
+
+    handler = SessionPermissionHandler(prompt)
+    first = handler(shell_call(0, "true"))
+    second = handler(shell_call(1, "false"))
+
+    assert first.allowed and first.prompted
+    assert second.allowed and not second.prompted
+    assert second.source is PermissionSource.SESSION_GRANT
+    assert first.granted_capabilities == frozenset({PermissionCapability.LOCAL_SHELL})
+    assert len(prompts) == 1
 
 
 @pytest.mark.parametrize(
@@ -167,14 +155,13 @@ def test_run_turn_rejects_invalid_prompt_choices_without_execution(
 ) -> None:
     prompt = Mock(return_value=choice)
     handler = SessionPermissionHandler(prompt)
-    llm = SequenceLLM([network_tool_response()])
     sink = RecordingSink()
     execute = AsyncMock()
     monkeypatch.setattr(BashTool, "execute", execute)
     agent = build_agent(
         workspace=Workspace(tmp_path),
         event_handler=None,
-        llm=llm,
+        llm=SequenceLLM([shell_tool_response()]),
         permission_handler=handler,
         tracer=Tracer(sink),
     )
@@ -196,69 +183,19 @@ def test_run_turn_rejects_invalid_prompt_choices_without_execution(
     assert "Invalid permission choice" in turn_span.error
 
 
-@pytest.mark.parametrize("platform", ["darwin", "linux"])
-def test_network_context_changes_only_network_restriction(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str
-) -> None:
-    skip_without_sandbox()
-    process = AsyncMock()
-    process.pid = 12345
-    process.wait.return_value = 0
-    for name in ("stdout", "stderr"):
-        stream = AsyncMock(spec=asyncio.StreamReader)
-        stream.read.return_value = b""
-        setattr(process, name, stream)
-    create = AsyncMock(return_value=process)
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
-    monkeypatch.setattr("cairn.infra.tools.bash.os.killpg", Mock())
-    monkeypatch.setattr("cairn.infra.tools.bash.sys.platform", platform)
-    # Only the sandbox launcher has to look installed. Faking every path would
-    # also make the workspace's absent .git entry look present, which the Git
-    # metadata check reads as an unsupported layout.
-    real_is_file = Path.is_file
-    monkeypatch.setattr(
-        Path,
-        "is_file",
-        lambda self: (
-            True
-            if str(self) in ("/usr/bin/bwrap", "/usr/bin/sandbox-exec")
-            else real_is_file(self)
-        ),
-    )
-    tool = BashTool(Workspace(tmp_path))
-    for allowed in (False, True):
-        asyncio.run(
-            tool.execute(
-                {"command": "true"},
-                context=ToolExecutionContext(network_access=allowed),
-            )
-        )
-    denied_args, allowed_args = [list(call.args) for call in create.call_args_list]
-    if platform == "darwin":
-        assert "(deny network*)" in denied_args[2]
-        denied_args[2] = denied_args[2].replace("(deny network*)", "")
-    else:
-        assert "--unshare-net" in denied_args
-        denied_args.remove("--unshare-net")
-    assert denied_args == allowed_args
-    assert create.call_args_list[0].kwargs == create.call_args_list[1].kwargs
-
-
-@pytest.mark.skipif(sys.platform != "darwin", reason="macOS host filesystem")
-def test_network_grant_preserves_write_boundary(
+def test_no_handler_runs_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    require_working_sandbox(Workspace(workspace))
-    monkeypatch.setenv("TMPDIR", str(workspace))
-    outside = tmp_path / "outside"
-    outside.write_text("unchanged")
-    result = asyncio.run(
-        BashTool(Workspace(workspace)).execute(
-            {"command": f"printf bad > {shlex.quote(str(outside))}"},
-            context=ToolExecutionContext(network_access=True),
-        )
+    """Without anyone to approve, a shell command is not executed."""
+    execute = AsyncMock()
+    monkeypatch.setattr(BashTool, "execute", execute)
+    agent = build_agent(
+        workspace=Workspace(tmp_path),
+        event_handler=None,
+        llm=SequenceLLM([shell_tool_response(), LLMResponse(content="done")]),
+        permission_handler=None,
+        tracer=None,
     )
-    assert result.exit_code != 0
-    assert outside.read_text() == "unchanged"
+
+    assert asyncio.run(run_turn(agent, "test", budget=TEST_BUDGET)) == "done"
+    assert execute.await_count == 0
