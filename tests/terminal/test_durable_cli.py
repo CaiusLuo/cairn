@@ -158,6 +158,7 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[Harness]:
         isolated.setattr(cli, "dotenv_values", lambda: {})
         isolated.setattr(cli, "print_banner", lambda: None)
         isolated.setattr(cli, "confirm_provider_access", lambda *a, **k: True)
+        isolated.setattr(cli, "confirm_workspace_trust", lambda root: True)
         isolated.setattr(durable, "interactive_terminal", lambda: True)
         result = Harness(root, isolated)
 
@@ -565,7 +566,9 @@ def test_old_network_permissions_never_restored(harness: Harness) -> None:
     assert not tools[-1].calls
     new_handler = harness.agents[-1].permission_handler
     assert isinstance(new_handler, SessionPermissionHandler)
-    assert not new_handler.grants
+    # A reopened session starts with only the workspace trust every start asks
+    # for; the old network grant is never restored.
+    assert new_handler.grants == {PermissionCapability.WORKSPACE_TRUST}
     assert "Committed checkpoint 2" in result.output
 
 

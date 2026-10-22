@@ -3,6 +3,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.resources import files
+from pathlib import Path
 from time import perf_counter
 
 from rich.console import Console, Group
@@ -958,6 +959,29 @@ _STREAMING_HANDLERS: dict[str, Callable[["StreamingDisplay", Event], None]] = {
     "model_stream_end": StreamingDisplay._finish_stream,
     "trace_finish": StreamingDisplay._record_turn_totals,
 }
+
+
+def confirm_workspace_trust(workspace_root: Path) -> bool:
+    """Ask once whether this session may read and write the started directory.
+
+    Cairn edits files in the directory it was started in, so that directory is
+    trusted explicitly before the first turn. Without an interactive terminal or
+    on end of input, trust fails closed.
+    """
+    if not sys.stdin.isatty():
+        raise ValueError("Workspace trust requires an interactive terminal.")
+    console.print("\nCairn will read and write files in this directory:\n")
+    console.print(f"  {workspace_root}\n", markup=False)
+    console.print(
+        "Files outside this directory are readable; writing to them needs a "
+        "separate approval. Shell commands are asked for on first use."
+    )
+    try:
+        return Confirm.ask(
+            "Trust this directory for this session?", default=False, console=console
+        )
+    except EOFError:
+        return False
 
 
 def console_permission_prompt(request: PermissionRequest) -> PermissionChoice:

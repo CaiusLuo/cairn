@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from cairn.core.context import ContextBuilder, ContextRequest
 from cairn.core.events import Event, EventHandler
@@ -15,6 +15,7 @@ from cairn.core.llm import LLMClient
 from cairn.core.memory.context import MemoryContext
 from cairn.core.memory.models import Freshness
 from cairn.core.models import LLMResponse, Message, ToolResult
+from cairn.core.permissions import CapabilityRequest
 from cairn.infra.memory.identity import ProjectIdentity, git_read
 from cairn.infra.observability.models import Span
 from cairn.infra.observability.sinks import JsonlTraceSink
@@ -245,6 +246,14 @@ class ObservedTool:
 
     def validate(self, arguments: dict[str, Any]) -> None:
         self.tool.validate(arguments)
+
+    def requested_capability(
+        self, arguments: dict[str, Any]
+    ) -> "CapabilityRequest | None":
+        report = getattr(self.tool, "requested_capability", None)
+        if not callable(report):
+            return None
+        return cast("CapabilityRequest | None", report(arguments))
 
     async def execute(
         self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None

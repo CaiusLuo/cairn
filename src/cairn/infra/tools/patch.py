@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from cairn.core.models import ToolResult
+from cairn.core.permissions import AccessKind, CapabilityRequest
 from cairn.infra.tools.arguments import (
+    access_request,
     function_schema,
     reject_unknown_keys,
-    workspace_path,
+    tool_path,
 )
 from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
 from cairn.infra.workspace.workspace import Workspace
@@ -32,6 +34,11 @@ class PatchTool:
 
     def __init__(self, workspace: Workspace) -> None:
         self.workspace = workspace
+
+    def requested_capability(
+        self, arguments: dict[str, Any]
+    ) -> "CapabilityRequest | None":
+        return access_request(self.workspace, arguments, access=AccessKind.WRITE)
 
     def schema(self) -> dict[str, Any]:
         return function_schema(
@@ -70,7 +77,9 @@ class PatchTool:
 
     def validate(self, arguments: dict[str, Any]) -> None:
         reject_unknown_keys(arguments, {"path", "patches"}, tool_label="patch_file")
-        workspace_path(self.workspace, arguments)
+        tool_path(
+            self.workspace, arguments, access=AccessKind.WRITE, enforce_grant=False
+        )
 
         patches = arguments.get("patches")
         if not isinstance(patches, list) or not patches:
@@ -97,7 +106,13 @@ class PatchTool:
         context: ToolExecutionContext | None = None,
     ) -> ToolResult:
         self.validate(arguments)
-        path = self.workspace.resolve_path(arguments["path"])
+        granted = context.accessible_roots if context is not None else ()
+        path = tool_path(
+            self.workspace,
+            arguments,
+            access=AccessKind.WRITE,
+            granted_roots=frozenset(granted),
+        )
         patches = arguments["patches"]
 
         if not path.is_file():

@@ -39,7 +39,10 @@ class PermissionCapability(StrEnum):
     NETWORK = "network"
     #: The user trusts this session with a local, unsandboxed shell.
     LOCAL_SHELL = "local_shell"
-    #: Read/write access to specific directories outside the workspace.
+    #: The user trusts this session to read and write the Workspace.
+    WORKSPACE_TRUST = "workspace_trust"
+    #: Write access to specific directories outside the Workspace. Reading
+    #: outside the Workspace needs no grant.
     FILESYSTEM_ACCESS = "filesystem_access"
 
 
@@ -76,6 +79,26 @@ class PermissionRequest(BaseModel):
     justification: str
     tool_call: ToolCall
     paths: tuple[str, ...] = ()
+
+
+class CapabilityRequest(BaseModel):
+    """One capability a validated tool call asks for.
+
+    A tool derives this from its own arguments during preflight, so the runtime
+    can approve a concrete request. ``paths`` is non-empty only for
+    ``FILESYSTEM_ACCESS`` and names the directories the call wants to write.
+    """
+
+    capability: PermissionCapability
+    paths: tuple[str, ...] = ()
+    justification: str = ""
+
+
+class AccessKind(StrEnum):
+    """What a tool wants to do with a path outside the Workspace."""
+
+    READ = "read"
+    WRITE = "write"
 
 
 class PermissionResult(BaseModel):
@@ -234,8 +257,10 @@ class SessionPermissionHandler:
         # StrEnum equality also matches a plain string or a foreign StrEnum with
         # the same value, so every branch compares identity. A value that merely
         # equals a member is not that member and cannot reuse a session grant.
-        if capability is PermissionCapability.NETWORK or (
-            capability is PermissionCapability.LOCAL_SHELL
+        if (
+            capability is PermissionCapability.NETWORK
+            or (capability is PermissionCapability.LOCAL_SHELL)
+            or (capability is PermissionCapability.WORKSPACE_TRUST)
         ):
             if capability in self.grants:
                 return self._granted(capability, source=PermissionSource.SESSION_GRANT)
@@ -243,6 +268,78 @@ class SessionPermissionHandler:
         if capability is PermissionCapability.FILESYSTEM_ACCESS:
             return self._authorize_filesystem(request)
         raise ValueError("Invalid permission capability")
+
+    def ensure_workspace_trust(self) -> PermissionResult:
+        """Ask once whether this session may read and write the Workspace.
+
+        A local Cairn edits files in the directory it was started in, so that
+        directory is trusted explicitly before the first turn. The grant is
+        session-scoped and never written to disk.
+        """
+        capability = PermissionCapability.WORKSPACE_TRUST
+        if capability in self.grants:
+            return self._granted(capability, source=PermissionSource.SESSION_GRANT)
+        return self._prompt_and_grant(
+            PermissionRequest(
+                capability=capability,
+                justification=(
+                    "Read and write files in this directory for the rest of the "
+                    "session."
+                ),
+                tool_call=ToolCall(
+                    id="workspace-trust",
+                    name="workspace",
+                    arguments={},
+                ),
+            ),
+            roots=None,
+        )
+
+    def access_decision(
+        self, *, outside: bool, access: AccessKind, path: Path
+    ) -> PermissionResult:
+        """Decide whether a file tool may touch ``path``.
+
+        Inside the Workspace, access follows the session's workspace trust.
+        Outside it, reading is allowed and writing needs a grant covering the
+        path's directory, which the operator approves once per subtree.
+        """
+        if not outside:
+            if PermissionCapability.WORKSPACE_TRUST in self.grants:
+                return PermissionResult(
+                    policy_decision=PermissionDecision.ALLOW,
+                    allowed=True,
+                    source=PermissionSource.SESSION_GRANT,
+                )
+            return self.ensure_workspace_trust()
+
+        if access is AccessKind.READ:
+            return PermissionResult(
+                policy_decision=PermissionDecision.ALLOW,
+                allowed=True,
+                source=PermissionSource.BASELINE,
+            )
+
+        if is_within_granted(path, self.granted_roots):
+            return self._granted(
+                PermissionCapability.FILESYSTEM_ACCESS,
+                source=PermissionSource.SESSION_GRANT,
+                roots=(path,),
+            )
+        # The grant is on the containing directory, so approving one file also
+        # covers its siblings for the rest of the session.
+        return self._authorize_filesystem(
+            PermissionRequest(
+                capability=PermissionCapability.FILESYSTEM_ACCESS,
+                justification=f"Write to {path} outside the Workspace.",
+                tool_call=ToolCall(
+                    id="filesystem-access",
+                    name="write_file",
+                    arguments={"path": str(path)},
+                ),
+                paths=(str(path.parent),),
+            )
+        )
 
     def _authorize_filesystem(self, request: PermissionRequest) -> PermissionResult:
         capability = PermissionCapability.FILESYSTEM_ACCESS
@@ -347,6 +444,11 @@ def _shell_justification(tool_call: ToolCall) -> str:
         f"{detail} on this machine as your user. A local shell is not sandboxed: "
         "it can reach the network and any file you can."
     )
+
+
+def is_within_granted(path: Path, roots: set[Path]) -> bool:
+    """Whether ``path`` is already covered by an approved directory grant."""
+    return _covered_by(path, roots)
 
 
 def _covered_by(resolved: Path, roots: set[Path]) -> bool:

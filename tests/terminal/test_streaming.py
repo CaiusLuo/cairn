@@ -121,6 +121,7 @@ def test_public_cli_partial_fallback_labels_abandoned_text(
     monkeypatch.setattr(
         cli_module, "confirm_provider_access", lambda *args, **kwargs: True
     )
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     first = ProviderStream(
         provider_chunk(reasoning="ABANDONED_THOUGHT"),
         provider_chunk("ABANDONED"),

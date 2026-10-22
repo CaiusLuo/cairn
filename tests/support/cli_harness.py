@@ -160,6 +160,9 @@ def configure_cli(
         return completion_response(f"reply {len(state.requests)}")
 
     monkeypatch.setattr(cli_module, "confirm_provider_access", confirm_access)
+    # The started directory is trusted for these runs; the trust dialogue has its
+    # own test and a CLI test has no interactive terminal.
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     monkeypatch.setattr(cli_module, "build_agent", capture_agent)
     monkeypatch.setattr(
         cli_module, "SessionPermissionHandler", lambda **_kwargs: handler

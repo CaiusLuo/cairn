@@ -11,13 +11,17 @@ from cairn.core.memory.models import safe_path
 from cairn.core.models import ToolResult
 from cairn.infra.repo_graph.builder import RepoGraphBuilder
 from cairn.infra.repo_graph.models import BuildLimits, RelationshipStatus
-from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
+from cairn.infra.tools.base import (
+    InvalidArguments,
+    ToolExecutionContext,
+    WorkspaceOnlyTool,
+)
 from cairn.infra.workspace.workspace import Workspace
 
 GraphObserver = Callable[[tuple[str, ...], float, bool], None]
 
 
-class RepoGraphQueryTool:
+class RepoGraphQueryTool(WorkspaceOnlyTool):
     name = "repo_graph"
     description = (
         "Query current Python repository structure without shell execution. "

@@ -91,3 +91,17 @@ class Tool(Protocol):
         *,
         context: ToolExecutionContext | None = None,
     ) -> ToolResult: ...
+
+
+class WorkspaceOnlyTool:
+    """A tool that cannot leave the Workspace.
+
+    ``requested_capability`` is an optional member, not part of the ``Tool``
+    protocol: only a tool that can reach outside the Workspace reports one, and
+    the runtime asks for it defensively. This base class documents that intent
+    for the tools that opt in by inheriting it.
+    """
+
+    def requested_capability(self, arguments: dict[str, Any]) -> None:
+        """This tool asks for no capability beyond the workspace itself."""
+        return None

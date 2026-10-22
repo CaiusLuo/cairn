@@ -7,10 +7,14 @@ from typing import Any
 from cairn.core.models import ToolResult
 from cairn.infra.skills import SkillLibrary
 from cairn.infra.tools.arguments import function_schema, reject_unknown_keys
-from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
+from cairn.infra.tools.base import (
+    InvalidArguments,
+    ToolExecutionContext,
+    WorkspaceOnlyTool,
+)
 
 
-class ReadSkillTool:
+class ReadSkillTool(WorkspaceOnlyTool):
     """Return a skill body that the system message only advertises.
 
     Only the name and description travel with every request; the body arrives

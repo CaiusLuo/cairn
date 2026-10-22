@@ -198,3 +198,64 @@ def _contained_directory(
     if cache is not None:
         cache[directory] = result
     return result
+
+
+def resolve_tool_path(
+    root: Path,
+    raw: object,
+    *,
+    writable: bool,
+    granted_roots: frozenset[Path] = frozenset(),
+) -> tuple[Path, bool]:
+    """Resolve a file-tool path that may be inside or outside the Workspace.
+
+    Returns the resolved target and whether it lies outside the Workspace. A
+    path inside keeps the strict workspace rule. A path outside is allowed only
+    when it is absolute and does not pass through ``.git``; the caller decides
+    whether the requested access is permitted (read is allowed, write needs a
+    grant). Symlink components outside the Workspace are followed, because the
+    caller's grant is on the resolved directory.
+
+    ``writable`` names the intent so the error can say which access was refused;
+    this function does not enforce grants itself.
+
+    Raises:
+        ValueError: the path is malformed or cannot be a tool target.
+    """
+    if not isinstance(raw, str) or not raw:
+        raise ValueError("path must be a non-empty string")
+    if "\0" in raw:
+        raise ValueError("path must not contain NUL")
+
+    candidate = Path(raw)
+
+    if not candidate.is_absolute():
+        return resolve_workspace_path(root, raw), False
+
+    if _has_git_part(candidate.parts):
+        raise ValueError("path must stay outside .git")
+
+    try:
+        resolved = candidate.resolve(strict=False)
+    except (OSError, RuntimeError):
+        raise ValueError("path could not be resolved") from None
+
+    canonical_root = root.resolve()
+    if resolved.is_relative_to(canonical_root):
+        # An absolute path that lands inside the Workspace obeys the workspace
+        # rule, including its symlink and .git checks. Compare against the
+        # canonical root so a symlinked workspace path (e.g. /tmp on macOS) is
+        # still recognised as inside.
+        return resolve_workspace_path(
+            canonical_root, resolved.relative_to(canonical_root)
+        ), False
+
+    if _has_git_part(resolved.parts):
+        raise ValueError("path must stay outside .git")
+
+    return resolved, True
+
+
+def is_within(path: Path, roots: frozenset[Path]) -> bool:
+    """Whether ``path`` is one of ``roots`` or sits inside one of them."""
+    return any(path == root or root in path.parents for root in roots)

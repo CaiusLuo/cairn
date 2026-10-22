@@ -12,7 +12,7 @@ from uuid import UUID
 from cairn.core.budget import RunBudget
 from cairn.core.events import Event
 from cairn.core.models import Message, ToolCall
-from cairn.core.permissions import SessionPermissionHandler
+from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
 from cairn.infra.sessions.codec import (
     decode_record,
     encode_checkpoint,
@@ -158,8 +158,17 @@ class DurableSession(Session):
         self._pin_runtime()
 
     def _validate_permissions(self) -> None:
+        """Refuse to attach with authority carried over from an earlier session.
+
+        ``WORKSPACE_TRUST`` is not carried over: it is confirmed again at every
+        start, before any turn, so it is the baseline this session begins with
+        rather than a leftover grant.
+        """
         handler = self.agent.permission_handler
-        if isinstance(handler, SessionPermissionHandler) and handler.grants:
+        if not isinstance(handler, SessionPermissionHandler):
+            return
+        carried = handler.grants - {PermissionCapability.WORKSPACE_TRUST}
+        if carried:
             raise SessionAdmissionError("Durable attachment needs fresh permissions.")
 
     def _pin_runtime(self) -> None:

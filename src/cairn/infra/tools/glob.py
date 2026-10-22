@@ -5,7 +5,11 @@ from typing import Any
 
 from cairn.core.models import ToolResult
 from cairn.infra.tools.arguments import function_schema, reject_unknown_keys
-from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
+from cairn.infra.tools.base import (
+    InvalidArguments,
+    ToolExecutionContext,
+    WorkspaceOnlyTool,
+)
 from cairn.infra.workspace.paths import (
     contained_candidate,
     validate_workspace_pattern,
@@ -20,7 +24,7 @@ DEFAULT_LIMIT = 100
 MAX_SCAN_CANDIDATES = 50_000
 
 
-class GlobTool:
+class GlobTool(WorkspaceOnlyTool):
     name = "glob"
     description = (
         "Find workspace files whose paths match a glob pattern, such as "

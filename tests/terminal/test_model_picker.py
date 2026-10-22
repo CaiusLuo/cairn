@@ -238,7 +238,10 @@ def test_picker_in_real_cli_preserves_session_and_provider_boundary(
                 assert all(a is b for a, b in zip(before, after, strict=True))
                 assert agent.context_builder.budget is budget
                 assert agent.state.messages == history
-                assert state.handler.grants == {PermissionCapability.NETWORK}
+                assert state.handler.grants == {
+                    PermissionCapability.NETWORK,
+                    PermissionCapability.WORKSPACE_TRUST,
+                }
                 assert context.active_provider_name == "bailian"
                 assert state.resolved_keys == ["BAILIAN_API_KEY"]
                 assert state.approvals == [("bailian", "flash", False)]

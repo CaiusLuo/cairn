@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from cairn.core.models import ToolResult
+from cairn.core.permissions import AccessKind, CapabilityRequest
 from cairn.infra.tools.arguments import (
+    access_request,
     function_schema,
     reject_unknown_keys,
-    workspace_path,
+    tool_path,
 )
 from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
 from cairn.infra.workspace.workspace import Workspace
@@ -39,6 +41,14 @@ def _read_current_content(path: Path) -> str | None:
         return data.decode("utf-8")
     except UnicodeDecodeError:
         return None
+
+
+def _display_path(root: Path, path: Path) -> str:
+    """A workspace-relative path when possible, otherwise the absolute target."""
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return str(path)
 
 
 class WriteTool:
@@ -85,13 +95,20 @@ class WriteTool:
             },
         )
 
+    def requested_capability(
+        self, arguments: dict[str, Any]
+    ) -> "CapabilityRequest | None":
+        return access_request(self.workspace, arguments, access=AccessKind.WRITE)
+
     def validate(self, arguments: dict[str, Any]) -> None:
         reject_unknown_keys(
             arguments,
             {"path", "content", "expected_content"},
             tool_label="write_file",
         )
-        path = workspace_path(self.workspace, arguments)
+        path = tool_path(
+            self.workspace, arguments, access=AccessKind.WRITE, enforce_grant=False
+        )
 
         content = arguments.get("content")
         if not isinstance(content, str):
@@ -128,7 +145,13 @@ class WriteTool:
         context: ToolExecutionContext | None = None,
     ) -> ToolResult:
         self.validate(arguments)
-        path = self.workspace.resolve_path(arguments["path"])
+        granted = context.accessible_roots if context is not None else ()
+        path = tool_path(
+            self.workspace,
+            arguments,
+            access=AccessKind.WRITE,
+            granted_roots=frozenset(granted),
+        )
         content = arguments["content"]
 
         existed = path.exists()
@@ -152,6 +175,6 @@ class WriteTool:
 
         action = "Replaced" if existed else "Created"
         return ToolResult(
-            stdout=f"{action} {path.relative_to(self.workspace.root).as_posix()}",
+            stdout=f"{action} {_display_path(self.workspace.root, path)}",
             exit_code=0,
         )

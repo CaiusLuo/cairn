@@ -194,10 +194,28 @@ def test_parent_traversal_is_rejected_without_effect(
 
 
 @pytest.mark.parametrize("spec", PATH_TOOLS, ids=_ids(PATH_TOOLS))
-def test_absolute_path_is_rejected(spec: ToolSpec, workspace_root: Path) -> None:
+def test_absolute_outside_path_is_a_tool_target_not_a_preflight_rejection(
+    spec: ToolSpec, workspace_root: Path
+) -> None:
+    """An absolute path outside the Workspace is resolved, not refused outright.
+
+    Reading outside the Workspace is allowed; a write is refused later because
+    no grant covers it. Either way the path is a legitimate target, so preflight
+    no longer rejects it as malformed.
+    """
     outside = workspace_root.parent / "outside.txt"
 
-    _rejected(spec, workspace_root, spec.arguments() | {"path": str(outside)})
+    tool = spec.build(Workspace(workspace_root))
+    arguments = spec.arguments() | {"path": str(outside)}
+
+    # Preflight only checks that the path is a well-formed target. Whether the
+    # access is permitted is decided at execution time: a read is allowed, a
+    # write needs a grant the session has not approved here.
+    tool.validate(arguments)
+
+    if tool.requested_capability(arguments) is not None:
+        with pytest.raises(InvalidArguments, match="requires approval"):
+            asyncio.run(tool.execute(arguments))
 
     assert outside.read_text(encoding="utf-8") == "private"
 

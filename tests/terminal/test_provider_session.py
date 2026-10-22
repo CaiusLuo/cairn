@@ -442,7 +442,10 @@ def test_switch_to_the_active_provider_is_a_noop(
     assert result.exit_code == 0, result.output
     assert state.approvals == [("bailian", "flash", False)]
     assert state.resolved_keys == ["BAILIAN_API_KEY"]
-    assert handler.grants == {PermissionCapability.NETWORK}
+    assert handler.grants == {
+        PermissionCapability.NETWORK,
+        PermissionCapability.WORKSPACE_TRUST,
+    }
     assert observed[0][1] is observed[0][1]
     assert state.contexts[0].active_provider_name == "bailian"
     assert "Current provider: bailian" in result.output
@@ -471,7 +474,10 @@ def test_denied_switch_keeps_the_old_provider_fully_usable(
     assert result.exit_code == 0, result.output
     assert "Provider 'local' was not approved for this session." in result.output
     assert state.resolved_keys == ["BAILIAN_API_KEY"]
-    assert handler.grants == {PermissionCapability.NETWORK}
+    assert handler.grants == {
+        PermissionCapability.NETWORK,
+        PermissionCapability.WORKSPACE_TRUST,
+    }
     assert state.contexts[0].active_provider_name == "bailian"
     assert state.requests[0]["api_base"] == "https://bailian.test/v1"
     assert observed[0][4] == "bailian"
@@ -492,7 +498,10 @@ def test_missing_target_credential_keeps_the_old_provider_usable(
     assert result.exit_code == 0, result.output
     assert "LOCAL_API_KEY environment variable is not set" in result.output
     assert state.resolved_keys == ["BAILIAN_API_KEY", "LOCAL_API_KEY"]
-    assert handler.grants == {PermissionCapability.NETWORK}
+    assert handler.grants == {
+        PermissionCapability.NETWORK,
+        PermissionCapability.WORKSPACE_TRUST,
+    }
     assert state.contexts[0].active_provider_name == "bailian"
     assert observed[0][1].api_base == "https://bailian.test/v1"
     assert state.requests[0]["api_key"] == BAILIAN_CREDENTIAL
@@ -521,7 +530,10 @@ def test_failed_runtime_construction_rolls_back_the_switch(
     assert result.exit_code == 0, result.output
     assert "could not be activated (RuntimeError)" in result.output
     assert "current provider is unchanged" in result.output
-    assert handler.grants == {PermissionCapability.NETWORK}
+    assert handler.grants == {
+        PermissionCapability.NETWORK,
+        PermissionCapability.WORKSPACE_TRUST,
+    }
     assert state.contexts[0].active_provider_name == "bailian"
     assert observed[0][1].api_base == "https://bailian.test/v1"
     assert observed[0][4] == "bailian"

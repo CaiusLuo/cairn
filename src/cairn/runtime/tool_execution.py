@@ -51,12 +51,15 @@ import asyncio
 import json
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 from cairn.core.events import Event
 from cairn.core.models import ToolCall, ToolFailure
 from cairn.core.permissions import (
+    AccessKind,
     PermissionCapability,
     PermissionDecision,
+    PermissionRequest,
     PermissionResult,
     PermissionSource,
     evaluate_permission_policy,
@@ -64,6 +67,7 @@ from cairn.core.permissions import (
 from cairn.infra.observability.models import Span, SpanStatus
 from cairn.infra.tools.base import (
     InvalidArguments,
+    Tool,
     ToolExecutionContext,
     ToolExecutionFailure,
     ToolFailureKind,
@@ -87,6 +91,52 @@ def _ask_for_approval(agent: Agent, tool_call: ToolCall) -> PermissionResult:
         )
 
     return agent.permission_handler(tool_call)
+
+
+def _tool_access_request(tool: Tool, tool_call: ToolCall) -> PermissionRequest | None:
+    """The filesystem request a validated file tool reports, if any.
+
+    A tool that can reach outside the Workspace reports the capability it needs
+    from its own arguments. A broken report never widens authority: it degrades
+    to ``None`` and the tool then refuses the path itself.
+    """
+    report = getattr(tool, "requested_capability", None)
+    if not callable(report):
+        return None
+    try:
+        request = report(tool_call.arguments)
+    except Exception:
+        return None
+    if request is None:
+        return None
+    return PermissionRequest(
+        capability=request.capability,
+        justification=request.justification,
+        tool_call=tool_call,
+        paths=request.paths,
+    )
+
+
+def _file_tool_decision(
+    agent: Agent, request: PermissionRequest
+) -> PermissionResult | None:
+    """Route a file tool's request to the handler's path-aware decision.
+
+    Only a handler that owns workspace and grant state can answer it; any other
+    handler is left to the ordinary capability path.
+    """
+    handler = agent.permission_handler
+    decide = getattr(handler, "access_decision", None)
+    if not callable(decide):
+        return None
+    return cast(
+        PermissionResult,
+        decide(
+            outside=True,
+            access=AccessKind.WRITE,
+            path=Path(request.paths[0]),
+        ),
+    )
 
 
 def _permission_failure(permission: PermissionResult) -> ToolFailure:
@@ -187,6 +237,7 @@ def _check_tool_permission(
     agent: Agent,
     tool_call: ToolCall,
     turn_span: Span | None,
+    tool: Tool | None = None,
 ) -> PermissionResult:
     # A span exists only when a tracer does, so one local binding is enough.
     tracer = agent.tracer
@@ -208,7 +259,17 @@ def _check_tool_permission(
         # so a permissive handler can never re-authorize a policy denial.
         permission = evaluate_permission_policy(tool_call)
         if permission.policy_decision is PermissionDecision.ASK:
-            permission = _ask_for_approval(agent, tool_call)
+            # A file tool that reaches outside the Workspace reports the write it
+            # needs; the handler decides that path, not the tool name.
+            request = (
+                _tool_access_request(tool, tool_call) if tool is not None else None
+            )
+            decided = (
+                _file_tool_decision(agent, request) if request is not None else None
+            )
+            permission = (
+                decided if decided is not None else _ask_for_approval(agent, tool_call)
+            )
 
         if permission_span is not None and tracer is not None:
             permission_span.attributes.update(
@@ -279,7 +340,7 @@ async def execute_tool_call(
         )
         return
 
-    permission = _check_tool_permission(agent, tool_call, turn_span)
+    permission = _check_tool_permission(agent, tool_call, turn_span, tool)
 
     if permission.policy_decision is PermissionDecision.DENY or not permission.allowed:
         failure = _permission_failure(permission)

@@ -28,7 +28,11 @@ from pathlib import Path
 from typing import Any
 
 from cairn.core.models import ToolResult
-from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
+from cairn.infra.tools.base import (
+    InvalidArguments,
+    ToolExecutionContext,
+    WorkspaceOnlyTool,
+)
 from cairn.infra.tools.capture import read_bounded
 from cairn.infra.tools.credential_env import SECRET_ENV_KEYS
 from cairn.infra.workspace.workspace import Workspace
@@ -98,7 +102,7 @@ def workspace_python(workspace_root: Path | None = None) -> str:
     return sys.executable if sys.executable else ""
 
 
-class BashTool:
+class BashTool(WorkspaceOnlyTool):
     name = "bash"
     description = (
         "Execute a shell command on this machine. Commands start at the workspace "

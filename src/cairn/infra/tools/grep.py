@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from cairn.core.models import ToolResult
+from cairn.core.permissions import AccessKind, CapabilityRequest
 from cairn.infra.tools.arguments import (
+    access_request,
     function_schema,
     reject_unknown_keys,
-    workspace_path,
+    tool_path,
 )
 from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
 from cairn.infra.workspace.paths import contained_candidate
@@ -38,6 +40,11 @@ class GrepTool:
 
     def __init__(self, workspace: Workspace) -> None:
         self.workspace = workspace
+
+    def requested_capability(
+        self, arguments: dict[str, Any]
+    ) -> "CapabilityRequest | None":
+        return access_request(self.workspace, arguments, access=AccessKind.READ)
 
     def schema(self) -> dict[str, Any]:
         return function_schema(
@@ -134,7 +141,7 @@ class GrepTool:
             raise InvalidArguments("pattern must not contain NUL")
 
         if arguments.get("path") is not None:
-            workspace_path(self.workspace, arguments)
+            tool_path(self.workspace, arguments, access=AccessKind.READ)
 
         include = arguments.get("include")
         if include is not None and (
@@ -201,7 +208,7 @@ class GrepTool:
         root = self.workspace.root
 
         if raw_path is not None:
-            base = self.workspace.resolve_path(raw_path)
+            base = tool_path(self.workspace, {"path": raw_path}, access=AccessKind.READ)
             if base.is_file():
                 candidates = [base]
             elif base.is_dir():

@@ -10,7 +10,7 @@ from dotenv import dotenv_values
 from cairn.core.budget import RunBudget, RunBudgetExceeded
 from cairn.core.context import ContextBudget
 from cairn.core.events import Event, EventHandler
-from cairn.core.permissions import SessionPermissionHandler
+from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
 from cairn.core.provider_catalog import ProviderCatalog
 from cairn.infra.config import (
     CAIRN_MAX_STEPS_ENV_NAME,
@@ -54,6 +54,7 @@ from cairn.terminal.input import CliInput
 from cairn.terminal.output import (
     StreamingDisplay,
     confirm_provider_access,
+    confirm_workspace_trust,
     console_event_handler,
     console_permission_prompt,
     print_assistant_response,
@@ -387,6 +388,16 @@ async def main(
         home=Path.home(),
         root_normalizer=normalize_access_root,
     )
+    # A local Cairn edits the directory it was started in, so that directory is
+    # trusted explicitly before the first turn. The `.env` layout keeps its
+    # existing no-dialogue behaviour; denial or no interactive terminal stops
+    # here rather than starting a session it cannot use.
+    if project.layout is ConfigLayout.ENV:
+        permission_handler.grants.add(PermissionCapability.WORKSPACE_TRUST)
+    else:
+        if confirm_workspace_trust(workspace.root) is not True:
+            raise ValueError("Workspace access was not approved for this session.")
+        permission_handler.grants.add(PermissionCapability.WORKSPACE_TRUST)
     # The .env layout declares no catalog; its implicit provider is the only one.
     catalog = ProviderCatalog(providers=project.providers or (active_runtime.provider,))
     # Every configured credential variable is withheld from Bash children,

@@ -12,10 +12,12 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from cairn.core.models import ToolResult
+from cairn.core.permissions import AccessKind, CapabilityRequest
 from cairn.infra.tools.arguments import (
+    access_request,
     function_schema,
     reject_unknown_keys,
-    workspace_path,
+    tool_path,
 )
 from cairn.infra.tools.base import (
     InvalidArguments,
@@ -265,13 +267,18 @@ class ReadFileTool:
             },
         )
 
+    def requested_capability(
+        self, arguments: dict[str, Any]
+    ) -> "CapabilityRequest | None":
+        return access_request(self.workspace, arguments, access=AccessKind.READ)
+
     def validate(self, arguments: dict[str, Any]) -> None:
         reject_unknown_keys(
             arguments,
             {"path", "start_line", "end_line"},
             tool_label="file tool",
         )
-        workspace_path(self.workspace, arguments)
+        tool_path(self.workspace, arguments, access=AccessKind.READ)
         start = arguments.get("start_line", 1)
         end = arguments.get("end_line", start + 199 if isinstance(start, int) else 0)
         if (
@@ -320,7 +327,7 @@ class ReadFileTool:
 
     def _read_once(self, arguments: dict[str, Any], *, deadline: float) -> ToolResult:
         self._check_deadline(deadline)
-        path = self.workspace.resolve_path(arguments["path"])
+        path = tool_path(self.workspace, arguments, access=AccessKind.READ)
         start = arguments.get("start_line", 1)
         end = arguments.get("end_line", start + 199)
         is_file = path.is_file()
@@ -394,6 +401,11 @@ class EditFileTool:
     def __init__(self, workspace: Workspace) -> None:
         self.workspace = workspace
 
+    def requested_capability(
+        self, arguments: dict[str, Any]
+    ) -> "CapabilityRequest | None":
+        return access_request(self.workspace, arguments, access=AccessKind.WRITE)
+
     def schema(self) -> dict[str, Any]:
         return function_schema(
             self.name,
@@ -427,7 +439,9 @@ class EditFileTool:
             {"path", "old_text", "new_text", "replace_all"},
             tool_label="file tool",
         )
-        workspace_path(self.workspace, arguments)
+        tool_path(
+            self.workspace, arguments, access=AccessKind.WRITE, enforce_grant=False
+        )
         if not isinstance(arguments.get("old_text"), str) or not isinstance(
             arguments.get("new_text"), str
         ):
@@ -442,7 +456,13 @@ class EditFileTool:
         context: ToolExecutionContext | None = None,
     ) -> ToolResult:
         self.validate(arguments)
-        path = self.workspace.resolve_path(arguments["path"])
+        granted = context.accessible_roots if context is not None else ()
+        path = tool_path(
+            self.workspace,
+            arguments,
+            access=AccessKind.WRITE,
+            granted_roots=frozenset(granted),
+        )
         old_text = arguments["old_text"]
         new_text = arguments["new_text"]
         replace_all = arguments.get("replace_all", False)
