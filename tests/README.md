@@ -9,7 +9,7 @@ Tests follow Cairn's package ownership:
 | `infra/` | Configuration, Git and GitHub adapters, LLM clients, tools, workspace, traces, memory storage, and repository graphs |
 | `terminal/` | CLI startup, provider and model selection, input handling, commands, and rendered output |
 | `docs/` | Documentation navigation: relative links, referenced source paths, and documented test commands |
-| `support/` | Shared deterministic runtime doubles, Git helpers, and native sandbox readiness helpers |
+| `support/` | Shared deterministic runtime doubles, Git helpers, and local-shell readiness helpers |
 
 Prefer tests that exercise observable behavior through the public interface.
 Keep explicit coverage of authority, path boundaries, bounded resource use,

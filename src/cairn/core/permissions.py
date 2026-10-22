@@ -9,8 +9,8 @@ Three questions are deliberately kept apart:
 
 The policy below therefore never asks whether a tool is registered and never
 inspects whether arguments are well formed. It decides intent guardrails only;
-the sandbox enforces authority, and approval can expand authority by one
-capability at a time.
+a tool's own implementation enforces what it can, and approval is what grants a
+capability the tool would otherwise refuse.
 
 Cairn is local-first, so a shell command runs as the invoking user with no OS
 sandbox. ``LOCAL_SHELL`` is therefore a host-level capability: running any
@@ -129,8 +129,8 @@ def evaluate_permission_policy(tool_call: ToolCall) -> PermissionResult:
     """Pure baseline policy: intent guardrails only.
 
     * the sudo guardrail is hard denied before execution;
-    * a ``bash`` call asks for ``LOCAL_SHELL``, because a local command is a
-      host-level action with no sandbox behind it;
+    * a ``bash`` call is an ASK, because a local command is a host-level action
+      with no sandbox behind it (the handler names the ``LOCAL_SHELL`` capability);
     * every other call is an ordinary tool operation.
 
     A file tool that needs something outside the workspace reports its own
@@ -231,11 +231,11 @@ class SessionPermissionHandler:
         before using a network transport or mounting a filesystem root.
         """
         capability = request.capability
-        # StrEnum equality also accepts strings; only the actual capability
-        # member authorizes, including when model validation was bypassed.
-        if capability in (
-            PermissionCapability.NETWORK,
-            PermissionCapability.LOCAL_SHELL,
+        # StrEnum equality also matches a plain string or a foreign StrEnum with
+        # the same value, so every branch compares identity. A value that merely
+        # equals a member is not that member and cannot reuse a session grant.
+        if capability is PermissionCapability.NETWORK or (
+            capability is PermissionCapability.LOCAL_SHELL
         ):
             if capability in self.grants:
                 return self._granted(capability, source=PermissionSource.SESSION_GRANT)

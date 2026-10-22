@@ -143,76 +143,37 @@ def check_sqlite(checks: list[Check], *, durable: bool) -> None:
         )
 
 
-def check_sandbox(checks: list[Check]) -> None:
-    tool_name = (
-        "/usr/bin/sandbox-exec"
-        if sys.platform == "darwin"
-        else "/usr/bin/bwrap"
-        if sys.platform == "linux"
-        else None
-    )
-    if tool_name is None:
-        _emit(
-            checks,
-            Check("bash-sandbox", BLOCKED, f"no sandbox for {sys.platform}"),
-        )
-        return
-    if not Path(tool_name).is_file():
-        _emit(checks, Check("bash-sandbox", BLOCKED, f"{tool_name} is not installed"))
-        return
+def check_local_shell(checks: list[Check]) -> None:
+    """Confirm a command actually runs from the Workspace on this host.
 
-    with tempfile.TemporaryDirectory(prefix="cairn-preflight-sandbox-") as root:
+    Cairn is local-first, so there is no isolation boundary to probe. What a
+    pilot still needs to know is that the shell works and starts where it should.
+    """
+    with tempfile.TemporaryDirectory(prefix="cairn-preflight-shell-") as root:
         workspace = Path(root) / "workspace"
         workspace.mkdir()
         tool = BashTool(Workspace(workspace))
-        result = asyncio.run(tool.execute({"command": "printf sandbox-ready"}))
-        marker = Path(root) / "escape-marker"
-        # An outside write must not reach the host. The tool's exit code is not
-        # part of the verdict (reason below), but the call has to run either way.
-        asyncio.run(tool.execute({"command": f"printf leaked > {marker}"}))
-        # Observe the result while the directory still exists: TemporaryDirectory
-        # deletes the marker on exit, so a later check would always look clean
-        # and could report PASS for a sandbox that actually let the write through.
-        escaped = marker.exists()
+        result = asyncio.run(tool.execute({"command": "pwd"}))
 
-    if result.exit_code != 0 or result.stdout != "sandbox-ready":
-        _emit(
-            checks,
-            Check("bash-sandbox", BLOCKED, result.stderr.strip() or "sandbox failed"),
-        )
-        return
-
-    # The decisive property is the host side: an outside write must leave no
-    # marker on the host. That is what the isolation boundary protects, and it is
-    # observed above while the temporary directory still exists.
-    #
-    # The command's own exit code is deliberately NOT part of the verdict. On
-    # Linux the sandbox mounts a private /tmp tmpfs and creates workspace parents
-    # with --dir, so a write outside the workspace can legitimately succeed inside
-    # that private view and exit 0 while the host never sees it. Requiring a
-    # nonzero exit there reported a healthy sandbox as BLOCKED. A real host write
-    # is still caught, because it always creates the host-side marker.
-    enforced = not escaped
+    ok = result.exit_code == 0 and result.stdout.strip() == str(workspace.resolve())
     _emit(
         checks,
         Check(
-            "bash-sandbox",
-            PASS if enforced else BLOCKED,
-            f"{tool_name} runs commands and leaves no write outside the workspace"
-            if enforced
-            else f"{tool_name} ran and a write landed outside the workspace",
+            "bash-shell",
+            PASS if ok else BLOCKED,
+            "a local command runs from the Workspace"
+            if ok
+            else (result.stderr.strip() or f"unexpected output: {result.stdout!r}"),
         ),
-    )
-    # Read isolation is a Linux property; macOS allows host reads by default.
-    read_detail = (
-        "writes are jailed and reads are limited by the mount namespace"
-        if sys.platform == "linux"
-        else "writes are jailed; host reads are allowed (macOS profile) - "
-        "not a confidentiality boundary"
     )
     _emit(
         checks,
-        Check("sandbox-read-boundary", PASS if enforced else BLOCKED, read_detail),
+        Check(
+            "bash-isolation",
+            PASS,
+            "not applicable: a local shell is not sandboxed and claims no "
+            "filesystem or network isolation",
+        ),
     )
 
 
@@ -500,7 +461,7 @@ def main(argv: list[str] | None = None) -> int:
     checks: list[Check] = []
     check_python(checks)
     check_sqlite(checks, durable=durable)
-    check_sandbox(checks)
+    check_local_shell(checks)
     check_cli(checks)
     check_state_dir(checks, state_dir)
     check_state_outside_workspace(checks, workspace, state_dir)
