@@ -16,6 +16,7 @@ as a silent PASS. See docs/guides/pilot-runbook.md for the operator procedure.
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -43,6 +44,7 @@ from cairn.infra.sessions.store import (
     wal_admission,
 )
 from cairn.infra.tools.bash import BashTool
+from cairn.infra.tools.sandbox import resolve_tmpdir, resolve_uv_cache_dir
 from cairn.infra.workspace.workspace import Workspace
 
 PASS = "PASS"
@@ -143,6 +145,29 @@ def check_sqlite(checks: list[Check], *, durable: bool) -> None:
         )
 
 
+def _probe_escape_dir(avoid: list[Path]) -> Path:
+    """First existing host directory outside every writable root.
+
+    The probe writes its marker here, so a write must be a genuine escape on both
+    platforms: never under the sandboxed workspace, and on macOS never under the
+    effective TMPDIR or uv cache (both deliberately writable there). The ordered
+    candidates are user-writable on a normal Unix host yet outside those roots.
+    """
+    resolved_avoid = [path.resolve() for path in avoid]
+    for name in ("/var/tmp", "/tmp", "/usr/local"):
+        candidate = Path(name)
+        try:
+            if not candidate.is_dir():
+                continue
+        except OSError:
+            continue
+        resolved = candidate.resolve()
+        if any(resolved == root or root in resolved.parents for root in resolved_avoid):
+            continue
+        return candidate
+    return Path.cwd().parent
+
+
 def check_sandbox(checks: list[Check]) -> None:
     tool_name = (
         "/usr/bin/sandbox-exec"
@@ -166,14 +191,33 @@ def check_sandbox(checks: list[Check]) -> None:
         workspace.mkdir()
         tool = BashTool(Workspace(workspace))
         result = asyncio.run(tool.execute({"command": "printf sandbox-ready"}))
-        marker = Path(root) / "escape-marker"
+        # The escape marker must sit in a directory the sandbox does NOT grant
+        # writes to. The macOS profile deliberately allows writes to the effective
+        # TMPDIR and the uv cache, and TemporaryDirectory lives under TMPDIR, so a
+        # marker there would let a healthy sandbox write it and be misreported as
+        # an escape. Probe an existing host directory outside every writable root.
+        avoid = [workspace]
+        if sys.platform == "darwin":
+            probe_tmpdir = resolve_tmpdir(os.environ)
+            if probe_tmpdir is not None:
+                avoid.append(probe_tmpdir)
+            probe_uv_cache = resolve_uv_cache_dir(os.environ)
+            if probe_uv_cache is not None:
+                avoid.append(probe_uv_cache)
+        marker = _probe_escape_dir(avoid) / (
+            f".cairn-preflight-escape-{os.getpid()}-{os.urandom(4).hex()}"
+        )
+        with contextlib.suppress(FileNotFoundError):
+            marker.unlink()
         # An outside write must not reach the host. The tool's exit code is not
         # part of the verdict (reason below), but the call has to run either way.
         asyncio.run(tool.execute({"command": f"printf leaked > {marker}"}))
-        # Observe the result while the directory still exists: TemporaryDirectory
-        # deletes the marker on exit, so a later check would always look clean
-        # and could report PASS for a sandbox that actually let the write through.
+        # Observe the result before any cleanup: a later check would always look
+        # clean and could report PASS for a sandbox that actually let the write
+        # through.
         escaped = marker.exists()
+        with contextlib.suppress(FileNotFoundError):
+            marker.unlink()
 
     if result.exit_code != 0 or result.stdout != "sandbox-ready":
         _emit(

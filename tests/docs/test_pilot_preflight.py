@@ -207,6 +207,55 @@ def test_a_refusing_sandbox_is_reported_as_pass(
     assert _status(checks, "bash-sandbox") == preflight.PASS
 
 
+def test_a_macos_sandbox_that_allows_tmpdir_but_denies_outside_writes_is_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A healthy macOS sandbox must not be mistaken for an escape.
+
+    The macOS profile deliberately allows writes to the effective TMPDIR and the
+    uv cache, and the preflight's own TemporaryDirectory lives under TMPDIR. A
+    probe that dropped its escape marker there would let the (legitimate) TMPDIR
+    allowance create it and report the sandbox BLOCKED. The marker must be probed
+    outside every writable root, so this fake models the real profile: writes
+    under the host temp directory succeed, writes anywhere else are refused.
+    """
+    import tempfile
+
+    from cairn.core.models import ToolResult
+
+    temp_root = Path(tempfile.gettempdir()).resolve()
+
+    class MacOSSemanticsBashTool:
+        def __init__(self, _workspace: object) -> None:
+            pass
+
+        async def execute(self, arguments: dict[str, object]) -> ToolResult:
+            command = str(arguments["command"])
+            if ">" not in command:
+                return ToolResult(stdout="sandbox-ready", stderr="", exit_code=0)
+            target = Path(command.rsplit(">", 1)[1].strip())
+            try:
+                target.resolve().relative_to(temp_root)
+            except ValueError:
+                # Outside the writable roots: the real profile denies it.
+                return ToolResult(
+                    stdout="", stderr="operation not permitted", exit_code=1
+                )
+            # Inside TMPDIR (a legitimate writable root): the write lands.
+            target.write_text("leaked", encoding="utf-8")
+            return ToolResult(stdout="", stderr="", exit_code=0)
+
+    monkeypatch.setattr(preflight, "BashTool", MacOSSemanticsBashTool)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(Path, "is_file", lambda self: True)
+
+    checks: list[preflight.Check] = []
+    preflight.check_sandbox(checks)
+
+    assert _status(checks, "bash-sandbox") == preflight.PASS
+    assert _status(checks, "sandbox-read-boundary") == preflight.PASS
+
+
 def test_stateless_never_constructs_a_session_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
