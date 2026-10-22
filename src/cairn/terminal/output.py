@@ -968,6 +968,11 @@ def console_permission_prompt(request: PermissionRequest) -> PermissionChoice:
     if isinstance(command, str):
         console.print(f"Command: {command}", markup=False)
 
+    # A filesystem request names the exact directories it would expose, so the
+    # operator approves a concrete path set rather than an abstract capability.
+    for path in request.paths:
+        console.print(f"Path: {path}", markup=False)
+
     console.print(f"Reason: {request.justification}\n", markup=False)
     console.print(
         "[1] Allow once\n"

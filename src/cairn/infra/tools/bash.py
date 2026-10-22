@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from cairn.core.models import ToolResult
+from cairn.core.permissions import CapabilityRequest, PermissionCapability
 from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
 from cairn.infra.tools.capture import read_bounded
 from cairn.infra.tools.credential_env import SECRET_ENV_KEYS
@@ -323,8 +324,9 @@ def _macos_sandbox_profile(
     writable_tmpdir: Path | None,
     writable_uv_cache: Path | None,
     network_access: bool = False,
+    extra_writable_roots: tuple[Path, ...] = (),
 ) -> str:
-    writable_roots = [cwd]
+    writable_roots = [cwd, *extra_writable_roots]
     for root in (writable_tmpdir, writable_uv_cache):
         if root is not None:
             writable_roots.append(root)
@@ -344,6 +346,29 @@ def _macos_sandbox_profile(
     )
 
 
+def _filesystem_mounts(roots: tuple[Path, ...]) -> tuple[str, ...]:
+    """bubblewrap mounts that expose each approved root read-write in one namespace.
+
+    The Linux sandbox starts from an empty mount namespace, so a granted root is
+    useless unless its ancestors exist as directories and the root itself is
+    bound. Ancestors are created first (``--dir``); a root already created by an
+    earlier mount is a harmless duplicate. Roots are deduplicated and ordered so
+    a parent mount is never shadowed by a later child bind, and Git metadata
+    inside a granted root is re-mounted read-only afterwards.
+    """
+    ordered = sorted(set(roots), key=lambda path: (len(path.parts), str(path)))
+    argv: list[str] = []
+    for root in ordered:
+        for parent in reversed(root.parents):
+            if parent != Path("/"):
+                argv.extend(("--dir", str(parent)))
+        argv.extend(("--bind", str(root), str(root)))
+    for root in ordered:
+        for metadata in _git_metadata_paths(root):
+            argv.extend(("--ro-bind", str(metadata), str(metadata)))
+    return tuple(argv)
+
+
 class BashTool:
     name = "bash"
     description = (
@@ -352,7 +377,9 @@ class BashTool:
         "subdirectory. Preserve command failure status when running verification commands. "
         "Network is denied by default. Set network_access=true only when the command "
         "requires network and provide a concise justification; do not request network "
-        "preemptively for local commands."
+        "preemptively for local commands. To read or write a directory outside the "
+        "workspace, pass extra_writable_roots with its absolute path and a justification; "
+        "the user must approve before the directory is exposed."
     )
 
     def __init__(
@@ -397,11 +424,22 @@ class BashTool:
                                 "justification."
                             ),
                         },
+                        "extra_writable_roots": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Absolute directories outside the workspace this "
+                                "command needs to read and write. Each requires "
+                                "user approval and a justification; granting a "
+                                "directory also exposes its subtree."
+                            ),
+                        },
                         "justification": {
                             "type": "string",
                             "description": (
-                                "Why this command needs network access. Required "
-                                "when network_access is true; shown to the user."
+                                "Why this command needs network access or extra "
+                                "writable roots. Required when either is "
+                                "requested; shown to the user."
                             ),
                         },
                     },
@@ -423,7 +461,12 @@ class BashTool:
         if not isinstance(command, str) or not command.strip() or "\0" in command:
             raise InvalidArguments("command must be a non-empty string without NUL")
 
-        unexpected = arguments.keys() - {"command", "network_access", "justification"}
+        unexpected = arguments.keys() - {
+            "command",
+            "network_access",
+            "extra_writable_roots",
+            "justification",
+        }
         if unexpected:
             raise InvalidArguments(
                 f"unexpected bash command argument: {sorted(unexpected)}"
@@ -433,12 +476,50 @@ class BashTool:
         if not isinstance(network_access, bool):
             raise InvalidArguments("network_access must be a boolean")
 
+        extra_roots = arguments.get("extra_writable_roots", [])
+        if not isinstance(extra_roots, list):
+            raise InvalidArguments("extra_writable_roots must be an array of strings")
+        if any(not isinstance(root, str) or not root.strip() for root in extra_roots):
+            raise InvalidArguments(
+                "extra_writable_roots must be absolute directory paths"
+            )
+        if network_access and extra_roots:
+            raise InvalidArguments(
+                "request network_access or extra_writable_roots, not both in one call"
+            )
+
         justification = arguments.get("justification", "")
         if not isinstance(justification, str):
             raise InvalidArguments("justification must be a string")
 
-        if network_access and not justification.strip():
-            raise InvalidArguments("network_access requires a non-empty justification")
+        if (network_access or extra_roots) and not justification.strip():
+            raise InvalidArguments(
+                "network_access or extra_writable_roots requires a justification"
+            )
+
+    def requested_capability(
+        self, arguments: dict[str, Any]
+    ) -> CapabilityRequest | None:
+        """Report the bash capability this validated call needs.
+
+        Network and filesystem requests are mutually exclusive per call so the
+        approval prompt names exactly one capability. ``validate`` rejects an
+        unapproved shape; this only reports the capability the call asked for.
+        """
+        justification = arguments.get("justification", "")
+        roots = arguments.get("extra_writable_roots") or []
+        if roots:
+            return CapabilityRequest(
+                capability=PermissionCapability.FILESYSTEM_ACCESS,
+                paths=tuple(roots),
+                justification=justification,
+            )
+        if arguments.get("network_access") is True:
+            return CapabilityRequest(
+                capability=PermissionCapability.NETWORK,
+                justification=justification,
+            )
+        return None
 
     async def _collect_output(
         self, process: asyncio.subprocess.Process
@@ -498,6 +579,11 @@ class BashTool:
         self.validate(arguments)
         command = arguments["command"]
         network_access = context is not None and context.network_access
+        # Granted filesystem roots come only from the approval context, never
+        # from the model-provided arguments.
+        extra_roots: tuple[Path, ...] = (
+            context.accessible_roots if context is not None else ()
+        )
 
         cwd = self.workspace.root
         env = build_command_env(os.environ, self.secret_env_keys)
@@ -513,6 +599,7 @@ class BashTool:
                 resolve_tmpdir(env),
                 resolve_uv_cache_dir(env),
                 network_access=network_access,
+                extra_writable_roots=extra_roots,
             )
             argv = ["/usr/bin/sandbox-exec", "-p", profile, *command_argv]
         elif sys.platform == "linux":
@@ -560,6 +647,11 @@ class BashTool:
             # read-only mount shadows the earlier writable one.
             for metadata in _git_metadata_paths(cwd):
                 argv.extend(("--ro-bind", str(metadata), str(metadata)))
+            # Approved roots outside the workspace are bound read-write here,
+            # after the workspace and interpreter mounts, so a granted directory
+            # (e.g. a data or temp directory) becomes visible and writable while
+            # everything else outside the mounts stays absent.
+            argv.extend(_filesystem_mounts(extra_roots))
             argv.extend(command_argv)
         else:
             raise RuntimeError(f"BashTool has no sandbox for {sys.platform}")

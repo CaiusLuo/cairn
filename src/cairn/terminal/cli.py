@@ -380,7 +380,11 @@ async def main(
     trace_root = Path(".cairn/traces")
     tracer = Tracer(JsonlTraceSink(trace_root))
     command_context = CommandContext(trace_store=TraceStore(trace_root))
-    permission_handler = SessionPermissionHandler(prompt=console_permission_prompt)
+    permission_handler = SessionPermissionHandler(
+        prompt=console_permission_prompt,
+        workspace_root=workspace.root,
+        home=Path.home(),
+    )
     # The .env layout declares no catalog; its implicit provider is the only one.
     catalog = ProviderCatalog(providers=project.providers or (active_runtime.provider,))
     # Every configured credential variable is withheld from Bash children,

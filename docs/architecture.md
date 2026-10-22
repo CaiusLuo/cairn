@@ -237,9 +237,12 @@ task/turn lifecycle.
   `exit_code`). Non-shell tools must fit it, and a richer structured result has no
   core representation yet. Changing this touches every tool and is deferred until
   a tool actually needs it.
-- `core.permissions` knows the `bash` tool name and its argument keys. This is a
-  deliberate, narrow guardrail that runs after the tool validates its arguments,
-  so the coupling is documented rather than removed.
+- `core.permissions` knows the `bash` tool name and the argument keys that request
+  a capability (`network_access`, `extra_writable_roots`), and owns the filesystem
+  path rule a `filesystem_access` grant must satisfy. This is a deliberate, narrow
+  guardrail that runs after the tool validates its arguments, so the coupling is
+  documented rather than removed. A tool that reaches outside the workspace can
+  instead report its own request through `Tool.requested_capability`.
 - `core.events.Event.data` is an untyped mapping rendered and consumed by string
   key. A typed payload per event would be a real improvement, but no consumer
   needs it yet.

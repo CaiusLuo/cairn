@@ -50,12 +50,16 @@ One call::
 import asyncio
 import json
 from collections.abc import Callable
+from pathlib import Path
+from typing import cast
 
 from cairn.core.events import Event
 from cairn.core.models import ToolCall, ToolFailure
 from cairn.core.permissions import (
+    CapabilityRequest,
     PermissionCapability,
     PermissionDecision,
+    PermissionRequest,
     PermissionResult,
     PermissionSource,
     evaluate_permission_policy,
@@ -63,6 +67,7 @@ from cairn.core.permissions import (
 from cairn.infra.observability.models import Span, SpanStatus
 from cairn.infra.tools.base import (
     InvalidArguments,
+    Tool,
     ToolExecutionContext,
     ToolExecutionFailure,
     ToolFailureKind,
@@ -71,17 +76,55 @@ from cairn.infra.tools.base import (
 from cairn.runtime.agent import Agent
 
 
-def _ask_for_approval(agent: Agent, tool_call: ToolCall) -> PermissionResult:
+def _tool_capability_request(
+    tool: Tool, tool_call: ToolCall
+) -> CapabilityRequest | None:
+    """Ask a validated tool which capability its arguments need.
+
+    Capability reporting is optional: a tool that cannot leave the sandbox does
+    not define it. A broken report must never widen authority, so any exception
+    degrades to "no capability" and the call stays in the fixed sandbox.
+    """
+    report = getattr(tool, "requested_capability", None)
+    if not callable(report):
+        return None
+    try:
+        return cast("CapabilityRequest | None", report(tool_call.arguments))
+    except Exception:
+        return None
+
+
+def _ask_for_approval(
+    agent: Agent,
+    tool_call: ToolCall,
+    request: CapabilityRequest | None,
+) -> PermissionResult:
     """Ask the approval handler for the requested capability.
 
     Without a handler the call fails closed: there is nobody who could grant the
-    authority the command asked for.
+    authority the command asked for. A handler that supports explicit
+    authorization receives the full request, including filesystem paths the core
+    policy cannot derive from the tool call arguments alone.
     """
     if agent.permission_handler is None:
         return PermissionResult(
             policy_decision=PermissionDecision.ASK,
             allowed=False,
             source=PermissionSource.NO_HANDLER,
+        )
+
+    authorize = getattr(agent.permission_handler, "authorize", None)
+    if request is not None and callable(authorize):
+        return cast(
+            PermissionResult,
+            authorize(
+                PermissionRequest(
+                    capability=request.capability,
+                    justification=request.justification,
+                    tool_call=tool_call,
+                    paths=request.paths,
+                )
+            ),
         )
 
     return agent.permission_handler(tool_call)
@@ -170,10 +213,22 @@ def _record_tool_error(
     )
 
 
+def _accessible_roots(permission: PermissionResult) -> tuple[Path, ...]:
+    """The filesystem roots a granted capability authorizes for this execution.
+
+    An empty tuple unless ``FILESYSTEM_ACCESS`` was actually granted, so a tool
+    never receives roots from a capability it did not get.
+    """
+    if PermissionCapability.FILESYSTEM_ACCESS not in permission.granted_capabilities:
+        return ()
+    return tuple(Path(root) for root in sorted(permission.granted_roots))
+
+
 def _check_tool_permission(
     agent: Agent,
     tool_call: ToolCall,
     turn_span: Span | None,
+    request: CapabilityRequest | None = None,
 ) -> PermissionResult:
     # A span exists only when a tracer does, so one local binding is enough.
     tracer = agent.tracer
@@ -193,9 +248,9 @@ def _check_tool_permission(
     try:
         # Pure policy first. Baseline ALLOW and hard DENY never reach a handler,
         # so a permissive handler can never re-authorize a policy denial.
-        permission = evaluate_permission_policy(tool_call)
+        permission = evaluate_permission_policy(tool_call, request)
         if permission.policy_decision is PermissionDecision.ASK:
-            permission = _ask_for_approval(agent, tool_call)
+            permission = _ask_for_approval(agent, tool_call, request)
 
         if permission_span is not None and tracer is not None:
             permission_span.attributes.update(
@@ -205,6 +260,7 @@ def _check_tool_permission(
                     "prompted": permission.prompted,
                     "source": permission.source.value,
                     "granted_capabilities": sorted(permission.granted_capabilities),
+                    "granted_roots": sorted(permission.granted_roots),
                 }
             )
     except Exception as exc:
@@ -265,7 +321,9 @@ async def execute_tool_call(
         )
         return
 
-    permission = _check_tool_permission(agent, tool_call, turn_span)
+    # Only a validated call may report a capability, and only after preflight.
+    request = _tool_capability_request(tool, tool_call)
+    permission = _check_tool_permission(agent, tool_call, turn_span, request)
 
     if permission.policy_decision is PermissionDecision.DENY or not permission.allowed:
         failure = _permission_failure(permission)
@@ -317,7 +375,8 @@ async def execute_tool_call(
                 network_access=(
                     tool_call.name == "bash"
                     and PermissionCapability.NETWORK in permission.granted_capabilities
-                )
+                ),
+                accessible_roots=_accessible_roots(permission),
             ),
         )
 

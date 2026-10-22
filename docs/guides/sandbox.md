@@ -192,6 +192,41 @@ host with no usable sandbox produces SKIP, which is not evidence of enforcement.
 uv run pytest -q tests/infra/tools/test_sandbox_git_boundaries.py -rs
 ```
 
+## Filesystem-access capability
+
+The workspace is the only directory a normal command can read or write. When a
+task needs a directory outside it — a scratch tree under `/tmp`, a data drop — the
+agent requests the `filesystem_access` capability instead of the sandbox being
+widened silently.
+
+- `bash` advertises `extra_writable_roots`: an array of absolute directories, with
+  a required `justification`. Requesting network access and extra roots in the same
+  call is rejected, so one approval always names one capability.
+- The tool reports the request from its own validated arguments
+  (`Tool.requested_capability`); the runtime turns it into a permission `ASK`. The
+  user sees every absolute path and the reason before approving.
+- Approval is scope-limited: a grant is a set of normalized, per-session
+  directories and is never written to disk. `allow once` covers that execution;
+  `allow for this session` also reuses the grant for later requests whose
+  directories fall inside an already-granted subtree.
+- A rejected path fails closed. Blocked outright: `/`, the system trees (`/usr`,
+  `/etc`, `/lib*`, `/bin`, `/sbin`, `/boot`, `/dev`, `/proc`, `/sys`), the user's
+  home, the workspace, and any directory that contains or sits inside one of these.
+  A granted path must resolve to an existing directory with no `.git` component.
+- Authority comes only from the approved grant, never from the model's arguments:
+  a command that names a root without an approved grant runs with that directory
+  absent.
+
+On Linux (`bwrap`) an approved root is bound read-write into the fresh mount
+namespace (`--dir` ancestors, then `--bind`), and any Git metadata inside it is
+re-mounted read-only. On macOS (`sandbox-exec`) the root joins the profile's
+writable set. Everything outside the workspace and the granted roots stays
+invisible (Linux) or read-only (macOS), exactly as without a grant.
+
+The boundary is exercised by `tests/runtime/test_filesystem_permissions.py` (the
+real grant path, a denied write, and that a bare argument never mounts a root) and
+`tests/core/test_filesystem_permissions.py` (path normalization and grant reuse).
+
 ## Related
 
 - [Offline coding task E2E](offline-coding-e2e.md) — end-to-end task acceptance
