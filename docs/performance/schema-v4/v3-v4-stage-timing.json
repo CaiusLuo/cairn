@@ -1,0 +1,179 @@
+{
+  "note": "Same script, same host, full production path (SessionStore.fence_tool). Stages nest; do not sum. V3 measured on a worktree of 5936435, V4 on the working tree.",
+  "v3": {
+    "schema_version": 3,
+    "repeats": 5,
+    "note": "intervals nest: prepare/write/commit/validate/codec are not additive",
+    "rows": [
+      {
+        "fences": 16,
+        "total_s": 0.1249,
+        "prepare_s": 0.0661,
+        "codec_s": 0.0219,
+        "validate_s": 0.0003,
+        "write_s": 0.0499,
+        "commit_s": 0.0284,
+        "total_max_s": 0.1286,
+        "total_min_s": 0.1216
+      },
+      {
+        "fences": 32,
+        "total_s": 0.304,
+        "prepare_s": 0.1761,
+        "codec_s": 0.0637,
+        "validate_s": 0.0012,
+        "write_s": 0.1071,
+        "commit_s": 0.0622,
+        "total_max_s": 0.3118,
+        "total_min_s": 0.2868
+      },
+      {
+        "fences": 64,
+        "total_s": 0.7542,
+        "prepare_s": 0.5066,
+        "codec_s": 0.1938,
+        "validate_s": 0.0038,
+        "write_s": 0.2123,
+        "commit_s": 0.1226,
+        "total_max_s": 0.7794,
+        "total_min_s": 0.7385
+      },
+      {
+        "fences": 128,
+        "total_s": 2.1478,
+        "prepare_s": 1.6486,
+        "codec_s": 0.671,
+        "validate_s": 0.0143,
+        "write_s": 0.4295,
+        "commit_s": 0.2483,
+        "total_max_s": 2.1915,
+        "total_min_s": 2.1327
+      },
+      {
+        "fences": 256,
+        "total_s": 7.1006,
+        "prepare_s": 5.9114,
+        "codec_s": 2.5021,
+        "validate_s": 0.0545,
+        "write_s": 1.0416,
+        "commit_s": 0.6612,
+        "total_max_s": 7.2206,
+        "total_min_s": 7.021
+      }
+    ]
+  },
+  "v4": {
+    "schema_version": 4,
+    "repeats": 5,
+    "note": "intervals nest: prepare/write/commit/validate/codec are not additive",
+    "rows": [
+      {
+        "fences": 16,
+        "total_s": 0.0727,
+        "prepare_s": 0.0,
+        "codec_s": 0.0122,
+        "validate_s": 0.0,
+        "write_s": 0.0643,
+        "commit_s": 0.0299,
+        "total_max_s": 0.0764,
+        "total_min_s": 0.0713
+      },
+      {
+        "fences": 32,
+        "total_s": 0.145,
+        "prepare_s": 0.0,
+        "codec_s": 0.0246,
+        "validate_s": 0.0,
+        "write_s": 0.128,
+        "commit_s": 0.0579,
+        "total_max_s": 0.1555,
+        "total_min_s": 0.1435
+      },
+      {
+        "fences": 64,
+        "total_s": 0.2949,
+        "prepare_s": 0.0,
+        "codec_s": 0.0487,
+        "validate_s": 0.0,
+        "write_s": 0.2609,
+        "commit_s": 0.1221,
+        "total_max_s": 0.3053,
+        "total_min_s": 0.2927
+      },
+      {
+        "fences": 128,
+        "total_s": 0.5982,
+        "prepare_s": 0.0,
+        "codec_s": 0.0996,
+        "validate_s": 0.0,
+        "write_s": 0.5303,
+        "commit_s": 0.2458,
+        "total_max_s": 0.6076,
+        "total_min_s": 0.594
+      },
+      {
+        "fences": 256,
+        "total_s": 1.2069,
+        "prepare_s": 0.0,
+        "codec_s": 0.1996,
+        "validate_s": 0.0,
+        "write_s": 1.0701,
+        "commit_s": 0.4955,
+        "total_max_s": 1.2352,
+        "total_min_s": 1.1851
+      }
+    ]
+  },
+  "comparison": [
+    {
+      "fences": 16,
+      "v3_total_s": 0.1249,
+      "v4_total_s": 0.0727,
+      "speedup": 1.72,
+      "v3_ms_per_fence": 7.81,
+      "v4_ms_per_fence": 4.54,
+      "v3_prepare_s": 0.0661,
+      "v4_prepare_s": 0.0
+    },
+    {
+      "fences": 32,
+      "v3_total_s": 0.304,
+      "v4_total_s": 0.145,
+      "speedup": 2.1,
+      "v3_ms_per_fence": 9.5,
+      "v4_ms_per_fence": 4.53,
+      "v3_prepare_s": 0.1761,
+      "v4_prepare_s": 0.0
+    },
+    {
+      "fences": 64,
+      "v3_total_s": 0.7542,
+      "v4_total_s": 0.2949,
+      "speedup": 2.56,
+      "v3_ms_per_fence": 11.78,
+      "v4_ms_per_fence": 4.61,
+      "v3_prepare_s": 0.5066,
+      "v4_prepare_s": 0.0
+    },
+    {
+      "fences": 128,
+      "v3_total_s": 2.1478,
+      "v4_total_s": 0.5982,
+      "speedup": 3.59,
+      "v3_ms_per_fence": 16.78,
+      "v4_ms_per_fence": 4.67,
+      "v3_prepare_s": 1.6486,
+      "v4_prepare_s": 0.0
+    },
+    {
+      "fences": 256,
+      "v3_total_s": 7.1006,
+      "v4_total_s": 1.2069,
+      "speedup": 5.88,
+      "v3_ms_per_fence": 27.74,
+      "v4_ms_per_fence": 4.71,
+      "v3_prepare_s": 5.9114,
+      "v4_prepare_s": 0.0
+    }
+  ]
+}

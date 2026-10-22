@@ -28,6 +28,7 @@ from cairn.core.provider_catalog import NamedProvider
 from cairn.infra.observability.models import Span
 from cairn.infra.observability.sinks import JsonlTraceSink
 from cairn.infra.sessions.models import (
+    SCHEMA_VERSION,
     RecoveryReport,
     SessionStoreError,
     ToolFence,
@@ -206,11 +207,11 @@ def test_default_is_stateless_and_commands_remain_available(harness: Harness) ->
     assert "session" in runner.invoke(cli.app, ["--help"]).output
 
 
-@pytest.mark.parametrize("schema_version", [1, 2, 3])
+@pytest.mark.parametrize("schema_version", [1, 2, 4])
 def test_new_multiple_turns_inspect_and_fresh_reopen(
     harness: Harness, schema_version: int
 ) -> None:
-    if schema_version < 3:
+    if schema_version < SCHEMA_VERSION:
         legacy_store(harness.root, version=schema_version).close()
     harness.responses = [LLMResponse(content="one"), LLMResponse(content="two")]
     harness.inputs("first", "second", EOFError())
@@ -256,6 +257,8 @@ def test_new_multiple_turns_inspect_and_fresh_reopen(
     )
     assert len(harness.agents[-1].state.messages) == 4
     with sqlite3.connect(harness.directory / "sessions.sqlite3") as conn:
+        # A Turn with no tool call needs no fence, so a legacy store stays at its
+        # own version; only a fenced Turn requires the V4 upgrade.
         assert conn.execute("PRAGMA user_version").fetchone()[0] == schema_version
 
 

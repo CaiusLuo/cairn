@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from cairn.infra.sessions.codec import restore_messages
-from cairn.infra.sessions.models import SessionStoreError
+from cairn.infra.sessions.models import SCHEMA_VERSION, SessionStoreError
 from cairn.infra.sessions.store import SessionStore
 from tests.support.sessions import (
     OTHER_TURN,
@@ -105,7 +105,7 @@ def test_explicit_upgrade_preserves_committed_sessions_and_validated_backup(
         original = api.inspect(SESSION)
         inode = legacy.stat().st_ino
         backup = api.upgrade_schema()
-        assert api.schema_version == 3 and legacy.stat().st_ino == inode
+        assert api.schema_version == SCHEMA_VERSION and legacy.stat().st_ino == inode
         assert api.inspect(SESSION) == original
         assert_v1_backup(backup, legacy)
         task = api.create_task(
@@ -216,7 +216,7 @@ def test_upgrade_commit_uncertainty_retains_v1_backup_and_reports_actual_schema(
     try:
         with pytest.raises(SessionStoreError, match="commit_uncertain"):
             api.upgrade_schema()
-        assert api.schema_version == (3 if committed else 1)
+        assert api.schema_version == (SCHEMA_VERSION if committed else 1)
         assert api.inspect(SESSION).receipt == original.receipt
         backups = list(legacy.parent.glob("schema-1-backup-*.sqlite3"))
         assert len(backups) == 1
@@ -254,7 +254,7 @@ def test_upgrade_requires_writer_ownership_and_no_live_turn(
             settled(turn, history=restore_messages(report.checkpoint) + messages()),
         )
         api.upgrade_schema()
-        assert api.schema_version == 3
+        assert api.schema_version == SCHEMA_VERSION
     finally:
         api.close()
 

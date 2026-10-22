@@ -332,6 +332,10 @@ def legacy_store(root: Path, *, version: int = 2) -> SessionStore:
         conn.execute("DROP TABLE checkpoints")
         conn.execute("DROP INDEX session_turn_order")
         conn.execute(_SCHEMA[-1])
+        # A store created by this build starts at V4 and therefore already has
+        # `tool_fences`; a V1/V2 fixture must not carry a table its version never
+        # defined, or the exact-schema check rejects it.
+        conn.execute("DROP TABLE IF EXISTS tool_fences")
         if version == 1:
             conn.execute("DROP TABLE tasks")
         conn.execute(f"PRAGMA user_version={version}")

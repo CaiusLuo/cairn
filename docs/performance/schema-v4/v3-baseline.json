@@ -1,0 +1,71 @@
+{
+  "abandoned": {
+    "error": "turn_still_owned",
+    "kind": "abandoned"
+  },
+  "completed": {
+    "error": "turn_still_owned",
+    "kind": "completed"
+  },
+  "executing": {
+    "error": "turn_still_owned",
+    "kind": "executing"
+  },
+  "no_fence": {
+    "kind": "no_fence",
+    "receipt": {
+      "outcome": "completed",
+      "revision": {
+        "head_seq": 1,
+        "session_id": "00000000-0000-4000-8000-000000000001",
+        "version": 2
+      },
+      "sha256": "934adccd3c5c0d9b93e0c9f9f67585676578fd0e67179d6658ee59f24d18d919",
+      "turn_id": "00000000-0000-4000-8000-000000000002"
+    },
+    "revision": "session_id='00000000-0000-4000-8000-000000000001' version=2 head_seq=1",
+    "status": "clean"
+  },
+  "performance": [
+    {
+      "fences": 16,
+      "max_s": 0.13536519184708595,
+      "median_ms_per_fence": 7.94361368753016,
+      "median_s": 0.12709781900048256,
+      "min_s": 0.12551960162818432
+    },
+    {
+      "fences": 32,
+      "max_s": 0.3020190801471472,
+      "median_ms_per_fence": 9.29774483665824,
+      "median_s": 0.29752783477306366,
+      "min_s": 0.2902489332482219
+    },
+    {
+      "fences": 64,
+      "max_s": 0.7789355963468552,
+      "median_ms_per_fence": 12.158688201452605,
+      "median_s": 0.7781560448929667,
+      "min_s": 0.7537902100011706
+    },
+    {
+      "fences": 128,
+      "max_s": 2.2340589435771108,
+      "median_ms_per_fence": 17.26059331849683,
+      "median_s": 2.2093559447675943,
+      "min_s": 2.185872634872794
+    },
+    {
+      "fences": 256,
+      "max_s": 7.165765846148133,
+      "median_ms_per_fence": 27.86668799308245,
+      "median_s": 7.133872126229107,
+      "min_s": 6.96196598187089
+    }
+  ],
+  "recovery": {
+    "error": "turn_still_owned",
+    "kind": "recovery"
+  },
+  "store_path": "/tmp/cairn-baseline-nd5emjv5"
+}

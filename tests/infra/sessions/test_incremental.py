@@ -12,6 +12,7 @@ from cairn.core.models import Message, ToolCall
 from cairn.infra.sessions.codec import canonical, restore_messages
 from cairn.infra.sessions.models import (
     MAX_CHECKPOINT_BYTES,
+    SCHEMA_VERSION,
     CheckpointReceipt,
     HostResolution,
     SessionStoreError,
@@ -55,16 +56,42 @@ def append_turn(api: SessionStore, number: int) -> CheckpointReceipt:
     )
 
 
+def append_turn_without_fence(api: SessionStore, number: int) -> CheckpointReceipt:
+    """Commit a Turn that admits no tool call.
+
+    A legacy schema has no fence table, and this build only writes fences at V4,
+    so a V2 fixture used to exercise the V2->V3 migration must not fence.
+    """
+    report = api.inspect(SESSION)
+    turn = intent(
+        report.binding,
+        report.revision,
+        turn_id=str(UUID(int=number + 500, version=4)),
+        start=len(report.checkpoint.messages),
+        time=T4,
+    )
+    active = api.begin_turn(report.revision, turn)
+    return api.commit_turn(
+        active,
+        settled(turn, history=restore_messages(report.checkpoint) + messages()),
+    )
+
+
 def rows(path: Path, table: str) -> list[tuple[object, ...]]:
     with sqlite3.connect(path) as conn:
         return conn.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
 
 
-@pytest.mark.parametrize("version", [1, 2, 3])
+@pytest.mark.parametrize("version", [1, 2, 3, 4])
 def test_full_history_reopen_and_linear_v2_payloads(
     tmp_path: Path, version: int
 ) -> None:
-    api = store(tmp_path) if version == 3 else legacy_store(tmp_path, version=version)
+    api = store(tmp_path) if version >= 3 else legacy_store(tmp_path, version=version)
+    if version < 3:
+        # Fencing needs the V4 fence table; a legacy store is upgraded explicitly
+        # first, exactly as a host would do before running a durable Turn.
+        api.upgrade_schema()
+        assert api.schema_version == SCHEMA_VERSION
     api.create(binding(tmp_path))
     receipts = [append_turn(api, i) for i in range(8)]
     path = api.path
@@ -75,7 +102,7 @@ def test_full_history_reopen_and_linear_v2_payloads(
         report = reader.inspect(SESSION)
         assert report.receipt == receipts[-1]
         assert restore_messages(report.checkpoint) == messages() * 8
-        assert reader.schema_version == version
+        assert reader.schema_version == SCHEMA_VERSION
     finally:
         reader.close()
     assert {p.name: p.read_bytes() for p in path.parent.iterdir()} == original
@@ -84,14 +111,11 @@ def test_full_history_reopen_and_linear_v2_payloads(
             json.loads(row[0])
             for row in conn.execute("SELECT payload FROM checkpoints ORDER BY seq")
         ]
-    if version == 3:
-        assert [len(d["messages"]) for d in data] == [0] + [4] * 8
-        for index in range(2, len(data)):
-            assert data[index]["predecessor"] == receipts[index - 2].model_dump(
-                mode="json"
-            )
-    else:
-        assert [len(d["messages"]) for d in data] == list(range(0, 33, 4))
+    # Every fixture is upgraded to the current schema before the Turn, so all of
+    # them write the incremental checkpoint format.
+    assert [len(d["messages"]) for d in data] == [0] + [4] * 8
+    for index in range(2, len(data)):
+        assert data[index]["predecessor"] == receipts[index - 2].model_dump(mode="json")
 
 
 def test_upgrade_preserves_historical_task_receipt_bytes_and_mixed_chain(
@@ -102,9 +126,10 @@ def test_upgrade_preserves_historical_task_receipt_bytes_and_mixed_chain(
     task = api.create_task(
         api.inspect(SESSION).revision, task_id=TASK, input_digest=INPUT_DIGEST
     )
-    old_receipt = commit_task_checkpoint(api, task, fenced=True)
+    # A legacy schema has no fence table and this build only writes fences at
+    # V4, so the historical Task Turn is committed without a tool call.
+    old_receipt = commit_task_checkpoint(api, task)
     api.commit_task_turn(task.revision, old_receipt)
-    append_turn(api, 2)
     before = {
         table: rows(api.path, table)
         for table in ("sessions", "turns", "checkpoints", "tasks")
@@ -112,10 +137,11 @@ def test_upgrade_preserves_historical_task_receipt_bytes_and_mixed_chain(
     report = api.inspect(SESSION)
     backup = api.upgrade_schema()
     assert backup.name.startswith("schema-2-backup-")
-    assert api.schema_version == 3
+    assert api.schema_version == SCHEMA_VERSION
     assert api.inspect(SESSION) == report
     for table, expected in before.items():
         assert rows(backup, table) == rows(api.path, table) == expected
+    append_turn(api, 2)
     current = append_turn(api, 3)
     assert api.inspect_task(SESSION, TASK).task.checkpoint == old_receipt
     assert api.inspect(SESSION).receipt == current
@@ -124,7 +150,7 @@ def test_upgrade_preserves_historical_task_receipt_bytes_and_mixed_chain(
     with sqlite3.connect(path) as conn:
         assert conn.execute(
             "SELECT format_version FROM checkpoints ORDER BY seq"
-        ).fetchall() == [(1,), (1,), (1,), (2,)]
+        ).fetchall() == [(1,), (1,), (2,), (2,)]
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     reader = store(tmp_path, mode="inspect")
     try:
@@ -306,7 +332,7 @@ def test_schema_two_migration_failure_retains_backup_and_foreign_keys(
 ) -> None:
     api = legacy_store(tmp_path)
     api.create(binding(tmp_path))
-    receipt = append_turn(api, 1)
+    receipt = append_turn_without_fence(api, 1)
     original = rows(api.path, "checkpoints")
     migrate = api._migrate_v2
 
@@ -332,7 +358,7 @@ def test_schema_two_migration_failure_retains_backup_and_foreign_keys(
         KeyboardInterrupt if failure == "interrupt" else SessionStoreError
     ):
         api.upgrade_schema()
-    assert api.schema_version == (3 if failure == "commit_after" else 2)
+    assert api.schema_version == (SCHEMA_VERSION if failure == "commit_after" else 2)
     assert api._conn().execute("PRAGMA foreign_keys").fetchone()[0] == 1
     assert api._conn().execute("PRAGMA foreign_key_check").fetchall() == []
     assert rows(api.path, "checkpoints") == original
@@ -392,7 +418,7 @@ def test_failed_foreign_key_restore_blocks_even_recovery_mutations(
 ) -> None:
     api = legacy_store(tmp_path)
     api.create(binding(tmp_path))
-    append_turn(api, 1)
+    append_turn_without_fence(api, 1)
     conn = api._conn()
 
     def deny_restore(

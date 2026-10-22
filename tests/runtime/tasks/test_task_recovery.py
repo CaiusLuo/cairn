@@ -14,7 +14,7 @@ import pytest
 from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
 from cairn.core.repository import RepositoryEvidence
 from cairn.infra.git.context import RepoContextProvider
-from cairn.infra.sessions.models import SessionStoreError
+from cairn.infra.sessions.models import SCHEMA_VERSION, SessionStoreError
 from cairn.infra.sessions.task_models import TaskRecoveryReport, TaskResolution
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import SessionAdmissionError
@@ -165,7 +165,7 @@ def test_sigkill_recovery_preserves_git_and_receipts_without_turn_or_tool_replay
         assert git(fresh.workspace.root, "rev-parse", "HEAD") == before_head
         assert (fresh.workspace.root / ".git" / "index").read_bytes() == before_index
         assert (fresh.workspace.root / "tracked.txt").read_bytes() == before_file
-        assert fresh.store.schema_version == 3
+        assert fresh.store.schema_version == SCHEMA_VERSION
     finally:
         fresh.session.close()
 

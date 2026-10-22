@@ -163,6 +163,28 @@ _CHECKPOINT_SCHEMA_V3 = (
 _TURN_ORDER_INDEX = "CREATE INDEX session_turn_order ON turns(session_id)"
 _SCHEMA_V3 = (*_SCHEMA[:-1], _CHECKPOINT_SCHEMA_V3, _TURN_ORDER_INDEX)
 
+# Schema 4 moves every admitted fence out of `turns.diagnostics_json` into this
+# append-only table, so appending fence N inserts one row instead of re-encoding
+# the N-1 before it. The CHECK and UNIQUE constraints are the SQLite twins of the
+# Strict Codec's field bounds and `_validate_record`'s reference set; the parts a
+# CHECK cannot express (no control characters, timestamp monotonicity, ordinal
+# contiguity, the cumulative bound) stay in the codec and the append path.
+_TOOL_FENCE_SCHEMA = (
+    """CREATE TABLE tool_fences (
+        session_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 1 AND 256),
+        assistant_message_index INTEGER NOT NULL CHECK(assistant_message_index >= 0),
+        call_id TEXT NOT NULL CHECK(length(call_id) BETWEEN 1 AND 256),
+        tool_name TEXT NOT NULL CHECK(length(tool_name) BETWEEN 1 AND 256),
+        observed_at_utc TEXT NOT NULL,
+        PRIMARY KEY(session_id,turn_id,ordinal),
+        UNIQUE(session_id,turn_id,assistant_message_index,call_id),
+        FOREIGN KEY(session_id,turn_id) REFERENCES turns(session_id,turn_id)
+    )""",
+)
+_SCHEMA_V4 = (*_SCHEMA_V3, *_TOOL_FENCE_SCHEMA)
+
 
 _TASK_SCHEMA = (
     """CREATE TABLE tasks (
@@ -342,7 +364,7 @@ class SessionStore(TaskLedgerMixin):
                     raise SessionStoreError("wal_unavailable")
                 conn.execute("PRAGMA synchronous=FULL")
                 conn.execute("BEGIN IMMEDIATE")
-                for statement in (*_SCHEMA_V3, *_TASK_SCHEMA):
+                for statement in (*_SCHEMA_V4, *_TASK_SCHEMA):
                     conn.execute(statement)
                 conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 conn.commit()
@@ -383,7 +405,9 @@ class SessionStore(TaskLedgerMixin):
 
     def _schema(self, conn: sqlite3.Connection) -> None:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (1, 2, SCHEMA_VERSION):
+        # Every schema this build can read: the legacy versions it can migrate
+        # from, and the one it writes.
+        if version not in (1, 2, 3, SCHEMA_VERSION):
             raise SessionStoreError("schema_mismatch")
         observed = {
             " ".join(row[0].split())
@@ -397,6 +421,8 @@ class SessionStore(TaskLedgerMixin):
             else (*_SCHEMA, *_TASK_SCHEMA)
             if version == 2
             else (*_SCHEMA_V3, *_TASK_SCHEMA)
+            if version == 3
+            else (*_SCHEMA_V4, *_TASK_SCHEMA)
         )
         if observed != {" ".join(s.split()) for s in expected}:
             raise SessionStoreError("schema_mismatch")
@@ -414,6 +440,9 @@ class SessionStore(TaskLedgerMixin):
         )
         if version >= 2:
             bounds += (("tasks", "record_json", MAX_TASK_BYTES, "text"),)
+        if version >= 4:
+            bounds += (("tool_fences", "call_id", 256, "text"),)
+            bounds += (("tool_fences", "tool_name", 256, "text"),)
         for table, column, limit, sql_type in bounds:
             if (
                 conn.execute(
@@ -443,6 +472,18 @@ class SessionStore(TaskLedgerMixin):
         except SessionStoreError:
             self._latch()
             raise
+
+    @staticmethod
+    def _without_fences(diagnostics: AttemptDiagnostics) -> AttemptDiagnostics:
+        """A diagnostics record with the fence tuple emptied.
+
+        `tool_fences` is the only fence of record. Every write to
+        `turns.diagnostics_json` goes through here so the JSON column can never
+        hold a second copy that drifts from the table.
+        """
+        if not diagnostics.fences:
+            return diagnostics
+        return diagnostics.model_copy(update={"fences": ()})
 
     def _begin(self, expected: Revision | TaskRevision, kind: type[StrictDTO]) -> None:
         """Attribute a later fault to this caller's session, then validate.
@@ -618,30 +659,81 @@ class SessionStore(TaskLedgerMixin):
         for row in conn.execute(
             "SELECT * FROM turns WHERE session_id=? ORDER BY rowid", (session_id,)
         ):
-            diagnostics = decode_record(
-                AttemptDiagnostics,
-                row["diagnostics_json"].encode(),
-                sensitive_values=self.sensitive_values,
-            )
-            record = TurnRecord(
-                intent=TurnIntent(
-                    session_id=row["session_id"],
-                    turn_id=row["turn_id"],
-                    base_seq=row["base_seq"],
-                    message_start=diagnostics.message_start,
-                    input_digest=row["input_digest"],
-                    started_at_utc=row["started_at_utc"],
-                    task_id=row["task_id"],
-                    binding=diagnostics.binding,
-                ),
-                state=row["state"],
-                ended_at_utc=row["ended_at_utc"],
-                settled_seq=row["settled_seq"],
-                diagnostics=diagnostics,
-            )
+            record = self._turn_record(conn, row)
             self._validate_record(record)
             result.append(record)
         return tuple(result)
+
+    def _turn_record(
+        self, conn: sqlite3.Connection, row: sqlite3.Row, *, with_fences: bool = True
+    ) -> TurnRecord:
+        """One TurnRecord, with its fences reassembled from `tool_fences`.
+
+        `with_fences=False` skips the child rows. The append path only needs the
+        Turn's identity and state, and decoding every prior fence there is the
+        quadratic term this schema removes.
+        """
+        diagnostics = decode_record(
+            AttemptDiagnostics,
+            row["diagnostics_json"].encode(),
+            sensitive_values=self.sensitive_values,
+        )
+        if with_fences:
+            fences = self._fences_for(conn, row["session_id"], row["turn_id"])
+            if fences:
+                diagnostics = diagnostics.model_copy(update={"fences": fences})
+        return TurnRecord(
+            intent=TurnIntent(
+                session_id=row["session_id"],
+                turn_id=row["turn_id"],
+                base_seq=row["base_seq"],
+                message_start=diagnostics.message_start,
+                input_digest=row["input_digest"],
+                started_at_utc=row["started_at_utc"],
+                task_id=row["task_id"],
+                binding=diagnostics.binding,
+            ),
+            state=row["state"],
+            ended_at_utc=row["ended_at_utc"],
+            settled_seq=row["settled_seq"],
+            diagnostics=diagnostics,
+        )
+
+    @staticmethod
+    def _has_fence_table(conn: sqlite3.Connection) -> bool:
+        """Whether this database has the V4 fence table yet."""
+        return (
+            conn.execute(
+                "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='tool_fences'"
+            ).fetchone()
+            is not None
+        )
+
+    def _fences_for(
+        self, conn: sqlite3.Connection, session_id: str, turn_id: str
+    ) -> tuple[ToolFence, ...]:
+        # A legacy schema has no fence table; its fences are still in the JSON
+        # column and `decode_record` above has already loaded them.
+        if not self._has_fence_table(conn):
+            return ()
+        rows = conn.execute(
+            "SELECT * FROM tool_fences WHERE session_id=? AND turn_id=? ORDER BY ordinal",
+            (session_id, turn_id),
+        ).fetchall()
+        if not rows:
+            return ()
+        return tuple(
+            ToolFence(
+                session_id=row["session_id"],
+                turn_id=row["turn_id"],
+                ordinal=row["ordinal"],
+                assistant_message_index=row["assistant_message_index"],
+                call_id=row["call_id"],
+                tool_name=row["tool_name"],
+                observed_at_utc=row["observed_at_utc"],
+            )
+            for row in rows
+        )
 
     def _validate_record(self, record: TurnRecord) -> None:
         intent, diagnostic = record.intent, record.diagnostics
@@ -1110,6 +1202,53 @@ class SessionStore(TaskLedgerMixin):
         conn.execute("DROP TABLE checkpoints")
         conn.execute("ALTER TABLE checkpoints_upgrade RENAME TO checkpoints")
         conn.execute(_TURN_ORDER_INDEX)
+        conn.execute("PRAGMA user_version=3")
+
+    def _migrate_v3(self, conn: sqlite3.Connection) -> None:
+        """Move every fence from `turns.diagnostics_json` into `tool_fences`.
+
+        Runs inside the migration transaction after a verified backup. Fences are
+        copied in ordinal order with their identity intact; each `diagnostics_json`
+        is then rewritten without them. Anything that does not decode, does not
+        order contiguously, or repeats a reference aborts the whole step, leaving
+        the V3 database untouched.
+        """
+        for statement in _TOOL_FENCE_SCHEMA:
+            conn.execute(statement)
+        for row in conn.execute(
+            "SELECT session_id, turn_id, diagnostics_json FROM turns ORDER BY rowid"
+        ).fetchall():
+            diagnostics = decode_record(
+                AttemptDiagnostics,
+                row["diagnostics_json"].encode(),
+                sensitive_values=self.sensitive_values,
+            )
+            for expected_ordinal, fence_value in enumerate(diagnostics.fences, 1):
+                if (
+                    fence_value.ordinal != expected_ordinal
+                    or fence_value.session_id != row["session_id"]
+                    or fence_value.turn_id != row["turn_id"]
+                ):
+                    raise SessionStoreError("invalid_fence")
+                self._encode(fence_value, kind=ToolFence)
+                conn.execute(
+                    "INSERT INTO tool_fences VALUES (?,?,?,?,?,?,?)",
+                    (
+                        fence_value.session_id,
+                        fence_value.turn_id,
+                        fence_value.ordinal,
+                        fence_value.assistant_message_index,
+                        fence_value.call_id,
+                        fence_value.tool_name,
+                        fence_value.observed_at_utc,
+                    ),
+                )
+            stripped = self._without_fences(diagnostics)
+            raw = self._encode(stripped)
+            conn.execute(
+                "UPDATE turns SET diagnostics_json=? WHERE session_id=? AND turn_id=?",
+                (raw.decode(), row["session_id"], row["turn_id"]),
+            )
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     def upgrade_schema(self) -> Path:
@@ -1141,7 +1280,9 @@ class SessionStore(TaskLedgerMixin):
                     raise SessionStoreError("schema_mismatch")
                 if version == 1:
                     self._migrate_v1(conn)
-                self._migrate_v2(conn)
+                if version <= 2:
+                    self._migrate_v2(conn)
+                self._migrate_v3(conn)
                 self._schema(conn)
                 self._validate_sessions(conn)
             return backup
@@ -1153,6 +1294,11 @@ class SessionStore(TaskLedgerMixin):
 
     def _tasks_supported(self, conn: sqlite3.Connection) -> None:
         if conn.execute("PRAGMA user_version").fetchone()[0] < 2:
+            raise SessionStoreError("schema_upgrade_required")
+
+    def _fences_supported(self, conn: sqlite3.Connection) -> None:
+        """Fencing needs the fence table introduced at schema 4."""
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 4:
             raise SessionStoreError("schema_upgrade_required")
 
     @contextmanager
@@ -1205,7 +1351,7 @@ class SessionStore(TaskLedgerMixin):
             started_at_utc=None,
             settled_at_utc=binding.observed_at_utc,
         )
-        format_version = 2 if self.schema_version == 3 else 1
+        format_version = 2 if self.schema_version >= 3 else 1
         payload, digest = encode_storage_checkpoint(
             checkpoint,
             None,
@@ -1214,7 +1360,7 @@ class SessionStore(TaskLedgerMixin):
         )
         with self._write(idle_after=True) as conn:
             if format_version != (
-                2 if conn.execute("PRAGMA user_version").fetchone()[0] == 3 else 1
+                2 if conn.execute("PRAGMA user_version").fetchone()[0] >= 3 else 1
             ):
                 raise VersionConflict()
             conn.execute(
@@ -1339,27 +1485,33 @@ class SessionStore(TaskLedgerMixin):
     def fence_tool(self, expected: Revision, fence: ToolFence) -> Revision:
         self._begin(expected, Revision)
         fence = decode_record(ToolFence, self._encode(fence, kind=ToolFence))
-        with self._prepare(expected) as prepared:
-            record = self._active(prepared, fence.turn_id)
-            if (
-                fence.session_id != expected.session_id
-                or fence.turn_id != record.intent.turn_id
-            ):
-                raise SessionStoreError("invalid_fence")
-            diagnostics = record.diagnostics.model_copy(
-                update={"fences": (*record.diagnostics.fences, fence)}
-            )
-            diagnostic_raw = self._encode(diagnostics)
-            self._validate_record(
-                record.model_copy(update={"diagnostics": diagnostics})
-            )
-            self._admit_diagnostics(record.intent, diagnostics)
         with self._write() as conn:
-            current = self._current(conn, expected, prepared)
-            self._active(current, fence.turn_id)
+            self._fences_supported(conn)
+            record = self._fence_target(conn, expected, fence.turn_id)
+            previous = self._last_fence(conn, expected.session_id, fence.turn_id)
+            self._check_fence_succession(conn, record, previous, fence)
+            # The fence is screened here, before the INSERT, so a credential or
+            # oversize row never reaches the table even though the turn's own
+            # diagnostics column is no longer rewritten to hold it.
+            self._encode(fence, kind=ToolFence)
+            # Every admitted fence must still leave the Turn's diagnostics record
+            # room for a full host resolution. Fences no longer add bytes to that
+            # record (they are their own rows), so only the non-fence part is
+            # measured here.
+            self._admit_diagnostics(
+                record.intent, self._without_fences(record.diagnostics)
+            )
             conn.execute(
-                "UPDATE turns SET diagnostics_json=? WHERE session_id=? AND turn_id=? AND state='executing'",
-                (diagnostic_raw.decode(), expected.session_id, fence.turn_id),
+                "INSERT INTO tool_fences VALUES (?,?,?,?,?,?,?)",
+                (
+                    fence.session_id,
+                    fence.turn_id,
+                    fence.ordinal,
+                    fence.assistant_message_index,
+                    fence.call_id,
+                    fence.tool_name,
+                    fence.observed_at_utc,
+                ),
             )
             revision = self._cas(
                 conn,
@@ -1369,6 +1521,101 @@ class SessionStore(TaskLedgerMixin):
                 binding=record.intent.binding,
             )
         return revision
+
+    def _fence_target(
+        self, conn: sqlite3.Connection, expected: Revision, turn_id: str
+    ) -> TurnRecord:
+        """The locally-owned executing Turn this fence would extend."""
+        self._row(conn, expected)
+        record = self._turn_record_by_id(
+            conn, expected.session_id, turn_id, with_fences=False
+        )
+        if (
+            record is None
+            or record.state != "executing"
+            or (expected.session_id, turn_id) not in self._owned_turns
+        ):
+            raise SessionStoreError("live_turn_required")
+        return record
+
+    def _turn_record_by_id(
+        self,
+        conn: sqlite3.Connection,
+        session_id: str,
+        turn_id: str,
+        *,
+        with_fences: bool = True,
+    ) -> TurnRecord | None:
+        row = conn.execute(
+            "SELECT * FROM turns WHERE session_id=? AND turn_id=?",
+            (session_id, turn_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._turn_record(conn, row, with_fences=with_fences)
+
+    def _last_fence(
+        self, conn: sqlite3.Connection, session_id: str, turn_id: str
+    ) -> ToolFence | None:
+        row = conn.execute(
+            "SELECT * FROM tool_fences WHERE session_id=? AND turn_id=? "
+            "ORDER BY ordinal DESC LIMIT 1",
+            (session_id, turn_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return ToolFence(
+            session_id=row["session_id"],
+            turn_id=row["turn_id"],
+            ordinal=row["ordinal"],
+            assistant_message_index=row["assistant_message_index"],
+            call_id=row["call_id"],
+            tool_name=row["tool_name"],
+            observed_at_utc=row["observed_at_utc"],
+        )
+
+    def _check_fence_succession(
+        self,
+        conn: sqlite3.Connection,
+        record: TurnRecord,
+        previous: ToolFence | None,
+        fence: ToolFence,
+    ) -> None:
+        """Everything the full-record validation checked, answered incrementally.
+
+        Committed fences are immutable, so re-reading them proves nothing new;
+        the only new fact is this fence. Its constraints are that it follows the
+        last one and that its reference has not been used in this Turn. The
+        UNIQUE constraint enforces the second on write; this check turns a
+        constraint violation into the same `invalid_fence` the read path raised.
+        """
+        intent = record.intent
+        if fence.session_id != intent.session_id or fence.turn_id != intent.turn_id:
+            raise SessionStoreError("invalid_fence")
+        ordinal = 1 if previous is None else previous.ordinal + 1
+        if fence.ordinal != ordinal:
+            raise SessionStoreError("invalid_fence")
+        if previous is None:
+            index, timestamp = intent.message_start, intent.started_at_utc
+        else:
+            index = previous.assistant_message_index
+            timestamp = previous.observed_at_utc
+        if fence.assistant_message_index < index:
+            raise SessionStoreError("invalid_fence")
+        if instant(fence.observed_at_utc) < instant(timestamp):
+            raise SessionStoreError("invalid_fence")
+        duplicate = conn.execute(
+            "SELECT 1 FROM tool_fences WHERE session_id=? AND turn_id=? "
+            "AND assistant_message_index=? AND call_id=? LIMIT 1",
+            (
+                fence.session_id,
+                fence.turn_id,
+                fence.assistant_message_index,
+                fence.call_id,
+            ),
+        ).fetchone()
+        if duplicate is not None:
+            raise SessionStoreError("invalid_fence")
 
     def commit_turn(
         self, expected: Revision, settled: SettledTurn
@@ -1393,6 +1640,8 @@ class SessionStore(TaskLedgerMixin):
             if checkpoint.session_id != expected.session_id:
                 raise SessionStoreError("invalid_relationship")
             record = self._active(prepared, checkpoint.turn_id or "")
+            # Validation needs the fences; only the JSON encoding drops them.
+            # They stay in `tool_fences`, which is their single source of truth.
             diagnostics = record.diagnostics.model_copy(
                 update={"commit_version": expected.version + 1}
             )
@@ -1406,10 +1655,10 @@ class SessionStore(TaskLedgerMixin):
                     "diagnostics": diagnostics,
                 }
             )
-            diagnostic_raw = self._encode(diagnostics)
+            diagnostic_raw = self._encode(self._without_fences(diagnostics))
             self._settled_relationship(terminal, checkpoint, prepared.checkpoint)
             self._validate_record(terminal)
-            format_version = 2 if self.schema_version == 3 else 1
+            format_version = 2 if self.schema_version >= 3 else 1
             payload, digest = encode_storage_checkpoint(
                 checkpoint,
                 prepared.receipt,
@@ -1420,7 +1669,7 @@ class SessionStore(TaskLedgerMixin):
             current = self._current(conn, expected, prepared)
             self._active(current, checkpoint.turn_id or "")
             if format_version != (
-                2 if conn.execute("PRAGMA user_version").fetchone()[0] == 3 else 1
+                2 if conn.execute("PRAGMA user_version").fetchone()[0] >= 3 else 1
             ):
                 raise VersionConflict()
             conn.execute(
@@ -1475,8 +1724,8 @@ class SessionStore(TaskLedgerMixin):
             record = prepared.unresolved
             raw: bytes | None = None
             if record is not None:
-                diagnostics = record.diagnostics.model_copy(
-                    update={"reason": reason_code}
+                diagnostics = self._without_fences(
+                    record.diagnostics.model_copy(update={"reason": reason_code})
                 )
                 raw = self._encode(diagnostics)
         with self._write(recovery=True) as conn:
@@ -1558,8 +1807,8 @@ class SessionStore(TaskLedgerMixin):
                 raise SessionStoreError("turn_still_owned")
             raw: bytes | None = None
             if record is not None:
-                diagnostics = record.diagnostics.model_copy(
-                    update={"resolution": resolution}
+                diagnostics = self._without_fences(
+                    record.diagnostics.model_copy(update={"resolution": resolution})
                 )
                 abandoned = record.model_copy(
                     update={

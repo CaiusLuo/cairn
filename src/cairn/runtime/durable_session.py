@@ -780,7 +780,7 @@ class DurableSession(Session):
             _, digest = encode_storage_checkpoint(
                 checkpoint,
                 self._receipt,
-                format_version=2 if self._store.schema_version == 3 else 1,
+                format_version=2 if self._store.schema_version >= 3 else 1,
                 sensitive_values=self._store.sensitive_values,
             )
             self._expected_receipt = CheckpointReceipt(
