@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Protocol
 
 from cairn.core.models import ToolResult
@@ -63,9 +64,14 @@ class ToolExecutionContext:
     It is built by the agent loop from an approved permission result and is the
     only channel through which a tool learns that it may exceed the sandbox.
     Model-provided arguments are never trusted as proof of approval.
+
+    ``accessible_roots`` holds the normalized absolute directories a
+    ``FILESYSTEM_ACCESS`` grant approved for this execution. It is empty for an
+    ordinary call, so a tool outside the workspace with no grant stays refused.
     """
 
     network_access: bool = False
+    accessible_roots: tuple[Path, ...] = ()
 
 
 class Tool(Protocol):

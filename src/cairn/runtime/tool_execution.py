@@ -50,6 +50,7 @@ One call::
 import asyncio
 import json
 from collections.abc import Callable
+from pathlib import Path
 
 from cairn.core.events import Event
 from cairn.core.models import ToolCall, ToolFailure
@@ -75,7 +76,8 @@ def _ask_for_approval(agent: Agent, tool_call: ToolCall) -> PermissionResult:
     """Ask the approval handler for the requested capability.
 
     Without a handler the call fails closed: there is nobody who could grant the
-    authority the command asked for.
+    authority the command asked for. The handler derives the capability from the
+    tool call's validated arguments, so authority never crosses from here.
     """
     if agent.permission_handler is None:
         return PermissionResult(
@@ -170,6 +172,17 @@ def _record_tool_error(
     )
 
 
+def _accessible_roots(permission: PermissionResult) -> tuple[Path, ...]:
+    """The filesystem roots a granted capability authorizes for this execution.
+
+    An empty tuple unless ``FILESYSTEM_ACCESS`` was actually granted, so a tool
+    never receives roots from a capability it did not get.
+    """
+    if PermissionCapability.FILESYSTEM_ACCESS not in permission.granted_capabilities:
+        return ()
+    return tuple(Path(root) for root in sorted(permission.granted_roots))
+
+
 def _check_tool_permission(
     agent: Agent,
     tool_call: ToolCall,
@@ -205,6 +218,7 @@ def _check_tool_permission(
                     "prompted": permission.prompted,
                     "source": permission.source.value,
                     "granted_capabilities": sorted(permission.granted_capabilities),
+                    "granted_roots": sorted(permission.granted_roots),
                 }
             )
     except Exception as exc:
@@ -317,7 +331,8 @@ async def execute_tool_call(
                 network_access=(
                     tool_call.name == "bash"
                     and PermissionCapability.NETWORK in permission.granted_capabilities
-                )
+                ),
+                accessible_roots=_accessible_roots(permission),
             ),
         )
 

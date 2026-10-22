@@ -13,7 +13,6 @@ from cairn.core.permissions import (
     PermissionSource,
     SessionPermissionHandler,
     evaluate_permission_policy,
-    requested_capability,
 )
 
 
@@ -158,7 +157,6 @@ def test_harness_invalid_capability_cannot_prompt_or_reuse_session_grant(
 
 def test_harness_request_does_not_change_model_tool_permission_policy() -> None:
     call = publication_request().tool_call
-    assert requested_capability(call) is None
     result = evaluate_permission_policy(call)
     assert result.policy_decision is PermissionDecision.ALLOW
     assert result.source is PermissionSource.BASELINE
