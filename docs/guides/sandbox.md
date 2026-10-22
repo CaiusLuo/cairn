@@ -40,7 +40,38 @@ bounded, and a cleanup failure never replaces the primary outcome.
 The file tools keep their own, independent boundary: `infra.workspace.paths`
 rejects absolute paths, `..`, `.git` components and symlinked components, so
 `read_file`/`write_file`/`edit_file`/`patch`/`glob`/`grep` cannot leave the
-Workspace. External access needs an approved `filesystem_access` grant.
+Workspace.
+
+## Workspace trust and outside writes
+
+A local Cairn edits the directory it was started in, so that directory is trusted
+explicitly before the first turn:
+
+```text
+Cairn will read and write files in this directory:
+  /path/to/project
+
+Trust this directory for this session? [y/N]
+```
+
+Denial — or no interactive terminal — stops before any turn runs. The grant lives
+in the process and is never written to disk.
+
+Once trusted, reads and writes inside the directory need no further approval.
+A path **outside** it is handled differently:
+
+| Access | Outside the Workspace |
+| --- | --- |
+| Read (`read_file`, `grep`, `glob`) | Allowed, no approval |
+| Write (`write_file`, `edit_file`, `patch_file`) | Needs a grant on the containing directory |
+
+An approved directory covers its whole subtree for the rest of the session, so
+approving `/tmp/data` once covers `/tmp/data/a.txt` and `/tmp/data/b.txt`. `.git`
+stays unreachable wherever it appears.
+
+Preflight checks only that the path is a well-formed target; the grant is enforced
+when the tool executes, so a refusal is a tool error the model can act on rather
+than an exception during approval.
 
 ## Approval
 
