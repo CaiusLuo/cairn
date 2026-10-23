@@ -2,7 +2,7 @@
 
 Issue [#44](https://github.com/CaiusLuo/cairn/issues/44) has an offline acceptance
 path through the real `CodingTaskRunner`, `run_turn`, filesystem tools, permission
-policy, native Bash sandbox, Git worktrees and JSONL tracing. The provider alone
+policy, local Bash execution, Git worktrees and JSONL tracing. The provider alone
 is scripted. This proves integration behavior; it does not establish real-model
 quality or a durable deployment qualification.
 
@@ -29,7 +29,7 @@ It does not create a second corpus, eval runner or Agent loop. The isolated task
 runs through the existing [CodingTaskRunner](../../src/cairn/runtime/tasks/runner.py);
 the selected suite checks then inspect the final workspace independently of the
 model's final response. The additional behavioral oracle executes the two
-inclusive-count examples from the existing prompt in the real Bash sandbox.
+inclusive-count examples from the existing prompt in the real Bash tool.
 
 A temporary source repository has distinct staged and unstaged sentinel bytes
 and an untracked file. `WorktreeProvider` creates a detached task worktree from

@@ -10,10 +10,10 @@ The trusted Python host owns `MemoryService` and `ApprovalAuthority`. The approv
 callback must obtain a human's decision on the exact claim, scope, evidence and
 operation; a coding-model verdict is not human approval. Model JSON cannot supply
 an authority. This is an API boundary, not protection from arbitrary same-user
-Python, direct SQLite writes, disabled sandboxes or unconstrained tools.
+Python, direct SQLite writes or unconstrained tools.
 
 `MemoryStore(directory, project_id, forbidden_roots=...)` requires the host to
-enumerate **all** sandbox-writable roots (Workspace, effective TMPDIR, uv cache,
+enumerate **all** host-writable roots (Workspace, effective TMPDIR, uv cache,
 and any additional tool-specific roots). Keep storage outside those roots. It
 does not promise confidentiality from tools that can read HOME. Private directory
 permissions and symlink rejection are defense in depth, not same-user isolation.

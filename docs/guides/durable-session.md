@@ -15,7 +15,7 @@ from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.loop import run_turn
 
 # The trusted host builds a fresh, empty Agent, a dedicated writer Store outside
-# ALL sandbox-writable roots, and an observed, approved SessionBinding.
+# ALL host-writable roots, and an observed, approved SessionBinding.
 session = DurableSession.create(store, agent=agent, binding=binding)
 try:
     answer = await run_turn(agent, "new work", budget=budget, session=session)

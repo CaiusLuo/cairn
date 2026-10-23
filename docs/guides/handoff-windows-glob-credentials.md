@@ -5,7 +5,7 @@
 **Written**: 2026-10-23.
 
 Read this together with [AGENTS.md](../../AGENTS.md) and
-[docs/guides/sandbox.md](sandbox.md) before changing anything.
+[docs/guides/local-execution.md](local-execution.md) before changing anything.
 
 ---
 
@@ -260,7 +260,7 @@ everything except credentials. Allowlisting would need to enumerate a whole disk
 - Write the failing test first: a denied path must produce zero bytes in the
   result and a structured `permission_required` outcome. Given lesson (1) above,
   an untested deny rule is the thing that will be silently wrong.
-- Document the precedence in `docs/guides/sandbox.md` next to the existing table;
+- Document the precedence in `docs/guides/local-execution.md` next to the existing table;
   do not add a second, competing description elsewhere.
 
 ---

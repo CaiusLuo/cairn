@@ -32,7 +32,7 @@ finally:
     store.close()
 ```
 
-The host supplies **every** sandbox-writable root, including additional roots;
+The host supplies **every** host-writable root, including additional roots;
 an empty set or overlap in either direction is rejected. The example values are
 host-selected, not model inputs. The Store does not resolve credentials, approve
 a provider, inspect a Workspace, or adopt/clean up a Worktree.

@@ -6,10 +6,7 @@ sandbox on any platform, and this document makes no isolation claim: a command
 can read and write whatever the user can, including files outside the Workspace
 and the network.
 
-That is a deliberate change from the earlier sandbox-first model, which required
-macOS `sandbox-exec` or Linux `bubblewrap` before a coding agent could run at all.
-The trade is explicit: a local agent is useful on an ordinary machine, and the
-operator — not a mount namespace — decides whether it may run a shell.
+The operator, not a mount namespace, decides whether Cairn may run a shell.
 
 ## What the tool still guarantees
 
@@ -39,9 +36,13 @@ bounded, and a cleanup failure never replaces the primary outcome.
 
 The file tools keep their own, independent boundary. A path inside the Workspace
 obeys `infra.workspace.paths`: no `..`, no `.git` component, no symlinked
-component. A path outside it is handled by the trust and grant rules below, and
-`glob` has no `path` argument, so its search root and candidate filtering stay
-inside the Workspace: `glob` never searches outside.
+component. A path outside it is handled by the trust and grant rules below.
+
+`glob` is the exception: it accepts a `path` argument, so it **can** search
+outside the Workspace. Its containment rule follows the *candidate*, not the
+root — a search rooted inside the Workspace re-checks every match against
+`infra.workspace.paths`, so naming a subdirectory is not a way around it. Git
+metadata (`.git`) and credential files are never returned from any root.
 
 ## Workspace trust and outside writes
 
@@ -65,7 +66,7 @@ A path **outside** it is handled differently:
 | --- | --- |
 | Read (`read_file`, `grep` with an explicit `path`) | Allowed, no approval |
 | Write (`write_file`, `edit_file`, `patch_file`) | Needs a grant on the containing directory |
-| `glob` | Not supported — its search root and candidates stay inside the Workspace |
+| `glob` with `path` | Allowed, no approval; `.git` and credential files are still withheld |
 
 An approved directory covers its whole subtree for the rest of the session, so
 approving `/tmp/data` once covers `/tmp/data/a.txt` and `/tmp/data/b.txt`. `.git`

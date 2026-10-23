@@ -68,7 +68,7 @@ The checks are:
 
 The preflight reuses production code rather than reimplementing checks:
 `sqlite_wal_fix_supported`/`wal_admission` and `SessionStore` from
-[store.py](../../src/cairn/infra/sessions/store.py), `BashTool` for the sandbox,
+[store.py](../../src/cairn/infra/sessions/store.py), `BashTool` for the local shell,
 `load_project_providers` for configuration, and `Tracer`/`JsonlTraceSink` for
 traces. It adds no CLI subcommand.
 
@@ -93,7 +93,7 @@ cannot stand in for the other.
 
 | Check | Question it answers | What it does **not** prove |
 | --- | --- | --- |
-| Repository preflight (`scripts/pilot/preflight.py`) | Does *this checkout* import, run, sandbox and admit the runtime correctly? | That the built wheel ships the same code |
+| Repository preflight (`scripts/pilot/preflight.py`) | Does *this checkout* import, run a shell and admit the runtime correctly? | That the built wheel ships the same code |
 | Wheel smoke (built artifact installed into a clean environment) | Does the *installed package* import and expose its entry point? | Anything about the repository working tree |
 
 The preflight script resolves imports from the checkout: it inserts the
@@ -272,7 +272,7 @@ host, interpreter and filesystem, not a platform or deployment claim.
 
 | Mode | Status | Basis |
 | --- | --- | --- |
-| **Stateless** | **PASS** | Preflight `local-stateless` reported no blocking check on this host. Sandbox enforcement, `cairn --help`, writable state directory and JSONL trace output were each verified. |
+| **Stateless** | **PASS** | Preflight `local-stateless` reported no blocking check on this host. The shell isolation check (`bash-isolation`, reported *not applicable*: a local shell claims no isolation), `cairn --help`, writable state directory and JSONL trace output were each verified. |
 | **Durable** | **BLOCKED** | The uv-managed interpreter links SQLite 3.50.4; `wal_admission()` is `refused`, so `SessionStore` refuses and every durable command fails closed. This host is not qualified for durable mode. |
 | **GitHub Publishing** | **BLOCKED** | Not exercised. It requires the separately authorized live smoke in [#50](https://github.com/CaiusLuo/cairn/issues/50); no real Draft PR has been created or verified by this runbook. |
 
@@ -282,8 +282,8 @@ The preflight admits a host; it is not the #51 pilot acceptance by itself. It
 does **not** run the offline scripted Agent workflow, and it does **not** run the
 fresh-wheel install described above. Both are separate commands in this runbook
 and neither is implied by a preflight `PASS`. A green preflight means the
-runtime, sandbox, CLI import, state directory, store gate and trace output were
-each observed on this host — nothing more.
+runtime, shell admission, CLI import, state directory, store gate and trace
+output were each observed on this host — nothing more.
 
 ### What is not claimed
 
@@ -299,8 +299,9 @@ each observed on this host — nothing more.
   claim is made here.
 - SIGKILL evidence is application-crash evidence, **not** power-loss durability.
   Deployment filesystem and device-synchronization behavior remains unvalidated.
-- Read isolation is a Linux property. On macOS a sandboxed command can read any
-  host file the invoking user can read; write isolation is the guarantee there.
+- No shell isolation is claimed on any platform. A `bash` command runs as the
+  invoking user and can read or write whatever that user can, including files
+  outside the Workspace and the network.
 - There is no CPU, memory or wall-clock quota beyond the tool timeout.
 
 ## Related
@@ -310,7 +311,8 @@ each observed on this host — nothing more.
 - [Durable CLI](durable-cli.md) — approval, inspection and reconciliation
   semantics.
 - [Durable Task Ledger](task-ledger.md) — Task phases and explicit recovery.
-- [Native Bash sandbox](sandbox.md) — the enforced boundary and its limits.
+- [Local command execution](local-execution.md) — the host shell, approval, and
+  the boundaries it does not claim.
 - [Configuration](../configuration.md) — provider and credential layouts.
 - [Offline coding task E2E](offline-coding-e2e.md) — the offline acceptance path
   for one coding task.

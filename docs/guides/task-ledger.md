@@ -238,7 +238,7 @@ See [SessionStore](session-store.md#codec-and-transactions) for the format matri
 Upgrading is an explicit trusted-host operation, independent of Agent execution:
 
 1. Stop every writer and wait for owned Task/Turn work and cleanup to finish.
-2. Open the existing Store as a writer with the actual effective sandbox-writable
+2. Open the existing Store as a writer with the actual effective host-writable
    roots and known sensitive values, as described in [SessionStore](session-store.md).
 3. Call `upgrade_schema()` once if `schema_version < SCHEMA_VERSION`; retain its returned
    backup path. An inspector, another writer or a locally owned Task/Turn cannot

@@ -104,9 +104,7 @@ StoreOption = Annotated[
 ]
 RootsOption = Annotated[
     list[Path] | None,
-    typer.Option(
-        "--forbid-root", help="Additional host sandbox-writable root (repeatable)."
-    ),
+    typer.Option("--forbid-root", help="Additional host-writable root (repeatable)."),
 ]
 
 

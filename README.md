@@ -22,7 +22,7 @@ test, and extend. This is an early-stage learning and engineering project.
 
 - Asynchronous agent loop with context and step budgets.
 - LiteLLM integration with session model selection.
-- Sandboxed Bash, bounded file reading, and guarded file editing.
+- Local Bash execution, bounded file reading, and guarded file editing.
 - Interactive Python CLI with model selection, permission prompts, and cancellation.
 - Streaming answers and separate provisional thinking from `reasoning_content`.
 - JSONL traces, [bounded Coding Task summaries](docs/guides/task-metrics.md),

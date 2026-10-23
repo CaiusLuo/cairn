@@ -3,7 +3,7 @@
 ``serialize_entry``, ``insert_entry`` and ``update_entries`` are the host-only
 mutation API; ``MemoryService`` owns every lifecycle transition. Same-user
 arbitrary Python/SQL is trusted host code, not a security boundary.
-The host must keep this directory outside ALL sandbox-writable roots.
+The host must keep this directory outside ALL host-writable roots.
 """
 
 import json

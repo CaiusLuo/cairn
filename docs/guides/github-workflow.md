@@ -69,8 +69,8 @@ preserves the creation-time exclusions, including every source TOML Provider.
 ReviewWorkflow combines them with its own declarations and GitHub credential
 names for Fixer Bash and repository-inspection children. Parent environments stay
 unchanged. This protects environment-variable transmission; accessible credential
-files remain readable. It does not provide a complete process sandbox or change
-the existing Agent sandbox and permission policy.
+files remain readable. It does not provide process isolation or change the
+existing permission policy.
 
 ## Recovery and limits
 

@@ -3,7 +3,7 @@
 These repository entry points operate Cairn; evaluation cases and experiments
 belong in [evaluation/](../evaluation/README.md).
 
-- [pilot/preflight.py](pilot/preflight.py) checks local configuration, sandbox and
+- [pilot/preflight.py](pilot/preflight.py) checks local configuration, shell and
   storage admission offline. Follow the [pilot runbook](../docs/guides/pilot-runbook.md).
 - [github/run_issue_task.py](github/run_issue_task.py) runs the explicitly approved
   disposable-repository workflow. Follow the
