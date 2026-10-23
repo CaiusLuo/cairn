@@ -92,4 +92,3 @@ def test_scroll_to_bottom_is_immediate() -> None:
 
 def test_the_gap_is_two_rows() -> None:
     assert TRANSCRIPT_GAP_LINES == 2
-
