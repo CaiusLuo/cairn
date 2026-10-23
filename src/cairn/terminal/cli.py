@@ -47,6 +47,7 @@ from cairn.terminal.durable import (
     DurableOptions,
     attach_session,
     inspect_session,
+    list_sessions,
     reconcile_session,
     show_report,
 )
@@ -135,6 +136,22 @@ def session_new(store: StoreOption = None, forbid_root: RootsOption = None) -> N
             "new", directory=store, additional_roots=tuple(forbid_root or ())
         )
     )
+
+
+@session_app.command("list")
+def session_list(store: StoreOption = None, forbid_root: RootsOption = None) -> None:
+    """List the stored conversations that can be reopened, newest first."""
+    try:
+        list_sessions(store, tuple(forbid_root or ()))
+    except SessionStoreError as refused:
+        typer.echo(f"Session listing unavailable: {refused}", err=True)
+        raise typer.Exit(1) from None
+    except Exception:
+        typer.echo(
+            "Session listing unavailable; verify the store and writable roots.",
+            err=True,
+        )
+        raise typer.Exit(1) from None
 
 
 @session_app.command("inspect")

@@ -20,6 +20,7 @@ from cairn.infra.sessions.models import (
     RecoveryReport,
     SessionBinding,
     SessionStoreError,
+    SessionSummary,
     same_workspace,
 )
 from cairn.infra.sessions.store import SessionStore
@@ -74,6 +75,41 @@ def open_store(
     )
 
 
+def list_sessions(directory: Path | None, additional_roots: tuple[Path, ...]) -> None:
+    """Print the Sessions that can be reopened, most recently updated first.
+
+    Read-only: this opens the store in inspection mode and reports what it holds,
+    so looking for a conversation cannot change one.
+    """
+    store = open_store(
+        directory,
+        Workspace(Path.cwd()),
+        inspect=True,
+        additional_roots=additional_roots,
+    )
+    try:
+        sessions = store.list_sessions()
+    finally:
+        store.close()
+    if not sessions:
+        typer.echo("No stored sessions.")
+        return
+    typer.echo(f"{'ID':<8} {'STATE':<19} {'UPDATED':<21} TITLE")
+    for summary in sessions:
+        typer.echo(
+            f"{summary.short_id:<8} {summary.state:<19} "
+            f"{summary.updated_at_utc:<21} {_display_title(summary)}"
+        )
+    typer.echo("")
+    typer.echo("Reopen one with: cairn session reopen <ID>")
+
+
+def _display_title(summary: SessionSummary) -> str:
+    if summary.title:
+        return summary.title
+    return "(untitled; the title is written after the first reply)"
+
+
 def show_report(report: RecoveryReport) -> None:
     typer.echo(f"Session: {report.revision.session_id}")
     typer.echo(f"Last committed checkpoint: {report.receipt.revision.head_seq}")
@@ -107,7 +143,7 @@ def inspect_session(
         additional_roots=additional_roots,
     )
     try:
-        show_report(store.inspect(session_id))
+        show_report(store.inspect(store.resolve_session_id(session_id)))
     finally:
         store.close()
 
@@ -207,8 +243,16 @@ def attach_session(
                 store, agent=agent, binding=binding, observe_binding=observe
             )
         else:
+            # A caller may type the abbreviated identifier `session list` shows;
+            # resolving it here keeps the store the only authority on which
+            # Session that is, and refuses an ambiguous prefix before any state
+            # changes.
             session = DurableSession.reopen(
-                store, session_id, agent=agent, binding=binding, observe_binding=observe
+                store,
+                store.resolve_session_id(session_id),
+                agent=agent,
+                binding=binding,
+                observe_binding=observe,
             )
         return session, observe
     except BaseException:

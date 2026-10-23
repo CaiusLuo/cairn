@@ -491,3 +491,35 @@ class RecoveryReport(StrictDTO):
             (t for t in self.attempts if t.state in ("executing", "recovery_required")),
             None,
         )
+
+
+#: Bound on how many Sessions one listing reports, so a store with a long
+#: history cannot turn a listing into an unbounded read.
+MAX_LISTED_SESSIONS = 200
+
+#: Length of the abbreviated Session identifier shown by ``session list``.
+#: Six is enough to be unambiguous in practice and short enough to retype; the
+#: resolver still verifies uniqueness rather than trusting that.
+SESSION_SHORT_ID_LENGTH = 6
+
+
+class SessionSummary(StrictDTO):
+    """One row of the recoverable-Session list.
+
+    Deliberately cheap: it is read from the Session row alone, without decoding a
+    checkpoint payload or replaying attempts, because listing many Sessions must
+    not cost what inspecting one does. A caller that needs the recovery decision
+    follows up with ``inspect``.
+    """
+
+    session_id: str
+    state: SessionState
+    title: str | None = None
+    created_at_utc: str
+    updated_at_utc: str
+    head_seq: int = Field(ge=0)
+
+    @property
+    def short_id(self) -> str:
+        """The prefix a caller may type instead of the whole identifier."""
+        return self.session_id[:SESSION_SHORT_ID_LENGTH]

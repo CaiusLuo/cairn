@@ -7,6 +7,7 @@ from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 from cairn.infra.sessions.codec import (
     canonical,
@@ -22,6 +23,7 @@ from cairn.infra.sessions.models import (
     MAX_CHECKPOINT_BYTES,
     MAX_DATABASE_BYTES,
     MAX_INTEGER,
+    MAX_LISTED_SESSIONS,
     MAX_MESSAGES,
     MAX_RECORD_BYTES,
     MAX_WAL_BYTES,
@@ -38,6 +40,7 @@ from cairn.infra.sessions.models import (
     SessionBinding,
     SessionState,
     SessionStoreError,
+    SessionSummary,
     SettledTurn,
     StoredMessage,
     StrictDTO,
@@ -1173,6 +1176,82 @@ class SessionStore(TaskLedgerMixin):
         report = self._snapshot(session_id)
         self._inspected[session_id] = report.revision
         return report
+
+    def list_sessions(
+        self, *, limit: int = MAX_LISTED_SESSIONS
+    ) -> list[SessionSummary]:
+        """Recoverable Sessions, most recently updated first.
+
+        This reads the Session row only. Listing must stay cheap enough to run
+        before a caller has decided anything, so no checkpoint is decoded and no
+        attempt is replayed here; ``inspect`` is the call that answers whether a
+        given Session can be reopened.
+        """
+        if type(limit) is not int or limit < 1:
+            raise SessionStoreError("invalid_options")
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT session_id, state, created_at_utc, updated_at_utc, head_seq "
+                "FROM sessions ORDER BY updated_at_utc DESC, session_id ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [
+                SessionSummary(
+                    session_id=row[0],
+                    state=row[1],
+                    created_at_utc=row[2],
+                    updated_at_utc=row[3],
+                    head_seq=row[4],
+                )
+                for row in rows
+            ]
+
+    def resolve_session_id(self, prefix: str) -> str:
+        """The one Session whose identifier starts with ``prefix``.
+
+        A whole identifier needs no scan. An abbreviated one is accepted with or
+        without hyphens, because that is what a caller copies out of a listing,
+        and it resolves only when exactly one Session matches: reopening the
+        wrong conversation would resume work against the wrong history.
+        """
+        if not isinstance(prefix, str) or not prefix:
+            raise SessionStoreError("invalid_options")
+        digits = prefix.replace("-", "")
+        if not digits or any(c not in "0123456789abcdef" for c in digits):
+            raise SessionStoreError("invalid_session_id")
+        if len(digits) > 32:
+            raise SessionStoreError("invalid_session_id")
+        if len(digits) == 32:
+            # A whole identifier is unambiguous by construction, so it needs no
+            # scan. Stored identities are canonical UUID text; a caller who
+            # omits the hyphens still means the same Session.
+            canonical = str(UUID(digits))
+            uuid4_text(canonical)
+            with self._read() as conn:
+                if (
+                    conn.execute(
+                        "SELECT 1 FROM sessions WHERE session_id = ?", (canonical,)
+                    ).fetchone()
+                    is None
+                ):
+                    raise SessionStoreError("session_not_found")
+            return canonical
+        # A partial identifier is matched against the stored form as typed, and
+        # against its hyphenated form when the caller typed digits only.
+        with self._read() as conn:
+            matches = [
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT session_id FROM sessions"
+                    " WHERE session_id LIKE ? OR session_id LIKE ?",
+                    (f"{prefix}%", f"{digits}%"),
+                )
+            ]
+        if not matches:
+            raise SessionStoreError("session_not_found")
+        if len(matches) > 1:
+            raise SessionStoreError("ambiguous_session_id")
+        return matches[0]
 
     @property
     def schema_version(self) -> int:
