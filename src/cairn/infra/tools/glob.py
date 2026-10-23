@@ -19,6 +19,7 @@ from cairn.infra.tools.base import (
 from cairn.infra.tools.sensitive_paths import is_credential_path
 from cairn.infra.workspace.paths import (
     contained_candidate,
+    has_git_metadata_component,
     resolve_tool_path,
     validate_workspace_pattern,
 )
@@ -165,7 +166,12 @@ class GlobTool(WorkspaceOnlyTool):
         matches: list[str] = []
         blocked: list[str] = []
         scan_exhausted = True
-        inside = root == self.workspace.root
+        # Containment applies whenever the search root sits inside the Workspace,
+        # not only when it IS the Workspace. A narrower root is still a view of
+        # the Workspace, so it must obey the same rule; otherwise naming a
+        # subdirectory would be a way to step around containment for every
+        # candidate beneath it.
+        inside = root.is_relative_to(self.workspace.root)
         # Per-directory containment answers, so a wide scan does not re-walk the
         # same parent components for every candidate.
         contained_directories: dict[Path, Path | None] = {}
@@ -175,13 +181,21 @@ class GlobTool(WorkspaceOnlyTool):
                 scan_exhausted = False
                 break
 
+            # Git metadata is never a search result, whichever root was named.
+            # An outside root has no containment rule to enforce, so this check
+            # cannot live only in the containment layer below.
+            if has_git_metadata_component(candidate.relative_to(root)):
+                continue
+
             if inside:
                 # Second containment layer: check the RESOLVED candidate, not the
                 # lexical one. A pattern is not a path, so validate() can only
                 # check its literal prefix; this drops anything an actual match
                 # reached outside the Workspace or into .git.
                 contained = contained_candidate(
-                    root, candidate, directory_cache=contained_directories
+                    self.workspace.root,
+                    candidate,
+                    directory_cache=contained_directories,
                 )
                 if contained is None:
                     continue

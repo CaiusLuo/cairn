@@ -55,6 +55,16 @@ def _has_git_part(parts: "tuple[str, ...] | list[str]") -> bool:
     return any(_is_git_part(part) for part in parts)
 
 
+def has_git_metadata_component(path: Path) -> bool:
+    """Whether any component of ``path`` names Git metadata.
+
+    A search that has no containment rule to apply still must not report Git
+    metadata, so the ``.git`` decision stays here rather than being re-derived by
+    the tool that searches.
+    """
+    return _has_git_part(path.parts)
+
+
 def _relative_parts(raw: object) -> Path:
     """Split a workspace-relative argument into parts, rejecting an escape.
 

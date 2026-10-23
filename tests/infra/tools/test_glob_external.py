@@ -66,6 +66,40 @@ def test_credential_files_are_blocked_not_returned(tmp_path: Path) -> None:
     assert result.error_type == "permission_required"
 
 
+def test_a_subdirectory_root_still_hides_git_metadata(tmp_path: Path) -> None:
+    """A relative root inside the Workspace must not expose `.git` contents.
+
+    The containment rule is about the candidate, not about whether the caller
+    happened to name the Workspace root itself, so a narrower root cannot be
+    used to step around it.
+    """
+    workspace = _workspace(tmp_path)
+    nested = workspace.root / "sub"
+    (nested / ".git" / "objects").mkdir(parents=True)
+    (nested / ".git" / "config").write_text("x", encoding="utf-8")
+    (nested / ".git" / "objects" / "blob").write_text("x", encoding="utf-8")
+    (nested / "visible.py").write_text("x", encoding="utf-8")
+
+    result = _search(workspace, pattern="**/*", path="sub")
+
+    assert ".git" not in result.stdout
+    assert "visible.py" in result.stdout
+
+
+def test_an_outside_root_still_hides_git_metadata(tmp_path: Path) -> None:
+    """`.git` metadata is never a search result, whichever root was named."""
+    workspace = _workspace(tmp_path)
+    outside = tmp_path / "outside"
+    (outside / ".git" / "refs" / "heads").mkdir(parents=True)
+    (outside / ".git" / "config").write_text("x", encoding="utf-8")
+    (outside / "note.txt").write_text("x", encoding="utf-8")
+
+    result = _search(workspace, pattern="**/*", path=str(outside))
+
+    assert ".git" not in result.stdout
+    assert "note.txt" in result.stdout
+
+
 def test_an_ordinary_dotfile_is_not_a_credential(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     outside = tmp_path / "outside"
