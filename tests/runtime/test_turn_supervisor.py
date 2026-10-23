@@ -124,6 +124,7 @@ def test_several_queued_messages_keep_their_order() -> None:
 
 def test_an_interrupt_discards_nothing_already_queued() -> None:
     """Queued text is handed back so the caller can decide what to do with it."""
+
     async def run(_: str) -> str:
         await asyncio.sleep(0.05)
         return "never"
@@ -145,6 +146,7 @@ def test_an_interrupt_discards_nothing_already_queued() -> None:
 
 def test_the_reader_is_cancelled_when_the_turn_finishes() -> None:
     """A reader must not outlive the turn it was watching."""
+
     async def run(_: str) -> str:
         return "quick"
 
@@ -160,7 +162,10 @@ def test_the_reader_is_cancelled_when_the_turn_finishes() -> None:
 
     asyncio.run(
         supervise_turn(
-            run, "start", queue=TurnQueue(), wait_for_input=read,
+            run,
+            "start",
+            queue=TurnQueue(),
+            wait_for_input=read,
             is_interrupt=_is_interrupt,
         )
     )
