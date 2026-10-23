@@ -22,6 +22,7 @@ page is the map for everything else.
 | [M1-C.1 SessionStore](guides/session-store.md) | Isolated SQLite storage, strict checkpoint codec, CAS, local lock and manual recovery facts |
 | [M1-C.2 DurableSession](guides/durable-session.md) | Opt-in runtime admission, tool fences, settled checkpoint receipts and explicit host recovery |
 | [M1-C.3 Durable CLI](guides/durable-cli.md) | Local creation, read-only inspection, fresh reopen and exact human reconciliation |
+| [Session discovery, titles and resumed work](guides/session-discovery.md) | Listing stored Sessions, abbreviated IDs, title contract and the Task/goal resumption order |
 | [M2 Durable Tasks](guides/task-ledger.md) | Task Ledger, opt-in CodingTaskRunner execution, verified checkpoint references, explicit host-only Task reconciliation and schema upgrade |
 | [GitHub Issue workflows](guides/github-workflow.md) | Retained worktrees, deterministic verification, and approved Draft PR publication |
 | [GitHub Draft PR smoke preflight](guides/github-smoke-preflight.md) | Authorization list, disposable-repository preparation, and independent remote Draft PR verification |
