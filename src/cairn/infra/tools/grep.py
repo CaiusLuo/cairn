@@ -15,7 +15,8 @@ from cairn.infra.tools.arguments import (
     tool_path,
 )
 from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
-from cairn.infra.workspace.paths import contained_candidate
+from cairn.infra.tools.sensitive_paths import is_credential_path
+from cairn.infra.workspace.paths import contained_candidate, has_git_metadata_component
 from cairn.infra.workspace.workspace import Workspace
 
 DEFAULT_LIMIT = 100
@@ -199,11 +200,17 @@ class GrepTool:
             limit,
         )
 
-    def _candidate_files(self, raw_path: object, include: str | None) -> list[Path]:
-        """Files to inspect, in a deterministic order.
+    def _candidate_files(
+        self, raw_path: object, include: str | None
+    ) -> tuple[list[Path], list[Path]]:
+        """Files to inspect, and the files whose content is withheld.
 
         A missing path is reported as a tool failure describing what was asked
         for, so the caller sees "no such directory" rather than an empty result.
+
+        A candidate is withheld, never returned, when it is Git metadata or
+        credential material: searching a file is reading it, so the capability to
+        search an outside directory must not become a way to read those.
         """
         root = self.workspace.root
 
@@ -225,16 +232,21 @@ class GrepTool:
                 path for path in candidates if fnmatch.fnmatch(path.name, include)
             ]
 
-        # A candidate inside the Workspace obeys the containment rule: a
-        # symlinked entry and a `.git` entry are not task results. A path the
-        # caller named outside the Workspace was already resolved by tool_path,
-        # and reading outside needs no grant, so those stay.
-        return sorted(
-            path
-            for path in candidates
-            if not path.is_relative_to(root)
-            or contained_candidate(root, path) is not None
-        )
+        # Git metadata is refused from any root. A candidate inside the Workspace
+        # additionally obeys the containment rule: a symlinked entry is not a
+        # task result. A path the caller named outside the Workspace was already
+        # resolved by tool_path, and reading outside needs no grant, so it stays.
+        contained: list[Path] = []
+        for path in candidates:
+            if has_git_metadata_component(path):
+                continue
+            if path.is_relative_to(root) and contained_candidate(root, path) is None:
+                continue
+            contained.append(path)
+
+        withheld = [path for path in contained if is_credential_path(path)]
+        searchable = [path for path in contained if not is_credential_path(path)]
+        return sorted(searchable), sorted(withheld)
 
     def _read_lines(self, path: Path) -> list[str] | None:
         """Decode a file as lines, or ``None`` when it must be skipped.
@@ -271,18 +283,26 @@ class GrepTool:
         limit: int,
     ) -> ToolResult:
         include_glob = include if isinstance(include, str) else None
-        candidates = self._candidate_files(raw_path, include_glob)
+        searchable, withheld = self._candidate_files(raw_path, include_glob)
+        root = self.workspace.root
 
         entries: list[str] = []
         truncated = False
         matches = 0
 
-        for candidate in candidates:
+        for candidate in searchable:
             lines = self._read_lines(candidate)
             if lines is None:
                 continue
 
-            relative = candidate.relative_to(self.workspace.root).as_posix()
+            # An inside candidate is named relative to the Workspace; one the
+            # caller named outside it has no such name, so it is named by the
+            # absolute path that was searched.
+            relative = (
+                candidate.relative_to(root).as_posix()
+                if candidate.is_relative_to(root)
+                else str(candidate)
+            )
 
             for number, line in enumerate(lines, start=1):
                 if len(line) > MAX_LINE_LENGTH:
@@ -303,22 +323,53 @@ class GrepTool:
             if truncated:
                 break
 
+        names = [self._display_name(path, root) for path in withheld]
         if not entries:
-            if not candidates:
+            if not searchable:
                 message = "No workspace files are available to search."
             else:
                 message = f"No matches for pattern '{expression.pattern}'."
-            return ToolResult(stdout=message, exit_code=0)
+            return ToolResult(
+                stdout=self._render_withheld(message, names),
+                exit_code=0,
+                error_type="permission_required" if names else None,
+                blocked_paths=tuple(names),
+            )
 
         report = "\n".join(entries)
         if truncated:
             report += "\n[grep output truncated; match limit reached]"
 
         return ToolResult(
-            stdout=report,
+            stdout=self._render_withheld(report, names),
             exit_code=0,
             stdout_truncated=truncated,
+            error_type="permission_required" if names else None,
+            blocked_paths=tuple(names),
         )
+
+    def _display_name(self, path: Path, root: Path) -> str:
+        return (
+            path.relative_to(root).as_posix()
+            if path.is_relative_to(root)
+            else str(path)
+        )
+
+    def _render_withheld(self, body: str, names: list[str]) -> str:
+        """Search output, then the paths whose content was withheld.
+
+        Naming them tells the model the material exists and that approval would
+        unblock it, instead of returning a silently shorter result.
+        """
+        if not names:
+            return body
+        lines = [
+            body,
+            "",
+            "Blocked: Git metadata and credential files are not searched:",
+        ]
+        lines.extend(f"  {name}" for name in names)
+        return "\n".join(lines)
 
     def _format_match(
         self,
