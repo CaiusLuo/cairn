@@ -26,18 +26,22 @@ Rendering rules this module owns:
 
 import time
 from collections.abc import Callable
+from io import StringIO
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.enums import EditingMode
+from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Layout, Window
-from prompt_toolkit.layout.controls import BufferControl
+from prompt_toolkit.layout import HSplit, Layout, Window
+from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.lexers import SimpleLexer
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
+from rich.console import Console
 
+from cairn.terminal.live import LiveRegion
 from cairn.terminal.pacing import StreamPacer
 from cairn.terminal.transcript import TRANSCRIPT_GAP_LINES, Transcript
 
@@ -76,6 +80,7 @@ class TranscriptView:
         self._clock = clock
         self._write = write
         self._draft: list[str] = []
+        self._live_text = ""
         self._app: Application[str] | None = None
         # Set by the CLI once the streaming display exists; the key binding is
         # always present so the hint it prints is never a lie.
@@ -120,13 +125,28 @@ class TranscriptView:
             if not self._buffer.text:
                 self._app.exit(exception=EOFError())  # type: ignore[union-attr]
 
-        # The gap the operator asked for, then the input. No screen ownership:
-        # this is the whole application, and everything above it is scrollback.
-        body = Window(
-            BufferControl(buffer=self._buffer, lexer=SimpleLexer("class:input")),
-            height=Dimension(min=1, max=8),
-            style="class:input",
-            dont_extend_height=True,
+        # Top to bottom: the live region, the gap the operator asked for, then the
+        # input. No screen ownership: everything above this block is the terminal's
+        # own scrollback.
+        body = HSplit(
+            [
+                Window(
+                    FormattedTextControl(text=self._live_control),
+                    height=Dimension(weight=1, min=0),
+                    wrap_lines=False,
+                    style="class:live",
+                    dont_extend_height=True,
+                ),
+                Window(height=TRANSCRIPT_GAP_LINES),
+                Window(
+                    BufferControl(
+                        buffer=self._buffer, lexer=SimpleLexer("class:input")
+                    ),
+                    height=Dimension(min=1, max=8),
+                    style="class:input",
+                    dont_extend_height=True,
+                ),
+            ]
         )
         return Application(
             layout=Layout(body, focused_element=self._buffer),
@@ -141,6 +161,10 @@ class TranscriptView:
         )
 
     # -- input -----------------------------------------------------------
+
+    def _live_control(self) -> ANSI:
+        """The live region as ANSI, so its dim styling survives the frame."""
+        return ANSI(self._live_text)
 
     def _on_accept(self, buffer: Buffer) -> bool:
         text = buffer.text
@@ -182,6 +206,20 @@ class TranscriptView:
         self._draft.clear()
         self.pacer.reset()
 
+    def show_live(self, text: str) -> None:
+        """Set the live region shown above the input line.
+
+        This is the only part of the screen the application repaints, which is why
+        it is separated from ``emit``: finished output belongs in the scrollback and
+        must never be redrawn.
+        """
+        self._live_text = text
+        self.repaint()
+
+    @property
+    def live_text(self) -> str:
+        return self._live_text
+
     def repaint(self) -> None:
         if self._app is not None and self._app.is_running:
             self._app.invalidate()
@@ -196,3 +234,67 @@ class TranscriptView:
 def gap_lines() -> int:
     """How many blank rows separate output from the input line."""
     return TRANSCRIPT_GAP_LINES
+
+
+class FrameLiveRegion:
+    """A live region drawn inside the frame's own bottom viewport.
+
+    This is the host that lets the input keep its position: the region paints above
+    the input line inside the application, so the two never fight for the cursor.
+    A ``rich.Live`` region cannot do this — it moves the cursor itself, and an
+    application repaints over it.
+
+    The region renders each frame to text and hands it to the view, which owns the
+    repaint schedule. Rendering here rather than in the view keeps the styling
+    rules — dim reasoning, foreground-only colour — in the one module that already
+    states them.
+    """
+
+    def __init__(self, view: TranscriptView, *, width: int = 80) -> None:
+        self._view = view
+        self._width = width
+        self._renderable: object = None
+
+    def start(self, renderable: object) -> None:
+        self._renderable = renderable
+        self._paint()
+
+    def update(self, renderable: object) -> None:
+        self._renderable = renderable
+        self._paint()
+
+    def stop(self) -> None:
+        self._renderable = None
+        self._view.show_live("")
+
+    def _paint(self) -> None:
+        self._view.show_live(_render_to_text(self._renderable, width=self._width))
+
+
+def _render_to_text(renderable: object, *, width: int) -> str:
+    """Render one rich renderable to plain ANSI text.
+
+    A fresh console per frame keeps this independent of the global one: the live
+    region must not inherit whatever the scrollback path configured.
+    """
+    if renderable is None:
+        return ""
+    buffer = StringIO()
+    renderer = Console(
+        file=buffer,
+        width=width,
+        color_system="256",
+        force_terminal=True,
+        legacy_windows=False,
+    )
+    renderer.print(renderable)
+    return buffer.getvalue().rstrip("\n")
+
+
+def frame_live_region(view: TranscriptView) -> "Callable[[object], LiveRegion]":
+    """A live-region factory that paints inside ``view``."""
+
+    def factory(renderable: object) -> LiveRegion:
+        return FrameLiveRegion(view)
+
+    return factory

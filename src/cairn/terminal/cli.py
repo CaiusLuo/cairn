@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 from collections.abc import Awaitable, Mapping
 from pathlib import Path
 from typing import Annotated
@@ -51,6 +52,7 @@ from cairn.terminal.durable import (
     reconcile_session,
     show_report,
 )
+from cairn.terminal.frame import TranscriptView, frame_live_region
 from cairn.terminal.input import CliInput
 from cairn.terminal.output import (
     StreamingDisplay,
@@ -313,6 +315,14 @@ def _resolve_active_runtime(
     return runtime, api_key, context_budget
 
 
+def _interactive_terminal() -> bool:
+    """Whether this process has a terminal the frame may own."""
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
 def _print_durable_intro(durable_session: DurableSession) -> None:
     if durable_session.recovery_notice:
         print(durable_session.recovery_notice)
@@ -323,6 +333,7 @@ async def _turn_loop(
     *,
     agent: Agent,
     input_reader: CliInput,
+    frame: TranscriptView | None,
     router: CommandRouter,
     command_context: CommandContext,
     streaming_display: StreamingDisplay,
@@ -332,7 +343,11 @@ async def _turn_loop(
     """Read input, dispatch commands, and run turns until exit."""
     while True:
         try:
-            user_input = await input_reader.read()
+            # The frame owns the input line when it exists, so typed text and the
+            # live region share one viewport instead of fighting for the cursor.
+            user_input = (
+                await frame.read() if frame is not None else await input_reader.read()
+            )
         except KeyboardInterrupt:
             continue
         except EOFError:
@@ -435,7 +450,20 @@ async def main(
     # including providers this session has not selected.
     secret_env_keys = frozenset(named.config.api_key_env for named in catalog.providers)
 
-    streaming_display = StreamingDisplay()
+    # The live region is drawn inside the frame when there is an interactive
+    # terminal to draw it in, and by rich otherwise. The two cannot share a
+    # terminal: a rich region moves the cursor itself, which the frame's
+    # application repaints over. Off terminal there is nothing to repaint, and the
+    # display already falls back to printing each block once.
+    frame = TranscriptView() if _interactive_terminal() else None
+    streaming_display = StreamingDisplay(
+        live_factory=frame_live_region(frame) if frame is not None else None
+    )
+    if frame is not None:
+        # Ctrl+O reveals more reasoning. A keystroke rather than a click: capturing
+        # the mouse would cost the native drag-select and copy this layout exists to
+        # keep.
+        frame.on_reveal_reasoning = streaming_display.reveal_reasoning
     handle_event, pending_trace_finish = _make_event_handler(
         durable, streaming_display, command_context
     )
@@ -540,6 +568,7 @@ async def main(
         await _turn_loop(
             agent=agent,
             input_reader=input_reader,
+            frame=frame,
             router=router,
             command_context=command_context,
             streaming_display=streaming_display,

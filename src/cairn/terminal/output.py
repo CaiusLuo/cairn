@@ -6,7 +6,7 @@ from importlib.resources import files
 from pathlib import Path
 from time import perf_counter
 
-from rich.console import Console, Group
+from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.prompt import Confirm, Prompt
@@ -16,6 +16,7 @@ from cairn.core.events import Event
 from cairn.core.model_manager import ModelConfig
 from cairn.core.permissions import PermissionChoice, PermissionRequest
 from cairn.core.provider_catalog import NamedProvider
+from cairn.terminal.live import LiveRegion
 from cairn.terminal.reasoning import ReasoningView
 
 console = Console()
@@ -559,6 +560,47 @@ def console_event_handler(event: Event, *, report_trace_failure: bool = True) ->
                 )
 
 
+#: Builds a live region. The callable takes the function that produces the current
+#: frame, so a host can ask for fresh content whenever it repaints.
+LiveFactory = Callable[["Callable[[], RenderableType]"], LiveRegion]
+
+
+class _RichLiveRegion:
+    """A live region drawn by ``rich``, for a terminal nobody else owns."""
+
+    def __init__(self, frame: "Callable[[], RenderableType]") -> None:
+        self._frame = frame
+        # The rich object, not the protocol: ``Live.start`` takes no renderable, so
+        # this adapter's own signature differs from the region it implements.
+        self._rich: Live | None = None
+
+    def start(self, renderable: RenderableType) -> None:
+        # transient: each block is redrawn here, then printed once for good when
+        # it settles, so the live copy must not survive the stop.
+        self._rich = Live(
+            renderable,
+            console=console,
+            refresh_per_second=8,
+            vertical_overflow="visible",
+            transient=True,
+        )
+        self._rich.start()
+
+    def update(self, renderable: RenderableType) -> None:
+        if self._rich is not None:
+            self._rich.update(renderable)
+
+    def stop(self) -> None:
+        if self._rich is not None:
+            self._rich.stop()
+            self._rich = None
+
+
+def rich_live_region(frame: "Callable[[], RenderableType]") -> LiveRegion:
+    """The default host: a cursor-moving region in a plain terminal."""
+    return _RichLiveRegion(frame)
+
+
 class StreamingDisplay:
     """Per-CLI transient display state; it never advances an Agent lifecycle.
 
@@ -578,8 +620,14 @@ class StreamingDisplay:
     the status line throttles the reasoning repaint.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, live_factory: "LiveFactory | None" = None) -> None:
         self.final_text_visible = False
+        # Where the live region is painted. Injected so the display never has to
+        # know whether it is drawing into a plain terminal or an application that
+        # owns the bottom of the screen.
+        self._live_factory: LiveFactory = (
+            live_factory if live_factory is not None else rich_live_region
+        )
         self._reasoning: list[str] = []
         self._reasoning_open = False
         self._reasoning_view = ReasoningView()
@@ -589,7 +637,7 @@ class StreamingDisplay:
         self._answer: list[str] = []
         self._settled_blocks = 0
         self._settled_chars = 0
-        self._live: Live | None = None
+        self._live: LiveRegion | None = None
         # Counters for the status line. Updated on every delta; the line itself
         # is repainted on a timer, so a burst of deltas costs one repaint.
         self._turn_started: float | None = None
@@ -790,6 +838,15 @@ class StreamingDisplay:
             # not settled here: only its final form goes to the log.
             _write_reasoning_rows(_rows_for_lines(lines[-1:], growing=True))
 
+    def reveal_reasoning(self) -> None:
+        """Show more of the collapsed reasoning, and repaint.
+
+        The full text is already retained; this only changes how much of it is
+        shown, which is why it can be a plain action with no side effects.
+        """
+        self._reasoning_view.expand()
+        self._refresh_status()
+
     def _visible_reasoning(self) -> list[str]:
         """The reasoning rows to show, honoring the collapsed/expanded view.
 
@@ -867,17 +924,13 @@ class StreamingDisplay:
     def _start_live(self) -> None:
         """Open the one live region this turn: pending block, status, reasoning.
 
-        transient: each block is redrawn here, then printed once for good when
-        it settles, so the live copy must not survive the stop.
+        The region is whatever host the caller supplied. ``rich.Live`` is the
+        default and keeps the cursor-moving behaviour a plain terminal expects; the
+        CLI substitutes a host that paints inside its own bottom viewport, which is
+        what lets output stay selectable while the input keeps its position.
         """
-        self._live = Live(
-            self._live_renderable(),
-            console=console,
-            refresh_per_second=8,
-            vertical_overflow="visible",
-            transient=True,
-        )
-        self._live.start()
+        self._live = self._live_factory(self._live_renderable)
+        self._live.start(self._live_renderable())
         self._status_painted = perf_counter()
 
     def _live_renderable(self) -> Group:
