@@ -12,6 +12,7 @@ from cairn.infra.tools.arguments import (
     access_request,
     function_schema,
     reject_unknown_keys,
+    require_readable_content,
     tool_path,
 )
 from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
@@ -131,11 +132,16 @@ class WriteTool:
         if not path.exists():
             return
 
+        # Preflight runs before authority, so reading the file here must not
+        # confirm bytes the caller is not yet allowed to see. Credential
+        # material is refused first: the comparison would otherwise answer
+        # "correct" or "wrong" for a file a read tool would have to refuse.
+        require_readable_content(path)
+
         if _read_current_content(path) != expected_content:
-            relative = path.relative_to(self.workspace.root).as_posix()
             raise InvalidArguments(
-                f"current content of {relative} does not match "
-                "expected_content; no changes made"
+                f"current content of {_display_path(self.workspace.root, path)} "
+                "does not match expected_content; no changes made"
             )
 
     async def execute(

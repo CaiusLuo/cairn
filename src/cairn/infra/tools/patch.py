@@ -12,6 +12,7 @@ from cairn.infra.tools.arguments import (
     access_request,
     function_schema,
     reject_unknown_keys,
+    require_readable_content,
     tool_path,
 )
 from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
@@ -107,11 +108,13 @@ class PatchTool:
     ) -> ToolResult:
         self.validate(arguments)
         granted = context.accessible_roots if context is not None else ()
-        path = tool_path(
-            self.workspace,
-            arguments,
-            access=AccessKind.WRITE,
-            granted_roots=frozenset(granted),
+        path = require_readable_content(
+            tool_path(
+                self.workspace,
+                arguments,
+                access=AccessKind.WRITE,
+                granted_roots=frozenset(granted),
+            )
         )
         patches = arguments["patches"]
 

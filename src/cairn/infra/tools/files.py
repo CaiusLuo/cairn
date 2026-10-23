@@ -17,6 +17,7 @@ from cairn.infra.tools.arguments import (
     access_request,
     function_schema,
     reject_unknown_keys,
+    require_readable_content,
     tool_path,
 )
 from cairn.infra.tools.base import (
@@ -327,7 +328,9 @@ class ReadFileTool:
 
     def _read_once(self, arguments: dict[str, Any], *, deadline: float) -> ToolResult:
         self._check_deadline(deadline)
-        path = tool_path(self.workspace, arguments, access=AccessKind.READ)
+        path = require_readable_content(
+            tool_path(self.workspace, arguments, access=AccessKind.READ)
+        )
         start = arguments.get("start_line", 1)
         end = arguments.get("end_line", start + 199)
         is_file = path.is_file()
@@ -457,11 +460,13 @@ class EditFileTool:
     ) -> ToolResult:
         self.validate(arguments)
         granted = context.accessible_roots if context is not None else ()
-        path = tool_path(
-            self.workspace,
-            arguments,
-            access=AccessKind.WRITE,
-            granted_roots=frozenset(granted),
+        path = require_readable_content(
+            tool_path(
+                self.workspace,
+                arguments,
+                access=AccessKind.WRITE,
+                granted_roots=frozenset(granted),
+            )
         )
         old_text = arguments["old_text"]
         new_text = arguments["new_text"]

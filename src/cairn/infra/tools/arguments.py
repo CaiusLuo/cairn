@@ -23,6 +23,7 @@ from typing import Any
 
 from cairn.core.permissions import AccessKind, CapabilityRequest, PermissionCapability
 from cairn.infra.tools.base import InvalidArguments, PermissionRefused
+from cairn.infra.tools.sensitive_paths import is_credential_path
 from cairn.infra.workspace.paths import is_within, resolve_tool_path
 from cairn.infra.workspace.workspace import Workspace
 
@@ -100,6 +101,26 @@ def access_request(
         justification=f"Write to {resolved} outside the workspace.",
         access=access,
     )
+
+
+def require_readable_content(path: Path) -> Path:
+    """Return ``path`` when a tool may return its content.
+
+    ``is_credential_path`` owns the decision; this is the one place that turns it
+    into a refusal, so every tool that returns bytes asks the same question
+    instead of each keeping a partial list.
+
+    It is enforced at execution time, after preflight and authority, because
+    whether a target is credential material is not an argument-validity question.
+    The refusal names the target so the model can ask the operator for access
+    rather than silently seeing nothing.
+    """
+    if is_credential_path(path):
+        raise PermissionRefused(
+            "reading credential material requires approval",
+            blocked_paths=(str(path),),
+        )
+    return path
 
 
 def tool_path(
