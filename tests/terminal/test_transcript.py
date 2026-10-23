@@ -1,12 +1,11 @@
-"""The transcript window and the stream pacing that drives its repaints.
+"""The transcript window: what a reader can see, and where they are looking.
 
-Both are pure arithmetic over text and time, so they are tested directly rather
-than through a terminal. The cases that matter are the ones a reader would notice
-if they were wrong: a resize, a scroll away from the bottom, and a stream that
-arrives faster than a person can read.
+Pure arithmetic over text, so it is tested directly rather than through a
+terminal. The cases that matter are the ones a reader would notice if they were
+wrong: a resize, a scroll away from the bottom, and output arriving while they are
+reading earlier lines. Stream pacing is tested in ``test_pacing.py``.
 """
 
-from cairn.terminal.pacing import DEFAULT_FRAME_INTERVAL_SECONDS, StreamPacer
 from cairn.terminal.transcript import TRANSCRIPT_GAP_LINES, Transcript
 
 
@@ -94,45 +93,3 @@ def test_scroll_to_bottom_is_immediate() -> None:
 def test_the_gap_is_two_rows() -> None:
     assert TRANSCRIPT_GAP_LINES == 2
 
-
-# -- pacing ---------------------------------------------------------------
-
-
-def test_the_first_paint_is_immediate() -> None:
-    pacer = StreamPacer()
-    assert pacer.admit(0.0)
-
-
-def test_a_second_delta_inside_the_interval_is_refused() -> None:
-    """Faster text must not repaint faster than the frame budget allows."""
-    pacer = StreamPacer(interval=0.1)
-    assert pacer.admit(0.0)
-    assert not pacer.admit(0.01)
-    assert not pacer.admit(0.09)
-    assert pacer.admit(0.1)
-
-
-def test_the_default_interval_is_the_documented_frame_budget() -> None:
-    assert DEFAULT_FRAME_INTERVAL_SECONDS == 1.0 / 30.0
-
-
-def test_a_stream_of_many_deltas_costs_bounded_repaints() -> None:
-    """One second of very fast deltas must not become a repaint per delta."""
-    pacer = StreamPacer(interval=0.1)
-    paints = sum(1 for step in range(1000) if pacer.admit(step / 1000))
-    assert paints <= 11
-
-
-def test_reset_makes_the_next_paint_immediate() -> None:
-    pacer = StreamPacer(interval=10.0)
-    assert pacer.admit(0.0)
-    assert not pacer.admit(0.1)
-    pacer.reset()
-    assert pacer.admit(0.2)
-
-
-def test_a_nonpositive_interval_is_refused() -> None:
-    import pytest
-
-    with pytest.raises(ValueError, match="interval must be positive"):
-        StreamPacer(interval=0)

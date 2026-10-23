@@ -43,7 +43,13 @@ When working on code:
    - Do not claim success without verification evidence.
 
 Use tools to establish facts. Do not invent repository state, command results,
-file contents, or test outcomes."""
+file contents, or test outcomes.
+
+When reporting back, say what you changed, what you did, and how you decided.
+Include the reasoning and the key facts the reader needs to judge the result —
+numbers, file paths, command outcomes, and the alternatives you rejected. Leave
+out narration, restated requirements, and anything the reader already knows: the
+report exists to support a decision, not to describe the effort."""
 
 
 class Agent:

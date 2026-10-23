@@ -16,6 +16,7 @@ from cairn.core.events import Event
 from cairn.core.model_manager import ModelConfig
 from cairn.core.permissions import PermissionChoice, PermissionRequest
 from cairn.core.provider_catalog import NamedProvider
+from cairn.terminal.reasoning import ReasoningView
 
 console = Console()
 
@@ -581,6 +582,7 @@ class StreamingDisplay:
         self.final_text_visible = False
         self._reasoning: list[str] = []
         self._reasoning_open = False
+        self._reasoning_view = ReasoningView()
         # Off terminal, reasoning is appended rather than redrawn. This counts
         # the logical lines already written so a delta adds only what is new.
         self._logged_lines = 0
@@ -789,9 +791,21 @@ class StreamingDisplay:
             _write_reasoning_rows(_rows_for_lines(lines[-1:], growing=True))
 
     def _visible_reasoning(self) -> list[str]:
-        """The trailing reasoning text that fits beside the answer."""
+        """The reasoning rows to show, honoring the collapsed/expanded view.
+
+        The block is kept in full; this only decides how much of it competes with
+        the answer for the reader's attention. A collapsed block shows its opening
+        lines and a hint naming the key and the remainder, because a silent
+        truncation reads as lost content.
+        """
         rows = _reasoning_rows(self._reasoning, final=True)
-        return [text for text, _ in rows[-_reasoning_window() :]]
+        available = [text for text, _ in rows]
+        shown = self._reasoning_view.visible_lines(len(available))
+        hidden = len(available) - shown
+        visible = available[:shown]
+        if hidden:
+            visible = [*visible, self._reasoning_view.note(hidden)]
+        return visible
 
     def _close_reasoning(self) -> None:
         if not self._reasoning_open:

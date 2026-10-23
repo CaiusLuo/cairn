@@ -77,6 +77,9 @@ class TranscriptView:
         self._write = write
         self._draft: list[str] = []
         self._app: Application[str] | None = None
+        # Set by the CLI once the streaming display exists; the key binding is
+        # always present so the hint it prints is never a lie.
+        self.on_reveal_reasoning: Callable[[], None] | None = None
 
         self._buffer = Buffer(
             multiline=True,
@@ -103,6 +106,14 @@ class TranscriptView:
             # prompt_toolkit installs a no-op SIGINT handler for an Application,
             # so Ctrl-C must be bound explicitly or nothing can be interrupted.
             self._app.exit(exception=KeyboardInterrupt())  # type: ignore[union-attr]
+
+        @bindings.add("c-o")
+        def reveal_reasoning(event: object) -> None:
+            # Expanding reasoning is a keystroke rather than a click: capturing
+            # the mouse would cost the native drag-select and copy that this
+            # layout exists to keep.
+            if self.on_reveal_reasoning is not None:
+                self.on_reveal_reasoning()
 
         @bindings.add("c-d")
         def end_of_input(event: object) -> None:
