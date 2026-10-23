@@ -38,11 +38,12 @@ The file tools keep their own, independent boundary. A path inside the Workspace
 obeys `infra.workspace.paths`: no `..`, no `.git` component, no symlinked
 component. A path outside it is handled by the trust and grant rules below.
 
-`glob` is the exception: it accepts a `path` argument, so it **can** search
-outside the Workspace. Its containment rule follows the *candidate*, not the
-root — a search rooted inside the Workspace re-checks every match against
-`infra.workspace.paths`, so naming a subdirectory is not a way around it. Git
-metadata (`.git`) and credential files are never returned from any root.
+`glob` and `grep` both accept a `path` argument, so they **can** search outside
+the Workspace. Their rule follows the *candidate*, not the root — a search rooted
+inside the Workspace re-checks every match against `infra.workspace.paths`, so
+naming a subdirectory is not a way around it. Git metadata (`.git`) is never
+returned from any root, and credential files are never returned from any root
+either.
 
 ## Workspace trust and outside writes
 
@@ -64,13 +65,28 @@ A path **outside** it is handled differently:
 
 | Access | Outside the Workspace |
 | --- | --- |
-| Read (`read_file`, `grep` with an explicit `path`) | Allowed, no approval |
+| Read (`read_file`, `grep` with an explicit `path`) | Allowed, no approval, except credential files |
 | Write (`write_file`, `edit_file`, `patch_file`) | Needs a grant on the containing directory |
 | `glob` with `path` | Allowed, no approval; `.git` and credential files are still withheld |
+| Any read of a credential file | Refused with `permission_required` |
 
 An approved directory covers its whole subtree for the rest of the session, so
 approving `/tmp/data` once covers `/tmp/data/a.txt` and `/tmp/data/b.txt`. `.git`
 stays unreachable wherever it appears.
+
+### Credential files
+
+A credential file is not ordinary data, so it is the one exception to "reading
+needs no approval". `infra.tools.sensitive_paths` decides which paths hold
+credential material, and every tool that would return its *content* refuses with
+a `permission_required` outcome naming the target: `read_file`, `grep`,
+`edit_file` and `patch_file`. `write_file` refuses the same targets when its
+`expected_content` guard would otherwise read them to compare.
+
+The rule applies inside the Workspace as well as outside it: a tool boundary, not
+a location. `glob` reports the names it withheld instead of returning them, so the
+model learns the material exists and can ask for access rather than seeing
+nothing.
 
 Preflight checks only that the path is a well-formed target; the grant is enforced
 when the tool executes, so a refusal is a tool error the model can act on rather
