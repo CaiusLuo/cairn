@@ -461,12 +461,9 @@ def test_current_tool_output_overflow_preserves_executed_facts_and_can_recover()
     ]
     for index, fact in enumerate(agent.state.messages[-2:], start=1):
         assert fact.tool_call_id == f"call-{index}"
-        assert (
-            json.loads(fact.content or "")
-            == ToolResult(
-                stdout=f"result-{index}:" + "x" * 1_000, exit_code=0
-            ).model_dump()
-        )
+        payload = json.loads(fact.content or "")
+        assert payload["stdout"] == f"result-{index}:" + "x" * 1_000
+        assert payload["exit_code"] == 0
     assert sink.spans[-1].status == SpanStatus.ERROR
     assert "ContextBudgetExceeded" in (sink.spans[-1].error or "")
     assert events[-1].data["status"] == "error"

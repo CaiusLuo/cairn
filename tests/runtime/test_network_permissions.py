@@ -99,10 +99,9 @@ def test_shell_runs_only_after_approval(
 
     if choice is PermissionChoice.DENY:
         for message in messages:
-            assert message == {
-                "error": "Permission denied by user.",
-                "type": "PermissionDenied",
-            }
+            assert message["error"] == "Permission denied by user."
+            assert message["type"] == "PermissionDenied"
+            assert message["blocked_paths"] == []
         assert len([s for s in sink.spans if s.name == "tool.execute"]) == 0
         return
 

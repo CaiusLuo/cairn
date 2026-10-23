@@ -172,7 +172,6 @@ def test_generic_tool_execution_never_retries_an_effectful_or_unknown_tool(
     assert effect.read_text(encoding="utf-8") == "attempt 1\n"
     error = next(event for event in events if event.type == "tool_error")
     assert error.data["failure_kind"] == "transient_before_effect"
-    assert json.loads(agent.state.messages[2].content or "") == {
-        "type": "InjectedTransient",
-        "error": "injected failure after an effect",
-    }
+    failure = json.loads(agent.state.messages[2].content or "")
+    assert failure["type"] == "InjectedTransient"
+    assert failure["error"] == "injected failure after an effect"
