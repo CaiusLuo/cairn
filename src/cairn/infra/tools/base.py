@@ -28,8 +28,14 @@ class PermissionRefused(PermissionError):
 
     Distinct from ``InvalidArguments``: the arguments were well formed and the
     path is legitimate, but the session has not approved this access. The model
-    is told a permission is missing, not that its call was malformed.
+    is told a permission is missing, not that its call was malformed, so it can
+    ask the operator and then retry the same call.
     """
+
+    def __init__(self, message: str, *, blocked_paths: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        #: The targets that need approval, so the model can name them.
+        self.blocked_paths = blocked_paths
 
 
 class ToolFailureKind(StrEnum):

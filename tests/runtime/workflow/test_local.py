@@ -2,7 +2,6 @@ import asyncio
 import json
 import os
 import subprocess
-import sys
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from typing import Any
@@ -763,11 +762,10 @@ model_ids = ["test/model"]
     captured: list[dict[str, str]] = []
 
     async def spawn(*args: Any, **kwargs: Any) -> asyncio.subprocess.Process:
-        if args[0] == "git":
+        # The shell runs locally, as the user, with no OS sandbox wrapper: the
+        # child environment is what must be inspected.
+        if args[0] == "git" or args[0] == "/bin/bash":
             captured.append(dict(kwargs.get("env") or os.environ))
-        if args[0] in {"/usr/bin/sandbox-exec", "/usr/bin/bwrap"}:
-            captured.append(dict(kwargs["env"]))
-            return await original(sys.executable, "-c", "print('safe child')", **kwargs)
         return await original(*args, **kwargs)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)

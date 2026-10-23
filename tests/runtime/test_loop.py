@@ -272,13 +272,12 @@ def test_run_turn_cancellation_after_tool_preserves_fact_for_next_turn() -> None
             "tool",
         ]
         assert agent.state.messages[-1].tool_call_id == "call-1"
-        assert json.loads(agent.state.messages[-1].content or "") == {
-            "stdout": "recorded",
-            "stderr": "",
-            "exit_code": 0,
-            "stdout_truncated": False,
-            "stderr_truncated": False,
-        }
+        payload = json.loads(agent.state.messages[-1].content or "")
+        assert payload["stdout"] == "recorded"
+        assert payload["stderr"] == ""
+        assert payload["exit_code"] == 0
+        assert payload["stdout_truncated"] is False
+        assert payload["stderr_truncated"] is False
         assert not any(event.type == "agent_finish" for event in events)
         trace_finish = [event for event in events if event.type == "trace_finish"]
         llm_spans = [span for span in sink.spans if span.name == "llm.generate"]
@@ -337,13 +336,12 @@ def test_run_turn_executes_tool_and_returns_follow_up() -> None:
         "tool",
         "assistant",
     ]
-    assert json.loads(agent.state.messages[2].content or "") == {
-        "stdout": "recorded",
-        "stderr": "",
-        "exit_code": 0,
-        "stdout_truncated": False,
-        "stderr_truncated": False,
-    }
+    payload = json.loads(agent.state.messages[2].content or "")
+    assert payload["stdout"] == "recorded"
+    assert payload["stderr"] == ""
+    assert payload["exit_code"] == 0
+    assert payload["stdout_truncated"] is False
+    assert payload["stderr_truncated"] is False
     tool_result_event = next(event for event in events if event.type == "tool_result")
     assert tool_result_event.data["stdout"] == "recorded"
     assert tool_result_event.data["stdout_truncated"] is False
@@ -378,10 +376,10 @@ def test_run_turn_records_tool_errors_and_continues() -> None:
     result = asyncio.run(run_turn(agent, "run it", budget=TEST_BUDGET))
 
     assert result == "recovered"
-    assert json.loads(agent.state.messages[2].content or "") == {
-        "error": "tool failed",
-        "type": "RuntimeError",
-    }
+    failure = json.loads(agent.state.messages[2].content or "")
+    assert failure["error"] == "tool failed"
+    assert failure["type"] == "RuntimeError"
+    assert failure["blocked_paths"] == []
     assert any(event.type == "tool_error" for event in events)
     tool_spans = [span for span in sink.spans if span.name == "tool.execute"]
     assert len(tool_spans) == 1
@@ -408,10 +406,10 @@ def test_run_turn_reports_unknown_tool_as_tool_failure() -> None:
     result = asyncio.run(run_turn(agent, "run it", budget=TEST_BUDGET))
 
     assert result == "recovered"
-    assert json.loads(agent.state.messages[2].content or "") == {
-        "error": "Tool not found: record",
-        "type": "ToolNotFound",
-    }
+    failure = json.loads(agent.state.messages[2].content or "")
+    assert failure["error"] == "Tool not found: record"
+    assert failure["type"] == "ToolNotFound"
+    assert failure["blocked_paths"] == []
     assert [event.type for event in events if event.type == "tool_error"] == [
         "tool_error"
     ]

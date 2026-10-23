@@ -157,13 +157,12 @@ def test_edit_fact_survives_llm_failure_and_reaches_next_turn(tmp_path: Path) ->
     ]
     fact = agent.state.messages[-1]
     assert fact.tool_call_id == "edit-1"
-    assert json.loads(fact.content or "") == {
-        "stdout": "Created answer.txt",
-        "stderr": "",
-        "exit_code": 0,
-        "stdout_truncated": False,
-        "stderr_truncated": False,
-    }
+    payload = json.loads(fact.content or "")
+    assert payload["stdout"] == "Created answer.txt"
+    assert payload["stderr"] == ""
+    assert payload["exit_code"] == 0
+    assert payload["stdout_truncated"] is False
+    assert payload["stderr_truncated"] is False
     preserved = agent.state.messages.copy()
     next_llm = SequenceLLM([LLMResponse(content="done")])
     agent.llm = next_llm
@@ -244,15 +243,15 @@ def test_step_limit_preserves_successful_and_failed_tool_facts(
     assert agent.state.messages[-1].tool_call_id == "edit-1"
     payload = json.loads(agent.state.messages[-1].content or "")
     if tool_type is WriteThenFailTool:
-        assert payload == {"type": "RuntimeError", "error": "tool failed after writing"}
+        # Assert the facts that matter; a new optional field must not break this.
+        assert payload["type"] == "RuntimeError"
+        assert payload["error"] == "tool failed after writing"
     else:
-        assert payload == {
-            "stdout": "Created answer.txt",
-            "stderr": "",
-            "exit_code": 0,
-            "stdout_truncated": False,
-            "stderr_truncated": False,
-        }
+        assert payload["stdout"] == "Created answer.txt"
+        assert payload["stderr"] == ""
+        assert payload["exit_code"] == 0
+        assert payload["stdout_truncated"] is False
+        assert payload["stderr_truncated"] is False
 
 
 @pytest.mark.parametrize("tool_type", [EditFileTool, WriteThenFailTool])
@@ -288,15 +287,15 @@ def test_tool_fact_is_stored_before_failing_event(
     assert fact.tool_call_id == "edit-1"
     payload = json.loads(fact.content or "")
     if tool_type is WriteThenFailTool:
-        assert payload == {"type": "RuntimeError", "error": "tool failed after writing"}
+        # Assert the facts that matter; a new optional field must not break this.
+        assert payload["type"] == "RuntimeError"
+        assert payload["error"] == "tool failed after writing"
     else:
-        assert payload == {
-            "stdout": "Created first.txt",
-            "stderr": "",
-            "exit_code": 0,
-            "stdout_truncated": False,
-            "stderr_truncated": False,
-        }
+        assert payload["stdout"] == "Created first.txt"
+        assert payload["stderr"] == ""
+        assert payload["exit_code"] == 0
+        assert payload["stdout_truncated"] is False
+        assert payload["stderr_truncated"] is False
     assert aborted.tool_call_id == "edit-2"
     assert json.loads(aborted.content or "")["type"] == "TurnAborted"
 

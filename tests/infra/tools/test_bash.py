@@ -148,30 +148,24 @@ def test_bash_cleanup_removes_only_owned_process_group(
 
 
 @pytest.mark.parametrize("ending", ["timeout", "cancel"])
-def test_bash_sandbox_wrapper_cleans_descendants(
+def test_bash_local_shell_cleans_descendants(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     ending: str,
 ) -> None:
-    if sys.platform == "linux" and not Path("/usr/bin/bwrap").is_file():
-        pytest.skip("bubblewrap is not installed")
+    """A timed-out or cancelled command leaves no descendant behind.
+
+    There is no OS sandbox: the command runs directly as the user, so this
+    asserts the local process-group cleanup rather than a sandbox wrapper.
+    """
+    if sys.platform == "win32":
+        pytest.skip("POSIX process groups are required")
 
     async def scenario() -> None:
         tool = BashTool(Workspace(tmp_path), timeout=0.5, cleanup_timeout=0.5)
-        preflight = await tool.execute({"command": "printf sandbox-ready"})
-        namespace_errors = (
-            "No permissions to create new namespace",
-            "Creating new namespace failed: Operation not permitted",
-            "setting up uid map: Permission denied",
-        )
-        if sys.platform == "linux" and any(
-            error in preflight.stderr for error in namespace_errors
-        ):
-            pytest.skip(
-                f"bubblewrap namespaces unavailable: {preflight.stderr.strip()}"
-            )
+        preflight = await tool.execute({"command": "printf shell-ready"})
         assert preflight.exit_code == 0, preflight.stderr
-        assert preflight.stdout == "sandbox-ready"
+        assert preflight.stdout == "shell-ready"
 
         create_process = asyncio.create_subprocess_exec
         owned: list[asyncio.subprocess.Process] = []
@@ -179,7 +173,7 @@ def test_bash_sandbox_wrapper_cleans_descendants(
         async def track_process(
             *args: str, **kwargs: Any
         ) -> asyncio.subprocess.Process:
-            # Preserve the real sandbox-exec/bwrap argv and process-group ownership.
+            # Preserve the real argv and process-group ownership.
             process = await create_process(*args, **kwargs)
             owned.append(process)
             return process

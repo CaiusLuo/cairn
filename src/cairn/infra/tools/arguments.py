@@ -136,5 +136,8 @@ def tool_path(
     # same canonical form, or a symlinked parent (e.g. /tmp on macOS) never matches.
     approved = frozenset(root.resolve() for root in granted_roots)
     if not is_within(resolved.parent.resolve(), approved):
-        raise PermissionRefused("write outside the workspace requires approval")
+        raise PermissionRefused(
+            "write outside the workspace requires approval",
+            blocked_paths=(str(resolved),),
+        )
     return resolved

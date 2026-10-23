@@ -48,10 +48,21 @@ class ToolResult(BaseModel):
     stdout_truncated: bool = False
     stderr_truncated: bool = False
 
+    #: A model-facing outcome class when the result needs one beyond the exit
+    #: code. ``permission_required`` tells the model an approval would unblock
+    #: the call, so it can ask the operator instead of assuming it was malformed.
+    error_type: str | None = None
+    #: Targets the caller was not allowed to touch. Present with
+    #: ``error_type="permission_required"`` so the model can name what it needs.
+    blocked_paths: tuple[str, ...] = ()
+
 
 class ToolFailure(BaseModel):
     error: str
     type: str
+    #: Targets the caller may not touch yet. Present for
+    #: ``type="permission_required"`` so the model can name what it needs.
+    blocked_paths: tuple[str, ...] = ()
 
     def to_content(self) -> str:
         return self.model_dump_json(ensure_ascii=False)

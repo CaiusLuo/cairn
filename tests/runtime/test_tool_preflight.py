@@ -296,7 +296,12 @@ def test_sudo_policy_denial_skips_permissive_handler_and_execution() -> None:
     assert asyncio.run(run_turn(agent, "try sudo", budget=TEST_BUDGET)) == "recovered"
     assert tool.calls == []
     failure = json.loads(agent.state.messages[2].content or "")
-    assert failure == {"error": "sudo is not supported", "type": "PolicyDenied"}
+    # Pin the facts that matter: a policy denial names its reason and type and
+    # reports no blocked target. Asserting the whole mapping would break on any
+    # added field without saying anything more about the behaviour.
+    assert failure["error"] == "sudo is not supported"
+    assert failure["type"] == "PolicyDenied"
+    assert failure["blocked_paths"] == []
     assert [
         (event.type, event.data["error"])
         for event in events

@@ -67,6 +67,7 @@ from cairn.core.permissions import (
 from cairn.infra.observability.models import Span, SpanStatus
 from cairn.infra.tools.base import (
     InvalidArguments,
+    PermissionRefused,
     Tool,
     ToolExecutionContext,
     ToolExecutionFailure,
@@ -206,7 +207,15 @@ def _record_tool_error(
     failure_kind: ToolFailureKind = ToolFailureKind.EFFECT_UNKNOWN,
 ) -> None:
     """Record an expected preflight or execution failure through one path."""
-    if isinstance(error, ToolExecutionFailure):
+    if isinstance(error, PermissionRefused):
+        # A well-formed call that only needs approval. The model is told which
+        # targets are blocked so it can ask the operator and retry the call.
+        failure = ToolFailure(
+            error=str(error),
+            type="permission_required",
+            blocked_paths=error.blocked_paths,
+        )
+    elif isinstance(error, ToolExecutionFailure):
         outcome = error.outcome
         failure = ToolFailure(error=outcome.message, type=outcome.error_type)
         failure_kind = outcome.kind
