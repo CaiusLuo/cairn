@@ -9,7 +9,6 @@ import asyncio
 import hashlib
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 from dotenv import dotenv_values
