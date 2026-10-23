@@ -612,6 +612,13 @@ class StreamingDisplay:
         """
         self._close_live()
         self._forget_attempt()
+        # The running total belongs to the turn that just ended. The context
+        # limit belongs to the session, so it survives: the next turn is measured
+        # against the same budget.
+        self._input_tokens = 0
+        self._output_tokens = 0
+        self._cached_tokens = 0
+        self._reasoning_tokens = None
 
     def _forget_attempt(self) -> None:
         """Drop everything the display knows about the attempt so far.
@@ -650,6 +657,30 @@ class StreamingDisplay:
         self._reasoning_tokens = None
         self._trace_id = None
         self._active = True
+
+    def observe_context(self, *, used: int | None, limit: int | None) -> None:
+        """Adopt the context measurement of the request about to be sent.
+
+        This is what makes the gauge live during a turn. It is fed from the
+        request the runtime is about to build, because that is the only point
+        where "how full is the context" is both known and about to matter.
+        """
+        self._context_used = used if used is not None else self._context_used
+        self._context_limit = limit if limit is not None else self._context_limit
+
+    def observe_step_usage(
+        self, *, input_tokens: int | None, output_tokens: int | None
+    ) -> None:
+        """Add one step's measured usage to the running turn total.
+
+        A step that reports no usage adds nothing and erases nothing: a timed-out
+        or cancelled call must not discard the figures its predecessors measured,
+        which is what made a long turn display no numbers at all.
+        """
+        if input_tokens is not None:
+            self._input_tokens += input_tokens
+        if output_tokens is not None:
+            self._output_tokens += output_tokens
 
     def _show_text_delta(self, event: Event) -> None:
         self._text_seen = True

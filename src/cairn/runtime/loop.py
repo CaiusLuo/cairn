@@ -90,6 +90,14 @@ from cairn.runtime.turn.hook import (
 from cairn.runtime.turn_trace import AttemptContext, TurnTrace
 
 
+
+def _context_limit(agent: Agent) -> int | None:
+    """The input budget a status line should measure against, when it is known."""
+    builder = getattr(agent, "context_builder", None)
+    budget = getattr(builder, "budget", None)
+    limit = getattr(budget, "input_tokens", None)
+    return limit if type(limit) is int and limit > 0 else None
+
 async def run_turn(
     agent: Agent,
     user_input: str,
@@ -127,12 +135,17 @@ async def run_turn(
             agent.state.add_user_message(user_input)
 
             for step in range(budget.max_steps):
+                # The context budget travels with the existing step event rather
+                # than a new event type: the event vocabulary is a closed
+                # contract that other consumers read, and a status line needs
+                # only data, not a new kind of thing to handle.
                 agent.emit(
                     Event(
                         type="agent_step",
                         data={
                             "step": step + 1,
                             "max_steps": budget.max_steps,
+                            "context_limit": _context_limit(agent),
                         },
                     )
                 )

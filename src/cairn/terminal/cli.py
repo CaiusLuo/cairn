@@ -255,10 +255,30 @@ def _make_event_handler(
             console_event_handler(event, report_trace_failure=durable is None)
             pending_trace_finish[0] = event
             return
+        # The context budget arrives with the step and each step's measurement with
+        # the stream end, both on existing event types: the status line needs
+        # data, not a new kind of event for other consumers to learn.
+        if event.type == "agent_step":
+            limit = _optional_count(event.data.get("context_limit"))
+            if limit is not None:
+                streaming_display.observe_context(used=None, limit=limit)
+        if event.type == "model_stream_end" and event.data.get("status") == "completed":
+            streaming_display.observe_context(
+                used=_optional_count(event.data.get("context_used")), limit=None
+            )
+            streaming_display.observe_step_usage(
+                input_tokens=_optional_count(event.data.get("input_tokens")),
+                output_tokens=_optional_count(event.data.get("output_tokens")),
+            )
         if not streaming_display.observe(event):
             console_event_handler(event)
 
     return handle_event, pending_trace_finish
+
+
+def _optional_count(value: object) -> int | None:
+    """A token count when the provider reported one, otherwise nothing."""
+    return value if type(value) is int and value >= 0 else None
 
 
 def _resolve_active_runtime(

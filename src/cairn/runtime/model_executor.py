@@ -28,6 +28,23 @@ def _notify(observer: Callable[[Event], None] | None, event: Event) -> None:
             raise StreamObserverError("Streaming observer failed.") from None
 
 
+
+def _usage_fields(response: LLMResponse) -> dict[str, int]:
+    """The token counts this response reported, for the status line to adopt.
+
+    Omitted rather than zeroed when the provider reported nothing, so a reader is
+    never shown a measurement that was not made.
+    """
+    usage = response.usage
+    if usage is None:
+        return {}
+    fields: dict[str, int] = {}
+    for name in ("input_tokens", "output_tokens", "cached_tokens"):
+        value = getattr(usage, name)
+        if type(value) is int and value >= 0:
+            fields[name] = value
+    return fields
+
 async def _assemble_stream(
     client: StreamingLLMClient,
     request: ContextRequest,
@@ -272,11 +289,21 @@ class ModelExecutor:
                     continue
 
                 if streaming:
+                    # The step's own measurement rides on the existing end event.
+                    # A status line cannot wait for the turn total: that is only
+                    # published at trace_finish, and a turn that fails publishes
+                    # none, so this is the last point where a step's figures can
+                    # reach a reader.
                     _notify(
                         on_stream,
                         Event(
                             type="model_stream_end",
-                            data={**attribution, "status": "completed"},
+                            data={
+                                **attribution,
+                                "status": "completed",
+                                "context_used": request.tokens_before.tokens,
+                                **_usage_fields(response),
+                            },
                         ),
                     )
                 if model_id is not None:
