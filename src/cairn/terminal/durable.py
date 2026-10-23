@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -133,6 +133,27 @@ def show_report(report: RecoveryReport) -> None:
         typer.echo("Unfinished Turn: none")
 
 
+async def resolve_interactively(
+    store: SessionStore, typed: str, *, choose: Callable[[], Awaitable[str | None]]
+) -> str:
+    """The Session the operator means by ``typed``, asking when it is ambiguous.
+
+    A unique prefix resolves as before. Several matches become a choice rather
+    than an error, because the operator is looking at the listing and can tell
+    the conversations apart; refusing there would make the abbreviation useless
+    exactly when a store is large enough to need it. Declining chooses nothing.
+    """
+    candidates = store.matching_sessions(typed)
+    if not candidates:
+        raise SessionStoreError("session_not_found")
+    if len(candidates) == 1:
+        return candidates[0].session_id
+    selected = await choose()
+    if selected is None:
+        raise SessionStoreError("session_selection_cancelled")
+    return selected
+
+
 def inspect_session(
     session_id: str, directory: Path | None, additional_roots: tuple[Path, ...]
 ) -> None:
@@ -175,7 +196,26 @@ def confirm_resolution(report: RecoveryReport, binding: SessionBinding) -> bool:
         return False
 
 
-def attach_session(
+async def _select_session(
+    store: SessionStore,
+    typed: str,
+    choose: Callable[[tuple[SessionSummary, ...]], Awaitable[str | None]] | None,
+) -> str:
+    """The Session ``typed`` names, asking only when the prefix is ambiguous."""
+    candidates = store.matching_sessions(typed)
+    if not candidates:
+        raise SessionStoreError("session_not_found")
+    if len(candidates) == 1:
+        return candidates[0].session_id
+    if choose is None:
+        raise SessionStoreError("ambiguous_session_id")
+    selected = await choose(tuple(candidates))
+    if selected is None:
+        raise SessionStoreError("session_selection_cancelled")
+    return selected
+
+
+async def attach_session(
     options: DurableOptions,
     agent: Agent,
     workspace: Workspace,
@@ -184,6 +224,8 @@ def attach_session(
     max_steps: int,
     secret_env_keys: frozenset[str],
     sensitive_values: tuple[str, ...],
+    choose_session: Callable[[tuple[SessionSummary, ...]], Awaitable[str | None]]
+    | None = None,
 ) -> tuple[DurableSession, Callable[[], SessionBinding]]:
     session_id = options.session_id or str(uuid4())
     group = runtime.model_manager.current_model()
@@ -245,11 +287,12 @@ def attach_session(
         else:
             # A caller may type the abbreviated identifier `session list` shows;
             # resolving it here keeps the store the only authority on which
-            # Session that is, and refuses an ambiguous prefix before any state
-            # changes.
+            # Session that is. An ambiguous prefix becomes a choice, and the
+            # choice is made before any state changes.
+            selected = await _select_session(store, session_id, choose_session)
             session = DurableSession.reopen(
                 store,
-                store.resolve_session_id(session_id),
+                selected,
                 agent=agent,
                 binding=binding,
                 observe_binding=observe,

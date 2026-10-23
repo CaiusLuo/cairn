@@ -7,6 +7,7 @@ from prompt_toolkit.shortcuts.choice_input import ChoiceInput
 from prompt_toolkit.styles import Style
 
 from cairn.core.model_manager import ModelConfig
+from cairn.infra.sessions.models import SessionSummary
 
 
 def _create_key_bindings() -> KeyBindings:
@@ -79,6 +80,54 @@ class CliInput:
         )
         # Reuse even explicitly injected pipe/PTY input. No second stdin reader
         # or blocking prompt is introduced inside the CLI's asyncio loop.
+        with create_app_session(
+            input=self._session.app.input, output=self._session.app.output
+        ):
+            try:
+                return await picker.prompt_async()
+            except (KeyboardInterrupt, EOFError):
+                return None
+
+    async def choose_session(
+        self, candidates: tuple[SessionSummary, ...]
+    ) -> str | None:
+        return await self._choose_session(candidates)
+
+    async def _choose_session(
+        self, candidates: tuple[SessionSummary, ...]
+    ) -> str | None:
+        """Pick one of several Sessions that share the typed prefix.
+
+        Offered only when a prefix is ambiguous, because choosing between
+        conversations is a decision the operator must make explicitly: silently
+        resuming the newest one would be a guess about which history to continue.
+        ``None`` means the operator declined and nothing is reopened.
+        """
+        bindings = KeyBindings()
+
+        @bindings.add("escape")
+        def cancel(event: KeyPressEvent) -> None:
+            # Not eager: Escape also prefixes the terminal's arrow sequences.
+            event.app.exit(exception=KeyboardInterrupt())
+
+        picker = ChoiceInput(
+            message=(
+                "Several sessions share that prefix\n"
+                "Up/Down move \u00b7 Enter select \u00b7 Esc/Ctrl+C cancel"
+            ),
+            options=[
+                (
+                    summary.session_id,
+                    f"{summary.short_id}  {summary.state}  {summary.updated_at_utc}"
+                    + ("\n" if index < len(candidates) - 1 else ""),
+                )
+                for index, summary in enumerate(candidates)
+            ],
+            default=None,
+            show_numbers=False,
+            key_bindings=bindings,
+            style=Style.from_dict({"selected-option": "fg:#87cefa bold"}),
+        )
         with create_app_session(
             input=self._session.app.input, output=self._session.app.output
         ):

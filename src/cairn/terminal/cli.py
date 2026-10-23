@@ -484,12 +484,13 @@ async def main(
 
     durable_session: DurableSession | None = None
     if durable is not None:
-        durable_session, observe_binding = attach_session(
+        durable_session, observe_binding = await attach_session(
             durable,
             agent,
             workspace,
             active_runtime,
             max_steps=DEFAULT_CLI_RUN_BUDGET.max_steps,
+            choose_session=input_reader.choose_session,
             secret_env_keys=secret_env_keys,
             sensitive_values=tuple(
                 {

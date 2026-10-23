@@ -1206,13 +1206,14 @@ class SessionStore(TaskLedgerMixin):
                 for row in rows
             ]
 
-    def resolve_session_id(self, prefix: str) -> str:
-        """The one Session whose identifier starts with ``prefix``.
+    def matching_sessions(self, prefix: str) -> list[SessionSummary]:
+        """Stored Sessions whose identifier starts with ``prefix``.
 
-        A whole identifier needs no scan. An abbreviated one is accepted with or
-        without hyphens, because that is what a caller copies out of a listing,
-        and it resolves only when exactly one Session matches: reopening the
-        wrong conversation would resume work against the wrong history.
+        An abbreviated identifier is matched with and without hyphens. A whole
+        identifier is matched exactly, so it never depends on a scan. Candidates
+        are returned for the caller to choose from; selecting one is the caller's
+        decision, which is why this returns a list rather than asserting
+        uniqueness.
         """
         if not isinstance(prefix, str) or not prefix:
             raise SessionStoreError("invalid_options")
@@ -1223,35 +1224,49 @@ class SessionStore(TaskLedgerMixin):
             raise SessionStoreError("invalid_session_id")
         if len(digits) == 32:
             # A whole identifier is unambiguous by construction, so it needs no
-            # scan. Stored identities are canonical UUID text; a caller who
-            # omits the hyphens still means the same Session.
+            # scan. Stored identities are canonical UUID text; a caller who omits
+            # the hyphens still means the same Session.
             canonical = str(UUID(digits))
             uuid4_text(canonical)
-            with self._read() as conn:
-                if (
-                    conn.execute(
-                        "SELECT 1 FROM sessions WHERE session_id = ?", (canonical,)
-                    ).fetchone()
-                    is None
-                ):
-                    raise SessionStoreError("session_not_found")
-            return canonical
-        # A partial identifier is matched against the stored form as typed, and
-        # against its hyphenated form when the caller typed digits only.
+            clause = "WHERE session_id = ?"
+            parameters: tuple[str, ...] = (canonical,)
+        else:
+            # A partial identifier is matched against the stored form as typed,
+            # and against its hyphenated form when the caller typed digits only.
+            clause = "WHERE session_id LIKE ? OR session_id LIKE ?"
+            parameters = (f"{prefix}%", f"{digits}%")
         with self._read() as conn:
-            matches = [
-                str(row[0])
-                for row in conn.execute(
-                    "SELECT session_id FROM sessions"
-                    " WHERE session_id LIKE ? OR session_id LIKE ?",
-                    (f"{prefix}%", f"{digits}%"),
-                )
-            ]
+            rows = conn.execute(
+                "SELECT session_id, state, created_at_utc, updated_at_utc, head_seq "
+                f"FROM sessions {clause} "
+                "ORDER BY updated_at_utc DESC, session_id ASC",
+                parameters,
+            ).fetchall()
+        return [
+            SessionSummary(
+                session_id=row[0],
+                state=row[1],
+                created_at_utc=row[2],
+                updated_at_utc=row[3],
+                head_seq=row[4],
+            )
+            for row in rows
+        ]
+
+    def resolve_session_id(self, prefix: str) -> str:
+        """The one Session whose identifier starts with ``prefix``.
+
+        Refuses an ambiguous prefix rather than picking one, because reopening
+        the wrong conversation resumes work against the wrong history. A caller
+        that wants to offer a choice uses ``matching_sessions`` instead of
+        handling that refusal.
+        """
+        matches = self.matching_sessions(prefix)
         if not matches:
             raise SessionStoreError("session_not_found")
         if len(matches) > 1:
             raise SessionStoreError("ambiguous_session_id")
-        return matches[0]
+        return matches[0].session_id
 
     @property
     def schema_version(self) -> int:
