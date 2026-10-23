@@ -28,7 +28,6 @@ def _notify(observer: Callable[[Event], None] | None, event: Event) -> None:
             raise StreamObserverError("Streaming observer failed.") from None
 
 
-
 def _usage_fields(response: LLMResponse) -> dict[str, int]:
     """The token counts this response reported, for the status line to adopt.
 
@@ -44,6 +43,7 @@ def _usage_fields(response: LLMResponse) -> dict[str, int]:
         if type(value) is int and value >= 0:
             fields[name] = value
     return fields
+
 
 async def _assemble_stream(
     client: StreamingLLMClient,

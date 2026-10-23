@@ -90,13 +90,13 @@ from cairn.runtime.turn.hook import (
 from cairn.runtime.turn_trace import AttemptContext, TurnTrace
 
 
-
 def _context_limit(agent: Agent) -> int | None:
     """The input budget a status line should measure against, when it is known."""
     builder = getattr(agent, "context_builder", None)
     budget = getattr(builder, "budget", None)
     limit = getattr(budget, "input_tokens", None)
     return limit if type(limit) is int and limit > 0 else None
+
 
 async def run_turn(
     agent: Agent,

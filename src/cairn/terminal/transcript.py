@@ -81,7 +81,9 @@ class Transcript:
         """Move the view towards older output, stopping at the first line."""
         if lines <= 0:
             return
-        self._offset_from_bottom = min(len(self._lines), self._offset_from_bottom + lines)
+        self._offset_from_bottom = min(
+            len(self._lines), self._offset_from_bottom + lines
+        )
 
     def scroll_down(self, lines: int = 1) -> None:
         """Move the view towards newer output; reaching the end resumes following."""
