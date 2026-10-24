@@ -89,3 +89,55 @@ def test_the_model_survives_a_reset() -> None:
     first, _ = display.status_lines()
 
     assert "openai/x" in first
+
+
+# -- painting -------------------------------------------------------------
+#
+# The status has its own destination, so repainting it must not depend on the live
+# region being open. Tying the two together meant the final figures — the last
+# turn's usage and its frozen rate — never reached the screen, because the live
+# region closes exactly when a turn ends and those figures are known.
+
+
+def _painted() -> tuple[StreamingDisplay, list[str]]:
+    painted: list[str] = []
+    display = StreamingDisplay(on_status=painted.append)
+    return display, painted
+
+
+def test_the_status_paints_without_a_live_region() -> None:
+    """The final figures arrive after the live region has closed."""
+    display, painted = _painted()
+
+    display._refresh_status()
+
+    assert painted
+
+
+def test_the_final_usage_is_painted_after_the_live_region_closes() -> None:
+    display, painted = _painted()
+    display.observe_step_usage(input_tokens=312, output_tokens=58)
+    display._close_live()
+
+    display._refresh_status()
+
+    assert any("312 in" in text for text in painted)
+
+
+def test_the_frozen_rate_is_painted_after_the_turn_ends() -> None:
+    display, painted = _painted()
+    display.observe_step_usage(input_tokens=100, output_tokens=200)
+    display._frozen_rate = 42.0
+
+    display._refresh_status()
+
+    assert any("42 tok/s" in text for text in painted)
+
+
+def test_the_model_survives_into_the_painted_status() -> None:
+    display, painted = _painted()
+    display.observe_model("openai/x", provider="bailian")
+
+    display._refresh_status()
+
+    assert any("openai/x" in text and "bailian" in text for text in painted)

@@ -896,23 +896,26 @@ class StreamingDisplay:
         )
 
     def _refresh_status(self) -> None:
-        """Repaint the live region if it is showing.
+        """Publish the status area, whether or not a live region is open.
 
-        Called on the events that change what the status line says, not per
-        delta: a token stream can deliver dozens of updates a second and each
-        repaint costs a full region redraw.
+        The status has its own destination, so it is not gated on the live region.
+        Gating it meant the final figures never appeared: the last turn's usage and
+        its frozen rate become known exactly when the live region closes, which was
+        the moment the guard stopped anything from being painted.
+
+        Rate limited because the status changes many times a second and each repaint
+        costs a redraw; the limit applies to the paint, not to what is published.
         """
-        if self._live is None:
-            return
         now = perf_counter()
         if now - self._status_painted < STATUS_INTERVAL_SECONDS:
             return
         self._status_painted = now
         if self._on_status is not None:
-            # Same rate limit as the live region: the status line changes many times
-            # a second and each repaint costs a redraw.
             self._on_status("\n".join(self.status_lines()))
-        self._live.update(self._live_renderable())
+        if self._live is not None:
+            frame = self._live_renderable()
+            if frame is not None:
+                self._live.update(frame)
 
     def _render_reasoning(self) -> None:
         """Show the reasoning; live where a live region is safe, else a log.
