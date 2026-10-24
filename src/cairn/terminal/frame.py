@@ -30,6 +30,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from io import StringIO
 
+from prompt_toolkit import keys
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.enums import EditingMode
@@ -41,15 +42,25 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.lexers import SimpleLexer
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
+from prompt_toolkit.widgets import HorizontalLine
 from rich.console import Console
 
 from cairn.terminal.live import LiveRegion
 from cairn.terminal.pacing import StreamPacer
+from cairn.terminal.paste import PasteRegistry, decide_paste
 from cairn.terminal.submission import LineQueue
 from cairn.terminal.transcript import TRANSCRIPT_GAP_LINES, Transcript
 
-#: Prompt shown at the input line. Kept short so the input keeps its width.
-INPUT_PROMPT = "cairn> "
+#: Rows the live tail may occupy. Bounded rather than weighted: an inline
+#: application gives a weighted window every spare row, which pushes the input off
+#: screen and makes the session look frozen.
+LIVE_TAIL_LINES = 3
+
+#: Rows the composer grows to before it scrolls internally. Kept small so the
+#: transcript keeps most of the screen; the shipped agents use 10 (Gemini) or
+#: two-thirds of the screen (Codex), which suits a full-screen layout but not an
+#: inline one.
+COMPOSER_MAX_LINES = 4
 
 #: Styling for the owned region. Colours are foreground-only on purpose: a filled
 #: pane is indistinguishable from unreadable once a different palette renders it.
@@ -87,6 +98,8 @@ class TranscriptView:
         # Submitted lines go through a queue because the input line runs for the
         # whole session: the turn and the input overlap, they are not nested.
         self._lines = LineQueue()
+        # Payloads behind the paste markers currently in the buffer.
+        self._pastes = PasteRegistry()
         self._runner: asyncio.Task[None] | None = None
         self._app: Application[str] | None = None
         # Set by the CLI once the streaming display exists; the key binding is
@@ -127,32 +140,59 @@ class TranscriptView:
             if self.on_reveal_reasoning is not None:
                 self.on_reveal_reasoning()
 
+        @bindings.add(keys.Keys.BracketedPaste)
+        def paste(event: object) -> None:
+            """Collapse a large paste so it cannot flood the composer.
+
+            The payload is kept in a registry and restored on submit, so the model
+            receives the text the operator pasted while the composer stays readable.
+            """
+            data = event.data  # type: ignore[attr-defined]
+            decision = decide_paste(data, existing=self._pastes.count)
+            if not decision.collapsed:
+                event.current_buffer.insert_text(decision.payload)  # type: ignore[attr-defined]
+                return
+            self._pastes.remember(decision.marker, decision.payload)
+            event.current_buffer.insert_text(decision.marker)  # type: ignore[attr-defined]
+
         @bindings.add("c-d")
         def end_of_input(event: object) -> None:
             if not self._buffer.text:
                 self._app.exit(exception=EOFError())  # type: ignore[union-attr]
 
-        # Top to bottom: the live region, the gap the operator asked for, then the
-        # input. No screen ownership: everything above this block is the terminal's
-        # own scrollback.
+        # Top to bottom: the live tail, a blank separator, the input bracketed by
+        # two horizontal rules. The rules have no side segments on purpose: a full
+        # box double-draws against the terminal edge and has to be re-measured on
+        # every resize, while a rule simply spans the current width. Two of the
+        # shipped agents (Claude Code, Gemini CLI) use exactly this shape.
         body = HSplit(
             [
+                # A bounded live tail, not a weighted pane. A weighted window
+                # claims every spare row of an inline application, which pushes the
+                # input line off the visible area — the input is then unreachable
+                # and the session looks frozen.
                 Window(
                     FormattedTextControl(text=self._live_control),
-                    height=Dimension(weight=1, min=0),
+                    height=Dimension(min=0, max=LIVE_TAIL_LINES),
                     wrap_lines=False,
                     style="class:live",
                     dont_extend_height=True,
                 ),
                 Window(height=TRANSCRIPT_GAP_LINES),
+                HorizontalLine(),
                 Window(
                     BufferControl(
                         buffer=self._buffer, lexer=SimpleLexer("class:input")
                     ),
-                    height=Dimension(min=1, max=8),
+                    # Four lines is the readable size at the bottom of a terminal:
+                    # enough for a pasted sentence or a short list, small enough to
+                    # leave the transcript most of the screen. Beyond it the buffer
+                    # scrolls internally so the transcript never jumps.
+                    height=Dimension(min=1, max=COMPOSER_MAX_LINES),
                     style="class:input",
                     dont_extend_height=True,
                 ),
+                HorizontalLine(),
             ]
         )
         return Application(
@@ -181,8 +221,12 @@ class TranscriptView:
         """
         text = buffer.text
         buffer.reset()
-        if text.strip():
-            self._lines.submit(text)
+        # Markers in the buffer stand for pasted content; submission sends what was
+        # pasted, not the placeholder that stood in for it.
+        expanded = self._pastes.expand(text)
+        self._pastes.clear()
+        if expanded.strip():
+            self._lines.submit(expanded)
         return True
 
     async def read(self) -> str:
@@ -256,7 +300,14 @@ class TranscriptView:
         it is separated from ``emit``: finished output belongs in the scrollback and
         must never be redrawn.
         """
-        self._live_text = text
+        # Only the last few rows are kept: the pane is a bounded window, and text
+        # longer than it would either be clipped or push the layout around. The
+        # tail is what a reader watches; earlier lines are already in the
+        # scrollback or in the reasoning block.
+        lines = text.split("\n")
+        if len(lines) > LIVE_TAIL_LINES:
+            lines = lines[-LIVE_TAIL_LINES:]
+        self._live_text = "\n".join(lines)
         self.repaint()
 
     @property

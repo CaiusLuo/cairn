@@ -15,7 +15,13 @@ from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from cairn.terminal.frame import FRAME_STYLE, INPUT_PROMPT, TranscriptView, gap_lines
+from cairn.terminal.frame import (
+    COMPOSER_MAX_LINES,
+    FRAME_STYLE,
+    LIVE_TAIL_LINES,
+    TranscriptView,
+    gap_lines,
+)
 from cairn.terminal.pacing import StreamPacer
 from cairn.terminal.transcript import TRANSCRIPT_GAP_LINES, Transcript
 
@@ -80,8 +86,15 @@ def test_the_application_does_not_own_the_screen() -> None:
         assert view._app.full_screen is False
 
 
-def test_the_header_prompt_is_the_documented_one() -> None:
-    assert INPUT_PROMPT == "cairn> "
+def test_the_composer_is_capped_at_four_lines() -> None:
+    """Beyond the cap the buffer scrolls internally, so the transcript never jumps."""
+    assert COMPOSER_MAX_LINES == 4
+
+
+def test_the_live_tail_is_bounded() -> None:
+    """A weighted pane would claim every spare row and hide the input line."""
+    assert LIVE_TAIL_LINES > 0
+    assert LIVE_TAIL_LINES < COMPOSER_MAX_LINES
 
 
 def test_the_gap_between_output_and_input_is_two_rows() -> None:
