@@ -49,6 +49,7 @@ from rich.console import Console
 from cairn.runtime.turn.steering import PendingMessage, SteerQueue
 from cairn.terminal.live import LiveRegion
 from cairn.terminal.pacing import StreamPacer
+from cairn.terminal.palette import Palette
 from cairn.terminal.paste import PasteRegistry, decide_paste
 from cairn.terminal.queue_view import QueueView
 from cairn.terminal.submission import Delivery, LineQueue, PendingLine
@@ -58,6 +59,9 @@ from cairn.terminal.transcript import TRANSCRIPT_GAP_LINES, Transcript
 #: application gives a weighted window every spare row, which pushes the input off
 #: screen and makes the session look frozen.
 LIVE_TAIL_LINES = 3
+
+#: Rows the palette may occupy, plus one for its key hint.
+PALETTE_ROWS = 6
 
 #: Rows the status area uses for session facts: what the session talks to, and
 #: what it has spent.
@@ -115,6 +119,9 @@ class TranscriptView:
         # The queued messages and which one the operator has selected.
         self._pending = SteerQueue()
         self._queue_view = QueueView()
+        # The command surface, opened by typing `/` and closed when the text stops
+        # looking like a command.
+        self._palette = Palette()
         # The session facts, supplied by the display; one entry per line.
         self._status: list[str] = []
         # Payloads behind the paste markers currently in the buffer.
@@ -128,6 +135,7 @@ class TranscriptView:
         self._buffer = Buffer(
             multiline=True,
             accept_handler=self._on_accept,
+            on_text_changed=self._on_text_changed,
             name="input",
         )
         self._app = self._build()
@@ -155,6 +163,35 @@ class TranscriptView:
             if not self._running:
                 return
             self._submit_typed(delivery="queue")
+
+        @bindings.add("up", filter=Condition(lambda: self._palette.open))
+        def palette_previous(event: object) -> None:
+            self._palette.move(-1)
+            self.repaint()
+
+        @bindings.add("down", filter=Condition(lambda: self._palette.open))
+        def palette_next(event: object) -> None:
+            self._palette.move(1)
+            self.repaint()
+
+        @bindings.add("tab", filter=Condition(lambda: self._palette.open))
+        def palette_complete(event: object) -> None:
+            """Put the chosen command in the composer, ready to run or extend."""
+            command = self._palette.selected_command()
+            if command:
+                self._buffer.reset()
+                self._buffer.insert_text(command + " ")
+            self.repaint()
+
+        @bindings.add("escape", filter=Condition(lambda: self._palette.open))
+        def palette_close(event: object) -> None:
+            """Hide the palette without touching the turn.
+
+            Escape closes a menu; it must never reach the running turn, which is why
+            the binding exists only while the palette is open.
+            """
+            self._palette.close()
+            self.repaint()
 
         @bindings.add("up")
         def select_previous(event: object) -> None:
@@ -267,6 +304,15 @@ class TranscriptView:
                 ),
                 HorizontalLine(),
                 Window(
+                    FormattedTextControl(text=self._palette_control),
+                    # Bounded like every other region: a taller window would claim
+                    # rows the transcript and the composer need.
+                    height=Dimension(min=0, max=PALETTE_ROWS + 1),
+                    wrap_lines=False,
+                    style="class:palette",
+                    dont_extend_height=True,
+                ),
+                Window(
                     BufferControl(
                         buffer=self._buffer, lexer=SimpleLexer("class:input")
                     ),
@@ -341,6 +387,24 @@ class TranscriptView:
             return self._app.output.get_size().columns
         except (AttributeError, ValueError):
             return None
+
+    def _on_text_changed(self, buffer: Buffer) -> None:
+        """Keep the command surface in step with what is typed."""
+        self._palette.update(buffer.text)
+        self.repaint()
+
+    def _palette_control(self) -> ANSI:
+        """The command list, shown only while a command is being typed."""
+        if not self._palette.open:
+            return ANSI("")
+        lines = []
+        for row in self._palette.rows():
+            marker = ">" if row.selected else " "
+            lines.append(f"{marker} {row.name:<10} {row.description}")
+        hint = self._palette.hint()
+        if hint:
+            lines.append(f"  {hint}")
+        return ANSI("\n".join(lines))
 
     def _queue_control(self) -> ANSI:
         """The queued messages, with the selected one marked."""

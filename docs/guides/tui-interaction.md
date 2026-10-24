@@ -85,6 +85,34 @@ the transcript around. A large paste is replaced by a marker such as
 `[pasted 12 lines]`, and the payload is restored on submit — the composer stays
 readable while the message still carries what was pasted.
 
+## The command palette
+
+Typing `/` opens a list of commands above the composer, filtered as the text grows:
+
+```text
+> /mo
+
++ Commands ------------------------------------------+
+| > /model     Choose the active model group          |
++-----------------------------------------------------+
+  Up/Down move · Tab or Enter complete · Esc close
+```
+
+It is a temporary surface, not transcript text: a list of commands is a means to an
+action, so closing it leaves nothing behind.
+
+| Key | Effect |
+| --- | --- |
+| `Up` / `Down` | Move the selection |
+| `Tab` | Put the chosen command in the composer |
+| `Enter` | Run it |
+| `Esc` | Close the palette, without touching a running turn |
+
+Filtering is by prefix, not substring: `/mo` means "the command starting with mo",
+and answering with `/compact` because it contains an `m` would be a guess. The
+palette follows the text rather than a key, so it closes the moment the text stops
+looking like a command — including when the slash is deleted.
+
 ## Steering a running turn
 
 While a turn runs, a typed message is not a new turn. It joins the one in flight at
