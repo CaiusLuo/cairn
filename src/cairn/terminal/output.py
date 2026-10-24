@@ -18,6 +18,7 @@ from cairn.core.events import Event
 from cairn.core.model_manager import ModelConfig
 from cairn.core.permissions import PermissionChoice, PermissionRequest
 from cairn.core.provider_catalog import NamedProvider
+from cairn.terminal.interrupt import Interruption
 from cairn.terminal.live import LiveRegion
 from cairn.terminal.thinking import ThinkingPreview
 
@@ -740,6 +741,8 @@ class StreamingDisplay:
         # The temporary reasoning preview; it owns what the reader sees while the
         # model thinks, and the receipt that survives it.
         self._thinking = ThinkingPreview()
+        # Whether a turn is being stopped, and the receipt it leaves.
+        self._interruption = Interruption()
         # Off terminal, reasoning is appended rather than redrawn. This counts
         # the logical lines already written so a delta adds only what is new.
         self._logged_lines = 0
@@ -790,6 +793,7 @@ class StreamingDisplay:
         self._reasoning_tokens = None
         self._step = None
         self._thinking.clear()
+        self._interruption.reset()
 
     def _forget_attempt(self) -> None:
         """Drop everything the display knows about the attempt so far.
@@ -1067,6 +1071,38 @@ class StreamingDisplay:
         """Remember which model and provider this session talks to."""
         self._model_name = name
         self._provider_name = provider
+
+    def begin_interrupt(self) -> bool:
+        """Note that a stop was requested, so the surface can say so.
+
+        Returns False when one is already in flight, which keeps a repeated Ctrl-C
+        from re-requesting a cancellation that is already happening.
+        """
+        if not self._interruption.begin(at=perf_counter()):
+            return False
+        self._refresh_status()
+        return True
+
+    def settle_interrupt(self) -> None:
+        """Report the interruption once the turn has actually stopped.
+
+        The partial answer is dropped rather than printed, because a half-written
+        block reads as corruption; what remains is the fact that the turn stopped.
+        """
+        if not self._interruption.settle():
+            return
+        # Drop the partial attempt without the generic warning: "interrupted" already
+        # says why, and printing both lines repeats the same fact in two voices.
+        self._close_live()
+        self._discard_attempt_output()
+        self._active = False
+        receipt = self._interruption.receipt()
+        if receipt:
+            console.print(Text(receipt, style="dim"))
+
+    @property
+    def interrupting(self) -> bool:
+        return self._interruption.pending
 
     def reveal_reasoning(self) -> None:
         """Widen the live preview, if one is running.

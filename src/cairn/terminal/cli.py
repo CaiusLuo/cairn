@@ -325,6 +325,7 @@ async def _run_supervised_turn(
     user_input: str,
     frame: TranscriptView | None,
     input_reader: CliInput,
+    streaming: StreamingDisplay,
     durable_session: DurableSession | None,
 ) -> str:
     """Run one turn, watching for a message typed while it runs.
@@ -352,6 +353,7 @@ async def _run_supervised_turn(
         user_input=user_input,
         steering=steering,
         frame=frame,
+        streaming=streaming,
         durable_session=durable_session,
     )
 
@@ -362,6 +364,7 @@ async def _drive_turn(
     user_input: str,
     steering: SteerQueue,
     frame: TranscriptView,
+    streaming: StreamingDisplay,
     durable_session: DurableSession | None,
 ) -> str:
     """Run one turn while reading further instructions from the input line."""
@@ -378,12 +381,22 @@ async def _drive_turn(
 
     turn = asyncio.create_task(run())
     reader = asyncio.create_task(frame.read())
+
+    def request_stop() -> None:
+        """Stop the running turn, saying so while the cleanup completes."""
+        streaming.begin_interrupt()
+        turn.cancel()
+
+    frame.on_interrupt = request_stop
     try:
         while True:
             done, _ = await asyncio.wait(
                 {turn, reader}, return_when=asyncio.FIRST_COMPLETED
             )
             if turn in done:
+                if turn.cancelled() or turn.exception() is not None:
+                    streaming.settle_interrupt()
+                    raise turn.exception() or asyncio.CancelledError()
                 return await turn
             line = await reader
             if line.text.strip():
@@ -490,6 +503,7 @@ async def _turn_loop(
                 user_input=user_input,
                 frame=frame,
                 input_reader=input_reader,
+                streaming=streaming_display,
                 durable_session=durable_session,
             )
         except RunBudgetExceeded:

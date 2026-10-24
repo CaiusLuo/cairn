@@ -131,6 +131,8 @@ class TranscriptView:
         # Set by the CLI once the streaming display exists; the key binding is
         # always present so the hint it prints is never a lie.
         self.on_reveal_reasoning: Callable[[], None] | None = None
+        #: Asked to stop the running turn; set by the CLI that owns the turn.
+        self.on_interrupt: Callable[[], None] | None = None
 
         self._buffer = Buffer(
             multiline=True,
@@ -250,9 +252,24 @@ class TranscriptView:
 
         @bindings.add("c-c")
         def interrupt(event: object) -> None:
-            # prompt_toolkit installs a no-op SIGINT handler for an Application,
-            # so Ctrl-C must be bound explicitly or nothing can be interrupted.
-            self._app.exit(exception=KeyboardInterrupt())  # type: ignore[union-attr]
+            """Interrupt the running turn, or do nothing when there is none.
+
+            Ctrl-C used to exit the application, which ended the session when the
+            operator meant to stop one turn. It now stops the turn: prompt_toolkit
+            installs a no-op SIGINT handler for an Application, so the key must be
+            bound explicitly either way.
+
+            With the composer holding text the key clears it first, because a reader
+            reaching for Ctrl-C while typing usually means "not this message".
+            """
+            if self._buffer.text:
+                self._buffer.reset()
+                self.repaint()
+                return
+            if not self._running:
+                return
+            if self.on_interrupt is not None:
+                self.on_interrupt()
 
         @bindings.add("c-o")
         def reveal_reasoning(event: object) -> None:
