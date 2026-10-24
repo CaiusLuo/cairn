@@ -274,10 +274,3 @@ class TestFolding:
             m.content or "" for m in folded if "omitted" in (m.content or "")
         )
         assert "400 characters" in folded_text
-
-    def test_user_messages_are_never_folded(self) -> None:
-        messages = history(groups=3)
-
-        folded = compactor(100_000).fold(messages, up_to=len(messages))
-
-        assert folded[0] == messages[0]

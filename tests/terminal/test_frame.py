@@ -136,8 +136,13 @@ def test_settling_an_empty_stream_writes_nothing() -> None:
         assert sink.lines == []
 
 
-def test_ctrl_c_is_bound_so_a_turn_can_be_interrupted() -> None:
-    """prompt_toolkit swallows SIGINT by default; an unbound Ctrl-C does nothing."""
+@pytest.mark.parametrize(
+    "expected",
+    ["Keys.ControlC", "Keys.ControlD"],
+    ids=["interrupt", "end-input"],
+)
+def test_control_key_is_bound(expected: str) -> None:
+    """Ctrl-C interrupts and Ctrl-D ends input; neither may be swallowed."""
     with (
         create_pipe_input() as pipe,
         create_app_session(input=pipe, output=DummyOutput()),
@@ -149,22 +154,7 @@ def test_ctrl_c_is_bound_so_a_turn_can_be_interrupted() -> None:
         keys = {
             tuple(str(key) for key in binding.keys) for binding in bindings.bindings
         }
-        assert ("Keys.ControlC",) in keys
-
-
-def test_ctrl_d_is_bound_to_end_input() -> None:
-    with (
-        create_pipe_input() as pipe,
-        create_app_session(input=pipe, output=DummyOutput()),
-    ):
-        view, _, _ = _view()
-        assert view._app is not None
-        bindings = view._app.key_bindings
-        assert bindings is not None
-        keys = {
-            tuple(str(key) for key in binding.keys) for binding in bindings.bindings
-        }
-        assert ("Keys.ControlD",) in keys
+        assert (expected,) in keys
 
 
 @pytest.mark.parametrize("blank", ["", "   ", "\n"])

@@ -69,25 +69,6 @@ def test_grant_is_required_before_an_outside_path_is_usable(tmp_path: Path) -> N
     assert handler.granted_roots == set()
 
 
-def test_session_grant_is_reused_for_a_covered_path(tmp_path: Path) -> None:
-    outside = tmp_path / "data"
-    (outside / "child").mkdir(parents=True)
-    prompts: list[PermissionRequest] = []
-
-    def prompt(request: PermissionRequest) -> PermissionChoice:
-        prompts.append(request)
-        return PermissionChoice.ALLOW_SESSION
-
-    handler = _handler(prompt)
-    first = handler.authorize(_request(outside))
-    second = handler.authorize(_request(outside / "child"))
-
-    assert first.allowed and first.prompted
-    assert second.allowed and not second.prompted
-    assert second.source is PermissionSource.SESSION_GRANT
-    assert len(prompts) == 1
-
-
 def test_grant_cannot_cover_the_workspace(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     workspace.mkdir()

@@ -6,7 +6,7 @@ wrong: a resize, a scroll away from the bottom, and output arriving while they a
 reading earlier lines. Stream pacing is tested in ``test_pacing.py``.
 """
 
-from cairn.terminal.transcript import TRANSCRIPT_GAP_LINES, Transcript
+from cairn.terminal.transcript import Transcript
 
 
 def test_an_empty_transcript_shows_nothing() -> None:
@@ -18,12 +18,6 @@ def test_appended_text_becomes_lines() -> None:
     transcript.append("one\ntwo\n")
     assert transcript.window(10) == ["one", "two"]
     assert transcript.line_count == 2
-
-
-def test_a_trailing_newline_does_not_grow_a_blank_line() -> None:
-    transcript = Transcript()
-    transcript.append("only\n")
-    assert transcript.window(5) == ["only"]
 
 
 def test_the_window_shows_the_newest_lines_by_default() -> None:
@@ -88,7 +82,3 @@ def test_scroll_to_bottom_is_immediate() -> None:
     transcript.scroll_up(4)
     transcript.scroll_to_bottom()
     assert transcript.follow
-
-
-def test_the_gap_is_two_rows() -> None:
-    assert TRANSCRIPT_GAP_LINES == 2

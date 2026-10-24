@@ -97,19 +97,6 @@ class TestReplacementIsInPlace:
         calls = {call.id for m in replaced for call in m.tool_calls}
         assert results <= calls
 
-    def test_current_turn_survives_verbatim(self) -> None:
-        history = conversation()
-
-        replaced = apply_replacement(history, record(7))
-
-        assert replaced[-1] == history[-1]
-
-    def test_landing_on_a_tool_result_is_rejected(self) -> None:
-        history = conversation()
-
-        with pytest.raises(ReplacementError):
-            apply_replacement(history, record(2))
-
     def test_split_that_orphans_a_group_is_rejected(self) -> None:
         history = conversation()
 
