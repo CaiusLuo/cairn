@@ -329,6 +329,19 @@ class TranscriptView:
     def _status_text(self) -> str:
         return "\n".join(self._status)
 
+    def available_width(self) -> int | None:
+        """The columns this frame has, for callers that must fit their text."""
+        return self._available_width()
+
+    def _available_width(self) -> int | None:
+        """The columns the status may use, when the terminal size is known."""
+        if self._app is None:
+            return None
+        try:
+            return self._app.output.get_size().columns
+        except (AttributeError, ValueError):
+            return None
+
     def _queue_control(self) -> ANSI:
         """The queued messages, with the selected one marked."""
         rows = self._queue_view.rows(self._pending)

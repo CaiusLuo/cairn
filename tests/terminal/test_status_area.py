@@ -141,3 +141,64 @@ def test_the_model_survives_into_the_painted_status() -> None:
     display._refresh_status()
 
     assert any("openai/x" in text and "bailian" in text for text in painted)
+
+
+# -- fitting a narrow terminal -------------------------------------------
+#
+# A status line that overflows is worse than a shorter one: it wraps into the
+# composer or is truncated with no rule about what was dropped. The order below is
+# deliberate — the model is shortened before anything is removed, because identity
+# matters more than precision; then context goes, because it is available elsewhere;
+# usage goes last. The model and provider never disappear together, because a reader
+# who cannot tell what they are talking to has lost the most important fact.
+
+
+def _measured(model: str = "openai/deepseek-v4.1-flash-1017") -> StreamingDisplay:
+    display = StreamingDisplay()
+    display.observe_model(model, provider="bailian")
+    display.observe_step_usage(input_tokens=1200, output_tokens=84)
+    display.observe_context(used=23040, limit=128000)
+    return display
+
+
+def test_a_wide_terminal_keeps_everything() -> None:
+    first, second = _measured().status_lines(width=100)
+
+    assert "deepseek-v4.1-flash-1017" in first
+    assert "bailian" in first
+    assert "1200 in" in second
+    assert "ctx 18%" in second
+
+
+def test_a_narrow_terminal_shortens_the_model_before_dropping_anything() -> None:
+    first, second = _measured().status_lines(width=52)
+
+    assert "1200 in" in second
+    assert len(first) <= 52
+
+
+def test_the_provider_survives_the_first_reduction() -> None:
+    """Identity is the last thing to go; a shortened model keeps it readable."""
+    first, _ = _measured().status_lines(width=52)
+    assert "bailian" in first
+
+
+def test_a_very_narrow_terminal_drops_context_before_usage() -> None:
+    """Usage is the figure a reader checks; context is available from /compact."""
+    # Wide enough for the model to be shortened but not for the context figure.
+    _, second = _measured().status_lines(width=26)
+
+    assert "in" in second
+    assert "ctx" not in second
+
+
+def test_no_line_exceeds_the_available_width() -> None:
+    for width in (30, 40, 52, 64, 100):
+        for line in _measured().status_lines(width=width):
+            assert len(line) <= width, f"overflowed at width {width}: {line!r}"
+
+
+def test_the_model_and_provider_never_both_disappear() -> None:
+    """A reader who cannot tell what they are talking to has lost the key fact."""
+    first, _ = _measured().status_lines(width=24)
+    assert first.strip()

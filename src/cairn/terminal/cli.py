@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shutil
 import sys
 from collections.abc import Awaitable, Mapping
 from pathlib import Path
@@ -402,6 +403,18 @@ async def _drive_turn(
         await asyncio.gather(turn, reader, return_exceptions=True)
 
 
+def _terminal_width() -> int | None:
+    """The terminal's columns, when there is a terminal to ask.
+
+    Off terminal there is no width to fit, and the status keeps its full form: a
+    log has no wrapping to avoid.
+    """
+    try:
+        return shutil.get_terminal_size().columns
+    except (AttributeError, ValueError, OSError):
+        return None
+
+
 def _interactive_terminal() -> bool:
     """Whether this process has a terminal the frame may own."""
     try:
@@ -568,6 +581,11 @@ async def main(
     streaming_display.observe_model(
         active_runtime.model_manager.current_model().model_ids[0],
         provider=active_runtime.provider.name,
+    )
+    # The status must fit the terminal it is printed in; the frame reports the width
+    # it actually has, so a narrow window shortens rather than wraps.
+    streaming_display.set_status_width(
+        frame.available_width() if frame is not None else _terminal_width()
     )
     if frame is not None:
         # Ctrl+O reveals more reasoning. A keystroke rather than a click: capturing

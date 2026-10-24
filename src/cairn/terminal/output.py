@@ -177,6 +177,24 @@ ASSISTANT_GLYPH = "*"
 CONTINUATION = " " * GUTTER
 
 
+#: Characters a model id or provider keeps at the narrowest reduction.
+NARROW_MODEL_CHARS = 12
+
+
+def _trim(value: str, limit: int) -> str:
+    """``value`` reduced to ``limit`` characters, or unchanged when it already fits."""
+    return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+def _shorten(model: str) -> str:
+    """A model id short enough for a narrow terminal.
+
+    The last path segment is the readable part: ``deepseek-v4.1-flash`` means more
+    to a reader than the vendor prefix, which ``/model`` shows in full.
+    """
+    return model.rsplit("/", 1)[-1]
+
+
 def print_user_message(content: str) -> None:
     """Echo what the operator sent, so the transcript keeps both sides.
 
@@ -740,6 +758,8 @@ class StreamingDisplay:
         self._step: tuple[int, int] | None = None
         self._model_name = ""
         self._provider_name = ""
+        #: Columns the status may use. Set by the caller that knows the terminal.
+        self._status_width: int | None = None
         #: The last turn's rate, kept so an idle session does not show it decaying.
         self._frozen_rate: float | None = None
         # Where the session facts are shown when the caller wants them below the
@@ -911,7 +931,7 @@ class StreamingDisplay:
             return
         self._status_painted = now
         if self._on_status is not None:
-            self._on_status("\n".join(self.status_lines()))
+            self._on_status("\n".join(self.status_lines(width=self._status_width)))
         if self._live is not None:
             frame = self._live_renderable()
             if frame is not None:
@@ -967,33 +987,54 @@ class StreamingDisplay:
             # not settled here: only its final form goes to the log.
             _write_reasoning_rows(_rows_for_lines(lines[-1:], growing=True))
 
-    def status_lines(self) -> list[str]:
+    def status_lines(self, *, width: int | None = None) -> list[str]:
         """The session facts, as the two lines a reader scans while waiting.
 
         Two lines rather than one because they answer different questions and age
         differently: what this session is talking to rarely changes, while the
         numbers change every second. Packing both onto one line made a long line
         that was mostly stale.
-        """
-        first: list[str] = []
-        if self._model_name:
-            first.append(self._model_name)
-        if self._provider_name:
-            first.append(self._provider_name)
 
-        second: list[str] = []
-        if self._output_tokens or self._input_tokens:
-            second.append(f"{self._input_tokens} in / {self._output_tokens} out")
+        ``width`` makes them fit. A status that overflows wraps into the composer or
+        is cut with no rule about what was lost, so the reduction order is fixed and
+        stated once here: shorten the model, then drop context, then drop usage. The
+        provider and model never both disappear — a reader who cannot tell what they
+        are talking to has lost the most important fact on the line.
+        """
+        for reduction in ("full", "short-model", "no-context", "narrow"):
+            lines = self._status_at(reduction)
+            if width is None or max(len(line) for line in lines) <= width:
+                return lines
+        return lines
+
+    def _status_at(self, reduction: str) -> list[str]:
+        """Both status lines at one reduction level."""
+        model = _shorten(self._model_name) if reduction != "full" else self._model_name
+        if reduction == "narrow":
+            # The last resort: keep identity readable by dropping the version, and
+            # never drop both parts — a reader who cannot tell what they are talking
+            # to has lost the most important fact on the line.
+            model = _trim(model, NARROW_MODEL_CHARS)
+            provider = _trim(self._provider_name, NARROW_MODEL_CHARS)
+        else:
+            provider = self._provider_name
+        first = "  ".join(part for part in (model, provider) if part)
+
+        measured = bool(self._output_tokens or self._input_tokens)
+        parts: list[str] = []
+        if measured:
+            parts.append(f"{self._input_tokens} in / {self._output_tokens} out")
             rate = self._rate()
             if rate is not None:
-                second.append(f"{rate:.0f} tok/s")
-        if self._context_used is not None and self._context_limit:
-            second.append(f"ctx {self._context_used * 100 // self._context_limit}%")
-        if not second:
-            # Nothing measured yet: say so plainly instead of showing zeros that
+                parts.append(f"{rate:.0f} tok/s")
+        keeps_context = reduction in ("full", "short-model")
+        if keeps_context and self._context_used and self._context_limit:
+            parts.append(f"ctx {self._context_used * 100 // self._context_limit}%")
+        if not parts:
+            # Nothing measured yet: say so plainly rather than showing zeros that
             # look like a measurement.
-            second.append("ready")
-        return ["  ".join(first), "  ".join(second)]
+            parts.append("ready")
+        return [first, "  ".join(parts)]
 
     def _rate(self) -> float | None:
         """Tokens per second for the turn, frozen once it ends.
@@ -1012,6 +1053,15 @@ class StreamingDisplay:
     def status_text(self) -> str:
         """The status as one string, for callers that place a single line."""
         return " · ".join(part for part in self.status_lines() if part)
+
+    def set_status_width(self, width: int | None) -> None:
+        """Tell the display how wide its status may be.
+
+        The display owns what the status says and the caller owns how much room
+        there is, so the width is pushed in rather than guessed here.
+        """
+        self._status_width = width
+        self._refresh_status()
 
     def observe_model(self, name: str, *, provider: str = "") -> None:
         """Remember which model and provider this session talks to."""
