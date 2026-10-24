@@ -101,12 +101,28 @@ Typing `/` opens a list of commands above the composer, filtered as the text gro
 It is a temporary surface, not transcript text: a list of commands is a means to an
 action, so closing it leaves nothing behind.
 
+The palette is a stack of levels, not a flat list. A command that takes a
+sub-command opens one rather than running something that prints into the
+conversation:
+
+```text
+Commands > /model
+  > use        Select a model group for this session
+    list       Show groups with their primary and fallback IDs
+```
+
 | Key | Effect |
 | --- | --- |
-| `Up` / `Down` | Move the selection |
+| `Up` / `Down` | Move the selection within the level |
+| `Right` / `Enter` | Descend into the chosen command, or confirm it |
+| `Left` | Go back one level; at the root there is nowhere to go |
 | `Tab` | Put the chosen command in the composer |
-| `Enter` | Run it |
 | `Esc` | Close the palette, without touching a running turn |
+
+The keys mean the same thing at every level, which is what makes the surface
+learnable. A level remembers its own selection, so coming back puts the cursor where
+it was. The breadcrumb names where you are, because the same `use` row means a model
+group here and a provider one level away.
 
 Filtering is by prefix, not substring: `/mo` means "the command starting with mo",
 and answering with `/compact` because it contains an `m` would be a guess. The

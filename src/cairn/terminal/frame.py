@@ -174,13 +174,23 @@ class TranscriptView:
             self._palette.move(1)
             self.repaint()
 
+        @bindings.add("right", filter=Condition(lambda: self._palette.open))
+        def palette_descend(event: object) -> None:
+            """Enter the chosen level, or complete the command when there is none."""
+            if not self._palette.descend():
+                self._complete_palette()
+            self.repaint()
+
+        @bindings.add("left", filter=Condition(lambda: self._palette.open))
+        def palette_ascend(event: object) -> None:
+            """Go back one level. At the root there is nowhere to go, so it stays."""
+            self._palette.ascend()
+            self.repaint()
+
         @bindings.add("tab", filter=Condition(lambda: self._palette.open))
         def palette_complete(event: object) -> None:
             """Put the chosen command in the composer, ready to run or extend."""
-            command = self._palette.selected_command()
-            if command:
-                self._buffer.reset()
-                self._buffer.insert_text(command + " ")
+            self._complete_palette()
             self.repaint()
 
         @bindings.add("escape", filter=Condition(lambda: self._palette.open))
@@ -387,6 +397,18 @@ class TranscriptView:
             return self._app.output.get_size().columns
         except (AttributeError, ValueError):
             return None
+
+    def _complete_palette(self) -> None:
+        """Copy the palette's choice into the composer.
+
+        The full command line is used, so a chosen sub-command becomes
+        ``/model use`` rather than the level's bare name.
+        """
+        command = self._palette.command_line()
+        if not command:
+            return
+        self._buffer.reset()
+        self._buffer.insert_text(command + " ")
 
     def _on_text_changed(self, buffer: Buffer) -> None:
         """Keep the command surface in step with what is typed."""
