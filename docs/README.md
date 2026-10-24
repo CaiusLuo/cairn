@@ -28,6 +28,7 @@ page is the map for everything else.
 | [GitHub Draft PR smoke preflight](guides/github-smoke-preflight.md) | Authorization list, disposable-repository preparation, and independent remote Draft PR verification |
 | [Offline coding task E2E](guides/offline-coding-e2e.md) | Reproducible scripted coding task, permissions, isolation, final verification and evidence artifacts |
 | [Single-node pilot runbook](guides/pilot-runbook.md) | Offline preflight, per-profile PASS/BLOCKED status, the SIGKILL inspect/confirm/reconcile drill and stop conditions |
+| [Interactive terminal](guides/tui-interaction.md) | Transcript grammar, composer keys, steering a running turn, and what startup asks |
 | [Local command execution](guides/local-execution.md) | Host shell, approval, process guarantees and the boundaries it does not claim |
 | [Safe retry](guides/safe-retry.md) | Typed tool failures and the single bounded `read_file` retry slice |
 | [Coding Task summaries](guides/task-metrics.md) | Bounded JSON metrics, trace-derived call counts, verification and missing-data semantics |

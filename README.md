@@ -23,7 +23,9 @@ test, and extend. This is an early-stage learning and engineering project.
 - Asynchronous agent loop with context and step budgets.
 - LiteLLM integration with session model selection.
 - Local Bash execution, bounded file reading, and guarded file editing.
-- Interactive Python CLI with model selection, permission prompts, and cancellation.
+- Interactive Python CLI with model selection, permission prompts, and
+  [steering](docs/guides/tui-interaction.md): a message typed while work runs can
+  guide the running turn or queue for the next one.
 - Streaming answers and separate provisional thinking from `reasoning_content`.
 - JSONL traces, [bounded Coding Task summaries](docs/guides/task-metrics.md),
   and headless coding evaluations.

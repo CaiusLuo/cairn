@@ -158,7 +158,10 @@ def test_public_cli_partial_fallback_labels_abandoned_text(
     assert "[attempt abandoned; incomplete output discarded]" in shown
     assert "ABANDONED\n" not in shown
     assert "ACCEPTED" in shown
-    assert [line.strip() for line in shown.splitlines()].count("ACCEPTED") == 1
+    # The reply opens under the transcript gutter, so the settled line carries the
+    # glyph; what matters is that the settled form appears exactly once.
+    settled_lines = [line.strip() for line in shown.splitlines()]
+    assert settled_lines.count("* ACCEPTED") == 1
     assert "TOPSECRET" not in shown
     assert calls == ["openai/one", "openai/two"]
     assert agents[0].state.messages[-1].content == "ACCEPTED"

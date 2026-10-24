@@ -1,6 +1,7 @@
 # M1-A model streaming
 
-Cairn displays model text incrementally under the `Cairn>` header. The final
+Cairn displays model text incrementally. The reply opens under a two-column
+gutter that carries the speaker's glyph on its first line only, and the final
 answer is printed once. Tool and permission output follows response assembly;
 incomplete tool arguments are never previewed. Streaming text is plain text:
 Rich markup/emoji syntax is literal and C0/C1 terminal controls are filtered

@@ -1,15 +1,17 @@
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 from time import perf_counter
 
-from rich.console import Console, Group, RenderableType
+from rich.console import Console, ConsoleOptions, Group, RenderableType
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.prompt import Confirm, Prompt
+from rich.segment import Segment
+from rich.style import Style
 from rich.text import Text
 
 from cairn.core.events import Event
@@ -157,6 +159,24 @@ def print_provider_selection(provider: NamedProvider, group: ModelConfig) -> Non
     )
 
 
+#: The two-column gutter every transcript block starts with. Two is the width every
+#: surveyed agent uses, and it is wide enough for a glyph plus a space while keeping
+#: the left edge a single straight column.
+GUTTER = 2
+
+#: Glyphs that say who is speaking. Role is carried by shape, not by a word: a word
+#: at column zero turns the transcript into a table of contents and costs a line per
+#: turn, which is why none of the mature agents print a role label.
+#:
+#: Both are ASCII. A glyph whose display width depends on the terminal's East Asian
+#: setting would shift every continuation line by a column on some hosts, and the
+#: straight left edge is the whole point of the gutter.
+USER_GLYPH = ">"
+ASSISTANT_GLYPH = "*"
+#: Continuation lines align to the gutter so the left edge stays straight.
+CONTINUATION = " " * GUTTER
+
+
 def print_user_message(content: str) -> None:
     """Echo what the operator sent, so the transcript keeps both sides.
 
@@ -164,14 +184,56 @@ def print_user_message(content: str) -> None:
     reader cannot tell what was asked, and a steered turn has two user messages
     with nothing to distinguish them from the answers beneath.
     """
-    for line in content.split("\n"):
-        console.print(f"[bold cyan]>[/bold cyan] {line}", markup=True, highlight=False)
+    lines = content.split("\n")
+    for index, line in enumerate(lines):
+        prefix = f"[bold cyan]{USER_GLYPH}[/bold cyan] " if index == 0 else CONTINUATION
+        console.print(f"{prefix}{line}", markup=True, highlight=False)
+    console.print()
 
 
 def print_assistant_response(content: str) -> None:
-    console.print("[bold]Cairn>[/bold]")
-    console.print(Markdown(content))
-    console.print()
+    """Print a reply as one block under a gutter glyph.
+
+    The glyph sits on the first line only: a continuation marker would be copied
+    along with code the reader selects.
+    """
+    console.print(_block(Markdown(content)))
+
+
+@dataclass(frozen=True, slots=True)
+class GutteredBlock:
+    """Render a block with a two-column gutter down its left edge.
+
+    A glyph can only lead the *first* line, so the block is rendered to lines and
+    prefixed per line rather than concatenated: a Markdown block is not text, and
+    wrapping it in a prefix renderable would put the glyph on a line of its own.
+
+    ``glyph`` is empty for a continuation block of the same reply. Repeating it
+    mid-reply would read as a new speaker, and a marker on every line would be
+    copied along with any code the reader selects.
+    """
+
+    renderable: RenderableType
+    glyph: str = ""
+
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> Iterator[Segment]:
+        width = max(1, options.max_width - GUTTER)
+        lines = console.render_lines(
+            self.renderable, options.update(width=width), pad=False
+        )
+        for index, line in enumerate(lines):
+            opens = index == 0 and bool(self.glyph)
+            lead = f"{self.glyph} " if opens else CONTINUATION
+            yield Segment(lead, Style(dim=True) if opens else None)
+            yield from line
+            yield Segment.line()
+
+
+def _block(renderable: RenderableType, *, first: bool = True) -> RenderableType:
+    """Place one transcript block under the gutter, glyph first when it opens one."""
+    return GutteredBlock(renderable, ASSISTANT_GLYPH if first else "")
 
 
 def print_banner() -> None:
@@ -981,9 +1043,7 @@ class StreamingDisplay:
             fresh = settled[self._settled_chars :]
             self._settled_chars = len(settled)
             self._close_live()
-            if not self._settled_blocks:
-                console.print("[bold]Cairn>[/bold]")
-            console.print(Markdown(fresh))
+            console.print(_block(Markdown(fresh), first=not self._settled_blocks))
             self._settled_blocks += 1
         if not pending.strip():
             self._close_live()
@@ -1068,14 +1128,12 @@ class StreamingDisplay:
         _, pending = _split_blocks("".join(self._answer))
         if pending.strip():
             self._close_live()
-            if not self._settled_blocks:
-                console.print("[bold]Cairn>[/bold]")
-            console.print(Markdown(pending))
+            console.print(_block(Markdown(pending), first=not self._settled_blocks))
+            self._settled_blocks += 1
             return
         self._close_live()
-        if not self._settled_blocks:
-            console.print("[bold]Cairn>[/bold]")
-            console.print(Markdown(text))
+        console.print(_block(Markdown(text), first=not self._settled_blocks))
+        self._settled_blocks += 1
 
     def close_incomplete(self, *, abandoned: bool = False) -> None:
         """Abandon an attempt: drop partial output and say so.
