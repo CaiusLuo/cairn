@@ -127,3 +127,64 @@ def test_clearing_leaves_nothing_behind() -> None:
     assert preview.visible() == []
     assert preview.receipt() == ""
     assert not preview.running
+
+
+# -- expansion ------------------------------------------------------------
+
+
+def test_expanding_a_running_preview_reveals_more_rows() -> None:
+    preview = _running_preview(*[f"line {index}" for index in range(30)])
+    collapsed = len(preview.visible())
+
+    assert preview.expand()
+    assert len(preview.visible()) > collapsed
+
+
+def test_expanding_twice_reveals_more_again() -> None:
+    preview = _running_preview(*[f"line {index}" for index in range(30)])
+    preview.expand()
+    once = len(preview.visible())
+
+    preview.expand()
+
+    assert len(preview.visible()) > once
+
+
+def test_expansion_never_reaches_beyond_the_text_received() -> None:
+    """The preview is all there is: reasoning is not kept after the turn."""
+    preview = _running_preview("one", "two", "three")
+    preview.expand()
+    preview.expand()
+
+    assert len(preview.visible()) == 3
+
+
+def test_a_settled_preview_cannot_be_expanded() -> None:
+    """Nothing is left to reveal, so the key must not appear to work."""
+    preview = _running_preview("thought")
+    preview.finish(at=1.0)
+
+    assert not preview.expand()
+    assert not preview.running
+
+
+def test_the_hint_is_absent_once_the_preview_settles() -> None:
+    """A key that does nothing is worse than no key."""
+    preview = _running_preview("thought")
+    preview.finish(at=1.0)
+
+    assert preview.hint() == ""
+
+
+def test_the_hint_names_the_key_while_running() -> None:
+    preview = _running_preview("thought")
+    assert "Ctrl+O" in preview.hint()
+
+
+def test_beginning_again_collapses_the_previous_expansion() -> None:
+    preview = _running_preview(*[f"line {index}" for index in range(30)])
+    preview.expand()
+    preview.begin(at=1.0)
+    preview.append("fresh")
+
+    assert len(preview.visible()) == 1

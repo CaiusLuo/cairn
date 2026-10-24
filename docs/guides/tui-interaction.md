@@ -57,9 +57,17 @@ Thinking  3.2s
 ```
 
 The text itself belongs to the trace. Reprinting it into the scrollback cost a
-screenful per turn, next to the answer that already summarised it. `Ctrl+O` is
-offered only while the preview runs, because a settled turn has nothing left to
-reveal and a key that does nothing is worse than no key.
+screenful per turn, next to the answer that already summarised it.
+
+`Ctrl+O` widens the preview by a step, so a long thought can be read while it
+arrives. It is offered only while the preview runs: the reasoning is not kept after
+the turn, so a settled turn has nothing to reveal and the key genuinely does
+nothing. The hint appears and disappears with the preview rather than persisting in
+the scrollback, which is what made it a false promise before.
+
+Expansion widens the same temporary viewport upward through the text already
+received. It never reaches into the transcript, because the transcript never held
+the reasoning in the first place.
 
 The status area is two lines because they answer different questions and age
 differently: the model and provider change when the operator switches, while the

@@ -37,10 +37,15 @@ class ThinkingPreview:
     """
 
     rows: int = PREVIEW_ROWS
+    #: Extra rows one expansion adds. A whole step keeps the reveal predictable
+    #: rather than moving the window one line at a time.
+    expanded_rows: int = PREVIEW_ROWS * 3
     _lines: list[str] = field(default_factory=list, repr=False)
     _started: float | None = field(default=None, repr=False)
     _finished: float | None = field(default=None, repr=False)
     _frame: int = field(default=0, repr=False)
+    _expanded: bool = field(default=False, repr=False)
+    _revealed: int = field(default=0, repr=False)
 
     def __post_init__(self) -> None:
         if self.rows < 1:
@@ -52,6 +57,8 @@ class ThinkingPreview:
         self._started = at
         self._finished = None
         self._frame = 0
+        self._expanded = False
+        self._revealed = 0
 
     def append(self, text: str) -> None:
         """Add newly arrived reasoning."""
@@ -98,16 +105,44 @@ class ThinkingPreview:
         return FRAMES[self._frame]
 
     def visible(self) -> Sequence[str]:
-        """The newest rows, oldest first, so the window scrolls upward."""
+        """The rows the preview shows, oldest first.
+
+        Collapsed shows the newest rows so the reader sees what the model is doing
+        now. Expansion widens the same window upward through the text already
+        received; it never reaches beyond the preview, because the reasoning is not
+        kept after the turn and there is no history to scroll.
+        """
         if not self._lines:
             return []
-        return self._lines[-self.rows :]
+        rows = self.rows if not self._expanded else self.rows + self._revealed
+        return self._lines[-rows:]
+
+    def expand(self) -> bool:
+        """Widen the preview by one step.
+
+        Returns False when the preview is not running: a settled turn has nothing
+        left to reveal, so the key must not appear to work.
+        """
+        if not self.running:
+            return False
+        self._revealed += self.expanded_rows
+        self._expanded = True
+        return True
 
     def header(self) -> str:
         """The preview title: what is happening, and for how long."""
         if self._started is None:
             return ""
         return f"{self.frame} Thinking  {_clock(self.elapsed)}"
+
+    def hint(self) -> str:
+        """The key that widens this preview, offered only while it runs.
+
+        A settled turn keeps no reasoning, so there is nothing to reveal and the
+        key would do nothing. Advertising it then was the defect this replaces: the
+        hint stayed in the scrollback long after it stopped being true.
+        """
+        return "Ctrl+O: details" if self.running else ""
 
     def receipt(self) -> str:
         """The one line a settled turn keeps.

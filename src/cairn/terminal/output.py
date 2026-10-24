@@ -19,7 +19,6 @@ from cairn.core.model_manager import ModelConfig
 from cairn.core.permissions import PermissionChoice, PermissionRequest
 from cairn.core.provider_catalog import NamedProvider
 from cairn.terminal.live import LiveRegion
-from cairn.terminal.reasoning import ReasoningView
 from cairn.terminal.thinking import ThinkingPreview
 
 console = Console()
@@ -720,7 +719,6 @@ class StreamingDisplay:
         )
         self._reasoning: list[str] = []
         self._reasoning_open = False
-        self._reasoning_view = ReasoningView()
         # The temporary reasoning preview; it owns what the reader sees while the
         # model thinks, and the receipt that survives it.
         self._thinking = ThinkingPreview()
@@ -1018,30 +1016,14 @@ class StreamingDisplay:
         self._provider_name = provider
 
     def reveal_reasoning(self) -> None:
-        """Show more of the collapsed reasoning, and repaint.
+        """Widen the live preview, if one is running.
 
-        The full text is already retained; this only changes how much of it is
-        shown, which is why it can be a plain action with no side effects.
+        Reasoning is not kept after the turn settles, so there is nothing to reveal
+        then and the key does nothing. That is why the hint is only shown while the
+        preview runs: a key that silently does nothing is worse than no key.
         """
-        self._reasoning_view.expand()
-        self._refresh_status()
-
-    def _visible_reasoning(self) -> list[str]:
-        """The reasoning rows to show, honoring the collapsed/expanded view.
-
-        The block is kept in full; this only decides how much of it competes with
-        the answer for the reader's attention. A collapsed block shows its opening
-        lines and a hint naming the key and the remainder, because a silent
-        truncation reads as lost content.
-        """
-        rows = _reasoning_rows(self._reasoning, final=True)
-        available = [text for text, _ in rows]
-        shown = self._reasoning_view.visible_lines(len(available))
-        hidden = len(available) - shown
-        visible = available[:shown]
-        if hidden:
-            visible = [*visible, self._reasoning_view.note(hidden)]
-        return visible
+        if self._thinking.expand():
+            self._refresh_status()
 
     def _close_reasoning(self) -> None:
         """Settle the reasoning: clear the preview and leave one receipt.
@@ -1131,8 +1113,9 @@ class StreamingDisplay:
             self._thinking.header(),
             *(f"  {row}" for row in self._thinking.visible()),
         ]
-        if self._thinking.running:
-            lines.append("  Ctrl+O: details")
+        hint = self._thinking.hint()
+        if hint:
+            lines.append(f"  {hint}")
         return Text("\n".join(lines), style="dim")
 
     def _status_line(self) -> Text:
