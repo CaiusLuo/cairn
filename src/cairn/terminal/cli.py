@@ -42,6 +42,7 @@ from cairn.runtime.provider_runtime import (
 from cairn.runtime.session import SessionState
 from cairn.runtime.turn.compaction import CompactionOutcome
 from cairn.runtime.turn.hook import run_compaction
+from cairn.runtime.turn.supervisor import TurnQueue, supervise_turn
 from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.router import CommandRouter
 from cairn.terminal.durable import (
@@ -315,6 +316,53 @@ def _resolve_active_runtime(
     return runtime, api_key, context_budget
 
 
+async def _run_supervised_turn(
+    *,
+    agent: Agent,
+    user_input: str,
+    frame: TranscriptView | None,
+    input_reader: CliInput,
+    durable_session: DurableSession | None,
+) -> str:
+    """Run one turn, watching for a message typed while it runs.
+
+    Without a frame there is no input line to read from during a turn, so the turn
+    runs alone. With one, the input keeps running and a typed line either waits for
+    the turn or interrupts it: an interruption cancels the turn and becomes the
+    guidance of the next one, which keeps ``run_turn`` the only Agent turn.
+    """
+
+    async def run(text: str) -> str:
+        if durable_session is None:
+            return await run_turn(agent, user_input=text, budget=DEFAULT_CLI_RUN_BUDGET)
+        return await _durable_turn(agent, text, durable_session)
+
+    if frame is None:
+        return await run(user_input)
+
+    result = await supervise_turn(
+        run,
+        user_input,
+        queue=TurnQueue(),
+        wait_for_input=frame.read,
+        is_interrupt=_is_interrupt_request,
+    )
+    if result.interrupted:
+        # The guidance replaces the turn's remaining work; it opens the next one.
+        return await run(result.interrupted_by or "")
+    return result.response or ""
+
+
+def _is_interrupt_request(text: str) -> bool:
+    """Whether a typed line redirects the running turn instead of waiting for it.
+
+    A leading ``!`` is the interrupt marker: it is quick to type, impossible to
+    produce by accident at the start of a sentence, and it keeps interrupting and
+    queueing on different inputs so one cannot be mistaken for the other.
+    """
+    return text.startswith("!")
+
+
 def _interactive_terminal() -> bool:
     """Whether this process has a terminal the frame may own."""
     try:
@@ -374,12 +422,13 @@ async def _turn_loop(
             durable_session.receipt.revision.head_seq if durable_session else None
         )
         try:
-            if durable_session is None:
-                response = await run_turn(
-                    agent, user_input=user_input, budget=DEFAULT_CLI_RUN_BUDGET
-                )
-            else:
-                response = await _durable_turn(agent, user_input, durable_session)
+            response = await _run_supervised_turn(
+                agent=agent,
+                user_input=user_input,
+                frame=frame,
+                input_reader=input_reader,
+                durable_session=durable_session,
+            )
         except RunBudgetExceeded:
             pass
         except Exception as exc:

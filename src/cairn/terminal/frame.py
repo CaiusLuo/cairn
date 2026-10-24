@@ -24,8 +24,10 @@ Rendering rules this module owns:
   an unbound Ctrl-C leaves the user unable to interrupt anything.
 """
 
+import asyncio
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from io import StringIO
 
 from prompt_toolkit.application import Application
@@ -43,6 +45,7 @@ from rich.console import Console
 
 from cairn.terminal.live import LiveRegion
 from cairn.terminal.pacing import StreamPacer
+from cairn.terminal.submission import LineQueue
 from cairn.terminal.transcript import TRANSCRIPT_GAP_LINES, Transcript
 
 #: Prompt shown at the input line. Kept short so the input keeps its width.
@@ -81,6 +84,10 @@ class TranscriptView:
         self._write = write
         self._draft: list[str] = []
         self._live_text = ""
+        # Submitted lines go through a queue because the input line runs for the
+        # whole session: the turn and the input overlap, they are not nested.
+        self._lines = LineQueue()
+        self._runner: asyncio.Task[None] | None = None
         self._app: Application[str] | None = None
         # Set by the CLI once the streaming display exists; the key binding is
         # always present so the hint it prints is never a lie.
@@ -167,18 +174,54 @@ class TranscriptView:
         return ANSI(self._live_text)
 
     def _on_accept(self, buffer: Buffer) -> bool:
+        """Deliver the line and keep the input running.
+
+        The application is not exited: it is the session's one terminal owner, so
+        exiting would end the input line the turn loop still needs.
+        """
         text = buffer.text
-        if text.strip() and self._app is not None:
-            self._app.exit(result=text)
         buffer.reset()
+        if text.strip():
+            self._lines.submit(text)
         return True
 
     async def read(self) -> str:
-        """Run the input line until the operator submits a line."""
+        """Wait for the next submitted line, running the input line meanwhile.
+
+        The application is started once and left running: it owns the terminal for
+        the session, so starting it per message would mean tearing down and
+        rebuilding the input line between every turn. A submitted line arrives
+        through the queue instead.
+        """
+        await self._ensure_running()
+        return await self._lines.next_line()
+
+    async def _ensure_running(self) -> None:
+        """Start the input line if it is not already running."""
         if self._app is None:
             raise RuntimeError("view has no application")
+        if self._runner is not None and not self._runner.done():
+            return
+        self._runner = asyncio.create_task(self._run_application())
+        # Let the first frame paint before the caller starts waiting for input,
+        # so a prompt is visible even when nothing else has been printed.
+        await asyncio.sleep(0)
+
+    async def _run_application(self) -> None:
         with patch_stdout(raw=True):
-            return await self._app.run_async()
+            await self._app.run_async()  # type: ignore[union-attr]
+
+    async def aclose(self) -> None:
+        """Stop the input line and release anything waiting on it."""
+        self._lines.close()
+        if self._app is not None and self._app.is_running:
+            # No result: the session is ending, not submitting a line.
+            self._app.exit(exception=EOFError())
+        if self._runner is not None:
+            # Ending the session is expected here, not an error to report.
+            with suppress(KeyboardInterrupt, EOFError):
+                await self._runner
+            self._runner = None
 
     # -- output ----------------------------------------------------------
 
