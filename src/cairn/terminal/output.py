@@ -20,6 +20,7 @@ from cairn.core.permissions import PermissionChoice, PermissionRequest
 from cairn.core.provider_catalog import NamedProvider
 from cairn.terminal.live import LiveRegion
 from cairn.terminal.reasoning import ReasoningView
+from cairn.terminal.thinking import ThinkingPreview
 
 console = Console()
 
@@ -720,6 +721,9 @@ class StreamingDisplay:
         self._reasoning: list[str] = []
         self._reasoning_open = False
         self._reasoning_view = ReasoningView()
+        # The temporary reasoning preview; it owns what the reader sees while the
+        # model thinks, and the receipt that survives it.
+        self._thinking = ThinkingPreview()
         # Off terminal, reasoning is appended rather than redrawn. This counts
         # the logical lines already written so a delta adds only what is new.
         self._logged_lines = 0
@@ -737,6 +741,9 @@ class StreamingDisplay:
         self._trace_id: str | None = None
         self._step: tuple[int, int] | None = None
         self._model_name = ""
+        self._provider_name = ""
+        #: The last turn's rate, kept so an idle session does not show it decaying.
+        self._frozen_rate: float | None = None
         # Where the session facts are shown when the caller wants them below the
         # input rather than on the live region.
         self._on_status = on_status
@@ -764,6 +771,7 @@ class StreamingDisplay:
         self._cached_tokens = 0
         self._reasoning_tokens = None
         self._step = None
+        self._thinking.clear()
 
     def _forget_attempt(self) -> None:
         """Drop everything the display knows about the attempt so far.
@@ -845,7 +853,9 @@ class StreamingDisplay:
         self._render_answer_progress()
 
     def _show_reasoning_delta(self, event: Event) -> None:
-        self._reasoning.append(_plain_text(event))
+        text = _plain_text(event)
+        self._reasoning.append(text)
+        self._thinking.append(text)
         self._render_reasoning()
 
     def _finish_stream(self, event: Event) -> None:
@@ -873,6 +883,9 @@ class StreamingDisplay:
             reasoning = _count(usage.get("reasoning_tokens"))
             self._reasoning_tokens = reasoning or None
         self._active = False
+        # Freeze the rate now: leaving it live would make it decay as the idle clock
+        # runs, which reads as the model slowing down after it has finished.
+        self._frozen_rate = self._rate()
         self._refresh_status()
 
     def _note_agent_finish(self, event: Event) -> None:
@@ -900,7 +913,7 @@ class StreamingDisplay:
         if self._on_status is not None:
             # Same rate limit as the live region: the status line changes many times
             # a second and each repaint costs a redraw.
-            self._on_status(self.status_text())
+            self._on_status("\n".join(self.status_lines()))
         self._live.update(self._live_renderable())
 
     def _render_reasoning(self) -> None:
@@ -914,6 +927,10 @@ class StreamingDisplay:
         bytes in a file. Each line is written once, when it settles, and the one
         line still being written overwrites itself in place.
         """
+        if not self._reasoning_open:
+            # The preview's clock starts with the first reasoning delta, so the
+            # receipt measures thinking rather than the turn.
+            self._thinking.begin(at=perf_counter())
         self._reasoning_open = True
         if supports_live_display():
             self._show_live_reasoning()
@@ -949,32 +966,56 @@ class StreamingDisplay:
             # not settled here: only its final form goes to the log.
             _write_reasoning_rows(_rows_for_lines(lines[-1:], growing=True))
 
-    def status_text(self) -> str:
-        """The session facts worth showing under the input.
+    def status_lines(self) -> list[str]:
+        """The session facts, as the two lines a reader scans while waiting.
 
-        Model, token rate and usage are the numbers a reader checks while waiting;
-        they belong where the cursor rests rather than in the transcript, which is
-        why they are exposed as text for the caller to place.
+        Two lines rather than one because they answer different questions and age
+        differently: what this session is talking to rarely changes, while the
+        numbers change every second. Packing both onto one line made a long line
+        that was mostly stale.
         """
-        parts: list[str] = []
+        first: list[str] = []
         if self._model_name:
-            parts.append(self._model_name)
-        if self._output_tokens:
-            elapsed = (
-                max(0.0, perf_counter() - self._turn_started)
-                if self._turn_started
-                else 0.0
-            )
-            if elapsed > 0:
-                parts.append(f"{self._output_tokens / elapsed:.0f} tok/s")
-            parts.append(f"{self._input_tokens} in / {self._output_tokens} out")
-        if self._context_used is not None and self._context_limit:
-            parts.append(f"ctx {self._context_used * 100 // self._context_limit}%")
-        return " · ".join(parts)
+            first.append(self._model_name)
+        if self._provider_name:
+            first.append(self._provider_name)
 
-    def observe_model(self, name: str) -> None:
-        """Remember which model this session talks to."""
+        second: list[str] = []
+        if self._output_tokens or self._input_tokens:
+            second.append(f"{self._input_tokens} in / {self._output_tokens} out")
+            rate = self._rate()
+            if rate is not None:
+                second.append(f"{rate:.0f} tok/s")
+        if self._context_used is not None and self._context_limit:
+            second.append(f"ctx {self._context_used * 100 // self._context_limit}%")
+        if not second:
+            # Nothing measured yet: say so plainly instead of showing zeros that
+            # look like a measurement.
+            second.append("ready")
+        return ["  ".join(first), "  ".join(second)]
+
+    def _rate(self) -> float | None:
+        """Tokens per second for the turn, frozen once it ends.
+
+        A live rate that keeps recomputing after the turn falls as the idle clock
+        runs, which reads as the model getting slower for no reason. The last turn's
+        rate is the useful figure, so it stops moving when the turn does.
+        """
+        if self._frozen_rate is not None:
+            return self._frozen_rate
+        if not self._turn_started or not self._output_tokens:
+            return None
+        elapsed = max(0.0, perf_counter() - self._turn_started)
+        return self._output_tokens / elapsed if elapsed > 0 else None
+
+    def status_text(self) -> str:
+        """The status as one string, for callers that place a single line."""
+        return " · ".join(part for part in self.status_lines() if part)
+
+    def observe_model(self, name: str, *, provider: str = "") -> None:
+        """Remember which model and provider this session talks to."""
         self._model_name = name
+        self._provider_name = provider
 
     def reveal_reasoning(self) -> None:
         """Show more of the collapsed reasoning, and repaint.
@@ -1003,27 +1044,25 @@ class StreamingDisplay:
         return visible
 
     def _close_reasoning(self) -> None:
+        """Settle the reasoning: clear the preview and leave one receipt.
+
+        The text is *not* written to the scrollback. It was already temporary while
+        it streamed, and reprinting it on settle is what made a turn cost a
+        screenful: the whole argument arrived, then stayed, next to the answer that
+        summarised it. The reasoning itself belongs to the trace; what the transcript
+        keeps is the fact that thinking happened and how long it took.
+        """
         if not self._reasoning_open:
             return
-        # The live copy is transient, and settling a block stops the region, so
-        # by the time the stream ends the reasoning may no longer be on screen.
-        # Reprint the trailing rows once, here, so they survive in the
-        # scrollback. Off terminal nothing was redrawn: the log holds every row
-        # already, and only the one that never settled is still missing.
-        replayed = self._replay_reasoning() if self._live is not None else False
+        self._thinking.finish(at=perf_counter())
         self._close_live()
-        if not replayed:
-            self._log_new_reasoning(final=True)
+        # The receipt belongs to the transcript, not to the redirected log: it is the
+        # one line a reader of the conversation keeps. It goes through the console so
+        # it appears wherever the answer will.
+        receipt = self._thinking.receipt() if self._thinking.has_content() else ""
+        if receipt:
+            console.print(Text(receipt, style="dim"))
         self._reasoning_open = False
-
-    def _replay_reasoning(self) -> bool:
-        """Write the trailing reasoning to the log; say whether anything went."""
-        rows = [(text, False) for text in self._visible_reasoning()]
-        if not _write_reasoning_rows(rows):
-            return False
-        # Separate the replayed block from whatever follows it.
-        _write_reasoning_rows([("", False)])
-        return True
 
     def _render_answer_progress(self) -> None:
         """Print each finished Markdown block once; redraw only the last one.
@@ -1079,11 +1118,22 @@ class StreamingDisplay:
         return Group(body, Text(""), self._status_line(), self._reasoning_renderable())
 
     def _reasoning_renderable(self) -> Text:
-        """The trailing reasoning lines as one dim block, empty when not streaming."""
-        return Text(
-            "\n".join(f"{THINKING_PREFIX}{line}" for line in self._visible_reasoning()),
-            style="dim",
-        )
+        """The temporary reasoning preview: a header and its newest two rows.
+
+        Only the newest rows are shown, because a reader looks at what the model is
+        doing now. The key hint is appended only while the preview is running: once
+        the turn settles there is nothing left to reveal, and promising a key that
+        does nothing is worse than saying nothing.
+        """
+        if not self._thinking.has_content():
+            return Text("")
+        lines = [
+            self._thinking.header(),
+            *(f"  {row}" for row in self._thinking.visible()),
+        ]
+        if self._thinking.running:
+            lines.append("  Ctrl+O: details")
+        return Text("\n".join(lines), style="dim")
 
     def _status_line(self) -> Text:
         elapsed = (

@@ -146,12 +146,14 @@ def test_public_cli_partial_fallback_labels_abandoned_text(
     assert result.exit_code == 0, result.output
     shown = text.getvalue()
     # Prose goes through the console channel; reasoning is plain lines, which
-    # CliRunner collects into the command's own output. A thought reaches a
-    # redirected log twice by design: once while it is still growing (padded and
-    # rewritten in place) and once settled. What must not happen is a repeat of
-    # the settled form.
+    # CliRunner collects into the command's own output.
+    #
+    # A settled turn deliberately does not reprint its reasoning: the transcript
+    # keeps a receipt instead, and the reasoning itself belongs to the trace. A
+    # redirected log still sees the text as it arrives, which is how an operator
+    # reading the log can tell what happened.
     reasoning_shown = result.output
-    assert reasoning_shown.count("⋮ ACCEPTED_THOUGHT\n") == 1
+    assert "ACCEPTED_THOUGHT" in reasoning_shown
     # The abandoned attempt's reasoning is already on screen before the label
     # that explains why its answer was dropped, and that answer never prints.
     assert "ABANDONED_THOUGHT" in reasoning_shown

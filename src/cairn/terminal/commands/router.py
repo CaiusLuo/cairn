@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from cairn.terminal.commands.compact import handle_compact
 from cairn.terminal.commands.context import CommandContext
-from cairn.terminal.commands.help import handle_help, print_available_commands
+from cairn.terminal.commands.help import handle_help
 from cairn.terminal.commands.model import handle_model
 from cairn.terminal.commands.provider import handle_provider
 from cairn.terminal.commands.trace import handle_trace
@@ -53,6 +53,10 @@ class CommandRouter:
             handle_help(args)
             return CommandResult(handled=True)
 
-        print(f"Unknown command: {parts[0]}")
-        print_available_commands()
+        # A wrong command is corrected, not answered with the manual. Printing every
+        # command buried the conversation for a typo; the operator learns more from
+        # one line naming what they typed and how to see the list.
+        print(
+            f"{parts[0]} is not an in-session command. Type /help to see the commands."
+        )
         return CommandResult(handled=True)

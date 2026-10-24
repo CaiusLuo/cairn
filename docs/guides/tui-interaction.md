@@ -33,8 +33,39 @@ Three rules follow from that and are worth stating because each is easy to break
   East Asian setting would shift every continuation line by a column.
 
 Progress is not part of the transcript. The step counter, token rate and context
-usage live on the status line under the input, because a turn with a hundred steps
+usage live on the status area under the input, because a turn with a hundred steps
 would otherwise leave a hundred lines that say nothing once it ends.
+
+## Information lifetimes
+
+Every surface exists because of how long its content is worth keeping:
+
+| Region | Lives | Holds |
+| --- | --- | --- |
+| Transcript | Permanent | The prompt and the final reply |
+| Preview | While a turn runs | The newest two rows of reasoning, a frame and a clock |
+| Status | Session | What the session talks to, and what it has spent |
+
+Reasoning is temporary by design. It shows its newest two rows while the model
+thinks — the opening rows aged badly, describing a thought the model had already
+moved past — and when the turn settles only a receipt remains:
+
+```text
+* Hi! I'm Cairn.
+
+Thinking  3.2s
+```
+
+The text itself belongs to the trace. Reprinting it into the scrollback cost a
+screenful per turn, next to the answer that already summarised it. `Ctrl+O` is
+offered only while the preview runs, because a settled turn has nothing left to
+reveal and a key that does nothing is worse than no key.
+
+The status area is two lines because they answer different questions and age
+differently: the model and provider change when the operator switches, while the
+numbers change every second. A rate freezes when its turn ends — left live it would
+decay with the idle clock, reading as a model that slows down after finishing — and
+an unmeasured session says `ready` rather than showing zeros that look measured.
 
 ## The composer
 

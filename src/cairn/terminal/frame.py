@@ -59,6 +59,10 @@ from cairn.terminal.transcript import TRANSCRIPT_GAP_LINES, Transcript
 #: screen and makes the session look frozen.
 LIVE_TAIL_LINES = 3
 
+#: Rows the status area uses for session facts: what the session talks to, and
+#: what it has spent.
+STATUS_LINES = 2
+
 #: Rows the queued-message stack may occupy. Bounded for the same reason as the live
 #: tail: an inline application gives a tall window rows the input needs.
 QUEUE_STACK_LINES = 3
@@ -111,8 +115,8 @@ class TranscriptView:
         # The queued messages and which one the operator has selected.
         self._pending = SteerQueue()
         self._queue_view = QueueView()
-        # Model, usage and rate, supplied by the display.
-        self._status = ""
+        # The session facts, supplied by the display; one entry per line.
+        self._status: list[str] = []
         # Payloads behind the paste markers currently in the buffer.
         self._pastes = PasteRegistry()
         self._runner: asyncio.Task[None] | None = None
@@ -278,7 +282,10 @@ class TranscriptView:
                 # turn runs: outside one both simply submit.
                 Window(
                     FormattedTextControl(text=self._hint_control),
-                    height=Dimension(min=0, max=1),
+                    # Two rows for the session facts, plus one for the key hint while
+                    # a turn runs. Bounded like every other region: an inline
+                    # application gives a taller window rows the input needs.
+                    height=Dimension(min=0, max=STATUS_LINES + 1),
                     style="class:hint",
                     dont_extend_height=True,
                 ),
@@ -299,17 +306,28 @@ class TranscriptView:
 
     # -- input -----------------------------------------------------------
 
+    def set_running(self, running: bool) -> None:
+        """Record whether a turn is in flight.
+
+        The composer's two keys mean different things in the two states, and the
+        hint must not promise a behaviour that is not available.
+        """
+        self._running = running
+        self.repaint()
+
     def observe_status(self, text: str) -> None:
-        """Adopt the session facts the status line shows.
+        """Adopt the session facts the status area shows.
 
         The display owns what these facts are; the frame only decides where they
-        appear, which is under the input where they are read while waiting.
+        appear, which is under the input where they are read while waiting. Two
+        lines are kept apart because they answer different questions: what the
+        session talks to, and what it has spent.
         """
-        self._status = text
+        self._status = [line for line in text.split("\n") if line.strip()]
         self.repaint()
 
     def _status_text(self) -> str:
-        return self._status
+        return "\n".join(self._status)
 
     def _queue_control(self) -> ANSI:
         """The queued messages, with the selected one marked."""

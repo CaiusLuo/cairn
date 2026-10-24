@@ -314,7 +314,7 @@ def test_cli_ctrl_c_and_eof_never_start_a_turn(
         ("/help", "Available commands:"),
         ("/trace", "No trace available yet."),
         ("/exit", "Goodbye! see you next time."),
-        ("/unknown", "Unknown command: /unknown"),
+        ("/unknown", "is not an in-session command"),
     ],
 )
 def test_interactive_commands_do_not_call_model(
@@ -333,9 +333,15 @@ def test_interactive_commands_do_not_call_model(
     assert expected in result.stdout
 
 
-def test_interactive_unknown_command_lists_commands_with_usage(
+def test_interactive_unknown_command_corrects_without_printing_the_manual(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A typo gets one line, not the whole command list.
+
+    Printing every command buried the conversation for a misspelling. The operator
+    is told what they typed and how to see the list, which is what they need to
+    recover; the manual is one keystroke away and belongs there.
+    """
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
@@ -347,14 +353,11 @@ def test_interactive_unknown_command_lists_commands_with_usage(
 
     assert result.exit_code == 0
     output = result.stdout
-    assert output.index("Unknown command: /unknown") < output.index(
-        "Available commands:"
-    )
-    for name in ("/trace", "/help", "/exit", "/quit"):
-        assert name in output
-    assert "usage: /trace | /trace TRACE_ID" in output
-    assert "usage: /help [COMMAND]" in output
-    assert "Run /help COMMAND for details" in output
+    assert "/unknown is not an in-session command" in output
+    assert "/help" in output
+    # The manual is no longer dumped into the transcript.
+    assert "Available commands:" not in output
+    assert "usage: /trace" not in output
 
 
 def test_interactive_unknown_trace_subcommand_shows_trace_usage(

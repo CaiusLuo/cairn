@@ -462,6 +462,8 @@ async def _turn_loop(
                 break
             continue
         streaming_display.reset()
+        if frame is not None:
+            frame.set_running(True)
         # Echo the prompt before the answer so the transcript keeps both sides of
         # the conversation; the reply alone leaves the reader reconstructing what
         # was asked.
@@ -490,6 +492,8 @@ async def _turn_loop(
             if not streaming_display.final_text_visible:
                 print_assistant_response(response)
         finally:
+            if frame is not None:
+                frame.set_running(False)
             streaming_display.close_incomplete()
             pending = pending_trace_finish[0]
             if pending is not None:
@@ -558,6 +562,12 @@ async def main(
         # Session facts belong under the input when there is one: they are read
         # while waiting, and a line per measurement would crowd the transcript.
         on_status=frame.observe_status if frame is not None else None,
+    )
+    # Which model this session talks to is a fact about the session, not about the
+    # turn, so it is set once here rather than derived from each event.
+    streaming_display.observe_model(
+        active_runtime.model_manager.current_model().model_ids[0],
+        provider=active_runtime.provider.name,
     )
     if frame is not None:
         # Ctrl+O reveals more reasoning. A keystroke rather than a click: capturing
