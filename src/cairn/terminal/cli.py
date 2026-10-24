@@ -42,7 +42,7 @@ from cairn.runtime.provider_runtime import (
 from cairn.runtime.session import SessionState
 from cairn.runtime.turn.compaction import CompactionOutcome
 from cairn.runtime.turn.hook import run_compaction
-from cairn.runtime.turn.supervisor import TurnQueue, supervise_turn
+from cairn.runtime.turn.steering import PendingMessage, SteerQueue
 from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.router import CommandRouter
 from cairn.terminal.durable import (
@@ -66,6 +66,7 @@ from cairn.terminal.output import (
     print_provider_selection,
     print_runtime_error,
 )
+from cairn.terminal.submission import PendingLine
 
 app = typer.Typer(
     invoke_without_command=True,
@@ -332,35 +333,72 @@ async def _run_supervised_turn(
     guidance of the next one, which keeps ``run_turn`` the only Agent turn.
     """
 
-    async def run(text: str) -> str:
-        if durable_session is None:
-            return await run_turn(agent, user_input=text, budget=DEFAULT_CLI_RUN_BUDGET)
-        return await _durable_turn(agent, text, durable_session)
-
     if frame is None:
-        return await run(user_input)
+        if durable_session is None:
+            return await run_turn(
+                agent, user_input=user_input, budget=DEFAULT_CLI_RUN_BUDGET
+            )
+        return await _durable_turn(agent, user_input, durable_session)
 
-    result = await supervise_turn(
-        run,
-        user_input,
-        queue=TurnQueue(),
-        wait_for_input=frame.read,
-        is_interrupt=_is_interrupt_request,
+    # The input line keeps running while the turn does. A message typed now either
+    # joins this turn at its next step boundary (steer) or waits for it to end
+    # (queue); neither cancels the turn, because a redirect is meant to keep the
+    # work already done.
+    steering = SteerQueue()
+    return await _drive_turn(
+        agent=agent,
+        user_input=user_input,
+        steering=steering,
+        frame=frame,
+        durable_session=durable_session,
     )
-    if result.interrupted:
-        # The guidance replaces the turn's remaining work; it opens the next one.
-        return await run(result.interrupted_by or "")
-    return result.response or ""
 
 
-def _is_interrupt_request(text: str) -> bool:
-    """Whether a typed line redirects the running turn instead of waiting for it.
+async def _drive_turn(
+    *,
+    agent: Agent,
+    user_input: str,
+    steering: SteerQueue,
+    frame: TranscriptView,
+    durable_session: DurableSession | None,
+) -> str:
+    """Run one turn while reading further instructions from the input line."""
 
-    A leading ``!`` is the interrupt marker: it is quick to type, impossible to
-    produce by accident at the start of a sentence, and it keeps interrupting and
-    queueing on different inputs so one cannot be mistaken for the other.
-    """
-    return text.startswith("!")
+    async def run() -> str:
+        if durable_session is None:
+            return await run_turn(
+                agent,
+                user_input=user_input,
+                budget=DEFAULT_CLI_RUN_BUDGET,
+                steering=steering,
+            )
+        return await _durable_turn(agent, user_input, durable_session)
+
+    turn = asyncio.create_task(run())
+    reader = asyncio.create_task(frame.read())
+    try:
+        while True:
+            done, _ = await asyncio.wait(
+                {turn, reader}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if turn in done:
+                return await turn
+            line = await reader
+            if line.text.strip():
+                # ``now`` only applies when nothing is running; during a turn the
+                # two meaningful choices are joining it or waiting for it.
+                steering.push(
+                    PendingMessage(
+                        text=line.text,
+                        delivery="queue" if line.delivery == "queue" else "steer",
+                    )
+                )
+            reader = asyncio.create_task(frame.read())
+    finally:
+        for task in (turn, reader):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(turn, reader, return_exceptions=True)
 
 
 def _interactive_terminal() -> bool:
@@ -393,8 +431,13 @@ async def _turn_loop(
         try:
             # The frame owns the input line when it exists, so typed text and the
             # live region share one viewport instead of fighting for the cursor.
-            user_input = (
+            submitted = (
                 await frame.read() if frame is not None else await input_reader.read()
+            )
+            # This loop only reads while the session is idle, so the delivery a line
+            # asked for does not apply here: work starts now either way.
+            user_input = (
+                submitted.text if isinstance(submitted, PendingLine) else submitted
             )
         except KeyboardInterrupt:
             continue

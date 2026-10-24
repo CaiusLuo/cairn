@@ -34,6 +34,7 @@ from prompt_toolkit import keys
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.enums import EditingMode
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout, Window
@@ -45,16 +46,22 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import HorizontalLine
 from rich.console import Console
 
+from cairn.runtime.turn.steering import PendingMessage, SteerQueue
 from cairn.terminal.live import LiveRegion
 from cairn.terminal.pacing import StreamPacer
 from cairn.terminal.paste import PasteRegistry, decide_paste
-from cairn.terminal.submission import LineQueue
+from cairn.terminal.queue_view import QueueView
+from cairn.terminal.submission import Delivery, LineQueue, PendingLine
 from cairn.terminal.transcript import TRANSCRIPT_GAP_LINES, Transcript
 
 #: Rows the live tail may occupy. Bounded rather than weighted: an inline
 #: application gives a weighted window every spare row, which pushes the input off
 #: screen and makes the session look frozen.
 LIVE_TAIL_LINES = 3
+
+#: Rows the queued-message stack may occupy. Bounded for the same reason as the live
+#: tail: an inline application gives a tall window rows the input needs.
+QUEUE_STACK_LINES = 3
 
 #: Rows the composer grows to before it scrolls internally. Kept small so the
 #: transcript keeps most of the screen; the shipped agents use 10 (Gemini) or
@@ -98,6 +105,12 @@ class TranscriptView:
         # Submitted lines go through a queue because the input line runs for the
         # whole session: the turn and the input overlap, they are not nested.
         self._lines = LineQueue()
+        # Set while a turn runs, so the two keys can mean guide/queue instead of
+        # submit; and outside a turn so the hint does not claim otherwise.
+        self._running = False
+        # The queued messages and which one the operator has selected.
+        self._pending = SteerQueue()
+        self._queue_view = QueueView()
         # Payloads behind the paste markers currently in the buffer.
         self._pastes = PasteRegistry()
         self._runner: asyncio.Task[None] | None = None
@@ -125,6 +138,49 @@ class TranscriptView:
         @bindings.add("escape", "enter")
         def newline(event: object) -> None:
             self._buffer.insert_text("\n")
+
+        @bindings.add("tab")
+        def queue_for_after(event: object) -> None:
+            """Queue the typed line for after the running turn.
+
+            Enter and Tab differ only while a turn runs: Enter guides it, Tab waits
+            for it. Outside a turn both submit, because there is nothing to wait for.
+            """
+            if not self._running:
+                return
+            self._submit_typed(delivery="queue")
+
+        @bindings.add("up")
+        def select_previous(event: object) -> None:
+            """Move the selection up through the queued messages.
+
+            Only when the composer is empty: with text in it the arrow keys belong
+            to editing, which is what a reader expects while typing.
+            """
+            if self._buffer.text:
+                self._buffer.history_backward()
+                return
+            self._queue_view.move_up(self._pending)
+            self.repaint()
+
+        @bindings.add("down")
+        def select_next(event: object) -> None:
+            if self._buffer.text:
+                self._buffer.history_forward()
+                return
+            self._queue_view.move_down(self._pending)
+            self.repaint()
+
+        @bindings.add("enter", filter=~Condition(lambda: bool(self._buffer.text)))
+        def promote_selected(event: object) -> None:
+            """Turn the selected queued message into a guide for the running turn.
+
+            Reachable only with an empty composer, so it cannot swallow a submission.
+            """
+            if not self._running:
+                return
+            if self._queue_view.promote_selected(self._pending):
+                self.repaint()
 
         @bindings.add("c-c")
         def interrupt(event: object) -> None:
@@ -179,6 +235,17 @@ class TranscriptView:
                     dont_extend_height=True,
                 ),
                 Window(height=TRANSCRIPT_GAP_LINES),
+                # The queued messages, oldest first, above the composer. Shown as a
+                # stack so a message typed for later stays visible: one that is
+                # accepted and then forgotten is indistinguishable from a dropped
+                # message, and the operator would type it again.
+                Window(
+                    FormattedTextControl(text=self._queue_control),
+                    height=Dimension(min=0, max=QUEUE_STACK_LINES),
+                    wrap_lines=False,
+                    style="class:queued",
+                    dont_extend_height=True,
+                ),
                 HorizontalLine(),
                 Window(
                     BufferControl(
@@ -190,6 +257,14 @@ class TranscriptView:
                     # scrolls internally so the transcript never jumps.
                     height=Dimension(min=1, max=COMPOSER_MAX_LINES),
                     style="class:input",
+                    dont_extend_height=True,
+                ),
+                # The hint names what the two keys mean right now, only while a
+                # turn runs: outside one both simply submit.
+                Window(
+                    FormattedTextControl(text=self._hint_control),
+                    height=Dimension(min=0, max=1),
+                    style="class:hint",
                     dont_extend_height=True,
                 ),
                 HorizontalLine(),
@@ -209,9 +284,43 @@ class TranscriptView:
 
     # -- input -----------------------------------------------------------
 
+    def _queue_control(self) -> ANSI:
+        """The queued messages, with the selected one marked."""
+        rows = self._queue_view.rows(self._pending)
+        if not rows:
+            return ANSI("")
+        lines = []
+        for row in rows:
+            marker = ">" if row.selected else " "
+            text = row.text.replace("\n", " ")
+            if len(text) > 60:
+                text = text[:57] + "..."
+            lines.append(f"{marker} {text}")
+        return ANSI("\n".join(lines))
+
+    def _hint_control(self) -> ANSI:
+        """What Enter and Tab mean right now."""
+        hint = self._queue_view.hint(running=self._running)
+        return ANSI(f"\x1b[2m{hint}\x1b[0m" if hint else "")
+
     def _live_control(self) -> ANSI:
         """The live region as ANSI, so its dim styling survives the frame."""
         return ANSI(self._live_text)
+
+    def _submit_typed(self, *, delivery: Delivery) -> None:
+        """Submit the composer's text, restoring pasted payloads first."""
+        text = self._buffer.text
+        self._buffer.reset()
+        expanded = self._pastes.expand(text)
+        self._pastes.clear()
+        if not expanded.strip():
+            return
+        if delivery == "queue":
+            # A queued message waits for the turn, so it lives in the queue the
+            # stack above the composer renders from.
+            self._pending.push(PendingMessage(text=expanded, delivery="queue"))
+        self._lines.submit(PendingLine(text=expanded, delivery=delivery))
+        self.repaint()
 
     def _on_accept(self, buffer: Buffer) -> bool:
         """Deliver the line and keep the input running.
@@ -219,17 +328,13 @@ class TranscriptView:
         The application is not exited: it is the session's one terminal owner, so
         exiting would end the input line the turn loop still needs.
         """
-        text = buffer.text
-        buffer.reset()
-        # Markers in the buffer stand for pasted content; submission sends what was
-        # pasted, not the placeholder that stood in for it.
-        expanded = self._pastes.expand(text)
-        self._pastes.clear()
-        if expanded.strip():
-            self._lines.submit(expanded)
+        # Enter means: start work when idle, guide the running turn when busy. The
+        # same key does the obvious thing in both states, which is why it needs no
+        # modifier to remember.
+        self._submit_typed(delivery="steer" if self._running else "now")
         return True
 
-    async def read(self) -> str:
+    async def read(self) -> PendingLine:
         """Wait for the next submitted line, running the input line meanwhile.
 
         The application is started once and left running: it owns the terminal for

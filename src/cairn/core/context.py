@@ -169,6 +169,14 @@ def _validate_turn_boundaries(history: list[Message], current_turn_start: int) -
 
     These are internal-invariant failures: without user-message turn boundaries
     the builder cannot describe which whole turns it omitted.
+
+    A turn is allowed to contain more than one user message. Steering adds an
+    instruction to a turn that is already running, and refusing the second message
+    would make redirecting a turn impossible. What trimming actually needs is
+    narrower than "exactly one user message per turn": it needs the index of the
+    turn's *first* message, and it needs every user message before that index to
+    close an older turn. Both still hold, so old turns remain droppable whole while
+    a live turn keeps every message it accumulated.
     """
     if (
         type(current_turn_start) is not int
@@ -178,11 +186,6 @@ def _validate_turn_boundaries(history: list[Message], current_turn_start: int) -
         raise ValueError("current_turn_start must identify the current user message")
     if history[0].role != "user":
         raise ValueError("Conversation history must start with a user message")
-    if any(
-        history[index].role == "user"
-        for index in range(current_turn_start + 1, len(history))
-    ):
-        raise ValueError("The current turn cannot contain another user message")
 
 
 def _tool_group_error(messages: list[Message]) -> str | None:

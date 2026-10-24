@@ -13,6 +13,19 @@ another line.
 
 import asyncio
 from dataclasses import dataclass, field
+from typing import Literal
+
+#: How a typed line should be delivered. ``now`` starts work when the session is
+#: idle; ``steer`` joins a running turn; ``queue`` waits for it to finish.
+Delivery = Literal["now", "steer", "queue"]
+
+
+@dataclass(frozen=True, slots=True)
+class PendingLine:
+    """One submitted line, with the delivery the operator asked for."""
+
+    text: str
+    delivery: Delivery = "now"
 
 
 @dataclass(slots=True)
@@ -23,22 +36,27 @@ class LineQueue:
     treating it as a turn would start work on nothing.
     """
 
-    _pending: asyncio.Queue[str] = field(default_factory=asyncio.Queue, repr=False)
+    _pending: asyncio.Queue[PendingLine] = field(
+        default_factory=asyncio.Queue, repr=False
+    )
     _closed: bool = field(default=False, repr=False)
     #: Readers suspended in ``next_line`` when the session closed. Woken explicitly
     #: because a closed queue will never produce a line for them to receive.
-    _waiters: list[asyncio.Future[str]] = field(default_factory=list, repr=False)
+    _waiters: list[asyncio.Future[PendingLine]] = field(
+        default_factory=list, repr=False
+    )
 
-    def submit(self, text: str) -> None:
+    def submit(self, line: "PendingLine | str") -> None:
         """Offer a submitted line. A blank line is ignored, not delivered."""
         if self._closed:
             raise EOFError("the session is closed")
-        if not text or not text.strip():
+        pending = line if isinstance(line, PendingLine) else PendingLine(text=line)
+        if not pending.text or not pending.text.strip():
             return
-        self._pending.put_nowait(text)
+        self._pending.put_nowait(pending)
         self._release_one_waiter()
 
-    async def next_line(self) -> str:
+    async def next_line(self) -> PendingLine:
         """Wait for the next submitted line.
 
         Raises:
@@ -48,7 +66,7 @@ class LineQueue:
             return self._pending.get_nowait()
         if self._closed:
             raise EOFError("the session is closed")
-        waiter: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        waiter: asyncio.Future[PendingLine] = asyncio.get_running_loop().create_future()
         self._waiters.append(waiter)
         try:
             return await waiter

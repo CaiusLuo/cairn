@@ -15,14 +15,14 @@ import asyncio
 
 import pytest
 
-from cairn.terminal.submission import LineQueue
+from cairn.terminal.submission import LineQueue, PendingLine
 
 
 def test_a_submission_is_delivered_once() -> None:
     async def scenario() -> str:
         queue = LineQueue()
         queue.submit("hello")
-        return await queue.next_line()
+        return (await queue.next_line()).text
 
     assert asyncio.run(scenario()) == "hello"
 
@@ -38,7 +38,7 @@ def test_reading_waits_until_a_line_arrives() -> None:
         task = asyncio.ensure_future(submit_later())
         line = await queue.next_line()
         await task
-        return line
+        return line.text
 
     assert asyncio.run(scenario()) == "late"
 
@@ -48,7 +48,7 @@ def test_lines_keep_their_order() -> None:
         queue = LineQueue()
         for text in ("first", "second", "third"):
             queue.submit(text)
-        return [await queue.next_line() for _ in range(3)]
+        return [(await queue.next_line()).text for _ in range(3)]
 
     assert asyncio.run(scenario()) == ["first", "second", "third"]
 
@@ -61,7 +61,7 @@ def test_a_blank_line_is_not_a_message() -> None:
         queue.submit("   ")
         queue.submit("\n")
         queue.submit("real")
-        return await queue.next_line()
+        return (await queue.next_line()).text
 
     assert asyncio.run(scenario()) == "real"
 
@@ -98,3 +98,23 @@ def test_the_queue_reports_its_length() -> None:
     queue.submit("a")
     queue.submit("b")
     assert len(queue) == 2
+
+
+def test_a_line_carries_the_delivery_the_operator_asked_for() -> None:
+    """The queue carries intent, not just text: the turn needs to know how."""
+
+    async def scenario() -> str:
+        queue = LineQueue()
+        queue.submit(PendingLine(text="later", delivery="queue"))
+        return (await queue.next_line()).delivery
+
+    assert asyncio.run(scenario()) == "queue"
+
+
+def test_a_plain_submission_defaults_to_starting_work() -> None:
+    async def scenario() -> str:
+        queue = LineQueue()
+        queue.submit("start")
+        return (await queue.next_line()).delivery
+
+    assert asyncio.run(scenario()) == "now"

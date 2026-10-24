@@ -350,6 +350,23 @@ def test_budget_error_without_components_still_reads_clearly() -> None:
     assert "The current turn and tool results cannot be trimmed" in str(error)
 
 
+def test_a_turn_may_hold_a_second_user_message() -> None:
+    """Steering adds an instruction to a turn that is already running.
+
+    This used to be rejected as a broken turn boundary. It is now the shape a
+    steered turn always has: the index still names the turn's first message, so
+    trimming can still drop whole old turns.
+    """
+    request = ContextBuilder(counter=SizeCounter()).build(
+        system_messages=[],
+        history=[user("current"), user("new")],
+        current_turn_start=0,
+        tools=[],
+    )
+
+    assert [message.content for message in request.messages] == ["current", "new"]
+
+
 @pytest.mark.parametrize(
     "history,current_turn_start",
     [
@@ -357,7 +374,6 @@ def test_budget_error_without_components_still_reads_clearly() -> None:
         ([user("current")], -1),
         ([user("current")], 1),
         ([assistant("old"), user("current")], 1),
-        ([user("current"), user("new")], 0),
         ([user("old"), assistant("answer")], 1),
         (
             [

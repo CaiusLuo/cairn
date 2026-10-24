@@ -87,6 +87,7 @@ from cairn.runtime.turn.hook import (
     compact_before_next_step,
     reusable_record,
 )
+from cairn.runtime.turn.steering import SteerQueue
 from cairn.runtime.turn_trace import AttemptContext, TurnTrace
 
 
@@ -104,7 +105,14 @@ async def run_turn(
     *,
     budget: RunBudget,
     session: Session | None = None,
+    steering: SteerQueue | None = None,
 ) -> str:
+    """Run one Agent turn.
+
+    ``steering`` carries instructions that arrive while the turn is running. They
+    join this same turn at a step boundary rather than starting a new one, because
+    a redirect is meant to keep the work already done.
+    """
     # Admission is synchronous and precedes every trace/event/state/effect.
     if agent.session_owner is not session:
         raise SessionAdmissionError("The exact owning Session is required.")
@@ -135,6 +143,14 @@ async def run_turn(
             agent.state.add_user_message(user_input)
 
             for step in range(budget.max_steps):
+                # Instructions that arrived during the previous step join the
+                # conversation here, before the request is built. This is the only
+                # safe boundary: the tool batch has settled, so no call group is
+                # split, and compaction below sees the new message as real context.
+                if steering is not None:
+                    for pending in steering.take_steers():
+                        agent.state.add_user_message(pending.text)
+
                 # The context budget travels with the existing step event rather
                 # than a new event type: the event vocabulary is a closed
                 # contract that other consumers read, and a status line needs
@@ -206,6 +222,11 @@ async def run_turn(
                 pending_tool_calls = deque(response.tool_calls)
 
                 if not response.tool_calls:
+                    # A message can arrive between the model finishing and this
+                    # check. Returning here would discard it and leave the operator
+                    # believing they redirected work that continued unchanged.
+                    if steering is not None and steering.has_pending_steers:
+                        continue
                     agent.emit(
                         Event(
                             type="agent_finish",
