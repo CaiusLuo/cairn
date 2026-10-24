@@ -137,8 +137,9 @@ def test_legacy_toml_startup_keeps_the_single_provider_approval(
     assert state.resolved_keys == ["LEGACY_TOML_KEY"]
     assert state.requests[0]["api_base"] == "https://legacy-toml.test/v1"
     assert state.requests[0]["api_key"] == LEGACY_TOML_CREDENTIAL
-    assert "Provider: 'default'" in result.output
-    assert "Model group: 'flash' (openai/legacy-toml-model)" in result.output
+    # The startup line names the model actually in use, which is what a reader needs
+    # on screen; the full group was already shown at approval.
+    assert "Model: openai/legacy-toml-model via default" in result.output
 
 
 def test_single_provider_catalog_is_selected_automatically(
@@ -183,7 +184,8 @@ def test_multi_provider_model_selection_is_available_after_startup(
     assert state.approvals == [("bailian", "flash", False)]
     assert state.requests[0]["model"] == "openai/qwen-plus"
     assert state.token_models == ["openai/qwen-plus"]
-    assert "Model group: 'flash' (openai/qwen-flash)" in result.output
+    # The startup line names the model in use; the group was named at approval.
+    assert "Model: openai/qwen-flash via bailian" in result.output
 
 
 def test_multi_provider_startup_still_requires_interactive_approval(
@@ -425,11 +427,11 @@ def test_switch_approval_display_names_the_target_before_resolving_it(
 
     assert result.exit_code == 0, result.output
     output = rendered.getvalue()
-    assert "Provider: 'local'" in output
-    assert "Endpoint: 'http://localhost:8000/v1'" in output
-    assert "Credential variable: 'LOCAL_API_KEY'" in output
-    assert "Model group: 'default'" in output
-    assert "1. 'openai/local-model'" in output
+    assert "'local'" in output
+    assert "http://localhost:8000/v1" in output
+    assert "LOCAL_API_KEY" in output
+    assert "'default'" in output
+    assert "openai/local-model" in output
     assert "conversation history" in output
     assert "resets session tool-permission grants" in output
     assert "Current provider: local" in result.output

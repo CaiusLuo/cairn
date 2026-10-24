@@ -65,6 +65,7 @@ from cairn.terminal.output import (
     print_banner,
     print_provider_selection,
     print_runtime_error,
+    print_user_message,
 )
 from cairn.terminal.submission import PendingLine
 
@@ -461,6 +462,10 @@ async def _turn_loop(
                 break
             continue
         streaming_display.reset()
+        # Echo the prompt before the answer so the transcript keeps both sides of
+        # the conversation; the reply alone leaves the reader reconstructing what
+        # was asked.
+        print_user_message(user_input)
         previous_seq = (
             durable_session.receipt.revision.head_seq if durable_session else None
         )
@@ -549,7 +554,10 @@ async def main(
     # display already falls back to printing each block once.
     frame = TranscriptView() if _interactive_terminal() else None
     streaming_display = StreamingDisplay(
-        live_factory=frame_live_region(frame) if frame is not None else None
+        live_factory=frame_live_region(frame) if frame is not None else None,
+        # Session facts belong under the input when there is one: they are read
+        # while waiting, and a line per measurement would crowd the transcript.
+        on_status=frame.observe_status if frame is not None else None,
     )
     if frame is not None:
         # Ctrl+O reveals more reasoning. A keystroke rather than a click: capturing

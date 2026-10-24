@@ -117,20 +117,25 @@ def confirm_provider_access(
     """
     if not sys.stdin.isatty():
         raise ValueError("Provider approval requires an interactive terminal.")
-    console.print("Project model configuration requests access to a credential.")
-    console.print(f"Provider: {provider.name!a}", markup=False)
-    console.print(f"Endpoint: {provider.config.base_url!a}", markup=False)
-    console.print(f"Credential variable: {provider.config.api_key_env!a}", markup=False)
-    console.print(f"Model group: {group.name!a}", markup=False)
-    for position, model_id in enumerate(group.model_ids, start=1):
-        console.print(f"  {position}. {model_id!a}", markup=False)
+    # The facts that make the consent meaningful, in the fewest lines: which
+    # credential is used, where the conversation goes, and which models that covers.
+    # The credential *variable* is named (never its value) because approving a
+    # provider is approving the key it reads.
     console.print(
-        "The selected API key and conversation content will be sent to this endpoint."
+        f"Send this session's conversation to {provider.name!a} at "
+        f"{provider.config.base_url}",
+        markup=False,
+    )
+    console.print(
+        f"Credential: {provider.config.api_key_env} · group: {group.name!a} · "
+        f"{' -> '.join(group.model_ids)}",
+        markup=False,
     )
     if switching:
         console.print(
-            "Switching providers transfers the full conversation history to that "
-            "endpoint and resets session tool-permission grants."
+            "Switching providers transfers the full conversation history and "
+            "resets session tool-permission grants.",
+            style="dim",
         )
     try:
         return Confirm.ask(
@@ -141,11 +146,26 @@ def confirm_provider_access(
 
 
 def print_provider_selection(provider: NamedProvider, group: ModelConfig) -> None:
-    """Show the provider and model group this session starts with."""
-    console.print(f"Provider: {provider.name!a}", markup=False)
+    """Show the provider and model this session starts with, in one line.
+
+    The full endpoint and credential variable were already confirmed above; what a
+    reader wants on screen is what they are now talking to.
+    """
     console.print(
-        f"Model group: {group.name!a} ({' -> '.join(group.model_ids)})", markup=False
+        f"[dim]Model: {group.model_ids[0]} via {provider.name}[/dim]",
+        markup=True,
     )
+
+
+def print_user_message(content: str) -> None:
+    """Echo what the operator sent, so the transcript keeps both sides.
+
+    A conversation that shows only replies is unreadable after a few turns: the
+    reader cannot tell what was asked, and a steered turn has two user messages
+    with nothing to distinguish them from the answers beneath.
+    """
+    for line in content.split("\n"):
+        console.print(f"[bold cyan]>[/bold cyan] {line}", markup=True, highlight=False)
 
 
 def print_assistant_response(content: str) -> None:
@@ -430,6 +450,7 @@ def format_status_line(
     cached_fraction: float | None = None,
     reasoning_tokens: int | None = None,
     trace_id: str | None = None,
+    step: tuple[int, int] | None = None,
 ) -> Text:
     """One quiet line describing what the turn is doing.
 
@@ -441,6 +462,13 @@ def format_status_line(
     parts: list[Text] = []
     spinner = GLYPHS.spinner if active else GLYPHS.tick
     parts.append(Text(spinner, style="green" if not active else "cyan"))
+
+    if step is not None:
+        # Progress belongs on this line rather than in the transcript. Printing one
+        # line per step filled the scrollback with a hundred lines that said nothing
+        # once the turn ended.
+        current, total = step
+        parts.append(Text(f" step {current}/{total}", style="dim"))
 
     if tokens_per_second is not None and tokens_per_second > 0:
         parts.append(Text(f" {tokens_per_second:.0f} tok/s", style="dim"))
@@ -493,12 +521,6 @@ def console_event_handler(event: Event, *, report_trace_failure: bool = True) ->
     reports an unstored trace itself, and this handler must not repeat it.
     """
     match event.type:
-        case "agent_step":
-            step = event.data.get("step")
-            max_steps = event.data.get("max_steps")
-
-            console.print(f"[dim]step {step}/{max_steps}[/dim]")
-
         case "context_trimmed":
             omitted_turns = event.data["omitted_turns"]
             omitted_messages = event.data["omitted_messages"]
@@ -620,7 +642,12 @@ class StreamingDisplay:
     the status line throttles the reasoning repaint.
     """
 
-    def __init__(self, *, live_factory: "LiveFactory | None" = None) -> None:
+    def __init__(
+        self,
+        *,
+        live_factory: "LiveFactory | None" = None,
+        on_status: "Callable[[str], None] | None" = None,
+    ) -> None:
         self.final_text_visible = False
         # Where the live region is painted. Injected so the display never has to
         # know whether it is drawing into a plain terminal or an application that
@@ -646,6 +673,11 @@ class StreamingDisplay:
         self._cached_tokens = 0
         self._reasoning_tokens: int | None = None
         self._trace_id: str | None = None
+        self._step: tuple[int, int] | None = None
+        self._model_name = ""
+        # Where the session facts are shown when the caller wants them below the
+        # input rather than on the live region.
+        self._on_status = on_status
         self._context_used: int | None = None
         self._context_limit: int | None = None
         self._status_painted = 0.0
@@ -669,6 +701,7 @@ class StreamingDisplay:
         self._output_tokens = 0
         self._cached_tokens = 0
         self._reasoning_tokens = None
+        self._step = None
 
     def _forget_attempt(self) -> None:
         """Drop everything the display knows about the attempt so far.
@@ -696,6 +729,18 @@ class StreamingDisplay:
             return False
         handler(self, event)
         return True
+
+    def _note_step(self, event: Event) -> None:
+        """Remember how far through its step budget the turn is.
+
+        Progress is shown on the status line rather than printed, so a turn with a
+        hundred steps leaves no hundred lines behind.
+        """
+        step = event.data.get("step")
+        total = event.data.get("max_steps")
+        if type(step) is int and type(total) is int:
+            self._step = (step, total)
+            self._refresh_status()
 
     def _open_stream(self, event: Event) -> None:
         """Start a fresh attempt: nothing from the previous one may survive."""
@@ -790,6 +835,10 @@ class StreamingDisplay:
         if now - self._status_painted < STATUS_INTERVAL_SECONDS:
             return
         self._status_painted = now
+        if self._on_status is not None:
+            # Same rate limit as the live region: the status line changes many times
+            # a second and each repaint costs a redraw.
+            self._on_status(self.status_text())
         self._live.update(self._live_renderable())
 
     def _render_reasoning(self) -> None:
@@ -837,6 +886,33 @@ class StreamingDisplay:
             # The line in flight is rewritten in place on every delta, so it is
             # not settled here: only its final form goes to the log.
             _write_reasoning_rows(_rows_for_lines(lines[-1:], growing=True))
+
+    def status_text(self) -> str:
+        """The session facts worth showing under the input.
+
+        Model, token rate and usage are the numbers a reader checks while waiting;
+        they belong where the cursor rests rather than in the transcript, which is
+        why they are exposed as text for the caller to place.
+        """
+        parts: list[str] = []
+        if self._model_name:
+            parts.append(self._model_name)
+        if self._output_tokens:
+            elapsed = (
+                max(0.0, perf_counter() - self._turn_started)
+                if self._turn_started
+                else 0.0
+            )
+            if elapsed > 0:
+                parts.append(f"{self._output_tokens / elapsed:.0f} tok/s")
+            parts.append(f"{self._input_tokens} in / {self._output_tokens} out")
+        if self._context_used is not None and self._context_limit:
+            parts.append(f"ctx {self._context_used * 100 // self._context_limit}%")
+        return " · ".join(parts)
+
+    def observe_model(self, name: str) -> None:
+        """Remember which model this session talks to."""
+        self._model_name = name
 
     def reveal_reasoning(self) -> None:
         """Show more of the collapsed reasoning, and repaint.
@@ -970,6 +1046,7 @@ class StreamingDisplay:
         )
         return format_status_line(
             active=self._active,
+            step=self._step,
             tokens_per_second=tps,
             context_fraction=context_fraction,
             cached_fraction=cached_fraction,
@@ -1051,6 +1128,7 @@ class StreamingDisplay:
 # Streaming event type -> the method that presents it. A table keeps the
 # dispatch readable and lets every event type name its one handler.
 _STREAMING_HANDLERS: dict[str, Callable[["StreamingDisplay", Event], None]] = {
+    "agent_step": StreamingDisplay._note_step,
     "model_stream_start": StreamingDisplay._open_stream,
     "model_text_delta": StreamingDisplay._show_text_delta,
     "model_reasoning_delta": StreamingDisplay._show_reasoning_delta,
@@ -1068,12 +1146,10 @@ def confirm_workspace_trust(workspace_root: Path) -> bool:
     """
     if not sys.stdin.isatty():
         raise ValueError("Workspace trust requires an interactive terminal.")
-    console.print("\nCairn will read and write files in this directory:\n")
-    console.print(f"  {workspace_root}\n", markup=False)
-    console.print(
-        "Files outside this directory are readable; writing to them needs a "
-        "separate approval. Shell commands are asked for on first use."
-    )
+    # The consent question, and the one fact that makes it meaningful. The rest of
+    # the boundary is documented in the sandbox guide; repeating it here delayed the
+    # first turn without changing the decision.
+    console.print(f"\nWork in {workspace_root}?\n", markup=False)
     try:
         return Confirm.ask(
             "Trust this directory for this session?", default=False, console=console

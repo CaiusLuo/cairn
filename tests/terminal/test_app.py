@@ -432,7 +432,9 @@ def test_interactive_trace_uses_latest_completed_turn(
 
     assert result.exit_code == 0
     assert "agent.turn" in result.stdout
-    assert "step 1/1" in result.stdout
+    # Step progress lives on the status line, not in the transcript: a turn with a
+    # hundred steps must not leave a hundred lines behind.
+    assert "step 1/1" not in result.stdout
     # The per-turn trace line is gone; the identifier stays reachable through
     # `/trace`, so nothing about the trace is printed on a normal turn.
     assert "trace:" not in result.stdout

@@ -78,6 +78,21 @@ class QueueView:
             return ""
         return "Enter = guide the running turn · Tab = queue for after it"
 
+    def discard_selected(self, queue: SteerQueue) -> bool:
+        """Drop the selected queued message, and move the selection back.
+
+        Discarding is offered beside promotion because the two corrections an
+        operator needs are opposite: a message that became urgent is promoted, and
+        one that became irrelevant is removed. Both act on the selection, so neither
+        can hit a message the operator was not looking at.
+        """
+        if not queue.queued():
+            return False
+        if not queue.discard(self._selected):
+            return False
+        self._selected = max(0, self._selected - 1)
+        return True
+
     def promote_selected(self, queue: SteerQueue) -> bool:
         """Turn the selected message into a steer, and move the selection back.
 

@@ -111,6 +111,8 @@ class TranscriptView:
         # The queued messages and which one the operator has selected.
         self._pending = SteerQueue()
         self._queue_view = QueueView()
+        # Model, usage and rate, supplied by the display.
+        self._status = ""
         # Payloads behind the paste markers currently in the buffer.
         self._pastes = PasteRegistry()
         self._runner: asyncio.Task[None] | None = None
@@ -170,6 +172,19 @@ class TranscriptView:
                 return
             self._queue_view.move_down(self._pending)
             self.repaint()
+
+        @bindings.add("delete")
+        def discard_selected(event: object) -> None:
+            """Drop the selected queued message.
+
+            Delete rather than a letter: it is the key a reader already associates
+            with removing the thing that is selected, and it cannot be confused with
+            typed text because it only acts on an empty composer.
+            """
+            if self._buffer.text or not self._running:
+                return
+            if self._queue_view.discard_selected(self._pending):
+                self.repaint()
 
         @bindings.add("enter", filter=~Condition(lambda: bool(self._buffer.text)))
         def promote_selected(event: object) -> None:
@@ -284,6 +299,18 @@ class TranscriptView:
 
     # -- input -----------------------------------------------------------
 
+    def observe_status(self, text: str) -> None:
+        """Adopt the session facts the status line shows.
+
+        The display owns what these facts are; the frame only decides where they
+        appear, which is under the input where they are read while waiting.
+        """
+        self._status = text
+        self.repaint()
+
+    def _status_text(self) -> str:
+        return self._status
+
     def _queue_control(self) -> ANSI:
         """The queued messages, with the selected one marked."""
         rows = self._queue_view.rows(self._pending)
@@ -299,9 +326,22 @@ class TranscriptView:
         return ANSI("\n".join(lines))
 
     def _hint_control(self) -> ANSI:
-        """What Enter and Tab mean right now."""
-        hint = self._queue_view.hint(running=self._running)
-        return ANSI(f"\x1b[2m{hint}\x1b[0m" if hint else "")
+        """The session facts and what the keys mean, on one dim line.
+
+        Model, usage and rate live below the input because they describe the
+        session rather than the answer: they are read while waiting, and putting
+        them in the transcript would add a line per measurement. The key hint joins
+        them only while a turn runs, since outside one both keys simply submit.
+        """
+        parts = [
+            part
+            for part in (
+                self._status_text(),
+                self._queue_view.hint(running=self._running),
+            )
+            if part
+        ]
+        return ANSI(f"\x1b[2m{'  ·  '.join(parts)}\x1b[0m" if parts else "")
 
     def _live_control(self) -> ANSI:
         """The live region as ANSI, so its dim styling survives the frame."""
