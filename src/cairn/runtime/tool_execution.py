@@ -122,6 +122,27 @@ def _resolve_ask(
     )
 
 
+async def _resolve_ask_async(
+    agent: Agent, tool: Tool | None, tool_call: ToolCall
+) -> PermissionResult:
+    """Resolve ASK through an awaitable handler when the adapter provides one."""
+    request = _tool_access_request(tool, tool_call) if tool is not None else None
+    handler = agent.permission_handler
+    if request is not None:
+        decide = getattr(handler, "access_decision_async", None)
+        if callable(decide):
+            access = request.access if request.access is not None else AccessKind.WRITE
+            return cast(
+                PermissionResult,
+                await decide(outside=True, access=access, path=Path(request.paths[0])),
+            )
+        return _resolve_ask(agent, tool, tool_call)
+    authorize = getattr(handler, "authorize_tool_call_async", None)
+    if tool_call.name == "bash" and callable(authorize):
+        return cast(PermissionResult, await authorize(tool_call))
+    return _resolve_ask(agent, tool, tool_call)
+
+
 def _tool_access_request(tool: Tool, tool_call: ToolCall) -> PermissionRequest | None:
     """The filesystem request a validated file tool reports, if any.
 
@@ -313,6 +334,14 @@ def _check_tool_permission(
                     "granted_roots": sorted(permission.granted_roots),
                 }
             )
+    except asyncio.CancelledError as exc:
+        if permission_span is not None and tracer is not None:
+            tracer.end_span(
+                permission_span,
+                status=SpanStatus.ERROR,
+                error=f"{type(exc).__name__}: {exc or 'permission approval cancelled'}",
+            )
+        raise
     except Exception as exc:
         if permission_span is not None and tracer is not None:
             tracer.end_span(
@@ -325,6 +354,62 @@ def _check_tool_permission(
         if permission_span is not None and tracer is not None:
             tracer.end_span(permission_span, status=SpanStatus.OK)
 
+    return permission
+
+
+async def _check_tool_permission_async(
+    agent: Agent,
+    tool_call: ToolCall,
+    turn_span: Span | None,
+    tool: Tool | None = None,
+) -> PermissionResult:
+    """Permission check for the turn path, which may await a live UI decision."""
+    tracer = agent.tracer
+    permission_span = None
+    if tracer is not None and turn_span is not None:
+        permission_span = tracer.start_child_span(
+            turn_span,
+            "permission.check",
+            attributes={
+                "tool": tool_call.name,
+                "tool_call_id": tool_call.id,
+                "handler_configured": agent.permission_handler is not None,
+            },
+        )
+    try:
+        permission = evaluate_permission_policy(tool_call)
+        if permission.policy_decision is PermissionDecision.ASK:
+            permission = await _resolve_ask_async(agent, tool, tool_call)
+        if permission_span is not None and tracer is not None:
+            permission_span.attributes.update(
+                {
+                    "policy_decision": permission.policy_decision.value,
+                    "allowed": permission.allowed,
+                    "prompted": permission.prompted,
+                    "source": permission.source.value,
+                    "granted_capabilities": sorted(permission.granted_capabilities),
+                    "granted_roots": sorted(permission.granted_roots),
+                }
+            )
+    except asyncio.CancelledError as exc:
+        if permission_span is not None and tracer is not None:
+            tracer.end_span(
+                permission_span,
+                status=SpanStatus.ERROR,
+                error=f"{type(exc).__name__}: {exc or 'permission approval cancelled'}",
+            )
+        raise
+    except Exception as exc:
+        if permission_span is not None and tracer is not None:
+            tracer.end_span(
+                permission_span,
+                status=SpanStatus.ERROR,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        raise
+    else:
+        if permission_span is not None and tracer is not None:
+            tracer.end_span(permission_span, status=SpanStatus.OK)
     return permission
 
 
@@ -371,7 +456,7 @@ async def execute_tool_call(
         )
         return
 
-    permission = _check_tool_permission(agent, tool_call, turn_span, tool)
+    permission = await _check_tool_permission_async(agent, tool_call, turn_span, tool)
 
     if permission.policy_decision is PermissionDecision.DENY or not permission.allowed:
         failure = _permission_failure(permission)

@@ -1059,21 +1059,27 @@ def test_provider_command_handles_a_session_without_provider_state(
         ),
     )
 
-    handle_provider(context, [])
-    assert "No provider configuration is available" in capsys.readouterr().out
+    # A command answers on the action surface now, so its message is the return
+    # value rather than something it prints into the transcript.
+    action, _ = handle_provider(context, [])
+    assert action is not None
+    assert "No provider configuration is available" in action.message
 
     context.provider_catalog = ProviderCatalog(providers=(provider,))
-    handle_provider(context, [])
-    assert "No provider is active" in capsys.readouterr().out
+    action, _ = handle_provider(context, [])
+    assert action is not None
+    assert "No provider is active" in action.message
 
     context.active_provider_name = "local"
-    handle_provider(context, [])
-    output = capsys.readouterr().out
-    assert "Current provider: local" in output
-    assert "Current model" not in output
+    action, _ = handle_provider(context, [])
+    assert action is not None
+    assert "Current provider: local" in action.message
+    assert "Current model" not in action.message
 
-    handle_provider(context, ["use", "local"])
-    assert "Usage: /provider" in capsys.readouterr().out
+    # No switcher is bound here, so `/provider use` explains the usage instead.
+    action, _ = handle_provider(context, ["use", "local"])
+    assert action is not None
+    assert "Usage: /provider" in action.message
 
 
 def test_model_use_after_a_switch_targets_the_active_provider(

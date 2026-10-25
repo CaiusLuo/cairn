@@ -4,6 +4,44 @@ What the operator sees and presses while a session runs. This describes the
 current design; the guarantees each surface rests on live in the guides linked at
 the end.
 
+## The bottom dock
+
+One viewport owns the bottom of the terminal. Finished output is printed into the
+terminal's real scrollback above it, so native search, selection and copy keep
+working; only the dock repaints. From top to bottom:
+
+```text
+* Thinking  00:03                       <- activity: what the turn is doing now
+  Reading the current parser and its callers...
+  Checking how tokens reach the tree...    Ctrl+O: details
+main  ·  provider bailian               <- action: a decision or a correction
+  > flash    current
+    plus
+  Up/Down move   Enter select   Esc cancel
+>                                        <- queued messages, if any
+--------------------------------------------------------------
+> |                                      <- the composer
+--------------------------------------------------------------
+model  deepseek-v4.1-flash-1017         provider  bailian
+usage  1.2k in / 84 out   28 tok/s      context 18%
+```
+
+Nothing else is permanent. The activity slot and the action slot are empty most of
+the time, and they collapse to nothing when they are — which is what keeps the
+composer and the two status rows in the same place all session.
+
+## Information lifetimes
+
+Every surface exists because of how long its content is worth keeping:
+
+| Region | Lives | Holds |
+| --- | --- | --- |
+| Transcript | Permanent | The prompt, the final answer, one reasoning receipt |
+| Activity | While the turn runs | Thinking preview, running tool, interrupt message |
+| Action | Until answered or replaced | Corrections, refusals, `/model` and `/provider` choosers |
+| Composer | Always | The line being typed |
+| Status | Session | Two rows: model and provider, then usage |
+
 ## The transcript
 
 A turn is two blocks under a two-column gutter:
@@ -13,81 +51,123 @@ A turn is two blocks under a two-column gutter:
 
 * It splits tokens, then builds a tree.
 
-> and the cache?
-
-* Keyed by file digest.
+  Thinking  3.2s
 ```
 
 The left edge is the interface. A glyph opens each turn — `>` for the operator,
 `*` for the reply — and continuation lines align under it, so the column of
 glyphs reads as a rhythm and the transcript stays scannable in peripheral vision.
 
-Three rules follow from that and are worth stating because each is easy to break:
-
 - **No role labels.** A word at the left edge turns the rhythm into a table of
-  contents and costs a line per turn; the shipped agents do not print one, and a
-  rendered role marker is treated as a defect rather than a feature.
+  contents and costs a line per turn.
 - **The glyph leads the first line only.** A marker on every line is copied along
   with any code the reader selects.
 - **Both glyphs are ASCII.** A glyph whose display width depends on the terminal's
   East Asian setting would shift every continuation line by a column.
 
-Progress is not part of the transcript. The step counter, token rate and context
-usage live on the status area under the input, because a turn with a hundred steps
-would otherwise leave a hundred lines that say nothing once it ends.
+Tool calls do not enter the transcript. A call is transient — it is happening, then
+it has happened — and the trace keeps the full record. A *failure* is the exception:
+a denied call or a failed command is the one tool event a reader must act on, so it
+still prints, with its exit code and a bounded diagnostic.
 
-## Information lifetimes
+## The activity slot
 
-Every surface exists because of how long its content is worth keeping:
-
-| Region | Lives | Holds |
-| --- | --- | --- |
-| Transcript | Permanent | The prompt and the final reply |
-| Preview | While a turn runs | The newest two rows of reasoning, a frame and a clock |
-| Status | Session | What the session talks to, and what it has spent |
-
-Reasoning is temporary by design. It shows its newest two rows while the model
-thinks — the opening rows aged badly, describing a thought the model had already
-moved past — and when the turn settles only a receipt remains:
+Thinking, tool work and an interrupt share one place, because a reader asking "what
+is happening" should not have to look in three.
 
 ```text
-* Hi! I'm Cairn.
-
-Thinking  3.2s
+* Thinking  00:03
+  Reading the current parser and its callers...
+  Checking how tokens reach the tree...    Ctrl+O: details
 ```
 
-The text itself belongs to the trace. Reprinting it into the scrollback cost a
-screenful per turn, next to the answer that already summarised it.
+- **Two rendered rows.** The window shows the last two rows *after wrapping at the
+  current width*, not two logical lines and not two provider deltas. A delta can end
+  mid-word, so slicing by delta would show fragments of one sentence.
+- **A frame and a clock that actually run.** `.` `*` `+` `*` at most four times a
+  second, advanced by the repaint the display already does. Without that the clock
+  froze at `00:00` whenever the model paused, which looks like a hang.
+- **`Ctrl+O` toggles.** It widens the window and puts it back, and the hint changes
+  from `details` to `less`. It is offered only while the preview runs; after the turn
+  there is nothing to reveal, so the key disappears with the surface.
+- **The first answer token clears it.** Thinking leaves immediately, not at the end
+  of the stream, and then the receipt prints *once* after the answer.
 
-`Ctrl+O` widens the preview by a step, so a long thought can be read while it
-arrives. It is offered only while the preview runs: the reasoning is not kept after
-the turn, so a settled turn has nothing to reveal and the key genuinely does
-nothing. The hint appears and disappears with the preview rather than persisting in
-the scrollback, which is what made it a false promise before.
+```text
+* read_file  src/parser.py
+  Checking the parser implementation
+```
 
-Expansion widens the same temporary viewport upward through the text already
-received. It never reaches into the transcript, because the transcript never held
-the reasoning in the first place.
+A running tool names itself and its subject. Several in one batch report how many
+share the work, and the surface keeps saying so until the batch settles — reporting
+"thinking" while three calls still execute would describe work that has not started.
 
-The status area is two lines because they answer different questions and age
-differently: the model and provider change when the operator switches, while the
-numbers change every second. A rate freezes when its turn ends — left live it would
-decay with the idle clock, reading as a model that slows down after finishing — and
-an unmeasured session says `ready` rather than showing zeros that look measured.
+```text
+* Interrupting...
+```
 
-## The composer
+`Ctrl+C` during a turn shows this while cleanup completes.
 
-The input is bracketed by two horizontal rules with no side segments: a rule spans
-the current width for free, while a full box must be re-measured on every resize.
+## The action slot
 
-It grows to four lines and then scrolls internally, so a long message never pushes
-the transcript around. A large paste is replaced by a marker such as
-`[pasted 12 lines]`, and the payload is restored on submit — the composer stays
-readable while the message still carries what was pasted.
+Corrections, refusals and choosers appear here, above the composer, and are gone
+when answered. They are not transcript text: a note about a typo, or a list of
+commands, is a means to an action rather than a record of one.
+
+An unknown command is corrected in place and cleared by the next keystroke:
+
+```text
+/session is not an in-session command. Type / to browse, or /help for the list.
+```
+
+### Choosing a model
+
+`/model` opens the groups the provider actually configures, and expands only the
+one under the cursor — its primary and any fallback IDs, with the most recent
+failure if there was one:
+
+```text
+model  deepseek-v4.1
+  > flash    current
+      primary   openai/deepseek-v4.1-flash-1017
+      fallback  none
+    plus
+  Up/Down move   Enter select   Esc cancel
+```
+
+`/model use <group>` and confirming a row run the same command, so the menu and the
+typed form share one path through the runtime and its build-before-commit rules.
+`/model list` still prints the whole catalogue, for a reader who wants it in the
+scrollback.
+
+### Switching a provider
+
+Switching sends the conversation somewhere else, so the surface states the whole
+decision before anything happens:
+
+```text
+Send this session's conversation to bailian:
+  https://<configured-endpoint>/compatible-mode/v1
+Credential variable  CAIRN_LLM_API_KEY
+Models              openai/deepseek-v4.1-flash-1017
+The full conversation history moves with it, and session tool permissions are reset.
+  > bailian    current
+    local
+  Up/Down move   Enter switch   Esc cancel
+```
+
+The endpoint is shown in full, because a lookalike host is exactly what a shortened
+one would hide. The credential appears as a *variable name* and is not resolved
+until the operator confirms. `Esc` and `Ctrl+D` decline, `Enter` is never the
+default, and a declined or failed switch keeps the current provider.
+
+When decision facts are longer than the action viewport, `PageUp` and `PageDown`
+page through the wrapped facts. The selected choice row stays visible on every page,
+including the safe cancellation row; `Up` and `Down` continue to move the selection.
 
 ## The command palette
 
-Typing `/` opens a list of commands above the composer, filtered as the text grows:
+Typing `/` opens the command list above the composer, filtered as the text grows:
 
 ```text
 > /mo
@@ -95,34 +175,19 @@ Typing `/` opens a list of commands above the composer, filtered as the text gro
 + Commands ------------------------------------------+
 | > /model     Choose the active model group          |
 +-----------------------------------------------------+
-  Up/Down move · Tab or Enter complete · Esc close
+  Up/Down move · Esc close
 ```
 
 It is a temporary surface, not transcript text: a list of commands is a means to an
-action, so closing it leaves nothing behind.
-
-The palette is a stack of levels, not a flat list. A command that takes a
-sub-command opens one rather than running something that prints into the
-conversation:
-
-```text
-Commands > /model
-  > use        Select a model group for this session
-    list       Show groups with their primary and fallback IDs
-```
+action, so closing it leaves nothing behind. It sits *above* the composer rather than
+between the composer's rules and the text being edited, which would look like the
+input had moved.
 
 | Key | Effect |
 | --- | --- |
-| `Up` / `Down` | Move the selection within the level |
-| `Right` / `Enter` | Descend into the chosen command, or confirm it |
-| `Left` | Go back one level; at the root there is nowhere to go |
-| `Tab` | Put the chosen command in the composer |
+| `Up` / `Down` | Move the selection |
+| `Tab` / `Right` | Put the chosen command in the composer |
 | `Esc` | Close the palette, without touching a running turn |
-
-The keys mean the same thing at every level, which is what makes the surface
-learnable. A level remembers its own selection, so coming back puts the cursor where
-it was. The breadcrumb names where you are, because the same `use` row means a model
-group here and a provider one level away.
 
 Filtering is by prefix, not substring: `/mo` means "the command starting with mo",
 and answering with `/compact` because it contains an `m` would be a guess. The
@@ -132,35 +197,59 @@ looking like a command — including when the slash is deleted.
 ## Steering a running turn
 
 While a turn runs, a typed message is not a new turn. It joins the one in flight at
-its next step boundary, so the work already done is kept: the turn keeps its
-identity, its tool batch and its cancellation scope.
+its next step boundary, so the work already done is kept.
 
 | Key | While a turn runs | While idle |
 | --- | --- | --- |
 | `Enter` | Guide the running turn (steer) | Start work |
-| `Tab` | Queue the message for after the turn | — |
+| `Tab` | Queue the message for after the turn | Submit |
 | `Up` / `Down` | Move through the queued messages | Move through input history |
 | `Enter` with the composer empty | Promote the selected queued message to a guide | — |
 | `Delete` with the composer empty | Discard the selected queued message | — |
-| `Ctrl+O` | Show more of the collapsed reasoning | — |
-| `Ctrl+C` | Interrupt | — |
+| `Ctrl+O` | Toggle more of the thinking preview | — |
+| `Ctrl+C` | Unwind one layer, then interrupt | — |
 | `Ctrl+D` | End input | End input |
+
+`Ctrl+C` unwinds one layer at a time, because the operator cannot see which layer
+has focus: an open chooser or correction is declined first, then the palette closes,
+then the composer clears, and only then is a running turn stopped. Pressing it again
+while a cancellation is in flight does not re-request the cancellation and does not
+print a second receipt.
 
 Queued messages are shown as a stack above the composer with the selected one
 marked, because a message that is accepted and then invisible is indistinguishable
 from one that was dropped. The two corrections an operator needs are opposite: a
 message that became urgent is promoted, one that became irrelevant is discarded.
 
-A message arriving as the model finishes is still delivered — the turn does not
-end while a guide is waiting — and a message arriving during a tool batch lands
-before the next model call rather than after the turn.
+A message arriving as the model finishes is still delivered, and a message arriving
+during a tool batch lands before the next model call rather than after the turn.
+
+## The status rows
+
+Exactly two rows, and nothing beneath them:
+
+```text
+model  deepseek-v4.1-flash-1017     provider  bailian
+usage  1.2k in / 84 out   28 tok/s   context 18%
+```
+
+They answer different questions and age differently: what the session talks to
+changes when the operator switches, while the numbers change every second. A rate
+freezes when its turn ends — left live it would decay with the idle clock, reading as
+a model that slows down after finishing — and an unmeasured session says `ready`
+rather than showing zeros that look measured.
+
+On a narrow terminal the order of sacrifice is fixed: shorten the model id, then drop
+the context figure, then drop usage. The provider and model never both disappear,
+because a reader who cannot tell what they are talking to has lost the most important
+fact on the line. The full ids remain reachable through `/model`.
 
 ## Startup
 
-Two questions are asked, each for a reason the operator has to weigh: which
-provider receives the conversation, and whether this directory is trusted. Both are
-asked before the effect they authorise. The provider question names the credential
-it will read and the models it covers; the directory question names the directory.
+Two questions are asked, each for a reason the operator has to weigh: which provider
+receives the conversation, and whether this directory is trusted. Both are asked
+before the effect they authorise. The provider question names the credential it will
+read and the models it covers; the directory question names the directory.
 
 Everything else that used to be printed — endpoint, credential variable, model
 list — is either part of the question or already known to the operator.

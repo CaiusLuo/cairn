@@ -24,7 +24,7 @@ enforce.
 enforced.
 """
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
@@ -223,6 +223,9 @@ class SessionPermissionHandler:
         root_normalizer: RootNormalizer | None = None,
     ) -> None:
         self.prompt = prompt
+        self.prompt_async: (
+            Callable[[PermissionRequest], Awaitable[PermissionChoice]] | None
+        ) = None
         self.grants: set[PermissionCapability] = set()
         self.granted_roots: set[Path] = set()
         self._root_normalizer = root_normalizer
@@ -273,6 +276,21 @@ class SessionPermissionHandler:
             )
         return policy
 
+    async def authorize_tool_call_async(self, tool_call: ToolCall) -> PermissionResult:
+        """Async counterpart to ``__call__`` for a running turn."""
+        policy = evaluate_permission_policy(tool_call)
+        if policy.policy_decision is not PermissionDecision.ASK:
+            return policy
+        if tool_call.name == "bash":
+            return await self.authorize_async(
+                PermissionRequest(
+                    capability=PermissionCapability.LOCAL_SHELL,
+                    justification=_shell_justification(tool_call),
+                    tool_call=tool_call,
+                )
+            )
+        return policy
+
     def authorize(self, request: PermissionRequest) -> PermissionResult:
         """Approve an explicit request without changing model tool policy.
 
@@ -296,6 +314,96 @@ class SessionPermissionHandler:
         if capability is PermissionCapability.FILESYSTEM_ACCESS:
             return self._authorize_filesystem(request)
         raise ValueError("Invalid permission capability")
+
+    async def authorize_async(self, request: PermissionRequest) -> PermissionResult:
+        """Async counterpart used when approval belongs to a live event loop.
+
+        The synchronous API remains available for startup and non-async callers.
+        Both paths update this same session grant owner after validating the exact
+        ``PermissionChoice`` member.
+        """
+        capability = request.capability
+        if capability in {
+            PermissionCapability.NETWORK,
+            PermissionCapability.LOCAL_SHELL,
+            PermissionCapability.WORKSPACE_TRUST,
+        }:
+            if capability in self.grants:
+                return self._granted(capability, source=PermissionSource.SESSION_GRANT)
+            return await self._prompt_and_grant_async(request, roots=None)
+        if capability is PermissionCapability.FILESYSTEM_ACCESS:
+            return await self._authorize_filesystem_async(request)
+        raise ValueError("Invalid permission capability")
+
+    async def access_decision_async(
+        self, *, outside: bool, access: AccessKind, path: Path
+    ) -> PermissionResult:
+        """Async path-aware counterpart to ``access_decision``."""
+        if not outside:
+            if PermissionCapability.WORKSPACE_TRUST in self.grants:
+                return PermissionResult(
+                    policy_decision=PermissionDecision.ALLOW,
+                    allowed=True,
+                    source=PermissionSource.SESSION_GRANT,
+                )
+            return await self.authorize_async(
+                PermissionRequest(
+                    capability=PermissionCapability.WORKSPACE_TRUST,
+                    justification=(
+                        "Read and write files in this directory for the rest of the "
+                        "session."
+                    ),
+                    tool_call=ToolCall(
+                        id="workspace-trust", name="workspace", arguments={}
+                    ),
+                )
+            )
+        if access is AccessKind.READ:
+            return PermissionResult(
+                policy_decision=PermissionDecision.ALLOW, allowed=True
+            )
+        covering = self.covering_root(path)
+        if covering is not None:
+            return self._granted(
+                PermissionCapability.FILESYSTEM_ACCESS,
+                source=PermissionSource.SESSION_GRANT,
+                roots=(covering,),
+            )
+        return await self.authorize_async(
+            PermissionRequest(
+                capability=PermissionCapability.FILESYSTEM_ACCESS,
+                justification=f"Write to {path} outside the Workspace.",
+                tool_call=ToolCall(
+                    id="filesystem-access",
+                    name="write_file",
+                    arguments={"path": str(path)},
+                ),
+                paths=(str(path.parent),),
+                access=access,
+            )
+        )
+
+    async def _authorize_filesystem_async(
+        self, request: PermissionRequest
+    ) -> PermissionResult:
+        if not request.paths:
+            raise ValueError("filesystem request must name at least one path")
+        roots = tuple(self._normalize(path) for path in request.paths)
+        if all(_covered_by(root, self.granted_roots) for root in roots):
+            return self._granted(
+                PermissionCapability.FILESYSTEM_ACCESS,
+                source=PermissionSource.SESSION_GRANT,
+                roots=roots,
+            )
+        return await self._prompt_and_grant_async(request, roots=roots)
+
+    async def _prompt_and_grant_async(
+        self, request: PermissionRequest, *, roots: tuple[Path, ...] | None
+    ) -> PermissionResult:
+        if self.prompt_async is None:
+            return self._prompt_and_grant(request, roots=roots)
+        choice = await self.prompt_async(request)
+        return self._record_choice(request, choice, roots=roots)
 
     def ensure_workspace_trust(self) -> PermissionResult:
         """Ask once whether this session may read and write the Workspace.
@@ -400,11 +508,21 @@ class SessionPermissionHandler:
         Network passes ``roots=None``; filesystem passes its normalized roots.
         A session grant records them so a later covered request is reused.
         """
-        capability = request.capability
         if self.prompt is None:
             return self._no_handler()
 
         choice = self.prompt(request)
+        return self._record_choice(request, choice, roots=roots)
+
+    def _record_choice(
+        self,
+        request: PermissionRequest,
+        choice: PermissionChoice,
+        *,
+        roots: tuple[Path, ...] | None,
+    ) -> PermissionResult:
+        """Validate and apply a prompt answer for either sync or async callers."""
+        capability = request.capability
         # Only an actual PermissionChoice member authorizes. StrEnum equality
         # also matches a plain string or a foreign StrEnum, so identity is
         # required; raise before recording any grant so none is half-applied.

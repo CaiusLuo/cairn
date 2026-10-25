@@ -6,6 +6,7 @@ second. The rules here are the ones a reader notices: no fake zeros, no rate tha
 keeps decaying after the turn, and the model never disappears.
 """
 
+from cairn.core.events import Event
 from cairn.terminal.output import StreamingDisplay
 
 
@@ -202,3 +203,67 @@ def test_the_model_and_provider_never_both_disappear() -> None:
     """A reader who cannot tell what they are talking to has lost the key fact."""
     first, _ = _measured().status_lines(width=24)
     assert first.strip()
+
+
+# -- facts that must not be throttled ------------------------------------
+#
+# Ordinary paints are throttled because they repeat. A fact that will never be
+# painted again must not be: if it lands inside the window it is dropped, and the
+# reader keeps the previous turn's numbers for the rest of the session.
+
+
+def _painted_at_once(display: StreamingDisplay) -> list[str]:
+    painted: list[str] = []
+    display._on_status = painted.append
+    return painted
+
+
+def test_the_final_usage_survives_landing_inside_the_throttle_window() -> None:
+    display, painted = _painted()
+    display._refresh_status()  # a paint just happened
+    painted.clear()
+
+    display.observe(
+        Event(
+            type="trace_finish",
+            data={
+                "trace_id": "t",
+                "usage": {"input_tokens": 312, "output_tokens": 58},
+            },
+        )
+    )
+
+    assert any("312 in" in text for text in painted)
+
+
+def test_a_new_identity_is_published_immediately() -> None:
+    display, painted = _painted()
+    display._refresh_status()
+    painted.clear()
+
+    display.observe_model("openai/plus", provider="local")
+
+    assert any("openai/plus" in text and "local" in text for text in painted)
+
+
+def test_a_resize_is_published_immediately() -> None:
+    display, painted = _painted()
+    display.observe_model("openai/deepseek-v4.1-flash-1017", provider="bailian")
+    display.observe_step_usage(input_tokens=1200, output_tokens=84)
+    display._refresh_status()
+    painted.clear()
+
+    display.set_status_width(26)
+
+    assert painted
+    assert all(len(line) <= 26 for line in painted[-1].split("\n"))
+
+
+def test_ordinary_updates_are_still_throttled() -> None:
+    display, painted = _painted()
+    display._refresh_status()
+    painted.clear()
+
+    display._refresh_status()
+
+    assert painted == []

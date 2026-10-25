@@ -99,6 +99,15 @@ A local shell is a host-level capability, so it is asked for explicitly. The fir
 trusts every later command until the session ends, and the grant is never written
 to disk. Denial — or no interactive approval path — means nothing runs.
 
+During an interactive turn, runtime tool execution awaits the terminal's approval
+surface cooperatively so the same event loop can keep drawing and receiving keys.
+The synchronous permission API remains available to startup and other synchronous
+callers. `SessionPermissionHandler` owns both paths and applies either answer to the
+same in-memory session grants; the terminal presents the decision but does not own
+or persist authority. Tool existence and argument validation still happen before
+the request reaches approval. Denial, dismissal, cancellation, or a missing handler
+grants nothing and prevents the requested effect.
+
 This is intentionally *not* keyword screening. The approval gates the capability,
 not individual commands; there is no command parser to defeat.
 

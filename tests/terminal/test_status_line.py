@@ -1,4 +1,13 @@
-"""The status line reports only what a turn actually measured."""
+"""Terminal capability, and the glyph fallbacks every surface depends on.
+
+The status *rendering* this module used to cover now belongs to the two-row footer
+under the composer and is asserted in ``test_status_area.py``: the live region no
+longer paints a status copy, so there is one owner and one set of tests for it.
+
+What remains here is terminal capability, which is not about spelling anything:
+whether an in-place region is safe to draw, and whether the glyphs a terminal is
+asked to render have an ASCII fallback.
+"""
 
 import sys
 from types import SimpleNamespace
@@ -8,74 +17,8 @@ import pytest
 from cairn.terminal import output as ui
 
 
-def render(**kwargs: object) -> str:
-    return ui.format_status_line(**kwargs).plain  # type: ignore[arg-type]
-
-
-def test_absent_signals_are_omitted_rather_than_placeheld() -> None:
-    """A figure the turn did not measure must not appear as a dash."""
-    rendered = render(active=True)
-
-    assert "tok/s" not in rendered
-    assert "ctx" not in rendered
-    assert "cached" not in rendered
-
-
-def test_a_zero_cache_fraction_is_not_reported() -> None:
-    """Zero hits means the feature did not apply, not that it failed."""
-    assert "cached" not in render(active=True, cached_fraction=0.0)
-
-
-def test_measured_signals_appear_together() -> None:
-    rendered = render(
-        active=True,
-        tokens_per_second=42.4,
-        context_fraction=0.34,
-        cached_fraction=0.68,
-        reasoning_tokens=76,
-    )
-
-    assert "42 tok/s" in rendered
-    assert "34%" in rendered
-    assert "68% cached" in rendered
-    assert "76 reasoning" in rendered
-
-
-def test_the_spinner_and_the_bar_carry_information_without_color() -> None:
-    """Colour is never the only signal, so the glyphs differ between states."""
-    streaming = render(active=True, context_fraction=0.5)
-    finished = render(active=False, context_fraction=0.5)
-
-    assert streaming.startswith(ui.GLYPHS.spinner)
-    assert finished.startswith(ui.GLYPHS.tick)
-    assert ui.GLYPHS.bar_full in streaming and ui.GLYPHS.bar_empty in streaming
-
-
-@pytest.mark.parametrize("fraction", [-1.0, 0.0, 0.5, 1.0, 2.0])
-def test_the_bar_is_bounded(fraction: float) -> None:
-    """A fraction outside 0..1 must not produce a bar of the wrong width."""
-    rendered = render(active=True, context_fraction=fraction)
-    bar = rendered.split("ctx ", 1)[1].split(" ", 1)[0]
-
-    assert len(bar) == ui._BAR_WIDTH
-
-
 def test_ascii_glyphs_are_available_for_a_plain_terminal() -> None:
-    assert ui.ASCII_GLYPHS.bar_full.isascii()
-    assert ui.ASCII_GLYPHS.spinner.isascii()
     assert ui.ASCII_GLYPHS.reasoning.isascii()
-
-
-def test_the_trace_prefix_is_shown_so_an_id_is_discoverable() -> None:
-    """The full trace line is gone, so its identifier lives here instead."""
-    rendered = render(active=False, trace_id="a5da4753b98f71b5")
-
-    assert "a5da4753" in rendered
-    assert "b98f71b5" not in rendered
-
-
-def test_no_trace_prefix_without_a_trace() -> None:
-    assert "a5da4753" not in render(active=True, trace_id=None)
 
 
 def test_live_display_follows_the_stream_not_a_flag(

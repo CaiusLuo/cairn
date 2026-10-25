@@ -346,21 +346,6 @@ def test_reasoning_is_appended_once_per_line_off_terminal(
     assert shown == [f"⋮ {word}" for word in ("one", "two", "three", "four")]
 
 
-def test_reasoning_window_fits_the_screen(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # The trailing window is a share of the screen rather than a fixed count, so
-    # a short terminal keeps the answer visible while the model thinks.
-    import cairn.terminal.output as output
-
-    monkeypatch.setattr(output.console, "height", 16, raising=False)
-    assert output._reasoning_window() == 4
-    monkeypatch.setattr(output.console, "height", 8, raising=False)
-    assert output._reasoning_window() == output.MIN_THINKING_LINES
-    monkeypatch.setattr(output.console, "height", 80, raising=False)
-    assert output._reasoning_window() == output.MAX_THINKING_LINES
-
-
 def test_reset_closes_a_live_region_left_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -447,8 +432,7 @@ def test_trace_finish_reaches_the_display_and_the_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The CLI used to swallow trace_finish before the display and the console
-    # handler saw it, so the status line never learned the turn's trace and
-    # `/trace` always answered "No trace available yet.".
+    # handler saw it, so the display never learned the turn's trace and its totals.
     from cairn.core.events import Event
 
     _answer, _log, display = _plain_display(monkeypatch)
@@ -458,7 +442,9 @@ def test_trace_finish_reaches_the_display_and_the_command(
     )
 
     assert handled
-    assert "abc123de" in display._status_line().plain
+    # The identifier is recorded, not printed: `/trace` is what reads it back, and
+    # the two status rows are spent on the model, the provider and the numbers.
+    assert display._trace_id == "abc123def456"
 
 
 def test_a_failed_trace_says_nothing_about_absent_tokens(

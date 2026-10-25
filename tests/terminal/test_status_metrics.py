@@ -42,10 +42,12 @@ def test_the_gauge_reports_the_fraction_it_was_given() -> None:
     display = _display()
     display.observe_context(used=64_000, limit=128_000)
 
-    line = display._status_line().plain
+    # The footer under the composer owns the session facts, so that is where the
+    # gauge has to appear; there is no second copy on the live region.
+    second = display.status_lines()[1]
 
-    assert "ctx" in line
-    assert "50%" in line
+    assert "ctx" in second
+    assert "50%" in second
 
 
 @pytest.mark.parametrize("limit", [0, None])
@@ -54,7 +56,7 @@ def test_a_zero_or_missing_limit_does_not_render_a_gauge(limit: int | None) -> N
     display = _display()
     display.observe_context(used=100, limit=limit)
 
-    assert "ctx" not in display._status_line().plain
+    assert "ctx" not in display.status_lines()[1]
 
 
 def test_a_step_usage_is_adopted_before_the_turn_finishes() -> None:

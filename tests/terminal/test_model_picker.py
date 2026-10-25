@@ -12,6 +12,7 @@ import cairn.terminal.cli as cli_module
 from cairn.core.model_manager import ModelConfig, ModelManager, ProviderConfig
 from cairn.core.permissions import PermissionCapability
 from cairn.infra.observability.storage import TraceStore
+from cairn.terminal.action import Action
 from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.router import CommandRouter
 from cairn.terminal.input import CliInput
@@ -88,7 +89,7 @@ def test_external_cancellation_propagates_from_picker() -> None:
 
 
 def test_picker_error_is_safe_and_does_not_select(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     picker = AsyncMock(side_effect=RuntimeError("fake-provider-secret"))
@@ -105,14 +106,16 @@ def test_picker_error_is_safe_and_does_not_select(
     )
     result = CommandRouter().handle("/model", context)
 
-    async def interact() -> None:
+    async def interact() -> Action | None:
         assert result.interaction is not None
-        await result.interaction()
+        return await result.interaction()
 
-    asyncio.run(interact())
-    output = capsys.readouterr().out
-    assert "Could not open model selector" in output
-    assert "fake-provider-secret" not in output
+    action = asyncio.run(interact())
+    # The refusal is the interaction's return value now: the chooser failed, so the
+    # surface is told why without the credential-bearing diagnostic reaching it.
+    assert action is not None
+    assert "Could not open model selector" in action.message
+    assert "fake-provider-secret" not in action.message
     select.assert_not_called()
     assert manager.current_model() == GROUPS[0]
 
@@ -135,7 +138,8 @@ def test_non_tty_summary_and_ordered_list(
     router = CommandRouter()
     result = router.handle("/model", context)
     assert result.handled and result.interaction is None
-    summary = capsys.readouterr().out
+    assert result.action is not None
+    summary = result.action.message
     assert "Current group: flash (primary: openai/flash) | provider: local" in summary
     assert "Fallbacks: openai/backup -> openai/last" in summary
     assert "/model list" in summary and "/model use <group>" in summary
@@ -155,14 +159,27 @@ def test_non_tty_summary_and_ordered_list(
 
 
 @pytest.mark.parametrize(
-    "outcome", ["switch", "current", "escape", "interrupt", "failure"]
+    ("outcome", "expected"),
+    [
+        ("switch", "plus"),
+        ("current", "flash"),
+        ("failure", "flash"),
+    ],
 )
-def test_picker_in_real_cli_preserves_session_and_provider_boundary(
+def test_choosing_a_group_preserves_session_and_provider_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     outcome: str,
+    expected: str,
 ) -> None:
+    """Selecting a model group changes the model, and nothing else.
+
+    The chooser is the bottom action surface now, and confirming a row means
+    ``/model use <name>`` — so this drives the same command the row runs and asserts
+    the boundary that makes a switch safe: the Agent object, its state, its tools,
+    its grants and its conversation all survive, and only the model changes.
+    """
     state = configure_cli(tmp_path, monkeypatch)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     state.handler.grants.add(PermissionCapability.NETWORK)
@@ -176,13 +193,7 @@ def test_picker_in_real_cli_preserves_session_and_provider_boundary(
         return original_counter(model)
 
     monkeypatch.setattr(counter_module, "LiteLLMTokenCounter", make_counter)
-    keys = {
-        "switch": "\x1b[B\r",
-        "current": "\r",
-        "escape": "\x1b",
-        "interrupt": "\x03",
-        "failure": "\x1b[B\r",
-    }
+    typed = "/model use flash\r" if outcome == "current" else "/model use plus\r"
 
     async def scenario() -> None:
         ready: asyncio.Queue[str] = asyncio.Queue()
@@ -191,12 +202,6 @@ def test_picker_in_real_cli_preserves_session_and_provider_boundary(
             async def read(self) -> str:
                 ready.put_nowait("prompt")
                 return await super().read()
-
-            async def choose_model(
-                self, provider: str, models: tuple[ModelConfig, ...], current: str
-            ) -> str | None:
-                ready.put_nowait("picker")
-                return await super().choose_model(provider, models, current)
 
         async def expect(kind: str) -> None:
             assert await asyncio.wait_for(ready.get(), 3) == kind
@@ -223,9 +228,7 @@ def test_picker_in_real_cli_preserves_session_and_provider_boundary(
                 context = state.contexts[0]
                 select = Mock(wraps=context.select_model)
                 context.select_model = select
-                pipe.send_text("/model\r")
-                await expect("picker")
-                pipe.send_text(keys[outcome])
+                pipe.send_text(typed)
                 await expect("prompt")
                 after = (
                     agent,
@@ -245,12 +248,13 @@ def test_picker_in_real_cli_preserves_session_and_provider_boundary(
                 assert context.active_provider_name == "bailian"
                 assert state.resolved_keys == ["BAILIAN_API_KEY"]
                 assert state.approvals == [("bailian", "flash", False)]
-                expected = "plus" if outcome == "switch" else "flash"
                 assert context.model_manager.current_model().name == expected
-                if outcome in {"switch", "failure"}:
-                    select.assert_called_once_with("plus")
-                else:
+                if outcome == "current":
+                    # Selecting the group already in use is not a switch at all.
                     select.assert_not_called()
+                else:
+                    # A switch is attempted; on failure the runtime rolls back.
+                    select.assert_called_once_with("plus")
                 if outcome != "switch":
                     assert agent.llm is runtime[0]
                     assert agent.context_builder is runtime[1]
@@ -284,5 +288,46 @@ def test_picker_in_real_cli_preserves_session_and_provider_boundary(
     assert "provider diagnostic" not in output
     if outcome == "failure":
         assert "Could not switch model group" in output
-    if outcome in {"escape", "interrupt"}:
-        assert "Model selection cancelled" in output
+
+
+def test_confirming_a_chooser_row_switches_to_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The menu's rows must reach the same command the typed form does.
+
+    A chooser shows group names; what turns a name into a switch is the ``/model
+    use`` command it stands for. If the surface forgets which command opened it, the
+    cursor still moves and the details still update, but confirming does nothing —
+    a menu that looks alive and is not.
+    """
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    manager = ModelManager(
+        ProviderConfig("https://example.invalid", "FAKE_KEY", GROUPS)
+    )
+    switched: list[str] = []
+
+    def select(name: str) -> ModelConfig:
+        switched.append(name)
+        for group in GROUPS:
+            if group.name == name:
+                return group
+        raise AssertionError(name)
+
+    context = CommandContext(
+        trace_store=TraceStore(tmp_path),
+        model_manager=manager,
+        active_provider_name="local",
+        select_model=select,
+        has_action_surface=True,
+    )
+    router = CommandRouter()
+    chooser = router.handle("/model", context).action
+    assert chooser is not None and chooser.choosable
+
+    # Confirm the second row, exactly as Enter on the surface does.
+    row = chooser.rows[1]
+    result = router.handle(f"/model use {row.name}", context)
+
+    assert switched == [row.name]
+    assert result.action is not None
+    assert "Current group" in result.action.message

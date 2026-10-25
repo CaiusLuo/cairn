@@ -43,10 +43,12 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.lexers import SimpleLexer
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import HorizontalLine
 from rich.console import Console
 
 from cairn.runtime.turn.steering import PendingMessage, SteerQueue
+from cairn.terminal.action import Action, Tone
 from cairn.terminal.live import LiveRegion
 from cairn.terminal.pacing import StreamPacer
 from cairn.terminal.palette import Palette
@@ -55,16 +57,56 @@ from cairn.terminal.queue_view import QueueView
 from cairn.terminal.submission import Delivery, LineQueue, PendingLine
 from cairn.terminal.transcript import TRANSCRIPT_GAP_LINES, Transcript
 
-#: Rows the live tail may occupy. Bounded rather than weighted: an inline
+#: Rows the activity slot may occupy. Bounded rather than weighted: an inline
 #: application gives a weighted window every spare row, which pushes the input off
 #: screen and makes the session look frozen.
-LIVE_TAIL_LINES = 3
+#:
+#: Three is what the surface actually needs: one row naming the activity (a tool, or
+#: the thinking header) and two rows of preview under it. It is a slot rather than a
+#: live tail: thinking, tool work and an interrupt each replace the last, so a longer
+#: turn never makes it taller.
+ACTIVITY_ROWS = 3
 
 #: Rows the palette may occupy, plus one for its key hint.
 PALETTE_ROWS = 6
 
+#: Rows the action surface may occupy: a correction, or a chooser with its decision
+#: facts and its key hint. Bounded so it can never push the composer or the status
+#: off screen, but large enough that a provider's whole decision — endpoint,
+#: credential variable, models, both rows and the key hint — is readable without
+#: scrolling, because a fact the operator cannot see is a fact they cannot weigh.
+ACTION_ROWS = 14
+
+#: Columns assumed for the action surface before the terminal has reported a size.
+ACTION_DEFAULT_WIDTH = 80
+
+
+def _wrap_cells(text: str, width: int) -> list[str]:
+    """Split ``text`` into pieces of at most ``width`` display cells.
+
+    Recut by display cells rather than characters, so a CJK endpoint or a path with
+    wide glyphs wraps where the terminal would wrap it and no row overflows the frame.
+    """
+    pieces: list[str] = []
+    current: list[str] = []
+    used = 0
+    for char in text:
+        cells = get_cwidth(char)
+        if cells < 0:
+            current.append(char)
+            continue
+        if used + cells > width and current:
+            pieces.append("".join(current))
+            current = []
+            used = 0
+        current.append(char)
+        used += cells
+    pieces.append("".join(current))
+    return pieces
+
+
 #: Rows the status area uses for session facts: what the session talks to, and
-#: what it has spent.
+#: what it has spent. Exactly two, always, with nothing beneath them.
 STATUS_LINES = 2
 
 #: Rows the queued-message stack may occupy. Bounded for the same reason as the live
@@ -83,17 +125,24 @@ FRAME_STYLE = Style.from_dict(
     {
         "input": "",
         "prompt": "bold #87cefa",
-        "tail": "dim",
+        "live": "dim",
+        "palette": "",
+        "queued": "",
+        "status": "dim",
+        "action": "",
+        "action-correction": "bold yellow",
+        "action-refusal": "bold red",
     }
 )
 
 
 class TranscriptView:
-    """Owns the bottom of the terminal: a live tail and the input line.
+    """Owns the bottom of the terminal: the activity slot and the composer.
 
     Finished output goes to the real scrollback through ``emit``, so it survives
-    the session and every terminal feature applies to it. Only the live tail and
-    the input are repainted.
+    the session and every terminal feature applies to it. Only two things are
+    repainted here: whatever the turn is doing now, and the input with its two
+    status rows.
     """
 
     def __init__(
@@ -133,6 +182,28 @@ class TranscriptView:
         self.on_reveal_reasoning: Callable[[], None] | None = None
         #: Asked to stop the running turn; set by the CLI that owns the turn.
         self.on_interrupt: Callable[[], None] | None = None
+        #: Told the frame's width, so the display can re-fit its status and preview.
+        #: Called on every paint because a resize changes it without warning.
+        self.on_width: Callable[[int], None] | None = None
+        #: The width last reported, so the callback fires only when it changes.
+        self._reported_width: int | None = None
+        #: What the operator must see about what they just typed: a correction, a
+        #: refusal, or a chooser. Temporary by construction — the next one replaces
+        #: it, and the first edit clears it.
+        self._action: Action | None = None
+        self._action_message_offset = 0
+        #: Called when the operator confirms a chooser row, with the row's name.
+        self.on_action_choose: Callable[[str], None] | None = None
+        #: Called when a chooser's selection moves: ``(from_index, step)``. The
+        #: caller rebuilds the chosen row's details and returns the action to show.
+        #: The current index is passed because rebuilding an action from scratch
+        #: selects its first row, so adding ``step`` to that would pin the cursor at
+        #: the top: repeated Down could never reach the third entry.
+        self.on_action_move: Callable[[int, int], Action | None] | None = None
+        #: Told which command produced the action now on the surface, so a later
+        #: Enter knows which chooser it is answering. Empty when the action had no
+        #: rows to choose from.
+        self.on_action_command: Callable[[str], None] | None = None
 
         self._buffer = Buffer(
             multiline=True,
@@ -147,15 +218,33 @@ class TranscriptView:
     def _build(self) -> Application[str]:
         bindings = KeyBindings()
 
-        @bindings.add("enter")
+        # Enter submits the composer, except while a chooser is asking a question:
+        # there it confirms the chosen row. Registration order alone cannot express
+        # that — this binding is created before the chooser's — so the filter is what
+        # keeps a menu from being submitted as text.
+        @bindings.add(
+            "enter",
+            filter=~Condition(lambda: self._action_open() or self._palette.open),
+        )
         def submit(event: object) -> None:
             self._buffer.validate_and_handle()
 
-        @bindings.add("escape", "enter")
+        @bindings.add(
+            "escape",
+            "enter",
+            filter=~Condition(lambda: self._action_open() or self._palette.open),
+        )
         def newline(event: object) -> None:
             self._buffer.insert_text("\n")
 
-        @bindings.add("tab")
+        @bindings.add(
+            "tab",
+            filter=Condition(
+                lambda: (
+                    self._running and not self._action_open() and not self._palette.open
+                )
+            ),
+        )
         def queue_for_after(event: object) -> None:
             """Queue the typed line for after the running turn.
 
@@ -166,36 +255,78 @@ class TranscriptView:
                 return
             self._submit_typed(delivery="queue")
 
-        @bindings.add("up", filter=Condition(lambda: self._palette.open))
+        # The action surface owns the arrows while it is open, because it is the
+        # decision in front of the operator. These bindings come first so they win
+        # over the palette and the queue, which would otherwise move underneath a
+        # chooser that is asking for an answer.
+        @bindings.add("up", filter=Condition(lambda: self._choosable_action()))
+        def action_previous(event: object) -> None:
+            self._move_action(-1)
+
+        @bindings.add("down", filter=Condition(lambda: self._choosable_action()))
+        def action_next(event: object) -> None:
+            self._move_action(1)
+
+        @bindings.add("enter", filter=Condition(lambda: self._choosable_action()))
+        def action_choose(event: object) -> None:
+            """Confirm the chosen row and close the surface."""
+            action = self._action
+            if action is None:
+                return
+            row = action.selected_row()
+            self._action = None
+            self.repaint()
+            if row is not None and self.on_action_choose is not None:
+                self.on_action_choose(row.name)
+
+        @bindings.add("escape", filter=Condition(lambda: self._action is not None))
+        def action_close(event: object) -> None:
+            """Escape declines: it closes the chooser and changes nothing.
+
+            Declining must never reach the running turn, which is why this binding
+            exists only while an action is on screen.
+            """
+            self._dismiss_action()
+
+        @bindings.add("pageup", filter=Condition(lambda: self._action_open()))
+        def action_facts_previous(event: object) -> None:
+            self._scroll_action_facts(-1)
+
+        @bindings.add("pagedown", filter=Condition(lambda: self._action_open()))
+        def action_facts_next(event: object) -> None:
+            self._scroll_action_facts(1)
+
+        @bindings.add("up", filter=Condition(lambda: self._palette_focused()))
         def palette_previous(event: object) -> None:
             self._palette.move(-1)
             self.repaint()
 
-        @bindings.add("down", filter=Condition(lambda: self._palette.open))
+        @bindings.add("down", filter=Condition(lambda: self._palette_focused()))
         def palette_next(event: object) -> None:
             self._palette.move(1)
             self.repaint()
 
-        @bindings.add("right", filter=Condition(lambda: self._palette.open))
+        @bindings.add("right", filter=Condition(lambda: self._palette_focused()))
+        @bindings.add("enter", filter=Condition(lambda: self._palette_focused()))
         def palette_descend(event: object) -> None:
             """Enter the chosen level, or complete the command when there is none."""
             if not self._palette.descend():
                 self._complete_palette()
             self.repaint()
 
-        @bindings.add("left", filter=Condition(lambda: self._palette.open))
+        @bindings.add("left", filter=Condition(lambda: self._palette_focused()))
         def palette_ascend(event: object) -> None:
             """Go back one level. At the root there is nowhere to go, so it stays."""
             self._palette.ascend()
             self.repaint()
 
-        @bindings.add("tab", filter=Condition(lambda: self._palette.open))
+        @bindings.add("tab", filter=Condition(lambda: self._palette_focused()))
         def palette_complete(event: object) -> None:
             """Put the chosen command in the composer, ready to run or extend."""
             self._complete_palette()
             self.repaint()
 
-        @bindings.add("escape", filter=Condition(lambda: self._palette.open))
+        @bindings.add("escape", filter=Condition(lambda: self._palette_focused()))
         def palette_close(event: object) -> None:
             """Hide the palette without touching the turn.
 
@@ -205,7 +336,10 @@ class TranscriptView:
             self._palette.close()
             self.repaint()
 
-        @bindings.add("up")
+        @bindings.add(
+            "up",
+            filter=~Condition(lambda: self._action_open() or self._palette.open),
+        )
         def select_previous(event: object) -> None:
             """Move the selection up through the queued messages.
 
@@ -218,7 +352,10 @@ class TranscriptView:
             self._queue_view.move_up(self._pending)
             self.repaint()
 
-        @bindings.add("down")
+        @bindings.add(
+            "down",
+            filter=~Condition(lambda: self._action_open() or self._palette.open),
+        )
         def select_next(event: object) -> None:
             if self._buffer.text:
                 self._buffer.history_forward()
@@ -226,7 +363,10 @@ class TranscriptView:
             self._queue_view.move_down(self._pending)
             self.repaint()
 
-        @bindings.add("delete")
+        @bindings.add(
+            "delete",
+            filter=~Condition(lambda: self._action_open() or self._palette.open),
+        )
         def discard_selected(event: object) -> None:
             """Drop the selected queued message.
 
@@ -239,7 +379,14 @@ class TranscriptView:
             if self._queue_view.discard_selected(self._pending):
                 self.repaint()
 
-        @bindings.add("enter", filter=~Condition(lambda: bool(self._buffer.text)))
+        @bindings.add(
+            "enter",
+            filter=~Condition(
+                lambda: (
+                    bool(self._buffer.text) or self._action_open() or self._palette.open
+                )
+            ),
+        )
         def promote_selected(event: object) -> None:
             """Turn the selected queued message into a guide for the running turn.
 
@@ -259,9 +406,22 @@ class TranscriptView:
             installs a no-op SIGINT handler for an Application, so the key must be
             bound explicitly either way.
 
-            With the composer holding text the key clears it first, because a reader
-            reaching for Ctrl-C while typing usually means "not this message".
+            The key unwinds one layer at a time, so a reader who presses it while a
+            menu is open closes the menu rather than killing the work behind it:
+
+            1. a chooser or correction is showing — decline it, change nothing;
+            2. the palette is open — close it, leave the turn alone;
+            3. the composer holds text — clear it, which is what a reader reaching
+               for Ctrl-C while typing usually means;
+            4. a turn is running — stop it, and only then.
             """
+            if self._action is not None:
+                self._dismiss_action()
+                return
+            if self._palette.open:
+                self._palette.close()
+                self.repaint()
+                return
             if self._buffer.text:
                 self._buffer.reset()
                 self.repaint()
@@ -271,7 +431,7 @@ class TranscriptView:
             if self.on_interrupt is not None:
                 self.on_interrupt()
 
-        @bindings.add("c-o")
+        @bindings.add("c-o", filter=~Condition(lambda: self._action_open()))
         def reveal_reasoning(event: object) -> None:
             # Expanding reasoning is a keystroke rather than a click: capturing
             # the mouse would cost the native drag-select and copy that this
@@ -297,24 +457,65 @@ class TranscriptView:
         @bindings.add("c-d")
         def end_of_input(event: object) -> None:
             if not self._buffer.text:
+                if self._action is not None:
+                    self._dismiss_action()
                 self._app.exit(exception=EOFError())  # type: ignore[union-attr]
 
-        # Top to bottom: the live tail, a blank separator, the input bracketed by
-        # two horizontal rules. The rules have no side segments on purpose: a full
-        # box double-draws against the terminal edge and has to be re-measured on
-        # every resize, while a rule simply spans the current width. Two of the
-        # shipped agents (Claude Code, Gemini CLI) use exactly this shape.
+        # Top to bottom, one viewport owner:
+        #
+        #   activity slot      what the turn is doing now (thinking/tool/interrupt)
+        #   action slot        a correction, a refusal, or a chooser
+        #   palette            commands, while a command is being typed
+        #   queue stack        messages typed for after the running turn
+        #   rule               the composer opens
+        #   composer           the editable line
+        #   rule               the composer closes
+        #   status             exactly two rows: identity, then numbers
+        #
+        # The rules have no side segments on purpose: a full box double-draws against
+        # the terminal edge and has to be re-measured on every resize, while a rule
+        # simply spans the current width. Two of the shipped agents (Claude Code,
+        # Gemini CLI) use exactly this shape.
+        #
+        # Nothing but the two rules touches the composer: the palette and the action
+        # surface are decisions, so they sit above it rather than between the
+        # composer's rules and the text being edited, which was what made typing `/`
+        # look like the input had moved. The key hints belong to whichever temporary
+        # surface is showing them, so they ride inside the activity, action or palette
+        # rows instead of costing a third permanent row under the status.
         body = HSplit(
             [
-                # A bounded live tail, not a weighted pane. A weighted window
-                # claims every spare row of an inline application, which pushes the
-                # input line off the visible area — the input is then unreachable
-                # and the session looks frozen.
+                # The activity slot: thinking, tool work and an interrupt all render
+                # here, in this one place, replacing each other.
                 Window(
                     FormattedTextControl(text=self._live_control),
-                    height=Dimension(min=0, max=LIVE_TAIL_LINES),
+                    height=Dimension(min=0, max=ACTIVITY_ROWS),
                     wrap_lines=False,
                     style="class:live",
+                    dont_extend_height=True,
+                ),
+                # The action slot: what the operator must see about what they just
+                # typed. It takes priority over the palette because it is a decision
+                # or a correction, and over the activity because those are both
+                # present tense about *this* session rather than about the turn.
+                Window(
+                    FormattedTextControl(text=self._action_control),
+                    # The window must be able to show everything the control draws.
+                    # With `dont_extend_height` and a max-only height, an inline
+                    # layout squeezed this to a row or two and the decision's rows —
+                    # the ways to accept or decline — were never painted.
+                    height=Dimension(min=0, preferred=ACTION_ROWS, max=ACTION_ROWS),
+                    wrap_lines=False,
+                    style="class:action",
+                    dont_extend_height=True,
+                ),
+                # The palette is an action too, so it shares the place above the
+                # composer rather than sitting inside the composer.
+                Window(
+                    FormattedTextControl(text=self._palette_control),
+                    height=Dimension(min=0, max=PALETTE_ROWS + 1),
+                    wrap_lines=False,
+                    style="class:palette",
                     dont_extend_height=True,
                 ),
                 Window(height=TRANSCRIPT_GAP_LINES),
@@ -331,15 +532,6 @@ class TranscriptView:
                 ),
                 HorizontalLine(),
                 Window(
-                    FormattedTextControl(text=self._palette_control),
-                    # Bounded like every other region: a taller window would claim
-                    # rows the transcript and the composer need.
-                    height=Dimension(min=0, max=PALETTE_ROWS + 1),
-                    wrap_lines=False,
-                    style="class:palette",
-                    dont_extend_height=True,
-                ),
-                Window(
                     BufferControl(
                         buffer=self._buffer, lexer=SimpleLexer("class:input")
                     ),
@@ -351,18 +543,17 @@ class TranscriptView:
                     style="class:input",
                     dont_extend_height=True,
                 ),
-                # The hint names what the two keys mean right now, only while a
-                # turn runs: outside one both simply submit.
+                HorizontalLine(),
+                # Exactly two rows, and nothing beneath them: they are the last thing
+                # on screen so a reader's eye lands there while waiting, and a third
+                # row would either duplicate them or turn into a permanent hint bar.
                 Window(
-                    FormattedTextControl(text=self._hint_control),
-                    # Two rows for the session facts, plus one for the key hint while
-                    # a turn runs. Bounded like every other region: an inline
-                    # application gives a taller window rows the input needs.
-                    height=Dimension(min=0, max=STATUS_LINES + 1),
-                    style="class:hint",
+                    FormattedTextControl(text=self._status_control),
+                    height=Dimension.exact(STATUS_LINES),
+                    wrap_lines=False,
+                    style="class:status",
                     dont_extend_height=True,
                 ),
-                HorizontalLine(),
             ]
         )
         return Application(
@@ -388,6 +579,87 @@ class TranscriptView:
         self._running = running
         self.repaint()
 
+    def show_action(self, action: Action | None) -> None:
+        """Put an action on the surface, or clear it with ``None``.
+
+        One owner for what is showing: the next action replaces the last, so this
+        surface cannot accumulate into a transcript of corrections.
+
+        A question of authority takes the space the activity slot would use. Both
+        live above the composer, and on a short terminal the turn's progress is not
+        worth pushing the decision — the endpoint, the rows, the way to decline —
+        below the fold. The activity returns as soon as the question is answered.
+        """
+        self._action = action.clamped() if action is not None else None
+        self._action_message_offset = 0
+        if self._action is not None and self._action.decides_authority:
+            self._live_text = ""
+        self.repaint()
+
+    @property
+    def action(self) -> Action | None:
+        """What the surface is currently showing, if anything."""
+        return self._action
+
+    def _choosable_action(self) -> bool:
+        """Whether an open action has rows to move between."""
+        return self._action is not None and self._action.choosable
+
+    def _action_open(self) -> bool:
+        return self._action is not None
+
+    def _palette_focused(self) -> bool:
+        return self._palette.open and not self._action_open()
+
+    def _dismiss_action(self) -> None:
+        """Close the visible action and tell its owner it was declined."""
+        if self._action is None:
+            return
+        self._action = None
+        self._action_message_offset = 0
+        if self.on_action_command is not None:
+            self.on_action_command("")
+        self.repaint()
+
+    def _scroll_action_facts(self, step: int) -> None:
+        action = self._action
+        if action is None:
+            return
+        width = self._available_width() or ACTION_DEFAULT_WIDTH
+        message_lines = self._wrapped_message(action, width)
+        row_budget = min(len(action.rows), 4)
+        hint_rows = 1 if action.hint or len(message_lines) > 1 else 0
+        message_budget = max(1, ACTION_ROWS - row_budget - hint_rows)
+        self._action_message_offset = max(
+            0,
+            min(
+                self._action_message_offset + step * max(1, message_budget - 2),
+                max(0, len(message_lines) - message_budget + 1),
+            ),
+        )
+        self.repaint()
+
+    def _move_action(self, step: int) -> None:
+        """Move the chooser's selection, re-expanding the chosen row's details.
+
+        The move starts from the row the operator is looking at, not from zero: the
+        caller rebuilds the action when it needs fresh details, and a rebuild always
+        selects the first row, so the current index has to be carried across.
+        """
+        action = self._action
+        if action is None or not action.rows:
+            return
+        current = action.clamped().selected
+        if self.on_action_move is not None:
+            moved = self.on_action_move(current, step)
+            if moved is not None:
+                self._action = moved.clamped()
+                self.repaint()
+                return
+        action.selected = current + step
+        action.clamped()
+        self.repaint()
+
     def observe_status(self, text: str) -> None:
         """Adopt the session facts the status area shows.
 
@@ -395,12 +667,14 @@ class TranscriptView:
         appear, which is under the input where they are read while waiting. Two
         lines are kept apart because they answer different questions: what the
         session talks to, and what it has spent.
-        """
-        self._status = [line for line in text.split("\n") if line.strip()]
-        self.repaint()
 
-    def _status_text(self) -> str:
-        return "\n".join(self._status)
+        Only ``STATUS_LINES`` rows are kept. Trimming here rather than at render time
+        makes the two-row guarantee a property of the state, so no later caller can
+        grow the footer into a third row by publishing one.
+        """
+        rows = [line for line in text.split("\n") if line.strip()]
+        self._status = rows[:STATUS_LINES]
+        self.repaint()
 
     def available_width(self) -> int | None:
         """The columns this frame has, for callers that must fit their text."""
@@ -415,6 +689,20 @@ class TranscriptView:
         except (AttributeError, ValueError):
             return None
 
+    def _report_width(self) -> None:
+        """Tell the display the width, when it has changed since the last paint.
+
+        This runs from the status control, which every paint reaches, so a resize is
+        noticed without a resize event to subscribe to. Reporting only on a change
+        keeps the display from re-fitting on every keystroke.
+        """
+        width = self._available_width()
+        if width is None or width == self._reported_width:
+            return
+        self._reported_width = width
+        if self.on_width is not None:
+            self.on_width(width)
+
     def _complete_palette(self) -> None:
         """Copy the palette's choice into the composer.
 
@@ -428,13 +716,132 @@ class TranscriptView:
         self._buffer.insert_text(command + " ")
 
     def _on_text_changed(self, buffer: Buffer) -> None:
-        """Keep the command surface in step with what is typed."""
+        """Keep the command surface in step with what is typed.
+
+        The first edit clears a correction: it was about the line the operator has
+        already started replacing, and leaving it up would describe a message that no
+        longer exists. A chooser is left alone, because typing while choosing is
+        ordinary.
+        """
+        if self._action is not None and self._action.tone is Tone.CORRECTION:
+            self._action = None
         self._palette.update(buffer.text)
         self.repaint()
 
+    def _status_control(self) -> ANSI:
+        """The two session rows under the composer, and nothing else.
+
+        They answer different questions and age differently: what this session talks
+        to changes when the operator switches, while the numbers change every second.
+        Keeping them as exactly two lines is what makes them scannable, and is why no
+        key hint, queue state or blank spacer shares the space — a third row would
+        either duplicate the facts or become a permanent bar of instructions nobody
+        reads after the first hour.
+        """
+        lines = self._status[:STATUS_LINES]
+        # Every paint passes through here, which is what makes a resize noticed
+        # without a separate event to subscribe to.
+        self._report_width()
+        if not lines:
+            # The display has not published anything yet. Two blank rows still keep
+            # the composer's position stable; nothing else may claim them.
+            return ANSI("\n" * (STATUS_LINES - 1))
+        return ANSI("\n".join(f"\x1b[2m{line}\x1b[0m" for line in lines))
+
+    def _action_control(self) -> ANSI:
+        """The action surface: a correction, a refusal, a chooser or a question.
+
+        Emphasis follows the tone, because a correction and a refusal are the two the
+        operator must not miss. Rows carry a marker for the chosen one and a note for
+        the current value, so a chooser shows what is already in use without the
+        operator having to remember it.
+
+        The message is wrapped to the frame's width rather than clipped. A provider
+        decision states an endpoint in full precisely because a shortened one hides
+        the host, so cutting the line at the margin would undo the reason it is
+        shown. A list taller than the window scrolls to keep the cursor on screen.
+        """
+        action = self._action
+        if action is None:
+            return ANSI("")
+        style = {
+            Tone.CORRECTION: "\x1b[1;33m",
+            Tone.REFUSAL: "\x1b[1;31m",
+            Tone.INFO: "\x1b[2m",
+        }[action.tone]
+        width = self._available_width() or ACTION_DEFAULT_WIDTH
+        message_lines = self._wrapped_message(action, width)
+        row_budget = min(len(action.rows), 4)
+        hint_rows = 1 if action.hint or len(message_lines) > 1 else 0
+        message_budget = max(1, ACTION_ROWS - row_budget - hint_rows)
+        max_offset = max(0, len(message_lines) - message_budget + 1)
+        self._action_message_offset = min(self._action_message_offset, max_offset)
+        start = self._action_message_offset
+        has_previous = start > 0
+        has_next = start + message_budget < len(message_lines)
+        fact_budget = max(1, message_budget - int(has_previous) - int(has_next))
+        visible_message = message_lines[start : start + fact_budget]
+        lines: list[str] = []
+        if start:
+            lines.append("\x1b[2m↑ more facts (PgUp)\x1b[0m")
+        lines.extend(f"{style}{piece}\x1b[0m" for piece in visible_message)
+        if has_next:
+            lines.append("\x1b[2m↓ more facts (PgDn)\x1b[0m")
+        for line in self._visible_rows(action, width, row_budget):
+            lines.append(line)
+        if action.hint:
+            for piece in _wrap_cells(f"  {action.hint}", width):
+                lines.append(f"\x1b[2m{piece}\x1b[0m")
+        elif len(message_lines) > message_budget:
+            lines.append("\x1b[2m  PgUp/PgDn read decision facts\x1b[0m")
+        return ANSI("\n".join(lines))
+
+    @staticmethod
+    def _wrapped_message(action: Action, width: int) -> list[str]:
+        return [
+            piece
+            for text in action.message.split("\n")
+            for piece in (_wrap_cells(text, width) or [""])
+        ]
+
+    def _visible_rows(self, action: Action, width: int, budget: int) -> list[str]:
+        """The row lines to draw, scrolled so the chosen row is always visible.
+
+        A list longer than the window used to leave the cursor below the visible
+        area, so Enter would confirm a row the operator could not see. The window
+        slides just enough to keep the selection on screen.
+        """
+        rendered = [
+            f"  {('>' if index == action.selected else ' ')} {row.name}"
+            f"{f'  {row.description}' if row.description else ''}"
+            f"{'   current' if row.current else ''}"
+            for index, row in enumerate(action.rows)
+        ]
+        if not rendered:
+            return []
+        # Reserve the message viewport and hint before showing rows.
+        budget = max(1, budget)
+        if len(rendered) <= budget:
+            start = 0
+        else:
+            selected = min(action.selected, len(rendered) - 1)
+            start = max(0, min(selected - budget + 1, len(rendered) - budget))
+        out: list[str] = []
+        for offset, line in enumerate(rendered[start : start + budget]):
+            index = start + offset
+            lead = "\x1b[1;36m" if index == action.selected else "\x1b[2m"
+            for piece in _wrap_cells(line, width) or [""]:
+                out.append(f"{lead}{piece}\x1b[0m")
+        return out
+
     def _palette_control(self) -> ANSI:
-        """The command list, shown only while a command is being typed."""
-        if not self._palette.open:
+        """The command list, shown only while a command is being typed.
+
+        The key hints ride here, inside the palette, rather than in a permanent row:
+        they describe keys that only mean something while this surface is open, and
+        they disappear with it.
+        """
+        if not self._palette_focused():
             return ANSI("")
         lines = []
         for row in self._palette.rows():
@@ -446,9 +853,14 @@ class TranscriptView:
         return ANSI("\n".join(lines))
 
     def _queue_control(self) -> ANSI:
-        """The queued messages, with the selected one marked."""
+        """The queued messages, with the selected one marked.
+
+        The steering hint belongs to this stack rather than to a permanent footer:
+        it explains keys that only differ from ordinary typing while a turn runs.
+        """
         rows = self._queue_view.rows(self._pending)
-        if not rows:
+        hint = self._queue_view.hint(running=self._running)
+        if not rows and not hint:
             return ANSI("")
         lines = []
         for row in rows:
@@ -457,37 +869,29 @@ class TranscriptView:
             if len(text) > 60:
                 text = text[:57] + "..."
             lines.append(f"{marker} {text}")
+        if hint:
+            lines.append(f"\x1b[2m  {hint}\x1b[0m")
         return ANSI("\n".join(lines))
 
-    def _hint_control(self) -> ANSI:
-        """The session facts and what the keys mean, on one dim line.
-
-        Model, usage and rate live below the input because they describe the
-        session rather than the answer: they are read while waiting, and putting
-        them in the transcript would add a line per measurement. The key hint joins
-        them only while a turn runs, since outside one both keys simply submit.
-        """
-        parts = [
-            part
-            for part in (
-                self._status_text(),
-                self._queue_view.hint(running=self._running),
-            )
-            if part
-        ]
-        return ANSI(f"\x1b[2m{'  ·  '.join(parts)}\x1b[0m" if parts else "")
-
     def _live_control(self) -> ANSI:
-        """The live region as ANSI, so its dim styling survives the frame."""
+        """The activity slot as ANSI, so its dim styling survives the frame."""
         return ANSI(self._live_text)
 
     def _submit_typed(self, *, delivery: Delivery) -> None:
-        """Submit the composer's text, restoring pasted payloads first."""
+        """Submit the composer's text, restoring pasted payloads first.
+
+        Clearing the composer does not always notify `_on_text_changed`, so the
+        command list is closed explicitly here. Leaving it open put the palette and
+        the action it just opened in the same place above the composer, so a reader
+        saw two surfaces stacked and could not tell which one the arrows belonged to.
+        """
         text = self._buffer.text
         self._buffer.reset()
+        self._palette.close()
         expanded = self._pastes.expand(text)
         self._pastes.clear()
         if not expanded.strip():
+            self.repaint()
             return
         if delivery == "queue":
             # A queued message waits for the turn, so it lives in the queue the
@@ -532,10 +936,15 @@ class TranscriptView:
 
     async def _run_application(self) -> None:
         with patch_stdout(raw=True):
-            await self._app.run_async()  # type: ignore[union-attr]
+            try:
+                await self._app.run_async()  # type: ignore[union-attr]
+            except EOFError:
+                self._dismiss_action()
+                raise
 
     async def aclose(self) -> None:
         """Stop the input line and release anything waiting on it."""
+        self._dismiss_action()
         self._lines.close()
         if self._app is not None and self._app.is_running:
             # No result: the session is ending, not submitting a line.
@@ -579,13 +988,13 @@ class TranscriptView:
         it is separated from ``emit``: finished output belongs in the scrollback and
         must never be redrawn.
         """
-        # Only the last few rows are kept: the pane is a bounded window, and text
+        # Only the last few rows are kept: the slot is a bounded window, and text
         # longer than it would either be clipped or push the layout around. The
-        # tail is what a reader watches; earlier lines are already in the
-        # scrollback or in the reasoning block.
+        # surface already states what is happening in three rows, so anything past
+        # them is a rendering accident rather than information.
         lines = text.split("\n")
-        if len(lines) > LIVE_TAIL_LINES:
-            lines = lines[-LIVE_TAIL_LINES:]
+        if len(lines) > ACTIVITY_ROWS:
+            lines = lines[-ACTIVITY_ROWS:]
         self._live_text = "\n".join(lines)
         self.repaint()
 
@@ -623,9 +1032,12 @@ class FrameLiveRegion:
     states them.
     """
 
-    def __init__(self, view: TranscriptView, *, width: int = 80) -> None:
+    #: Columns used before the terminal has reported a size. Wide enough not to wrap
+    #: a normal answer needlessly, and replaced on the first paint.
+    DEFAULT_WIDTH = 80
+
+    def __init__(self, view: TranscriptView) -> None:
         self._view = view
-        self._width = width
         self._renderable: object = None
 
     def start(self, renderable: object) -> None:
@@ -641,7 +1053,18 @@ class FrameLiveRegion:
         self._view.show_live("")
 
     def _paint(self) -> None:
-        self._view.show_live(_render_to_text(self._renderable, width=self._width))
+        """Render at the frame's current width, so a resize re-wraps the surface.
+
+        The width is read on every paint rather than captured once: a region that
+        remembered the width it started with would keep wrapping a 60-column terminal
+        at 80 and overflow the frame after the operator resized.
+        """
+        self._view.show_live(
+            _render_to_text(
+                self._renderable,
+                width=self._view.available_width() or self.DEFAULT_WIDTH,
+            )
+        )
 
 
 def _render_to_text(renderable: object, *, width: int) -> str:

@@ -2,7 +2,7 @@ import asyncio
 import os
 import shutil
 import sys
-from collections.abc import Awaitable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Annotated
 
@@ -12,8 +12,14 @@ from dotenv import dotenv_values
 from cairn.core.budget import RunBudget, RunBudgetExceeded
 from cairn.core.context import ContextBudget
 from cairn.core.events import Event, EventHandler
-from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
-from cairn.core.provider_catalog import ProviderCatalog
+from cairn.core.model_manager import ModelConfig
+from cairn.core.permissions import (
+    PermissionCapability,
+    PermissionChoice,
+    PermissionRequest,
+    SessionPermissionHandler,
+)
+from cairn.core.provider_catalog import NamedProvider, ProviderCatalog
 from cairn.infra.config import (
     CAIRN_MAX_STEPS_ENV_NAME,
     ConfigLayout,
@@ -44,7 +50,10 @@ from cairn.runtime.session import SessionState
 from cairn.runtime.turn.compaction import CompactionOutcome
 from cairn.runtime.turn.hook import run_compaction
 from cairn.runtime.turn.steering import PendingMessage, SteerQueue
+from cairn.terminal.action import Action, ActionRow, Tone, consent, note, refusal
 from cairn.terminal.commands.context import CommandContext
+from cairn.terminal.commands.model import model_chooser_at
+from cairn.terminal.commands.provider import provider_chooser_at
 from cairn.terminal.commands.router import CommandRouter
 from cairn.terminal.durable import (
     DurableOptions,
@@ -382,11 +391,23 @@ async def _drive_turn(
     turn = asyncio.create_task(run())
     reader = asyncio.create_task(frame.read())
 
+    #: Set by the key binding immediately before it cancels the turn. Cancellation
+    #: reaches a task as a bare ``CancelledError`` that cannot say who asked, so this
+    #: flag is the only evidence that the stop was the operator's — the difference
+    #: between "the turn stopped because I asked" and "the turn failed".
+    operator_stopped = False
+
     def request_stop() -> None:
         """Stop the running turn, saying so while the cleanup completes."""
+        nonlocal operator_stopped
+        if operator_stopped:
+            # A second press must not re-request a cancellation already in flight.
+            return
+        operator_stopped = True
         streaming.begin_interrupt()
         turn.cancel()
 
+    previous_interrupt = frame.on_interrupt
     frame.on_interrupt = request_stop
     try:
         while True:
@@ -394,10 +415,20 @@ async def _drive_turn(
                 {turn, reader}, return_when=asyncio.FIRST_COMPLETED
             )
             if turn in done:
-                if turn.cancelled() or turn.exception() is not None:
+                if operator_stopped and turn.cancelled():
+                    # The operator asked for this, so the surface reports it and the
+                    # turn loop carries on to the next line. The outcome is a
+                    # dedicated exception rather than a sentinel value, so it cannot
+                    # be confused with a real answer.
                     streaming.settle_interrupt()
-                    raise turn.exception() or asyncio.CancelledError()
-                return await turn
+                    raise TurnStopped
+                # Anything else is a real failure the turn loop must report, and a
+                # cancellation nobody asked for is reported as one too.
+                if turn.cancelled():
+                    raise asyncio.CancelledError(
+                        "the turn was cancelled without an operator request"
+                    )
+                return turn.result()
             line = await reader
             if line.text.strip():
                 # ``now`` only applies when nothing is running; during a turn the
@@ -410,10 +441,10 @@ async def _drive_turn(
                 )
             reader = asyncio.create_task(frame.read())
     finally:
-        for task in (turn, reader):
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(turn, reader, return_exceptions=True)
+        # The binding belongs to this turn: restoring it means a later Ctrl-C cannot
+        # reach a turn that has already finished.
+        frame.on_interrupt = previous_interrupt
+        await settle_owned(turn, reader)
 
 
 def _terminal_width() -> int | None:
@@ -440,6 +471,311 @@ def _print_durable_intro(durable_session: DurableSession) -> None:
     if durable_session.recovery_notice:
         print(durable_session.recovery_notice)
     print("Durable mode: output is provisional until a committed checkpoint status.")
+
+
+class TurnStopped(Exception):
+    """Raised inside a turn whose cancellation the operator asked for.
+
+    Cancellation reaches an ``asyncio`` task as a bare ``CancelledError``, which
+    cannot say *who* asked. The key binding records that it requested the stop before
+    cancelling, so this exception carries the answer out to the turn loop: an
+    operator's own Ctrl-C is an outcome the session continues from, while anything
+    else that cancels the turn is a real failure the loop must report.
+    """
+
+
+#: The row that grants. Naming it once keeps the surface and the reader of the
+#: answer in agreement about what consent looks like.
+TRUST_ROW = "Trust for this session"
+
+
+def _trust_decision(provider: NamedProvider, group: ModelConfig) -> Action:
+    """The consent surface for one provider switch.
+
+    Every fact the operator needs is stated in full: where the conversation is sent,
+    which credential *variable* will be read, and which models it covers. A shortened
+    endpoint would hide exactly the thing a lookalike host relies on, so it is shown
+    whole and the surface wraps it.
+    """
+    return consent(
+        "\n".join(
+            [
+                f"Send this session's conversation to {provider.name}:",
+                f"  {provider.config.base_url}",
+                f"Credential variable  {provider.config.api_key_env}",
+                f"Models              {', '.join(group.model_ids)}",
+                "The full conversation history moves with it, and session tool "
+                "permissions are reset.",
+            ]
+        ),
+        grant=TRUST_ROW,
+        decline="Cancel",
+    )
+
+
+PERMISSION_ALLOW_ONCE = "Allow once"
+PERMISSION_ALLOW_SESSION = "Allow for this session"
+PERMISSION_DENY = "Deny"
+
+
+def _permission_prompt_for(
+    frame: TranscriptView | None,
+) -> Callable[[PermissionRequest], Awaitable[PermissionChoice]]:
+    """Build an async approval prompt that yields to the live terminal loop."""
+    assert frame is not None
+
+    async def ask(request: PermissionRequest) -> PermissionChoice:
+        return await _ask_permission_in_surface(request, frame=frame)
+
+    return ask
+
+
+def _permission_decision(request: PermissionRequest) -> Action:
+    """The consent surface for one tool capability, defaulting to Deny.
+
+    The facts are the ones the decision turns on: which capability, the concrete
+    command or paths it would act on, and why the tool asked. They are stated in
+    full — a path set is exactly what a filesystem grant hands out — and the cursor
+    starts on Deny, so Enter on an untouched menu refuses.
+    """
+    lines = [f"Permission required: {request.capability.value}"]
+    command = request.tool_call.arguments.get("command")
+    if isinstance(command, str):
+        lines.append(f"  Command  {command}")
+    for path in request.paths:
+        lines.append(f"  Path     {path}")
+    if request.justification:
+        lines.append(f"  Reason   {request.justification}")
+    return Action(
+        message="\n".join(lines),
+        rows=(
+            ActionRow(name=PERMISSION_ALLOW_ONCE),
+            ActionRow(name=PERMISSION_ALLOW_SESSION),
+            ActionRow(name=PERMISSION_DENY, cancel=True),
+        ),
+        selected=2,
+        hint="Up/Down move   Enter confirm   Esc deny",
+        tone=Tone.REFUSAL,
+        decides_authority=True,
+    )
+
+
+async def _ask_permission_in_surface(
+    request: PermissionRequest, *, frame: TranscriptView
+) -> PermissionChoice:
+    """Ask for tool authority on the bottom surface and await the answer.
+
+    Every outcome other than an explicit allow is a denial: Escape, end of input and
+    a closed surface all deny, because a capability that was never granted must never
+    be inferred from a keystroke that did not mean it.
+    """
+    loop = asyncio.get_running_loop()
+    answer: asyncio.Future[PermissionChoice] = loop.create_future()
+
+    def take(choice: PermissionChoice) -> None:
+        if not answer.done():
+            answer.set_result(choice)
+
+    previous_choose = frame.on_action_choose
+    previous_command = frame.on_action_command
+    previous_move = frame.on_action_move
+    action = _permission_decision(request)
+
+    def choose(name: str) -> None:
+        take(
+            {
+                PERMISSION_ALLOW_ONCE: PermissionChoice.ALLOW_ONCE,
+                PERMISSION_ALLOW_SESSION: PermissionChoice.ALLOW_SESSION,
+            }.get(name, PermissionChoice.DENY)
+        )
+
+    def command(name: str) -> None:
+        if not name:
+            take(PermissionChoice.DENY)
+
+    def move(current: int, step: int) -> Action:
+        action.selected = max(0, min(len(action.rows) - 1, current + step))
+        frame.show_action(action)
+        return action
+
+    frame.on_action_choose = choose
+    frame.on_action_command = command
+    frame.on_action_move = move
+    try:
+        frame.show_action(action)
+        return await answer
+    finally:
+        frame.on_action_choose = previous_choose
+        frame.on_action_command = previous_command
+        frame.on_action_move = previous_move
+        frame.show_action(None)
+
+
+async def _ask_in_surface(
+    provider: NamedProvider,
+    group: ModelConfig,
+    *,
+    frame: TranscriptView,
+) -> bool:
+    """Ask for provider approval on the bottom surface and await the answer.
+
+    The runtime asks this question in the middle of building a replacement binding,
+    so the answer has to arrive before that call returns; awaiting it on the same
+    loop is what lets the surface's keys resolve while the question is open.
+
+    Every outcome other than an explicit Trust is a refusal: Cancel, Escape, end of
+    input, and a surface closed without an answer all resolve to False.
+    """
+    loop = asyncio.get_running_loop()
+    answer: asyncio.Future[bool] = loop.create_future()
+
+    def take(choice: bool) -> None:
+        if not answer.done():
+            answer.set_result(choice)
+
+    previous_choose = frame.on_action_choose
+    previous_command = frame.on_action_command
+    previous_move = frame.on_action_move
+    action = _trust_decision(provider, group)
+
+    def choose(name: str) -> None:
+        # Only the grant row grants. Any other name is a refusal, so a renamed or
+        # mismatched row can never be read as consent.
+        take(name == TRUST_ROW)
+
+    def command(name: str) -> None:
+        # An empty command means the surface closed without an answer.
+        if not name:
+            take(False)
+
+    def move(current: int, step: int) -> Action:
+        action.selected = max(0, min(len(action.rows) - 1, current + step))
+        frame.show_action(action)
+        return action
+
+    frame.on_action_choose = choose
+    frame.on_action_command = command
+    frame.on_action_move = move
+    try:
+        frame.show_action(action)
+        return await answer
+    finally:
+        frame.on_action_choose = previous_choose
+        frame.on_action_command = previous_command
+        frame.on_action_move = previous_move
+        frame.show_action(None)
+
+
+def _confirm_provider(
+    provider: NamedProvider,
+    group: ModelConfig,
+    *,
+    frame: TranscriptView | None,
+) -> Awaitable[bool]:
+    """Resolve provider approval: on the surface when there is one, else the console.
+
+    A synchronous console question cannot be used while the surface is live, because
+    it would block the loop the surface is drawn on. Returning an awaitable keeps the
+    choice at the caller, which is the only place that knows whether a loop is
+    running.
+    """
+    if frame is None or not _interactive_terminal():
+        return asyncio.to_thread(
+            lambda: confirm_provider_access(provider, group, switching=True) is True
+        )
+
+    async def ask() -> bool:
+        return await _ask_in_surface(provider, group, frame=frame)
+
+    return ask()
+
+
+#: Interactions currently running from a key handler. Kept alive until they finish,
+#: because a task nobody references can be collected mid-await.
+_scheduled: list[asyncio.Task[None]] = []
+
+
+def _schedule_interaction(
+    interaction: Awaitable[Action | None],
+    frame: TranscriptView | None,
+    *,
+    command: str = "",
+) -> None:
+    """Run a command's interaction on the loop, then show what it concluded.
+
+    The key handler that produced this is synchronous, so it cannot await. The
+    interaction is scheduled instead; dropping it is what left a provider chooser
+    looking responsive while no trust question was ever asked.
+    """
+    loop = asyncio.get_running_loop()
+
+    async def run() -> None:
+        try:
+            action = await interaction
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            _show_action(refusal(f"{type(exc).__name__}: {exc}"), frame)
+            return
+        _show_action(action, frame, command=command)
+
+    # The reference is kept so the task is not collected while it is still running,
+    # and dropped once it finishes so the list cannot grow for the session's life.
+    task = loop.create_task(run())
+    _scheduled.append(task)
+    task.add_done_callback(
+        lambda finished: _scheduled.remove(finished) if finished in _scheduled else None
+    )
+
+
+async def _settle_interactions() -> None:
+    """Cancel and observe every key-handler interaction before session teardown."""
+    owned = tuple(_scheduled)
+    if not owned:
+        return
+    await settle_owned(*owned)
+
+
+def _details_for(
+    command: str,
+    action: Action,
+    context: CommandContext,
+    *,
+    selected: int | None = None,
+) -> Action:
+    """Rebuild ``action`` with ``selected`` chosen and that row's details expanded."""
+    index = action.selected if selected is None else selected
+    if command == "/model":
+        return model_chooser_at(context, index)
+    if command == "/provider":
+        return provider_chooser_at(context, index)
+    action.selected = index
+    return action.clamped()
+
+
+def _show_action(
+    action: Action | None,
+    frame: TranscriptView | None,
+    *,
+    command: str = "",
+) -> None:
+    """Show an action where the operator will see it.
+
+    In a terminal that is the surface above the composer; in a script there is no
+    surface, so the message is printed as plain text. A scripted run must still be
+    told what a command did — it just cannot be told it with a menu.
+
+    ``command`` names the command that produced the action, so a later Enter or arrow
+    knows which chooser it is answering.
+    """
+    if action is None:
+        return
+    if frame is not None:
+        frame.show_action(action)
+        if frame.on_action_command is not None:
+            frame.on_action_command(command if action.rows else "")
+        return
+    print(action.message)
 
 
 async def _turn_loop(
@@ -482,8 +818,10 @@ async def _turn_loop(
             continue
         command_result = router.handle(user_input, command_context)
         if command_result.handled:
+            command = user_input.split()[0].lower()
+            _show_action(command_result.action, frame, command=command)
             if command_result.interaction is not None:
-                await command_result.interaction()
+                _show_action(await command_result.interaction(), frame, command=command)
             if command_result.should_exit:
                 break
             continue
@@ -497,6 +835,9 @@ async def _turn_loop(
         previous_seq = (
             durable_session.receipt.revision.head_seq if durable_session else None
         )
+        # A single flag records whether the turn reported its own outcome, so the
+        # cleanup path cannot swallow an ordinary failure or a budget stop.
+        settled = False
         try:
             response = await _run_supervised_turn(
                 agent=agent,
@@ -506,9 +847,20 @@ async def _turn_loop(
                 streaming=streaming_display,
                 durable_session=durable_session,
             )
+        except TurnStopped:
+            # `settle_interrupt` already replaced the partial attempt with the
+            # receipt; nothing more belongs in the transcript.
+            settled = True
         except RunBudgetExceeded:
-            pass
+            # The budget guard has already said what stopped the turn.
+            settled = True
+        except asyncio.CancelledError:
+            # A cancellation nobody requested: the session is being torn down. The
+            # turn cannot finish, so it is reported and propagates after cleanup.
+            settled = True
+            raise
         except Exception as exc:
+            settled = True
             if durable_session is None:
                 print_runtime_error(exc)
             else:
@@ -521,7 +873,11 @@ async def _turn_loop(
         finally:
             if frame is not None:
                 frame.set_running(False)
-            streaming_display.close_incomplete()
+            # The display drops any half-written block in every outcome, but only
+            # speaks up when the turn did not already say what happened: an
+            # interrupt reported itself through `settle_interrupt`, and a failure was
+            # reported above, so the generic warning would repeat the same fact.
+            streaming_display.close_incomplete(silent=settled)
             pending = pending_trace_finish[0]
             if pending is not None:
                 if durable_session is not None and not pending.data.get(
@@ -560,6 +916,9 @@ async def main(
     trace_root = Path(".cairn/traces")
     tracer = Tracer(JsonlTraceSink(trace_root))
     command_context = CommandContext(trace_store=TraceStore(trace_root))
+    # The prompt is bound once the frame exists, because the surface is where an
+    # approval is given. Until then the console prompt is the only option, and it is
+    # what the startup bootstrap uses.
     permission_handler = SessionPermissionHandler(
         prompt=console_permission_prompt,
         workspace_root=workspace.root,
@@ -584,6 +943,11 @@ async def main(
     # application repaints over. Off terminal there is nothing to repaint, and the
     # display already falls back to printing each block once.
     frame = TranscriptView() if _interactive_terminal() else None
+    # With a surface to ask on, tool approvals go there: the console prompt would
+    # block the loop the surface is drawn on, so it could never be answered. Without
+    # one, the handler keeps the prompt it was built with.
+    if frame is not None:
+        permission_handler.prompt_async = _permission_prompt_for(frame)
     streaming_display = StreamingDisplay(
         live_factory=frame_live_region(frame) if frame is not None else None,
         # Session facts belong under the input when there is one: they are read
@@ -606,6 +970,10 @@ async def main(
         # the mouse would cost the native drag-select and copy this layout exists to
         # keep.
         frame.on_reveal_reasoning = streaming_display.reveal_reasoning
+        # A resize changes how much room the two status rows have. The frame reports
+        # the width whenever it changes, so the display re-fits instead of keeping
+        # the width it started with and overflowing a narrower terminal.
+        frame.on_width = streaming_display.set_status_width
     handle_event, pending_trace_finish = _make_event_handler(
         durable, streaming_display, command_context
     )
@@ -622,11 +990,18 @@ async def main(
         skills=builtin_skills(),
     )
 
+    def _publish_identity(provider_name: str) -> None:
+        """Tell the status which model and provider the session now talks to."""
+        manager = command_context.model_manager
+        model = manager.current_model().model_ids[0] if manager is not None else ""
+        streaming_display.observe_model(model, provider=provider_name)
+
     def mirror_committed_runtime(runtime: ProviderRuntime) -> None:
         """Keep the command context pointing at the runtime runtime owns."""
         command_context.model_manager = runtime.model_manager
         command_context.model_executor = runtime.model_executor
         command_context.active_provider_name = runtime.provider.name
+        _publish_identity(runtime.provider.name)
 
     # The runtime owns which provider and model are active and every rebinding a
     # switch performs; the CLI keeps prompting, printing and credential lookup.
@@ -636,13 +1011,31 @@ async def main(
         on_commit=mirror_committed_runtime,
     )
 
+    #: The provider the operator has just approved on the surface, for the switch
+    #: currently being performed. The runtime asks ``confirm`` synchronously inside
+    #: its build-before-commit sequence, so the question is asked and answered
+    #: *before* that call: by the time the runtime asks, the answer is known.
+    approved_provider: str | None = None
+
     def select_provider(name: str) -> None:
+        """Switch providers, using the trust decision already taken.
+
+        The runtime keeps build-before-commit: it asks for approval, resolves only
+        the approved provider's credential, builds the replacement and commits it.
+        The question itself was asked on the surface, because a synchronous console
+        prompt would block the loop the surface is drawn on.
+        """
+        nonlocal approved_provider
+
+        def confirm(provider: NamedProvider, group: ModelConfig) -> bool:
+            # Consent is bound to this exact provider. A different target than the
+            # one the operator approved is not consent, however the call arrived.
+            return approved_provider == provider.name
+
         switched = session.select_provider(
             name,
             catalog,
-            confirm=lambda provider, group: (
-                confirm_provider_access(provider, group, switching=True) is True
-            ),
+            confirm=confirm,
             resolve_credential=lambda config: resolve_provider_api_key(
                 config, os.environ, env_file_values
             ),
@@ -650,6 +1043,50 @@ async def main(
         )
         if switched:
             permission_handler.reset_grants()
+            # The footer names what the session is talking to, so a committed switch
+            # has to reach it: leaving the startup identity there would describe a
+            # provider the session no longer uses.
+            _publish_identity(name)
+
+    def _provider_summary_action(name: str) -> Action:
+        """One line confirming what the committed switch left the session on."""
+        return note(f"Current provider: {name}")
+
+    async def approve_provider(name: str) -> Action:
+        """Ask for trust on the surface, then perform the switch.
+
+        Approval and switching are one step: the answer is stored, the runtime is
+        asked to switch, and the surface reports what happened. A refusal never
+        reaches the runtime, so no credential is resolved for a provider the
+        operator declined.
+        """
+        nonlocal approved_provider
+        target = catalog.by_name(name)
+        if target is None:
+            return refusal(f"Provider {name!r} is not configured in this session.")
+        if target.name == (command_context.active_provider_name or target.name):
+            return note(f"Current provider: {name}")
+        group = target.config.model_config[0]
+        granted = False
+        if frame is not None and _interactive_terminal():
+            granted = await _ask_in_surface(target, group, frame=frame)
+        else:
+            granted = (
+                await asyncio.to_thread(
+                    lambda: confirm_provider_access(target, group, switching=True)
+                )
+                is True
+            )
+        if not granted:
+            return refusal(f"Provider {name!r} was not approved for this session.")
+        approved_provider = target.name
+        try:
+            select_provider(target.name)
+        except ValueError as exc:
+            return refusal(str(exc))
+        finally:
+            approved_provider = None
+        return _provider_summary_action(name)
 
     def compact_now() -> Awaitable[CompactionOutcome]:
         """Compact the live Agent on the user's explicit request."""
@@ -663,14 +1100,75 @@ async def main(
     command_context.compact_now = compact_now if agent.summarizer is not None else None
     command_context.select_model = session.select_model
     command_context.select_provider = select_provider
+    # Provider trust is a decision, so the command returns it as an interaction and
+    # the operator answers it on the surface with the loop still drawing.
+    command_context.approve_provider = approve_provider
     command_context.provider_catalog = catalog
     # Commands run between turns only, so a switch can never race a turn.
 
     router = CommandRouter()
     input_reader = cli_input or CliInput()
-    command_context.choose_model = lambda provider, models, current: (
-        input_reader.choose_model(provider, models, current)
-    )
+    # The frame's bottom surface is the chooser, so the legacy separate picker is
+    # not wired: two places to make the same decision is one place too many.
+    if frame is not None:
+        command_context.has_action_surface = True
+
+        # What a chooser row means is the command that opens it. Keeping this here,
+        # rather than on the frame, is what lets one surface serve both commands
+        # without the frame knowing either of them.
+        chooser: dict[str, str] = {"command": ""}
+
+        def choose_row(name: str) -> None:
+            """Confirm the row the operator picked.
+
+            A model row means ``/model use <name>``, so the menu and the typed form
+            share one path through the runtime and its build-before-commit rules.
+
+            A provider row means a trust question first. That question is returned as
+            an interaction rather than answered inside the command, because the
+            operator has to answer it on this surface — so the interaction is
+            scheduled on the loop instead of being dropped.
+            """
+            command = chooser["command"]
+            if command == "/model":
+                result = router.handle(f"/model use {name}", command_context)
+            elif command == "/provider":
+                result = router.handle(f"/provider use {name}", command_context)
+                if result.interaction is not None:
+                    _schedule_interaction(result.interaction(), frame, command=command)
+                    return
+            else:
+                return
+            _show_action(result.action, frame)
+
+        def move_row(current: int, step: int) -> Action | None:
+            """Re-expand the chosen row's details after the selection moved.
+
+            A chooser shows one entry's facts at a time, so moving the cursor has to
+            rebuild the message. Re-running the command is what keeps those facts
+            real rather than a copy taken when the menu opened.
+
+            The move starts from ``current``, the row on screen. Re-running the
+            command builds an action whose selection is the first row, so adding
+            ``step`` to *that* index would stop repeated Down at the second entry and
+            send Up back to the first.
+            """
+            command = chooser["command"]
+            if not command:
+                return None
+            result = router.handle(command, command_context)
+            rebuilt = result.action
+            if rebuilt is None or not rebuilt.rows:
+                return None
+            target = max(0, min(len(rebuilt.rows) - 1, current + step))
+            return _details_for(command, rebuilt, command_context, selected=target)
+
+        frame.on_action_choose = choose_row
+        frame.on_action_move = move_row
+        # Remember which command opened the chooser, so a later Enter knows which
+        # one it is answering. Without this the row names a group but no command
+        # ever consumes it.
+        frame.on_action_command = lambda name: chooser.__setitem__("command", name)
 
     durable_session: DurableSession | None = None
     if durable is not None:
@@ -719,6 +1217,7 @@ async def main(
         )
         print("Goodbye! see you next time.")
     finally:
+        await _settle_interactions()
         if durable_session is not None:
             durable_session.close()
 

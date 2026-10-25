@@ -18,6 +18,7 @@ from cairn.core.events import Event
 from cairn.core.model_manager import ModelConfig
 from cairn.core.permissions import PermissionChoice, PermissionRequest
 from cairn.core.provider_catalog import NamedProvider
+from cairn.terminal.activity import Activity, ActivityKind
 from cairn.terminal.interrupt import Interruption
 from cairn.terminal.live import LiveRegion
 from cairn.terminal.thinking import ThinkingPreview
@@ -29,16 +30,6 @@ console = Console()
 MAX_ARGUMENT_CHARS = 120
 # Failure output beyond this many lines moves to the trace instead of the screen.
 MAX_DIAGNOSTIC_LINES = 20
-# The most trailing reasoning lines that stay on screen. The model can reason
-# for thousands of tokens; a reader wants the current thread, not the transcript.
-MAX_THINKING_LINES = 6
-# The fewest, so the thread never loses its shape on a short screen.
-MIN_THINKING_LINES = 2
-# A quarter of the screen is reasoning at most; the answer and the status line
-# need the rest. Short screens therefore show fewer lines than MAX_THINKING.
-THINKING_SCREEN_SHARE = 4
-# Bar segments in the context meter.
-_BAR_WIDTH = 8
 # Status updates are painted at this rate at most. A token stream can deliver
 # dozens of deltas a second; repainting per delta costs far more than a reader
 # can perceive.
@@ -55,28 +46,16 @@ class Glyphs:
     """
 
     reasoning: str
-    tick: str
     cross: str
-    spinner: str
-    bar_full: str
-    bar_empty: str
 
 
 UNICODE_GLYPHS = Glyphs(
     reasoning="⋮ ",
-    tick="✓",
     cross="✗",
-    spinner="⟳",
-    bar_full="▓",
-    bar_empty="░",
 )
 ASCII_GLYPHS = Glyphs(
     reasoning=": ",
-    tick="+",
     cross="!",
-    spinner="*",
-    bar_full="#",
-    bar_empty="-",
 )
 
 
@@ -185,6 +164,18 @@ NARROW_MODEL_CHARS = 12
 def _trim(value: str, limit: int) -> str:
     """``value`` reduced to ``limit`` characters, or unchanged when it already fits."""
     return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+def _preview_width(width: int | None) -> int | None:
+    """Columns the reasoning preview may use, given the terminal's width.
+
+    The preview is drawn under a two-column indent inside the frame, so it wraps at
+    the width left after that. Wrapping at the full terminal width would make each
+    row one character too wide and overflow the frame.
+    """
+    if width is None:
+        return None
+    return max(1, width - GUTTER)
 
 
 def _shorten(model: str) -> str:
@@ -313,38 +304,21 @@ def _take_tool_label(event: Event) -> str:
     return _pending_tool_labels.pop(call_id, "")
 
 
-def _render_tool_result(event: Event) -> None:
-    """Report a finished tool call as one line.
+def _report_tool_failure(*, label: str, detail: object, suffix: str = "") -> None:
+    """Report a tool failure, which unlike routine progress is worth a line.
 
-    A call and its result are one fact, so they share a line instead of
-    occupying two with a blank line between them. The exit code stays: a status
-    line that cannot distinguish a normal failure from a killed process is
-    hiding the number a reader needs. Failures add a bounded diagnostic beneath,
-    because that is the part a reader acts on; the full record stays in the trace
-    for `/trace`.
+    Hiding routine progress is what kept the transcript readable; hiding failures
+    would be a different thing entirely, because a denied call or a failed command
+    is the one tool event a reader has to act on. The line names the call and the
+    reason, and the reason is bounded: a failing command can produce megabytes of
+    stderr, and the unclipped text is in the trace.
     """
-    tool = _tool_name(event)
-    label = _take_tool_label(event) or tool
-    exit_code = event.data["exit_code"]
-    raw_stdout = event.data.get("stdout")
-    stdout = raw_stdout if isinstance(raw_stdout, str) else ""
-    raw_stderr = event.data.get("stderr")
-    stderr = raw_stderr if isinstance(raw_stderr, str) else ""
-    mark = "✓" if exit_code == 0 else "✗"
-
-    if exit_code == 0 and tool == "edit_file":
-        detail = stdout.strip()
-        if detail:
-            console.print(f"{mark} {detail}", style="green", markup=False)
-            return
-    if exit_code == 0:
-        console.print(f"{mark} {label}", style="green", markup=False)
-        return
-
-    console.print(f"{mark} {label} (exit {exit_code})", style="bold red", markup=False)
-    diagnostic = (stderr or stdout).strip()
-    if diagnostic:
-        console.print(_indented(_bounded(diagnostic)), style="yellow", markup=False)
+    text = detail if isinstance(detail, str) else ""
+    head = f"{GLYPHS.cross} {label}{suffix}"
+    reason = text.strip()
+    if reason:
+        head = f"{head}: {reason}"
+    console.print(_indented(_bounded(head)), style="bold red", markup=False)
 
 
 def _bounded(text: str, limit: int = MAX_DIAGNOSTIC_LINES) -> str:
@@ -475,21 +449,6 @@ def _write_reasoning_rows(rows: list[tuple[str, bool]]) -> int:
     return len(rows)
 
 
-def _reasoning_window() -> int:
-    """How many trailing reasoning lines the screen can carry.
-
-    A fixed count either crowds a short terminal, where the answer stops being
-    visible while the model thinks, or wastes a tall one. The window is a share
-    of the screen, bounded so it neither collapses nor grows without limit.
-    """
-    height = console.height
-    if height <= 0:
-        return MAX_THINKING_LINES
-    return min(
-        MAX_THINKING_LINES, max(MIN_THINKING_LINES, height // THINKING_SCREEN_SHARE)
-    )
-
-
 def _split_blocks(text: str) -> tuple[str, str]:
     """Split Markdown into what can be printed for good and what is still open.
 
@@ -521,56 +480,6 @@ def _last_settled_offset(text: str) -> int:
             end = offset + len(line)
         offset += len(line)
     return end
-
-
-def format_status_line(
-    *,
-    active: bool,
-    tokens_per_second: float | None = None,
-    context_fraction: float | None = None,
-    cached_fraction: float | None = None,
-    reasoning_tokens: int | None = None,
-    trace_id: str | None = None,
-    step: tuple[int, int] | None = None,
-) -> Text:
-    """One quiet line describing what the turn is doing.
-
-    Only the signals a reader acts on appear, and each is omitted rather than
-    shown as a placeholder when it has no value: a dash where a number belongs
-    is noise that never changes. Color is never the only signal — the spinner
-    and the filled bar segments carry the same information in text.
-    """
-    parts: list[Text] = []
-    spinner = GLYPHS.spinner if active else GLYPHS.tick
-    parts.append(Text(spinner, style="green" if not active else "cyan"))
-
-    if step is not None:
-        # Progress belongs on this line rather than in the transcript. Printing one
-        # line per step filled the scrollback with a hundred lines that said nothing
-        # once the turn ended.
-        current, total = step
-        parts.append(Text(f" step {current}/{total}", style="dim"))
-
-    if tokens_per_second is not None and tokens_per_second > 0:
-        parts.append(Text(f" {tokens_per_second:.0f} tok/s", style="dim"))
-
-    if context_fraction is not None:
-        filled = round(max(0.0, min(1.0, context_fraction)) * _BAR_WIDTH)
-        bar = GLYPHS.bar_full * filled + GLYPHS.bar_empty * (_BAR_WIDTH - filled)
-        parts.append(Text(f"  ctx {bar} {context_fraction * 100:.0f}%", style="dim"))
-
-    if cached_fraction is not None and cached_fraction > 0:
-        parts.append(Text(f"  {cached_fraction * 100:.0f}% cached", style="dim"))
-
-    if reasoning_tokens:
-        parts.append(Text(f"  {reasoning_tokens} reasoning", style="dim"))
-
-    if trace_id:
-        # The prefix of the turn's trace, so an identifier is visible without
-        # printing a whole line for it. `/trace` accepts the same prefix.
-        parts.append(Text(f"  {trace_id[:8]}", style="dim"))
-
-    return Text.assemble(*parts)
 
 
 def _count(value: object) -> int:
@@ -621,18 +530,28 @@ def console_event_handler(event: Event, *, report_trace_failure: bool = True) ->
                 _pending_tool_labels[raw_call_id] = _describe_tool_call(event)
 
         case "tool_result":
-            _render_tool_result(event)
+            # Routine progress is observed by the display and never printed: a call
+            # that worked is not news, and a line per call filled the transcript.
+            # A *failure* is news wherever the runtime reports it this way, so the
+            # exit code and its bounded diagnostic still reach the reader.
+            exit_code = event.data.get("exit_code")
+            if exit_code:
+                _report_tool_failure(
+                    label=_take_tool_label(event) or _tool_name(event),
+                    detail=event.data.get("stderr") or event.data.get("stdout"),
+                    suffix=f" (exit {exit_code})",
+                )
 
         case "tool_error":
-            label = _take_tool_label(event) or str(event.data["tool"])
-            console.print(
-                f"✗ {label}: {event.data['error']}", style="bold red", markup=False
+            _report_tool_failure(
+                label=_take_tool_label(event) or str(event.data["tool"]),
+                detail=event.data["error"],
             )
 
         case "tool_denied":
-            label = _take_tool_label(event) or str(event.data["tool"])
-            console.print(
-                f"✗ {label}: {event.data['error']}", style="bold red", markup=False
+            _report_tool_failure(
+                label=_take_tool_label(event) or str(event.data["tool"]),
+                detail=event.data["error"],
             )
 
         case "agent_finish":
@@ -743,6 +662,9 @@ class StreamingDisplay:
         self._thinking = ThinkingPreview()
         # Whether a turn is being stopped, and the receipt it leaves.
         self._interruption = Interruption()
+        # What the turn is doing now. One surface, so the reader has one place to
+        # look instead of a preview and a stream of printed call lines.
+        self._activity = Activity()
         # Off terminal, reasoning is appended rather than redrawn. This counts
         # the logical lines already written so a delta adds only what is new.
         self._logged_lines = 0
@@ -794,6 +716,7 @@ class StreamingDisplay:
         self._step = None
         self._thinking.clear()
         self._interruption.reset()
+        self._activity.reset()
 
     def _forget_attempt(self) -> None:
         """Drop everything the display knows about the attempt so far.
@@ -814,13 +737,49 @@ class StreamingDisplay:
         self._active = False
 
     def observe(self, event: Event) -> bool:
-        """Return True only for handled streaming events; legacy output stays put."""
+        """Return True only for events this display fully owns.
+
+        Tool events are owned here too: the surface shows the call running and then
+        stops, and nothing about them belongs in the transcript. The complete tool
+        facts remain in the trace and in runtime state — this changes what is
+        displayed, not what happened.
+        """
         handler = _STREAMING_HANDLERS.get(event.type)
         if handler is None:
             self._note_agent_finish(event)
             return False
         handler(self, event)
         return True
+
+    def _note_tool_call(self, event: Event) -> None:
+        """A tool is starting: name it on the activity surface.
+
+        The call is not a fact on its own — the result is — so it is not printed. It
+        names what is happening now, which is what the surface is for. The call id
+        is kept so a batch's calls can be counted as they finish rather than as
+        they start.
+        """
+        raw_call_id = event.data.get("tool_call_id")
+        call_id = raw_call_id if isinstance(raw_call_id, str) else None
+        label = _describe_tool_call(event)
+        self._activity.started(call_id, label)
+        # A tool can start before any live region exists, which is the case for a
+        # turn whose first step is a tool with no reasoning or prose before it. The
+        # surface has to be opened here or the reader sees a frozen screen.
+        self._show_activity()
+
+    def _note_tool_result(self, event: Event) -> None:
+        """A tool finished: count it and show what is still running.
+
+        The result is not printed. It is transient progress like the call that
+        produced it, and the surface clears it when the next state arrives. What a
+        reader can audit afterwards is the trace.
+        """
+        raw_call_id = event.data.get("tool_call_id")
+        self._activity.finished_tool(
+            raw_call_id if isinstance(raw_call_id, str) else None
+        )
+        self._show_activity()
 
     def _note_step(self, event: Event) -> None:
         """Remember how far through its step budget the turn is.
@@ -835,7 +794,7 @@ class StreamingDisplay:
             self._refresh_status()
 
     def _open_stream(self, event: Event) -> None:
-        """Start a fresh attempt: nothing from the previous one may survive."""
+        """Start a fresh model step while retaining the turn's thinking receipt."""
         self._forget_attempt()
         self._turn_started = perf_counter()
         self._input_tokens = 0
@@ -870,12 +829,72 @@ class StreamingDisplay:
             self._output_tokens += output_tokens
 
     def _show_text_delta(self, event: Event) -> None:
+        """Show answer text, and give the screen back to it.
+
+        The first answer token ends thinking: the preview, its header and its key
+        hint leave the moment the answer starts, because the answer is what the
+        reader should be looking at. Leaving them to be cleared at the end of the
+        stream is what showed reasoning beside prose that had already replaced it as
+        the interesting thing on screen.
+
+        Only the receipt is kept, and only once per turn: multiple reasoning steps
+        are one act of thinking to a reader, and a receipt per step would report the
+        same fact several times.
+        """
+        if not self._text_seen:
+            self._end_thinking_early()
         self._text_seen = True
         self._answer.append(_plain_text(event))
         self._render_answer_progress()
 
+    def _end_thinking_early(self) -> None:
+        """Stop the preview when the answer starts, keeping the receipt for the end.
+
+        The receipt is not printed here. It belongs after the answer, where a reader
+        who has just finished it can see how long the thinking took; printing it
+        before the answer put the one line about reasoning where the answer should
+        have started.
+
+        The activity is taken off the surface as well as stopped: a finished preview
+        left as the current activity keeps rendering, so the reader would still be
+        looking at reasoning beside an answer that had already started.
+        """
+        if not self._reasoning_open:
+            return
+        self._thinking.finish(at=perf_counter())
+        self._reasoning_open = False
+        self._activity.idle()
+        self._close_live()
+
     def _show_reasoning_delta(self, event: Event) -> None:
-        text = _plain_text(event)
+        """Add reasoning, unless the answer has already started this turn.
+
+        A model that reasons again mid-turn is doing work, not reopening the
+        question: the reader has moved on to the answer, so the second thought is
+        recorded in the trace and the preview stays closed.
+        """
+        if self._text_seen:
+            self._reasoning.append(_plain_text(event))
+            return
+        self._append_reasoning(_plain_text(event))
+
+    def _append_reasoning(self, text: str) -> None:
+        """Add reasoning to the preview and show it.
+
+        The preview is started *before* the text is added, because beginning one
+        discards whatever it held: appending first and starting afterwards threw the
+        very delta that triggered the start away, so the preview stayed empty and the
+        turn looked as though it had never reasoned.
+        """
+        if not self._reasoning_open:
+            # The preview's clock starts with the first reasoning delta, so the
+            # receipt measures thinking rather than the turn.
+            now = perf_counter()
+            if self._thinking.has_content():
+                self._thinking.resume(at=now)
+            else:
+                self._thinking.begin(at=now)
+            self._reasoning_open = True
         self._reasoning.append(text)
         self._thinking.append(text)
         self._render_reasoning()
@@ -883,12 +902,26 @@ class StreamingDisplay:
     def _finish_stream(self, event: Event) -> None:
         status = event.data["status"]
         if status != "completed":
+            # A retry starts a different candidate. Its reasoning cannot inherit
+            # the abandoned attempt's preview or duration.
+            self._thinking.clear()
+            if self._interruption.pending:
+                # The operator already asked for this turn to stop, and the surface
+                # is showing "Interrupting…". The generic "incomplete output
+                # discarded" warning says the same thing in a second voice, so it
+                # stays quiet here and `settle_interrupt` reports the outcome once.
+                self._close_live()
+                self._discard_attempt_output()
+                return
             self.close_incomplete(abandoned=status == "abandoned")
             return
         self._active = False
-        self._close_reasoning()
         if not self._text_seen:
+            # Nothing was answered, so the thinking was the whole turn: it ends now.
+            self._close_reasoning()
             return
+        # The turn-level receipt is deferred until agent_finish, after the runtime
+        # has settled the final response. This stream may be one step in a tool loop.
         self._completed_text_step = event.data.get("step")
         self.final_text_visible = True
         self._render_answer()
@@ -908,7 +941,9 @@ class StreamingDisplay:
         # Freeze the rate now: leaving it live would make it decay as the idle clock
         # runs, which reads as the model slowing down after it has finished.
         self._frozen_rate = self._rate()
-        self._refresh_status()
+        # Nothing follows this turn's totals, so a throttled paint would drop them
+        # and the reader would keep the previous turn's numbers all session.
+        self._publish_status(throttled=False)
 
     def _note_agent_finish(self, event: Event) -> None:
         """Remember whether this step's text is already on screen."""
@@ -918,22 +953,38 @@ class StreamingDisplay:
             self._completed_text_step is not None
             and self._completed_text_step == event.data.get("step")
         )
+        if self._reasoning_open:
+            self._thinking.finish(at=perf_counter())
+            self._reasoning_open = False
+            self._activity.idle()
+            self._close_live()
+        self._print_thinking_receipt()
 
     def _refresh_status(self) -> None:
-        """Publish the status area, whether or not a live region is open.
+        """Publish the status during a turn, at most once per interval.
 
-        The status has its own destination, so it is not gated on the live region.
-        Gating it meant the final figures never appeared: the last turn's usage and
-        its frozen rate become known exactly when the live region closes, which was
-        the moment the guard stopped anything from being painted.
+        Rates change many times a second and each paint costs a redraw, so ordinary
+        updates are throttled. A throttled update is simply skipped: another one is
+        coming, and it carries the same facts.
+        """
+        self._publish_status(throttled=True)
 
-        Rate limited because the status changes many times a second and each repaint
-        costs a redraw; the limit applies to the paint, not to what is published.
+    def _publish_status(self, *, throttled: bool) -> None:
+        """Write the status out; ``throttled`` decides whether now is too soon.
+
+        A fact that will not recur — the turn's final usage and its frozen rate, a
+        new model or provider, a new width — must be published even when it lands
+        inside the throttle window. Skipping it means the reader never sees it,
+        because nothing follows to carry it.
         """
         now = perf_counter()
-        if now - self._status_painted < STATUS_INTERVAL_SECONDS:
+        if throttled and now - self._status_painted < STATUS_INTERVAL_SECONDS:
             return
         self._status_painted = now
+        self._write_status()
+
+    def _write_status(self) -> None:
+        """Put the current status on its destination and refresh the live region."""
         if self._on_status is not None:
             self._on_status("\n".join(self.status_lines(width=self._status_width)))
         if self._live is not None:
@@ -953,10 +1004,10 @@ class StreamingDisplay:
         line still being written overwrites itself in place.
         """
         if not self._reasoning_open:
-            # The preview's clock starts with the first reasoning delta, so the
-            # receipt measures thinking rather than the turn.
+            # A caller other than `_append_reasoning` still has to start the clock.
             self._thinking.begin(at=perf_counter())
-        self._reasoning_open = True
+            self._reasoning_open = True
+        self._activity.thinking()
         if supports_live_display():
             self._show_live_reasoning()
             return
@@ -967,7 +1018,7 @@ class StreamingDisplay:
         if self._live is None:
             self._start_live()
         else:
-            self._refresh_status()
+            self._live.update(self._live_renderable())
 
     def _log_new_reasoning(self, *, final: bool = False) -> None:
         """Write the reasoning a redirected stream has not seen yet.
@@ -1065,12 +1116,24 @@ class StreamingDisplay:
         there is, so the width is pushed in rather than guessed here.
         """
         self._status_width = width
-        self._refresh_status()
+        # The preview wraps at the same width, so a resize recomputes which rows its
+        # window shows rather than keeping rows cut for the old size.
+        self._thinking.set_width(_preview_width(width))
+        # A resize is a one-off: the narrower form has to appear now, not whenever
+        # some later paint happens to fall outside the throttle window.
+        self._publish_status(throttled=False)
 
     def observe_model(self, name: str, *, provider: str = "") -> None:
-        """Remember which model and provider this session talks to."""
+        """Remember which model and provider this session talks to, and show it.
+
+        The footer names what the session is talking to, so a committed switch has to
+        reach it immediately: leaving the startup identity there would describe a
+        provider the session no longer uses, and nothing else would correct it until
+        the next turn.
+        """
         self._model_name = name
         self._provider_name = provider
+        self._publish_status(throttled=False)
 
     def begin_interrupt(self) -> bool:
         """Note that a stop was requested, so the surface can say so.
@@ -1080,6 +1143,7 @@ class StreamingDisplay:
         """
         if not self._interruption.begin(at=perf_counter()):
             return False
+        self._activity.interrupting()
         self._refresh_status()
         return True
 
@@ -1095,6 +1159,9 @@ class StreamingDisplay:
         # says why, and printing both lines repeats the same fact in two voices.
         self._close_live()
         self._discard_attempt_output()
+        self._reasoning_open = False
+        self._thinking.clear()
+        self._activity.idle()
         self._active = False
         receipt = self._interruption.receipt()
         if receipt:
@@ -1105,17 +1172,61 @@ class StreamingDisplay:
         return self._interruption.pending
 
     def reveal_reasoning(self) -> None:
-        """Widen the live preview, if one is running.
+        """Widen or un-widen the live preview, if one is running.
 
         Reasoning is not kept after the turn settles, so there is nothing to reveal
         then and the key does nothing. That is why the hint is only shown while the
         preview runs: a key that silently does nothing is worse than no key.
+
+        It toggles rather than only growing. The preview offers one key, so that key
+        has to be able to undo what it did — otherwise a reader who wanted their
+        screen back had no way to ask for it.
         """
-        if self._thinking.expand():
+        if self._thinking.toggle_expanded():
             self._refresh_status()
+            self._tick()
+
+    def tick(self) -> None:
+        """Advance the clock and the spinner without waiting for a delta.
+
+        The display cannot start a timer of its own without opening another loop for
+        the turn, so the caller that already repaints pushes time in. Without this
+        the header's clock only moved when the model spoke, and a model that paused
+        before its first token looked like a hang with a frozen `00:00`.
+        """
+        self._tick()
+
+    def _tick(self) -> None:
+        if not self._thinking.running:
+            return
+        if not self._thinking.tick(at=perf_counter()):
+            return
+        self._paint_activity()
+
+    def _paint_activity(self) -> None:
+        """Repaint the surface the activity lives on, opening it when there is none.
+
+        The surface is shared with the answer's pending block, so this goes through
+        the same live region. Opening it here is what lets a tool-only step be
+        visible at all: previously only a status repaint could start a region, and a
+        step that produced no prose started nothing.
+        """
+        if not supports_live_display():
+            return
+        self._show_activity()
+
+    def _show_activity(self) -> None:
+        """Start or refresh the live region that carries the activity surface."""
+        if not supports_live_display():
+            return
+        if self._live is None:
+            self._start_live()
+        else:
+            self._live.update(self._live_renderable())
+        self._status_painted = perf_counter()
 
     def _close_reasoning(self) -> None:
-        """Settle the reasoning: clear the preview and leave one receipt.
+        """Pause the reasoning preview until the next model step or turn finish.
 
         The text is *not* written to the scrollback. It was already temporary while
         it streamed, and reprinting it on settle is what made a turn cost a
@@ -1126,14 +1237,23 @@ class StreamingDisplay:
         if not self._reasoning_open:
             return
         self._thinking.finish(at=perf_counter())
+        self._reasoning_open = False
+        self._activity.idle()
         self._close_live()
-        # The receipt belongs to the transcript, not to the redirected log: it is the
-        # one line a reader of the conversation keeps. It goes through the console so
-        # it appears wherever the answer will.
+
+    def _print_thinking_receipt(self) -> None:
+        """Print the one line a turn keeps about its reasoning, at most once.
+
+        Called after the answer has been printed, which is where a reader who has
+        just finished it looks for how long the thinking took. The guard is the
+        preview's own settled state: a turn with several reasoning steps must not
+        produce several receipts for one act of thinking.
+        """
         receipt = self._thinking.receipt() if self._thinking.has_content() else ""
         if receipt:
             console.print(Text(receipt, style="dim"))
-        self._reasoning_open = False
+        # The preview is spent: clear it so the next turn cannot inherit its clock.
+        self._thinking.clear()
 
     def _render_answer_progress(self) -> None:
         """Print each finished Markdown block once; redraw only the last one.
@@ -1180,61 +1300,61 @@ class StreamingDisplay:
         self._status_painted = perf_counter()
 
     def _live_renderable(self) -> Group:
-        """The block still being written, the status line, and trailing reasoning.
+        """The block still being written, then whatever the turn is doing now.
 
         One renderable, not two live regions: `rich` only paints the top of its
-        live stack, so a second Live for the status line would never appear.
+        live stack, so a second Live would never appear.
+
+        The session facts are deliberately *not* here. They have their own
+        destination under the composer, and painting them here as well put a copy of
+        the model, the rate and the context gauge above the input — the same three
+        facts twice on one screen. This region carries only what changes too fast to
+        print: the tail of the answer and the temporary activity.
         """
         body = Markdown("".join(self._answer)[self._settled_chars :])
-        return Group(body, Text(""), self._status_line(), self._reasoning_renderable())
+        activity = self._activity_renderable()
+        if isinstance(activity, Text) and not activity.plain:
+            return Group(body)
+        return Group(body, Text(""), activity)
 
-    def _reasoning_renderable(self) -> Text:
-        """The temporary reasoning preview: a header and its newest two rows.
+    def _activity_renderable(self) -> RenderableType:
+        """Everything transient the turn is doing, on one surface.
 
-        Only the newest rows are shown, because a reader looks at what the model is
-        doing now. The key hint is appended only while the preview is running: once
-        the turn settles there is nothing left to reveal, and promising a key that
-        does nothing is worse than saying nothing.
+        Three states share this place because a reader asking "what is happening"
+        should not have to look in three: thinking shows a header and its newest two
+        rendered rows, a running tool shows its name, and an interrupt says it is
+        stopping. Each replaces the last in place, so the surface is present tense
+        and never grows into a second transcript.
+        """
+        if self._interruption.pending:
+            return Text(
+                f"{ASSISTANT_GLYPH} {self._interruption.message()}", style="yellow"
+            )
+        if self._activity.kind is ActivityKind.WORKING:
+            return Text(f"{ASSISTANT_GLYPH} {self._activity.detail}", style="dim")
+        if self._activity.kind is ActivityKind.THINKING:
+            return self._thinking_renderable()
+        return Text("")
+
+    def _thinking_renderable(self) -> Text:
+        """The reasoning preview: a header and its newest two rendered rows.
+
+        Inside the activity surface rather than beside it. The rows come from the
+        preview already wrapped at the current width, so a long thought shows its
+        last two rows rather than two fragments of the first sentence.
+
+        The key hint rides on the last visible row instead of taking a row of its
+        own: the surface is three rows tall on a fixed budget, and spending one of
+        them on a hint would push a row of reasoning out of the window it describes.
         """
         if not self._thinking.has_content():
             return Text("")
-        lines = [
-            self._thinking.header(),
-            *(f"  {row}" for row in self._thinking.visible()),
-        ]
+        body = self._thinking.visible()
         hint = self._thinking.hint()
-        if hint:
-            lines.append(f"  {hint}")
+        lines = [self._thinking.header(), *(f"  {row}" for row in body)]
+        if hint and lines:
+            lines[-1] = f"{lines[-1]}    {hint}"
         return Text("\n".join(lines), style="dim")
-
-    def _status_line(self) -> Text:
-        elapsed = (
-            max(0.0, perf_counter() - self._turn_started) if self._turn_started else 0.0
-        )
-        tps = (
-            self._output_tokens / elapsed
-            if elapsed > 0 and self._output_tokens
-            else None
-        )
-        context_fraction = (
-            self._context_used / self._context_limit
-            if self._context_limit and self._context_used is not None
-            else None
-        )
-        cached_fraction = (
-            self._cached_tokens / self._input_tokens
-            if self._input_tokens and self._cached_tokens
-            else None
-        )
-        return format_status_line(
-            active=self._active,
-            step=self._step,
-            tokens_per_second=tps,
-            context_fraction=context_fraction,
-            cached_fraction=cached_fraction,
-            reasoning_tokens=self._reasoning_tokens,
-            trace_id=self._trace_id,
-        )
 
     def _close_live(self) -> None:
         if self._live is None:
@@ -1257,15 +1377,25 @@ class StreamingDisplay:
         console.print(_block(Markdown(text), first=not self._settled_blocks))
         self._settled_blocks += 1
 
-    def close_incomplete(self, *, abandoned: bool = False) -> None:
-        """Abandon an attempt: drop partial output and say so.
+    def close_incomplete(
+        self, *, abandoned: bool = False, silent: bool = False
+    ) -> None:
+        """Abandon an attempt: drop partial output, and say so unless already said.
 
         An unfinished markdown block is discarded rather than printed, because a
-        half-written table or code fence reads as corruption once it stops
-        changing.
+        half-written table or code fence reads as corruption once it stops changing.
+
+        ``silent`` is for a turn that has already reported its own outcome — an
+        interrupt shows a receipt, and a failure prints its error. The half-written
+        block still has to go in those cases, but the generic warning would be a
+        second line saying what the reader has just been told.
         """
         self._close_live()
         self._discard_attempt_output()
+        if silent:
+            self._active = False
+            self._reasoning_open = False
+            return
         self._say_attempt_failed(abandoned=abandoned)
 
     def _discard_attempt_output(self) -> None:
@@ -1309,6 +1439,8 @@ class StreamingDisplay:
 # dispatch readable and lets every event type name its one handler.
 _STREAMING_HANDLERS: dict[str, Callable[["StreamingDisplay", Event], None]] = {
     "agent_step": StreamingDisplay._note_step,
+    "tool_call": StreamingDisplay._note_tool_call,
+    "tool_result": StreamingDisplay._note_tool_result,
     "model_stream_start": StreamingDisplay._open_stream,
     "model_text_delta": StreamingDisplay._show_text_delta,
     "model_reasoning_delta": StreamingDisplay._show_reasoning_delta,
@@ -1374,4 +1506,6 @@ def console_permission_prompt(request: PermissionRequest) -> PermissionChoice:
 
 
 def print_runtime_error(exc: Exception) -> None:
-    console.print(f"✗ {type(exc).__name__}: {exc}", style="bold red", markup=False)
+    console.print(
+        f"{GLYPHS.cross} {type(exc).__name__}: {exc}", style="bold red", markup=False
+    )
