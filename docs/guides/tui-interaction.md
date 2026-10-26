@@ -22,13 +22,14 @@ main  ·  provider bailian               <- action: a decision or a correction
 --------------------------------------------------------------
 > |                                      <- the composer
 --------------------------------------------------------------
-model  deepseek-v4.1-flash-1017         provider  bailian
-usage  1.2k in / 84 out   28 tok/s      context 18%
+◇ deepseek-v4.1-flash-1017  ·  via bailian
+↑ 1.2k  ↓ 84  ·  28 tok/s  ·  ctx [##--------] 18%
 ```
 
-Nothing else is permanent. The activity slot and the action slot are empty most of
-the time, and they collapse to nothing when they are — which is what keeps the
-composer and the two status rows in the same place all session.
+Nothing else is permanent. The activity slot and the action slot collapse when
+empty. One intentional blank row separates the newest output from the composer.
+That keeps the composer and the two status rows in the same place while the
+transient surfaces open and close.
 
 ## Information lifetimes
 
@@ -49,9 +50,8 @@ A turn is two blocks under a two-column gutter:
 ```text
 > how does the parser work?
 
-* It splits tokens, then builds a tree.
-
   Thinking  3.2s
+* It splits tokens, then builds a tree.
 ```
 
 The left edge is the interface. A glyph opens each turn — `>` for the operator,
@@ -90,8 +90,9 @@ is happening" should not have to look in three.
 - **`Ctrl+O` toggles.** It widens the window and puts it back, and the hint changes
   from `details` to `less`. It is offered only while the preview runs; after the turn
   there is nothing to reveal, so the key disappears with the surface.
-- **The first answer token clears it.** Thinking leaves immediately, not at the end
-  of the stream, and then the receipt prints *once* after the answer.
+- **The first answer token freezes it.** Thinking leaves immediately, and one dim
+  receipt prints above the first visible answer. Its duration stops at that token.
+  Later model steps and retries cannot reopen the preview below or inside the reply.
 
 ```text
 * read_file  src/parser.py
@@ -229,9 +230,15 @@ during a tool batch lands before the next model call rather than after the turn.
 Exactly two rows, and nothing beneath them:
 
 ```text
-model  deepseek-v4.1-flash-1017     provider  bailian
-usage  1.2k in / 84 out   28 tok/s   context 18%
+◇ deepseek-v4.1-flash-1017  ·  via bailian
+↑ 1.2k  ↓ 84  ·  28 tok/s  ·  ctx [##--------] 18%
 ```
+
+The two rows group identity and usage separately. The model is accented, while the
+provider, labels and separators are secondary. Usage totals use compact `k` and `M`
+units; the context bar is decorative and gives way to the percentage on narrow
+terminals. Unicode marks have ordinary ASCII fallbacks, and the rows remain readable
+without color.
 
 They answer different questions and age differently: what the session talks to
 changes when the operator switches, while the numbers change every second. A rate

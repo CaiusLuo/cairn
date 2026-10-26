@@ -6,16 +6,17 @@ the rule that makes it safe: nothing it holds is printed, so a turn's transient 
 cannot leak into the transcript.
 
 The second half covers the turn's lifecycle, which is what a reader notices:
-reasoning leaves the screen the moment the answer starts, and the one duration line
-is printed after the answer, once. Failures are asserted separately, because
+reasoning leaves the screen when the answer starts, and its one duration line is
+printed above the answer, once. Failures are asserted separately, because
 hiding routine progress must never hide a denied call or a failed command.
 """
 
 import io
+from collections.abc import Callable
 from typing import Literal, cast
 
 import pytest
-from rich.console import Console
+from rich.console import Console, RenderableType
 from rich.text import Text
 
 from cairn.core.events import Event
@@ -302,10 +303,10 @@ def test_late_reasoning_does_not_reopen_the_preview() -> None:
     assert "Thinking" not in _surface(display)
 
 
-def test_the_receipt_is_printed_after_the_answer(
+def test_the_receipt_is_printed_before_the_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The duration belongs where a reader who finished the answer will look."""
+    """The receipt freezes above the first visible answer token."""
     transcript = _printed(monkeypatch)
     display = _reasoning_display()
 
@@ -316,7 +317,7 @@ def test_the_receipt_is_printed_after_the_answer(
     rendered = transcript.getvalue()
     assert "It splits tokens." in rendered
     assert "Thinking" in rendered
-    assert rendered.index("It splits tokens.") < rendered.index("Thinking")
+    assert rendered.index("Thinking") < rendered.index("It splits tokens.")
 
 
 def test_the_receipt_is_printed_once_per_turn(
@@ -334,6 +335,62 @@ def test_the_receipt_is_printed_once_per_turn(
     display.observe(Event(type="agent_finish", data={"step": 1}))
 
     assert transcript.getvalue().count("Thinking") == 1
+
+
+def test_later_model_step_does_not_reopen_thinking_after_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A step boundary cannot put a new preview after prose is visible."""
+    transcript = _printed(monkeypatch)
+    monkeypatch.setattr(ui, "supports_live_display", lambda: True)
+    frames: list[str] = []
+
+    class CapturedRegion:
+        def _capture(self, renderable: RenderableType) -> None:
+            output = io.StringIO()
+            Console(
+                file=output, color_system=None, force_terminal=False, width=80
+            ).print(renderable)
+            frames.append(output.getvalue())
+
+        def start(self, renderable: RenderableType) -> None:
+            self._capture(renderable)
+
+        def update(self, renderable: RenderableType) -> None:
+            self._capture(renderable)
+
+        def flush(self) -> bool:
+            return False
+
+        def stop(self) -> None:
+            pass
+
+    def live_factory(_frame: Callable[[], RenderableType]) -> CapturedRegion:
+        return CapturedRegion()
+
+    display = StreamingDisplay(live_factory=live_factory)
+    display.observe(Event(type="model_stream_start", data={"step": 1}))
+    display.observe(_stream_delta("model_reasoning_delta", "first thought", step=1))
+    display.observe(_stream_delta("model_text_delta", "first answer", step=1))
+    display.observe(_stream_end(step=1))
+    display.observe(_tool_call("between-steps"))
+    display.observe(_tool_result("between-steps"))
+    display.observe(Event(type="model_stream_start", data={"step": 2}))
+    display.observe(_stream_delta("model_reasoning_delta", "second thought", step=2))
+    display.observe(_stream_delta("model_text_delta", "second answer", step=2))
+    display.observe(_stream_end(step=2))
+    display.observe(Event(type="agent_finish", data={"step": 2}))
+
+    rendered = transcript.getvalue()
+    assert rendered.count("Thinking") == 1
+    assert rendered.index("Thinking") < rendered.index("first answer")
+    assert rendered.index("first answer") < rendered.index("second answer")
+    first_answer_frame = next(
+        index for index, frame in enumerate(frames) if "first answer" in frame
+    )
+    assert any("Thinking" in frame for frame in frames[:first_answer_frame])
+    assert all("Thinking" not in frame for frame in frames[first_answer_frame:])
+    assert all("second thought" not in frame for frame in frames)
 
 
 def test_no_receipt_when_no_reasoning_arrived(
@@ -380,11 +437,13 @@ def test_tool_only_steps_keep_one_receipt_for_the_completed_turn(
     display.observe(_stream_delta("model_reasoning_delta", "second thought", step=2))
     display.observe(_stream_delta("model_text_delta", "The answer.", step=2))
     display.observe(_stream_end(step=2))
-    assert "Thinking" not in transcript.getvalue()
+    assert transcript.getvalue().index("Thinking") < transcript.getvalue().index(
+        "The answer."
+    )
 
     display.observe(Event(type="agent_finish", data={"step": 2}))
     rendered = transcript.getvalue()
-    assert rendered.index("The answer.") < rendered.index("Thinking")
+    assert rendered.index("Thinking") < rendered.index("The answer.")
     assert rendered.count("Thinking") == 1
     assert "5.0s" in rendered
 

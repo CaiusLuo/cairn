@@ -128,7 +128,7 @@ FRAME_STYLE = Style.from_dict(
         "live": "dim",
         "palette": "",
         "queued": "",
-        "status": "dim",
+        "status": "",
         "action": "",
         "action-correction": "bold yellow",
         "action-refusal": "bold red",
@@ -159,6 +159,7 @@ class TranscriptView:
         self._write = write
         self._draft: list[str] = []
         self._live_text = ""
+        self._flush_live: Callable[[], bool] | None = None
         # Submitted lines go through a queue because the input line runs for the
         # whole session: the turn and the input overlap, they are not nested.
         self._lines = LineQueue()
@@ -489,7 +490,7 @@ class TranscriptView:
                 # here, in this one place, replacing each other.
                 Window(
                     FormattedTextControl(text=self._live_control),
-                    height=Dimension(min=0, max=ACTIVITY_ROWS),
+                    height=lambda: Dimension.exact(self._live_rows()),
                     wrap_lines=False,
                     style="class:live",
                     dont_extend_height=True,
@@ -504,7 +505,9 @@ class TranscriptView:
                     # With `dont_extend_height` and a max-only height, an inline
                     # layout squeezed this to a row or two and the decision's rows —
                     # the ways to accept or decline — were never painted.
-                    height=Dimension(min=0, preferred=ACTION_ROWS, max=ACTION_ROWS),
+                    height=lambda: Dimension.exact(
+                        ACTION_ROWS if self._action is not None else 0
+                    ),
                     wrap_lines=False,
                     style="class:action",
                     dont_extend_height=True,
@@ -513,7 +516,9 @@ class TranscriptView:
                 # composer rather than sitting inside the composer.
                 Window(
                     FormattedTextControl(text=self._palette_control),
-                    height=Dimension(min=0, max=PALETTE_ROWS + 1),
+                    height=lambda: Dimension.exact(
+                        PALETTE_ROWS + 1 if self._palette_focused() else 0
+                    ),
                     wrap_lines=False,
                     style="class:palette",
                     dont_extend_height=True,
@@ -525,7 +530,9 @@ class TranscriptView:
                 # message, and the operator would type it again.
                 Window(
                     FormattedTextControl(text=self._queue_control),
-                    height=Dimension(min=0, max=QUEUE_STACK_LINES),
+                    height=lambda: Dimension.exact(
+                        min(QUEUE_STACK_LINES, self._queue_rows())
+                    ),
                     wrap_lines=False,
                     style="class:queued",
                     dont_extend_height=True,
@@ -674,7 +681,8 @@ class TranscriptView:
         """
         rows = [line for line in text.split("\n") if line.strip()]
         self._status = rows[:STATUS_LINES]
-        self.repaint()
+        if not self.flush_live():
+            self.repaint()
 
     def available_width(self) -> int | None:
         """The columns this frame has, for callers that must fit their text."""
@@ -702,6 +710,7 @@ class TranscriptView:
         self._reported_width = width
         if self.on_width is not None:
             self.on_width(width)
+        self.flush_live()
 
     def _complete_palette(self) -> None:
         """Copy the palette's choice into the composer.
@@ -714,6 +723,11 @@ class TranscriptView:
             return
         self._buffer.reset()
         self._buffer.insert_text(command + " ")
+        # Inserting the completion fires `_on_text_changed`, which normally opens
+        # the palette for slash-prefixed text. Completing hands focus back to the
+        # composer; the next Enter should submit the command.
+        self._palette.close()
+        self.repaint()
 
     def _on_text_changed(self, buffer: Buffer) -> None:
         """Keep the command surface in step with what is typed.
@@ -746,7 +760,7 @@ class TranscriptView:
             # The display has not published anything yet. Two blank rows still keep
             # the composer's position stable; nothing else may claim them.
             return ANSI("\n" * (STATUS_LINES - 1))
-        return ANSI("\n".join(f"\x1b[2m{line}\x1b[0m" for line in lines))
+        return ANSI("\n".join(lines))
 
     def _action_control(self) -> ANSI:
         """The action surface: a correction, a refusal, a chooser or a question.
@@ -874,8 +888,53 @@ class TranscriptView:
         return ANSI("\n".join(lines))
 
     def _live_control(self) -> ANSI:
-        """The activity slot as ANSI, so its dim styling survives the frame."""
-        return ANSI(self._live_text)
+        """The live content, keeping its start visible if it exceeds the viewport."""
+        lines = self._live_text.splitlines()
+        limit = self._live_row_limit()
+        if len(lines) > limit:
+            lines = [*lines[: max(0, limit - 1)], "  … answer continues"]
+        return ANSI("\n".join(lines))
+
+    def _live_rows(self) -> int:
+        """Rows required by the live content, capped without hiding its beginning."""
+        return min(self._live_row_limit(), len(self._live_text.splitlines()))
+
+    def _live_row_limit(self) -> int:
+        """Fit the live tail around every other row the frame must keep visible."""
+        if self._app is None:
+            return ACTIVITY_ROWS
+        try:
+            size = self._app.output.get_size()
+        except (AttributeError, ValueError):
+            return ACTIVITY_ROWS
+        width = max(1, size.columns)
+        composer_rows = sum(
+            max(
+                1,
+                (sum(get_cwidth(char) for char in line) + width - 1) // width,
+            )
+            for line in self._buffer.document.lines
+        )
+        composer_rows = min(COMPOSER_MAX_LINES, composer_rows)
+        action_rows = ACTION_ROWS if self._action is not None else 0
+        palette_rows = PALETTE_ROWS + 1 if self._palette_focused() else 0
+        queue_rows = min(QUEUE_STACK_LINES, self._queue_rows())
+        reserved = (
+            STATUS_LINES
+            + 2  # The composer's opening and closing rules.
+            + TRANSCRIPT_GAP_LINES
+            + composer_rows
+            + action_rows
+            + palette_rows
+            + queue_rows
+        )
+        return max(0, size.rows - reserved)
+
+    def _queue_rows(self) -> int:
+        """Rows the queued-message surface currently needs, including its hint."""
+        rows = self._queue_view.rows(self._pending)
+        hint = self._queue_view.hint(running=self._running)
+        return len(rows) + int(bool(hint))
 
     def _submit_typed(self, *, delivery: Delivery) -> None:
         """Submit the composer's text, restoring pasted payloads first.
@@ -988,15 +1047,17 @@ class TranscriptView:
         it is separated from ``emit``: finished output belongs in the scrollback and
         must never be redrawn.
         """
-        # Only the last few rows are kept: the slot is a bounded window, and text
-        # longer than it would either be clipped or push the layout around. The
-        # surface already states what is happening in three rows, so anything past
-        # them is a rendering accident rather than information.
-        lines = text.split("\n")
-        if len(lines) > ACTIVITY_ROWS:
-            lines = lines[-ACTIVITY_ROWS:]
-        self._live_text = "\n".join(lines)
+        # Keep the complete renderable. The layout bounds transient activity; slicing
+        # here also cut off the beginning of a pending Markdown paragraph, making a
+        # stable answer look as if its first lines had been lost.
+        self._live_text = text
         self.repaint()
+
+    def flush_live(self) -> bool:
+        """Paint the newest coalesced live text at a settle or layout boundary."""
+        if self._flush_live is not None:
+            return self._flush_live()
+        return False
 
     @property
     def live_text(self) -> str:
@@ -1039,32 +1100,53 @@ class FrameLiveRegion:
     def __init__(self, view: TranscriptView) -> None:
         self._view = view
         self._renderable: object = None
+        self._pending: object = None
+        self._view._flush_live = self.flush
 
     def start(self, renderable: object) -> None:
         self._renderable = renderable
-        self._paint()
+        self._paint(force=True)
 
     def update(self, renderable: object) -> None:
         self._renderable = renderable
         self._paint()
 
     def stop(self) -> None:
+        # Settle the newest coalesced renderable before taking the surface down.
+        if self._pending is not None:
+            self._paint(force=True)
         self._renderable = None
         self._view.show_live("")
 
-    def _paint(self) -> None:
+    def flush(self) -> bool:
+        """Paint a pending frame on a status/resize boundary."""
+        if self._pending is not None:
+            self._paint(force=True)
+            return True
+        return False
+
+    def _paint(self, *, force: bool = False) -> None:
         """Render at the frame's current width, so a resize re-wraps the surface.
 
         The width is read on every paint rather than captured once: a region that
         remembered the width it started with would keep wrapping a 60-column terminal
         at 80 and overflow the frame after the operator resized.
         """
-        self._view.show_live(
-            _render_to_text(
-                self._renderable,
-                width=self._view.available_width() or self.DEFAULT_WIDTH,
-            )
+        now = self._view._clock()
+        if not force and not self._view.pacer.admit(now):
+            self._pending = self._renderable
+            return
+        if force:
+            self._view.pacer.reset()
+            self._view.pacer.admit(now)
+        started = time.perf_counter()
+        rendered = _render_to_text(
+            self._renderable,
+            width=self._view.available_width() or self.DEFAULT_WIDTH,
         )
+        self._view.show_live(rendered)
+        self._view.pacer.record_paint(duration=time.perf_counter() - started)
+        self._pending = None
 
 
 def _render_to_text(renderable: object, *, width: int) -> str:

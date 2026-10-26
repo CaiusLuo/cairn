@@ -80,6 +80,24 @@ def test_a_user_message_is_separated_from_the_reply(rendered: io.StringIO) -> No
     assert "" in lines
 
 
+def test_turn_blocks_have_one_blank_row_in_both_directions(
+    rendered: io.StringIO,
+) -> None:
+    ui.print_user_message("first question")
+    ui.print_assistant_response("first answer")
+    ui.print_turn_separator()
+    ui.print_user_message("second question")
+
+    lines = rendered.getvalue().splitlines()
+    first_user = next(i for i, line in enumerate(lines) if "first question" in line)
+    first_reply = next(i for i, line in enumerate(lines) if "first answer" in line)
+    second_user = next(i for i, line in enumerate(lines) if "second question" in line)
+    assert lines[first_reply - 1] == ""
+    assert lines[second_user - 1] == ""
+    assert sum(not line.strip() for line in lines[first_user + 1 : first_reply]) == 1
+    assert sum(not line.strip() for line in lines[first_reply + 1 : second_user]) == 1
+
+
 def test_a_multiline_user_message_indents_its_continuations(
     rendered: io.StringIO,
 ) -> None:

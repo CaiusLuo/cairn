@@ -31,6 +31,9 @@ class _Recorder:
     def update(self, renderable: object) -> None:
         self.updated.append(renderable)
 
+    def flush(self) -> bool:
+        return False
+
     def stop(self) -> None:
         self.stopped += 1
 

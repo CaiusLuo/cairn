@@ -6,6 +6,12 @@ second. The rules here are the ones a reader notices: no fake zeros, no rate tha
 keeps decaying after the turn, and the model never disappears.
 """
 
+import re
+
+import pytest
+from prompt_toolkit.utils import get_cwidth
+
+import cairn.terminal.output as output_module
 from cairn.core.events import Event
 from cairn.terminal.output import StreamingDisplay
 
@@ -27,8 +33,41 @@ def test_the_status_is_two_lines() -> None:
 def test_the_first_line_names_the_model_and_provider() -> None:
     first, _ = _display(model="openai/x", provider="bailian").status_lines()
 
-    assert "openai/x" in first
+    assert "◇ x" in first
+    assert "openai/" not in first
     assert "bailian" in first
+
+
+def test_the_status_uses_compact_tokens_and_fits_dock_widths() -> None:
+    display = _measured()
+    display._frozen_rate = 54.0
+    for width in (60, 80, 120):
+        lines = display.status_lines(width=width)
+        assert len(lines) == 2
+        assert all(get_cwidth(line) <= width for line in lines)
+        assert "1.2k" in lines[1] and "84" in lines[1]
+        assert "54 tok/s" in lines[1]
+        assert "18%" in lines[1]
+    assert "[" not in display.status_lines(width=40)[1]
+    assert "[" in display.status_lines(width=60)[1]
+
+
+def test_the_ascii_fallback_uses_no_unicode_status_marks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(output_module, "_declares_unicode", lambda: False)
+    display = _measured()
+    display._frozen_rate = 54.0
+    text = display.status_rendered_text(width=80)
+
+    assert "o " in text
+    assert "in " in text and "out " in text and "|" in text
+    assert "◇" not in text and "↑" not in text and "↓" not in text
+    narrow = display.status_lines(width=24)
+    assert all(get_cwidth(line) <= 24 for line in narrow)
+    assert "in" in narrow[1] and "out" in narrow[1] and "18%" in narrow[1]
+    assert all(line.isascii() for line in narrow)
+    assert display.status_rendered_text(width=80).isascii()
 
 
 def test_an_unmeasured_session_says_ready_rather_than_zero() -> None:
@@ -46,8 +85,8 @@ def test_measured_usage_appears_on_the_second_line() -> None:
 
     _, second = display.status_lines()
 
-    assert "312 in" in second
-    assert "58 out" in second
+    assert "312" in second
+    assert "58" in second
 
 
 def test_context_usage_appears_when_known() -> None:
@@ -56,7 +95,7 @@ def test_context_usage_appears_when_known() -> None:
 
     _, second = display.status_lines()
 
-    assert "ctx 18%" in second
+    assert "ctx " in second and "18%" in second
 
 
 def test_the_rate_stops_moving_when_the_turn_ends() -> None:
@@ -69,7 +108,7 @@ def test_the_rate_stops_moving_when_the_turn_ends() -> None:
     second = display.status_lines()[1]
 
     assert first == second
-    assert "40 tok/s" in first
+    assert "40 tok/s" in second
 
 
 def test_a_new_turn_clears_the_previous_turn_numbers() -> None:
@@ -89,7 +128,7 @@ def test_the_model_survives_a_reset() -> None:
 
     first, _ = display.status_lines()
 
-    assert "openai/x" in first
+    assert "◇ x" in first
 
 
 # -- painting -------------------------------------------------------------
@@ -122,7 +161,7 @@ def test_the_final_usage_is_painted_after_the_live_region_closes() -> None:
 
     display._refresh_status()
 
-    assert any("312 in" in text for text in painted)
+    assert any("312" in text for text in painted)
 
 
 def test_the_frozen_rate_is_painted_after_the_turn_ends() -> None:
@@ -141,7 +180,7 @@ def test_the_model_survives_into_the_painted_status() -> None:
 
     display._refresh_status()
 
-    assert any("openai/x" in text and "bailian" in text for text in painted)
+    assert any("x" in text and "bailian" in text for text in painted)
 
 
 # -- fitting a narrow terminal -------------------------------------------
@@ -167,14 +206,14 @@ def test_a_wide_terminal_keeps_everything() -> None:
 
     assert "deepseek-v4.1-flash-1017" in first
     assert "bailian" in first
-    assert "1200 in" in second
-    assert "ctx 18%" in second
+    assert "1.2k" in second
+    assert "ctx [" in second and "18%" in second
 
 
 def test_a_narrow_terminal_shortens_the_model_before_dropping_anything() -> None:
     first, second = _measured().status_lines(width=52)
 
-    assert "1200 in" in second
+    assert "1.2k" in second
     assert len(first) <= 52
 
 
@@ -184,19 +223,18 @@ def test_the_provider_survives_the_first_reduction() -> None:
     assert "bailian" in first
 
 
-def test_a_very_narrow_terminal_drops_context_before_usage() -> None:
-    """Usage is the figure a reader checks; context is available from /compact."""
-    # Wide enough for the model to be shortened but not for the context figure.
+def test_a_very_narrow_terminal_drops_rate_and_bar_before_context_percentage() -> None:
+    """The numeric context percentage survives after its decorative bar drops."""
     _, second = _measured().status_lines(width=26)
 
-    assert "in" in second
-    assert "ctx" not in second
+    assert "1.2k" in second
+    assert "ctx 18%" in second
 
 
 def test_no_line_exceeds_the_available_width() -> None:
     for width in (30, 40, 52, 64, 100):
         for line in _measured().status_lines(width=width):
-            assert len(line) <= width, f"overflowed at width {width}: {line!r}"
+            assert get_cwidth(line) <= width, f"overflowed at width {width}: {line!r}"
 
 
 def test_the_model_and_provider_never_both_disappear() -> None:
@@ -233,7 +271,7 @@ def test_the_final_usage_survives_landing_inside_the_throttle_window() -> None:
         )
     )
 
-    assert any("312 in" in text for text in painted)
+    assert any("312" in text for text in painted)
 
 
 def test_a_new_identity_is_published_immediately() -> None:
@@ -243,7 +281,7 @@ def test_a_new_identity_is_published_immediately() -> None:
 
     display.observe_model("openai/plus", provider="local")
 
-    assert any("openai/plus" in text and "local" in text for text in painted)
+    assert any("plus" in text and "local" in text for text in painted)
 
 
 def test_a_resize_is_published_immediately() -> None:
@@ -256,7 +294,8 @@ def test_a_resize_is_published_immediately() -> None:
     display.set_status_width(26)
 
     assert painted
-    assert all(len(line) <= 26 for line in painted[-1].split("\n"))
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", painted[-1])
+    assert all(get_cwidth(line) <= 26 for line in plain.split("\n"))
 
 
 def test_ordinary_updates_are_still_throttled() -> None:

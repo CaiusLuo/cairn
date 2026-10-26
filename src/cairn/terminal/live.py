@@ -38,6 +38,10 @@ class LiveRegion(Protocol):
         """Replace the drawn content. Repeated calls may be coalesced."""
         ...
 
+    def flush(self) -> bool:
+        """Paint the latest content after an explicit surface interaction."""
+        ...
+
     def stop(self) -> None:
         """Take the region down, leaving whatever the host considers settled."""
         ...

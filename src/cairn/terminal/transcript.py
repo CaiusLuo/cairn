@@ -13,9 +13,8 @@ pane.
 
 from dataclasses import dataclass, field
 
-#: Blank lines between the transcript and the input box. Two rows is a readable
-#: separation that still leaves most of a short terminal for output.
-TRANSCRIPT_GAP_LINES = 2
+#: The one intentional blank row between the live surface and the composer.
+TRANSCRIPT_GAP_LINES = 1
 
 
 @dataclass(slots=True)

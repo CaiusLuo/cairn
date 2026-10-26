@@ -6,6 +6,7 @@ from importlib.resources import files
 from pathlib import Path
 from time import perf_counter
 
+from prompt_toolkit.utils import get_cwidth
 from rich.console import Console, ConsoleOptions, Group, RenderableType
 from rich.live import Live
 from rich.markdown import Markdown
@@ -161,9 +162,18 @@ CONTINUATION = " " * GUTTER
 NARROW_MODEL_CHARS = 12
 
 
-def _trim(value: str, limit: int) -> str:
+def _trim(value: str, limit: int, *, ellipsis: str = "…") -> str:
     """``value`` reduced to ``limit`` characters, or unchanged when it already fits."""
-    return value if len(value) <= limit else value[: limit - 1] + "…"
+    return value if len(value) <= limit else value[: limit - len(ellipsis)] + ellipsis
+
+
+def _compact_count(value: int) -> str:
+    """Format measured token totals without hiding their scale."""
+    if value < 1_000:
+        return str(value)
+    if value < 1_000_000:
+        return f"{value / 1_000:.1f}k".replace(".0k", "k")
+    return f"{value / 1_000_000:.1f}M".replace(".0M", "M")
 
 
 def _preview_width(width: int | None) -> int | None:
@@ -198,6 +208,11 @@ def print_user_message(content: str) -> None:
     for index, line in enumerate(lines):
         prefix = f"[bold cyan]{USER_GLYPH}[/bold cyan] " if index == 0 else CONTINUATION
         console.print(f"{prefix}{line}", markup=True, highlight=False)
+    console.print()
+
+
+def print_turn_separator() -> None:
+    """Separate the preceding turn outcome from the next user block once."""
     console.print()
 
 
@@ -612,6 +627,12 @@ class _RichLiveRegion:
         if self._rich is not None:
             self._rich.update(renderable)
 
+    def flush(self) -> bool:
+        if self._rich is not None:
+            self._rich.update(self._frame(), refresh=True)
+            return True
+        return False
+
     def stop(self) -> None:
         if self._rich is not None:
             self._rich.stop()
@@ -694,6 +715,9 @@ class StreamingDisplay:
         self._context_limit: int | None = None
         self._status_painted = 0.0
         self._text_seen = False
+        # Sticky for the whole user turn: attempts and model steps may reset, but
+        # thinking must never reopen after answer text has become visible.
+        self._answer_visible = False
         self._active = False
         self._completed_text_step: int | None = None
 
@@ -705,6 +729,7 @@ class StreamingDisplay:
         turn's output.
         """
         self._close_live()
+        self._answer_visible = False
         self._forget_attempt()
         # The running total belongs to the turn that just ended. The context
         # limit belongs to the session, so it survives: the next turn is measured
@@ -841,30 +866,26 @@ class StreamingDisplay:
         are one act of thinking to a reader, and a receipt per step would report the
         same fact several times.
         """
-        if not self._text_seen:
+        if not self._answer_visible:
             self._end_thinking_early()
         self._text_seen = True
+        self._answer_visible = True
         self._answer.append(_plain_text(event))
         self._render_answer_progress()
 
     def _end_thinking_early(self) -> None:
-        """Stop the preview when the answer starts, keeping the receipt for the end.
-
-        The receipt is not printed here. It belongs after the answer, where a reader
-        who has just finished it can see how long the thinking took; printing it
-        before the answer put the one line about reasoning where the answer should
-        have started.
+        """Freeze the reasoning receipt above the answer at its first visible token.
 
         The activity is taken off the surface as well as stopped: a finished preview
         left as the current activity keeps rendering, so the reader would still be
         looking at reasoning beside an answer that had already started.
         """
-        if not self._reasoning_open:
-            return
-        self._thinking.finish(at=perf_counter())
-        self._reasoning_open = False
+        if self._reasoning_open:
+            self._thinking.finish(at=perf_counter())
+            self._reasoning_open = False
         self._activity.idle()
         self._close_live()
+        self._print_thinking_receipt()
 
     def _show_reasoning_delta(self, event: Event) -> None:
         """Add reasoning, unless the answer has already started this turn.
@@ -873,8 +894,7 @@ class StreamingDisplay:
         question: the reader has moved on to the answer, so the second thought is
         recorded in the trace and the preview stays closed.
         """
-        if self._text_seen:
-            self._reasoning.append(_plain_text(event))
+        if self._answer_visible:
             return
         self._append_reasoning(_plain_text(event))
 
@@ -920,8 +940,8 @@ class StreamingDisplay:
             # Nothing was answered, so the thinking was the whole turn: it ends now.
             self._close_reasoning()
             return
-        # The turn-level receipt is deferred until agent_finish, after the runtime
-        # has settled the final response. This stream may be one step in a tool loop.
+        # This stream may be one step in a tool loop. The receipt was already frozen
+        # at the first answer token, while final visibility still follows settlement.
         self._completed_text_step = event.data.get("step")
         self.final_text_visible = True
         self._render_answer()
@@ -986,7 +1006,7 @@ class StreamingDisplay:
     def _write_status(self) -> None:
         """Put the current status on its destination and refresh the live region."""
         if self._on_status is not None:
-            self._on_status("\n".join(self.status_lines(width=self._status_width)))
+            self._on_status(self.status_rendered_text(width=self._status_width))
         if self._live is not None:
             frame = self._live_renderable()
             if frame is not None:
@@ -1056,40 +1076,114 @@ class StreamingDisplay:
         provider and model never both disappear — a reader who cannot tell what they
         are talking to has lost the most important fact on the line.
         """
-        for reduction in ("full", "short-model", "no-context", "narrow"):
-            lines = self._status_at(reduction)
-            if width is None or max(len(line) for line in lines) <= width:
+        for reduction in ("full", "no-bar", "short-model", "no-rate", "narrow"):
+            lines = [
+                "".join(text for _style, text in row)
+                for row in self._status_parts_at(reduction)
+            ]
+            if width is None or max(map(get_cwidth, lines)) <= width:
                 return lines
         return lines
 
-    def _status_at(self, reduction: str) -> list[str]:
-        """Both status lines at one reduction level."""
-        model = _shorten(self._model_name) if reduction != "full" else self._model_name
+    def _status_parts_at(self, reduction: str) -> list[list[tuple[str, str]]]:
+        """Semantic footer fragments, shared by plain tests and styled painting."""
+        model = _shorten(self._model_name)
+        provider = self._provider_name
+        unicode_marks = _declares_unicode()
+        ellipsis = "…" if unicode_marks else "..."
+        if reduction in ("short-model", "no-rate", "narrow"):
+            model = _trim(model, 18 if reduction != "narrow" else 10, ellipsis=ellipsis)
         if reduction == "narrow":
-            # The last resort: keep identity readable by dropping the version, and
-            # never drop both parts — a reader who cannot tell what they are talking
-            # to has lost the most important fact on the line.
-            model = _trim(model, NARROW_MODEL_CHARS)
-            provider = _trim(self._provider_name, NARROW_MODEL_CHARS)
-        else:
-            provider = self._provider_name
-        first = "  ".join(part for part in (model, provider) if part)
+            provider = _trim(provider, 8, ellipsis=ellipsis)
+        mark = "◇" if unicode_marks else "o"
+        first: list[tuple[str, str]] = []
+        if model:
+            first.extend((("accent", f"{mark} "), ("model", model)))
+        if provider:
+            separator = (
+                ("  ·  " if reduction != "narrow" else " · ")
+                if unicode_marks
+                else (" | " if reduction != "narrow" else "|")
+            )
+            first.append(("separator", separator))
+            if reduction != "narrow":
+                first.append(("dim", "via "))
+            first.append(("provider", provider))
 
         measured = bool(self._output_tokens or self._input_tokens)
-        parts: list[str] = []
+        second: list[tuple[str, str]] = []
         if measured:
-            parts.append(f"{self._input_tokens} in / {self._output_tokens} out")
+            incoming = _compact_count(self._input_tokens)
+            outgoing = _compact_count(self._output_tokens)
+            if unicode_marks:
+                second.extend((("accent", "↑ "), ("value", incoming)))
+                second.extend((("gap", "  "), ("accent", "↓ "), ("value", outgoing)))
+            elif reduction == "narrow":
+                second.extend((("dim", "in"), ("value", incoming)))
+                second.extend((("separator", "|"), ("dim", "out"), ("value", outgoing)))
+            else:
+                second.extend((("dim", "in "), ("value", incoming)))
+                second.extend(
+                    (("separator", " | "), ("dim", "out "), ("value", outgoing))
+                )
             rate = self._rate()
-            if rate is not None:
-                parts.append(f"{rate:.0f} tok/s")
-        keeps_context = reduction in ("full", "short-model")
-        if keeps_context and self._context_used and self._context_limit:
-            parts.append(f"ctx {self._context_used * 100 // self._context_limit}%")
-        if not parts:
+            if rate is not None and reduction not in ("no-rate", "narrow"):
+                detail_separator = "  ·  " if unicode_marks else " | "
+                second.extend(
+                    (("separator", detail_separator), ("dim", f"{rate:.0f} tok/s"))
+                )
+        context_used = self._context_used
+        context_limit = self._context_limit
+        if context_used is not None and context_limit:
+            percent = min(100, context_used * 100 // context_limit)
+            if second:
+                detail_separator = (
+                    ("  ·  " if reduction != "narrow" else " · ")
+                    if unicode_marks
+                    else (" | " if reduction != "narrow" else " ")
+                )
+                second.append(("separator", detail_separator))
+            if reduction in ("full", "short-model"):
+                filled = percent // 10
+                bar = "[" + "#" * filled + "-" * (10 - filled) + "] "
+                shade = "warning" if percent >= 70 else "dim"
+                second.extend(((shade, f"ctx {bar}"), ("percent", f"{percent}%")))
+            else:
+                second.extend((("dim", "ctx "), ("percent", f"{percent}%")))
+        if not second:
             # Nothing measured yet: say so plainly rather than showing zeros that
             # look like a measurement.
-            parts.append("ready")
-        return [first, "  ".join(parts)]
+            second.append(("dim", "ready"))
+        return [first, second]
+
+    def status_rendered_text(self, *, width: int | None = None) -> str:
+        """Two ANSI-styled rows, built from the same semantic fragments as status_lines."""
+        reductions = ("full", "no-bar", "short-model", "no-rate", "narrow")
+        for reduction in reductions:
+            rows = self._status_parts_at(reduction)
+            plain = ["".join(text for _style, text in row) for row in rows]
+            if width is None or max(map(get_cwidth, plain)) <= width:
+                break
+        colors = {
+            "accent": "\x1b[36m",
+            "model": "\x1b[1;36m",
+            "separator": "\x1b[2m",
+            "dim": "\x1b[2m",
+            "provider": "\x1b[2m",
+            "gap": "",
+            "value": "",
+            "percent": "",
+            "warning": "\x1b[33m",
+        }
+        rendered = []
+        for row in rows:
+            rendered.append(
+                "".join(
+                    f"{colors[style]}{text}\x1b[0m" if colors[style] else text
+                    for style, text in row
+                )
+            )
+        return "\n".join(rendered)
 
     def _rate(self) -> float | None:
         """Tokens per second for the turn, frozen once it ends.
@@ -1184,7 +1278,10 @@ class StreamingDisplay:
         """
         if self._thinking.toggle_expanded():
             self._refresh_status()
-            self._tick()
+            if supports_live_display():
+                self._show_live_reasoning()
+                if self._live is not None:
+                    self._live.flush()
 
     def tick(self) -> None:
         """Advance the clock and the spinner without waiting for a delta.
@@ -1244,10 +1341,9 @@ class StreamingDisplay:
     def _print_thinking_receipt(self) -> None:
         """Print the one line a turn keeps about its reasoning, at most once.
 
-        Called after the answer has been printed, which is where a reader who has
-        just finished it looks for how long the thinking took. The guard is the
-        preview's own settled state: a turn with several reasoning steps must not
-        produce several receipts for one act of thinking.
+        The first answer token freezes and prints it before prose starts; a turn
+        without answer text prints it when the turn settles. Clearing the preview
+        makes the receipt one-shot across model steps and retries.
         """
         receipt = self._thinking.receipt() if self._thinking.has_content() else ""
         if receipt:
@@ -1300,7 +1396,7 @@ class StreamingDisplay:
         self._status_painted = perf_counter()
 
     def _live_renderable(self) -> Group:
-        """The block still being written, then whatever the turn is doing now.
+        """Activity first, then the pending answer, so the dock never hides thought.
 
         One renderable, not two live regions: `rich` only paints the top of its
         live stack, so a second Live would never appear.
@@ -1311,11 +1407,14 @@ class StreamingDisplay:
         facts twice on one screen. This region carries only what changes too fast to
         print: the tail of the answer and the temporary activity.
         """
-        body = Markdown("".join(self._answer)[self._settled_chars :])
+        body_text = "".join(self._answer)[self._settled_chars :]
+        body = _block(Markdown(body_text), first=not self._settled_blocks)
         activity = self._activity_renderable()
-        if isinstance(activity, Text) and not activity.plain:
-            return Group(body)
-        return Group(body, Text(""), activity)
+        if body_text.strip():
+            if isinstance(activity, Text) and not activity.plain:
+                return Group(body)
+            return Group(activity, Text(""), body)
+        return Group(activity)
 
     def _activity_renderable(self) -> RenderableType:
         """Everything transient the turn is doing, on one surface.

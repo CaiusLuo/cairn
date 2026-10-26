@@ -153,7 +153,9 @@ def test_public_cli_partial_fallback_labels_abandoned_text(
     # redirected log still sees the text as it arrives, which is how an operator
     # reading the log can tell what happened.
     reasoning_shown = result.output
-    assert "ACCEPTED_THOUGHT" in reasoning_shown
+    # Once the abandoned attempt showed answer text, a retry may not reopen the
+    # thinking surface below that committed visual position.
+    assert "ACCEPTED_THOUGHT" not in reasoning_shown
     # The abandoned attempt's reasoning is already on screen before the label
     # that explains why its answer was dropped, and that answer never prints.
     assert "ABANDONED_THOUGHT" in reasoning_shown

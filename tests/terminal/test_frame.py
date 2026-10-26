@@ -18,9 +18,12 @@ from prompt_toolkit.application import create_app_session
 from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.keys import Keys
+from prompt_toolkit.layout.screen import Char
 from prompt_toolkit.output import DummyOutput
 from rich.text import Text
 
+import cairn.terminal.output as output_module
+from cairn.core.events import Event
 from cairn.terminal.action import Action, ActionRow, correction
 from cairn.terminal.frame import (
     ACTIVITY_ROWS,
@@ -29,8 +32,10 @@ from cairn.terminal.frame import (
     STATUS_LINES,
     FrameLiveRegion,
     TranscriptView,
+    frame_live_region,
     gap_lines,
 )
+from cairn.terminal.output import StreamingDisplay
 from cairn.terminal.pacing import StreamPacer
 from cairn.terminal.transcript import TRANSCRIPT_GAP_LINES, Transcript
 
@@ -216,6 +221,29 @@ def test_the_status_shows_exactly_the_published_rows() -> None:
     assert "usage  1 in / 2 out" in str(rendered)
 
 
+def test_the_status_control_preserves_semantic_styling_fragments() -> None:
+    from cairn.terminal.output import StreamingDisplay
+
+    with (
+        create_pipe_input() as pipe,
+        create_app_session(input=pipe, output=DummyOutput()),
+    ):
+        view, _, _ = _view()
+        display = StreamingDisplay()
+        display.observe_model("openai/deepseek-v4.1-flash-1017", provider="bailian")
+        display.observe_step_usage(input_tokens=183323, output_tokens=3892)
+        display._frozen_rate = 54.0
+        display.observe_context(used=17, limit=100)
+        view.observe_status(display.status_rendered_text(width=80))
+
+        rendered = view._status_control().value
+
+    assert "\x1b[1;36m" in rendered
+    assert "\x1b[2m" in rendered
+    assert "183.3k" in rendered and "3.9k" in rendered
+    assert "54 tok/s" in rendered and "17%" in rendered
+
+
 def test_the_status_never_grows_a_third_row() -> None:
     """Anything the display sends past two rows is dropped, not appended."""
     with (
@@ -241,9 +269,53 @@ def test_the_key_hint_is_not_a_status_row() -> None:
         assert "guide" not in str(view._status_control())
 
 
-def test_the_gap_between_output_and_input_is_two_rows() -> None:
-    assert gap_lines() == 2
-    assert TRANSCRIPT_GAP_LINES == 2
+def test_the_gap_between_output_and_input_is_one_row() -> None:
+    assert gap_lines() == 1
+    assert TRANSCRIPT_GAP_LINES == 1
+
+
+def test_the_live_region_coalesces_tokens_and_flushes_its_latest_frame() -> None:
+    view, clock, _ = _view(interval=0.1)
+    paints: list[str] = []
+    view.repaint = lambda: paints.append(view.live_text)  # type: ignore[method-assign]
+    region = FrameLiveRegion(view)
+    region.start(Text("first"))
+
+    clock.advance(0.01)
+    region.update(Text("superseded"))
+    region.update(Text("latest pending"))
+    assert paints == ["first"]
+
+    clock.advance(0.1)
+    region.update(Text("admitted"))
+    assert paints[-1] == "admitted"
+    assert len(paints) == 2
+
+    region.update(Text("status boundary"))
+    view.observe_status("model x\nusage ready")
+    assert paints[-1] == "status boundary"
+
+    view._available_width = lambda: 80  # type: ignore[method-assign]
+    view.on_width = lambda _width: None
+    region.update(Text("resize boundary"))
+    view._report_width()
+    assert paints[-1] == "resize boundary"
+
+    region.update(Text("settled value"))
+    region.stop()
+    assert "settled value" in paints
+    assert paints[-1] == ""
+    assert len(paints) == 6
+
+
+def test_a_long_pending_renderable_keeps_its_complete_source_text() -> None:
+    view, _, _ = _view()
+    region = FrameLiveRegion(view)
+    content = "\n".join(f"line {index}" for index in range(12))
+    region.start(Text(content))
+
+    assert "line 0" in view.live_text
+    assert "line 11" in view.live_text
 
 
 def test_the_frame_uses_no_background_colour() -> None:
@@ -348,6 +420,122 @@ def test_the_live_region_renders_at_the_frame_width() -> None:
         region.start(Text("x" * 60))
 
         assert len(view.live_text.splitlines()[0]) <= (view.available_width() or 80)
+
+
+def test_running_renderer_reclaims_closed_surface_rows_and_tracks_resize(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            view, _, _ = _view()
+            assert view._app is not None
+            current = [Size(rows=60, columns=60)]
+            view._app.output.get_size = lambda: current[0]  # type: ignore[method-assign]
+            await view._ensure_running()
+            await asyncio.sleep(0.03)
+
+            def screen_rows() -> list[str]:
+                screen = view._app.renderer.last_rendered_screen  # type: ignore[union-attr]
+                assert screen is not None
+                rows = []
+                for y in range(screen.height):
+                    cells: dict[int, Char] = screen.data_buffer.get(y, {})
+                    rows.append("".join(cells[x].char for x in sorted(cells)))
+                return rows
+
+            idle_rows = screen_rows()
+            composer_rule = next(i for i, row in enumerate(idle_rows) if "─" in row)
+
+            current[0] = Size(rows=24, columns=80)
+            view.show_live("\n".join(f"long pending answer row {i}" for i in range(18)))
+            view._buffer.text = "/model"
+            await asyncio.sleep(0.03)
+            short_rows = screen_rows()
+            assert len(short_rows) == 24
+            assert any("long pending answer row 0" in row for row in short_rows)
+            assert any("/model" in row for row in short_rows)
+            assert not any("Window too small" in row for row in short_rows)
+            view.show_live("")
+            view._buffer.text = ""
+            current[0] = Size(rows=60, columns=60)
+            await asyncio.sleep(0.03)
+
+            view.show_action(
+                Action(
+                    message="provider chooser facts\n" * 8,
+                    rows=(ActionRow(name="bailian", current=True),),
+                    hint="Up/Down move   Enter switch   Esc cancel",
+                )
+            )
+            await asyncio.sleep(0.03)
+            expanded_rows = screen_rows()
+            assert (
+                len([row for row in expanded_rows if "provider chooser facts" in row])
+                > 1
+            )
+
+            view.show_action(None)
+            view.show_live("* Thinking  00:03\n  preview one\n  preview two")
+            await asyncio.sleep(0.03)
+            thinking_rows = screen_rows()
+            thinking_rule = next(i for i, row in enumerate(thinking_rows) if "─" in row)
+            assert thinking_rule > composer_rule
+            live_end = max(
+                i for i, row in enumerate(thinking_rows) if "preview two" in row
+            )
+            assert thinking_rule - live_end == 2
+            view.show_live("")
+            await asyncio.sleep(0.03)
+            closed_rows = screen_rows()
+            closed_rule = next(i for i, row in enumerate(closed_rows) if "─" in row)
+            assert closed_rule == composer_rule
+
+            monkeypatch.setattr(output_module, "supports_live_display", lambda: True)
+            display = StreamingDisplay(live_factory=frame_live_region(view))
+            view.on_width = display.set_status_width
+            display.observe(Event(type="model_stream_start", data={"step": 1}))
+            display.observe(
+                Event(
+                    type="model_reasoning_delta",
+                    data={"text": "\n".join(f"reason row {i}" for i in range(10))},
+                )
+            )
+            await asyncio.sleep(0.04)
+            view.flush_live()
+            collapsed = screen_rows()
+            collapsed_count = sum("reason row" in row for row in collapsed)
+            display.reveal_reasoning()
+            await asyncio.sleep(0.04)
+            view.flush_live()
+            expanded = screen_rows()
+            assert sum("reason row" in row for row in expanded) > collapsed_count
+            display.reveal_reasoning()
+            await asyncio.sleep(0.04)
+            view.flush_live()
+            recollapsed = screen_rows()
+            assert sum("reason row" in row for row in recollapsed) == collapsed_count
+            display.reset()
+
+            for size in (Size(rows=80, columns=80), Size(rows=120, columns=120)):
+                current[0] = size
+                view.show_live("pending paragraph row one\nrow two\nrow three")
+                view.repaint()
+                await asyncio.sleep(0.03)
+                resized_rows = screen_rows()
+                rule = next(i for i, row in enumerate(resized_rows) if "─" in row)
+                assert rule < len(resized_rows) - STATUS_LINES
+                live_end = max(
+                    i for i, row in enumerate(resized_rows) if "row three" in row
+                )
+                assert rule - live_end == 2
+                view.show_live("")
+                await asyncio.sleep(0.03)
+            await view.aclose()
+
+    asyncio.run(scenario())
 
 
 def test_a_width_change_is_reported_once() -> None:
@@ -794,6 +982,39 @@ def test_pipe_enter_descends_the_selected_palette_command() -> None:
             await asyncio.wait_for(task, timeout=1)
 
             assert view._palette.depth == 2
+
+    asyncio.run(scenario())
+
+
+def test_pipe_enter_completes_then_submits_palette_command() -> None:
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            view, _, _ = _view()
+            app = view._app
+            assert app is not None
+            task = asyncio.create_task(app.run_async())
+            await asyncio.sleep(0)
+
+            # /exit is the last root command, so select it before completing.
+            pipe.send_text("/\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\r")
+            for _ in range(100):
+                if view._buffer.text == "/exit " and not view._palette.open:
+                    break
+                await asyncio.sleep(0.01)
+            assert not view._palette.open
+            assert view._buffer.text == "/exit "
+
+            submitted = asyncio.create_task(view._lines.next_line())
+            pipe.send_text("\r")
+            line = await asyncio.wait_for(submitted, timeout=1)
+            app.exit()
+            await asyncio.wait_for(task, timeout=1)
+
+            assert line.text == "/exit "
+            assert line.delivery == "now"
 
     asyncio.run(scenario())
 

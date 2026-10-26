@@ -75,6 +75,7 @@ from cairn.terminal.output import (
     print_banner,
     print_provider_selection,
     print_runtime_error,
+    print_turn_separator,
     print_user_message,
 )
 from cairn.terminal.submission import PendingLine
@@ -790,6 +791,7 @@ async def _turn_loop(
     durable_session: DurableSession | None,
 ) -> None:
     """Read input, dispatch commands, and run turns until exit."""
+    needs_turn_gap = False
     while True:
         try:
             # The frame owns the input line when it exists, so typed text and the
@@ -828,6 +830,12 @@ async def _turn_loop(
         streaming_display.reset()
         if frame is not None:
             frame.set_running(True)
+        if needs_turn_gap:
+            # One separator belongs between a settled reply/outcome and the next
+            # user block. Commands do not set this flag, so their output cannot
+            # accumulate extra blank rows.
+            print_turn_separator()
+            needs_turn_gap = False
         # Echo the prompt before the answer so the transcript keeps both sides of
         # the conversation; the reply alone leaves the reader reconstructing what
         # was asked.
@@ -898,6 +906,7 @@ async def _turn_loop(
                 print(
                     f"Committed checkpoint {receipt.revision.head_seq} ({receipt.outcome})."
                 )
+        needs_turn_gap = True
 
 
 async def main(
