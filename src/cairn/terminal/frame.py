@@ -308,12 +308,40 @@ class TranscriptView:
             self.repaint()
 
         @bindings.add("right", filter=Condition(lambda: self._palette_focused()))
-        @bindings.add("enter", filter=Condition(lambda: self._palette_focused()))
         def palette_descend(event: object) -> None:
-            """Enter the chosen level, or complete the command when there is none."""
-            if not self._palette.descend():
-                self._complete_palette()
+            """Open the chosen entry's next level, and nothing more.
+
+            Right navigates, so it never runs a command: on an entry with no level it
+            does not act at all.
+            """
+            self._palette.descend()
             self.repaint()
+
+        @bindings.add("enter", filter=Condition(lambda: self._palette_focused()))
+        def palette_run(event: object) -> None:
+            """Run the chosen entry: open its level, or submit the complete command.
+
+            Enter has to mean "do the thing", the same as it does in the composer.
+            Completing the line and stopping there made the first Enter arrive
+            nowhere: ``/exit`` was put in the composer with a trailing space, not
+            submitted, so ending the session took a second press. A choice that
+            opens a level still only opens it, because the level chooses the rest of
+            the command line — and a running turn is steered or queued by the same
+            rule the composer uses, never exited into.
+
+            A command the list does not carry, such as a typed path the catalogue
+            has no row for, is submitted exactly as typed: the palette is a way to
+            type a command, not a filter on which ones count.
+            """
+            if self._palette.descend():
+                self.repaint()
+                return
+            if not self._palette.settles() and self._buffer.text.strip():
+                # The chosen entry has a level, so the line is unfinished: keep
+                # typing rather than sending a command that is missing its argument.
+                self.repaint()
+                return
+            self._submit_typed(delivery="steer" if self._running else "now")
 
         @bindings.add("left", filter=Condition(lambda: self._palette_focused()))
         def palette_ascend(event: object) -> None:
@@ -713,19 +741,21 @@ class TranscriptView:
         self.flush_live()
 
     def _complete_palette(self) -> None:
-        """Copy the palette's choice into the composer.
+        """Copy the palette's choice into the composer, ready to run or extend.
 
         The full command line is used, so a chosen sub-command becomes
-        ``/model use`` rather than the level's bare name.
+        ``/model use`` rather than the level's bare name. No trailing space is
+        added: a complete command is complete, and the space made ``/exit`` look
+        like an argument was still expected.
         """
         command = self._palette.command_line()
         if not command:
             return
         self._buffer.reset()
-        self._buffer.insert_text(command + " ")
+        self._buffer.insert_text(command)
         # Inserting the completion fires `_on_text_changed`, which normally opens
         # the palette for slash-prefixed text. Completing hands focus back to the
-        # composer; the next Enter should submit the command.
+        # composer; the next Enter submits the command.
         self._palette.close()
         self.repaint()
 

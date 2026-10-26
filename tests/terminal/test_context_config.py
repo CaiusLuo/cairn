@@ -18,7 +18,7 @@ CONTEXT_SETTINGS = ("CAIRN_CONTEXT_MAX_TOKENS", "CAIRN_RESPONSE_MAX_TOKENS")
 
 class ExitInput(CliInput):
     async def read(self) -> str:
-        return "/quit"
+        return "/exit"
 
 
 def _configure_cli(

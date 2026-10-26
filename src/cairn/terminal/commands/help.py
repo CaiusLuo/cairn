@@ -45,7 +45,6 @@ HELP_TEXT: dict[str, dict[str, str]] = {
         "detail": HELP_DETAIL,
     },
     "exit": {"usage": "/exit", "description": "Exit Cairn."},
-    "quit": {"usage": "/quit", "description": "Exit Cairn."},
 }
 
 

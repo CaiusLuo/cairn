@@ -44,7 +44,7 @@ class CommandRouter:
         command = parts[0].lower()
         args = parts[1:]
 
-        if command in {"/exit", "/quit"}:
+        if command == "/exit":
             return CommandResult(handled=True, should_exit=True)
 
         if command == "/trace":

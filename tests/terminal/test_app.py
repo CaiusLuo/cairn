@@ -178,7 +178,7 @@ def test_cli_ignores_blank_input_and_runs_normal_turn(
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     submitted_prompt = "  hello\nworld  "
-    _set_cli_inputs(monkeypatch, "", " \t\n ", submitted_prompt, "/quit")
+    _set_cli_inputs(monkeypatch, "", " \t\n ", submitted_prompt, "/exit")
     turns: list[str] = []
     responses: list[str] = []
 
@@ -255,7 +255,7 @@ def test_cli_continues_after_failed_turn(monkeypatch: pytest.MonkeyPatch) -> Non
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
-    _set_cli_inputs(monkeypatch, "first", "second", "/quit")
+    _set_cli_inputs(monkeypatch, "first", "second", "/exit")
     turns: list[str] = []
 
     async def fake_run_turn(
@@ -323,7 +323,7 @@ def test_interactive_commands_do_not_call_model(
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
-    _set_cli_inputs(monkeypatch, command, "/QUIT")
+    _set_cli_inputs(monkeypatch, command, "/EXIT")
 
     _forbid_model_calls(monkeypatch, "Interactive command reached the model")
 
@@ -345,7 +345,7 @@ def test_interactive_unknown_command_corrects_without_printing_the_manual(
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
-    _set_cli_inputs(monkeypatch, "/unknown", "/quit")
+    _set_cli_inputs(monkeypatch, "/unknown", "/exit")
 
     _forbid_model_calls(monkeypatch, "Unknown command reached the model")
 
@@ -366,7 +366,7 @@ def test_interactive_unknown_trace_subcommand_shows_trace_usage(
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
-    _set_cli_inputs(monkeypatch, "/trace lsit", "/quit")
+    _set_cli_inputs(monkeypatch, "/trace lsit", "/exit")
 
     _forbid_model_calls(monkeypatch, "Unknown trace command reached the model")
 
@@ -384,7 +384,7 @@ def test_interactive_help_for_unknown_command_lists_commands(
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
-    _set_cli_inputs(monkeypatch, "/help nope", "/quit")
+    _set_cli_inputs(monkeypatch, "/help nope", "/exit")
 
     _forbid_model_calls(monkeypatch, "Help command reached the model")
 
@@ -402,7 +402,7 @@ def test_interactive_trace_uses_latest_completed_turn(
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
-    _set_cli_inputs(monkeypatch, "hello", "/trace", "/quit")
+    _set_cli_inputs(monkeypatch, "hello", "/trace", "/exit")
 
     async def fake_run_turn(
         agent: Agent,
@@ -451,7 +451,7 @@ def test_interactive_trace_persistence_failure_is_not_saved_as_latest(
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
-    _set_cli_inputs(monkeypatch, "hello", "/trace", "/quit")
+    _set_cli_inputs(monkeypatch, "hello", "/trace", "/exit")
 
     async def fake_run_turn(
         agent: Agent,
@@ -532,7 +532,7 @@ def test_interactive_trace_list_shows_requested_recent_summaries(
     trace_ids = [
         _write_completed_trace(trace_root, index) for index in range(trace_count)
     ]
-    _set_cli_inputs(monkeypatch, command, "/help trace", "/quit")
+    _set_cli_inputs(monkeypatch, command, "/help trace", "/exit")
     requested_limits: list[int] = []
     original_list_traces = TraceStore.list_traces
 
@@ -587,7 +587,7 @@ def test_interactive_trace_list_invalid_count_keeps_session_available(
     _set_environment(monkeypatch, ENVIRONMENT)
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
-    _set_cli_inputs(monkeypatch, f"/trace list {arguments}", "/help", "/quit")
+    _set_cli_inputs(monkeypatch, f"/trace list {arguments}", "/help", "/exit")
 
     def unexpected_list_traces(*_args: object, **_kwargs: object) -> TraceListResult:
         pytest.fail("Invalid trace count reached the trace reader")
@@ -614,7 +614,7 @@ def test_interactive_trace_count_reports_stored_traces(
     trace_root = tmp_path / ".cairn" / "traces"
     for index in range(3):
         _write_completed_trace(trace_root, index)
-    _set_cli_inputs(monkeypatch, "/trace count", "/quit")
+    _set_cli_inputs(monkeypatch, "/trace count", "/exit")
 
     _forbid_model_calls(monkeypatch, "Trace count command reached the model")
 
@@ -634,7 +634,7 @@ def test_interactive_trace_del_tail_removes_oldest_and_echoes_ids(
     monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     trace_root = tmp_path / ".cairn" / "traces"
     trace_ids = [_write_completed_trace(trace_root, index) for index in range(3)]
-    _set_cli_inputs(monkeypatch, "/trace del --tail 2", "/trace count", "/quit")
+    _set_cli_inputs(monkeypatch, "/trace del --tail 2", "/trace count", "/exit")
 
     _forbid_model_calls(monkeypatch, "Trace delete command reached the model")
 
@@ -657,7 +657,7 @@ def test_interactive_trace_delete_clears_the_session_latest_trace(
     trace_root = tmp_path / ".cairn" / "traces"
     trace_id = _write_completed_trace(trace_root, 0)
     _set_cli_inputs(
-        monkeypatch, "hello", f"/trace del {trace_id[:8]}", "/trace", "/quit"
+        monkeypatch, "hello", f"/trace del {trace_id[:8]}", "/trace", "/exit"
     )
 
     async def fake_run_turn(
@@ -706,7 +706,7 @@ def test_interactive_trace_storage_usage_errors_keep_session_available(
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     _write_completed_trace(tmp_path / ".cairn" / "traces", 0)
-    _set_cli_inputs(monkeypatch, command, "/help", "/quit")
+    _set_cli_inputs(monkeypatch, command, "/help", "/exit")
 
     _forbid_model_calls(monkeypatch, "Invalid storage command reached the model")
 
@@ -730,7 +730,7 @@ def test_interactive_trace_del_tail_reports_unreadable_traces(
     trace_root.mkdir(parents=True)
     corrupt = trace_root / "corrupt.jsonl"
     corrupt.write_text("{invalid json\n", encoding="utf-8")
-    _set_cli_inputs(monkeypatch, "/trace del --tail 1", "/quit")
+    _set_cli_inputs(monkeypatch, "/trace del --tail 1", "/exit")
 
     _forbid_model_calls(monkeypatch, "Trace delete command reached the model")
 
@@ -773,7 +773,7 @@ def test_interactive_trace_commands_route_without_model(
         command = f"/trace {trace_id[:8]}"
     else:
         command = "/trace list"
-    _set_cli_inputs(monkeypatch, command, "/quit")
+    _set_cli_inputs(monkeypatch, command, "/exit")
 
     _forbid_model_calls(monkeypatch, "Trace command reached the model")
 
@@ -825,7 +825,7 @@ def test_interactive_trace_read_errors_keep_session_available(
         trace_command = f"/trace {trace_id[:8]}"
         expected_error = "permission denied"
 
-    _set_cli_inputs(monkeypatch, trace_command, "/help", "/quit")
+    _set_cli_inputs(monkeypatch, trace_command, "/help", "/exit")
 
     _forbid_model_calls(monkeypatch, "Trace command reached the model")
 
@@ -842,7 +842,7 @@ def test_default_cli_keeps_original_workspace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_environment(monkeypatch, ENVIRONMENT)
-    _set_cli_inputs(monkeypatch, "/quit")
+    _set_cli_inputs(monkeypatch, "/exit")
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
     captured: list[Path] = []
