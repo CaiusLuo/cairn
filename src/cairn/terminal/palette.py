@@ -10,9 +10,11 @@ what that command accepts, and ``Left`` comes back. The keys mean the same thing
 every level, which is what makes the surface learnable:
 
 * ``Up``/``Down`` move within a level,
-* ``Right``/``Enter`` descend or confirm,
+* ``Right`` opens the chosen entry's next level; ``Tab`` completes the command,
 * ``Left`` goes up one level,
-* ``Esc`` closes the whole palette, leaving the transcript untouched.
+* ``Esc`` closes the whole palette, leaving the transcript untouched,
+* ``Enter`` runs what is chosen: it opens a level while the choice has one, and
+  submits the command once the choice is complete.
 """
 
 from collections.abc import Sequence
@@ -126,12 +128,20 @@ class Palette:
         limit = min(len(rows), MAX_ROWS) - 1
         self._stack[-1] = (rows, max(0, min(limit, selected + step)))
 
+    def settles(self) -> bool:
+        """Whether the chosen entry is complete as it stands.
+
+        A command with no next level is a whole command line: ``/exit`` is finished
+        the moment it is chosen, and nothing is left to type. A command that opens a
+        level is not, because the level is what chooses the rest of the line.
+        """
+        return self.selected_name() not in DESCENDS
+
     def descend(self) -> bool:
         """Open the selected entry's next level.
 
-        Returns False when the selection leads nowhere, so the caller can submit it
-        instead. A command that is not in ``DESCENDS`` is submitted to the runtime; a
-        row that already ran its action is not re-run.
+        Returns False when the selection leads nowhere, so the caller can act on the
+        choice instead. A row that already ran its action is not re-run.
         """
         command = self.selected_name()
         if command not in DESCENDS:
@@ -196,12 +206,19 @@ class Palette:
         return " > ".join(["Commands", *self._trail])
 
     def hint(self) -> str:
-        """The keys the palette answers, shown only while it is open."""
+        """The keys the palette answers, shown only while it is open.
+
+        The hint names what ``Enter`` does to the entry currently chosen, because it
+        is the one key a reader presses without looking: on a complete command it
+        runs it, and on a command that opens a level it opens that level.
+        """
         if not self._open:
             return ""
         if self.depth > 1:
-            return "Up/Down move · Enter confirm · Left back · Esc close"
-        return "Up/Down move · Enter select · Esc close"
+            return "Up/Down move · Enter run · Left back · Esc close"
+        if self.settles():
+            return "Up/Down move · Enter run · Esc close"
+        return "Up/Down move · Enter open · Tab complete · Esc close"
 
     # -- internals -------------------------------------------------------
 

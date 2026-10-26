@@ -12,6 +12,7 @@ selection and copy keep working, and only the bottom dock repaints.
 
 import asyncio
 import re
+from contextlib import suppress
 
 import pytest
 from prompt_toolkit.application import create_app_session
@@ -986,7 +987,70 @@ def test_pipe_enter_descends_the_selected_palette_command() -> None:
     asyncio.run(scenario())
 
 
-def test_pipe_enter_completes_then_submits_palette_command() -> None:
+def test_pipe_enter_runs_the_chosen_palette_command_once() -> None:
+    """A single Enter on a complete command submits it; it is not just completed.
+
+    Typing ``/exit`` and pressing Enter once must put the command on the queue the
+    session reads from. Accepting the completion as the outcome made the first Enter
+    land nowhere: the composer held ``/exit`` and the command had to be typed a
+    second time.
+    """
+
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            view, _, _ = _view()
+            reader = asyncio.create_task(view.read())
+            await asyncio.sleep(0)
+
+            pipe.send_text("/exit\r")
+            line = await asyncio.wait_for(reader, timeout=1)
+
+            assert line.text == "/exit"
+            assert line.delivery == "now"
+            # The composer and the palette are left as an idle session expects.
+            assert view._buffer.text == ""
+            assert not view._palette.open
+            await view.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_pipe_enter_submits_a_command_the_list_does_not_carry() -> None:
+    """A typed command with no palette row is still submitted by one Enter.
+
+    The palette filters the catalogue, not what the operator may run: a command it
+    has no row for reaches the router exactly as typed.
+    """
+
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            view, _, _ = _view()
+            reader = asyncio.create_task(view.read())
+            await asyncio.sleep(0)
+
+            pipe.send_text("/nosuchcommand\r")
+            line = await asyncio.wait_for(reader, timeout=1)
+
+            assert line.text == "/nosuchcommand"
+            assert line.delivery == "now"
+            await view.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_pipe_right_and_tab_complete_without_running() -> None:
+    """Right and Tab navigate: they put the command in the composer and stop.
+
+    Only Enter acts. If completing a command also submitted it, picking a level with
+    Right would run ``/model`` before the operator had chosen a group.
+    """
+
     async def scenario() -> None:
         with (
             create_pipe_input() as pipe,
@@ -997,24 +1061,62 @@ def test_pipe_enter_completes_then_submits_palette_command() -> None:
             assert app is not None
             task = asyncio.create_task(app.run_async())
             await asyncio.sleep(0)
+            submitted = asyncio.create_task(view._lines.next_line())
 
-            # /exit is the last root command, so select it before completing.
-            pipe.send_text("/\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\r")
+            # /exit is the last root command; Tab has to leave it in the composer
+            # rather than run it.
+            pipe.send_text("/\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B")
             for _ in range(100):
-                if view._buffer.text == "/exit " and not view._palette.open:
+                if view._palette.command_line() == "/exit":
                     break
                 await asyncio.sleep(0.01)
-            assert not view._palette.open
-            assert view._buffer.text == "/exit "
+            pipe.send_text("\t")
+            for _ in range(100):
+                if not view._palette.open:
+                    break
+                await asyncio.sleep(0.01)
 
+            assert not submitted.done()
+            assert view._buffer.text == "/exit"
+            assert not view._palette.open
+            # Closing the session releases the waiting read; it never delivers the
+            # completed line, which is what "Tab did not run it" means.
+            with suppress(EOFError):
+                await view.aclose()
+            with pytest.raises(EOFError):
+                await asyncio.wait_for(submitted, timeout=1)
+            await asyncio.wait_for(
+                asyncio.gather(task, return_exceptions=True), timeout=1
+            )
+
+    asyncio.run(scenario())
+
+
+def test_pipe_right_opens_the_selected_palette_level() -> None:
+    """Right navigates into a level without running the command."""
+
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            view, _, _ = _view()
+            app = view._app
+            assert app is not None
+            task = asyncio.create_task(app.run_async())
+            await asyncio.sleep(0)
             submitted = asyncio.create_task(view._lines.next_line())
-            pipe.send_text("\r")
-            line = await asyncio.wait_for(submitted, timeout=1)
+            pipe.send_text("/\x1b[C")
+            for _ in range(100):
+                if view._palette.depth == 2:
+                    break
+                await asyncio.sleep(0.01)
             app.exit()
             await asyncio.wait_for(task, timeout=1)
 
-            assert line.text == "/exit "
-            assert line.delivery == "now"
+            assert view._palette.depth == 2
+            assert not submitted.done()
+            await view.aclose()
 
     asyncio.run(scenario())
 

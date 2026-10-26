@@ -198,7 +198,7 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[Harness]:
 
 
 def test_default_is_stateless_and_commands_remain_available(harness: Harness) -> None:
-    harness.inputs("/help", "/model list", "/quit")
+    harness.inputs("/help", "/model list", "/exit")
     result = runner.invoke(cli.app, [])
     assert result.exit_code == 0
     assert not harness.directory.exists()

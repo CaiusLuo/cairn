@@ -187,6 +187,37 @@ def test_the_hint_changes_when_a_level_is_open() -> None:
     assert "Left" in palette.hint()
 
 
+# Enter runs what is chosen, so the palette has to say which entries are already
+# complete and which still open a level. A hint promising "Enter" for both left the
+# operator guessing why one press only filled the composer.
+def test_a_command_without_a_level_is_complete() -> None:
+    palette = _open("/")
+
+    palette.update("/exit")
+    assert palette.settles()
+
+    palette.update("/model")
+    assert not palette.settles()
+
+
+def test_a_child_below_the_root_is_always_complete() -> None:
+    palette = _open("/model")
+    palette.descend()
+
+    assert palette.settles()
+    assert "Enter run" in palette.hint()
+
+
+def test_the_hint_names_what_enter_does_to_the_choice() -> None:
+    palette = _open("/")
+
+    palette.update("/exit")
+    assert "Enter run" in palette.hint()
+
+    palette.update("/model")
+    assert "Enter open" in palette.hint()
+
+
 def test_typing_returns_to_the_root_level() -> None:
     """The filter applies to the command list, not to a submenu."""
     palette = _open("/model")

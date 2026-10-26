@@ -176,7 +176,7 @@ Typing `/` opens the command list above the composer, filtered as the text grows
 + Commands ------------------------------------------+
 | > /model     Choose the active model group          |
 +-----------------------------------------------------+
-  Up/Down move · Esc close
+  Up/Down move · Enter open · Tab complete · Esc close
 ```
 
 It is a temporary surface, not transcript text: a list of commands is a means to an
@@ -187,8 +187,16 @@ input had moved.
 | Key | Effect |
 | --- | --- |
 | `Up` / `Down` | Move the selection |
-| `Tab` / `Right` | Put the chosen command in the composer |
+| `Enter` | Run the chosen command: open its level, or submit it when it is complete |
+| `Right` | Open the chosen command's next level, without running anything |
+| `Tab` | Put the chosen command in the composer, without running it |
 | `Esc` | Close the palette, without touching a running turn |
+
+`Enter` runs what is chosen, the same as it does in the composer, so ending the
+session is typing `/exit` once and pressing `Enter` once. A command that opens a
+level is not run by the first `Enter`: that press opens the level, and the level
+chooses the rest of the command line. `/exit` is the only command that ends the
+session; there is no alias.
 
 Filtering is by prefix, not substring: `/mo` means "the command starting with mo",
 and answering with `/compact` because it contains an `m` would be a guess. The
