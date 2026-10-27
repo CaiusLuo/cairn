@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from dotenv import dotenv_values
+from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from typer.testing import CliRunner
@@ -26,6 +27,8 @@ from cairn.infra.observability.tracer import Tracer
 from cairn.runtime.agent import Agent
 from cairn.runtime.assembly import build_agent
 from cairn.terminal.cli import app
+from cairn.terminal.commands.router import CommandRouter
+from cairn.terminal.frame import TranscriptView
 from cairn.terminal.input import CliInput
 
 runner = CliRunner()
@@ -109,6 +112,135 @@ def _run_main_capturing_llm(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(cli_module, "build_agent", capture_agent)
     asyncio.run(cli_module.main())
     return captured["llm"]
+
+
+def _capture_interactive_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[TranscriptView]:
+    _set_environment(monkeypatch, ENVIRONMENT)
+    monkeypatch.setattr(cli_module, "print_banner", lambda: None)
+    monkeypatch.setattr(cli_module, "confirm_workspace_trust", lambda root: True)
+    monkeypatch.setattr(cli_module, "_interactive_terminal", lambda: True)
+    _forbid_model_calls(monkeypatch, "Exit reached the model")
+    frames: list[TranscriptView] = []
+
+    def create_frame() -> TranscriptView:
+        frame = TranscriptView(write=lambda text: None)
+        frames.append(frame)
+        return frame
+
+    monkeypatch.setattr(cli_module, "TranscriptView", create_frame)
+    return frames
+
+
+async def _wait_for_interactive_frame(
+    frames: list[TranscriptView], main: asyncio.Task[None]
+) -> None:
+    async with asyncio.timeout(10):
+        while not frames or frames[0]._app is None or not frames[0]._app.is_running:
+            if main.done():
+                await main
+                raise AssertionError("CLI returned before starting its input frame")
+            await asyncio.sleep(0)
+
+
+def test_main_closes_interactive_frame_before_returning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frames = _capture_interactive_frames(monkeypatch)
+
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            main = asyncio.create_task(cli_module.main())
+            await _wait_for_interactive_frame(frames, main)
+            pipe.send_text("/exit\r")
+            await asyncio.wait_for(main, timeout=3)
+
+            assert len(frames) == 1
+            assert frames[0]._runner is None
+            assert frames[0]._app is not None
+            assert not frames[0]._app.is_running
+
+    asyncio.run(scenario())
+
+
+def test_main_preserves_command_error_when_frame_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frames = _capture_interactive_frames(monkeypatch)
+    primary = RuntimeError("command failed")
+    original_close = TranscriptView.aclose
+
+    def fail_command(*args: object, **kwargs: object) -> None:
+        raise primary
+
+    async def failing_close(frame: TranscriptView) -> None:
+        await original_close(frame)
+        raise ValueError("close failed")
+
+    monkeypatch.setattr(CommandRouter, "handle", fail_command)
+    monkeypatch.setattr(TranscriptView, "aclose", failing_close)
+
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            main = asyncio.create_task(cli_module.main())
+            await _wait_for_interactive_frame(frames, main)
+            pipe.send_text("/exit\r")
+            with pytest.raises(RuntimeError) as failure:
+                await asyncio.wait_for(main, timeout=3)
+
+            assert failure.value is primary
+            assert frames[0]._runner is None
+            assert frames[0]._app is not None
+            assert not frames[0]._app.is_running
+
+    asyncio.run(scenario())
+
+
+def test_main_finishes_frame_cleanup_under_repeated_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frames = _capture_interactive_frames(monkeypatch)
+    original_close = TranscriptView.aclose
+
+    async def scenario() -> None:
+        closing = asyncio.Event()
+        release = asyncio.Event()
+
+        async def delayed_close(frame: TranscriptView) -> None:
+            closing.set()
+            await release.wait()
+            await original_close(frame)
+
+        monkeypatch.setattr(TranscriptView, "aclose", delayed_close)
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            main = asyncio.create_task(cli_module.main())
+            await _wait_for_interactive_frame(frames, main)
+            pipe.send_text("/exit\r")
+            await asyncio.wait_for(closing.wait(), timeout=3)
+            main.cancel()
+            await asyncio.sleep(0)
+            main.cancel()
+            await asyncio.sleep(0)
+            assert not main.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(main, timeout=3)
+
+            assert frames[0]._runner is None
+            assert frames[0]._app is not None
+            assert not frames[0]._app.is_running
+
+    asyncio.run(scenario())
 
 
 def test_main_requires_configuration(

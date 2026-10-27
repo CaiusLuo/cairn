@@ -192,11 +192,15 @@ input had moved.
 | `Tab` | Put the chosen command in the composer, without running it |
 | `Esc` | Close the palette, without touching a running turn |
 
-`Enter` runs what is chosen, the same as it does in the composer, so ending the
+`Enter` runs what is chosen, the same as it does in the composer, so ending an idle
 session is typing `/exit` once and pressing `Enter` once. A command that opens a
 level is not run by the first `Enter`: that press opens the level, and the level
 chooses the rest of the command line. `/exit` is the only command that ends the
 session; there is no alias.
+
+Session teardown settles outstanding terminal interactions and closes the input
+application before returning to the shell. Repeated cancellation during input
+cleanup waits for that cleanup to finish; an earlier failure remains primary.
 
 Filtering is by prefix, not substring: `/mo` means "the command starting with mo",
 and answering with `/compact` because it contains an `m` would be a guess. The

@@ -39,7 +39,7 @@ from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.assembly import build_agent
 from cairn.runtime.durable_session import DurableSession
-from cairn.runtime.lifecycle import settle_owned
+from cairn.runtime.lifecycle import await_owned, settle_owned
 from cairn.runtime.loop import run_turn
 from cairn.runtime.provider_runtime import (
     ProviderRuntime,
@@ -1200,6 +1200,7 @@ async def main(
                 - {""}
             ),
         )
+    primary_error: BaseException | None = None
     try:
         if durable_session is not None:
             assert durable is not None
@@ -1225,10 +1226,43 @@ async def main(
             durable_session=durable_session,
         )
         print("Goodbye! see you next time.")
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        await _settle_interactions()
+        cleanup_error: BaseException | None = None
+        cancellation: asyncio.CancelledError | None = None
+        try:
+            await _settle_interactions()
+        except BaseException as exc:
+            cleanup_error = exc
+        if frame is not None:
+            try:
+                closing = asyncio.create_task(frame.aclose())
+                cancellation = await await_owned(closing)
+                closing.result()
+            except BaseException as exc:
+                if cleanup_error is None:
+                    cleanup_error = exc
+                else:
+                    cleanup_error.add_note("Frame cleanup also failed.")
         if durable_session is not None:
-            durable_session.close()
+            try:
+                durable_session.close()
+            except BaseException as exc:
+                if cleanup_error is None:
+                    cleanup_error = exc
+                else:
+                    cleanup_error.add_note("Durable session cleanup also failed.")
+        if primary_error is not None:
+            if cleanup_error is not None:
+                primary_error.add_note("Terminal cleanup also failed.")
+            if cancellation is not None:
+                primary_error.add_note("Terminal cleanup completed after cancellation.")
+        elif cleanup_error is not None:
+            raise cleanup_error
+        elif cancellation is not None:
+            raise cancellation
 
 
 if __name__ == "__main__":

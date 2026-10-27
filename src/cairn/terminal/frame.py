@@ -336,11 +336,11 @@ class TranscriptView:
             if self._palette.descend():
                 self.repaint()
                 return
-            if not self._palette.settles() and self._buffer.text.strip():
-                # The chosen entry has a level, so the line is unfinished: keep
-                # typing rather than sending a command that is missing its argument.
-                self.repaint()
-                return
+            typed = self._buffer.text.strip()
+            if len(typed.split(maxsplit=1)) < 2:
+                # A palette choice may be more complete than the composer text:
+                # submit the selected command, including any navigated submenu.
+                self._complete_palette()
             self._submit_typed(delivery="steer" if self._running else "now")
 
         @bindings.add("left", filter=Condition(lambda: self._palette_focused()))

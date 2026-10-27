@@ -1044,6 +1044,43 @@ def test_pipe_enter_submits_a_command_the_list_does_not_carry() -> None:
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    ("keys", "expected"),
+    [
+        ("/\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\r", "/exit"),
+        ("/ex\r", "/exit"),
+        ("/model\r\x1b[B\r", "/model list"),
+        ("/provider\r\x1b[B\r", "/provider list"),
+        ("/trace del --tail 2\r", "/trace del --tail 2"),
+        ("/nosuchcommand\r", "/nosuchcommand"),
+    ],
+)
+def test_pipe_enter_submits_the_selected_command_or_typed_line(
+    keys: str, expected: str
+) -> None:
+    """Enter submits menu choices and preserves complete typed command lines."""
+
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            view, _, _ = _view()
+            reader = asyncio.create_task(view.read())
+            await asyncio.sleep(0)
+
+            pipe.send_text(keys)
+            line = await asyncio.wait_for(reader, timeout=1)
+
+            assert line.text == expected
+            assert line.delivery == "now"
+            assert view._buffer.text == ""
+            assert not view._palette.open
+            await view.aclose()
+
+    asyncio.run(scenario())
+
+
 def test_pipe_right_and_tab_complete_without_running() -> None:
     """Right and Tab navigate: they put the command in the composer and stop.
 
