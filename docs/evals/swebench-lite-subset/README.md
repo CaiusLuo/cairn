@@ -84,21 +84,46 @@ execute arbitrary shell. A temporary directory plus a timeout is not isolation.
 - A subset result is **not** a full SWE-bench Lite score and is **not** a
   leaderboard entry.
 
-## Status this round
+## Execution modes and status
 
-**LIVE_NOT_RUN.** No paid real-model scoring was started and the official Docker
-harness was not invoked: no model/budget was authorized and no Docker grader was
-provisioned. Offline format validation runs by default and touches no provider.
+The entry distinguishes four modes, each with its own status, so a printed
+command is never mistaken for a run:
+
+| Mode | Command | Status | Executes? |
+| --- | --- | --- | --- |
+| manifest | `--check` | `MANIFEST_OK` | no |
+| convert existing patches | `--diffs DIR --predictions P` | `PREDICTIONS_WRITTEN` | no |
+| preview command | `--predictions P --print-command` | `COMMAND_READY` | no (`executed=False`) |
+| grade | `--predictions P --grade --run-id ID --model M --max-total-tokens N --isolated` | `GRADED` / `LIVE_BLOCKED` | yes — the official harness |
+
+`--grade` actually invokes the official Docker harness
+(`python -m swebench.harness.run_evaluation …`) on the predictions and parses its
+`logs/evaluation/**/<run_id>/results.json` into subset counts. It requires an
+explicit model, hard token budget, `--run-id` and an `--isolated` confirmation;
+if the harness is unavailable it reports `LIVE_BLOCKED` with
+`missing=["official-harness"]` and applies no patch and runs no test itself. A
+non-zero harness exit is reported as `LIVE_BLOCKED` with `executed=true`, not as
+a success.
+
+## Status this round: PARTIAL
+
+The full closed loop — **Cairn solve → patch → official grade** — is **partial**.
+The *grade* stage is implemented and testable; the *solve* stage (running the
+Cairn agent per instance inside an isolated container to produce a patch) is
+**not built this round**, so `--live` reports `PARTIAL` with
+`missing=["cairn-solve-patch-generation (needs an isolated container agent
+runner; not built this round)"]` and never claims a score. No paid model run and
+no Docker grading actually executed here (no model/budget authorized, no harness
+installed).
 
 ```sh
 uv run python evaluation/runners/run_swebench_lite.py --check
 uv run pytest tests/runtime/evals/test_swebench_lite_adapter.py tests/runtime/evals/test_swebench_lite_entry.py -q
 ```
 
-A real run needs separate authorization naming the model, hard token budget,
-attempt/time limits and the isolated container/VM setup. Until then the entry
-reports `LIVE_NOT_RUN` (offline) or `LIVE_BLOCKED` (missing authorization or the
-official harness), and applies no patch and runs no test itself.
+A full live run still needs separate authorization naming the model, hard token
+budget, attempt/time limits and the isolated container/VM setup, plus the solve
+stage above.
 
 ## Offline verification
 

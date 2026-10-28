@@ -24,7 +24,6 @@ The local JSONL trace remains telemetry, not a durable fact (ADR 0002).
 
 from __future__ import annotations
 
-import contextlib
 import json
 import queue
 import threading
@@ -81,7 +80,6 @@ ALLOWED_ATTRIBUTES: frozenset[str] = frozenset(
         "output_tokens",
         # tools / permissions
         "tool",
-        "tool_call_id",
         "exit_code",
         "cancelled",
         "error_type",
@@ -95,6 +93,26 @@ ALLOWED_ATTRIBUTES: frozenset[str] = frozenset(
 
 #: Attribute values are short scalars. A path-like or long string never survives.
 MAX_ATTRIBUTE_STRING = 64
+
+#: Canonical tool names from the trusted registry (``build_default_registry`` and
+#: the optional ``repo_graph`` tool). A span's ``tool`` attribute is the
+#: model-provided call name; only an exact match here is exported. Anything else —
+#: a short sensitive string, a path, or an illegal name — becomes the fixed
+#: ``unknown_tool`` category, so a model cannot smuggle text through a tool name.
+SAFE_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "bash",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "patch_file",
+        "glob",
+        "grep",
+        "read_skill",
+        "repo_graph",
+    }
+)
+UNKNOWN_TOOL = "unknown_tool"
 
 
 def _safe_value(key: str, value: Any) -> Any | None:
@@ -110,11 +128,26 @@ def _safe_value(key: str, value: Any) -> Any | None:
     return None
 
 
+def sanitize_tool_name(value: Any) -> str:
+    """Map a tool identity to a trusted canonical name or a fixed category.
+
+    Only an exact allow-listed registry name passes through; everything else
+    (unknown, path-like, over-long or non-string) collapses to ``unknown_tool``.
+    """
+    if isinstance(value, str) and value in SAFE_TOOL_NAMES:
+        return value
+    return UNKNOWN_TOOL
+
+
 def redact_attributes(attributes: Mapping[str, Any]) -> dict[str, Any]:
-    """Return only allow-listed, scalar, bounded attributes."""
+    """Return only allow-listed, scalar, bounded, sanitized attributes."""
     redacted: dict[str, Any] = {}
     for key, value in attributes.items():
         if key not in ALLOWED_ATTRIBUTES:
+            continue
+        if key == "tool":
+            # Tool identity never passes through raw: only a trusted name.
+            redacted[key] = sanitize_tool_name(value)
             continue
         safe = _safe_value(key, value)
         if safe is not None:
@@ -233,10 +266,14 @@ class OtlpSpanExporter:
     def __init__(self, config: ExportConfig) -> None:
         self.config = config
         self.stats = ExportStats()
-        self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue(
+        self._queue: queue.Queue[dict[str, Any]] = queue.Queue(
             maxsize=config.queue_size
         )
         self._closed = False
+        #: Set by ``close``; the worker drains the queue then exits, so a full
+        #: queue can never strand the worker waiting for a sentinel that was
+        #: dropped.
+        self._stop = threading.Event()
         self._worker = threading.Thread(
             target=self._run, name="cairn-otlp-export", daemon=True
         )
@@ -256,10 +293,14 @@ class OtlpSpanExporter:
 
     def _run(self) -> None:
         while True:
-            item = self._queue.get()
             try:
-                if item is None:
+                item = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                # Exit only once stopped *and* the queue is drained.
+                if self._stop.is_set():
                     return
+                continue
+            try:
                 self._post(item)
             finally:
                 self._queue.task_done()
@@ -284,12 +325,14 @@ class OtlpSpanExporter:
         self.stats.sent += 1
 
     def close(self, timeout_seconds: float | None = None) -> None:
-        """Stop accepting spans and flush what is queued, bounded by a timeout."""
-        if self._closed:
-            return
+        """Stop accepting spans, drain the queue, and boundedly join the worker.
+
+        Idempotent and safe to repeat: after setting the stop flag the worker
+        drains whatever is queued and then exits, so a full queue cannot leave it
+        blocked. A repeated call re-joins in case an earlier join timed out.
+        """
         self._closed = True
-        with contextlib.suppress(queue.Full):
-            self._queue.put_nowait(None)
+        self._stop.set()
         self._worker.join(timeout=timeout_seconds or self.config.timeout_seconds)
 
 

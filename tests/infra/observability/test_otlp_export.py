@@ -21,6 +21,7 @@ from cairn.infra.observability.otlp import (
     build_exporter,
     redact_attributes,
     resolve_export_config,
+    span_to_otlp_json,
 )
 from cairn.infra.observability.sinks import FanoutTraceSink, JsonlTraceSink
 
@@ -223,3 +224,93 @@ def test_payload_contains_no_prompt_or_path(collector: _Collector) -> None:
     exporter.close(timeout_seconds=5)
     raw = json.dumps(collector.requests)
     assert "/etc/shadow" not in raw and "id_rsa" not in raw
+
+
+# --- Issue 4: tool identity must come from a trusted allowlist -----------------
+
+
+def _payload_attributes(exporter: OtlpSpanExporter, span) -> dict[str, dict[str, Any]]:  # type: ignore[no-untyped-def]
+    payload = span_to_otlp_json(span, exporter.config.service_name)
+    spans = payload["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    return {item["key"]: item["value"] for item in spans[0]["attributes"]}
+
+
+def test_legal_tool_name_is_preserved() -> None:
+    exporter = OtlpSpanExporter(ExportConfig(endpoint="http://127.0.0.1:1/x"))
+    attrs = _payload_attributes(exporter, _span("tool.execute", tool="bash"))
+    exporter.close(timeout_seconds=1)
+    assert attrs["tool"]["stringValue"] == "bash"
+
+
+@pytest.mark.parametrize(
+    "malicious",
+    ["SECRET42", "id_rsa", "/etc/passwd", "../../secret", "a" * 30, "", "tool;rm"],
+)
+def test_untrusted_tool_name_becomes_fixed_category(malicious: str) -> None:
+    exporter = OtlpSpanExporter(ExportConfig(endpoint="http://127.0.0.1:1/x"))
+    attrs = _payload_attributes(exporter, _span("tool.execute", tool=malicious))
+    exporter.close(timeout_seconds=1)
+    assert attrs["tool"]["stringValue"] == "unknown_tool"
+    if malicious:
+        assert malicious not in json.dumps(attrs)
+
+
+def test_tool_call_id_is_not_exported() -> None:
+    exporter = OtlpSpanExporter(ExportConfig(endpoint="http://127.0.0.1:1/x"))
+    attrs = _payload_attributes(
+        exporter, _span("tool.execute", tool="bash", tool_call_id="secret-id-123")
+    )
+    exporter.close(timeout_seconds=1)
+    assert "tool_call_id" not in attrs
+    assert "secret-id-123" not in json.dumps(attrs)
+
+
+def test_short_sensitive_string_in_unknown_attribute_is_dropped() -> None:
+    exporter = OtlpSpanExporter(ExportConfig(endpoint="http://127.0.0.1:1/x"))
+    attrs = _payload_attributes(
+        exporter, _span("tool.execute", tool="bash", prompt="SUPERSECRET")
+    )
+    exporter.close(timeout_seconds=1)
+    assert "prompt" not in attrs
+    assert "SUPERSECRET" not in json.dumps(attrs)
+
+
+# --- Issue 5: bounded, repeatable close; no stranded worker --------------------
+
+
+def test_close_exits_worker_even_when_queue_is_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+
+    exporter = OtlpSpanExporter(
+        ExportConfig(endpoint="http://127.0.0.1:1/x", queue_size=1)
+    )
+
+    def slow_post(_payload: dict[str, Any]) -> None:
+        time.sleep(0.2)
+
+    monkeypatch.setattr(exporter, "_post", slow_post)
+    for _ in range(20):
+        exporter.emit(_span("agent.turn", step=1))
+    # The queue is full; close must still let the worker drain and exit.
+    exporter.close(timeout_seconds=5)
+    assert exporter._worker.is_alive() is False
+
+
+def test_repeated_close_is_safe() -> None:
+    exporter = OtlpSpanExporter(ExportConfig(endpoint="http://127.0.0.1:1/x"))
+    exporter.emit(_span("agent.turn"))
+    exporter.close(timeout_seconds=2)
+    exporter.close(timeout_seconds=2)  # idempotent, no error
+    assert exporter._worker.is_alive() is False
+
+
+def test_consecutive_create_and_close_leaves_no_workers() -> None:
+    for _ in range(10):
+        exporter = OtlpSpanExporter(
+            ExportConfig(endpoint="http://127.0.0.1:1/x", queue_size=2)
+        )
+        exporter.emit(_span("agent.turn"))
+        exporter.close(timeout_seconds=2)
+        assert exporter._worker.is_alive() is False

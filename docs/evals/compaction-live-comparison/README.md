@@ -17,13 +17,39 @@ lifecycle owner, `runtime.loop.run_turn`:
 | `FULL_CONTEXT` | the complete context, uncompacted (baseline) |
 | `REAL_SUMMARY` | older history replaced by a real summary from the session's own model |
 
-The comparison is only meaningful when **both** contexts fit the budget. The
-harness then checks that, in either arm:
+The two arms share the same workspace snapshot but may use different context
+budgets: `FULL_CONTEXT` gets the full budget (no compaction), while
+`REAL_SUMMARY` gets a **tighter** budget so compaction is actually required.
+`spec.forbidden_history_marker` and `spec.key_fact_marker` make it possible to
+prove that a later request used the *compacted* history and that a key fact
+survived; the side-effecting tool appends to a log (not an overwrite), so a
+replay is detectable.
 
-- the current instruction still reaches the model verbatim;
-- executed tool facts are preserved and a side effect already applied in the
-  snapshot is **not replayed**;
-- final workspace behaviour (independent deterministic checks) is correct.
+## Hard total-token budget (both arms + summarizer)
+
+When `--max-total-tokens` is given, one shared `TokenBudgetLedger` caps
+`FULL_CONTEXT`, `REAL_SUMMARY` **and** every summarizer call together. Before each
+provider request the harness reserves a conservative upper bound (per-request
+prompt estimate + output cap); an unaffordable request is **refused before it is
+sent** with `TotalBudgetExceeded`. The reservation is charged, so unknown usage is
+never treated as zero. A budget too small to reserve even one request is refused
+up front (`LIVE_BLOCKED`) before any provider call. Different context budgets per
+arm do not weaken this: they are admission limits, the ledger is the hard cap.
+
+## A valid comparison requires real compaction
+
+A run is a **valid** full-vs-summary comparison only when **all** hold:
+
+- both arms ended within budget;
+- the `REAL_SUMMARY` arm actually invoked the summarizer
+  (`compaction_occurred`), and a later request carried the current instruction
+  without the large older text (`compacted_history_used`);
+- the key fact still reached the model after compaction (`key_fact_preserved`);
+- a non-idempotent side effect was not replayed (`replayed_side_effect` false).
+
+Otherwise the report sets `valid = false` with `invalid_reasons` — it is **never**
+reported as a successful comparison. A summary arm that does not actually compact
+is marked invalid rather than passing.
 
 ## Reporting contract
 
@@ -34,7 +60,12 @@ harness then checks that, in either arm:
   not claim a correctness result, and a correct final workspace does not imply a
   clean termination.
 - Failure classes: `none`, `run_timeout`, `budget_exhausted`,
-  `context_exceeded`, `runtime_error`, `cancelled`, `setup_error`.
+  `total_budget_exceeded`, `context_exceeded`, `runtime_error`, `cancelled`,
+  `setup_error`.
+- Per-arm correctness (`checks_passed`) is reported even when the *other* arm
+  overspends, so a correctness result already obtained is never hidden by a
+  budget failure; the combined `final_workspace_correct` is only produced when
+  both arms terminate.
 
 Implementation: [`src/cairn/runtime/evals/compaction_ab.py`](../../../src/cairn/runtime/evals/compaction_ab.py).
 Entry point: [`evaluation/runners/run_compaction_live.py`](../../../evaluation/runners/run_compaction_live.py).

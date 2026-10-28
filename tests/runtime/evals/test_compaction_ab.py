@@ -9,8 +9,11 @@ import asyncio
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
+
 from cairn.core.budget import RunBudget
 from cairn.core.compaction.summarizer import Summarizer, SummaryResult
+from cairn.core.context import TokenCount
 from cairn.core.llm import LLMClient
 from cairn.core.models import LLMResponse, Message, ToolCall
 from cairn.runtime.evals.checks import FileContentEqualsCheck
@@ -220,3 +223,318 @@ def test_failure_category_mapping() -> None:
     assert (
         failure_category(FailureKind.RUNTIME_ERROR) is EvalFailureCategory.RUNTIME_ERROR
     )
+
+
+# ============================================================================
+# Issue 1: hard total-token budget (shared across arms and summarizer calls)
+# ============================================================================
+
+from cairn.runtime.evals.compaction_ab import (  # noqa: E402
+    BudgetedLLM,
+    TokenBudgetLedger,
+    TotalBudgetExceeded,
+)
+
+
+class _UsageClient:
+    """A minimal LLMClient double with fixed usage; records call count."""
+
+    model = "double-model"
+    max_output_tokens = 50
+
+    def __init__(self, usage: "object | None") -> None:
+        self.usage = usage
+        self.calls: list[list[Message]] = []
+
+    async def generate(
+        self, messages: list[Message], tools: list[dict[str, object]] | None = None
+    ) -> LLMResponse:
+        self.calls.append(messages)
+        return LLMResponse(content="ok", usage=self.usage)  # type: ignore[arg-type]
+
+
+class _ConstCounter:
+    def __init__(self, per_message: int = 5) -> None:
+        self.per_message = per_message
+
+    def count(
+        self, messages: list[Message], tools: list[dict[str, object]]
+    ) -> TokenCount:
+        return TokenCount(tokens=self.per_message * len(messages), is_estimate=False)
+
+
+def test_ledger_reserves_before_spending_and_refuses_when_unaffordable() -> None:
+    ledger = TokenBudgetLedger(total=100)
+    assert ledger.reserve(10, 20) == 30  # affordable
+    ledger.settle(30, actual_known=True)
+    assert ledger.remaining == 70
+    with pytest.raises(TotalBudgetExceeded):
+        ledger.reserve(60, 20)  # 80 > 70
+
+
+def test_unknown_usage_is_charged_not_zero() -> None:
+    ledger = TokenBudgetLedger(total=1000)
+    client = _UsageClient(usage=None)
+    wrapped = BudgetedLLM(client, ledger, _ConstCounter(10), output_cap=50)
+    asyncio.run(wrapped.generate([Message(role="user", content="hi")]))
+    # Unknown usage is charged the reservation and flagged, never treated as zero.
+    assert ledger.spent > 0
+    assert ledger.unknown_usage is True
+    assert wrapped.usage_totals() == (None, None)
+
+
+def test_summary_request_is_counted_against_the_same_ledger() -> None:
+    ledger = TokenBudgetLedger(total=1000)
+    client = _UsageClient(usage=None)
+    wrapped = BudgetedLLM(client, ledger, _ConstCounter(10), output_cap=50)
+    summary_messages = [
+        Message(role="system", content="You are summarizing one conversation slice."),
+        Message(role="user", content="history"),
+    ]
+    asyncio.run(wrapped.generate(summary_messages))
+    assert wrapped.summary_request_count() == 1
+    # The summarizer call consumed budget like any other request.
+    assert ledger.spent > 0
+
+
+def test_low_total_budget_refused_before_any_provider_call(tmp_path: Path) -> None:
+    spec = _spec()
+    clients: list[SequenceLLM] = []
+
+    def factory() -> LLMClient:
+        client = SequenceLLM(_write_then_finish())
+        clients.append(client)
+        return client
+
+    report = asyncio.run(
+        compare_case(
+            spec,
+            llm_factory=factory,
+            budget=RunBudget(max_steps=4),
+            total_token_budget=5,  # far below one request
+            run_timeout_seconds=10,
+            summarizer_factory=lambda _llm: _CountingSummarizer(),
+        )
+    )
+    assert report.both_ended_within_budget is False
+    assert report.full_context.failure is FailureKind.TOTAL_BUDGET_EXCEEDED
+    assert report.real_summary.failure is FailureKind.TOTAL_BUDGET_EXCEEDED
+    # Nothing was ever sent to a provider.
+    assert all(client.calls == [] for client in clients)
+    assert report.tokens_spent_total == 0
+
+
+def test_two_arms_share_one_total_budget(tmp_path: Path) -> None:
+    spec = _spec()
+    # Measure the full arm's exact consumption with a generous cap.
+    measured = asyncio.run(
+        compare_case(
+            spec,
+            llm_factory=_run_factory(_write_then_finish),
+            budget=RunBudget(max_steps=4),
+            total_token_budget=10**9,
+            run_timeout_seconds=10,
+            summarizer_factory=lambda _llm: _CountingSummarizer(),
+        )
+    )
+    full_spend = measured.full_context.tokens_spent
+    assert full_spend is not None and full_spend > 0
+    # A cap equal to the full arm's spend lets the full arm finish, then refuses
+    # the summary arm at its first reservation (shared ledger).
+    report = asyncio.run(
+        compare_case(
+            spec,
+            llm_factory=_run_factory(_write_then_finish),
+            budget=RunBudget(max_steps=4),
+            total_token_budget=full_spend,
+            run_timeout_seconds=10,
+            summarizer_factory=lambda _llm: _CountingSummarizer(),
+        )
+    )
+    assert report.full_context.ended_within_budget is True
+    assert report.real_summary.failure is FailureKind.TOTAL_BUDGET_EXCEEDED
+    assert report.both_ended_within_budget is False
+    assert report.tokens_spent_total == full_spend
+
+
+# ============================================================================
+# Issue 2: a valid comparison requires real compaction and preserved facts
+# ============================================================================
+
+
+class _KeySummarizer(Summarizer):
+    def __init__(self, text: str) -> None:
+        self.calls: list[tuple[list[Message], int]] = []
+        self.text = text
+
+    async def summarize(
+        self, messages: list[Message], *, max_tokens: int
+    ) -> SummaryResult:
+        self.calls.append((messages, max_tokens))
+        return SummaryResult(text=self.text)
+
+
+def _deploy_spec(**overrides: object) -> CompactionCaseSpec:
+    history = (
+        Message(
+            role="user",
+            content=(
+                "Prior analysis "
+                + "A" * 300
+                + " DEPLOY-ANALYSIS-7781 and conclusion SEED-DEPLOY-DONE-4471"
+            ),
+        ),
+        Message(role="assistant", content="acknowledged"),
+        Message(
+            role="assistant",
+            content=None,
+            tool_calls=[ToolCall(id="seed-1", name="apply_side_effect", arguments={})],
+        ),
+        Message(
+            role="tool",
+            content="deployment applied and appended to the log; do not repeat",
+            tool_call_id="seed-1",
+        ),
+    )
+    base = dict(
+        name="verify-after-deploy",
+        prompt="Verify the deployment log and report finished.",
+        files={"applied_log.txt": "applied\n"},
+        current_instruction="Verify applied_log.txt and report finished. Do not deploy again.",
+        history=history,
+        budget_tokens=8_000,
+        summary_budget_tokens=1_600,
+        response_tokens=150,
+        side_effect_log="applied_log.txt",
+        forbidden_history_marker="DEPLOY-ANALYSIS-7781",
+        key_fact_marker="SEED-DEPLOY-DONE-4471",
+        expected_side_effect_runs=0,
+    )
+    base.update(overrides)
+    return CompactionCaseSpec(**base)  # type: ignore[arg-type]
+
+
+def _inspect_program(
+    count: int, extra: list[LLMResponse] | None = None
+) -> list[LLMResponse]:
+    responses = [
+        LLMResponse(
+            content=None,
+            tool_calls=[ToolCall(id=f"i{i}", name="inspect", arguments={})],
+        )
+        for i in range(count)
+    ]
+    responses += extra or []
+    responses.append(LLMResponse(content="finished"))
+    return responses
+
+
+def _deploy_checks() -> tuple[FileContentEqualsCheck, ...]:
+    return (FileContentEqualsCheck("applied_log.txt", "applied\n"),)
+
+
+def test_valid_when_compaction_occurs_and_facts_preserved(tmp_path: Path) -> None:
+    summ = _KeySummarizer(
+        "earlier deploy summarized; SEED-DEPLOY-DONE-4471 applied; do not repeat"
+    )
+    report = asyncio.run(
+        compare_case(
+            _deploy_spec(),
+            llm_factory=_run_factory(lambda: _inspect_program(3)),
+            checks=_deploy_checks(),
+            budget=RunBudget(max_steps=12),
+            run_timeout_seconds=20,
+            summarizer_factory=lambda _llm: summ,
+        )
+    )
+    assert report.both_ended_within_budget is True
+    assert report.real_summary.compaction_occurred is True
+    assert report.real_summary.compacted_history_used is True
+    assert report.real_summary.key_fact_preserved is True
+    assert report.real_summary.replayed_side_effect is False
+    assert report.valid is True, report.invalid_reasons
+    assert report.final_workspace_correct == {"FileContentEqualsCheck": True}
+
+
+def test_invalid_when_summary_arm_does_not_compact(tmp_path: Path) -> None:
+    # A generous summary budget means folding/omission suffices, so the
+    # summarizer never runs; the run must be marked invalid, not successful.
+    report = asyncio.run(
+        compare_case(
+            _deploy_spec(summary_budget_tokens=2_600),
+            llm_factory=_run_factory(lambda: _inspect_program(3)),
+            checks=_deploy_checks(),
+            budget=RunBudget(max_steps=12),
+            run_timeout_seconds=20,
+            summarizer_factory=lambda _llm: _KeySummarizer("no compaction here"),
+        )
+    )
+    assert report.both_ended_within_budget is True
+    assert report.real_summary.compaction_occurred is False
+    assert report.valid is False
+    assert any(
+        "did not invoke the summarizer" in reason for reason in report.invalid_reasons
+    )
+
+
+def test_invalid_when_key_fact_dropped_by_summary(tmp_path: Path) -> None:
+    summ = _KeySummarizer("earlier work summarized with no key fact")
+    report = asyncio.run(
+        compare_case(
+            _deploy_spec(),
+            llm_factory=_run_factory(lambda: _inspect_program(3)),
+            checks=_deploy_checks(),
+            budget=RunBudget(max_steps=12),
+            run_timeout_seconds=20,
+            summarizer_factory=lambda _llm: summ,
+        )
+    )
+    assert report.real_summary.compaction_occurred is True
+    assert report.real_summary.key_fact_preserved is False
+    assert report.valid is False
+    assert any("key tool fact" in reason for reason in report.invalid_reasons)
+
+
+def test_invalid_when_side_effect_is_replayed(tmp_path: Path) -> None:
+    replay = LLMResponse(
+        content=None,
+        tool_calls=[ToolCall(id="replay", name="apply_side_effect", arguments={})],
+    )
+    summ = _KeySummarizer("summarized; SEED-DEPLOY-DONE-4471 applied")
+    report = asyncio.run(
+        compare_case(
+            _deploy_spec(),
+            llm_factory=_run_factory(lambda: _inspect_program(3, [replay])),
+            checks=_deploy_checks(),
+            budget=RunBudget(max_steps=12),
+            run_timeout_seconds=20,
+            summarizer_factory=lambda _llm: summ,
+        )
+    )
+    assert report.real_summary.side_effect_runs == 1
+    assert report.real_summary.replayed_side_effect is True
+    assert report.valid is False
+    assert any("replayed" in reason for reason in report.invalid_reasons)
+    # The append-only log now has two entries, so the correctness check fails.
+    assert report.real_summary.checks_passed is False
+
+
+def test_correctness_reported_even_when_other_arm_overspends(tmp_path: Path) -> None:
+    # Full arm (budget 8000) is correct; the summary arm's tiny budget makes it
+    # exceed the context budget. The full arm's correctness must still be visible.
+    report = asyncio.run(
+        compare_case(
+            _deploy_spec(summary_budget_tokens=200),
+            llm_factory=_run_factory(lambda: _inspect_program(3)),
+            checks=_deploy_checks(),
+            budget=RunBudget(max_steps=12),
+            run_timeout_seconds=20,
+            summarizer_factory=lambda _llm: _KeySummarizer("x"),
+        )
+    )
+    assert report.full_context.ended_within_budget is True
+    assert report.full_context.checks_passed is True
+    assert report.real_summary.ended_within_budget is False
+    assert report.both_ended_within_budget is False
+    # No combined verdict, but the full arm's per-arm correctness is not hidden.
+    assert report.final_workspace_correct == {}

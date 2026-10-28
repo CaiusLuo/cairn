@@ -74,11 +74,18 @@ upload conversations.
 ### Redaction
 
 Only allow-listed attributes are exported (`ALLOWED_ATTRIBUTES`): ids, counts,
-timings, budget figures, usage numbers, tool names and fixed reason classes.
-String values are bounded to 64 characters. Prompts, message content, tool
-output, credentials and file paths are **never** exported;
-`redact_attributes` drops anything not on the allow list. Lists are exported as
-their length, not their members.
+timings, budget figures, usage numbers and fixed reason classes. String values
+are bounded to 64 characters. Prompts, message content, tool output, credentials
+and file paths are **never** exported; `redact_attributes` drops anything not on
+the allow list. Lists are exported as their length, not their members.
+
+**Tool identity is allow-listed, not passed through.** The span `tool` attribute
+is the *model-provided* call name, so it is not trusted: `sanitize_tool_name`
+exports a value only when it is an exact canonical registry name
+(`bash`, `read_file`, `edit_file`, `write_file`, `patch_file`, `glob`, `grep`,
+`read_skill`, `repo_graph`); anything else — a short sensitive string, a path or
+an illegal name — collapses to the fixed `unknown_tool` category. The
+model-provided `tool_call_id` is not exported at all.
 
 ### Failure isolation and lifecycle
 
@@ -86,7 +93,10 @@ their length, not their members.
 - A full queue drops the span (`ExportStats.dropped_full`) instead of stalling.
 - Requests have a hard timeout; connection errors and non-2xx responses are
   counted in `ExportStats.failed` and swallowed.
-- `close()` stops new spans, flushes within a timeout, and is idempotent.
+- `close()` sets a stop flag, the worker drains the queue and then exits, and the
+  join is bounded. It is idempotent and repeatable; a full queue can never strand
+  the worker waiting for a dropped sentinel, and repeated create/close leaves no
+  worker threads.
 - The CLI wires the exporter beside the JSONL sink with `FanoutTraceSink`, so a
   remote failure never stops the local record (and vice versa), and closes the
   exporter in bounded terminal cleanup.

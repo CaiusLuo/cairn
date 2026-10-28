@@ -26,7 +26,7 @@ from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.evals import EvalResult, EvalRunner, EvalStatus
 from cairn.runtime.evals.behavior import BehaviorCheck
 from tests.support.runtime import SequenceLLM
-from tests.support.sandbox import require_local_shell
+from tests.support.sandbox import require_execution_sandbox
 
 CASES = {spec.case.name: spec for spec in behavior_cases()}
 NAMES = tuple(CASES)
@@ -126,7 +126,7 @@ def _correct_changes(case_name: str) -> dict[str, str]:
 @pytest.mark.parametrize("case_name", NAMES)
 def test_initial_buggy_fixture_fails(case_name: str) -> None:
     """The unmodified buggy workspace must fail (no accidental pass)."""
-    require_local_shell()
+    require_execution_sandbox()
     result = _run(case_name, [LLMResponse(content="done; nothing changed.")])
     expected = EvalStatus.PASS if case_name == "no-op-correct-code" else EvalStatus.FAIL
     assert result.status is expected
@@ -135,7 +135,7 @@ def test_initial_buggy_fixture_fails(case_name: str) -> None:
 @pytest.mark.parametrize("case_name", NAMES)
 def test_reference_correct_solution_passes(case_name: str) -> None:
     """A correct solution — even a different spelling — must pass."""
-    require_local_shell()
+    require_execution_sandbox()
     changes = _correct_changes(case_name)
     calls = _edits(case_name, changes) if changes else []
     responses = ([LLMResponse(tool_calls=calls)] if calls else []) + [
@@ -186,7 +186,7 @@ def test_reference_correct_solution_passes(case_name: str) -> None:
 )
 def test_near_miss_solution_fails(case_name: str, changes: dict[str, str]) -> None:
     """A near-miss that reproduces the defect or skips a requirement fails."""
-    require_local_shell()
+    require_execution_sandbox()
     calls = _edits(case_name, changes)
     result = _run(
         case_name, [LLMResponse(tool_calls=calls), LLMResponse(content="done")]
@@ -201,7 +201,7 @@ def test_protected_unrelated_function_is_rejected() -> None:
     check asserts that unrelated function still works, so a solution that edits
     the right return expression but also damages ``format_user_id`` is refused.
     """
-    require_local_shell()
+    require_execution_sandbox()
     broken = IDENTITY.replace(
         '    return f"user-{value:04d}"\n', '    return f"user-{value}"\n'
     ).replace("    return value\n", "    return value.strip().lower()\n", 1)
@@ -259,7 +259,7 @@ def test_graded_code_is_executed_inside_throwaway_workspace(
     The eval runner creates that workspace in a throwaway temp dir, so a write is
     contained there and never appears in the pytest process directory.
     """
-    require_local_shell()
+    require_execution_sandbox()
     workspace = Workspace(tmp_path)
     probe = (
         "open('probe.txt', 'w', encoding='utf-8').write('x')\n"

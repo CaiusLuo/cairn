@@ -45,8 +45,22 @@ def test_report_skeleton_keeps_unknown_fields_null(tmp_path: Path) -> None:
     args = _args(tmp_path, model="openai/x", max_total_tokens=5000)
     assert script.main(args) == 0
     payload = json.loads((tmp_path / "report.json").read_text())
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["model_identifier"] == "openai/x"
     assert payload["max_total_tokens"] == 5000
     assert payload["status"] == "LIVE_NOT_RUN"
+    assert payload["valid"] is None
+    assert payload["invalid_reasons"] is None
+    assert payload["tokens_spent_total"] is None
     assert payload["notes"]
+
+
+def test_low_budget_is_refused_before_any_provider_call(tmp_path: Path) -> None:
+    # A budget too small to reserve even one request must be refused up front;
+    # no provider configuration is touched and no report arm is produced.
+    args = _args(tmp_path, live=True, model="openai/x", max_total_tokens=10)
+    assert script.main(args) == 2
+    payload = json.loads((tmp_path / "report.json").read_text())
+    assert payload["status"] == "LIVE_BLOCKED"
+    assert payload["full_context"] is None
+    assert payload["real_summary"] is None

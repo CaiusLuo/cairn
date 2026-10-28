@@ -31,6 +31,7 @@ from cairn.infra.llm.litellm_client import LiteLLMClient
 from cairn.infra.llm.token_counter import LiteLLMTokenCounter
 from cairn.infra.observability.sinks import JsonlTraceSink
 from cairn.infra.observability.tracer import Tracer
+from cairn.infra.sandbox import available as sandbox_available
 from cairn.runtime.evals import EvalRunner, EvalSuiteRunner
 from cairn.terminal.output import confirm_provider_access, print_provider_selection
 
@@ -43,6 +44,16 @@ from evaluation.runners.run_coding_smoke import print_result
 
 
 async def main(destination: Path) -> int:
+    # Behavior grading executes model-generated code, so it must run inside the
+    # execution sandbox. Block a real run up front if none is available; never
+    # fall back to grading generated code on the host.
+    if not sandbox_available():
+        print(
+            "BLOCKED: execution sandbox (bubblewrap) unavailable; "
+            "refusing to grade generated code on the host.",
+            file=sys.stderr,
+        )
+        return 2
     try:
         env_file_values = dotenv_values()
         project = load_project_providers()

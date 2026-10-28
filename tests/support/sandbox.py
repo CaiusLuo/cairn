@@ -27,6 +27,18 @@ def require_local_shell() -> None:
         pytest.skip("/bin/bash is not available")
 
 
+def require_execution_sandbox() -> None:
+    """Skip when the bubblewrap execution sandbox cannot run on this host.
+
+    Behavior checks that execute model-generated code refuse to fall back to the
+    host, so a host without bwrap/user-namespaces cannot exercise them.
+    """
+    from cairn.infra.sandbox import available
+
+    if not available():
+        pytest.skip("bubblewrap execution sandbox is not available on this host")
+
+
 def sandbox_python() -> str:
     """Return a Python executable usable by a command on this host."""
     interpreter = workspace_python()

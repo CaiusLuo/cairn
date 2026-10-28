@@ -42,16 +42,33 @@ code into a verdict. It scores observable behavior:
 * **Protected files** — where a case must not rewrite an unrelated file, an
   exact-content check pins it; `behavior_protected_files` exposes that set.
 
-### Execution and isolation (honest scope)
+### Execution isolation
 
-The script runs with the workspace interpreter through the real `BashTool`: a
-fresh throwaway temporary workspace, declared provider-secret variables stripped,
-a bounded wall-clock timeout and bounded output. **This is not an OS sandbox.** A
-timeout plus a temporary directory is not isolation of adversarial code. The
-scripts are host-authored trusted fixtures — never model context, never written
-by the evaluated model, never persisted into the case. The evaluated *generated
-code* runs inside the throwaway case workspace whose lifetime `EvalRunner` owns;
-that containment, plus the timeout, is all this contract claims.
+The behavior script is host-owned trusted code, but it **imports the code the
+evaluated model wrote**, so that generated code is untrusted. It is therefore run
+inside a real sandbox, [`cairn.infra.sandbox`](../../../src/cairn/infra/sandbox.py),
+not a plain subprocess:
+
+- bubblewrap (`bwrap`) with read-only system mounts (`/usr`, `/lib`, `/lib64`,
+  `/bin`, `/sbin`, `/etc`) and nothing else of the host filesystem;
+- the case workspace bind-mounted read-write at its own path, plus a private
+  `/tmp`;
+- `--unshare-all` (private user/pid/mount/net/ipc/uts/cgroup namespaces) — no
+  network, fresh `/proc`, no host session;
+- a cleared environment (only `PATH`, `HOME`) and in-process resource limits
+  (`RLIMIT_AS`, `RLIMIT_CPU`, `RLIMIT_NOFILE`, `RLIMIT_FSIZE`, `RLIMIT_CORE`).
+
+A temporary directory plus a timeout is **not** a sandbox. When no sandbox is
+available (no `bwrap`/user namespaces), `BehaviorCheck` fails explicitly with
+`error = "IsolationUnavailable: …"` (the case is an ERROR) and **never falls back
+to running generated code on the host**. The real-provider behavior runner also
+refuses to start when isolation is unavailable. The sandbox never broadens host
+permissions or weakens an existing check.
+
+Offline tests prove the boundary: generated code cannot read an injected host
+secret file or environment value, cannot overwrite a host marker, cannot reach the
+network, and a missing sandbox fails instead of executing. See
+[`tests/runtime/evals/test_behavior_check.py`](../../../tests/runtime/evals/test_behavior_check.py).
 
 ### Versioning
 

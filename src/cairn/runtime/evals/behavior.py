@@ -1,56 +1,53 @@
 """Independent, versioned behavior checks for eval cases.
 
-A ``BehaviorCheck`` executes host-authored Python inside the case workspace and
-turns the process exit code into a pass/fail verdict. It is the reusable,
-generic counterpart to the repository-intelligence
-``intelligence.checks.BehaviorCheck``: the intelligence dataset pins its own
-copy inside a frozen, digest-checked contract, so this module deliberately keeps
-a separate implementation rather than importing that one. Both run the exact
-same Bash/environment contract (workspace interpreter, no ``python`` alias,
-bounded output, sanitized secret variables); sharing the runner would couple two
-independently versioned datasets.
+A ``BehaviorCheck`` executes host-authored Python against the case workspace and
+turns the process exit code into a pass/fail verdict. It is the reusable, generic
+counterpart to the repository-intelligence ``intelligence.checks.BehaviorCheck``:
+the intelligence dataset pins its own copy inside a frozen, digest-checked
+contract, so this module deliberately keeps a separate implementation.
 
 A behavior check scores *observable behavior*: the script imports the code under
 test, exercises public functions and asserts outputs, boundaries and regressions
 to already-working behaviour. It therefore accepts any correct implementation,
-not just the exact bytes of one reference patch, and it refuses a near-miss that
-reproduces the original defect or breaks an untouched guarantee.
+not just the bytes of one reference patch, and refuses a near-miss that reproduces
+the original defect or breaks an untouched guarantee.
 
-Scope and honesty about it
---------------------------
-The script runs with the workspace's interpreter through the real ``BashTool``.
-That provides a fresh temporary directory, the declared provider-secret variables
-stripped, and a wall-clock timeout — but it is *not* an OS sandbox. A behavior
-script is host-owned trusted code: it is never model context, never written by the
-evaluated model, and never persisted into the case. Execution isolation for the
-*generated code under test* is the caller's responsibility (the case workspace
-lives in a throwaway temporary directory); a timeout and a temporary directory are
-not a sandbox.
+Execution isolation
+-------------------
+The script is host-owned trusted code, but it *imports the code the evaluated
+model wrote*, so that generated code is untrusted. This check therefore never
+runs it in a plain subprocess. It executes inside a bubblewrap sandbox
+([`cairn.infra.sandbox`](../../infra/sandbox.py)): read-only system mounts, the
+workspace bound read-write at its own path, a private ``/tmp``, no network, a
+cleared environment and in-process resource limits. When no sandbox is available
+the check fails explicitly (``error`` set, so the case is an ERROR) and never
+falls back to the host. A temporary directory plus a timeout is not a sandbox.
 """
 
 from __future__ import annotations
 
-import shlex
 from dataclasses import dataclass
 from typing import ClassVar
 
-from cairn.infra.tools.bash import BashTool, workspace_python
+from cairn.infra.sandbox import IsolatedRunner, IsolationLimits, IsolationUnavailable
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.evals.models import CheckResult
 
 #: A behavior script is small host code, not a program. Bound it so a runaway
 #: case fixture cannot smuggle a large payload through a "check".
 MAX_SCRIPT_BYTES = 32 * 1024
-#: Bound a single behavior execution; the interpreter is the only process.
-BEHAVIOR_TIMEOUT_SECONDS = 10
+#: Bound a single behavior execution; the interpreter runs inside the sandbox.
+BEHAVIOR_TIMEOUT_SECONDS = 10.0
 
 
 @dataclass(slots=True)
 class BehaviorCheck:
-    """Run a host-owned script against the workspace and score its behavior."""
+    """Run a host-owned script against the workspace, isolated, and score it."""
 
     name: str
     script: str
+    #: Kept for API compatibility; the sandbox clears the whole environment, so
+    #: declared provider secrets can never reach the generated code either way.
     secret_env_keys: frozenset[str] = frozenset()
     #: Stable label so reporting is independent of the concrete class name.
     check_type: ClassVar[str] = "behavior"
@@ -64,25 +61,23 @@ class BehaviorCheck:
             raise ValueError("behavior check script limit exceeded")
 
     async def evaluate(self, workspace: Workspace) -> CheckResult:
-        interpreter = workspace_python(workspace.root)
-        if not interpreter:
+        runner = IsolatedRunner(
+            IsolationLimits(timeout_seconds=BEHAVIOR_TIMEOUT_SECONDS)
+        )
+        try:
+            result = await runner.run_script(workspace, self.script)
+        except IsolationUnavailable as exc:
+            # Never fall back to the host: an unisolated run could read secrets,
+            # write host files or tamper with verification materials.
             return CheckResult(
                 name=self.name,
                 passed=False,
-                message="Behavior check failed: no Python interpreter available.",
+                error=f"IsolationUnavailable: {exc}",
             )
-        command = f"{shlex.quote(interpreter)} -B -c {shlex.quote(self.script)}"
-        result = await BashTool(
-            workspace,
-            timeout=BEHAVIOR_TIMEOUT_SECONDS,
-            stdout_limit=1024,
-            stderr_limit=1024,
-            secret_env_keys=self.secret_env_keys,
-        ).execute({"command": command})
         if result.exit_code == 0:
             return CheckResult(name=self.name, passed=True, message=None)
-        # Keep a bounded, last-line diagnostic: a missing interpreter or an
-        # escaping traceback must not read exactly like a genuine behavior fail.
+        # Bounded, last-line diagnostic so a missing interpreter or a traceback
+        # does not read exactly like a genuine behavioral failure.
         detail = (result.stderr or result.stdout).strip().splitlines()
         summary = detail[-1][:200] if detail else f"exit {result.exit_code}"
         return CheckResult(

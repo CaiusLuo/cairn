@@ -9,16 +9,19 @@ from the *same pre-compaction snapshot* in independent throwaway workspaces:
   summary that replaces the older history.
 
 Both arms run through the single lifecycle owner ``run_turn`` (via
-``runtime.evals.compaction_ab``). The comparison is only meaningful when both
-contexts fit the budget; correctness (independent final-workspace checks) is
-reported separately from within-budget termination, and unknown observations stay
-null.
+``runtime.evals.compaction_ab``). One shared ledger enforces ``--max-total-tokens``
+across *both* arms and every summarizer call: each request reserves conservatively
+before it is sent and an unaffordable request is refused before reaching the
+provider.
+
+A run is a **valid comparison** only when the summary arm actually compacted, a
+later request used the reduced history, the current instruction survived, key
+tool facts survived and a non-idempotent side effect was not replayed. Otherwise
+the report is marked invalid — never a successful comparison.
 
 Default behaviour is **LIVE_NOT_RUN**: with no ``--live`` flag the command spends
 nothing, prints ``LIVE_NOT_RUN`` and writes a skeleton report whose model, usage
-and timing fields are null. A real run requires ``--live`` plus an explicit
-``--model`` and ``--max-total-tokens`` budget, so a paid experiment can never
-start by accident.
+and timing fields are null.
 
 Run offline help:
 
@@ -36,6 +39,7 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 from cairn.core.budget import RunBudget
+from cairn.core.models import Message, ToolCall
 from cairn.infra.config import (
     default_provider,
     load_project_providers,
@@ -57,6 +61,10 @@ if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 LIVE_NOT_RUN = "LIVE_NOT_RUN"
+LIVE_BLOCKED = "LIVE_BLOCKED"
+
+#: The already-deployed log the continuation must not append to again.
+_SIDE_EFFECT_LOG = "applied_log.txt"
 
 
 def _source_revision() -> str | None:
@@ -73,32 +81,60 @@ def _source_revision() -> str | None:
 
 
 def _case_spec() -> CompactionCaseSpec:
-    """One fixed continuation task: write a file, then report.
+    """One realistic continuation: a prior deployment already happened.
 
-    The pre-snapshot carries an already-applied side effect; a continuation must
-    not replay it. The task is small and deterministic so the only difference
-    between arms is the continuation context.
+    The seeded history contains a real user request, an assistant tool call, its
+    tool result (the already-applied side effect) and a following user
+    correction. A large analysis block and a unique "key fact" token make it
+    possible to prove the summary compressed the former and preserved the latter.
+    The side-effect log is an append-only file, so a replay is observable.
     """
-    return CompactionCaseSpec(
-        name="write-after-summary",
-        prompt="Create output.txt containing 'done', then confirm.",
-        files={
-            "README.md": "Write output.txt with the word done.\n",
-            "applied.txt": "already applied before this continuation\n",
-        },
-        current_instruction="Create output.txt containing done and report finished.",
-        pre_side_effects={"applied.txt": "already applied before this continuation\n"},
-        older_history=(
-            "please prepare the workspace for the write task",
-            "the workspace is ready and applied.txt was already written",
+    big_analysis = (
+        "Prior deployment analysis: "
+        + "A" * 300
+        + " analysis-token DEPLOY-ANALYSIS-7781 and conclusion SEED-DEPLOY-DONE-4471"
+    )
+    history = (
+        Message(role="user", content=big_analysis),
+        Message(
+            role="assistant",
+            content=None,
+            tool_calls=[ToolCall(id="seed-1", name="apply_side_effect", arguments={})],
         ),
-        budget_tokens=12_000,
-        response_tokens=1_024,
+        Message(
+            role="tool",
+            content=(
+                "deployment applied and appended to applied_log.txt; do not repeat"
+            ),
+            tool_call_id="seed-1",
+        ),
+    )
+    return CompactionCaseSpec(
+        name="verify-after-deploy",
+        prompt="Verify the deployment log and report finished.",
+        files={
+            "README.md": "The deployment appends one applied entry to applied_log.txt.\n",
+            _SIDE_EFFECT_LOG: "applied\n",
+        },
+        pre_side_effects={},
+        history=history,
+        current_instruction=(
+            "Verify applied_log.txt and report finished. Do not deploy again."
+        ),
+        budget_tokens=6_000,
+        summary_budget_tokens=1_600,
+        response_tokens=512,
+        side_effect_tool="apply_side_effect",
+        side_effect_log=_SIDE_EFFECT_LOG,
+        forbidden_history_marker="DEPLOY-ANALYSIS-7781",
+        key_fact_marker="SEED-DEPLOY-DONE-4471",
+        expected_side_effect_runs=0,
     )
 
 
 def _checks() -> tuple[FileContentEqualsCheck, ...]:
-    return (FileContentEqualsCheck("output.txt", "done\n"),)
+    # Exactly one applied entry: a replay would append a second line.
+    return (FileContentEqualsCheck(_SIDE_EFFECT_LOG, "applied\n"),)
 
 
 def _arm_json(observation: ArmObservation) -> dict[str, object]:
@@ -111,7 +147,14 @@ def _arm_json(observation: ArmObservation) -> dict[str, object]:
         "check_results": dict(observation.check_results),
         "instruction_reached_model": observation.instruction_reached_model,
         "side_effect_runs": observation.side_effect_runs,
+        "replayed_side_effect": observation.replayed_side_effect,
+        "compaction_occurred": observation.compaction_occurred,
+        "compacted_history_used": observation.compacted_history_used,
+        "key_fact_preserved": observation.key_fact_preserved,
         "summary_calls": observation.summary_calls,
+        "request_count": observation.request_count,
+        "tokens_spent": observation.tokens_spent,
+        "usage_unknown": observation.usage_unknown,
         "model_identifier": observation.model_identifier,
         "model_version": observation.model_version,
         "provider_input_tokens": observation.provider_input_tokens,
@@ -132,7 +175,7 @@ def _report_json(
     notes: list[str],
 ) -> str:
     payload: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": status,
         "case_name": report.case_name if report else _case_spec().name,
         "model_identifier": model,
@@ -140,15 +183,48 @@ def _report_json(
         "max_total_tokens": budget,
         "source_revision": revision,
         "notes": notes,
+        "valid": report.valid if report else None,
+        "invalid_reasons": report.invalid_reasons if report else None,
+        "initial_snapshot_digest": report.initial_snapshot_digest if report else None,
+        "tokens_spent_total": report.tokens_spent_total if report else None,
+        "usage_unknown": report.usage_unknown if report else None,
         "full_context": _arm_json(report.full_context) if report else None,
         "real_summary": _arm_json(report.real_summary) if report else None,
         "both_ended_within_budget": report.both_ended_within_budget if report else None,
+        # Correctness is kept even when an arm overspent: it is reported per arm
+        # and as a combined verdict only when both arms terminated.
         "final_workspace_correct": report.final_workspace_correct if report else None,
     }
     return json.dumps(payload, indent=2) + "\n"
 
 
+#: Below this many tokens a comparison cannot even reserve one request; refuse.
+_MIN_TOKENS_FLOOR = 64
+
+
 async def _run_live(*, model: str, max_total_tokens: int, destination: Path) -> int:
+    spec = _case_spec()
+    if max_total_tokens < _MIN_TOKENS_FLOOR + spec.response_tokens:
+        print(
+            f"{LIVE_BLOCKED}: --max-total-tokens={max_total_tokens} is too small to "
+            f"cover one request (needs >= {_MIN_TOKENS_FLOOR + spec.response_tokens}); "
+            "refusing before any provider call.",
+            file=sys.stderr,
+        )
+        atomic_write_text(
+            destination,
+            _report_json(
+                status=LIVE_BLOCKED,
+                report=None,
+                model=model,
+                provider=None,
+                budget=max_total_tokens,
+                revision=_source_revision(),
+                notes=["token budget too small to reserve a single request"],
+            ),
+        )
+        return 2
+
     env_file_values = dotenv_values()
     try:
         project = load_project_providers()
@@ -159,7 +235,7 @@ async def _run_live(*, model: str, max_total_tokens: int, destination: Path) -> 
         atomic_write_text(
             destination,
             _report_json(
-                status="LIVE_BLOCKED",
+                status=LIVE_BLOCKED,
                 report=None,
                 model=model,
                 provider=None,
@@ -170,7 +246,6 @@ async def _run_live(*, model: str, max_total_tokens: int, destination: Path) -> 
         )
         return 2
 
-    spec = _case_spec()
     counter = LiteLLMTokenCounter(model)
 
     def llm_factory() -> LiteLLMClient:
@@ -186,6 +261,7 @@ async def _run_live(*, model: str, max_total_tokens: int, destination: Path) -> 
         llm_factory=llm_factory,
         checks=_checks(),
         budget=RunBudget(max_steps=10),
+        total_token_budget=max_total_tokens,
         run_timeout_seconds=180.0,
         check_timeout_seconds=10.0,
         token_counter=counter,
@@ -204,8 +280,10 @@ async def _run_live(*, model: str, max_total_tokens: int, destination: Path) -> 
         ),
     )
     print(f"Report: {destination}", flush=True)
-    # Exit non-zero only when the run itself failed, never for a failed check.
-    return 0 if report.both_ended_within_budget else 1
+    correct = bool(report.final_workspace_correct) and all(
+        value is True for value in report.final_workspace_correct.values()
+    )
+    return 0 if (report.valid and correct) else 1
 
 
 def main(args: argparse.Namespace) -> int:
@@ -253,6 +331,6 @@ if __name__ == "__main__":
         "--max-total-tokens",
         type=int,
         default=None,
-        help="Hard token budget for the comparison; unknown means not authorized.",
+        help="Hard token cap across both arms and summarizer calls.",
     )
     raise SystemExit(main(parser.parse_args()))
