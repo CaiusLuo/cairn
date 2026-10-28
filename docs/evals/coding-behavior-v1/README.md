@@ -9,7 +9,7 @@ separate module with a pinned dataset digest.
 
 Implemented in
 [`evaluation/cases/coding_smoke_behavior.py`](../../../evaluation/cases/coding_smoke_behavior.py).
-Current version `graded-behavior-v1`, digest
+Current version `graded-behavior-v2`, digest
 `70626544b76834685f1774b4873f9159c75747e01392762a2268a81e451bf7eb`
 (see `behavior_dataset_digest`; a test pins it).
 
@@ -73,11 +73,33 @@ secret file or environment value, cannot overwrite a host marker, cannot reach t
 network, and a missing sandbox fails instead of executing. See
 [`tests/runtime/evals/test_behavior_check.py`](../../../tests/runtime/evals/test_behavior_check.py).
 
+### Trusted host-side verdict (v2)
+
+The verdict is computed on the **host**, never inside the sandbox. A case supplies
+a *trusted probe program* that records raw observations with `obs(name, value)`
+and a host-side `expected` map (literal values, or `Contains` for a substring).
+The probe runs isolated and writes a bounded JSON observation record; the host
+then compares it to the expectations and only then marks PASS. Because the
+expected values never enter the sandbox, they cannot be read or forged.
+
+Consequences: a candidate that calls `os._exit(0)`, `sys.exit(0)`, prints a fake
+`SUCCESS` line, raises, or otherwise does not complete produces **no complete
+observation record** and FAILS — exit status is never a pass signal. A candidate
+that does return the right observations is correct by behaviour (hardcoding the
+right answers counts as correct behaviour, a known behavioural-testing limit).
+`sys.exit`/raised exceptions are recorded as an incomplete probe; `os._exit`
+bypasses the record entirely.
+
+The sandbox streams and caps stdout/stderr (no full buffering in the parent), and a
+timeout or external cancellation kills the whole process group and reaps readers
+before the error propagates — repeated cancellation cannot leave the child writing
+the workspace.
+
 ### Versioning
 
-- `BEHAVIOR_DATASET_VERSION = "graded-behavior-v1"` and the digest pin every
-  prompt, behavior script, protected entry and check. Changing any of them
-  requires a new version string and a new digest constant.
+- `BEHAVIOR_DATASET_VERSION = "graded-behavior-v2"` and the digest pin every
+  prompt, probe program, expected-observation map, protected entry and check.
+  Changing any of them requires a new version string and a new digest constant.
 - The frozen Repository Intelligence V1/V2 datasets and their 2026-10-11 pilot
   evidence are untouched by this contract.
 

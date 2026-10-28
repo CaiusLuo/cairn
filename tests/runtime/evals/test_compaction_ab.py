@@ -264,13 +264,26 @@ class _ConstCounter:
         return TokenCount(tokens=self.per_message * len(messages), is_estimate=False)
 
 
-def test_ledger_reserves_before_spending_and_refuses_when_unaffordable() -> None:
+def test_ledger_withholds_before_spending_and_refuses_when_unaffordable() -> None:
     ledger = TokenBudgetLedger(total=100)
-    assert ledger.reserve(10, 20) == 30  # affordable
-    ledger.settle(30, actual_known=True)
+    assert ledger.withhold(10, 20) == 30  # withheld up front
+    assert ledger.remaining == 70
+    ledger.settle(30, actual=30, is_estimate=False)  # exact: no refund
     assert ledger.remaining == 70
     with pytest.raises(TotalBudgetExceeded):
-        ledger.reserve(60, 20)  # 80 > 70
+        ledger.withhold(60, 20)  # 80 > 70
+
+
+def test_ledger_refunds_only_for_exact_known_actual() -> None:
+    ledger = TokenBudgetLedger(total=100)
+    withheld = ledger.withhold(40, 0)  # withheld 40
+    ledger.settle(withheld, actual=10, is_estimate=False)  # used 10 -> refund 30
+    assert ledger.spent == 10
+    # Unknown or estimate-degraded keeps the whole reservation.
+    withheld = ledger.withhold(20, 0)
+    ledger.settle(withheld, actual=5, is_estimate=True)
+    assert ledger.spent == 30
+    assert ledger.estimate_degraded is True
 
 
 def test_unknown_usage_is_charged_not_zero() -> None:
@@ -278,10 +291,45 @@ def test_unknown_usage_is_charged_not_zero() -> None:
     client = _UsageClient(usage=None)
     wrapped = BudgetedLLM(client, ledger, _ConstCounter(10), output_cap=50)
     asyncio.run(wrapped.generate([Message(role="user", content="hi")]))
-    # Unknown usage is charged the reservation and flagged, never treated as zero.
-    assert ledger.spent > 0
+    # Unknown usage is charged the full reservation and flagged, never zero.
+    assert ledger.spent == 10 + 50  # estimate(10) + output cap(50) kept
     assert ledger.unknown_usage is True
+    assert ledger.requests_settled == 1
     assert wrapped.usage_totals() == (None, None)
+
+
+class _BoomClient:
+    model = "boom"
+
+    async def generate(self, messages, tools=None):  # type: ignore[no-untyped-def]
+        raise RuntimeError("provider down")
+
+
+def test_failed_request_is_charged_and_settled_once() -> None:
+    ledger = TokenBudgetLedger(total=1000)
+    wrapped = BudgetedLLM(_BoomClient(), ledger, _ConstCounter(10), output_cap=50)
+    with pytest.raises(RuntimeError):
+        asyncio.run(wrapped.generate([Message(role="user", content="hi")]))
+    # A send that failed (possibly billed) keeps its reservation; settled once.
+    assert ledger.spent == 60
+    assert ledger.requests_settled == 1
+    assert ledger.unknown_usage is True
+
+
+def test_cancelled_request_is_charged_and_settled_once() -> None:
+    import asyncio as _asyncio
+
+    class _CancelClient:
+        model = "c"
+
+        async def generate(self, messages, tools=None):  # type: ignore[no-untyped-def]
+            raise _asyncio.CancelledError()
+
+    ledger = TokenBudgetLedger(total=1000)
+    wrapped = BudgetedLLM(_CancelClient(), ledger, _ConstCounter(10), output_cap=50)
+    with pytest.raises(_asyncio.CancelledError):
+        asyncio.run(wrapped.generate([Message(role="user", content="hi")]))
+    assert ledger.spent == 60 and ledger.requests_settled == 1
 
 
 def test_summary_request_is_counted_against_the_same_ledger() -> None:
@@ -296,6 +344,7 @@ def test_summary_request_is_counted_against_the_same_ledger() -> None:
     assert wrapped.summary_request_count() == 1
     # The summarizer call consumed budget like any other request.
     assert ledger.spent > 0
+    assert ledger.requests_settled == 1
 
 
 def test_low_total_budget_refused_before_any_provider_call(tmp_path: Path) -> None:
@@ -380,9 +429,10 @@ def _deploy_spec(**overrides: object) -> CompactionCaseSpec:
         Message(
             role="user",
             content=(
-                "Prior analysis "
+                "Older requirement: staging only. Analysis "
                 + "A" * 300
-                + " DEPLOY-ANALYSIS-7781 and conclusion SEED-DEPLOY-DONE-4471"
+                + " ref DEPLOY-ANALYSIS-7781 generic GENERIC-DEPLOY-42 "
+                "tool-ref TOOLFACT-9f3c2a correction CORRECTION-7b1d"
             ),
         ),
         Message(role="assistant", content="acknowledged"),
@@ -393,9 +443,10 @@ def _deploy_spec(**overrides: object) -> CompactionCaseSpec:
         ),
         Message(
             role="tool",
-            content="deployment applied and appended to the log; do not repeat",
+            content="deployment applied and appended once; do not repeat",
             tool_call_id="seed-1",
         ),
+        Message(role="user", content="Proceed with the verification step."),
     )
     base = dict(
         name="verify-after-deploy",
@@ -403,12 +454,13 @@ def _deploy_spec(**overrides: object) -> CompactionCaseSpec:
         files={"applied_log.txt": "applied\n"},
         current_instruction="Verify applied_log.txt and report finished. Do not deploy again.",
         history=history,
-        budget_tokens=8_000,
+        budget_tokens=9_000,
         summary_budget_tokens=1_600,
         response_tokens=150,
         side_effect_log="applied_log.txt",
         forbidden_history_marker="DEPLOY-ANALYSIS-7781",
-        key_fact_marker="SEED-DEPLOY-DONE-4471",
+        tool_fact_marker="TOOLFACT-9f3c2a",
+        correction_marker="CORRECTION-7b1d",
         expected_side_effect_runs=0,
     )
     base.update(overrides)
@@ -436,7 +488,8 @@ def _deploy_checks() -> tuple[FileContentEqualsCheck, ...]:
 
 def test_valid_when_compaction_occurs_and_facts_preserved(tmp_path: Path) -> None:
     summ = _KeySummarizer(
-        "earlier deploy summarized; SEED-DEPLOY-DONE-4471 applied; do not repeat"
+        "earlier deploy summarized; GENERIC-DEPLOY-42; tool-ref TOOLFACT-9f3c2a; "
+        "decision-ref CORRECTION-7b1d; do not repeat"
     )
     report = asyncio.run(
         compare_case(
@@ -451,7 +504,8 @@ def test_valid_when_compaction_occurs_and_facts_preserved(tmp_path: Path) -> Non
     assert report.both_ended_within_budget is True
     assert report.real_summary.compaction_occurred is True
     assert report.real_summary.compacted_history_used is True
-    assert report.real_summary.key_fact_preserved is True
+    assert report.real_summary.tool_fact_preserved is True
+    assert report.real_summary.correction_preserved is True
     assert report.real_summary.replayed_side_effect is False
     assert report.valid is True, report.invalid_reasons
     assert report.final_workspace_correct == {"FileContentEqualsCheck": True}
@@ -478,8 +532,11 @@ def test_invalid_when_summary_arm_does_not_compact(tmp_path: Path) -> None:
     )
 
 
-def test_invalid_when_key_fact_dropped_by_summary(tmp_path: Path) -> None:
-    summ = _KeySummarizer("earlier work summarized with no key fact")
+def test_invalid_when_tool_fact_dropped_even_with_generic_marker(
+    tmp_path: Path,
+) -> None:
+    # Keeps the generic deploy marker but drops the tool-only fact -> invalid.
+    summ = _KeySummarizer("summarized; GENERIC-DEPLOY-42; decision-ref CORRECTION-7b1d")
     report = asyncio.run(
         compare_case(
             _deploy_spec(),
@@ -491,9 +548,49 @@ def test_invalid_when_key_fact_dropped_by_summary(tmp_path: Path) -> None:
         )
     )
     assert report.real_summary.compaction_occurred is True
-    assert report.real_summary.key_fact_preserved is False
+    assert report.real_summary.tool_fact_preserved is False
     assert report.valid is False
-    assert any("key tool fact" in reason for reason in report.invalid_reasons)
+    assert any("tool-only fact" in reason for reason in report.invalid_reasons)
+
+
+def test_invalid_when_correction_dropped_even_with_generic_marker(
+    tmp_path: Path,
+) -> None:
+    # Keeps the tool fact and the generic marker but drops the older correction.
+    summ = _KeySummarizer("summarized; GENERIC-DEPLOY-42; tool-ref TOOLFACT-9f3c2a")
+    report = asyncio.run(
+        compare_case(
+            _deploy_spec(),
+            llm_factory=_run_factory(lambda: _inspect_program(3)),
+            checks=_deploy_checks(),
+            budget=RunBudget(max_steps=12),
+            run_timeout_seconds=20,
+            summarizer_factory=lambda _llm: summ,
+        )
+    )
+    assert report.real_summary.compaction_occurred is True
+    assert report.real_summary.correction_preserved is False
+    assert report.valid is False
+    assert any("correction" in reason for reason in report.invalid_reasons)
+
+
+def test_semantically_equivalent_summary_is_allowed(tmp_path: Path) -> None:
+    # A rephrased summary that still carries the required identifiers passes.
+    summ = _KeySummarizer(
+        "Deployment finished earlier; GENERIC-DEPLOY-42 confirmed. "
+        "Tool reported TOOLFACT-9f3c2a. The user insisted: CORRECTION-7b1d."
+    )
+    report = asyncio.run(
+        compare_case(
+            _deploy_spec(),
+            llm_factory=_run_factory(lambda: _inspect_program(3)),
+            checks=_deploy_checks(),
+            budget=RunBudget(max_steps=12),
+            run_timeout_seconds=20,
+            summarizer_factory=lambda _llm: summ,
+        )
+    )
+    assert report.valid is True, report.invalid_reasons
 
 
 def test_invalid_when_side_effect_is_replayed(tmp_path: Path) -> None:
@@ -501,7 +598,9 @@ def test_invalid_when_side_effect_is_replayed(tmp_path: Path) -> None:
         content=None,
         tool_calls=[ToolCall(id="replay", name="apply_side_effect", arguments={})],
     )
-    summ = _KeySummarizer("summarized; SEED-DEPLOY-DONE-4471 applied")
+    summ = _KeySummarizer(
+        "summarized; tool-ref TOOLFACT-9f3c2a; decision-ref CORRECTION-7b1d"
+    )
     report = asyncio.run(
         compare_case(
             _deploy_spec(),
@@ -558,3 +657,50 @@ def test_reservation_counter_covers_tool_schemas() -> None:
     )
     with pytest.raises(TotalBudgetExceeded):
         asyncio.run(wrapped.generate(messages, tools))
+
+
+class _RaisingSummarizer(Summarizer):
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    async def summarize(self, messages, *, max_tokens):  # type: ignore[no-untyped-def]
+        self.calls.append(1)
+        raise TimeoutError("summary provider timed out")
+
+
+def test_summary_failure_does_not_abort_the_turn(tmp_path: Path) -> None:
+    # A failed summarizer must not end the turn: compaction failure is swallowed
+    # and the continuation still finishes within budget.
+    summ = _RaisingSummarizer()
+    report = asyncio.run(
+        compare_case(
+            _deploy_spec(),
+            llm_factory=_run_factory(lambda: _inspect_program(3)),
+            checks=_deploy_checks(),
+            budget=RunBudget(max_steps=12),
+            run_timeout_seconds=20,
+            summarizer_factory=lambda _llm: summ,
+        )
+    )
+    assert report.both_ended_within_budget is True
+    assert report.real_summary.summary_calls is not None
+    assert report.real_summary.summary_calls >= 1
+
+
+def test_budget_accumulates_across_both_arms_and_summary() -> None:
+    # A single ledger records spend from both arms; total is the sum of settled
+    # reservations, never zero for attempted requests.
+    measured = asyncio.run(
+        compare_case(
+            _spec(),
+            llm_factory=_run_factory(_write_then_finish),
+            budget=RunBudget(max_steps=4),
+            total_token_budget=10**9,
+            run_timeout_seconds=10,
+            summarizer_factory=lambda _llm: _CountingSummarizer(),
+        )
+    )
+    full = measured.full_context.tokens_spent or 0
+    summary = measured.real_summary.tokens_spent or 0
+    assert full > 0 and summary > 0
+    assert measured.tokens_spent_total == full + summary

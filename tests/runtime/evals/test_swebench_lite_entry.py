@@ -17,6 +17,10 @@ def _args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         predictions=tmp_path / "predictions.jsonl",
         print_command=False,
         grade=False,
+        solve=False,
+        tasks=None,
+        max_steps=10,
+        solve_timeout_seconds=30.0,
         live=False,
         official_harness=False,
         model=None,
@@ -101,26 +105,19 @@ def test_grade_without_official_harness_is_blocked(
     assert "official-harness" in result["missing"]
 
 
-def test_grade_executes_harness_and_summarizes_results(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Official swebench.harness.reporting.make_run_report keys (verified against
-    # the upstream source), not a self-invented format.
-    results = {
+def _official_report(subset_ids: list[str]) -> dict[str, object]:
+    return {
         "total_instances": 300,
-        "resolved_ids": ["astropy__astropy-12907", "django__django-11001"],
-        "unresolved_ids": ["sympy__sympy-11400"],
+        "submitted_ids": subset_ids,
+        "resolved_ids": subset_ids[:2],
+        "unresolved_ids": subset_ids[2:3],
         "empty_patch_ids": [],
         "error_ids": [],
     }
-    results_path = tmp_path / "results.json"
-    results_path.write_text(json.dumps(results))
-    monkeypatch.setattr(script, "_docker_available", lambda: True)
-    monkeypatch.setattr(script, "_official_harness_available", lambda: True)
-    monkeypatch.setattr(
-        script, "_run_official_harness", lambda *a, **k: (0, results_path)
-    )
-    args = _args(
+
+
+def _grade_args(tmp_path: Path) -> argparse.Namespace:
+    return _args(
         tmp_path,
         grade=True,
         run_id="r1",
@@ -128,32 +125,122 @@ def test_grade_executes_harness_and_summarizes_results(
         max_total_tokens=1000,
         isolated=True,
     )
-    assert script.main(args) == 0
+
+
+def _fake_harness_writing(payload: object, *, run_id: str = "r1", age: float = 0.0):  # type: ignore[no-untyped-def]
+    def run(predictions, requested_run_id, **kwargs):  # type: ignore[no-untyped-def]
+        path = Path("logs") / "evaluation" / requested_run_id / "model" / "results.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(payload if isinstance(payload, str) else json.dumps(payload))
+        if age:
+            import os
+            import time as _t
+
+            old = _t.time() - age
+            os.utime(path, (old, old))
+        return 0, path
+
+    return run
+
+
+def test_grade_executes_and_validates_official_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    ids = lite.instance_ids()
+    monkeypatch.setattr(script, "_docker_available", lambda: True)
+    monkeypatch.setattr(script, "_official_harness_available", lambda: True)
+    monkeypatch.setattr(
+        script,
+        "_run_official_harness",
+        _fake_harness_writing(_official_report(list(ids[:3]))),
+    )
+    assert script.main(_grade_args(tmp_path)) == 0
     result, _ = _parse(capsys)
     assert result["status"] == "GRADED"
     assert result["executed"] is True
     assert result["summary"]["resolved"] == 2
     assert result["summary"]["unresolved"] == 1
+    assert result["error_class"] is None
 
 
-def test_grade_propagates_nonzero_harness_exit_as_blocked(
+def test_grade_exit0_but_missing_results_is_blocked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(script, "_docker_available", lambda: True)
+    monkeypatch.setattr(script, "_official_harness_available", lambda: True)
+    monkeypatch.setattr(script, "_run_official_harness", lambda *a, **k: (0, None))
+    assert script.main(_grade_args(tmp_path)) == 1
+    result, _ = _parse(capsys)
+    assert result["status"] == "LIVE_BLOCKED"
+    assert result["error_class"] == "missing_results"
+
+
+def test_grade_bad_json_is_parse_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(script, "_docker_available", lambda: True)
+    monkeypatch.setattr(script, "_official_harness_available", lambda: True)
+    monkeypatch.setattr(
+        script, "_run_official_harness", _fake_harness_writing("{not json")
+    )
+    assert script.main(_grade_args(tmp_path)) == 1
+    result, _ = _parse(capsys)
+    assert result["status"] == "LIVE_BLOCKED"
+    assert result["error_class"] == "parse_error"
+
+
+def test_grade_stale_results_is_blocked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(script, "_docker_available", lambda: True)
+    monkeypatch.setattr(script, "_official_harness_available", lambda: True)
+    monkeypatch.setattr(
+        script,
+        "_run_official_harness",
+        _fake_harness_writing(
+            _official_report(list(lite.instance_ids()[:3])), age=3600
+        ),
+    )
+    assert script.main(_grade_args(tmp_path)) == 1
+    result, _ = _parse(capsys)
+    assert result["status"] == "LIVE_BLOCKED"
+    assert result["error_class"] == "stale_results"
+
+
+def test_grade_mismatched_instances_is_blocked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(script, "_docker_available", lambda: True)
+    monkeypatch.setattr(script, "_official_harness_available", lambda: True)
+    monkeypatch.setattr(
+        script,
+        "_run_official_harness",
+        _fake_harness_writing(
+            _official_report(["not__in-subset-1", "not__in-subset-2"])
+        ),
+    )
+    assert script.main(_grade_args(tmp_path)) == 1
+    result, _ = _parse(capsys)
+    assert result["status"] == "LIVE_BLOCKED"
+    assert result["error_class"] == "instance_mismatch"
+
+
+def test_grade_nonzero_exit_is_execution_error(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(script, "_docker_available", lambda: True)
     monkeypatch.setattr(script, "_official_harness_available", lambda: True)
     monkeypatch.setattr(script, "_run_official_harness", lambda *a, **k: (3, None))
-    args = _args(
-        tmp_path,
-        grade=True,
-        run_id="r1",
-        model="openai/x",
-        max_total_tokens=1000,
-        isolated=True,
-    )
-    assert script.main(args) == 1
+    assert script.main(_grade_args(tmp_path)) == 1
     result, _ = _parse(capsys)
     assert result["status"] == "LIVE_BLOCKED"
-    assert result["executed"] is True  # it ran, but failed
+    assert result["executed"] is True
+    assert result["error_class"] == "execution"
 
 
 def test_live_reports_partial_closed_loop(

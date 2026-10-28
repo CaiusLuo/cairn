@@ -30,6 +30,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
+from typing import Any
 
 from cairn.core.models import ToolResult
 from cairn.infra.workspace.workspace import Workspace
@@ -198,6 +199,9 @@ def build_argv(workspace: Workspace, script: str, limits: IsolationLimits) -> li
 class IsolatedRunner:
     """Runs host-owned scripts inside a fresh bubblewrap sandbox."""
 
+    #: How long cleanup may take after a kill, independent of the caller's cancel.
+    _CLEANUP_SECONDS = 5.0
+
     def __init__(self, limits: IsolationLimits | None = None) -> None:
         self.limits = limits or IsolationLimits()
 
@@ -206,7 +210,14 @@ class IsolatedRunner:
         return available()
 
     async def run_script(self, workspace: Workspace, script: str) -> ToolResult:
-        """Execute ``script`` isolated; raises ``IsolationUnavailable`` if blocked."""
+        """Execute ``script`` isolated with bounded I/O and reliable cleanup.
+
+        * stdout/stderr are streamed and capped (never fully buffered), so a child
+          that floods output cannot exhaust parent memory or deadlock the pipe.
+        * a timeout or an external cancellation kills the whole process group and
+          reaps the reader tasks before the caller's error propagates; repeated
+          cancellation cannot interrupt that cleanup, and no write survives it.
+        """
         if not available():
             raise IsolationUnavailable(
                 "no execution sandbox (bubblewrap + user namespaces) is available"
@@ -223,34 +234,79 @@ class IsolatedRunner:
             raise IsolationUnavailable(
                 f"could not start sandbox: {type(exc).__name__}"
             ) from exc
+
+        cap = self.limits.max_output_bytes
+        out = _Capped()
+        err = _Capped()
+        readers = [
+            asyncio.create_task(_read_capped(process.stdout, cap, out)),
+            asyncio.create_task(_read_capped(process.stderr, cap, err)),
+        ]
+        waiter = asyncio.ensure_future(process.wait())
         try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=self.limits.timeout_seconds
+            await asyncio.wait_for(
+                asyncio.gather(waiter, *readers), timeout=self.limits.timeout_seconds
             )
         except TimeoutError:
-            _kill_group(process)
-            await _drain(process)
+            await _terminate(process, waiter, readers)
             return ToolResult(
-                stdout="",
+                stdout=out.decode(),
                 stderr=f"behavior check exceeded {self.limits.timeout_seconds}s "
                 "and was killed inside the sandbox",
                 exit_code=-1,
-                stdout_truncated=False,
-                stderr_truncated=False,
+                stdout_truncated=out.truncated,
+                stderr_truncated=True,
             )
-        limit = self.limits.max_output_bytes
-        out = stdout[:limit].decode("utf-8", "replace")
-        err = stderr[:limit].decode("utf-8", "replace")
+        except asyncio.CancelledError:
+            # Kill the whole group and finish reaping before propagating, so a
+            # cancelled run never keeps writing the workspace or leaks readers.
+            await _terminate(process, waiter, readers)
+            raise
         return ToolResult(
-            stdout=out,
-            stderr=err,
+            stdout=out.decode(),
+            stderr=err.decode(),
             exit_code=process.returncode if process.returncode is not None else -1,
-            stdout_truncated=len(stdout) > limit,
-            stderr_truncated=len(stderr) > limit,
+            stdout_truncated=out.truncated,
+            stderr_truncated=err.truncated,
         )
 
 
+class _Capped:
+    """An output buffer that keeps at most ``cap`` bytes but never stops draining."""
+
+    def __init__(self) -> None:
+        self._buf = bytearray()
+        self.truncated = False
+
+    def feed(self, chunk: bytes, cap: int) -> None:
+        if len(self._buf) < cap:
+            take = cap - len(self._buf)
+            self._buf += chunk[:take]
+            if len(chunk) > take:
+                self.truncated = True
+        else:
+            self.truncated = True
+
+    def decode(self) -> str:
+        return self._buf.decode("utf-8", "replace")
+
+
+async def _read_capped(
+    stream: asyncio.StreamReader | None, cap: int, sink: _Capped
+) -> None:
+    """Drain ``stream`` to EOF, keeping only the first ``cap`` bytes."""
+    if stream is None:
+        return
+    while True:
+        chunk = await stream.read(4096)
+        if not chunk:
+            return
+        sink.feed(chunk, cap)
+
+
 def _kill_group(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
     try:
         os.killpg(os.getpgid(process.pid), 9)
     except (ProcessLookupError, PermissionError):
@@ -258,10 +314,40 @@ def _kill_group(process: asyncio.subprocess.Process) -> None:
             process.kill()
 
 
-async def _drain(process: asyncio.subprocess.Process) -> None:
-    """Reap a killed process so no zombie/reader task is left behind."""
-    with contextlib.suppress(TimeoutError, ProcessLookupError):
-        await asyncio.wait_for(process.wait(), timeout=5)
+async def _await_quiet(future: asyncio.Future[Any], deadline: float) -> None:
+    """Await ``future`` tolerating repeated cancellation until done or timed out."""
+    loop = asyncio.get_running_loop()
+    while not future.done() and loop.time() < deadline:
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError:
+            # A repeated cancel must not abandon cleanup; keep waiting.
+            continue
+        except Exception:
+            return
+
+
+async def _terminate(
+    process: asyncio.subprocess.Process,
+    waiter: asyncio.Future[Any],
+    readers: list[asyncio.Task[Any]],
+) -> None:
+    """Kill the process group, then boundedly reap the waiter and readers.
+
+    Runs to completion even when the surrounding task is cancelled again.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + IsolatedRunner._CLEANUP_SECONDS
+    _kill_group(process)
+    await _await_quiet(waiter, deadline)
+    if process.returncode is None:
+        _kill_group(process)
+        await _await_quiet(waiter, deadline)
+    for reader in readers:
+        if not reader.done():
+            reader.cancel()
+    for reader in readers:
+        await _await_quiet(reader, deadline)
 
 
 def require_isolation() -> None:

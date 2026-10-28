@@ -97,27 +97,50 @@ command is never mistaken for a run:
 | grade | `--predictions P --grade --run-id ID --model M --max-total-tokens N --isolated` | `GRADED` / `LIVE_BLOCKED` | yes — the official harness |
 
 `--grade` actually invokes the official Docker harness
-(`python -m swebench.harness.run_evaluation …`) on the predictions and parses its
-`logs/evaluation/**/<run_id>/results.json`. It parses the **official** schema
-(`resolved_ids`, `unresolved_ids`, `error_ids`, `empty_patch_ids`, as produced by
-`swebench.harness.reporting.make_run_report`), not a self-invented format. It
-requires an explicit model, hard token budget, `--run-id`, and `--isolated` with
-**real evidence**: `--isolated` is only honored when the Docker daemon actually
-answers (`docker info`); otherwise it reports `LIVE_BLOCKED
-missing=["docker-daemon"]`. If the harness is installed but absent it reports
-`LIVE_BLOCKED missing=["official-harness"]` (`docker_available=true`). A non-zero
-harness exit is reported as `LIVE_BLOCKED` with `executed=true`, not a success.
+(`python -m swebench.harness.run_evaluation …`) and validates the report before
+any success claim. A `GRADED` verdict requires the report to be **this run's and
+real**: present, belonging to `--run-id`, **fresh** (mtime after the run started),
+**valid official schema** (`resolved_ids`, `unresolved_ids`, `error_ids`,
+`empty_patch_ids` from `swebench.harness.reporting.make_run_report`), and about a
+**subset-matching instance set**. Otherwise it reports `LIVE_BLOCKED` with an
+`error_class` of `missing_results` / `wrong_run_id` / `stale_results` /
+`parse_error` / `invalid_schema` / `empty_report` / `instance_mismatch`, or
+`execution` for a non-zero harness exit (`executed=true`). `--isolated` requires
+the Docker daemon to answer (`docker info`); that only proves the daemon is up —
+the execution boundary is recorded as the official per-instance Docker harness,
+and a real container run is still required to prove isolation end to end.
 
-## Status this round: PARTIAL
+## Solve stage (Cairn → patch)
 
-The full closed loop — **Cairn solve → patch → official grade** — is **partial**.
-The *grade* stage is implemented and testable; the *solve* stage (running the
-Cairn agent per instance inside an isolated container to produce a patch) is
-**not built this round**, so `--live` reports `PARTIAL` with
-`missing=["cairn-solve-patch-generation (needs an isolated container agent
-runner; not built this round)"]` and never claims a score. No paid model run and
-no Docker grading actually executed here (no model/budget authorized, no harness
-installed).
+`evaluation/benchmarks/swebench_lite_solve.py` implements the thin solve stage:
+it runs the normal agent loop (`runtime.loop.run_turn`, the single lifecycle
+owner) on a task's problem statement in a **disposable git checkout**, then
+collects the working-tree diff as `model_patch`. `--solve --tasks FILE
+--predictions P --model M` writes official predictions; combined with `--grade`
+it closes the loop. The solve stage is validated offline with a scripted model
+(edit → patch → apply → behaviour check). Running the agent over an untrusted
+repository with shell/file tools is a trust decision that SWE-bench answers with
+per-instance containers; this repo does **not** silently expand host authority —
+the container/VM isolation of the solve stage is a **decision point** handed back
+(see below).
+
+## Status this round: PARTIAL (live only)
+
+The solve and grade stages are both **implemented and offline-validated**; the
+closed-loop code exists. What a real run still needs is an **environment**, not
+new code: a provider/model + budget, and a disposable **container/VM** per
+instance (repo at `base_commit` + test image) so the untrusted repo and the agent
+run isolated. Without those, `--live`/`--solve` report `LIVE_BLOCKED` (missing
+`provider-config` / `--tasks`) or `PARTIAL`, never a score. No paid model run and
+no Docker grading actually executed here (no model/budget authorized, no
+`swebench` package/images).
+
+**Decision point (needs owner input):** running Cairn's shell/file tools over an
+untrusted SWE-bench repository on the host is a security decision. Choose: (A)
+provision per-instance containers/VM for solve (mirrors the official harness), or
+(B) accept a documented host-execution trust assumption for solve. Until chosen,
+the solve stage defaults to no shell grant unless a caller opts in, and live
+acceptance stays blocked.
 
 ```sh
 uv run python evaluation/runners/run_swebench_lite.py --check

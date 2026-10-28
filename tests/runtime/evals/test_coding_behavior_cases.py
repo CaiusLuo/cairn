@@ -219,15 +219,15 @@ def test_suite_is_versioned_and_stable() -> None:
     assert [c.case.name for c in suite.cases] == list(NAMES)
     assert behavior_suite() == suite  # deterministic construction
     with pytest.raises(ValueError, match="Unsupported coding behavior"):
-        behavior_suite(version="graded-behavior-v2")
+        behavior_suite(version="graded-behavior-v1")
 
 
 def test_versioned_dataset_digest_is_pinned() -> None:
     """A silent prompt/behavior/protected change must require a new version."""
-    assert BEHAVIOR_DATASET_VERSION == "graded-behavior-v1"
+    assert BEHAVIOR_DATASET_VERSION == "graded-behavior-v2"
     assert (
         behavior_dataset_digest()
-        == "70626544b76834685f1774b4873f9159c75747e01392762a2268a81e451bf7eb"
+        == "000f4bbc08059b436b3cd26601fb0dd1c92d3948b85bb72d1967fccca119aa58"
     )
 
 
@@ -263,9 +263,11 @@ def test_graded_code_is_executed_inside_throwaway_workspace(
     workspace = Workspace(tmp_path)
     probe = (
         "open('probe.txt', 'w', encoding='utf-8').write('x')\n"
-        "assert open('probe.txt', encoding='utf-8').read() == 'x'"
+        "obs('read', open('probe.txt', encoding='utf-8').read())"
     )
-    result = asyncio.run(BehaviorCheck("probe", probe).evaluate(workspace))
+    result = asyncio.run(
+        BehaviorCheck("probe", probe, {"read": "x"}).evaluate(workspace)
+    )
     assert result.passed is True
     # The write landed in the workspace, not the process working directory.
     assert (tmp_path / "probe.txt").read_text() == "x"

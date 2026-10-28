@@ -81,21 +81,24 @@ def _source_revision() -> str | None:
 
 
 def _case_spec() -> CompactionCaseSpec:
-    """One realistic continuation: a prior deployment already happened.
+    """One realistic continuation built to exercise a *real* compaction.
 
-    The seeded history contains a real user request, an assistant tool call, its
-    tool result (the already-applied side effect) and a following user
-    correction. A large analysis block and a unique "key fact" token make it
-    possible to prove the summary compressed the former and preserved the latter.
-    The side-effect log is an append-only file, so a replay is observable.
+    The seeded history carries an older requirement (with a large analysis block
+    the summary must compress away), an assistant tool call whose result is the
+    only source of a tool fact, and a **pre-existing user correction** that a
+    faithful summary must retain. The side-effect log is append-only, so a replay
+    is observable. A generic deploy marker is always present, so a summary that
+    keeps it but drops the correction or the tool fact is still detected.
     """
     big_analysis = (
-        "Prior deployment analysis: "
+        "Older requirement: staging only. Analysis: "
         + "A" * 300
-        + " analysis-token DEPLOY-ANALYSIS-7781 and conclusion SEED-DEPLOY-DONE-4471"
+        + " ref ANALYSIS-7781 generic GENERIC-DEPLOY-42 "
+        "tool-ref TOOLFACT-9f3c2a correction CORRECTION-7b1d."
     )
     history = (
         Message(role="user", content=big_analysis),
+        Message(role="assistant", content="acknowledged the staging deployment plan"),
         Message(
             role="assistant",
             content=None,
@@ -103,11 +106,10 @@ def _case_spec() -> CompactionCaseSpec:
         ),
         Message(
             role="tool",
-            content=(
-                "deployment applied and appended to applied_log.txt; do not repeat"
-            ),
+            content="deployment applied and appended once to applied_log.txt; do not repeat",
             tool_call_id="seed-1",
         ),
+        Message(role="user", content="Proceed with the verification step."),
     )
     return CompactionCaseSpec(
         name="verify-after-deploy",
@@ -126,8 +128,10 @@ def _case_spec() -> CompactionCaseSpec:
         response_tokens=512,
         side_effect_tool="apply_side_effect",
         side_effect_log=_SIDE_EFFECT_LOG,
-        forbidden_history_marker="DEPLOY-ANALYSIS-7781",
-        key_fact_marker="SEED-DEPLOY-DONE-4471",
+        forbidden_history_marker="ANALYSIS-7781",
+        tool_fact_marker="TOOLFACT-9f3c2a",
+        correction_marker="CORRECTION-7b1d",
+        version="compaction-sample-v2",
         expected_side_effect_runs=0,
     )
 
@@ -151,6 +155,8 @@ def _arm_json(observation: ArmObservation) -> dict[str, object]:
         "compaction_occurred": observation.compaction_occurred,
         "compacted_history_used": observation.compacted_history_used,
         "key_fact_preserved": observation.key_fact_preserved,
+        "tool_fact_preserved": observation.tool_fact_preserved,
+        "correction_preserved": observation.correction_preserved,
         "summary_calls": observation.summary_calls,
         "request_count": observation.request_count,
         "tokens_spent": observation.tokens_spent,
@@ -175,9 +181,10 @@ def _report_json(
     notes: list[str],
 ) -> str:
     payload: dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": status,
         "case_name": report.case_name if report else _case_spec().name,
+        "sample_version": _case_spec().version,
         "model_identifier": model,
         "provider": provider,
         "max_total_tokens": budget,

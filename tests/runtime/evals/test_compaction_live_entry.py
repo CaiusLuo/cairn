@@ -45,7 +45,7 @@ def test_report_skeleton_keeps_unknown_fields_null(tmp_path: Path) -> None:
     args = _args(tmp_path, model="openai/x", max_total_tokens=5000)
     assert script.main(args) == 0
     payload = json.loads((tmp_path / "report.json").read_text())
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["model_identifier"] == "openai/x"
     assert payload["max_total_tokens"] == 5000
     assert payload["status"] == "LIVE_NOT_RUN"

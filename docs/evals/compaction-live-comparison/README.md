@@ -29,10 +29,14 @@ replay is detectable.
 
 When `--max-total-tokens` is given, one shared `TokenBudgetLedger` caps
 `FULL_CONTEXT`, `REAL_SUMMARY` **and** every summarizer call together. Before each
-provider request the harness reserves a conservative upper bound computed over the
-**whole request surface — system messages, history and tool schemas — plus the
-output cap**; an unaffordable request is **refused before it is sent** with
-`TotalBudgetExceeded`. The live runner uses `LiteLLMTokenCounter` (the real
+provider request the harness **withholds** a conservative upper bound computed
+over the whole request surface — system messages, history and tool schemas — plus
+the output cap; an unaffordable request is **refused before it is sent** with
+`TotalBudgetExceeded`. Each request **settles exactly once**: an exact, known
+actual cost refunds the unused reservation; unknown usage, an estimate-degraded
+counter, a failure, a lost response or a cancellation keep the full reservation
+(never zero). The live client disables provider retries (`num_retries=0`), so one
+logical request is one provider call. The live runner uses `LiteLLMTokenCounter` (the real
 per-model tokenizer, which includes tools); offline doubles use a deterministic
 character proxy that also counts tool schemas. A character estimate is a proxy,
 not a proven provider hard cap; the ledger caps reserved tokens under whichever
@@ -46,11 +50,18 @@ arm do not weaken this: they are admission limits, the ledger is the hard cap.
 A run is a **valid** full-vs-summary comparison only when **all** hold:
 
 - both arms ended within budget;
-- the `REAL_SUMMARY` arm actually invoked the summarizer
-  (`compaction_occurred`), and a later request carried the current instruction
-  without the large older text (`compacted_history_used`);
-- the key fact still reached the model after compaction (`key_fact_preserved`);
-- a non-idempotent side effect was not replayed (`replayed_side_effect` false).
+- the `REAL_SUMMARY` arm actually invoked the summarizer (`compaction_occurred`),
+  and its produced **summary text appears in a later request**
+  (`summary_text_used`) — reduction by context omission alone is not compaction;
+- the older-history **user correction** survives (`correction_preserved`) and a
+  **tool-only fact** survives (`tool_fact_preserved`), checked by unique
+  identifiers so a semantically-rephrased but faithful summary still passes, while
+  a summary that keeps a generic marker but drops either fact fails;
+- a non-idempotent (append-only) side effect was not replayed
+  (`replayed_side_effect` false); the final-workspace oracle independently checks
+  the task result.
+
+Sample version `compaction-sample-v2`, report `schema_version` 3.
 
 Otherwise the report sets `valid = false` with `invalid_reasons` — it is **never**
 reported as a successful comparison. A summary arm that does not actually compact

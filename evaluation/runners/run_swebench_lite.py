@@ -25,9 +25,11 @@ https://www.swebench.com/SWE-bench/guides/evaluation/
 """
 
 import argparse
+import asyncio
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 if not __package__:
@@ -35,6 +37,7 @@ if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from evaluation.benchmarks import swebench_lite as lite
+from evaluation.benchmarks.swebench_lite_solve import SolveTask, solve_task
 
 LIVE_NOT_RUN = "LIVE_NOT_RUN"
 LIVE_BLOCKED = "LIVE_BLOCKED"
@@ -43,6 +46,7 @@ PREDICTIONS_WRITTEN = "PREDICTIONS_WRITTEN"
 COMMAND_READY = "COMMAND_READY"
 GRADED = "GRADED"
 PARTIAL = "PARTIAL"
+SOLVED = "SOLVED"
 
 #: Stage missing from the closed loop this round.
 _MISSING_SOLVE = (
@@ -136,25 +140,70 @@ def _run_official_harness(
     return result.returncode, (candidates[0] if candidates else None)
 
 
-def _summarize(results_path: Path | None) -> dict[str, object] | None:
+_REQUIRED_REPORT_KEYS = frozenset(
+    {"resolved_ids", "unresolved_ids", "error_ids", "empty_patch_ids"}
+)
+
+
+def _validate_report(
+    results_path: Path | None,
+    *,
+    run_id: str,
+    started_at: float,
+    expected_ids: set[str],
+) -> tuple[dict[str, object] | None, str | None]:
+    """Validate this run's official results.json; return (summary, error_class).
+
+    A GRADED verdict requires a report that belongs to *this* run and is real:
+    present, fresh, correct schema, and about the expected instance set. Anything
+    else returns an ``error_class`` instead of a summary.
+    """
     if results_path is None or not results_path.is_file():
-        return None
+        return None, "missing_results"
+    if run_id not in str(results_path):
+        return None, "wrong_run_id"
     try:
-        results = json.loads(results_path.read_text(encoding="utf-8"))
+        if results_path.stat().st_mtime < started_at - 1:
+            return None, "stale_results"
+    except OSError:
+        return None, "missing_results"
+    try:
+        data = json.loads(results_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
-    summary = lite.summarize_results(results)
-    return {
-        "total": summary.total,
-        "submitted": summary.submitted,
-        "completed": summary.completed,
-        "resolved": summary.resolved,
-        "unresolved": summary.unresolved,
-        "empty_patches": summary.empty_patches,
-        "errors": summary.errors,
-        "incomplete": summary.incomplete,
-        "resolved_rate": summary.resolved_rate,
-    }
+        return None, "parse_error"
+    if not isinstance(data, dict) or not set(data) >= _REQUIRED_REPORT_KEYS:
+        return None, "invalid_schema"
+    seen: set[str] = set()
+    for key in (
+        "submitted_ids",
+        "resolved_ids",
+        "unresolved_ids",
+        "error_ids",
+        "empty_patch_ids",
+    ):
+        value = data.get(key, [])
+        if not isinstance(value, list) or any(not isinstance(x, str) for x in value):
+            return None, "invalid_schema"
+        seen |= set(value)
+    if not seen:
+        return None, "empty_report"
+    if not seen <= expected_ids:
+        return None, "instance_mismatch"
+    summary = lite.summarize_results(data)
+    return (
+        {
+            "total": summary.total,
+            "submitted": summary.submitted,
+            "completed": summary.completed,
+            "resolved": summary.resolved,
+            "unresolved": summary.unresolved,
+            "empty_patches": summary.empty_patches,
+            "errors": summary.errors,
+            "incomplete": summary.incomplete,
+            "resolved_rate": summary.resolved_rate,
+        },
+        None,
+    )
 
 
 def main(args: argparse.Namespace) -> int:
@@ -180,6 +229,99 @@ def main(args: argparse.Namespace) -> int:
         return _result(
             PREDICTIONS_WRITTEN, executed=False, rc=0, extra={"count": len(predictions)}
         )
+
+    if args.solve:
+        missing_solve: list[str] = []
+        if args.tasks is None:
+            missing_solve.append("--tasks")
+        if args.predictions is None:
+            missing_solve.append("--predictions")
+        if not args.model:
+            missing_solve.append("--model")
+        if missing_solve:
+            print(
+                f"{LIVE_BLOCKED}: solve needs {', '.join(missing_solve)}",
+                file=sys.stderr,
+            )
+            return _result(
+                LIVE_BLOCKED, executed=False, rc=2, extra={"missing": missing_solve}
+            )
+        try:
+            from cairn.core.budget import RunBudget
+            from cairn.core.permissions import (
+                PermissionChoice,
+                SessionPermissionHandler,
+            )
+            from cairn.infra.config import (
+                default_provider,
+                load_project_providers,
+                resolve_provider_api_key,
+            )
+            from cairn.infra.llm.litellm_client import LiteLLMClient
+
+            project = load_project_providers()
+            provider = default_provider(project, __import__("os").environ, {})
+            api_key = resolve_provider_api_key(
+                provider.config, __import__("os").environ, {}
+            )
+        except (OSError, ValueError) as exc:
+            print(
+                f"{LIVE_BLOCKED}: provider config unavailable: {exc}", file=sys.stderr
+            )
+            return _result(
+                LIVE_BLOCKED,
+                executed=False,
+                rc=2,
+                extra={"missing": ["provider-config"], "execution_boundary": "solve"},
+            )
+        import json as _json
+
+        tasks = [
+            SolveTask(
+                instance_id=row["instance_id"],
+                problem_statement=row["problem_statement"],
+                files=row.get("files", {}),
+            )
+            for row in (
+                _json.loads(line)
+                for line in args.tasks.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            )
+        ]
+
+        def llm_factory() -> object:
+            return LiteLLMClient(
+                model=args.model,
+                api_key=api_key,
+                api_base=provider.config.base_url,
+            )
+
+        handler = SessionPermissionHandler(
+            lambda request: PermissionChoice.ALLOW_SESSION
+        )
+
+        async def _do_solve() -> list[dict[str, str]]:
+            return [
+                await solve_task(
+                    task,
+                    llm_factory=llm_factory,  # type: ignore[arg-type]
+                    budget=RunBudget(max_steps=args.max_steps),
+                    run_timeout_seconds=args.solve_timeout_seconds,
+                    permission_handler=handler,
+                )
+                for task in tasks
+            ]
+
+        solved = asyncio.run(_do_solve())
+        import json as _json2
+
+        args.predictions.write_text(
+            "".join(_json2.dumps(p) + "\n" for p in solved), encoding="utf-8"
+        )
+        print(f"wrote {len(solved)} solved predictions to {args.predictions}")
+        if not args.grade:
+            return _result(SOLVED, executed=True, rc=0, extra={"count": len(solved)})
+        # else fall through to grade the just-written predictions
 
     if args.predictions is None:
         if not args.live:
@@ -242,19 +384,48 @@ def main(args: argparse.Namespace) -> int:
                 rc=2,
                 extra={"missing": ["official-harness"], "docker_available": True},
             )
+        started_at = time.time()
         rc, results_path = _run_official_harness(args.predictions, args.run_id)
-        summary = _summarize(results_path)
-        extra = {
+        base_extra: dict[str, object] = {
             "run_id": args.run_id,
             "model": args.model,
             "max_total_tokens": args.max_total_tokens,
             "isolated": True,
             "docker_available": True,
+            "execution_boundary": "official-swebench-docker-harness",
             "results_path": str(results_path) if results_path else None,
-            "summary": summary,
         }
-        status = GRADED if rc == 0 else LIVE_BLOCKED
-        return _result(status, executed=True, rc=0 if rc == 0 else 1, extra=extra)
+        if rc != 0:
+            print(f"{LIVE_BLOCKED}: official harness exited {rc}", file=sys.stderr)
+            return _result(
+                LIVE_BLOCKED,
+                executed=True,
+                rc=1,
+                extra={**base_extra, "error_class": "execution", "harness_rc": rc},
+            )
+        summary, error_class = _validate_report(
+            results_path,
+            run_id=args.run_id,
+            started_at=started_at,
+            expected_ids=set(lite.instance_ids()),
+        )
+        if error_class is not None:
+            print(
+                f"{LIVE_BLOCKED}: results report not usable ({error_class})",
+                file=sys.stderr,
+            )
+            return _result(
+                LIVE_BLOCKED,
+                executed=True,
+                rc=1,
+                extra={**base_extra, "error_class": error_class},
+            )
+        return _result(
+            GRADED,
+            executed=True,
+            rc=0,
+            extra={**base_extra, "summary": summary, "error_class": None},
+        )
 
     if args.live:
         print(f"{PARTIAL}: closed loop incomplete.", file=sys.stderr)

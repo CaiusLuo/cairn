@@ -3,43 +3,37 @@
 The original ``coding_smoke.py`` corpus keeps its exact-content oracles unchanged
 and remains the frozen reference (``coding-smoke``). This module adds a *separate,
 versioned* behavioral acceptance set built on those same five prompts and
-fixtures. It does not modify, wrap or re-interpret the original checks: a new
-case/check contract gets a new version, per
-[AGENTS.md](../../../AGENTS.md) and the dataset-versioning rule that a changed
-acceptance oracle needs an explicitly versioned contract.
+fixtures. A changed acceptance oracle needs a new version, per
+[AGENTS.md](../../../AGENTS.md).
 
-Why a second oracle?
+How it judges
+-------------
+Each case supplies a **trusted probe program** that records raw observations with
+``obs(name, value)`` and a host-side ``expected`` map. The probe runs isolated; the
+*verdict* is computed on the host by comparing observations to expectations (see
+[`cairn.runtime.evals.behavior`](../../../src/cairn/runtime/evals/behavior.py)).
+A candidate that does not complete (``os._exit``/``sys.exit``/crash) yields no
+complete observation record and fails; the expected values never enter the
+sandbox, so they cannot be read or forged.
 
-* **No false negatives on correct-but-different code.** The original corpus fixes
-  a few cases to exact final bytes, which is right for a "smallest change" task.
-  A behavior check instead exercises the public functions and asserts their
-  outputs, so a different correct implementation (``end - start + 1`` vs
-  ``end - (start - 1)``) also passes.
-* **No false positives on a near miss.** Each behavior script asserts the exact
-  boundaries named in the prompt, so an implementation that reproduces the
-  original defect — or fixes the shown example but breaks a boundary — fails.
-* **Protected files are ground truth.** Every file a case must not touch is
-  pinned by an exact-content ``preserve:`` check, so "fix by rewriting unrelated
-  code" is refused even when the target behavior is correct.
-
-``graded-behavior-v1`` — behaviors, boundaries and protected set are all part of
-the versioned contract; any change needs a new version string.
+``graded-behavior-v2`` — the probe programs, expected observations, prompts,
+fixtures and protected-file set are all part of the versioned contract.
 """
 
 import hashlib
 import json
 from dataclasses import dataclass
 
-from cairn.runtime.evals.behavior import BehaviorCheck
+from cairn.runtime.evals.behavior import BehaviorCheck, Contains
 from cairn.runtime.evals.checks import (
     FileContentEqualsCheck,
     FileNotContainsCheck,
 )
 from cairn.runtime.evals.models import EvalCase, EvalCheck, EvalSuite, EvalSuiteCase
 
-#: The frozen version string for this behavior set's prompts, behaviors, boundaries
-#: and protected-file set. Bump it whenever any of those changes.
-BEHAVIOR_DATASET_VERSION: str = "graded-behavior-v1"
+#: The frozen version string for this behavior set's probes, expectations,
+#: prompts, boundaries and protected-file set. Bump it whenever any of those change.
+BEHAVIOR_DATASET_VERSION: str = "graded-behavior-v2"
 
 # --- Fixtures: byte-for-byte the originals from coding_smoke.py ---------------
 
@@ -81,99 +75,129 @@ SLUG = (
 SETTINGS = '"""Shared defaults for service helpers."""\n\nDEFAULT_TIMEOUT_SECONDS = 5\n'
 
 
-# --- Behavior scripts: exercise behavior + boundaries, tolerate other solutions
+# --- Trusted probe programs (record observations only; no verdict) -----------
 
-_RANGE_BEHAVIOR = """\
+_RANGE_PROBE = """\
 import importlib.util
 spec = importlib.util.spec_from_file_location("range_utils", "src/range_utils.py")
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 f = mod.inclusive_count
-assert f(4, 4) == 1, f(4, 4)
-assert f(2, 5) == 4, f(2, 5)
-assert f(0, 0) == 1, "single element bounds"
-assert f(-3, 2) == 6, "negative start"
-assert f(7, 7) == 1, "equal endpoints"
-assert f.__doc__ and "start" in f.__doc__, "docstring preserved"
+obs("f44", f(4, 4))
+obs("f25", f(2, 5))
+obs("f00", f(0, 0))
+obs("fneg", f(-3, 2))
+obs("f77", f(7, 7))
+obs("doc", f.__doc__ or "")
 """
+_RANGE_EXPECTED = {
+    "f44": 1,
+    "f25": 4,
+    "f00": 1,
+    "fneg": 6,
+    "f77": 1,
+    "doc": Contains("start"),
+}
 
-_RETRY_BEHAVIOR = """\
-import sys
-sys.path.insert(0, ".")
+_RETRY_PROBE = """\
 import importlib
-mod = importlib.import_module("src.retry")  # package import: relative import resolves
+mod = importlib.import_module("src.retry")
 f = mod.retry
-attempts = {"n": 0}
+n = [0]
 def ok():
-    attempts["n"] += 1
+    n[0] += 1
     return "value"
-assert f(ok) == "value", "returns the operation result"
-assert attempts["n"] == 1, "success on first try must not retry"
-flaky = {"n": 0}
+obs("ok_result", f(ok))
+obs("ok_calls", n[0])
+flaky = [0]
 def flaky_ok():
-    flaky["n"] += 1
-    if flaky["n"] < 2:
+    flaky[0] += 1
+    if flaky[0] < 2:
         raise OSError("transient")
     return "recovered"
-assert f(flaky_ok) == "recovered", "retries a transient OSError"
-assert flaky["n"] == 2, "retries exactly until success"
+obs("flaky_result", f(flaky_ok))
+obs("flaky_calls", flaky[0])
 def always_fail():
     raise OSError("down")
 try:
     f(always_fail)
 except RuntimeError:
-    pass
+    obs("always", "RuntimeError")
 else:
-    raise AssertionError("must raise after exhausting retries")
-assert "DEFAULT_RETRY_LIMIT" in open("src/retry.py", encoding="utf-8").read()
+    obs("always", "no-raise")
+obs("has_limit", "DEFAULT_RETRY_LIMIT" in open("src/retry.py", encoding="utf-8").read())
 """
+_RETRY_EXPECTED = {
+    "ok_result": "value",
+    "ok_calls": 1,
+    "flaky_result": "recovered",
+    "flaky_calls": 2,
+    "always": "RuntimeError",
+    "has_limit": True,
+}
 
-_USER_SERVICE_BEHAVIOR = """\
-import importlib.util, sys
-sys.path.insert(0, "src")
-import text_utils  # noqa: F401  (helper must exist and be importable)
+_USER_SERVICE_PROBE = """\
+import importlib.util
+import text_utils
 spec = importlib.util.spec_from_file_location("user_service", "src/user_service.py")
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 for fn in (mod.username_for_lookup, mod.username_for_storage):
-    assert fn("  Alice ") == "alice", fn.__name__
-    assert fn("BOB") == "bob", fn.__name__
-    assert fn("  mIxEd ") == "mixed", fn.__name__
-builtin = text_utils.normalize_username
-assert builtin is not None, "helper exported"
-assert builtin("  QR ") == "qr", "helper behavior"
+    name = fn.__name__
+    obs(name + "_a", fn("  Alice "))
+    obs(name + "_b", fn("BOB"))
+    obs(name + "_c", fn("  mIxEd "))
+obs("helper", text_utils.normalize_username("  QR "))
 """
+_USER_SERVICE_EXPECTED = {
+    "username_for_lookup_a": "alice",
+    "username_for_lookup_b": "bob",
+    "username_for_lookup_c": "mixed",
+    "username_for_storage_a": "alice",
+    "username_for_storage_b": "bob",
+    "username_for_storage_c": "mixed",
+    "helper": "qr",
+}
 
-_IDENTITY_BEHAVIOR = """\
+_IDENTITY_PROBE = """\
 import importlib.util
 spec = importlib.util.spec_from_file_location("identity", "src/identity.py")
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-assert mod.normalize_username("  Alice ") == "alice"
-assert mod.normalize_username("BOB") == "bob"
-assert mod.normalize_username("") == ""
-assert mod.format_user_id(7) == "user-0007", "unrelated function preserved"
-assert mod.format_user_id(1234) == "user-1234"
+obs("n1", mod.normalize_username("  Alice "))
+obs("n2", mod.normalize_username("BOB"))
+obs("n3", mod.normalize_username(""))
+obs("id7", mod.format_user_id(7))
+obs("id1234", mod.format_user_id(1234))
 """
+_IDENTITY_EXPECTED = {
+    "n1": "alice",
+    "n2": "bob",
+    "n3": "",
+    "id7": "user-0007",
+    "id1234": "user-1234",
+}
 
-_SLUG_BEHAVIOR = """\
+_SLUG_PROBE = """\
 import importlib.util
 spec = importlib.util.spec_from_file_location("slug", "src/slug.py")
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 f = mod.normalize_slug
-assert f("  Hello World ") == "hello-world"
-assert f("A  B") == "a--b", "only single spaces become hyphens"
-assert f("") == "", "empty"
+obs("s1", f("  Hello World "))
+obs("s2", f("A  B"))
+obs("s3", f(""))
 """
+_SLUG_EXPECTED = {"s1": "hello-world", "s2": "a--b", "s3": ""}
 
 
 @dataclass(frozen=True, slots=True)
 class BehaviorCorpusCase:
-    """One case: its prompt fixture, behavior check and protected files."""
+    """One case: its prompt fixture, probe program, expectations, protected files."""
 
     case: EvalCase
-    behavior: str
+    program: str
+    expected: dict[str, object]
     protected: dict[str, str | None]
     checks: tuple[EvalCheck, ...]
 
@@ -191,7 +215,8 @@ def behavior_cases() -> tuple[BehaviorCorpusCase, ...]:
             ),
             files={"src/range_utils.py": RANGE_UTILS},
         ),
-        behavior=_RANGE_BEHAVIOR,
+        program=_RANGE_PROBE,
+        expected=dict(_RANGE_EXPECTED),
         protected={},
         checks=(),
     )
@@ -211,7 +236,8 @@ def behavior_cases() -> tuple[BehaviorCorpusCase, ...]:
                 "src/retry.py": RETRY,
             },
         ),
-        behavior=_RETRY_BEHAVIOR,
+        program=_RETRY_PROBE,
+        expected=dict(_RETRY_EXPECTED),
         # settings.py gains a constant; its pre-existing default must survive.
         protected={"src/settings.py": None},
         checks=(FileNotContainsCheck("src/retry.py", "range(3)"),),
@@ -229,7 +255,8 @@ def behavior_cases() -> tuple[BehaviorCorpusCase, ...]:
             ),
             files={"src/__init__.py": "", "src/user_service.py": USER_SERVICE},
         ),
-        behavior=_USER_SERVICE_BEHAVIOR,
+        program=_USER_SERVICE_PROBE,
+        expected=dict(_USER_SERVICE_EXPECTED),
         # No protected files: text_utils.py is created and user_service.py edited.
         protected={},
         checks=(
@@ -248,7 +275,8 @@ def behavior_cases() -> tuple[BehaviorCorpusCase, ...]:
             ),
             files={"src/identity.py": IDENTITY},
         ),
-        behavior=_IDENTITY_BEHAVIOR,
+        program=_IDENTITY_PROBE,
+        expected=dict(_IDENTITY_EXPECTED),
         protected={},
         checks=(),
     )
@@ -264,7 +292,8 @@ def behavior_cases() -> tuple[BehaviorCorpusCase, ...]:
             ),
             files={"src/slug.py": SLUG},
         ),
-        behavior=_SLUG_BEHAVIOR,
+        program=_SLUG_PROBE,
+        expected=dict(_SLUG_EXPECTED),
         protected={},
         checks=(),
     )
@@ -273,12 +302,8 @@ def behavior_cases() -> tuple[BehaviorCorpusCase, ...]:
 
 def _assemble(spec: BehaviorCorpusCase, version: str) -> EvalSuiteCase:
     checks: list[EvalCheck] = [
-        BehaviorCheck(f"{spec.case.name}:behavior", spec.behavior)
+        BehaviorCheck(f"{spec.case.name}:behavior", spec.program, spec.expected)
     ]
-    # Protected files: when a file exists in the fixture, an exact-content check
-    # refuses any modification. A ``None`` entry pins only the surviving original
-    # content for files whose target fix legitimately adds to them, so the whole
-    # original body must remain present by exact equality of unrelated files.
     for path, expected in spec.protected.items():
         if expected is not None:
             checks.append(FileContentEqualsCheck(path, expected))
@@ -297,11 +322,7 @@ def behavior_suite(*, version: str = BEHAVIOR_DATASET_VERSION) -> EvalSuite:
 
 
 def behavior_protected_files() -> dict[str, dict[str, str]]:
-    """Exact original contents per case name for the files it must not rewrite.
-
-    Only non-``None`` protected entries are returned; a ``None`` entry means the
-    fix legitimately edits that file, so it is not a byte-identical requirement.
-    """
+    """Exact original contents per case name for the files it must not rewrite."""
     return {
         spec.case.name: {
             path: contents
@@ -313,17 +334,22 @@ def behavior_protected_files() -> dict[str, dict[str, str]]:
 
 
 def behavior_dataset_digest() -> str:
-    """Stable SHA256 over the versioned prompts, behaviors, boundaries and checks.
-
-    Pinned by a test so a silent change to a prompt, a behavior script, a
-    protected entry or an extra check requires a new ``BEHAVIOR_DATASET_VERSION``.
-    """
+    """Stable SHA256 over the versioned prompts, probes, expectations and checks."""
     payload = []
     for spec in behavior_cases():
         payload.append(
             {
                 "case": spec.case.model_dump(),
-                "behavior": spec.behavior,
+                "program": spec.program,
+                "expected": {
+                    key: (value.substring if isinstance(value, Contains) else value)
+                    for key, value in spec.expected.items()
+                },
+                "expected_contains": sorted(
+                    key
+                    for key, value in spec.expected.items()
+                    if isinstance(value, Contains)
+                ),
                 "protected": dict(spec.protected),
                 "checks": [
                     {

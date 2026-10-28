@@ -91,14 +91,20 @@ class TotalBudgetExceeded(Exception):
 class TokenBudgetLedger:
     """A conservative hard cap shared across both arms and summarizer calls.
 
-    ``reserve`` is checked before a request; ``settle`` charges the full reserved
-    amount after it, so the ledger never under-counts (it is intentionally
-    conservative). Unknown usage charges the reservation rather than zero.
+    The budget is **withheld before a request is sent** (``withhold``), so a
+    request that is attempted but whose response is lost or that fails/cancels
+    still consumes its reservation rather than counting as zero. ``settle`` runs
+    exactly once per request: with an exact, known actual cost it refunds the
+    unused part of the reservation; with unknown usage, an estimate-degraded
+    counter, a failure or a cancellation it keeps the full reservation
+    (conservative). Every request therefore settles at most once.
     """
 
     total: int
     spent: int = 0
     unknown_usage: bool = False
+    estimate_degraded: bool = False
+    requests_settled: int = 0
 
     def __post_init__(self) -> None:
         if self.total <= 0:
@@ -108,18 +114,31 @@ class TokenBudgetLedger:
     def remaining(self) -> int:
         return self.total - self.spent
 
-    def reserve(self, estimate: int, output_cap: int) -> int:
-        """Return the reserved amount or raise if the budget cannot cover it."""
+    def withhold(self, estimate: int, output_cap: int) -> int:
+        """Reserve (and charge) before sending; raise if it cannot be afforded."""
         need = max(0, estimate) + max(0, output_cap)
         if need > self.remaining:
             raise TotalBudgetExceeded(needed=need, remaining=self.remaining)
+        self.spent += need
         return need
 
-    def settle(self, reserved: int, actual_known: bool) -> None:
-        """Charge the reservation; record unknown usage rather than assuming zero."""
-        self.spent += reserved
-        if not actual_known:
-            self.unknown_usage = True
+    def settle(self, withheld: int, *, actual: int | None, is_estimate: bool) -> None:
+        """Settle one request exactly once, conservatively when cost is unknown."""
+        self.requests_settled += 1
+        if actual is None or is_estimate:
+            # Keep the full reservation; never treat unknown/degraded cost as zero.
+            if is_estimate:
+                self.estimate_degraded = True
+            else:
+                self.unknown_usage = True
+            return
+        refund = withheld - actual
+        if refund >= 0:
+            self.spent -= refund
+        else:
+            # Estimate under-counted; charge the real cost (may push remaining
+            # negative, which fail-closes subsequent requests).
+            self.spent += -refund
 
 
 class _CharCounter:
@@ -196,17 +215,21 @@ class BudgetedLLM:
         self, messages: list[Message], tools: list[dict[str, Any]] | None = None
     ) -> LLMResponse:
         is_summary = _is_summary_request(messages)
+        counted = self._counter.count(messages, tools or [])
         if self._ledger is not None:
-            estimate = self._counter.count(messages, tools or []).tokens
-            reserved = self._ledger.reserve(estimate, self._output_cap)
+            withheld = self._ledger.withhold(counted.tokens, self._output_cap)
         else:
-            reserved = 0
+            withheld = 0
         self.requests.append((is_summary, tuple(messages)))
         try:
             response = await self.client.generate(messages, tools)
-        except Exception:
-            # A failed request consumed nothing chargeable; its reservation was
-            # only a check and is not settled here.
+        except BaseException:
+            # Attempted request whose response was lost / failed / cancelled: keep
+            # the reservation (a real send may have been billed) and re-raise.
+            if self._ledger is not None:
+                self._ledger.settle(
+                    withheld, actual=None, is_estimate=counted.is_estimate
+                )
             raise
         usage = response.usage
         known = (
@@ -214,8 +237,18 @@ class BudgetedLLM:
             and usage.input_tokens is not None
             and usage.output_tokens is not None
         )
+        actual = (
+            usage.input_tokens + usage.output_tokens
+            if known
+            and usage is not None
+            and usage.input_tokens is not None
+            and usage.output_tokens is not None
+            else None
+        )
         if self._ledger is not None:
-            self._ledger.settle(reserved, actual_known=known)
+            self._ledger.settle(
+                withheld, actual=actual, is_estimate=counted.is_estimate
+            )
         if usage is not None and usage.input_tokens is not None:
             self._input_total = (
                 None
@@ -262,8 +295,14 @@ class CompactionCaseSpec:
     system_prompt: str = "sys"
     #: Text a summary should compress away; absent from a compacted request.
     forbidden_history_marker: str | None = None
-    #: Fact that must survive compaction into a later request.
+    #: Fact that must survive compaction into a later request (generic).
     key_fact_marker: str | None = None
+    #: A fact available ONLY from a tool result; a faithful summary must keep it.
+    tool_fact_marker: str | None = None
+    #: A user correction present only in older history; must survive compaction.
+    correction_marker: str | None = None
+    #: Version string of this sample (its history/markers/behaviour contract).
+    version: str = "compaction-sample-v2"
     #: Expected continuation runs of the side-effecting tool (None = unasserted).
     expected_side_effect_runs: int | None = None
     #: Name of the non-idempotent side-effect tool and the log it appends to.
@@ -296,6 +335,9 @@ class ArmObservation:
     compaction_occurred: bool | None = None
     compacted_history_used: bool | None = None
     key_fact_preserved: bool | None = None
+    tool_fact_preserved: bool | None = None
+    correction_preserved: bool | None = None
+    summary_text_used: bool | None = None
     replayed_side_effect: bool | None = None
     request_count: int | None = None
     tokens_spent: int | None = None
@@ -333,6 +375,25 @@ def _snapshot_digest(spec: CompactionCaseSpec) -> str:
         "pre_side_effects": dict(sorted(spec.pre_side_effects.items())),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+class _RecordingSummarizer:
+    """Wrap a summarizer to record produced texts, so validity can prove the
+    summary was actually substituted into a later request."""
+
+    def __init__(self, inner: Summarizer) -> None:
+        self.inner = inner
+        self.calls: list[int] = []
+        self.texts: list[str] = []
+
+    async def summarize(self, messages: list[Message], *, max_tokens: int):  # type: ignore[no-untyped-def]
+        # Count the attempt before awaiting, so a failed/timeout summary is still
+        # counted as an attempted (and charged) call.
+        self.calls.append(1)
+        result = await self.inner.summarize(messages, max_tokens=max_tokens)
+        if getattr(result, "ok", False) and getattr(result, "text", ""):
+            self.texts.append(result.text)
+        return result
 
 
 class _SideEffectTrackingTool:
@@ -451,6 +512,8 @@ async def _run_arm(
             observation.model_identifier = model
         wrapped = BudgetedLLM(base_llm, ledger, reserve_counter, spec.response_tokens)
         summarizer = summarizer_factory(wrapped) if summarizer_factory else None
+        recorder = _RecordingSummarizer(summarizer) if summarizer is not None else None
+        summarizer_for_agent = recorder if recorder is not None else summarizer
 
         builder = ContextBuilder(
             budget=ContextBudget(
@@ -465,7 +528,7 @@ async def _run_arm(
             event_handler=event_handler,
             tracer=None,
             context_builder=builder,
-            summarizer=summarizer,
+            summarizer=summarizer_for_agent,
         )
         agent.system_prompt = spec.system_prompt
         side_effect_tool = _SideEffectTrackingTool(
@@ -516,7 +579,7 @@ async def _run_arm(
             message.role == "user" and message.content == spec.current_instruction
             for message in agent.state.messages
         )
-        observation.summary_calls = _summary_calls(summarizer, wrapped)
+        observation.summary_calls = _summary_calls(summarizer_for_agent, wrapped)
         observation.elapsed_seconds = perf_counter() - started
         observation.request_count = len(wrapped.requests)
         input_total, output_total = wrapped.usage_totals()
@@ -526,7 +589,7 @@ async def _run_arm(
             observation.tokens_spent = ledger.spent - spent_before
             observation.usage_unknown = ledger.unknown_usage
 
-        _observe_integrity(spec, observation, wrapped)
+        _observe_integrity(spec, observation, wrapped, recorder)
 
         try:
             observation.check_results = await _run_checks(
@@ -544,7 +607,10 @@ async def _run_arm(
 
 
 def _observe_integrity(
-    spec: CompactionCaseSpec, observation: ArmObservation, wrapped: BudgetedLLM
+    spec: CompactionCaseSpec,
+    observation: ArmObservation,
+    wrapped: BudgetedLLM,
+    recorder: _RecordingSummarizer | None = None,
 ) -> None:
     model_requests = wrapped.model_requests()
     observation.compaction_occurred = (
@@ -571,20 +637,31 @@ def _observe_integrity(
             and _carries(request, spec.forbidden_history_marker)
         )
     ]
+    targets = (
+        compacted_requests
+        if spec.forbidden_history_marker is not None
+        else [request for request in model_requests if _carries_instruction(request)]
+    )
     if spec.forbidden_history_marker is not None:
         observation.compacted_history_used = bool(compacted_requests)
     if spec.key_fact_marker is not None:
-        # The key fact must still reach the model *after* compaction. A
-        # pre-compaction request still holds the full history and would prove
-        # nothing, so only compacted requests count when the marker is set.
-        if spec.forbidden_history_marker is not None:
-            targets = compacted_requests
-        else:
-            targets = [
-                request for request in model_requests if _carries_instruction(request)
-            ]
         observation.key_fact_preserved = any(
             _carries(request, spec.key_fact_marker) for request in targets
+        )
+    tool_marker = spec.tool_fact_marker or spec.key_fact_marker
+    if tool_marker is not None:
+        observation.tool_fact_preserved = any(
+            _carries(request, tool_marker) for request in targets
+        )
+    if spec.correction_marker is not None:
+        observation.correction_preserved = any(
+            _carries(request, spec.correction_marker) for request in targets
+        )
+    if recorder is not None and recorder.texts:
+        observation.summary_text_used = any(
+            any(text[:40] in (message.content or "") for message in request)
+            for text in recorder.texts
+            for request in model_requests
         )
     if (
         spec.expected_side_effect_runs is not None
@@ -729,6 +806,10 @@ def _invalid_reasons(
         reasons.append("no post-compaction request used the reduced history")
     if summary.key_fact_preserved is False:
         reasons.append("compaction dropped a key tool fact")
+    if summary.tool_fact_preserved is False:
+        reasons.append("compaction dropped a tool-only fact")
+    if summary.correction_preserved is False:
+        reasons.append("compaction dropped a pre-existing user correction")
     if summary.replayed_side_effect is True:
         reasons.append("REAL_SUMMARY replayed a non-idempotent side effect")
     return reasons

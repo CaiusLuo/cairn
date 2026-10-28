@@ -1,9 +1,9 @@
-"""BehaviorCheck runs generated code in a real sandbox and scores behavior.
+"""BehaviorCheck: host-side verdict from bounded observations, real sandbox.
 
-The check executes the host-owned script (together with the model-generated code
-it imports) inside bubblewrap, so these tests both verify behavior grading and
-prove the isolation boundary: host files and secrets stay out of reach, and a
-missing sandbox fails explicitly instead of running code on the host.
+Covers the untrusted-candidate attacks A demands: a candidate that calls
+``os._exit(0)``, ``sys.exit(0)``, prints a fake SUCCESS line, or crashes must never
+be marked PASS; correct vs wrong implementations are distinguished; and the
+sandbox keeps host secrets/network/markers out of reach.
 """
 
 import asyncio
@@ -13,190 +13,205 @@ import pytest
 
 import cairn.infra.sandbox as sandbox
 from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.evals.behavior import BehaviorCheck
+from cairn.runtime.evals.behavior import BehaviorCheck, Contains
 from cairn.runtime.evals.models import CheckResult
 from cairn.runtime.evals.runner import _check_label
 from tests.support.sandbox import require_execution_sandbox
 
 
-def _run(tmp_path: Path, script: str, name: str = "b") -> CheckResult:
+def _run(
+    tmp_path: Path, program: str, expected: dict[str, object], name: str = "b"
+) -> CheckResult:
     (tmp_path / "src").mkdir(exist_ok=True)
-    return asyncio.run(BehaviorCheck(name, script).evaluate(Workspace(tmp_path)))
+    return asyncio.run(
+        BehaviorCheck(name, program, expected).evaluate(Workspace(tmp_path))
+    )
 
 
-def test_behavior_passes_for_true_assertion(tmp_path: Path) -> None:
+def test_passes_when_observations_match(tmp_path: Path) -> None:
     require_execution_sandbox()
-    result = _run(tmp_path, "assert 1 + 1 == 2")
-    assert result.passed is True
-    assert result.error is None
+    result = _run(tmp_path, "obs('x', 1 + 1)", {"x": 2})
+    assert result.passed is True and result.error is None
 
 
-def test_behavior_fails_with_bounded_diagnostic_on_false_assertion(
-    tmp_path: Path,
-) -> None:
+def test_fails_on_wrong_value(tmp_path: Path) -> None:
     require_execution_sandbox()
-    result = _run(tmp_path, "assert False, 'nope'")
+    result = _run(tmp_path, "obs('x', 1 + 1)", {"x": 3})
     assert result.passed is False
-    assert "Behavior check failed" in (result.message or "")
-    assert len(result.message or "") <= 260
+    assert "expected" in (result.message or "")
 
 
-def test_behavior_runs_against_workspace_files(tmp_path: Path) -> None:
+def test_fails_on_missing_observation(tmp_path: Path) -> None:
     require_execution_sandbox()
-    (tmp_path / "value.py").write_text("RESULT = 42\n", encoding="utf-8")
-    result = _run(tmp_path, "import value\nassert value.RESULT == 42")
-    assert result.passed is True
+    result = _run(tmp_path, "obs('x', 1)", {"x": 1, "y": 2})
+    assert result.passed is False
+    assert "missing observation" in (result.message or "")
 
 
-def test_behavior_rejects_malformed_definition() -> None:
-    with pytest.raises(ValueError, match="non-empty"):
-        BehaviorCheck("  ", "assert True")
-    with pytest.raises(ValueError, match="non-empty"):
-        BehaviorCheck("b", "   ")
-    with pytest.raises(ValueError, match="limit"):
-        BehaviorCheck("b", "x = 1\n" * 20000)
-
-
-def test_behavior_strips_declared_secret_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_contains_expectation(tmp_path: Path) -> None:
     require_execution_sandbox()
-    monkeypatch.setenv("CAIRN_TEST_SECRET", "leaked-value")
-    script = "import os\nassert 'CAIRN_TEST_SECRET' not in os.environ"
-    result = asyncio.run(BehaviorCheck("b", script).evaluate(Workspace(tmp_path)))
-    assert result.passed is True
+    ok = _run(tmp_path, "obs('doc', 'start here')", {"doc": Contains("start")})
+    bad = _run(tmp_path, "obs('doc', 'nope')", {"doc": Contains("start")})
+    assert ok.passed is True
+    assert bad.passed is False
 
 
-def test_behavior_check_reports_stable_type_label() -> None:
-    check = BehaviorCheck("c", "assert True")
+def test_rejects_malformed_definition() -> None:
+    with pytest.raises(ValueError, match="name"):
+        BehaviorCheck("  ", "obs('x',1)", {"x": 1})
+    with pytest.raises(ValueError, match="program"):
+        BehaviorCheck("b", "   ", {"x": 1})
+    with pytest.raises(ValueError, match="expected"):
+        BehaviorCheck("b", "obs('x',1)", {})
+
+
+def test_check_type_label() -> None:
+    check = BehaviorCheck("c", "obs('x',1)", {"x": 1})
     assert _check_label(check) == "behavior"
-
-
-def test_behavior_check_protocol_type_is_classvar_string() -> None:
     assert BehaviorCheck.check_type == "behavior"
-    assert isinstance(BehaviorCheck.check_type, str)
 
 
-# --- Isolation boundary proofs ------------------------------------------------
+def _candidate(tmp_path: Path, source: str) -> None:
+    (tmp_path / "candidate.py").write_text(source, encoding="utf-8")
 
 
-def test_generated_code_cannot_read_host_secret_or_write_host_marker(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Generated code cannot reach a host secret file or overwrite a marker."""
+def test_candidate_os_exit_cannot_fake_pass(tmp_path: Path) -> None:
     require_execution_sandbox()
-    monkeypatch.setenv("CAIRN_HOST_SECRET", "TOP_SECRET_VALUE")
-    host_secret = tmp_path.parent / "host_secret.txt"
-    host_marker = tmp_path.parent / "host_marker.txt"
-    host_secret.write_text("TOP_SECRET_VALUE", encoding="utf-8")
-    host_marker.write_text("untouched", encoding="utf-8")
-    # Script: it may exist only inside the workspace; it must not see the host
-    # secret path, the env var, or be able to overwrite the host marker.
-    script = (
-        f"import os\n"
-        f"assert 'CAIRN_HOST_SECRET' not in os.environ\n"
-        f"assert not os.path.exists({str(host_secret)!r})\n"
-        f"assert not os.path.exists({str(host_marker)!r})\n"
-        f"print('isolated')\n"
-    )
-    result = _run(tmp_path, script)
-    assert result.passed is True, result.message
-    # The host marker is unchanged after the run.
-    assert host_marker.read_text(encoding="utf-8") == "untouched"
-
-
-def test_generated_code_has_no_network(tmp_path: Path) -> None:
-    require_execution_sandbox()
-    script = (
-        "import urllib.request\n"
-        "try:\n"
-        "    urllib.request.urlopen('http://1.1.1.1', timeout=2)\n"
-        "except Exception:\n"
-        "    print('blocked')\n"
-        "else:\n"
-        "    raise SystemExit('network was reachable')\n"
-    )
-    result = _run(tmp_path, script)
-    assert result.passed is True, result.message
-
-
-def test_missing_isolation_fails_explicitly_and_never_runs_on_host(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """No sandbox => an explicit error, and the code never executes."""
-    sentinel = tmp_path / "executed.txt"
-    script = f"open({str(sentinel)!r}, 'w').write('ran')"
-    monkeypatch.setattr(sandbox, "available", lambda: False)
-    result = asyncio.run(BehaviorCheck("b", script).evaluate(Workspace(tmp_path)))
+    _candidate(tmp_path, "import os\nos._exit(0)\n")
+    result = _run(tmp_path, "import candidate\nobs('ran', True)\n", {"ran": True})
     assert result.passed is False
-    assert result.error is not None
-    assert "IsolationUnavailable" in result.error
-    # The host sentinel proves the generated code did not run.
-    assert not sentinel.exists()
+    assert "no observation record" in (result.message or "")
 
 
-def test_resource_limits_are_applied(tmp_path: Path) -> None:
+def test_candidate_sys_exit_cannot_fake_pass(tmp_path: Path) -> None:
     require_execution_sandbox()
-    script = (
-        "import resource\n"
-        "as_limit = resource.getrlimit(resource.RLIMIT_AS)[0]\n"
-        "cpu = resource.getrlimit(resource.RLIMIT_CPU)[0]\n"
-        "core = resource.getrlimit(resource.RLIMIT_CORE)[0]\n"
-        "assert as_limit > 0, as_limit\n"
-        "assert cpu > 0, cpu\n"
-        "assert core == 0, core\n"
+    _candidate(tmp_path, "import sys\nsys.exit(0)\n")
+    result = _run(tmp_path, "import candidate\nobs('ran', True)\n", {"ran": True})
+    assert result.passed is False
+    assert "did not complete" in (result.message or "")
+
+
+def test_candidate_fake_success_output_is_ignored(tmp_path: Path) -> None:
+    require_execution_sandbox()
+    _candidate(
+        tmp_path,
+        "import os, sys\nprint('SUCCESS: all checks passed')\nsys.stdout.flush()\nos._exit(0)\n",
     )
-    result = _run(tmp_path, script)
-    assert result.passed is True, result.message
+    result = _run(tmp_path, "import candidate\nobs('ran', True)\n", {"ran": True})
+    assert result.passed is False
+    assert "SUCCESS" not in (result.message or "")
 
 
-# --- Bind-set confidentiality (read-only is not confidential) ------------------
-
-
-def test_bind_set_excludes_etc_and_sbin() -> None:
-    # /etc holds host secrets (/etc/passwd, /etc/shadow); it must never be
-    # mounted even read-only. Only code/library trees are bound.
-    assert set(sandbox._RO_BINDS) == {"/usr", "/lib", "/lib64", "/bin"}
-
-
-def test_etc_tree_is_not_visible_in_sandbox(tmp_path: Path) -> None:
+def test_candidate_raising_cannot_fake_pass(tmp_path: Path) -> None:
     require_execution_sandbox()
-    script = (
+    _candidate(tmp_path, "raise RuntimeError('boom')\n")
+    result = _run(tmp_path, "import candidate\nobs('ran', True)\n", {"ran": True})
+    assert result.passed is False
+    assert "did not complete" in (result.message or "")
+
+
+def test_correct_vs_wrong_implementation(tmp_path: Path) -> None:
+    require_execution_sandbox()
+    (tmp_path / "src").mkdir(exist_ok=True)
+    program = (
+        "import importlib.util\n"
+        "spec = importlib.util.spec_from_file_location('impl', 'src/impl.py')\n"
+        "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+        "obs('add', m.add(2, 3))\n"
+    )
+    (tmp_path / "src" / "impl.py").write_text("def add(a, b):\n    return a + b\n")
+    good = _run(tmp_path, program, {"add": 5})
+    (tmp_path / "src" / "impl.py").write_text("def add(a, b):\n    return a - b\n")
+    bad = _run(tmp_path, program, {"add": 5})
+    assert good.passed is True
+    assert bad.passed is False
+
+
+def test_etc_tree_is_not_visible(tmp_path: Path) -> None:
+    require_execution_sandbox()
+    program = (
         "import os\n"
-        "assert not os.path.exists('/etc/passwd'), 'etc mounted'\n"
-        "assert not os.path.exists('/etc/shadow'), 'shadow visible'\n"
-        "assert not os.path.exists('/etc'), '/etc visible'\n"
-        "print('etc hidden')\n"
+        "obs('passwd', os.path.exists('/etc/passwd'))\n"
+        "obs('shadow', os.path.exists('/etc/shadow'))\n"
     )
-    result = _run(tmp_path, script)
+    result = _run(tmp_path, program, {"passwd": False, "shadow": False})
     assert result.passed is True, result.message
 
 
-def test_workspace_symlink_cannot_escape_to_host_secret(
-    tmp_path: Path,
+def test_injected_secret_env_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    require_execution_sandbox()
+    monkeypatch.setenv("CAIRN_TEST_SECRET", "leaked")
+    result = _run(
+        tmp_path,
+        "import os\nobs('present', 'CAIRN_TEST_SECRET' in os.environ)",
+        {"present": False},
+    )
+    assert result.passed is True
+
+
+def test_network_blocked(tmp_path: Path) -> None:
+    require_execution_sandbox()
+    program = (
+        "try:\n"
+        "    import urllib.request; urllib.request.urlopen('http://1.1.1.1', timeout=2)\n"
+        "    obs('net', 'reachable')\n"
+        "except Exception:\n"
+        "    obs('net', 'blocked')\n"
+    )
+    assert _run(tmp_path, program, {"net": "blocked"}).passed is True
+
+
+def test_workspace_symlink_cannot_escape(tmp_path: Path) -> None:
     require_execution_sandbox()
     host_secret = tmp_path.parent / "outside_secret.txt"
     host_secret.write_text("TOP_SECRET_OUTSIDE", encoding="utf-8")
     (tmp_path / "evil").symlink_to(host_secret)
-    script = (
-        "import os\n"
-        "assert os.path.islink('evil')\n"
+    program = (
         "try:\n"
-        "    data = open('evil').read()\n"
+        "    obs('escape', open('evil').read())\n"
         "except (FileNotFoundError, OSError):\n"
-        "    print('escape blocked')\n"
-        "else:\n"
-        "    raise SystemExit('escaped: ' + data)\n"
+        "    obs('escape', 'blocked')\n"
     )
-    result = _run(tmp_path, script)
-    assert result.passed is True, result.message
+    assert _run(tmp_path, program, {"escape": "blocked"}).passed is True
 
 
-def test_sandbox_rejects_bare_path_to_prevent_host_bind(tmp_path: Path) -> None:
-    # A bare Path's ``.root`` is ``/``; binding it would expose the whole host.
-    # The sandbox requires a Workspace so this mistake fails closed.
+def test_resource_limits_applied(tmp_path: Path) -> None:
+    require_execution_sandbox()
+    program = (
+        "import resource\n"
+        "obs('as_positive', resource.getrlimit(resource.RLIMIT_AS)[0] > 0)\n"
+        "obs('core_zero', resource.getrlimit(resource.RLIMIT_CORE)[0] == 0)\n"
+    )
+    assert (
+        _run(tmp_path, program, {"as_positive": True, "core_zero": True}).passed is True
+    )
+
+
+def test_missing_sandbox_fails_explicitly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sentinel = tmp_path / "executed.txt"
+    program = f"obs('x', open({str(sentinel)!r}, 'w').write('ran'))"
+    monkeypatch.setattr(sandbox, "available", lambda: False)
+    result = asyncio.run(
+        BehaviorCheck("b", program, {"x": 3}).evaluate(Workspace(tmp_path))
+    )
+    assert (
+        result.passed is False
+        and result.error
+        and "IsolationUnavailable" in result.error
+    )
+    assert not sentinel.exists()
+
+
+def test_sandbox_bind_set_excludes_etc_and_sbin() -> None:
+    assert set(sandbox._RO_BINDS) == {"/usr", "/lib", "/lib64", "/bin"}
+
+
+def test_sandbox_rejects_bare_path() -> None:
     from cairn.infra.sandbox import build_argv
 
     with pytest.raises(TypeError, match="Workspace"):
-        build_argv(tmp_path, "assert True", sandbox.IsolationLimits())  # type: ignore[arg-type]
+        build_argv(Path("/tmp"), "assert True", sandbox.IsolationLimits())  # type: ignore[arg-type]
