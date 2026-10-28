@@ -21,6 +21,7 @@ uv run python evaluation/runners/run_coding_smoke.py --help
 uv run python evaluation/runners/run_coding_behavior.py --help
 uv run python evaluation/runners/run_repository_intelligence.py --help
 uv run python evaluation/runners/run_compaction_live.py --help
+uv run python evaluation/runners/run_swebench_lite.py --help
 uv run python -m evaluation.benchmarks.session_checkpoints --help
 ```
 
@@ -32,6 +33,12 @@ acceptance set for the five coding-smoke prompts; its contract is
 compaction comparison; its contract is
 [real-model compaction comparison](../docs/evals/compaction-live-comparison/README.md).
 It is `LIVE_NOT_RUN` unless `--live --model --max-total-tokens` are all given.
+
+`benchmarks/swebench_lite.py` + `runners/run_swebench_lite.py` are the fixed
+SWE-bench Lite internal subset adapter; its contract is
+[SWE-bench Lite internal subset](../docs/evals/swebench-lite-subset/README.md).
+Offline format checks run by default; real scoring needs the official Docker
+harness and a separate budget authorization.
 
 The [offline coding E2E](../docs/guides/offline-coding-e2e.md) uses the same smoke
 cases with scripted responses. The
