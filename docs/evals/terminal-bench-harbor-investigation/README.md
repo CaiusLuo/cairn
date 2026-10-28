@@ -35,9 +35,8 @@ Harbor docs (harborframework.com).
 A **prediction/trajectory adapter** is genuinely thin and reuses Cairn's existing
 contracts:
 
-- reuse the manifest+digest pattern from
-  [SWE-bench Lite subset](../swebench-lite-subset/README.md) to pin a fixed
-  Terminal-Bench task subset;
+- reuse Cairn's manifest+digest pattern (as earlier benchmark adapters used) to
+  pin a fixed Terminal-Bench task subset;
 - reuse the prediction-JSONL pattern for a per-task result artifact;
 - reuse `run_budget`/`turn_trace` usage to record budget and timing.
 
