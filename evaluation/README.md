@@ -20,12 +20,18 @@ them requires separate authorization; `--help` is offline:
 uv run python evaluation/runners/run_coding_smoke.py --help
 uv run python evaluation/runners/run_coding_behavior.py --help
 uv run python evaluation/runners/run_repository_intelligence.py --help
+uv run python evaluation/runners/run_compaction_live.py --help
 uv run python -m evaluation.benchmarks.session_checkpoints --help
 ```
 
 `cases/coding_smoke_behavior.py` is the versioned `graded-behavior-v1` behavioral
 acceptance set for the five coding-smoke prompts; its contract is
 [coding behavior v1](../docs/evals/coding-behavior-v1/README.md).
+
+`runners/run_compaction_live.py` is the opt-in full-context vs real-summary
+compaction comparison; its contract is
+[real-model compaction comparison](../docs/evals/compaction-live-comparison/README.md).
+It is `LIVE_NOT_RUN` unless `--live --model --max-total-tokens` are all given.
 
 The [offline coding E2E](../docs/guides/offline-coding-e2e.md) uses the same smoke
 cases with scripted responses. The
