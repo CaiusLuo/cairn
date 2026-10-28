@@ -134,6 +134,10 @@ async def run_turn(
         tool_execution_started = False
         pending_tool_calls: deque[ToolCall] = deque()
         trace = TurnTrace(agent, budget)
+        if session is not None:
+            # Opaque ids attach only after admission, so a rejected turn records
+            # no attribution it never owned.
+            trace.correlate(session.trace_correlation())
 
         try:
             # Roll back only while no tool execution has been attempted.

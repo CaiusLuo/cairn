@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import os
 import shutil
 import sys
@@ -29,7 +30,8 @@ from cairn.infra.config import (
     resolve_context_budget,
     resolve_provider_api_key,
 )
-from cairn.infra.observability.sinks import JsonlTraceSink
+from cairn.infra.observability.otlp import OtlpSpanExporter, build_exporter
+from cairn.infra.observability.sinks import FanoutTraceSink, JsonlTraceSink
 from cairn.infra.observability.storage import TraceStore
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.sessions.models import SessionStoreError
@@ -909,6 +911,29 @@ async def _turn_loop(
         needs_turn_gap = True
 
 
+def _build_trace_sink(
+    trace_root: Path, env_file_values: dict[str, str | None] | None
+) -> tuple[OtlpSpanExporter | None, JsonlTraceSink | FanoutTraceSink]:
+    """Build the local JSONL sink plus an optional opt-in OTLP exporter.
+
+    The JSONL sink is always the local record. The exporter rides beside it via a
+    fan-out so a remote failure never stops the local trace. Returns the exporter
+    (to be closed on shutdown) and the sink.
+    """
+    otlp_env = {
+        key: value
+        for key, value in (env_file_values or {}).items()
+        if value is not None
+    }
+    exporter = build_exporter({**otlp_env, **os.environ})
+    sink = (
+        FanoutTraceSink(JsonlTraceSink(trace_root), exporter)
+        if exporter is not None
+        else JsonlTraceSink(trace_root)
+    )
+    return exporter, sink
+
+
 async def main(
     cli_input: CliInput | None = None, *, durable: DurableOptions | None = None
 ) -> None:
@@ -923,7 +948,8 @@ async def main(
 
     workspace = Workspace(Path.cwd())
     trace_root = Path(".cairn/traces")
-    tracer = Tracer(JsonlTraceSink(trace_root))
+    exporter, trace_sink = _build_trace_sink(trace_root, env_file_values)
+    tracer = Tracer(trace_sink)
     command_context = CommandContext(trace_store=TraceStore(trace_root))
     # The prompt is bound once the frame exists, because the surface is where an
     # approval is given. Until then the console prompt is the only option, and it is
@@ -1254,6 +1280,11 @@ async def main(
                     cleanup_error = exc
                 else:
                     cleanup_error.add_note("Durable session cleanup also failed.")
+        if exporter is not None:
+            # Bounded flush of queued spans; a failed export is telemetry loss,
+            # never a terminal cleanup failure.
+            with contextlib.suppress(BaseException):
+                exporter.close()
         if primary_error is not None:
             if cleanup_error is not None:
                 primary_error.add_note("Terminal cleanup also failed.")

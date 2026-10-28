@@ -109,6 +109,19 @@ class Session:
             sequence=self._sequence,
         )
 
+    def trace_correlation(self) -> dict[str, str]:
+        """Stable identifiers for tracing one admitted turn.
+
+        Only opaque ids are returned: no message text, path or credential. The
+        turn id is the exactly-admitted turn; callers invoke this after admission.
+        """
+        if self._turn is None:
+            raise SessionAdmissionError("No turn is admitted.")
+        return {
+            "session_id": str(self._session_id),
+            "turn_id": str(self._turn.turn_id),
+        }
+
     def _started(self) -> None:
         self._notify_lifecycle(Event(type="turn_started"))
 

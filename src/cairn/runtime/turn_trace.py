@@ -54,6 +54,9 @@ class TurnTrace:
     def __init__(self, agent: Agent, budget: RunBudget) -> None:
         self._agent = agent
         self._budget = budget
+        # Opaque ids only (session/turn/task). Application happens on ``start``
+        # so a caller never has to know this constructor's keyword surface.
+        self._correlation: dict[str, str] = {}
         self._turn_span: Span | None = None
         self._llm_span: Span | None = None
         self._attempt: AttemptContext | None = None
@@ -83,6 +86,10 @@ class TurnTrace:
             return {}
         return {"provider": self._agent.provider_name}
 
+    def correlate(self, correlation: dict[str, str]) -> None:
+        """Attach opaque session/turn/task ids for this turn's root span."""
+        self._correlation = dict(correlation)
+
     def start(self) -> None:
         """Open the turn's root span and announce the trace, if tracing is on."""
         if self._agent.tracer is None:
@@ -96,6 +103,7 @@ class TurnTrace:
                     self._agent.context_builder.budget.response_tokens
                 ),
                 **self._provider_attributes(),
+                **self._correlation,
             },
         )
         self._agent.emit(
@@ -163,6 +171,12 @@ class TurnTrace:
             attributes.update(
                 model=model_id, model_name=model.name, attempt=attempt_number
             )
+        if attempt_number > 1:
+            # A candidate was replaced before this request. The reason is a fixed
+            # class, never provider error text: a fallback happened, and this is
+            # why the primary was abandoned.
+            attributes["fallback_reason"] = "candidate_unavailable"
+            attributes["fallback_attempt"] = attempt_number - 1
         memory_context = context.memory
         if memory_context is not None:
             attributes.update(

@@ -32,6 +32,7 @@ page is the map for everything else.
 | [Local command execution](guides/local-execution.md) | Host shell, approval, process guarantees and the boundaries it does not claim |
 | [Safe retry](guides/safe-retry.md) | Typed tool failures and the single bounded `read_file` retry slice |
 | [Coding Task summaries](guides/task-metrics.md) | Bounded JSON metrics, trace-derived call counts, verification and missing-data semantics |
+| [Tracing and opt-in OTLP export](guides/tracing-and-otlp.md) | Session/task/turn correlation, compaction/fallback trigger reasons, default-off OTLP export and redaction |
 | [RepoGraph](guides/repo-graph.md) | Bounded repository inventory and Python structure queries |
 | [Project Memory](guides/project-memory.md) | Evidence-backed memory candidates, freshness and retrieval |
 | [Session checkpoint performance](performance/session-checkpoints.md) | Checkpoint sizing options, the incremental V2 design, measurements, and verification limits |

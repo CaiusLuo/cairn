@@ -285,6 +285,13 @@ class DurableSession(Session):
             return SessionState.RECOVERY_REQUIRED
         return SessionState.SUSPENDED if self._suspended else SessionState.READY
 
+    def trace_correlation(self) -> dict[str, str]:
+        """Session, turn and (when bound) task ids for tracing one turn."""
+        correlation = super().trace_correlation()
+        if self._task is not None:
+            correlation["task_id"] = self._task.revision.task_id
+        return correlation
+
     @property
     def revision(self) -> Revision:
         return self._revision
