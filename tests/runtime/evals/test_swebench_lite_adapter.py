@@ -96,13 +96,15 @@ def test_write_predictions_is_one_json_line_each(tmp_path: Path) -> None:
 def test_summarize_results_restricts_to_subset() -> None:
     # A results.json scenario: two resolved, one unresolved, one empty patch,
     # one error, one out-of-subset id that must be ignored.
+    # Official swebench.harness.reporting.make_run_report keys.
     results = {
-        "resolved": ["astropy__astropy-12907", "django__django-11001"],
-        "unresolved": ["sympy__sympy-11400"],
+        "resolved_ids": ["astropy__astropy-12907", "django__django-11001"],
+        "unresolved_ids": ["sympy__sympy-11400"],
         "empty_patch_ids": ["sympy__sympy-11870"],
         "error_ids": ["django__django-10924"],
+        "resolved_instances": 2,
+        "total_instances": 300,
         "not_in_subset": ["django__django-1"],  # out-of-subset, ignored
-        "unrelated": ["some__other-1"],
     }
     summary = lite.summarize_results(results)
     assert summary.total == len(SUBSET)
@@ -127,4 +129,4 @@ def test_summarize_partial_results_does_not_fabricate() -> None:
 
 def test_summarize_rejects_non_list_results() -> None:
     with pytest.raises(ValueError, match="must be a list"):
-        lite.summarize_results({"resolved": "not-a-list"})
+        lite.summarize_results({"resolved_ids": "not-a-list"})

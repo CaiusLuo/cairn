@@ -49,8 +49,11 @@ evaluated model wrote**, so that generated code is untrusted. It is therefore ru
 inside a real sandbox, [`cairn.infra.sandbox`](../../../src/cairn/infra/sandbox.py),
 not a plain subprocess:
 
-- bubblewrap (`bwrap`) with read-only system mounts (`/usr`, `/lib`, `/lib64`,
-  `/bin`, `/sbin`, `/etc`) and nothing else of the host filesystem;
+- bubblewrap (`bwrap`) with read-only system mounts for **code and libraries only**
+  (`/usr`, `/lib`, `/lib64`, `/bin`). `/etc`, `/sbin`, `/home`, `/root` and the
+  repository are **not** mounted: read-only is not confidential, so mounting
+  `/etc` would expose `/etc/passwd`, `/etc/shadow` and host config to generated
+  code. A workspace symlink to a host path resolves to a non-existent target;
 - the case workspace bind-mounted read-write at its own path, plus a private
   `/tmp`;
 - `--unshare-all` (private user/pid/mount/net/ipc/uts/cgroup namespaces) — no

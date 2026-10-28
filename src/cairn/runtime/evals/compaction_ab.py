@@ -123,13 +123,26 @@ class TokenBudgetLedger:
 
 
 class _CharCounter:
-    """One token per character plus one per message: a readable upper bound."""
+    """One token per character plus one per message.
+
+    A deterministic *proxy* used by offline doubles only (it is a character
+    heuristic, not a model tokenizer). ``include_tools`` adds the tool-schema
+    characters so a budget reservation cannot silently omit tool tokens; the
+    live runner instead supplies ``LiteLLMTokenCounter`` (the real per-model
+    tokenizer, which includes tools).
+    """
+
+    def __init__(self, *, include_tools: bool = False) -> None:
+        self.include_tools = include_tools
 
     def count(self, messages: list[Message], tools: list[dict[str, Any]]) -> TokenCount:
-        return TokenCount(
-            tokens=sum(len(message.content or "") + 1 for message in messages),
-            is_estimate=False,
+        message_chars = sum(len(message.content or "") + 1 for message in messages)
+        tool_chars = (
+            len(json.dumps(tools, sort_keys=True))
+            if self.include_tools and tools
+            else 0
         )
+        return TokenCount(tokens=message_chars + tool_chars, is_estimate=False)
 
 
 def _is_summary_request(messages: Sequence[Message]) -> bool:
@@ -405,7 +418,10 @@ async def _run_arm(
 ) -> ArmObservation:
     observation = ArmObservation(arm=arm, checks=tuple(checks))
     started = perf_counter()
+    # The ContextBuilder keeps the messages-only proxy (calibrated admission);
+    # the budget ledger reserves over messages *and* tool schemas.
     counter = token_counter or _CharCounter()
+    reserve_counter = token_counter or _CharCounter(include_tools=True)
     arm_context_budget = (
         spec.summary_budget_tokens
         if arm is Arm.REAL_SUMMARY and spec.summary_budget_tokens is not None
@@ -433,7 +449,7 @@ async def _run_arm(
         model = getattr(base_llm, "model", None)
         if isinstance(model, str):
             observation.model_identifier = model
-        wrapped = BudgetedLLM(base_llm, ledger, counter, spec.response_tokens)
+        wrapped = BudgetedLLM(base_llm, ledger, reserve_counter, spec.response_tokens)
         summarizer = summarizer_factory(wrapped) if summarizer_factory else None
 
         builder = ContextBuilder(

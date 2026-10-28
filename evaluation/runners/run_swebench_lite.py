@@ -84,6 +84,21 @@ def _official_command(predictions: Path, run_id: str) -> list[str]:
     ]
 
 
+def _docker_available() -> bool:
+    """Real evidence of container isolation: the Docker daemon must answer.
+
+    ``--isolated`` is not a self-declaration; grading runs each instance in a
+    Docker container, so a reachable daemon is checked before any claim.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "info"], capture_output=True, text=True, check=False, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def _official_harness_available() -> bool:
     try:
         result = subprocess.run(
@@ -202,17 +217,30 @@ def main(args: argparse.Namespace) -> int:
             return _result(
                 LIVE_BLOCKED, executed=False, rc=2, extra={"missing": missing}
             )
-        if not _official_harness_available():
+        if not _docker_available():
             print(
-                f"{LIVE_BLOCKED}: the official SWE-bench harness is not installed; "
-                "install `swebench` and a Docker daemon. No patch applied, no test run.",
+                f"{LIVE_BLOCKED}: --isolated requested but the Docker daemon is not "
+                "reachable; grading needs real container isolation.",
                 file=sys.stderr,
             )
             return _result(
                 LIVE_BLOCKED,
                 executed=False,
                 rc=2,
-                extra={"missing": ["official-harness"]},
+                extra={"missing": ["docker-daemon"], "docker_available": False},
+            )
+        if not _official_harness_available():
+            print(
+                f"{LIVE_BLOCKED}: the official SWE-bench harness is not installed; "
+                "install `swebench`. Docker daemon is reachable. "
+                "No patch applied, no test run.",
+                file=sys.stderr,
+            )
+            return _result(
+                LIVE_BLOCKED,
+                executed=False,
+                rc=2,
+                extra={"missing": ["official-harness"], "docker_available": True},
             )
         rc, results_path = _run_official_harness(args.predictions, args.run_id)
         summary = _summarize(results_path)
@@ -221,6 +249,7 @@ def main(args: argparse.Namespace) -> int:
             "model": args.model,
             "max_total_tokens": args.max_total_tokens,
             "isolated": True,
+            "docker_available": True,
             "results_path": str(results_path) if results_path else None,
             "summary": summary,
         }

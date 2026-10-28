@@ -29,9 +29,14 @@ replay is detectable.
 
 When `--max-total-tokens` is given, one shared `TokenBudgetLedger` caps
 `FULL_CONTEXT`, `REAL_SUMMARY` **and** every summarizer call together. Before each
-provider request the harness reserves a conservative upper bound (per-request
-prompt estimate + output cap); an unaffordable request is **refused before it is
-sent** with `TotalBudgetExceeded`. The reservation is charged, so unknown usage is
+provider request the harness reserves a conservative upper bound computed over the
+**whole request surface — system messages, history and tool schemas — plus the
+output cap**; an unaffordable request is **refused before it is sent** with
+`TotalBudgetExceeded`. The live runner uses `LiteLLMTokenCounter` (the real
+per-model tokenizer, which includes tools); offline doubles use a deterministic
+character proxy that also counts tool schemas. A character estimate is a proxy,
+not a proven provider hard cap; the ledger caps reserved tokens under whichever
+counter is supplied. The reservation is charged, so unknown usage is
 never treated as zero. A budget too small to reserve even one request is refused
 up front (`LIVE_BLOCKED`) before any provider call. Different context budgets per
 arm do not weaken this: they are admission limits, the ledger is the hard cap.

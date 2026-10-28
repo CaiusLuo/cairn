@@ -148,3 +148,55 @@ def test_resource_limits_are_applied(tmp_path: Path) -> None:
     )
     result = _run(tmp_path, script)
     assert result.passed is True, result.message
+
+
+# --- Bind-set confidentiality (read-only is not confidential) ------------------
+
+
+def test_bind_set_excludes_etc_and_sbin() -> None:
+    # /etc holds host secrets (/etc/passwd, /etc/shadow); it must never be
+    # mounted even read-only. Only code/library trees are bound.
+    assert set(sandbox._RO_BINDS) == {"/usr", "/lib", "/lib64", "/bin"}
+
+
+def test_etc_tree_is_not_visible_in_sandbox(tmp_path: Path) -> None:
+    require_execution_sandbox()
+    script = (
+        "import os\n"
+        "assert not os.path.exists('/etc/passwd'), 'etc mounted'\n"
+        "assert not os.path.exists('/etc/shadow'), 'shadow visible'\n"
+        "assert not os.path.exists('/etc'), '/etc visible'\n"
+        "print('etc hidden')\n"
+    )
+    result = _run(tmp_path, script)
+    assert result.passed is True, result.message
+
+
+def test_workspace_symlink_cannot_escape_to_host_secret(
+    tmp_path: Path,
+) -> None:
+    require_execution_sandbox()
+    host_secret = tmp_path.parent / "outside_secret.txt"
+    host_secret.write_text("TOP_SECRET_OUTSIDE", encoding="utf-8")
+    (tmp_path / "evil").symlink_to(host_secret)
+    script = (
+        "import os\n"
+        "assert os.path.islink('evil')\n"
+        "try:\n"
+        "    data = open('evil').read()\n"
+        "except (FileNotFoundError, OSError):\n"
+        "    print('escape blocked')\n"
+        "else:\n"
+        "    raise SystemExit('escaped: ' + data)\n"
+    )
+    result = _run(tmp_path, script)
+    assert result.passed is True, result.message
+
+
+def test_sandbox_rejects_bare_path_to_prevent_host_bind(tmp_path: Path) -> None:
+    # A bare Path's ``.root`` is ``/``; binding it would expose the whole host.
+    # The sandbox requires a Workspace so this mistake fails closed.
+    from cairn.infra.sandbox import build_argv
+
+    with pytest.raises(TypeError, match="Workspace"):
+        build_argv(tmp_path, "assert True", sandbox.IsolationLimits())  # type: ignore[arg-type]

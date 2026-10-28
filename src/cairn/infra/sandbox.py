@@ -39,9 +39,13 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_MEMORY_BYTES = 1024**3  # 1 GiB address space
 DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024
 
-#: Directories bound read-only into the sandbox. Nothing else of the host is
-#: visible, so the repository, tests, home and temporary markers stay hidden.
-_RO_BINDS = ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc")
+#: Directories bound read-only into the sandbox. This is deliberately the *code
+#: and libraries only*: read-only is not confidential, so ``/etc`` and ``/sbin``
+#: are NOT mounted — ``/etc`` alone exposes ``/etc/passwd``, ``/etc/shadow`` and
+#: any host secret/config file to the generated code. With this set the
+#: repository, tests, home, ``/root`` and ``/etc`` stay entirely hidden; the
+#: wrapped interpreter only needs the standard library under ``/usr``.
+_RO_BINDS = ("/usr", "/lib", "/lib64", "/bin")
 
 
 class IsolationUnavailable(RuntimeError):
@@ -147,6 +151,10 @@ def _bootstrap(script: str, limits: IsolationLimits) -> str:
 
 def build_argv(workspace: Workspace, script: str, limits: IsolationLimits) -> list[str]:
     """The bubblewrap argv that runs ``script`` isolated over ``workspace``."""
+    if not isinstance(workspace, Workspace):
+        # Guard against a bare Path (whose ``.root`` is ``/``) accidentally
+        # binding the whole host filesystem into the sandbox.
+        raise TypeError("sandbox workspace must be a Workspace, not a bare path")
     bwrap = _bwrap_path()
     interpreter = sandbox_interpreter()
     if not bwrap or not interpreter:

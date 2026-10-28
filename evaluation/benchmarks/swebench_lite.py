@@ -245,9 +245,12 @@ def _subset_keys(results: Mapping[str, object]) -> set[str]:
 def summarize_results(results: Mapping[str, object]) -> SubsetSummary:
     """Parse the official harness ``results.json`` for this subset only.
 
-    The official file holds ``resolved``, ``unresolved``, ``error_ids`` and
-    ``empty_patch_ids`` (lists of instance ids). Unknown or absent keys are
-    treated as an empty list rather than an error, so a partial run is readable.
+    Keys match the official ``swebench.harness.reporting.make_run_report`` output:
+    ``resolved_ids``, ``unresolved_ids``, ``error_ids`` and ``empty_patch_ids``
+    (lists of instance ids). Unknown or absent keys are treated as an empty list
+    rather than an error, so a partial run is readable. The count fields
+    (``*_instances``) are derivable from the id lists, so only the id lists are
+    read here.
     """
 
     def ids(key: str) -> list[str]:
@@ -257,8 +260,8 @@ def summarize_results(results: Mapping[str, object]) -> SubsetSummary:
         return [item for item in value if isinstance(item, str)]
 
     subset = _subset_keys(results)
-    resolved = [item for item in ids("resolved") if item in subset]
-    unresolved = [item for item in ids("unresolved") if item in subset]
+    resolved = [item for item in ids("resolved_ids") if item in subset]
+    unresolved = [item for item in ids("unresolved_ids") if item in subset]
     errors = [item for item in ids("error_ids") if item in subset]
     empty = [item for item in ids("empty_patch_ids") if item in subset]
     graded_ids = set(resolved) | set(unresolved) | set(errors) | set(empty)

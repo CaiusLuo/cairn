@@ -98,12 +98,15 @@ command is never mistaken for a run:
 
 `--grade` actually invokes the official Docker harness
 (`python -m swebench.harness.run_evaluation …`) on the predictions and parses its
-`logs/evaluation/**/<run_id>/results.json` into subset counts. It requires an
-explicit model, hard token budget, `--run-id` and an `--isolated` confirmation;
-if the harness is unavailable it reports `LIVE_BLOCKED` with
-`missing=["official-harness"]` and applies no patch and runs no test itself. A
-non-zero harness exit is reported as `LIVE_BLOCKED` with `executed=true`, not as
-a success.
+`logs/evaluation/**/<run_id>/results.json`. It parses the **official** schema
+(`resolved_ids`, `unresolved_ids`, `error_ids`, `empty_patch_ids`, as produced by
+`swebench.harness.reporting.make_run_report`), not a self-invented format. It
+requires an explicit model, hard token budget, `--run-id`, and `--isolated` with
+**real evidence**: `--isolated` is only honored when the Docker daemon actually
+answers (`docker info`); otherwise it reports `LIVE_BLOCKED
+missing=["docker-daemon"]`. If the harness is installed but absent it reports
+`LIVE_BLOCKED missing=["official-harness"]` (`docker_available=true`). A non-zero
+harness exit is reported as `LIVE_BLOCKED` with `executed=true`, not a success.
 
 ## Status this round: PARTIAL
 

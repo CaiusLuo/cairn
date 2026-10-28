@@ -233,6 +233,7 @@ from cairn.runtime.evals.compaction_ab import (  # noqa: E402
     BudgetedLLM,
     TokenBudgetLedger,
     TotalBudgetExceeded,
+    _CharCounter,
 )
 
 
@@ -538,3 +539,22 @@ def test_correctness_reported_even_when_other_arm_overspends(tmp_path: Path) -> 
     assert report.both_ended_within_budget is False
     # No combined verdict, but the full arm's per-arm correctness is not hidden.
     assert report.final_workspace_correct == {}
+
+
+def test_reservation_counter_covers_tool_schemas() -> None:
+    # The ledger reservation must count tool-schema tokens, or a request could be
+    # admitted whose provider payload exceeds the cap. The ContextBuilder keeps a
+    # messages-only proxy; the reserve counter must include tools.
+    messages = [Message(role="user", content="hello")]
+    tools = [{"name": "bash", "description": "run", "parameters": {"type": "object"}}]
+    messages_only = _CharCounter().count(messages, tools).tokens
+    with_tools = _CharCounter(include_tools=True).count(messages, tools).tokens
+    assert with_tools > messages_only
+
+    # A budget sized to fit messages-only but not messages+tools must refuse.
+    ledger = TokenBudgetLedger(total=messages_only + 1)
+    wrapped = BudgetedLLM(
+        _UsageClient(usage=None), ledger, _CharCounter(include_tools=True), output_cap=0
+    )
+    with pytest.raises(TotalBudgetExceeded):
+        asyncio.run(wrapped.generate(messages, tools))

@@ -84,6 +84,7 @@ def test_grade_requires_model_budget_isolation(
 def test_grade_without_official_harness_is_blocked(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(script, "_docker_available", lambda: True)
     monkeypatch.setattr(script, "_official_harness_available", lambda: False)
     args = _args(
         tmp_path,
@@ -103,14 +104,18 @@ def test_grade_without_official_harness_is_blocked(
 def test_grade_executes_harness_and_summarizes_results(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Official swebench.harness.reporting.make_run_report keys (verified against
+    # the upstream source), not a self-invented format.
     results = {
-        "resolved": ["astropy__astropy-12907", "django__django-11001"],
-        "unresolved": ["sympy__sympy-11400"],
+        "total_instances": 300,
+        "resolved_ids": ["astropy__astropy-12907", "django__django-11001"],
+        "unresolved_ids": ["sympy__sympy-11400"],
         "empty_patch_ids": [],
         "error_ids": [],
     }
     results_path = tmp_path / "results.json"
     results_path.write_text(json.dumps(results))
+    monkeypatch.setattr(script, "_docker_available", lambda: True)
     monkeypatch.setattr(script, "_official_harness_available", lambda: True)
     monkeypatch.setattr(
         script, "_run_official_harness", lambda *a, **k: (0, results_path)
@@ -134,6 +139,7 @@ def test_grade_executes_harness_and_summarizes_results(
 def test_grade_propagates_nonzero_harness_exit_as_blocked(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(script, "_docker_available", lambda: True)
     monkeypatch.setattr(script, "_official_harness_available", lambda: True)
     monkeypatch.setattr(script, "_run_official_harness", lambda *a, **k: (3, None))
     args = _args(
@@ -169,3 +175,24 @@ def test_default_is_live_not_run(
     result, _ = _parse(capsys)
     assert result["status"] == "LIVE_NOT_RUN"
     assert result["executed"] is False
+
+
+def test_grade_requires_real_docker_evidence_not_self_declaration(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(script, "_docker_available", lambda: False)
+    args = _args(
+        tmp_path,
+        grade=True,
+        run_id="r1",
+        model="openai/x",
+        max_total_tokens=1000,
+        isolated=True,
+    )
+    assert script.main(args) == 2
+    result, _ = _parse(capsys)
+    assert result["status"] == "LIVE_BLOCKED"
+    assert result["executed"] is False
+    assert "docker-daemon" in result["missing"]
