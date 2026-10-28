@@ -46,6 +46,7 @@ commands; neither directory changes the frozen experiment records below.
 | Document | Covers |
 | --- | --- |
 | [Repository Intelligence V2](evals/repository-intelligence-v2/README.md) | The current experiment contract |
+| [Coding behavior V1](evals/coding-behavior-v1/README.md) | The versioned `graded-behavior-v1` behavioral acceptance for the five coding-smoke prompts |
 | [Repository Intelligence V1](evals/repository-intelligence-v1/README.md) | The frozen V1 contract and its 2026-10-11 pilot |
 
 ## Background

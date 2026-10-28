@@ -74,6 +74,11 @@ class EvalCase(BaseModel):
 
 class EvalCheck(Protocol):
     name: str
+    # A check *may* also declare a stable, implementation-independent `check_type`
+    # label. Reporting reads it when present so a versioned case keeps the same
+    # reported label across renamed or refactored implementations, and otherwise
+    # falls back to `type(check).__name__`. It is intentionally not a required
+    # protocol member: existing checks satisfy EvalCheck without it.
 
     async def evaluate(self, workspace: Workspace) -> CheckResult: ...
 

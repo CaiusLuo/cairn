@@ -1,3 +1,4 @@
+from cairn.runtime.evals.behavior import BehaviorCheck
 from cairn.runtime.evals.checks import (
     FileContainsCheck,
     FileContentEqualsCheck,
@@ -20,6 +21,7 @@ from cairn.runtime.evals.runner import EvalRunner
 from cairn.runtime.evals.suite import EvalSuiteRunner, write_suite_report
 
 __all__ = [
+    "BehaviorCheck",
     "CheckResult",
     "EvalCase",
     "EvalCheck",

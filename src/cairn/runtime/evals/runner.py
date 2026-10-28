@@ -46,6 +46,12 @@ def _error_message(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+def _check_label(check: EvalCheck) -> str:
+    """A stable label for reporting: declared ``check_type`` else class name."""
+    label = getattr(check, "check_type", None)
+    return label if isinstance(label, str) and label.strip() else type(check).__name__
+
+
 def _check_target_path(check: EvalCheck, workspace: Workspace) -> str | None:
     if not isinstance(
         check,
@@ -355,6 +361,7 @@ class EvalRunner:
         self, check: EvalCheck, workspace: Workspace, *, index: int
     ) -> CheckResult:
         name = type(check).__name__
+        label = _check_label(check)
         target_path = _check_target_path(check, workspace)
         deadline = asyncio.timeout(self.check_timeout_seconds)
         try:
@@ -376,7 +383,7 @@ class EvalRunner:
                 return result.model_copy(
                     update={
                         "check_index": index,
-                        "check_type": type(check).__name__,
+                        "check_type": label,
                         "target_path": target_path,
                         "failure_category": category,
                     }
@@ -395,7 +402,7 @@ class EvalRunner:
                 passed=False,
                 error=error,
                 check_index=index,
-                check_type=type(check).__name__,
+                check_type=label,
                 target_path=target_path,
                 failure_category=category,
             )

@@ -18,9 +18,14 @@ them requires separate authorization; `--help` is offline:
 
 ```bash
 uv run python evaluation/runners/run_coding_smoke.py --help
+uv run python evaluation/runners/run_coding_behavior.py --help
 uv run python evaluation/runners/run_repository_intelligence.py --help
 uv run python -m evaluation.benchmarks.session_checkpoints --help
 ```
+
+`cases/coding_smoke_behavior.py` is the versioned `graded-behavior-v1` behavioral
+acceptance set for the five coding-smoke prompts; its contract is
+[coding behavior v1](../docs/evals/coding-behavior-v1/README.md).
 
 The [offline coding E2E](../docs/guides/offline-coding-e2e.md) uses the same smoke
 cases with scripted responses. The
