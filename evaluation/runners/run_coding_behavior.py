@@ -2,7 +2,7 @@
 
 This is the graded-behavior counterpart to ``run_coding_smoke.py``: same model
 configuration, same ``EvalRunner``/``EvalSuiteRunner`` lifecycle, but it selects
-the versioned behavioral acceptance set (``graded-behavior-v1``) instead of the
+the versioned behavioral acceptance set (``graded-behavior-v2``) instead of the
 frozen exact-content smoke corpus. It does not reimplement the runner or the
 provider wiring — it imports the existing ``print_result`` and mirrors the
 smoke runner's configuration resolution.
@@ -90,7 +90,7 @@ async def main(destination: Path) -> int:
         trust_local_shell=True,
     )
 
-    print("coding behavior evals (graded-behavior-v1)\n", flush=True)
+    print("coding behavior evals (graded-behavior-v2)\n", flush=True)
     try:
         report = await EvalSuiteRunner(runner).run(
             behavior_suite(), destination=destination, on_result=print_result

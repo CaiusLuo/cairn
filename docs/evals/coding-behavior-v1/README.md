@@ -1,4 +1,4 @@
-# Coding behavior v1 contract (`graded-behavior-v1`)
+# Coding behavior contract (`graded-behavior-v2`)
 
 This is the versioned **behavioral** acceptance contract for the five coding-smoke
 prompts. It is additive: it does not replace or reinterpret the frozen
@@ -24,7 +24,7 @@ The same five prompts are graded two ways for two different risks:
 | A correct target buried in unrelated rewrites passes | avoided by `FileContentEqualsCheck` | avoided by protected-file + behavior-of-old-function checks |
 
 Neither oracle replaces the other. `coding-smoke` remains the byte-exact
-"smallest change" gate; `graded-behavior-v1` adds behavior-and-boundary grading
+"smallest change" gate; `graded-behavior-v2` adds behavior-and-boundary grading
 and a different-implementation tolerance.
 
 ## Contract
