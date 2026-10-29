@@ -393,6 +393,7 @@ def test_run_headless_task_forwards_model_executor_and_context_builder(
     class _FakeRunner:
         def __init__(self, **kwargs: object) -> None:
             captured.update(kwargs)
+            self.event_handler = None
 
         async def run(self, spec: TaskSpec, *, cancellation_event=None):  # type: ignore[no-untyped-def]
             return types.SimpleNamespace(
@@ -815,7 +816,7 @@ def test_cancelled_json_reuses_real_runner_task_id(
 
     class _FakeRunner:
         def __init__(self, **kwargs: object) -> None:
-            pass
+            self.event_handler = None
 
         async def run(self, spec: TaskSpec, *, cancellation_event=None):  # type: ignore[no-untyped-def]
             captured["spec_task_id"] = spec.task_id

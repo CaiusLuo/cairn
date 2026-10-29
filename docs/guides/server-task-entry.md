@@ -104,6 +104,31 @@ exit code `4`. A cancelled result preserves the observed trace id, captured from
 the turn trace events, so the caller can locate the persisted trace at
 `<trace-dir>/<trace_id>.jsonl`.
 
+## Optional host verification (`--check-command`)
+
+Pass `--check-command "..."` together with `--allow-shell` (optionally
+`--check-timeout SECONDS`, a positive finite number) to run a trusted-host command
+in the Workspace after the turn. The command comes only from this CLI argument: it
+is never taken from the task text, a model reply or a tool argument, and
+`--allow-shell` is the same explicit host-shell authorization. Without it the run
+is refused (`check_permission_denied`) before any agent turn or command runs.
+
+- Exit 0: `check_status: passed`, `verified: true`, exit `0`.
+- Nonzero: one bounded, credential-redacted repair turn, then the **same** command
+  runs again. A second pass sets `verified: true` (attempts 2); a second failure is
+  `check_failed` (exit `7`).
+- Timeout: `check_timed_out` (exit `8`); no repair is started.
+- Cooperative cancellation during a check: `cancelled` (exit `4`) with the actual
+  `check_attempts`; no repair starts. A command never starts if cancellation was
+  already set.
+- A required permission denial keeps `verified: false` and a non-zero exit even if
+  the check exits 0.
+
+The result adds `check_requested`, `check_status`
+(`passed|failed|timed_out|not_run|permission_denied|cancelled`), `check_exit_code`
+and `check_attempts`. The command runs in the existing Workspace: no worktree,
+branch, reset, overwrite or discarded user change.
+
 ## Offline example
 
 No provider or network is needed to exercise the entry end-to-end: the real

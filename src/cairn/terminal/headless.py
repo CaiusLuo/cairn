@@ -2,9 +2,11 @@
 
 Public entry: ``cairn task run --workspace DIR --prompt TEXT --trust-workspace``
 plus the provider-approval facts (``--approve-provider-name/-endpoint/-group/
--key-env/-models``) and optional ``--allow-shell``/``--json``. It runs exactly one
-coding task through the existing ``CodingTaskRunner`` / ``runtime.loop.run_turn``
-boundary against an explicit Workspace and returns a machine-readable result.
+-key-env/-models``), optional ``--allow-shell``/``--json`` and an optional
+``--check-command``. It runs one coding task through the existing
+``CodingTaskRunner`` / ``runtime.loop.run_turn`` boundary against an explicit
+Workspace and returns a machine-readable result. Check/repair sequencing lives in
+``runtime.tasks.check``; this module only parses CLI input and presents results.
 
 Authorization is the operator's explicit CLI facts, never the prompt text, a
 model argument or a tool name. An unapproved launch performs no side effect and
@@ -15,6 +17,7 @@ denied immediately instead of prompting.
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import uuid
 from collections.abc import Sequence
@@ -32,7 +35,7 @@ from cairn.core.context import ContextBudget, ContextBuilder
 from cairn.core.events import Event
 from cairn.core.llm import LLMClient
 from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
-from cairn.core.tasks import TaskSpec, TaskStatus
+from cairn.core.tasks import TaskCheckStatus, TaskSpec, TaskStatus
 from cairn.infra.config import (
     default_provider,
     load_project_providers,
@@ -46,9 +49,15 @@ from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.artifacts import atomic_write_text
 from cairn.runtime.model_executor import ModelExecutor
 from cairn.runtime.provider_runtime import build_provider_runtime
+from cairn.runtime.tasks.check import (
+    CheckedTaskOutcome,
+    TaskCheckSpec,
+    run_task_with_check,
+)
 from cairn.runtime.tasks.runner import CodingTaskRunner
 
 DEFAULT_MAX_STEPS = 150
+DEFAULT_CHECK_TIMEOUT_S = 300.0
 
 
 class HeadlessStatus(StrEnum):
@@ -58,6 +67,9 @@ class HeadlessStatus(StrEnum):
     CANCELLED = "cancelled"
     UNAUTHORIZED = "unauthorized"
     INVALID_REQUEST = "invalid_request"
+    CHECK_FAILED = "check_failed"
+    CHECK_TIMED_OUT = "check_timed_out"
+    CHECK_PERMISSION_DENIED = "check_permission_denied"
 
 
 class HeadlessResult(BaseModel):
@@ -82,6 +94,14 @@ class HeadlessResult(BaseModel):
     permission_denied: bool = False
     denied_tools: list[str] = Field(default_factory=list)
     shell_authorized: bool = False
+    #: Whether a host check command was requested.
+    check_requested: bool = False
+    #: Outcome of the final host check; None when no check was requested.
+    check_status: TaskCheckStatus | None = None
+    #: Exit status of the final host check; None for a timeout or skipped check.
+    check_exit_code: int | None = None
+    #: How many times the host check actually ran (0, 1 or 2).
+    check_attempts: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +193,85 @@ def _redacting_tracer(
     return Tracer(RedactingTraceSink(tracer.sink, values))
 
 
+def _cancelled_check_state(
+    check_ref: dict[str, Any], wants_check: bool
+) -> tuple[TaskCheckStatus | None, int]:
+    """Observed check state to report when external cancellation is translated."""
+    if not wants_check:
+        return None, 0
+    attempts = int(check_ref.get("attempts", 0) or 0)
+    if attempts == 0:
+        return TaskCheckStatus.NOT_RUN, 0
+    raw = check_ref.get("status")
+    valid = {status.value for status in TaskCheckStatus}
+    if isinstance(raw, str) and raw in valid and not check_ref.get("running"):
+        return TaskCheckStatus(raw), attempts
+    # A check was running (never finished) when cancellation arrived.
+    return TaskCheckStatus.CANCELLED, attempts
+
+
+def _outcome_status(outcome: CheckedTaskOutcome) -> HeadlessStatus:
+    if outcome.cancelled:
+        return HeadlessStatus.CANCELLED
+    if outcome.check_permission_denied:
+        return HeadlessStatus.CHECK_PERMISSION_DENIED
+    task = outcome.task
+    if task is None:
+        return HeadlessStatus.RUNTIME_ERROR
+    if task.status is not TaskStatus.COMPLETED:
+        return _headless_status(task.status)
+    if outcome.check_status is TaskCheckStatus.FAILED:
+        return HeadlessStatus.CHECK_FAILED
+    if outcome.check_status is TaskCheckStatus.TIMED_OUT:
+        return HeadlessStatus.CHECK_TIMED_OUT
+    return HeadlessStatus.COMPLETED
+
+
+def _result_from_outcome(
+    *,
+    outcome: CheckedTaskOutcome,
+    resolved_id: str,
+    resolved_ws: Path,
+    ref: dict[str, Any],
+    granted_shell: bool,
+    check_requested: bool,
+    secret_values: Sequence[str],
+) -> HeadlessResult:
+    task = outcome.task
+    status = _outcome_status(outcome)
+    error_category: str | None = None
+    if outcome.cancelled:
+        error_category = "cancelled"
+    elif outcome.check_permission_denied:
+        error_category = "check_permission_denied"
+    elif status is HeadlessStatus.CHECK_FAILED:
+        error_category = "check_failed"
+    elif status is HeadlessStatus.CHECK_TIMED_OUT:
+        error_category = "check_timed_out"
+    elif task is not None and task.status is not TaskStatus.COMPLETED:
+        error_category = task.status.value
+    return HeadlessResult(
+        task_id=task.task_id if task is not None else resolved_id,
+        status=status,
+        verified=outcome.verified,
+        workspace=str(resolved_ws),
+        final_response=_redact(
+            task.final_response if task is not None else None, secret_values
+        ),
+        trace_id=(task.trace_id if task is not None else None) or _trace_id_of(ref),
+        trace_persisted=_trace_persisted_of(ref),
+        error_category=error_category,
+        error=_redact(task.error if task is not None else None, secret_values),
+        permission_denied=bool(outcome.denied_tools),
+        denied_tools=list(outcome.denied_tools),
+        shell_authorized=granted_shell,
+        check_requested=check_requested,
+        check_status=outcome.check_status,
+        check_exit_code=outcome.check_exit_code,
+        check_attempts=outcome.check_attempts,
+    )
+
+
 async def run_headless_task(
     *,
     workspace: Path,
@@ -190,6 +289,9 @@ async def run_headless_task(
     secret_values: Sequence[str] = (),
     cancellation_event: asyncio.Event | None = None,
     trace_ref: dict[str, Any] | None = None,
+    check_command: str | None = None,
+    check_timeout: float = DEFAULT_CHECK_TIMEOUT_S,
+    check_ref: dict[str, Any] | None = None,
 ) -> HeadlessResult:
     """Run one task against ``workspace`` and return a machine-readable result.
 
@@ -226,9 +328,10 @@ async def run_headless_task(
         grant_workspace_trust=grant_workspace_trust,
         grant_shell=grant_shell,
     )
-    denied: set[str] = set()
 
     def observe(event: Event) -> None:
+        # Terminal owns only result correlation (trace id/persisted). Denials and
+        # check sequencing are observed inside runtime.tasks.check.
         if event.type in ("trace_start", "trace_finish"):
             trace_id = event.data.get("trace_id")
             if isinstance(trace_id, str) and trace_id:
@@ -237,10 +340,6 @@ async def run_headless_task(
                 persisted = event.data.get("persisted")
                 if isinstance(persisted, bool):
                     ref["persisted"] = persisted
-        elif event.type == "tool_denied":
-            name = event.data.get("tool")
-            if isinstance(name, str) and name:
-                denied.add(name)
 
     runner = CodingTaskRunner(
         workspace=Workspace(resolved_ws),
@@ -254,26 +353,32 @@ async def run_headless_task(
         tracer=_redacting_tracer(tracer, secret_values),
         secret_env_keys=secret_env_keys,
     )
-    # External cancellation propagates (the runner has already settled owned
-    # work); only a normal return is mapped to a result.
-    result = await runner.run(
-        TaskSpec(task_id=resolved_id, prompt=prompt),
-        cancellation_event=cancellation_event,
+    check_spec = (
+        TaskCheckSpec(command=check_command, timeout=check_timeout)
+        if check_command is not None
+        else None
     )
-    return HeadlessResult(
-        task_id=result.task_id,
-        status=_headless_status(result.status),
-        workspace=str(resolved_ws),
-        final_response=_redact(result.final_response, secret_values),
-        trace_id=result.trace_id or _trace_id_of(ref),
-        trace_persisted=_trace_persisted_of(ref),
-        error_category=(
-            None if result.status is TaskStatus.COMPLETED else result.status.value
-        ),
-        error=_redact(result.error, secret_values),
-        permission_denied=bool(denied),
-        denied_tools=sorted(denied),
+    # The runtime owns the turn/check/repair sequence; external cancellation
+    # propagates after its owned cleanup. Shell authorization for a host check is
+    # the same explicit --allow-shell grant, never a model-chosen capability.
+    outcome = await run_task_with_check(
+        runner=runner,
+        spec=TaskSpec(task_id=resolved_id, prompt=prompt),
+        check=check_spec,
         shell_authorized=grant_shell,
+        cancellation_event=cancellation_event,
+        secret_values=secret_values,
+        secret_env_keys=secret_env_keys,
+        check_ref=check_ref,
+    )
+    return _result_from_outcome(
+        outcome=outcome,
+        resolved_id=resolved_id,
+        resolved_ws=resolved_ws,
+        ref=ref,
+        granted_shell=grant_shell,
+        check_requested=check_command is not None,
+        secret_values=secret_values,
     )
 
 
@@ -290,12 +395,17 @@ _EXIT_CODES: dict[HeadlessStatus, int] = {
     HeadlessStatus.CANCELLED: 4,
     HeadlessStatus.UNAUTHORIZED: 5,
     HeadlessStatus.INVALID_REQUEST: 2,
+    HeadlessStatus.CHECK_FAILED: 7,
+    HeadlessStatus.CHECK_TIMED_OUT: 8,
+    HeadlessStatus.CHECK_PERMISSION_DENIED: 9,
 }
 
 
 def _exit_code(result: HeadlessResult) -> int:
-    # A completed run in which a capability was denied is distinguishable from a
-    # fully-authorized completion without changing the underlying status.
+    # A passing final host check is exit 0 only when no required permission was
+    # denied; a denial keeps the run non-zero even if the check itself passed.
+    if result.verified:
+        return 0
     if result.status is HeadlessStatus.COMPLETED and result.permission_denied:
         return 6
     return _EXIT_CODES[result.status]
@@ -315,6 +425,12 @@ def _emit(result: HeadlessResult, *, as_json: bool, report: Path | None) -> None
         typer.echo("verified: false (normal completion is not verification)")
     if result.trace_id:
         typer.echo(f"trace: {result.trace_id}")
+    if result.check_requested:
+        check = result.check_status.value if result.check_status else "unknown"
+        typer.echo(
+            f"check: {check} "
+            f"(exit={result.check_exit_code}, attempts={result.check_attempts})"
+        )
     if result.permission_denied:
         typer.echo(f"permission denied: {', '.join(result.denied_tools)}")
     if result.error_category:
@@ -356,6 +472,9 @@ def _run_via_config(
     max_steps: int,
     trace_dir: Path | None,
     trace_ref: dict[str, Any] | None = None,
+    check_command: str | None = None,
+    check_timeout: float = DEFAULT_CHECK_TIMEOUT_S,
+    check_ref: dict[str, Any] | None = None,
 ) -> HeadlessResult:
     """Build the configured provider runtime and run one task.
 
@@ -409,6 +528,9 @@ def _run_via_config(
             secret_env_keys=secret_env_keys,
             secret_values=secret_values,
             trace_ref=trace_ref,
+            check_command=check_command,
+            check_timeout=check_timeout,
+            check_ref=check_ref,
         )
     )
 
@@ -498,8 +620,27 @@ def task_run(
     ] = None,
     allow_shell: Annotated[
         bool,
-        typer.Option("--allow-shell", help="Grant the local shell capability."),
+        typer.Option(
+            "--allow-shell",
+            help="Grant the local shell capability. Also authorizes the host "
+            "--check-command.",
+        ),
     ] = False,
+    check_command: Annotated[
+        str | None,
+        typer.Option(
+            "--check-command",
+            help="Host-selected verification command run in the Workspace after the "
+            "task; requires --allow-shell.",
+        ),
+    ] = None,
+    check_timeout: Annotated[
+        float,
+        typer.Option(
+            "--check-timeout",
+            help="Seconds before the host check is killed and reported timed out.",
+        ),
+    ] = DEFAULT_CHECK_TIMEOUT_S,
     max_steps: Annotated[int, typer.Option("--max-steps")] = DEFAULT_MAX_STEPS,
     trace_dir: Annotated[Path | None, typer.Option("--trace-dir")] = None,
     emit_json: Annotated[
@@ -514,6 +655,8 @@ def task_run(
     # error/cancellation result carry this same id.
     admitted_id = task_id or f"task-{uuid.uuid4().hex[:12]}"
     trace_ref: dict[str, Any] = {}
+    check_ref: dict[str, Any] = {}
+    wants_check = check_command is not None
     text = prompt
     if prompt_file is not None:
         try:
@@ -561,9 +704,52 @@ def task_run(
             workspace=str(resolved_ws),
             error_category="workspace_trust_required",
             shell_authorized=allow_shell,
+            check_requested=wants_check,
+            check_status=TaskCheckStatus.NOT_RUN if wants_check else None,
         )
         _emit(result, as_json=emit_json, report=report)
         raise typer.Exit(_exit_code(result))
+    if wants_check:
+        assert check_command is not None
+        if not check_command.strip() or "\0" in check_command:
+            _invalid(
+                workspace=workspace,
+                task_id=admitted_id,
+                category="invalid_check_command",
+                message="--check-command must be a non-empty string.",
+                allow_shell=allow_shell,
+                as_json=emit_json,
+                report=report,
+            )
+            raise typer.Exit(2)
+        # Argument validity precedes the permission decision: a malformed
+        # check-command or timeout is rejected as invalid input before shell
+        # authorization is consulted.
+        if not math.isfinite(check_timeout) or check_timeout <= 0:
+            _invalid(
+                workspace=workspace,
+                task_id=admitted_id,
+                category="invalid_check_timeout",
+                message="--check-timeout must be a positive number of seconds.",
+                allow_shell=allow_shell,
+                as_json=emit_json,
+                report=report,
+            )
+            raise typer.Exit(2)
+        if not allow_shell:
+            result = HeadlessResult(
+                task_id=admitted_id,
+                status=HeadlessStatus.CHECK_PERMISSION_DENIED,
+                workspace=str(resolved_ws),
+                error_category="check_permission_denied",
+                error="Executing --check-command requires the host shell "
+                "authorization --allow-shell.",
+                shell_authorized=False,
+                check_requested=True,
+                check_status=TaskCheckStatus.PERMISSION_DENIED,
+            )
+            _emit(result, as_json=emit_json, report=report)
+            raise typer.Exit(_exit_code(result))
     approval = _build_approval(
         approve_provider_name,
         approve_provider_endpoint,
@@ -581,8 +767,12 @@ def task_run(
             max_steps=max_steps,
             trace_dir=trace_dir,
             trace_ref=trace_ref,
+            check_command=check_command if wants_check else None,
+            check_timeout=check_timeout,
+            check_ref=check_ref,
         )
     except (asyncio.CancelledError, KeyboardInterrupt):
+        cancel_status, cancel_attempts = _cancelled_check_state(check_ref, wants_check)
         # The library keeps raising external cancellation; only the CLI boundary
         # turns it into a report, after the runner has finished owned cleanup.
         result = HeadlessResult(
@@ -593,6 +783,9 @@ def task_run(
             trace_persisted=_trace_persisted_of(trace_ref),
             error_category="cancelled",
             shell_authorized=allow_shell,
+            check_requested=wants_check,
+            check_status=cancel_status,
+            check_attempts=cancel_attempts,
         )
     except ProviderApprovalRequired as exc:
         result = HeadlessResult(
@@ -602,6 +795,8 @@ def task_run(
             error_category="provider_approval_required",
             error=str(exc),
             shell_authorized=allow_shell,
+            check_requested=wants_check,
+            check_status=TaskCheckStatus.NOT_RUN if wants_check else None,
         )
     except ProviderApprovalMismatch as exc:
         result = HeadlessResult(
@@ -611,6 +806,8 @@ def task_run(
             error_category="provider_approval_mismatch",
             error=str(exc),
             shell_authorized=allow_shell,
+            check_requested=wants_check,
+            check_status=TaskCheckStatus.NOT_RUN if wants_check else None,
         )
     except (OSError, ValueError) as exc:
         result = HeadlessResult(
@@ -620,6 +817,8 @@ def task_run(
             error_category="configuration_error",
             error=str(exc),
             shell_authorized=allow_shell,
+            check_requested=wants_check,
+            check_status=TaskCheckStatus.NOT_RUN if wants_check else None,
         )
     _emit(result, as_json=emit_json, report=report)
     raise typer.Exit(_exit_code(result))
