@@ -7,6 +7,7 @@ budget, cancellation, credential redaction and the machine-readable result.
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,26 @@ from cairn.terminal.headless import (
 )
 from tests.support.runtime import SequenceLLM
 from tests.support.sandbox import require_local_shell
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
+def _set_color_env(monkeypatch: pytest.MonkeyPatch, force: bool) -> None:
+    for name in ("FORCE_COLOR", "PY_COLORS", "CLICOLOR_FORCE"):
+        monkeypatch.delenv(name, raising=False)
+    if force:
+        # Rich also needs a color-capable TERM and no NO_COLOR override.
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        monkeypatch.setenv("FORCE_COLOR", "1")
+        monkeypatch.setenv("TERM", "xterm-256color")
+    else:
+        # Deterministically colorless regardless of the ambient environment.
+        monkeypatch.setenv("NO_COLOR", "1")
+        monkeypatch.setenv("TERM", "dumb")
 
 
 def _tracer(tmp_path: Path) -> Tracer:
@@ -247,10 +268,18 @@ def test_cli_unauthorized_is_offline_and_scriptable(tmp_path: Path) -> None:
     assert sorted(p.name for p in ws.iterdir()) == ["src"]
 
 
-def test_cli_help_is_offline(tmp_path: Path) -> None:
+@pytest.mark.parametrize("force_color", [False, True], ids=["uncolored", "colored"])
+def test_cli_help_is_offline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, force_color: bool
+) -> None:
+    _set_color_env(monkeypatch, force_color)
     result = CliRunner().invoke(task_app, ["--help"])
     assert result.exit_code == 0
-    assert "--trust-workspace" in result.stdout
+    if force_color:
+        assert "\x1b[" in result.stdout  # the colored case is actually colored
+    else:
+        assert "\x1b[" not in result.stdout
+    assert "--trust-workspace" in _strip_ansi(result.stdout)
 
 
 # --- Review-driven coverage ---------------------------------------------------
@@ -588,12 +617,20 @@ def test_dotenv_and_provider_read_from_each_workspace(
     ]
 
 
-def test_registered_under_task_subcommand(tmp_path: Path) -> None:
+@pytest.mark.parametrize("force_color", [False, True], ids=["uncolored", "colored"])
+def test_registered_under_task_subcommand(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, force_color: bool
+) -> None:
     from cairn.terminal.cli import app as cairn_cli
 
+    _set_color_env(monkeypatch, force_color)
     result = CliRunner().invoke(cairn_cli, ["task", "run", "--help"])
     assert result.exit_code == 0
-    assert "--trust-workspace" in result.stdout
+    if force_color:
+        assert "\x1b[" in result.stdout
+    else:
+        assert "\x1b[" not in result.stdout
+    assert "--trust-workspace" in _strip_ansi(result.stdout)
 
 
 def test_provider_approval_binds_ordered_model_ids(
