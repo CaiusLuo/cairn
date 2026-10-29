@@ -66,6 +66,7 @@ from cairn.terminal.durable import (
     show_report,
 )
 from cairn.terminal.frame import TranscriptView, frame_live_region
+from cairn.terminal.headless import task_app
 from cairn.terminal.input import CliInput
 from cairn.terminal.output import (
     StreamingDisplay,
@@ -118,6 +119,7 @@ session_app = typer.Typer(
     help="Create, inspect, reopen or reconcile local conversations."
 )
 app.add_typer(session_app, name="session")
+app.add_typer(task_app, name="task")
 StoreOption = Annotated[
     Path | None, typer.Option("--store", help="Session storage directory.")
 ]
