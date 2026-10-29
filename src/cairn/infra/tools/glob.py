@@ -10,13 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from cairn.core.models import ToolResult
+from cairn.infra.credential_paths import is_credential_path
 from cairn.infra.tools.arguments import function_schema, reject_unknown_keys
 from cairn.infra.tools.base import (
     InvalidArguments,
     ToolExecutionContext,
     WorkspaceOnlyTool,
 )
-from cairn.infra.tools.sensitive_paths import is_credential_path
 from cairn.infra.workspace.paths import (
     contained_candidate,
     has_git_metadata_component,

@@ -1399,3 +1399,59 @@ def test_two_palette_selections_can_be_inserted_before_sending() -> None:
         _press(view, "Down")
         _press_by_name(view, "palette_run")
         assert view._buffer.text == "[skill:a] [skill:b] "
+
+
+def test_palette_insertion_keeps_text_after_cursor() -> None:
+    with (
+        create_pipe_input() as pipe,
+        create_app_session(input=pipe, output=DummyOutput()),
+    ):
+        view, _, _ = _view()
+        view.on_palette_data = lambda: (
+            (("/skill", "Select a skill"),),
+            {"/skill": (("local", "Local helper"),)},
+        )
+        view._buffer.insert_text("finish the task")
+        view._buffer.cursor_position = 0
+        view._buffer.insert_text("/skill loc")
+        _press_by_name(view, "palette_run")
+        assert view._buffer.text == "[skill:local] finish the task"
+        assert len(view._lines) == 0
+
+
+def test_running_extension_selection_uses_one_deletable_queue() -> None:
+    with (
+        create_pipe_input() as pipe,
+        create_app_session(input=pipe, output=DummyOutput()),
+    ):
+        view, _, _ = _view()
+        view.set_running(True)
+        view._buffer.insert_text("[skill:local] run later")
+        view._on_accept(view._buffer)
+        assert not view.steering.has_pending_steers
+        assert [m.text for m in view.steering.queued()] == ["[skill:local] run later"]
+        assert len(view._lines) == 0
+        view.show_action(None)
+        _press_by_name(view, "promote_selected")
+        assert not view.steering.has_pending_steers
+        view.show_action(None)
+        _press_by_name(view, "discard_selected")
+        view.set_running(False)
+        assert len(view._lines) == 0
+
+
+def test_extension_queue_is_released_once_when_turn_finishes() -> None:
+    with (
+        create_pipe_input() as pipe,
+        create_app_session(input=pipe, output=DummyOutput()),
+    ):
+        view, _, _ = _view()
+        view.set_running(True)
+        view._buffer.insert_text("[mcp:local] run later")
+        view._on_accept(view._buffer)
+        view.set_running(False)
+        line = asyncio.run(view._lines.next_line())
+        assert line.text == "[mcp:local] run later"
+        view.set_running(False)
+        assert not view.steering.has_pending
+        assert len(view._lines) == 0

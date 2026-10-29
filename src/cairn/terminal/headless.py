@@ -50,7 +50,7 @@ from cairn.infra.tools.base import Tool
 from cairn.infra.tools.filesystem_access import normalize_access_root
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.artifacts import atomic_write_text
-from cairn.runtime.mcp.activation import open_mcp_servers
+from cairn.runtime.mcp.activation import McpActivationError, open_mcp_servers
 from cairn.runtime.model_executor import ModelExecutor
 from cairn.runtime.provider_runtime import build_provider_runtime
 from cairn.runtime.tasks.check import (
@@ -438,12 +438,12 @@ async def run_headless_task(
             check_requested=wants_check_inner,
             check_status=TaskCheckStatus.NOT_RUN if wants_check_inner else None,
         )
-    except NotImplementedError as exc:
+    except McpActivationError as exc:
         return HeadlessResult(
             task_id=resolved_id,
             status=HeadlessStatus.RUNTIME_ERROR,
             workspace=str(resolved_ws),
-            error_category="mcp_unsupported",
+            error_category="mcp_connection_error",
             error=str(exc),
             shell_authorized=grant_shell,
             check_requested=wants_check_inner,

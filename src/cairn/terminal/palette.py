@@ -17,6 +17,7 @@ every level, which is what makes the surface learnable:
   submits the command once the choice is complete.
 """
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
@@ -140,15 +141,17 @@ class Palette:
         when the slash is deleted. Typing returns to the first level, because the
         filter applies to the command list and not to a submenu.
         """
-        if typed.startswith("/"):
+        # A second inline selection has a search suffix too ("[skill:a]
+        # /mcp git"). The final whitespace-delimited word is not the command.
+        matches = list(re.finditer(r"(?:^|\s)(/(?:skill|mcp)\b[^\n]*)$", typed))
+        if matches:
+            offset = matches[-1].start(1)
+            command_text = typed[offset:]
+        elif typed.startswith("/"):
             offset, command_text = 0, typed
         else:
-            index = max(typed.rfind("\n"), typed.rfind(" ")) + 1
-            if index < len(typed) and typed[index] == "/":
-                offset, command_text = index, typed[index:]
-            else:
-                self.close()
-                return
+            self.close()
+            return
         self._command_offset = offset
         self._command_text = command_text
         head, _, remainder = command_text.partition(" ")

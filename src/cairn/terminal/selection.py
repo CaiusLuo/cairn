@@ -16,7 +16,7 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 from prompt_toolkit.lexers import Lexer
 
-TOKEN_RE = re.compile(r"\[(skill|mcp):([^\]]+)\]")
+TOKEN_RE = re.compile(r"\[(skill|mcp):([\w-]+)\]")
 
 
 def format_token(kind: str, name: str) -> str:
@@ -44,7 +44,20 @@ def parse_selection_tokens(text: str) -> Selection:
         if not name:
             continue
         (skills if kind == "skill" else servers).append(name)
-    task = re.sub(r"[ \t]+", " ", TOKEN_RE.sub("", text)).strip()
+    # Remove only token spans and their single insertion separator. Never
+    # normalize the surrounding task: it may be indentation-sensitive code.
+    parts: list[str] = []
+    position = 0
+    for match in matches:
+        parts.append(text[position : match.start()])
+        position = match.end()
+        if text[position : position + 1] == " " or (
+            text[position : position + 1] == "\n"
+            and (match.start() == 0 or text[match.start() - 1] == "\n")
+        ):
+            position += 1
+    parts.append(text[position:])
+    task = "".join(parts)
     return Selection(
         task_text=task,
         skills=tuple(dict.fromkeys(skills)),

@@ -33,6 +33,7 @@ from io import StringIO
 from prompt_toolkit import keys
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.document import Document
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import ANSI
@@ -53,7 +54,7 @@ from cairn.terminal.pacing import StreamPacer
 from cairn.terminal.palette import Palette
 from cairn.terminal.paste import PasteRegistry, decide_paste
 from cairn.terminal.queue_view import QueueView
-from cairn.terminal.selection import SelectionTokenLexer
+from cairn.terminal.selection import SelectionTokenLexer, parse_selection_tokens
 from cairn.terminal.submission import Delivery, LineQueue, PendingLine
 from cairn.terminal.transcript import TRANSCRIPT_GAP_LINES, Transcript
 
@@ -442,6 +443,18 @@ class TranscriptView:
             """
             if not self._running:
                 return
+            queued = self._pending.queued()
+            if self._queue_view.selected < len(queued):
+                selection = parse_selection_tokens(
+                    queued[self._queue_view.selected].text
+                )
+                if selection.skills or selection.mcp_servers:
+                    self.show_action(
+                        Action(
+                            message="Extension selection stays queued for the next turn."
+                        )
+                    )
+                    return
             if self._queue_view.promote_selected(self._pending):
                 self.repaint()
 
@@ -622,6 +635,11 @@ class TranscriptView:
 
     # -- input -----------------------------------------------------------
 
+    @property
+    def steering(self) -> SteerQueue:
+        """The single pending-message queue shared with the running turn."""
+        return self._pending
+
     def set_running(self, running: bool) -> None:
         """Record whether a turn is in flight.
 
@@ -629,6 +647,9 @@ class TranscriptView:
         hint must not promise a behaviour that is not available.
         """
         self._running = running
+        if not running:
+            for item in self._pending.drain():
+                self._lines.submit(PendingLine(text=item.text))
         self.repaint()
 
     def show_action(self, action: Action | None) -> None:
@@ -762,8 +783,10 @@ class TranscriptView:
         current = self._buffer.text
         offset = self._palette.command_offset()
         prefix = current[:offset]
-        self._buffer.reset()
-        self._buffer.insert_text(prefix + token + " ")
+        suffix = current[self._buffer.cursor_position :]
+        self._buffer.document = Document(
+            prefix + token + " " + suffix, cursor_position=len(prefix + token + " ")
+        )
         self._palette.close()
         self.repaint()
 
@@ -799,7 +822,7 @@ class TranscriptView:
         if self.on_palette_data is not None:
             root, children = self.on_palette_data()
             self._palette.set_dynamic(root, children)
-        self._palette.update(buffer.text)
+        self._palette.update(buffer.document.text_before_cursor)
         self.repaint()
 
     def _status_control(self) -> ANSI:
@@ -1012,11 +1035,18 @@ class TranscriptView:
         if not expanded.strip():
             self.repaint()
             return
-        if delivery == "queue":
+        selection = parse_selection_tokens(expanded)
+        if self._running and (selection.skills or selection.mcp_servers):
+            delivery = "queue"
+            self.show_action(
+                Action(message="Extension selection queued for the next turn.")
+            )
+        if delivery == "queue" and self._running:
             # A queued message waits for the turn, so it lives in the queue the
             # stack above the composer renders from.
             self._pending.push(PendingMessage(text=expanded, delivery="queue"))
-        self._lines.submit(PendingLine(text=expanded, delivery=delivery))
+        else:
+            self._lines.submit(PendingLine(text=expanded, delivery=delivery))
         self.repaint()
 
     def _on_accept(self, buffer: Buffer) -> bool:

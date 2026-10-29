@@ -53,3 +53,13 @@ def test_plain_command_has_no_insertion_token() -> None:
     palette = _palette()
     palette.update("/model")
     assert palette.insertion() == ""
+
+
+def test_inline_second_selection_keeps_search_query() -> None:
+    palette = _palette()
+    text = "[skill:s0] do something /mcp git"
+    palette.update(text)
+    assert [r.name for r in palette.rows()] == ["github"]
+    assert palette.command_offset() == text.index("/mcp")
+    palette.update("[mcp:github] /skill desc 7")
+    assert palette.insertion() == "[skill:s7]"

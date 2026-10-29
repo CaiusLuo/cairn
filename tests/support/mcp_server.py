@@ -1,83 +1,30 @@
-# mypy: ignore-errors
-"""Tiny stdio MCP server used by offline tests (JSON-RPC, newline delimited)."""
+"""A real official-SDK server shared by offline stdio and HTTP regressions."""
 
-import json
+import asyncio
 import os
-import sys
+from pathlib import Path
+
+from mcp.server import MCPServer
 
 
-def main() -> None:
-    marker = os.environ.get("MCP_TEST_MARKER")
-    if marker:
-        with open(marker, "w", encoding="utf-8") as handle:
-            handle.write("started\n")
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            message = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        method = message.get("method")
-        request_id = message.get("id")
-        if method == "initialize":
-            result = {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "demo", "version": "0.0"},
-            }
-        elif method == "tools/list":
-            result = {
-                "tools": [
-                    {
-                        "name": "echo",
-                        "description": "Echo text back",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {"text": {"type": "string"}},
-                            "required": ["text"],
-                        },
-                    }
-                ]
-            }
-        elif method == "tools/call":
-            params = message.get("params") or {}
-            if params.get("name") != "echo":
-                result = {
-                    "content": [{"type": "text", "text": "unknown tool"}],
-                    "isError": True,
-                }
-            else:
-                arguments = params.get("arguments") or {}
-                result = {
-                    "content": [
-                        {"type": "text", "text": str(arguments.get("text", ""))}
-                    ],
-                    "isError": False,
-                }
-        else:
-            if request_id is None:
-                continue
-            sys.stdout.write(
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "error": {"code": -32601, "message": "method not found"},
-                    }
-                )
-                + "\n"
-            )
-            sys.stdout.flush()
-            continue
-        if request_id is not None:
-            sys.stdout.write(
-                json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result})
-                + "\n"
-            )
-            sys.stdout.flush()
+def make_server() -> MCPServer[None]:
+    server: MCPServer[None] = MCPServer("Cairn test")
+
+    @server.tool()
+    async def echo(text: str) -> str:
+        """Echo text back; optionally pause to exercise cancellation."""
+        if text == "wait":
+            await asyncio.sleep(30)
+        if text == "secret":
+            return os.environ.get("MCP_TEST_SECRET", "absent")
+        if text == "ungranted":
+            return os.environ.get("MCP_UNGRANTED_SECRET", "absent")
+        return text
+
+    return server
 
 
 if __name__ == "__main__":
-    main()
+    if marker := os.environ.get("MCP_TEST_MARKER"):
+        Path(marker).write_text(str(os.getpid()), encoding="utf-8")
+    make_server().run()

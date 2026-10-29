@@ -67,3 +67,19 @@ def test_unselected_skill_body_stays_out_of_request(tmp_path: Path) -> None:
 
     contents = "\n".join(m.content or "" for m in llm.calls[0][0])
     assert BODY not in contents
+
+
+def test_unknown_selected_skill_never_reaches_model(tmp_path: Path) -> None:
+    import pytest
+
+    ws = _workspace(tmp_path)
+    llm = SequenceLLM([])
+    agent = _agent(ws, llm)
+    with pytest.raises(ValueError, match="Unknown selected skill"):
+        asyncio.run(
+            run_turn(
+                agent, "task", budget=RunBudget(max_steps=2), selected_skills=["gone"]
+            )
+        )
+    assert not llm.calls
+    assert not agent.state.messages

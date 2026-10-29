@@ -15,9 +15,16 @@ missing directory is not an error: a project without skills simply has none.
 
 from __future__ import annotations
 
+import os
+import re
+import stat
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+
+import yaml
+
+from cairn.infra.credential_paths import is_credential_path
 
 SKILL_FILE = "SKILL.md"
 MAX_NAME_LENGTH = 64
@@ -49,27 +56,61 @@ class SkillSummary:
 
 
 def _frontmatter(text: str) -> tuple[dict[str, str], str]:
-    """Split leading YAML frontmatter from the body.
-
-    Only flat ``key: value`` pairs are read, which is all a skill needs. A file
-    without frontmatter is treated as all body.
-    """
-    if not text.startswith("---"):
-        return {}, text
+    """Read standard safe YAML, including folded/literal descriptions."""
     lines = text.splitlines()
-    if len(lines) < 2 or lines[0].strip() != "---":
+    if not lines or lines[0].strip() != "---":
         return {}, text
-    fields: dict[str, str] = {}
     for index, line in enumerate(lines[1:], start=1):
         if line.strip() == "---":
-            body = "\n".join(lines[index + 1 :]).strip("\n")
-            return fields, body
-        if ":" not in line or line.startswith((" ", "\t")):
-            continue
-        key, _, value = line.partition(":")
-        fields[key.strip()] = value.strip().strip("\"'")
-    # An unterminated block is malformed frontmatter, not a skill header.
+            try:
+                fields = yaml.safe_load("\n".join(lines[1:index]))
+            except yaml.YAMLError:
+                return {}, text
+            if not isinstance(fields, dict):
+                return {}, text
+            if any(
+                key in fields and not isinstance(fields[key], str)
+                for key in ("name", "description")
+            ):
+                return {}, text
+            return {
+                key: fields[key] for key in ("name", "description") if key in fields
+            }, "\n".join(lines[index + 1 :]).strip("\n")
     return {}, text
+
+
+def _read_file(root: Path, relative: Path, *, limit: int) -> str:
+    """Bounded regular-file read through directory FDs; never follow symlinks."""
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+        raise ValueError("resource path must be relative to the skill directory")
+    if is_credential_path(root / relative):
+        raise PermissionError("reading credential material requires approval")
+    # Anchor at the filesystem root, walking every component without symlinks.
+    # Checking path.resolve() before opening would leave a replacement race.
+    absolute = root.absolute()
+    fd = os.open(absolute.anchor, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for component in (*absolute.parts[1:], *relative.parts[:-1]):
+            child = os.open(
+                component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd
+            )
+            os.close(fd)
+            fd = child
+        child = os.open(
+            relative.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=fd
+        )
+        with os.fdopen(child, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("skill resource must be a regular file")
+            if info.st_size > limit:
+                raise ValueError("skill file exceeds the size limit")
+            data = handle.read(limit + 1)
+            if len(data) > limit:
+                raise ValueError("skill file exceeds the size limit")
+            return data.decode("utf-8")
+    finally:
+        os.close(fd)
 
 
 def _single_line(value: str) -> str:
@@ -86,7 +127,7 @@ def parse_skill(text: str, *, fallback_name: str = "") -> Skill | None:
     fields, body = _frontmatter(text)
     name = _single_line(fields.get("name") or fallback_name)
     description = _single_line(fields.get("description", ""))
-    if not name or len(name) > MAX_NAME_LENGTH:
+    if len(name) > MAX_NAME_LENGTH or re.fullmatch(r"[\w-]+", name) is None:
         return None
     if not description or len(description) > MAX_DESCRIPTION_LENGTH:
         return None
@@ -137,8 +178,10 @@ class SkillLibrary:
             if not path.is_file():
                 continue
             try:
-                text = path.read_text(encoding="utf-8")
-            except OSError:
+                text = _read_file(
+                    root, Path(entry.name) / SKILL_FILE, limit=MAX_BODY_BYTES + 16384
+                )
+            except (OSError, ValueError):
                 # An unreadable skill is skipped: discovery must not fail a turn.
                 continue
             parsed = parse_skill(text, fallback_name=entry.name)
@@ -179,13 +222,7 @@ class SkillLibrary:
         relative = Path(relative_path)
         if relative.is_absolute() or ".." in relative.parts:
             raise ValueError("resource path must be relative to the skill directory")
-        base = skill.directory.resolve()
-        target = (base / relative).resolve()
-        if not target.is_relative_to(base):
-            raise ValueError("resource path escapes the skill directory")
-        if target.stat().st_size > MAX_RESOURCE_BYTES:
-            raise ValueError("skill resource exceeds the size limit")
-        return target.read_text(encoding="utf-8")
+        return _read_file(skill.directory, relative, limit=MAX_RESOURCE_BYTES)
 
     def prompt_lines(self) -> list[str]:
         """One line per skill, for a system message; empty when there are none."""
@@ -261,22 +298,6 @@ class LayeredSkillLibrary(SkillLibrary):
                 else:
                     owner[item.name] = label
         return tuple(diagnostics)
-
-    def resolve(self, names: Sequence[str]) -> tuple[list[Skill], list[str]]:
-        """Resolve selected names, returning (skills, missing) deterministically."""
-        found: list[Skill] = []
-        missing: list[str] = []
-        seen: set[str] = set()
-        for name in names:
-            if name in seen:
-                continue
-            seen.add(name)
-            skill = self.read(name)
-            if skill is None:
-                missing.append(name)
-            else:
-                found.append(skill)
-        return found, missing
 
 
 def resolve_skills(

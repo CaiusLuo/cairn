@@ -22,8 +22,8 @@ from pathlib import Path
 from typing import Any
 
 from cairn.core.permissions import AccessKind, CapabilityRequest, PermissionCapability
+from cairn.infra.credential_paths import is_credential_path
 from cairn.infra.tools.base import InvalidArguments, PermissionRefused
-from cairn.infra.tools.sensitive_paths import is_credential_path
 from cairn.infra.workspace.paths import is_within, resolve_tool_path
 from cairn.infra.workspace.workspace import Workspace
 

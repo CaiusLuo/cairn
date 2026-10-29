@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from cairn.core.models import ToolResult
@@ -9,6 +10,7 @@ from cairn.infra.skills import SkillLibrary
 from cairn.infra.tools.arguments import function_schema, reject_unknown_keys
 from cairn.infra.tools.base import (
     InvalidArguments,
+    PermissionRefused,
     ToolExecutionContext,
     WorkspaceOnlyTool,
 )
@@ -121,6 +123,11 @@ class ReadSkillResourceTool(WorkspaceOnlyTool):
             value = arguments.get(key)
             if not isinstance(value, str) or not value.strip() or "\0" in value:
                 raise InvalidArguments(f"{key} must be a non-empty string without NUL")
+        path = Path(arguments["path"])
+        if path.is_absolute() or ".." in path.parts:
+            raise InvalidArguments(
+                "resource path must be relative to the skill directory"
+            )
 
     async def execute(
         self,
@@ -132,6 +139,10 @@ class ReadSkillResourceTool(WorkspaceOnlyTool):
             text = self.library.read_resource(
                 arguments["skill"].strip(), arguments["path"].strip()
             )
+        except PermissionError:
+            raise PermissionRefused(
+                "reading credential material requires approval"
+            ) from None
         except (KeyError, ValueError, OSError) as exc:
             return ToolResult(
                 stdout="", stderr=f"Skill resource error: {exc}", exit_code=1

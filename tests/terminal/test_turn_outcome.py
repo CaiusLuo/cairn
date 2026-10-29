@@ -316,3 +316,42 @@ def test_a_second_ctrl_c_does_not_rerequest_the_cancellation(
 
     assert display.interrupts == 1
     assert display.settled == 1
+
+
+def test_running_extension_selection_is_retained_for_next_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cairn.runtime.turn.steering import SteerQueue
+
+    queue = SteerQueue()
+    frame = _Frame("[skill:review] [mcp:local] check this")
+    notices: list[Any] = []
+    monkeypatch.setattr(
+        cli_module, "_show_action", lambda action, frame: notices.append(action)
+    )
+
+    async def run_turn(
+        agent: Any, user_input: str, *, budget: Any, steering: Any
+    ) -> str:
+        async with asyncio.timeout(2):
+            while not steering.queued():
+                await asyncio.sleep(0)
+        assert not steering.has_pending_steers
+        return "first task done"
+
+    monkeypatch.setattr(cli_module, "run_turn", run_turn)
+    result = asyncio.run(
+        cli_module._drive_turn(
+            agent=object(),  # type: ignore[arg-type]
+            user_input="first task",
+            steering=queue,
+            frame=frame,  # type: ignore[arg-type]
+            streaming=_Display(),  # type: ignore[arg-type]
+            durable_session=None,
+        )
+    )
+    assert result == "first task done"
+    assert [line.text for line in queue.queued()] == [
+        "[skill:review] [mcp:local] check this"
+    ]
+    assert notices and "next turn" in notices[0].message

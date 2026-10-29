@@ -33,3 +33,9 @@ def test_lexer_colours_token_without_ansi_in_text() -> None:
     fragments = lexer.lex_document(Document("run [skill:local] now"))(0)
     assert ("class:selection-token", "[skill:local]") in fragments
     assert all("\x1b[" not in str(fragment[1]) for fragment in fragments)
+
+
+def test_selection_preserves_pasted_code_whitespace() -> None:
+    code = 'def f():\n    value = "two  spaces"\n\treturn value\n'
+    assert parse_selection_tokens("[skill:local] " + code).task_text == code
+    assert parse_selection_tokens("[skill:local]\n" + code).task_text == code

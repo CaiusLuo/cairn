@@ -119,6 +119,8 @@ async def run_turn(
     if agent.session_owner is not session:
         raise SessionAdmissionError("The exact owning Session is required.")
     durable = session if isinstance(session, DurableSession) else None
+    if durable is not None and selected_skills:
+        raise SessionAdmissionError("Skill selection is not supported in durable mode.")
     if durable is not None:
         durable._admit_durable(agent, user_input, budget)
     elif session is not None:
@@ -146,16 +148,19 @@ async def run_turn(
             turn_start = len(agent.state.messages)
             trace.start()
 
-            if selected_skills and agent.skill_library is not None:
-                # A user-selected skill body is task context the operator chose,
-                # not a system-policy message: it can never grant authority.
-                for name in selected_skills:
-                    selected = agent.skill_library.read(name)
-                    if selected is not None:
-                        agent.state.add_user_message(
-                            f"[Selected skill: {selected.name}]\n\n{selected.body}"
-                        )
-            agent.state.add_user_message(user_input)
+            selected_context: list[str] = []
+            for name in dict.fromkeys(selected_skills):
+                selected = (
+                    agent.skill_library.read(name) if agent.skill_library else None
+                )
+                if selected is None:
+                    raise ValueError(f"Unknown selected skill: {name}")
+                selected_context.append(
+                    f"[Selected skill: {selected.name}]\n\n{selected.body}"
+                )
+            # One user message keeps selected instructions with the task during
+            # compaction; external instructions never become system authority.
+            agent.state.add_user_message("\n\n".join((*selected_context, user_input)))
 
             for step in range(budget.max_steps):
                 # Instructions that arrived during the previous step join the

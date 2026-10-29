@@ -8,10 +8,15 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "httpx2>=2.10,<3",
+    "jsonschema>=4.20",
     "litellm>=1.101.0",
+    "mcp>=2.3.0,<3",
     "prompt-toolkit>=3.0.53",
     "pydantic>=2.13.5",
     "python-dotenv>=1.2.3",
+    "pyyaml>=6",
+    "referencing>=0.36",
     "rich>=15.0.0",
     "tomlkit>=0.13.3",
     "typer>=0.27.2",
@@ -30,6 +35,8 @@ dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.0.0",
     "ruff>=0.16.7",
+    "types-jsonschema>=4.26.0.20261006",
+    "types-pyyaml>=6.0.12.20260906",
 ]
 
 [tool.ruff]

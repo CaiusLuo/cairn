@@ -54,3 +54,31 @@ def test_http_requires_url_and_stdio_requires_command(tmp_path: Path) -> None:
     _write(tmp_path, '[[servers]]\nname = "x"\ntransport = "stdio"\n')
     with pytest.raises(ValueError):
         load_mcp_servers(tmp_path)
+
+
+def test_header_credentials_remain_names_when_parsing(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        '[[servers]]\nname="remote"\ntransport="streamable_http"\nurl="https://example.test/mcp"\n[servers.header_env]\nAuthorization="MISSING_HOST_ENV"\n',
+    )
+    assert load_mcp_servers(tmp_path)[0].header_env == (
+        ("Authorization", "MISSING_HOST_ENV"),
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user:secret@example.test/mcp",
+        "https://example.test/mcp?token=secret",
+        "https://",
+        "https://example.test/mcp#secret",
+    ],
+)
+def test_http_credentials_must_not_be_embedded_in_url(tmp_path: Path, url: str) -> None:
+    _write(
+        tmp_path,
+        f'[[servers]]\nname="remote"\ntransport="streamable_http"\nurl="{url}"\n',
+    )
+    with pytest.raises(ValueError):
+        load_mcp_servers(tmp_path)

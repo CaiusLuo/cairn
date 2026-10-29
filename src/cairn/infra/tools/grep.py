@@ -8,6 +8,7 @@ from typing import Any
 
 from cairn.core.models import ToolResult
 from cairn.core.permissions import AccessKind, CapabilityRequest
+from cairn.infra.credential_paths import is_credential_path
 from cairn.infra.tools.arguments import (
     access_request,
     function_schema,
@@ -15,7 +16,6 @@ from cairn.infra.tools.arguments import (
     tool_path,
 )
 from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
-from cairn.infra.tools.sensitive_paths import is_credential_path
 from cairn.infra.workspace.paths import contained_candidate, has_git_metadata_component
 from cairn.infra.workspace.workspace import Workspace
 

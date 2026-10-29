@@ -77,7 +77,7 @@ stays unreachable wherever it appears.
 ### Credential files
 
 A credential file is not ordinary data, so it is the one exception to "reading
-needs no approval". `infra.tools.sensitive_paths` decides which paths hold
+needs no approval". `infra.credential_paths` decides which paths hold
 credential material, and every tool that would return its *content* refuses with
 a `permission_required` outcome naming the target: `read_file`, `grep`,
 `edit_file` and `patch_file`. `write_file` refuses the same targets when its

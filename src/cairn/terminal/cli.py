@@ -382,7 +382,7 @@ async def _run_supervised_turn(
     # joins this turn at its next step boundary (steer) or waits for it to end
     # (queue); neither cancels the turn, because a redirect is meant to keep the
     # work already done.
-    steering = SteerQueue()
+    steering = frame.steering
     return await _drive_turn(
         agent=agent,
         user_input=user_input,
@@ -520,20 +520,32 @@ async def _drive_turn(
                 return turn.result()
             line = await reader
             if line.text.strip():
-                # ``now`` only applies when nothing is running; during a turn the
-                # two meaningful choices are joining it or waiting for it.
-                steering.push(
-                    PendingMessage(
-                        text=line.text,
-                        delivery="queue" if line.delivery == "queue" else "steer",
-                    )
-                )
+                selection = parse_selection_tokens(line.text)
+                if (
+                    line.delivery == "queue"
+                    or selection.skills
+                    or selection.mcp_servers
+                ):
+                    steering.push(PendingMessage(text=line.text, delivery="queue"))
+                    if selection.skills or selection.mcp_servers:
+                        _show_action(
+                            Action(
+                                message="Extension selection queued for the next turn."
+                            ),
+                            frame,
+                        )
+                else:
+                    steering.push(PendingMessage(text=line.text, delivery="steer"))
             reader = asyncio.create_task(frame.read())
     finally:
         # The binding belongs to this turn: restoring it means a later Ctrl-C cannot
         # reach a turn that has already finished.
         frame.on_interrupt = previous_interrupt
         await settle_owned(turn, reader)
+        if reader.done() and not reader.cancelled() and reader.exception() is None:
+            # The input and final response may settle together. Keep a line that
+            # the turn did not consume in the same queue shown by the frame.
+            steering.push(PendingMessage(text=reader.result().text, delivery="queue"))
 
 
 def _terminal_width() -> int | None:
@@ -941,7 +953,7 @@ async def _turn_loop(
                 continue
             selected_mcp = tuple(selection.mcp_servers)
         user_input = selection.task_text
-        if not user_input:
+        if not user_input.strip():
             if selection.skills or selection.mcp_servers:
                 _show_action(correction("Type a task after the selection."), frame)
             continue

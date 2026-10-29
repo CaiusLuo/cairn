@@ -3,6 +3,7 @@
 import asyncio
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -10,12 +11,16 @@ from cairn.core.budget import RunBudget
 from cairn.core.events import Event
 from cairn.core.models import LLMResponse, ToolCall
 from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
+from cairn.infra.mcp.client import McpToolSpec
 from cairn.infra.mcp.config import McpServerConfig
-from cairn.infra.mcp.stdio import McpStdioClient, McpTimeout, McpToolSpec
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.assembly import build_agent
 from cairn.runtime.loop import run_turn
-from cairn.runtime.mcp.activation import McpToolAdapter, open_mcp_servers
+from cairn.runtime.mcp.activation import (
+    McpActivationError,
+    McpToolAdapter,
+    open_mcp_servers,
+)
 from cairn.terminal.headless import HeadlessStatus, run_headless_task
 from tests.support.runtime import SequenceLLM
 
@@ -84,29 +89,6 @@ def test_authorized_activation_lists_and_calls_tool(
 
     asyncio.run(scenario())
     assert marker.exists()
-
-
-def test_http_mcp_reports_blocker_without_connecting(tmp_path: Path) -> None:
-    handler = _handler(tmp_path, grant=False)
-    handler.grants.update(
-        {
-            PermissionCapability.MCP_SERVER,
-            PermissionCapability.MCP_TOOL,
-            PermissionCapability.NETWORK,
-        }
-    )
-    config = McpServerConfig(
-        name="remote", transport="streamable_http", url="http://127.0.0.1:9/mcp"
-    )
-
-    async def scenario() -> None:
-        with pytest.raises(NotImplementedError):
-            async with open_mcp_servers(
-                configs=(config,), handler=handler, workspace=tmp_path
-            ):
-                pass
-
-    asyncio.run(scenario())
 
 
 def test_dynamic_tool_is_fail_closed_without_grant(tmp_path: Path) -> None:
@@ -270,13 +252,166 @@ def test_mcp_invalid_arguments_are_preflight_failures(tmp_path: Path) -> None:
 
 
 def test_stdio_start_failure_closes_the_child(tmp_path: Path) -> None:
-    client = McpStdioClient(
+    marker = tmp_path / "pid"
+    config = McpServerConfig(
+        name="hung",
+        transport="stdio",
         command=sys.executable,
-        args=("-c", "import time; time.sleep(30)"),
-        env_keys=(),
-        cwd=tmp_path,
-        timeout=0.2,
+        args=(
+            "-c",
+            f"import os,time,pathlib; pathlib.Path({str(marker)!r}).write_text(str(os.getpid())); time.sleep(30)",
+        ),
     )
-    with pytest.raises(McpTimeout):
-        asyncio.run(client.start())
-    assert client._process is None
+
+    async def scenario() -> None:
+        with pytest.raises(McpActivationError):
+            async with open_mcp_servers(
+                configs=(config,),
+                handler=_handler(tmp_path, grant=True),
+                workspace=tmp_path,
+                timeout=0.3,
+            ):
+                pytest.fail("hung handshake cannot activate")
+
+    asyncio.run(scenario())
+    import os
+
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(marker.read_text()), 0)
+
+
+def test_credentials_are_opt_in_and_redacted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MCP_TEST_SECRET", "stdio-private-value")
+    monkeypatch.setenv("MCP_UNGRANTED_SECRET", "must-not-inherit")
+    config = McpServerConfig(
+        name="demo",
+        transport="stdio",
+        command=sys.executable,
+        args=("-u", str(SERVER)),
+        env_keys=("MCP_TEST_SECRET",),
+    )
+
+    async def scenario() -> None:
+        async with open_mcp_servers(
+            configs=(config,),
+            handler=_handler(tmp_path, grant=True),
+            workspace=tmp_path,
+        ) as runtime:
+            secret = await runtime.tools[0].execute({"text": "secret"})
+            assert secret.stdout == "[redacted]"
+            ungranted = await runtime.tools[0].execute({"text": "ungranted"})
+            assert ungranted.stdout == "absent"
+
+    asyncio.run(scenario())
+
+
+def test_repeated_cancellation_reaps_stdio_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    marker = tmp_path / "pid"
+    monkeypatch.setenv("MCP_TEST_MARKER", str(marker))
+
+    async def scenario() -> None:
+        started = asyncio.Event()
+
+        async def run() -> None:
+            async with open_mcp_servers(
+                configs=(_cfg(),),
+                handler=_handler(tmp_path, grant=True),
+                workspace=tmp_path,
+            ) as runtime:
+                started.set()
+                await runtime.tools[0].execute({"text": "wait"})
+
+        task = asyncio.create_task(run())
+        await asyncio.wait_for(started.wait(), 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 8)
+        with pytest.raises(ProcessLookupError):
+            os.kill(int(marker.read_text()), 0)
+        assert not any(
+            t.get_name() == "cairn-mcp-connections" for t in asyncio.all_tasks()
+        )
+
+    asyncio.run(scenario())
+
+
+def test_nested_mcp_arguments_validate_before_permission() -> None:
+    from cairn.infra.tools.base import InvalidArguments
+
+    spec = McpToolSpec(
+        "nested",
+        "Nested",
+        {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"count": {"type": "integer", "minimum": 1}},
+                        "required": ["count"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["items"],
+            "additionalProperties": False,
+        },
+    )
+    adapter = McpToolAdapter(client=object(), server="demo", spec=spec)  # type: ignore[arg-type]
+    adapter.validate({"items": [{"count": 1}]})
+    invalid: tuple[dict[str, Any], ...] = (
+        {"items": [{"count": True}]},
+        {"items": [{"count": 0}]},
+        {"items": [{}]},
+        {"items": [], "secret": "hidden"},
+    )
+    for args in invalid:
+        with pytest.raises(InvalidArguments) as exc:
+            adapter.validate(args)
+        assert "hidden" not in str(exc.value)
+
+
+def test_remote_schema_reference_never_fetches_network() -> None:
+    from cairn.infra.tools.base import InvalidArguments
+
+    adapter = McpToolAdapter(
+        client=object(),  # type: ignore[arg-type]
+        server="demo",
+        spec=McpToolSpec("ref", "Ref", {"$ref": "http://127.0.0.1:9/secret"}),
+    )
+    with pytest.raises(InvalidArguments, match="locally"):
+        adapter.validate({})
+
+
+def test_later_server_failure_closes_already_open_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    marker = tmp_path / "pid"
+    monkeypatch.setenv("MCP_TEST_MARKER", str(marker))
+    invalid = McpServerConfig(
+        name="missing", transport="stdio", command=str(tmp_path / "no-executable")
+    )
+
+    async def scenario() -> None:
+        with pytest.raises(McpActivationError):
+            async with open_mcp_servers(
+                configs=(_cfg(), invalid),
+                handler=_handler(tmp_path, grant=True),
+                workspace=tmp_path,
+            ):
+                pytest.fail("partial activation must not be exposed")
+        with pytest.raises(ProcessLookupError):
+            os.kill(int(marker.read_text()), 0)
+
+    asyncio.run(scenario())
