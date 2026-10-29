@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from cairn.core.compaction.summarizer import Summarizer
@@ -10,6 +11,7 @@ from cairn.infra.llm.compaction_summarizer import LLMCompactionSummarizer
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.skills import SkillLibrary
 from cairn.infra.tools import build_default_registry
+from cairn.infra.tools.base import Tool
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.model_executor import ModelExecutor
@@ -30,6 +32,7 @@ def build_agent(
     model_executor: ModelExecutor | None = None,
     memory_reader: "MemoryReader | None" = None,
     skills: SkillLibrary | None = None,
+    extra_tools: Sequence[Tool] = (),
     summarize: bool = True,
     summarizer: Summarizer | None = None,
 ) -> Agent:
@@ -42,7 +45,10 @@ def build_agent(
     # Skills are opt-in: an evaluation or a narrow caller must not inherit an
     # advertisement it did not ask for, because it spends context every step.
     registry = build_default_registry(
-        workspace, secret_env_keys=secret_env_keys, skills=skills
+        workspace,
+        secret_env_keys=secret_env_keys,
+        skills=skills,
+        extra_tools=extra_tools,
     )
 
     return Agent(

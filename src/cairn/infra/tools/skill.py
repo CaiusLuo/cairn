@@ -76,3 +76,64 @@ class ReadSkillTool(WorkspaceOnlyTool):
                 exit_code=1,
             )
         return ToolResult(stdout=skill.body, stderr="", exit_code=0)
+
+
+class ReadSkillResourceTool(WorkspaceOnlyTool):
+    """Read a relative resource file that belongs to one skill.
+
+    The path is confined to that skill's directory, so a SKILL.md can point at
+    ``scripts/run.sh`` without granting access to the rest of the filesystem.
+    """
+
+    name = "read_skill_resource"
+    description = (
+        "Read a UTF-8 resource file referenced by a skill, relative to the "
+        "skill's own directory. Use only for files a skill you are following "
+        "names."
+    )
+
+    def __init__(self, library: SkillLibrary) -> None:
+        self.library = library
+
+    def schema(self) -> dict[str, Any]:
+        return function_schema(
+            self.name,
+            self.description,
+            {
+                "type": "object",
+                "properties": {
+                    "skill": {"type": "string", "description": "Skill name."},
+                    "path": {
+                        "type": "string",
+                        "description": "Path relative to the skill directory.",
+                    },
+                },
+                "required": ["skill", "path"],
+                "additionalProperties": False,
+            },
+        )
+
+    def validate(self, arguments: dict[str, Any]) -> None:
+        reject_unknown_keys(
+            arguments, {"skill", "path"}, tool_label="read_skill_resource tool"
+        )
+        for key in ("skill", "path"):
+            value = arguments.get(key)
+            if not isinstance(value, str) or not value.strip() or "\0" in value:
+                raise InvalidArguments(f"{key} must be a non-empty string without NUL")
+
+    async def execute(
+        self,
+        arguments: dict[str, Any],
+        *,
+        context: ToolExecutionContext | None = None,
+    ) -> ToolResult:
+        try:
+            text = self.library.read_resource(
+                arguments["skill"].strip(), arguments["path"].strip()
+            )
+        except (KeyError, ValueError, OSError) as exc:
+            return ToolResult(
+                stdout="", stderr=f"Skill resource error: {exc}", exit_code=1
+            )
+        return ToolResult(stdout=text, stderr="", exit_code=0)

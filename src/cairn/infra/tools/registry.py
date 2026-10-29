@@ -31,6 +31,10 @@ class ToolRegistry:
             raise ToolNotFound(f"Tool not found: {tool.name}")
         self._tools[tool.name] = tool
 
+    def unregister_tool(self, name: str) -> None:
+        """Remove a per-task tool (MCP adapters) once its task is finished."""
+        self._tools.pop(name, None)
+
     def get_tool(self, name: str) -> Tool:
         tool = self._tools.get(name)
 

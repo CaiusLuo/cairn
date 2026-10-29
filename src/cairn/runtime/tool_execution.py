@@ -106,9 +106,13 @@ def _resolve_ask(
     """
     request = _tool_access_request(tool, tool_call) if tool is not None else None
     if request is not None:
-        decided = _file_tool_decision(agent, request)
-        if decided is not None:
-            return decided
+        if request.capability is PermissionCapability.FILESYSTEM_ACCESS:
+            decided = _file_tool_decision(agent, request)
+            if decided is not None:
+                return decided
+        authorize = getattr(agent.permission_handler, "authorize", None)
+        if callable(authorize):
+            return cast(PermissionResult, authorize(request))
         return _ask_for_approval(agent, tool_call)
 
     if tool_call.name == "bash":
@@ -129,13 +133,22 @@ async def _resolve_ask_async(
     request = _tool_access_request(tool, tool_call) if tool is not None else None
     handler = agent.permission_handler
     if request is not None:
-        decide = getattr(handler, "access_decision_async", None)
-        if callable(decide):
-            access = request.access if request.access is not None else AccessKind.WRITE
-            return cast(
-                PermissionResult,
-                await decide(outside=True, access=access, path=Path(request.paths[0])),
-            )
+        if request.capability is PermissionCapability.FILESYSTEM_ACCESS:
+            decide = getattr(handler, "access_decision_async", None)
+            if callable(decide):
+                access = (
+                    request.access if request.access is not None else AccessKind.WRITE
+                )
+                return cast(
+                    PermissionResult,
+                    await decide(
+                        outside=True, access=access, path=Path(request.paths[0])
+                    ),
+                )
+            return _resolve_ask(agent, tool, tool_call)
+        authorize_async = getattr(handler, "authorize_async", None)
+        if callable(authorize_async):
+            return cast(PermissionResult, await authorize_async(request))
         return _resolve_ask(agent, tool, tool_call)
     authorize = getattr(handler, "authorize_tool_call_async", None)
     if tool_call.name == "bash" and callable(authorize):
@@ -320,6 +333,14 @@ def _check_tool_permission(
         # Pure policy first. Baseline ALLOW and hard DENY never reach a handler,
         # so a permissive handler can never re-authorize a policy denial.
         permission = evaluate_permission_policy(tool_call)
+        if permission.policy_decision is not PermissionDecision.ASK and getattr(
+            tool, "requires_authorization", False
+        ):
+            # A dynamically sourced tool must never inherit the baseline ALLOW
+            # that ordinary built-ins receive.
+            permission = PermissionResult(
+                policy_decision=PermissionDecision.ASK, allowed=False
+            )
         if permission.policy_decision is PermissionDecision.ASK:
             permission = _resolve_ask(agent, tool, tool_call)
 
@@ -378,6 +399,12 @@ async def _check_tool_permission_async(
         )
     try:
         permission = evaluate_permission_policy(tool_call)
+        if permission.policy_decision is not PermissionDecision.ASK and getattr(
+            tool, "requires_authorization", False
+        ):
+            permission = PermissionResult(
+                policy_decision=PermissionDecision.ASK, allowed=False
+            )
         if permission.policy_decision is PermissionDecision.ASK:
             permission = await _resolve_ask_async(agent, tool, tool_call)
         if permission_span is not None and tracer is not None:

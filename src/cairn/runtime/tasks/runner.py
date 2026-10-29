@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+from collections.abc import Sequence
 from contextlib import ExitStack, suppress
 from time import perf_counter
 
@@ -22,6 +23,8 @@ from cairn.infra.sessions.task_models import (
     TaskResolution,
     TaskResultData,
 )
+from cairn.infra.skills import SkillLibrary
+from cairn.infra.tools.base import Tool
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent, SessionAdmissionError
 from cairn.runtime.assembly import build_agent
@@ -55,6 +58,8 @@ class CodingTaskRunner:
         tracer: Tracer | None = None,
         model_executor: ModelExecutor | None = None,
         secret_env_keys: frozenset[str] = frozenset(),
+        skills: SkillLibrary | None = None,
+        extra_tools: Sequence[Tool] = (),
     ) -> None:
         if context_builder is not None and context_budget is not None:
             raise ValueError("Provide context_builder or context_budget, not both")
@@ -71,6 +76,8 @@ class CodingTaskRunner:
         self.tracer = tracer
         self.model_executor = model_executor
         self.secret_env_keys = secret_env_keys
+        self.skills = skills
+        self.extra_tools = extra_tools
         self.last_summary: TaskExecutionSummary | None = None
 
     async def run(
@@ -79,6 +86,7 @@ class CodingTaskRunner:
         *,
         cancellation_event: asyncio.Event | None = None,
         durable_session: DurableSession | None = None,
+        selected_skills: Sequence[str] = (),
     ) -> TaskResult:
         observation: _TaskObservation | None = None
         started: float | None = None
@@ -93,7 +101,9 @@ class CodingTaskRunner:
         # Shield the owned lifecycle so repeated caller cancellation cannot
         # interrupt its child/process cleanup. This task is always observed.
         worker = asyncio.create_task(
-            self._execute(spec, cancellation_event, durable_session, observation)
+            self._execute(
+                spec, cancellation_event, durable_session, observation, selected_skills
+            )
         )
         try:
             result = await asyncio.shield(worker)
@@ -127,12 +137,30 @@ class CodingTaskRunner:
         prompt: str,
         cancellation_event: asyncio.Event | None,
         durable_session: DurableSession | None = None,
+        selected_skills: Sequence[str] = (),
     ) -> str | None:
-        execution = (
-            run_turn(agent, prompt, budget=self.budget)
-            if durable_session is None
-            else run_turn(agent, prompt, budget=self.budget, session=durable_session)
-        )
+        if durable_session is None:
+            execution = (
+                run_turn(
+                    agent, prompt, budget=self.budget, selected_skills=selected_skills
+                )
+                if selected_skills
+                else run_turn(agent, prompt, budget=self.budget)
+            )
+        else:
+            execution = (
+                run_turn(
+                    agent,
+                    prompt,
+                    budget=self.budget,
+                    session=durable_session,
+                    selected_skills=selected_skills,
+                )
+                if selected_skills
+                else run_turn(
+                    agent, prompt, budget=self.budget, session=durable_session
+                )
+            )
         if cancellation_event is None:
             return await execution
 
@@ -275,6 +303,7 @@ class CodingTaskRunner:
         cancellation_event: asyncio.Event | None,
         durable_session: DurableSession | None = None,
         observation: _TaskObservation | None = None,
+        selected_skills: Sequence[str] = (),
     ) -> TaskResult:
         trace_id: str | None = None
         final_response: str | None = None
@@ -315,7 +344,11 @@ class CodingTaskRunner:
                         setattr, agent, "event_handler", original_handler
                     )
                     response = await self._turn(
-                        agent, spec.prompt, cancellation_event, durable_session
+                        agent,
+                        spec.prompt,
+                        cancellation_event,
+                        durable_session,
+                        selected_skills,
                     )
                     if response is None:
                         status = TaskStatus.CANCELLED
@@ -330,9 +363,21 @@ class CodingTaskRunner:
                         tracer=self.tracer,
                         context_builder=self.context_builder,
                         model_executor=self.model_executor,
+                        skills=self.skills,
+                        extra_tools=self.extra_tools,
                         secret_env_keys=self.secret_env_keys,
                     )
-                    response = await self._turn(agent, spec.prompt, cancellation_event)
+                    if selected_skills:
+                        response = await self._turn(
+                            agent,
+                            spec.prompt,
+                            cancellation_event,
+                            selected_skills=selected_skills,
+                        )
+                    else:
+                        response = await self._turn(
+                            agent, spec.prompt, cancellation_event
+                        )
                     if response is None:
                         status = TaskStatus.CANCELLED
                     else:

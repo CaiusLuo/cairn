@@ -141,3 +141,14 @@ approval and machine-readable CLI validation/cancellation):
 ```sh
 uv run pytest tests/runtime/tasks/test_headless_task_entry.py -q
 ```
+
+
+## Project skills and MCP servers
+
+`.cairn/skills` and `.cairn/mcp.toml` are available to the server entry too.
+Select a project/builtin skill with `--skill NAME` (repeatable); its body is
+delivered as user task context for that task. Select a configured MCP server with
+`--mcp NAME` and authorize activation with `--allow-mcp`; a stdio server also
+needs `--allow-shell`, and an http server would need `--allow-network`. See
+[Project skills and MCP servers](project-extensions.md) for configuration,
+permission semantics and the current stdio/http support range.

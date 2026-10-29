@@ -44,6 +44,11 @@ class PermissionCapability(StrEnum):
     #: Write access to specific directories outside the Workspace. Reading
     #: outside the Workspace needs no grant.
     FILESYSTEM_ACCESS = "filesystem_access"
+    #: Start/connect a configured MCP server. Starting a stdio server also needs
+    #: LOCAL_SHELL; a streamable-http server also needs NETWORK.
+    MCP_SERVER = "mcp_server"
+    #: Invoke one tool exposed by an authorized MCP server.
+    MCP_TOOL = "mcp_tool"
 
 
 class PermissionDecision(StrEnum):
@@ -307,6 +312,8 @@ class SessionPermissionHandler:
             capability is PermissionCapability.NETWORK
             or (capability is PermissionCapability.LOCAL_SHELL)
             or (capability is PermissionCapability.WORKSPACE_TRUST)
+            or (capability is PermissionCapability.MCP_SERVER)
+            or (capability is PermissionCapability.MCP_TOOL)
         ):
             if capability in self.grants:
                 return self._granted(capability, source=PermissionSource.SESSION_GRANT)
@@ -327,6 +334,8 @@ class SessionPermissionHandler:
             PermissionCapability.NETWORK,
             PermissionCapability.LOCAL_SHELL,
             PermissionCapability.WORKSPACE_TRUST,
+            PermissionCapability.MCP_SERVER,
+            PermissionCapability.MCP_TOOL,
         }:
             if capability in self.grants:
                 return self._granted(capability, source=PermissionSource.SESSION_GRANT)

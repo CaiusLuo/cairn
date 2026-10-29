@@ -42,11 +42,15 @@ from cairn.infra.config import (
     resolve_context_budget,
     resolve_provider_api_key,
 )
+from cairn.infra.mcp.config import McpServerConfig, load_mcp_servers
 from cairn.infra.observability.sinks import JsonlTraceSink, RedactingTraceSink
 from cairn.infra.observability.tracer import Tracer
+from cairn.infra.skills import SkillLibrary, layered_skills, resolve_skills
+from cairn.infra.tools.base import Tool
 from cairn.infra.tools.filesystem_access import normalize_access_root
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.artifacts import atomic_write_text
+from cairn.runtime.mcp.activation import open_mcp_servers
 from cairn.runtime.model_executor import ModelExecutor
 from cairn.runtime.provider_runtime import build_provider_runtime
 from cairn.runtime.tasks.check import (
@@ -153,6 +157,8 @@ def build_headless_permission_handler(
     workspace_root: Path,
     grant_workspace_trust: bool,
     grant_shell: bool,
+    grant_mcp: bool = False,
+    grant_network: bool = False,
 ) -> SessionPermissionHandler:
     """Non-interactive grants only.
 
@@ -170,6 +176,11 @@ def build_headless_permission_handler(
         handler.grants.add(PermissionCapability.WORKSPACE_TRUST)
     if grant_shell:
         handler.grants.add(PermissionCapability.LOCAL_SHELL)
+    if grant_mcp:
+        handler.grants.add(PermissionCapability.MCP_SERVER)
+        handler.grants.add(PermissionCapability.MCP_TOOL)
+    if grant_network:
+        handler.grants.add(PermissionCapability.NETWORK)
     return handler
 
 
@@ -292,6 +303,11 @@ async def run_headless_task(
     check_command: str | None = None,
     check_timeout: float = DEFAULT_CHECK_TIMEOUT_S,
     check_ref: dict[str, Any] | None = None,
+    skills: SkillLibrary | None = None,
+    selected_skills: Sequence[str] = (),
+    mcp_configs: Sequence[McpServerConfig] = (),
+    grant_mcp: bool = False,
+    grant_network: bool = False,
 ) -> HeadlessResult:
     """Run one task against ``workspace`` and return a machine-readable result.
 
@@ -323,10 +339,35 @@ async def run_headless_task(
             shell_authorized=grant_shell,
         )
 
+    resolved_selected: tuple[str, ...] = ()
+    if selected_skills:
+        if skills is None:
+            return HeadlessResult(
+                task_id=resolved_id,
+                status=HeadlessStatus.INVALID_REQUEST,
+                workspace=str(resolved_ws),
+                error_category="unknown_skill",
+                error="Selected skills require a skill catalog.",
+                shell_authorized=grant_shell,
+            )
+        found, missing = resolve_skills(skills, selected_skills)
+        if missing:
+            return HeadlessResult(
+                task_id=resolved_id,
+                status=HeadlessStatus.INVALID_REQUEST,
+                workspace=str(resolved_ws),
+                error_category="unknown_skill",
+                error="Unknown skill: " + ", ".join(missing),
+                shell_authorized=grant_shell,
+            )
+        resolved_selected = tuple(skill.name for skill in found)
+
     handler = build_headless_permission_handler(
         workspace_root=resolved_ws,
         grant_workspace_trust=grant_workspace_trust,
         grant_shell=grant_shell,
+        grant_mcp=grant_mcp,
+        grant_network=grant_network,
     )
 
     def observe(event: Event) -> None:
@@ -341,36 +382,73 @@ async def run_headless_task(
                 if isinstance(persisted, bool):
                     ref["persisted"] = persisted
 
-    runner = CodingTaskRunner(
-        workspace=Workspace(resolved_ws),
-        llm=llm,
-        budget=budget,
-        context_budget=context_budget,
-        context_builder=context_builder,
-        model_executor=model_executor,
-        permission_handler=handler,
-        event_handler=observe,
-        tracer=_redacting_tracer(tracer, secret_values),
-        secret_env_keys=secret_env_keys,
-    )
     check_spec = (
         TaskCheckSpec(command=check_command, timeout=check_timeout)
         if check_command is not None
         else None
     )
-    # The runtime owns the turn/check/repair sequence; external cancellation
-    # propagates after its owned cleanup. Shell authorization for a host check is
-    # the same explicit --allow-shell grant, never a model-chosen capability.
-    outcome = await run_task_with_check(
-        runner=runner,
-        spec=TaskSpec(task_id=resolved_id, prompt=prompt),
-        check=check_spec,
-        shell_authorized=grant_shell,
-        cancellation_event=cancellation_event,
-        secret_values=secret_values,
-        secret_env_keys=secret_env_keys,
-        check_ref=check_ref,
-    )
+    wants_check_inner = check_command is not None
+
+    async def _run(mcp_tools: Sequence[Tool]) -> CheckedTaskOutcome:
+        runner = CodingTaskRunner(
+            workspace=Workspace(resolved_ws),
+            llm=llm,
+            budget=budget,
+            context_budget=context_budget,
+            context_builder=context_builder,
+            model_executor=model_executor,
+            permission_handler=handler,
+            event_handler=observe,
+            tracer=_redacting_tracer(tracer, secret_values),
+            secret_env_keys=secret_env_keys,
+            skills=skills,
+            extra_tools=mcp_tools,
+        )
+        return await run_task_with_check(
+            runner=runner,
+            spec=TaskSpec(task_id=resolved_id, prompt=prompt),
+            check=check_spec,
+            shell_authorized=grant_shell,
+            cancellation_event=cancellation_event,
+            secret_values=secret_values,
+            secret_env_keys=secret_env_keys,
+            check_ref=check_ref,
+            selected_skills=resolved_selected,
+        )
+
+    try:
+        if mcp_configs:
+            async with open_mcp_servers(
+                configs=mcp_configs,
+                handler=handler,
+                workspace=resolved_ws,
+                secret_values=secret_values,
+            ) as mcp_runtime:
+                outcome = await _run(mcp_runtime.tools)
+        else:
+            outcome = await _run(())
+    except PermissionError as exc:
+        return HeadlessResult(
+            task_id=resolved_id,
+            status=HeadlessStatus.UNAUTHORIZED,
+            workspace=str(resolved_ws),
+            error_category="mcp_permission_denied",
+            error=str(exc),
+            shell_authorized=grant_shell,
+            check_requested=wants_check_inner,
+            check_status=TaskCheckStatus.NOT_RUN if wants_check_inner else None,
+        )
+    except NotImplementedError as exc:
+        return HeadlessResult(
+            task_id=resolved_id,
+            status=HeadlessStatus.RUNTIME_ERROR,
+            workspace=str(resolved_ws),
+            error_category="mcp_unsupported",
+            error=str(exc),
+            shell_authorized=grant_shell,
+            check_requested=wants_check_inner,
+            check_status=TaskCheckStatus.NOT_RUN if wants_check_inner else None,
+        )
     return _result_from_outcome(
         outcome=outcome,
         resolved_id=resolved_id,
@@ -475,6 +553,10 @@ def _run_via_config(
     check_command: str | None = None,
     check_timeout: float = DEFAULT_CHECK_TIMEOUT_S,
     check_ref: dict[str, Any] | None = None,
+    selected_skills: Sequence[str] = (),
+    mcp_configs: Sequence[McpServerConfig] = (),
+    grant_mcp: bool = False,
+    grant_network: bool = False,
 ) -> HeadlessResult:
     """Build the configured provider runtime and run one task.
 
@@ -513,6 +595,7 @@ def _run_via_config(
     secret_values = _secret_values(secret_env_keys, env_file_values)
     trace_root = trace_dir if trace_dir is not None else workspace / ".cairn" / "traces"
     tracer = Tracer(JsonlTraceSink(trace_root))
+    skills = layered_skills(workspace)
     return asyncio.run(
         run_headless_task(
             workspace=workspace,
@@ -531,6 +614,11 @@ def _run_via_config(
             check_command=check_command,
             check_timeout=check_timeout,
             check_ref=check_ref,
+            skills=skills,
+            selected_skills=selected_skills,
+            mcp_configs=mcp_configs,
+            grant_mcp=grant_mcp,
+            grant_network=grant_network,
         )
     )
 
@@ -641,6 +729,25 @@ def task_run(
             help="Seconds before the host check is killed and reported timed out.",
         ),
     ] = DEFAULT_CHECK_TIMEOUT_S,
+    skill: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--skill",
+            help="Select a project/builtin skill for this task (repeatable).",
+        ),
+    ] = None,
+    mcp: Annotated[
+        list[str] | None,
+        typer.Option("--mcp", help="Select a configured MCP server (repeatable)."),
+    ] = None,
+    allow_mcp: Annotated[
+        bool,
+        typer.Option("--allow-mcp", help="Authorize activating selected MCP servers."),
+    ] = False,
+    allow_network: Annotated[
+        bool,
+        typer.Option("--allow-network", help="Authorize an HTTP MCP connection."),
+    ] = False,
     max_steps: Annotated[int, typer.Option("--max-steps")] = DEFAULT_MAX_STEPS,
     trace_dir: Annotated[Path | None, typer.Option("--trace-dir")] = None,
     emit_json: Annotated[
@@ -750,6 +857,74 @@ def task_run(
             )
             _emit(result, as_json=emit_json, report=report)
             raise typer.Exit(_exit_code(result))
+    selected_skill_names: tuple[str, ...] = ()
+    if skill:
+        found, missing = resolve_skills(layered_skills(resolved_ws), skill)
+        if missing:
+            _invalid(
+                workspace=workspace,
+                task_id=admitted_id,
+                category="unknown_skill",
+                message="Unknown skill: " + ", ".join(missing),
+                allow_shell=allow_shell,
+                as_json=emit_json,
+                report=report,
+            )
+            raise typer.Exit(2)
+        selected_skill_names = tuple(item.name for item in found)
+    mcp_configs: tuple[McpServerConfig, ...] = ()
+    if mcp:
+        try:
+            available = load_mcp_servers(resolved_ws)
+        except (OSError, ValueError) as exc:
+            _invalid(
+                workspace=workspace,
+                task_id=admitted_id,
+                category="mcp_config_error",
+                message=f"MCP config error: {exc}",
+                allow_shell=allow_shell,
+                as_json=emit_json,
+                report=report,
+            )
+            raise typer.Exit(2) from None
+        by_name = {server.name: server for server in available}
+        missing = [name for name in mcp if name not in by_name]
+        if missing:
+            _invalid(
+                workspace=workspace,
+                task_id=admitted_id,
+                category="unknown_mcp_server",
+                message="Unknown MCP server: " + ", ".join(missing),
+                allow_shell=allow_shell,
+                as_json=emit_json,
+                report=report,
+            )
+            raise typer.Exit(2)
+        selected_servers = tuple(by_name[name] for name in dict.fromkeys(mcp))
+        denial = None
+        if not allow_mcp:
+            denial = "MCP activation requires --allow-mcp."
+        elif any(s.transport == "stdio" for s in selected_servers) and not allow_shell:
+            denial = "stdio MCP requires --allow-shell."
+        elif (
+            any(s.transport == "streamable_http" for s in selected_servers)
+            and not allow_network
+        ):
+            denial = "HTTP MCP requires --allow-network."
+        if denial is not None:
+            result = HeadlessResult(
+                task_id=admitted_id,
+                status=HeadlessStatus.UNAUTHORIZED,
+                workspace=str(resolved_ws),
+                error_category="mcp_permission_denied",
+                error=denial,
+                shell_authorized=allow_shell,
+                check_requested=wants_check,
+                check_status=TaskCheckStatus.NOT_RUN if wants_check else None,
+            )
+            _emit(result, as_json=emit_json, report=report)
+            raise typer.Exit(_exit_code(result))
+        mcp_configs = selected_servers
     approval = _build_approval(
         approve_provider_name,
         approve_provider_endpoint,
@@ -770,6 +945,10 @@ def task_run(
             check_command=check_command if wants_check else None,
             check_timeout=check_timeout,
             check_ref=check_ref,
+            selected_skills=selected_skill_names,
+            mcp_configs=mcp_configs,
+            grant_mcp=allow_mcp,
+            grant_network=allow_network,
         )
     except (asyncio.CancelledError, KeyboardInterrupt):
         cancel_status, cancel_attempts = _cancelled_check_state(check_ref, wants_check)

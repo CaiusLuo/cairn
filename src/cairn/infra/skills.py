@@ -15,6 +15,7 @@ missing directory is not an error: a project without skills simply has none.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +23,7 @@ SKILL_FILE = "SKILL.md"
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 MAX_BODY_BYTES = 64 * 1024
+MAX_RESOURCE_BYTES = 256 * 1024
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,11 @@ class Skill:
     name: str
     description: str
     body: str
+    #: The skill directory, so relative resource files can be resolved. None for
+    #: a parsed value that did not come from a directory.
+    directory: Path | None = None
+    #: "project" or "builtin"; used only for diagnostics and precedence.
+    source: str = "builtin"
 
 
 @dataclass(frozen=True)
@@ -93,8 +100,14 @@ def parse_skill(text: str, *, fallback_name: str = "") -> Skill | None:
 class SkillLibrary:
     """The skills available under one directory, read on demand."""
 
-    def __init__(self, root: Path | None) -> None:
+    def __init__(self, root: Path | None, *, source: str = "project") -> None:
         self.root = root
+        self.source = source
+        self._conflicts: tuple[str, ...] = ()
+
+    def conflicts(self) -> tuple[str, ...]:
+        """Deterministic diagnostics from the last discovery pass."""
+        return self._conflicts
 
     def summaries(self) -> tuple[SkillSummary, ...]:
         """Advertisements for every usable skill, in directory-name order."""
@@ -117,6 +130,8 @@ class SkillLibrary:
         if root is None or not root.is_dir():
             return []
         skills: list[Skill] = []
+        seen: dict[str, Path] = {}
+        conflicts: list[str] = []
         for entry in sorted(root.iterdir()):
             path = entry / SKILL_FILE
             if not path.is_file():
@@ -126,10 +141,51 @@ class SkillLibrary:
             except OSError:
                 # An unreadable skill is skipped: discovery must not fail a turn.
                 continue
-            skill = parse_skill(text, fallback_name=entry.name)
-            if skill is not None:
-                skills.append(skill)
+            parsed = parse_skill(text, fallback_name=entry.name)
+            if parsed is None:
+                continue
+            if parsed.name in seen:
+                conflicts.append(
+                    f"duplicate skill '{parsed.name}' at {entry} ignored; "
+                    f"first definition wins ({seen[parsed.name]})"
+                )
+                continue
+            seen[parsed.name] = entry
+            skills.append(
+                Skill(
+                    name=parsed.name,
+                    description=parsed.description,
+                    body=parsed.body,
+                    directory=entry,
+                    source=self.source,
+                )
+            )
+        self._conflicts = tuple(conflicts)
         return skills
+
+    def read_resource(self, name: str, relative_path: str) -> str:
+        """Read a UTF-8 file named relative to one skill's directory.
+
+        Only paths inside the skill directory are allowed; ``..`` and absolute
+        paths are rejected, and the file is size-bounded. Relative resource files
+        referenced by a SKILL.md therefore work without exposing the rest of the
+        filesystem.
+        """
+        skill = self.read(name)
+        if skill is None:
+            raise KeyError(f"unknown skill: {name}")
+        if skill.directory is None:
+            raise ValueError(f"skill '{name}' has no directory")
+        relative = Path(relative_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("resource path must be relative to the skill directory")
+        base = skill.directory.resolve()
+        target = (base / relative).resolve()
+        if not target.is_relative_to(base):
+            raise ValueError("resource path escapes the skill directory")
+        if target.stat().st_size > MAX_RESOURCE_BYTES:
+            raise ValueError("skill resource exceeds the size limit")
+        return target.read_text(encoding="utf-8")
 
     def prompt_lines(self) -> list[str]:
         """One line per skill, for a system message; empty when there are none."""
@@ -145,10 +201,110 @@ class SkillLibrary:
 
 
 def builtin_skills() -> SkillLibrary:
-    """The skills shipped with Cairn itself.
-
-    A user directory can be layered on later; today the package ships the
-    default library so a fresh install has something to advertise.
-    """
+    """The skills shipped with Cairn itself."""
     root = Path(__file__).resolve().parent.parent / "skills"
-    return SkillLibrary(root)
+    return SkillLibrary(root, source="builtin")
+
+
+def project_skills(workspace_root: Path) -> SkillLibrary:
+    """The project's own skills under ``<workspace>/.cairn/skills``."""
+    return SkillLibrary(workspace_root / ".cairn" / "skills", source="project")
+
+
+class LayeredSkillLibrary(SkillLibrary):
+    """Project skills layered over the built-in library, first layer wins.
+
+    Precedence is deterministic: a project skill shadows a built-in skill of the
+    same name, and ``conflicts()`` reports every shadowed name.
+    """
+
+    def __init__(self, layers: Sequence[tuple[str, SkillLibrary]]) -> None:
+        super().__init__(None, source="layered")
+        self.layers = tuple(layers)
+
+    def summaries(self) -> tuple[SkillSummary, ...]:
+        seen: set[str] = set()
+        ordered: list[SkillSummary] = []
+        for _label, library in self.layers:
+            for item in library.summaries():
+                if item.name in seen:
+                    continue
+                seen.add(item.name)
+                ordered.append(item)
+        return tuple(ordered)
+
+    def read(self, name: str) -> Skill | None:
+        for _label, library in self.layers:
+            skill = library.read(name)
+            if skill is not None:
+                return skill
+        return None
+
+    def read_resource(self, name: str, relative_path: str) -> str:
+        for _label, library in self.layers:
+            skill = library.read(name)
+            if skill is not None:
+                return library.read_resource(name, relative_path)
+        raise KeyError(f"unknown skill: {name}")
+
+    def conflicts(self) -> tuple[str, ...]:
+        diagnostics: list[str] = []
+        for label, library in self.layers:
+            diagnostics.extend(f"{label}: {item}" for item in library.conflicts())
+        owner: dict[str, str] = {}
+        for label, library in self.layers:
+            for item in library.summaries():
+                if item.name in owner:
+                    diagnostics.append(
+                        f"skill '{item.name}' from {label} shadowed by {owner[item.name]}"
+                    )
+                else:
+                    owner[item.name] = label
+        return tuple(diagnostics)
+
+    def resolve(self, names: Sequence[str]) -> tuple[list[Skill], list[str]]:
+        """Resolve selected names, returning (skills, missing) deterministically."""
+        found: list[Skill] = []
+        missing: list[str] = []
+        seen: set[str] = set()
+        for name in names:
+            if name in seen:
+                continue
+            seen.add(name)
+            skill = self.read(name)
+            if skill is None:
+                missing.append(name)
+            else:
+                found.append(skill)
+        return found, missing
+
+
+def resolve_skills(
+    library: SkillLibrary, names: Sequence[str]
+) -> tuple[list[Skill], list[str]]:
+    """Resolve selected skill names into skills and missing names, in order."""
+    found: list[Skill] = []
+    missing: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
+        skill = library.read(name)
+        if skill is None:
+            missing.append(name)
+        else:
+            found.append(skill)
+    return found, missing
+
+
+def layered_skills(
+    workspace_root: Path | None, *, builtin: SkillLibrary | None = None
+) -> SkillLibrary:
+    """Project skills over built-ins; a missing project directory is empty."""
+    base = builtin if builtin is not None else builtin_skills()
+    if workspace_root is None:
+        return base
+    return LayeredSkillLibrary(
+        [("project", project_skills(workspace_root)), ("builtin", base)]
+    )

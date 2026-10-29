@@ -215,6 +215,7 @@ async def run_task_with_check(
     secret_values: Sequence[str] = (),
     secret_env_keys: frozenset[str] = frozenset(),
     check_ref: dict[str, Any] | None = None,
+    selected_skills: Sequence[str] = (),
 ) -> CheckedTaskOutcome:
     """Run ``spec`` (once) and, when a check is given, verify and repair once.
 
@@ -256,7 +257,15 @@ async def run_task_with_check(
                 check_permission_denied=True,
             )
 
-        first = await runner.run(spec, cancellation_event=cancellation_event)
+        first = (
+            await runner.run(
+                spec,
+                cancellation_event=cancellation_event,
+                selected_skills=selected_skills,
+            )
+            if selected_skills
+            else await runner.run(spec, cancellation_event=cancellation_event)
+        )
         if check is None:
             return CheckedTaskOutcome(
                 task=first,
@@ -332,9 +341,17 @@ async def run_task_with_check(
             output=check_run.output,
             secret_values=secret_values,
         )
-        repair = await runner.run(
-            TaskSpec(task_id=spec.task_id, prompt=repair_prompt, name="repair"),
-            cancellation_event=cancellation_event,
+        repair_spec = TaskSpec(
+            task_id=spec.task_id, prompt=repair_prompt, name="repair"
+        )
+        repair = (
+            await runner.run(
+                repair_spec,
+                cancellation_event=cancellation_event,
+                selected_skills=selected_skills,
+            )
+            if selected_skills
+            else await runner.run(repair_spec, cancellation_event=cancellation_event)
         )
         if repair.status is not TaskStatus.COMPLETED:
             return _outcome(

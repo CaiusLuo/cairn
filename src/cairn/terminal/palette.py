@@ -17,7 +17,7 @@ every level, which is what makes the surface learnable:
   submits the command once the choice is complete.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 #: What the palette accepts as a command name, with its one-line purpose. The
@@ -83,6 +83,15 @@ class Palette:
     )
     #: The names chosen on the way down, one per level below the root.
     _trail: list[str] = field(default_factory=list, repr=False)
+    #: Caller-supplied dynamic levels: extra root commands and their child rows.
+    _dynamic_root: tuple[tuple[str, str], ...] = field(
+        default_factory=tuple, repr=False
+    )
+    _dynamic_children: dict[str, tuple[tuple[str, str], ...]] = field(
+        default_factory=dict, repr=False
+    )
+    _command_offset: int = field(default=0, repr=False)
+    _command_text: str = field(default="", repr=False)
 
     # -- state -----------------------------------------------------------
 
@@ -95,6 +104,34 @@ class Palette:
         """How many levels are open; one is the command list."""
         return len(self._stack)
 
+    def set_dynamic(
+        self,
+        root: Sequence[tuple[str, str]],
+        children: Mapping[str, Sequence[tuple[str, str]]],
+    ) -> None:
+        """Install caller-supplied levels (skills, MCP servers) on this surface."""
+        self._dynamic_root = tuple(root)
+        self._dynamic_children = {key: tuple(value) for key, value in children.items()}
+        if self._open:
+            self.update(self._typed)
+
+    def command_offset(self) -> int:
+        """Where the slash command begins in the composer text."""
+        return self._command_offset
+
+    def insertion(self) -> str:
+        """The token to insert for the chosen dynamic row, or empty for commands."""
+        if not self._open or len(self._trail) != 1:
+            return ""
+        head, name = self._trail[0], self.selected_name()
+        if not name:
+            return ""
+        if head == "/skill":
+            return f"[skill:{name}]"
+        if head == "/mcp":
+            return f"[mcp:{name}]"
+        return ""
+
     def update(self, typed: str) -> None:
         """Track the composer's text, opening for a leading slash and closing otherwise.
 
@@ -103,8 +140,30 @@ class Palette:
         when the slash is deleted. Typing returns to the first level, because the
         filter applies to the command list and not to a submenu.
         """
-        if not typed.startswith("/"):
-            self.close()
+        if typed.startswith("/"):
+            offset, command_text = 0, typed
+        else:
+            index = max(typed.rfind("\n"), typed.rfind(" ")) + 1
+            if index < len(typed) and typed[index] == "/":
+                offset, command_text = index, typed[index:]
+            else:
+                self.close()
+                return
+        self._command_offset = offset
+        self._command_text = command_text
+        head, _, remainder = command_text.partition(" ")
+        head = head.lower()
+        if head in self._dynamic_children:
+            query = remainder.strip().lower()
+            rows = tuple(
+                item
+                for item in self._dynamic_children[head]
+                if not query or query in item[0].lower() or query in item[1].lower()
+            )
+            self._typed = typed
+            self._open = True
+            self._stack = [(self._matching_root(), 0), (rows, 0)]
+            self._trail = [head]
             return
         self._typed = typed
         self._open = True
@@ -125,7 +184,7 @@ class Palette:
         rows, selected = self._current()
         if not rows:
             return
-        limit = min(len(rows), MAX_ROWS) - 1
+        limit = len(rows) - 1
         self._stack[-1] = (rows, max(0, min(limit, selected + step)))
 
     def settles(self) -> bool:
@@ -144,9 +203,11 @@ class Palette:
         choice instead. A row that already ran its action is not re-run.
         """
         command = self.selected_name()
-        if command not in DESCENDS:
+        children = self._dynamic_children.get(command)
+        if children is None and command not in DESCENDS:
             return False
-        children = CHILDREN[command]
+        if children is None:
+            children = CHILDREN[command]
         self._trail.append(command)
         self._stack.append((children, 0))
         return True
@@ -186,9 +247,12 @@ class Palette:
     def rows(self) -> list[CommandRow]:
         """The visible rows of the current level, with the chosen one marked."""
         rows, selected = self._current()
+        total = len(rows)
+        start = max(0, selected - MAX_ROWS + 1) if total > MAX_ROWS else 0
         return [
             CommandRow(name=name, description=description, selected=index == selected)
-            for index, (name, description) in enumerate(rows[:MAX_ROWS])
+            for index, (name, description) in enumerate(rows)
+            if start <= index < start + MAX_ROWS
         ]
 
     def matches(self) -> Sequence[tuple[str, str]]:
@@ -227,9 +291,20 @@ class Palette:
             return (), 0
         return self._stack[-1]
 
+    def _matching_root(self) -> tuple[tuple[str, str], ...]:
+        seen: set[str] = set()
+        merged: list[tuple[str, str]] = []
+        for item in (*COMMANDS, *self._dynamic_root):
+            if item[0] in seen:
+                continue
+            seen.add(item[0])
+            merged.append(item)
+        return tuple(merged)
+
     def _matching(self) -> tuple[tuple[str, str], ...]:
-        text = self._typed.strip().lower()
+        text = (self._command_text or self._typed).strip().lower()
         prefix = text.split()[0] if text else ""
+        root = self._matching_root()
         if not prefix or prefix == "/":
-            return COMMANDS
-        return tuple(item for item in COMMANDS if item[0].startswith(prefix))
+            return root
+        return tuple(item for item in root if item[0].startswith(prefix))

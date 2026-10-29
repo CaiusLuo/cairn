@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+from collections.abc import Sequence
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from typing import Any
@@ -299,12 +300,14 @@ def test_blocker_runs_fresh_fixer_then_verifies_new_tree_and_reviews_from_clean_
             *,
             cancellation_event: asyncio.Event | None = None,
             durable_session: DurableSession | None = None,
+            selected_skills: Sequence[str] = (),
         ) -> Any:
             specs.append(spec)
             return await super().run(
                 spec,
                 cancellation_event=cancellation_event,
                 durable_session=durable_session,
+                selected_skills=selected_skills,
             )
 
     monkeypatch.setattr(workflow_module, "CodingTaskRunner", RecordingRunner)

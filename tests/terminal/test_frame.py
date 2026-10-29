@@ -1355,3 +1355,47 @@ def test_a_short_list_shows_from_the_top() -> None:
 
     assert "> one" in rendered
     assert "two" in rendered
+
+
+def test_palette_selection_inserts_editable_token_and_does_not_submit() -> None:
+    with (
+        create_pipe_input() as pipe,
+        create_app_session(input=pipe, output=DummyOutput()),
+    ):
+        view, _, _ = _view()
+        view.on_palette_data = lambda: (
+            (("/skill", "Select a skill"),),
+            {"/skill": (("local", "Local helper"),)},
+        )
+        view._buffer.insert_text("/skill")
+        assert view._palette.open
+        assert view._palette.insertion() == "[skill:local]"
+
+        _press_by_name(view, "palette_run")  # Enter on the palette row
+        assert view._buffer.text == "[skill:local] "
+        assert not view._palette.open
+
+        view._buffer.insert_text("fix the bug")  # type: ignore[unreachable]
+        assert view._buffer.text == "[skill:local] fix the bug"
+
+
+def test_two_palette_selections_can_be_inserted_before_sending() -> None:
+    with (
+        create_pipe_input() as pipe,
+        create_app_session(input=pipe, output=DummyOutput()),
+    ):
+        view, _, _ = _view()
+        view.on_palette_data = lambda: (
+            (("/skill", "Select a skill"),),
+            {"/skill": (("a", "First"), ("b", "Second"))},
+        )
+        view._buffer.insert_text("/skill")
+        _press_by_name(view, "palette_run")
+        assert view._buffer.text == "[skill:a] "
+
+        # A second trailing /skill opens the same level; the earlier token stays.
+        view._buffer.insert_text("/skill")
+        assert view._palette.open
+        _press(view, "Down")
+        _press_by_name(view, "palette_run")
+        assert view._buffer.text == "[skill:a] [skill:b] "

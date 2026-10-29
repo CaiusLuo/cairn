@@ -26,7 +26,7 @@ Rendering rules this module owns:
 
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from io import StringIO
 
@@ -40,7 +40,6 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.lexers import SimpleLexer
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
@@ -54,6 +53,7 @@ from cairn.terminal.pacing import StreamPacer
 from cairn.terminal.palette import Palette
 from cairn.terminal.paste import PasteRegistry, decide_paste
 from cairn.terminal.queue_view import QueueView
+from cairn.terminal.selection import SelectionTokenLexer
 from cairn.terminal.submission import Delivery, LineQueue, PendingLine
 from cairn.terminal.transcript import TRANSCRIPT_GAP_LINES, Transcript
 
@@ -127,6 +127,7 @@ FRAME_STYLE = Style.from_dict(
         "prompt": "bold #87cefa",
         "live": "dim",
         "palette": "",
+        "selection-token": "fg:#87cefa bold",
         "queued": "",
         "status": "",
         "action": "",
@@ -172,6 +173,16 @@ class TranscriptView:
         # The command surface, opened by typing `/` and closed when the text stops
         # looking like a command.
         self._palette = Palette()
+        #: Supplies (root rows, per-command child rows) for the dynamic palette.
+        self.on_palette_data: (
+            Callable[
+                [],
+                tuple[
+                    Sequence[tuple[str, str]], dict[str, tuple[tuple[str, str], ...]]
+                ],
+            ]
+            | None
+        ) = None
         # The session facts, supplied by the display; one entry per line.
         self._status: list[str] = []
         # Payloads behind the paste markers currently in the buffer.
@@ -336,6 +347,10 @@ class TranscriptView:
             if self._palette.descend():
                 self.repaint()
                 return
+            token = self._palette.insertion()
+            if token:
+                self._insert_palette_token(token)
+                return
             typed = self._buffer.text.strip()
             if len(typed.split(maxsplit=1)) < 2:
                 # A palette choice may be more complete than the composer text:
@@ -351,7 +366,11 @@ class TranscriptView:
 
         @bindings.add("tab", filter=Condition(lambda: self._palette_focused()))
         def palette_complete(event: object) -> None:
-            """Put the chosen command in the composer, ready to run or extend."""
+            """Put the chosen command or selection in the composer."""
+            token = self._palette.insertion()
+            if token:
+                self._insert_palette_token(token)
+                return
             self._complete_palette()
             self.repaint()
 
@@ -567,9 +586,7 @@ class TranscriptView:
                 ),
                 HorizontalLine(),
                 Window(
-                    BufferControl(
-                        buffer=self._buffer, lexer=SimpleLexer("class:input")
-                    ),
+                    BufferControl(buffer=self._buffer, lexer=SelectionTokenLexer()),
                     # Four lines is the readable size at the bottom of a terminal:
                     # enough for a pasted sentence or a short list, small enough to
                     # leave the transcript most of the screen. Beyond it the buffer
@@ -740,6 +757,16 @@ class TranscriptView:
             self.on_width(width)
         self.flush_live()
 
+    def _insert_palette_token(self, token: str) -> None:
+        """Replace the active slash command with a selection token."""
+        current = self._buffer.text
+        offset = self._palette.command_offset()
+        prefix = current[:offset]
+        self._buffer.reset()
+        self._buffer.insert_text(prefix + token + " ")
+        self._palette.close()
+        self.repaint()
+
     def _complete_palette(self) -> None:
         """Copy the palette's choice into the composer, ready to run or extend.
 
@@ -769,6 +796,9 @@ class TranscriptView:
         """
         if self._action is not None and self._action.tone is Tone.CORRECTION:
             self._action = None
+        if self.on_palette_data is not None:
+            root, children = self.on_palette_data()
+            self._palette.set_dynamic(root, children)
         self._palette.update(buffer.text)
         self.repaint()
 

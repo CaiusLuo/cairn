@@ -68,6 +68,7 @@ cancellation:
 
 import asyncio
 from collections import deque
+from collections.abc import Sequence
 
 from cairn.core.budget import (
     BudgetReason,
@@ -106,6 +107,7 @@ async def run_turn(
     budget: RunBudget,
     session: Session | None = None,
     steering: SteerQueue | None = None,
+    selected_skills: Sequence[str] = (),
 ) -> str:
     """Run one Agent turn.
 
@@ -144,6 +146,15 @@ async def run_turn(
             turn_start = len(agent.state.messages)
             trace.start()
 
+            if selected_skills and agent.skill_library is not None:
+                # A user-selected skill body is task context the operator chose,
+                # not a system-policy message: it can never grant authority.
+                for name in selected_skills:
+                    selected = agent.skill_library.read(name)
+                    if selected is not None:
+                        agent.state.add_user_message(
+                            f"[Selected skill: {selected.name}]\n\n{selected.body}"
+                        )
             agent.state.add_user_message(user_input)
 
             for step in range(budget.max_steps):

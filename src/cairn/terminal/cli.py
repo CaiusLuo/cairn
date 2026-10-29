@@ -3,7 +3,7 @@ import contextlib
 import os
 import shutil
 import sys
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Annotated
 
@@ -30,12 +30,13 @@ from cairn.infra.config import (
     resolve_context_budget,
     resolve_provider_api_key,
 )
+from cairn.infra.mcp.config import McpServerConfig, load_mcp_servers
 from cairn.infra.observability.otlp import OtlpSpanExporter, build_exporter
 from cairn.infra.observability.sinks import FanoutTraceSink, JsonlTraceSink
 from cairn.infra.observability.storage import TraceStore
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.sessions.models import SessionStoreError
-from cairn.infra.skills import builtin_skills
+from cairn.infra.skills import SkillLibrary, layered_skills, resolve_skills
 from cairn.infra.tools.filesystem_access import normalize_access_root
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
@@ -43,6 +44,7 @@ from cairn.runtime.assembly import build_agent
 from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.lifecycle import await_owned, settle_owned
 from cairn.runtime.loop import run_turn
+from cairn.runtime.mcp.activation import open_mcp_servers
 from cairn.runtime.provider_runtime import (
     ProviderRuntime,
     ProviderSession,
@@ -52,7 +54,15 @@ from cairn.runtime.session import SessionState
 from cairn.runtime.turn.compaction import CompactionOutcome
 from cairn.runtime.turn.hook import run_compaction
 from cairn.runtime.turn.steering import PendingMessage, SteerQueue
-from cairn.terminal.action import Action, ActionRow, Tone, consent, note, refusal
+from cairn.terminal.action import (
+    Action,
+    ActionRow,
+    Tone,
+    consent,
+    correction,
+    note,
+    refusal,
+)
 from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.model import model_chooser_at
 from cairn.terminal.commands.provider import provider_chooser_at
@@ -81,6 +91,7 @@ from cairn.terminal.output import (
     print_turn_separator,
     print_user_message,
 )
+from cairn.terminal.selection import parse_selection_tokens
 from cairn.terminal.submission import PendingLine
 
 app = typer.Typer(
@@ -341,6 +352,7 @@ async def _run_supervised_turn(
     input_reader: CliInput,
     streaming: StreamingDisplay,
     durable_session: DurableSession | None,
+    selected_skills: tuple[str, ...] = (),
 ) -> str:
     """Run one turn, watching for a message typed while it runs.
 
@@ -352,8 +364,17 @@ async def _run_supervised_turn(
 
     if frame is None:
         if durable_session is None:
-            return await run_turn(
-                agent, user_input=user_input, budget=DEFAULT_CLI_RUN_BUDGET
+            return (
+                await run_turn(
+                    agent,
+                    user_input=user_input,
+                    budget=DEFAULT_CLI_RUN_BUDGET,
+                    selected_skills=selected_skills,
+                )
+                if selected_skills
+                else await run_turn(
+                    agent, user_input=user_input, budget=DEFAULT_CLI_RUN_BUDGET
+                )
             )
         return await _durable_turn(agent, user_input, durable_session)
 
@@ -369,7 +390,59 @@ async def _run_supervised_turn(
         frame=frame,
         streaming=streaming,
         durable_session=durable_session,
+        selected_skills=selected_skills,
     )
+
+
+@contextlib.asynccontextmanager
+async def _selected_mcp_tools(
+    agent: Agent,
+    configs: Sequence[McpServerConfig],
+    secret_values: Sequence[str],
+) -> AsyncIterator[None]:
+    """Authorize, connect and expose only the selected servers for one turn."""
+    if not configs:
+        yield
+        return
+    provider = agent.repo_context_provider
+    workspace = provider.workspace.root if provider is not None else Path.cwd()
+    async with open_mcp_servers(
+        configs=configs,
+        handler=agent.permission_handler,
+        workspace=workspace,
+        secret_values=secret_values,
+    ) as runtime:
+        for tool in runtime.tools:
+            agent.tools.register_tool(tool)
+        try:
+            yield
+        finally:
+            for tool in runtime.tools:
+                agent.tools.unregister_tool(tool.name)
+
+
+async def _run_supervised_turn_with_mcp(
+    *,
+    agent: Agent,
+    user_input: str,
+    frame: TranscriptView | None,
+    input_reader: CliInput,
+    streaming: StreamingDisplay,
+    durable_session: DurableSession | None,
+    selected_skills: tuple[str, ...],
+    mcp_configs: Sequence[McpServerConfig],
+    secret_values: Sequence[str],
+) -> str:
+    async with _selected_mcp_tools(agent, mcp_configs, secret_values):
+        return await _run_supervised_turn(
+            agent=agent,
+            user_input=user_input,
+            frame=frame,
+            input_reader=input_reader,
+            streaming=streaming,
+            durable_session=durable_session,
+            selected_skills=selected_skills,
+        )
 
 
 async def _drive_turn(
@@ -380,16 +453,27 @@ async def _drive_turn(
     frame: TranscriptView,
     streaming: StreamingDisplay,
     durable_session: DurableSession | None,
+    selected_skills: tuple[str, ...] = (),
 ) -> str:
     """Run one turn while reading further instructions from the input line."""
 
     async def run() -> str:
         if durable_session is None:
-            return await run_turn(
-                agent,
-                user_input=user_input,
-                budget=DEFAULT_CLI_RUN_BUDGET,
-                steering=steering,
+            return (
+                await run_turn(
+                    agent,
+                    user_input=user_input,
+                    budget=DEFAULT_CLI_RUN_BUDGET,
+                    steering=steering,
+                    selected_skills=selected_skills,
+                )
+                if selected_skills
+                else await run_turn(
+                    agent,
+                    user_input=user_input,
+                    budget=DEFAULT_CLI_RUN_BUDGET,
+                    steering=steering,
+                )
             )
         return await _durable_turn(agent, user_input, durable_session)
 
@@ -793,8 +877,32 @@ async def _turn_loop(
     streaming_display: StreamingDisplay,
     pending_trace_finish: list[Event | None],
     durable_session: DurableSession | None,
+    skill_catalog: SkillLibrary,
+    mcp_servers: Sequence[McpServerConfig],
+    secret_values: Sequence[str],
+    mcp_config_error: str | None = None,
 ) -> None:
     """Read input, dispatch commands, and run turns until exit."""
+    if frame is not None:
+
+        def _palette_data() -> tuple[
+            tuple[tuple[str, str], ...], dict[str, tuple[tuple[str, str], ...]]
+        ]:
+            skill_rows = tuple(
+                (item.name, item.description) for item in skill_catalog.summaries()
+            )
+            mcp_rows = tuple((server.name, server.transport) for server in mcp_servers)
+            return (
+                (
+                    ("/skill", "Select a skill"),
+                    ("/mcp", "Select an MCP server"),
+                ),
+                {"/skill": skill_rows, "/mcp": mcp_rows},
+            )
+
+        frame.on_palette_data = _palette_data
+        if mcp_config_error is not None:
+            _show_action(correction(f"MCP config error: {mcp_config_error}"), frame)
     needs_turn_gap = False
     while True:
         try:
@@ -813,6 +921,35 @@ async def _turn_loop(
         except EOFError:
             break
         if not user_input or user_input.isspace():
+            continue
+        selection = parse_selection_tokens(user_input)
+        selected_skills: tuple[str, ...] = ()
+        selected_mcp: tuple[str, ...] = ()
+        if selection.skills:
+            found, missing = resolve_skills(skill_catalog, selection.skills)
+            if missing:
+                _show_action(correction("Unknown skill: " + ", ".join(missing)), frame)
+                continue
+            selected_skills = tuple(skill.name for skill in found)
+        if selection.mcp_servers:
+            known = {server.name for server in mcp_servers}
+            unknown = [name for name in selection.mcp_servers if name not in known]
+            if unknown:
+                _show_action(
+                    correction("Unknown MCP server: " + ", ".join(unknown)), frame
+                )
+                continue
+            selected_mcp = tuple(selection.mcp_servers)
+        user_input = selection.task_text
+        if not user_input:
+            if selection.skills or selection.mcp_servers:
+                _show_action(correction("Type a task after the selection."), frame)
+            continue
+        if durable_session is not None and (selected_skills or selected_mcp):
+            _show_action(
+                correction("Skill/MCP selection is not supported in durable mode."),
+                frame,
+            )
             continue
         if durable_session is not None and user_input.split()[0].lower() in {
             "/model",
@@ -851,13 +988,18 @@ async def _turn_loop(
         # cleanup path cannot swallow an ordinary failure or a budget stop.
         settled = False
         try:
-            response = await _run_supervised_turn(
+            response = await _run_supervised_turn_with_mcp(
                 agent=agent,
                 user_input=user_input,
                 frame=frame,
                 input_reader=input_reader,
                 streaming=streaming_display,
                 durable_session=durable_session,
+                selected_skills=selected_skills,
+                mcp_configs=tuple(
+                    server for server in mcp_servers if server.name in selected_mcp
+                ),
+                secret_values=secret_values,
             )
         except TurnStopped:
             # `settle_interrupt` already replaced the partial attempt with the
@@ -1011,10 +1153,18 @@ async def main(
         # the width whenever it changes, so the display re-fits instead of keeping
         # the width it started with and overflowing a narrower terminal.
         frame.on_width = streaming_display.set_status_width
+
     handle_event, pending_trace_finish = _make_event_handler(
         durable, streaming_display, command_context
     )
 
+    skill_catalog = layered_skills(workspace.root)
+    try:
+        mcp_servers = load_mcp_servers(workspace.root)
+        mcp_config_error: str | None = None
+    except (OSError, ValueError) as exc:
+        mcp_servers = ()
+        mcp_config_error = str(exc)
     agent = build_agent(
         workspace=workspace,
         llm=active_runtime.llm,
@@ -1024,7 +1174,7 @@ async def main(
         context_builder=active_runtime.context_builder,
         secret_env_keys=secret_env_keys,
         model_executor=active_runtime.model_executor,
-        skills=builtin_skills(),
+        skills=skill_catalog,
     )
 
     def _publish_identity(provider_name: str) -> None:
@@ -1243,6 +1393,9 @@ async def main(
             if durable.operation == "reconcile":
                 return
             _print_durable_intro(durable_session)
+        secret_values = tuple(
+            value for key in secret_env_keys if (value := os.environ.get(key))
+        )
         await _turn_loop(
             agent=agent,
             input_reader=input_reader,
@@ -1252,6 +1405,10 @@ async def main(
             streaming_display=streaming_display,
             pending_trace_finish=pending_trace_finish,
             durable_session=durable_session,
+            skill_catalog=skill_catalog,
+            mcp_servers=mcp_servers,
+            secret_values=secret_values,
+            mcp_config_error=mcp_config_error,
         )
         print("Goodbye! see you next time.")
     except BaseException as exc:
