@@ -17,6 +17,7 @@ from cairn.terminal.commands.help import handle_help
 from cairn.terminal.commands.model import handle_model
 from cairn.terminal.commands.provider import handle_provider
 from cairn.terminal.commands.trace import handle_trace
+from cairn.terminal.commands.wechat import handle_wechat
 
 
 @dataclass
@@ -57,6 +58,10 @@ class CommandRouter:
 
         if command == "/provider":
             action, interaction = handle_provider(context, args)
+            return CommandResult(handled=True, action=action, interaction=interaction)
+
+        if command == "/wx":
+            action, interaction = handle_wechat(context, args)
             return CommandResult(handled=True, action=action, interaction=interaction)
 
         if command == "/compact":

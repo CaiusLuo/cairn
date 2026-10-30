@@ -25,7 +25,7 @@ from rich.text import Text
 
 import cairn.terminal.output as output_module
 from cairn.core.events import Event
-from cairn.terminal.action import Action, ActionRow, correction
+from cairn.terminal.action import Action, ActionRow, correction, note
 from cairn.terminal.frame import (
     ACTIVITY_ROWS,
     COMPOSER_MAX_LINES,
@@ -1455,3 +1455,17 @@ def test_extension_queue_is_released_once_when_turn_finishes() -> None:
         view.set_running(False)
         assert not view.steering.has_pending
         assert len(view._lines) == 0
+
+
+def test_info_note_clears_on_edit_so_next_enter_can_submit() -> None:
+    with (
+        create_pipe_input() as pipe,
+        create_app_session(input=pipe, output=DummyOutput()),
+    ):
+        view, _, _ = _view()
+        view.show_action(note("微信登录: 已登录"))
+        assert view.action is not None
+        view._buffer.insert_text("/wx status")
+        # Editing the composer dismisses the transient note; the next Enter is a
+        # normal submission rather than the action surface's Enter handler.
+        assert view.action is None

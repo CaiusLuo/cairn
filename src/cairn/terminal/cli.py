@@ -38,6 +38,7 @@ from cairn.infra.observability.tracer import Tracer
 from cairn.infra.sessions.models import SessionStoreError
 from cairn.infra.skills import SkillLibrary, layered_skills, resolve_skills
 from cairn.infra.tools.filesystem_access import normalize_access_root
+from cairn.infra.wechat.state import default_state_dir
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.assembly import build_agent
@@ -76,7 +77,7 @@ from cairn.terminal.durable import (
     show_report,
 )
 from cairn.terminal.frame import TranscriptView, frame_live_region
-from cairn.terminal.headless import task_app
+from cairn.terminal.headless import HeadlessResult, run_headless_task, task_app
 from cairn.terminal.input import CliInput
 from cairn.terminal.output import (
     StreamingDisplay,
@@ -93,6 +94,8 @@ from cairn.terminal.output import (
 )
 from cairn.terminal.selection import parse_selection_tokens
 from cairn.terminal.submission import PendingLine
+from cairn.terminal.wechat.app import wechat_app
+from cairn.terminal.wechat.session import WechatSessionController
 
 app = typer.Typer(
     invoke_without_command=True,
@@ -131,6 +134,7 @@ session_app = typer.Typer(
 )
 app.add_typer(session_app, name="session")
 app.add_typer(task_app, name="task")
+app.add_typer(wechat_app, name="wechat")
 StoreOption = Annotated[
     Path | None, typer.Option("--store", help="Session storage directory.")
 ]
@@ -1189,6 +1193,42 @@ async def main(
         skills=skill_catalog,
     )
 
+    async def _wechat_execute(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        grants = permission_handler.grants
+        wechat_secret_values = tuple(
+            value for key in secret_env_keys if (value := os.environ.get(key))
+        )
+        return await run_headless_task(
+            workspace=workspace.root,
+            prompt=prompt,
+            grant_workspace_trust=True,
+            grant_shell=PermissionCapability.LOCAL_SHELL in grants,
+            llm=active_runtime.llm,
+            budget=DEFAULT_CLI_RUN_BUDGET,
+            context_builder=active_runtime.context_builder,
+            model_executor=active_runtime.model_executor,
+            task_id=task_id,
+            tracer=tracer,
+            secret_env_keys=secret_env_keys,
+            secret_values=wechat_secret_values,
+            skills=skill_catalog,
+            grant_mcp=PermissionCapability.MCP_SERVER in grants,
+            grant_network=PermissionCapability.NETWORK in grants,
+            cancellation_event=cancel,
+        )
+
+    wechat_controller = WechatSessionController(
+        workspace=workspace.root,
+        state_dir=default_state_dir(),
+        task_executor=_wechat_execute,
+        emit=((lambda text: frame.print_above(text)) if frame is not None else print),
+        clear=((lambda count: frame.clear_above(count)) if frame is not None else None),
+        prompt_verify=lambda message: typer.prompt(message),
+    )
+    command_context.wechat_command = wechat_controller.command
+
     def _publish_identity(provider_name: str) -> None:
         """Tell the status which model and provider the session now talks to."""
         manager = command_context.model_manager
@@ -1429,6 +1469,8 @@ async def main(
     finally:
         cleanup_error: BaseException | None = None
         cancellation: asyncio.CancelledError | None = None
+        with contextlib.suppress(Exception):
+            await wechat_controller.close()
         try:
             await _settle_interactions()
         except BaseException as exc:

@@ -30,6 +30,7 @@ page is the map for everything else.
 | [Single-node pilot runbook](guides/pilot-runbook.md) | Offline preflight, per-profile PASS/BLOCKED status, the SIGKILL inspect/confirm/reconcile drill and stop conditions |
 | [Interactive terminal](guides/tui-interaction.md) | Transcript grammar, composer keys, steering a running turn, and what startup asks |
 | [Project skills and MCP servers](guides/project-extensions.md) | `.cairn/skills` and `.cairn/mcp.toml`, `/skill` + `/mcp` selection, authorization, stdio support and current limits |
+| [WeChat iLink text tasks](guides/wechat-ilink.md) | One-account iLink login/serve, trusted senders, single task, status/cancel, dedupe/restart and host-private state |
 | [Server single-task entry](guides/server-task-entry.md) | Non-interactive `cairn task run` for Linux servers: explicit workspace, authorization flags, machine-readable result and exit codes |
 | [Local command execution](guides/local-execution.md) | Host shell, approval, process guarantees and the boundaries it does not claim |
 | [Safe retry](guides/safe-retry.md) | Typed tool failures and the single bounded `read_file` retry slice |

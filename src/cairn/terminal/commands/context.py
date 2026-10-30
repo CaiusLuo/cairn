@@ -36,6 +36,8 @@ class CommandContext:
     #: CLI sets it when it owns a frame; a script has none, so commands answer in
     #: plain text instead of waiting for a keypress that will never come.
     has_action_surface: bool = False
+    #: In-session `/wx` controller bound by the CLI; None in non-interactive callers.
+    wechat_command: Callable[[str], Awaitable[Action]] | None = None
 
     def chooser_available(self) -> bool:
         """Whether a chooser can be shown and answered."""

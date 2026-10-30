@@ -25,13 +25,14 @@ Rendering rules this module owns:
 """
 
 import asyncio
+import sys
 import time
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from io import StringIO
 
 from prompt_toolkit import keys
-from prompt_toolkit.application import Application
+from prompt_toolkit.application import Application, run_in_terminal
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.document import Document
 from prompt_toolkit.enums import EditingMode
@@ -817,7 +818,10 @@ class TranscriptView:
         longer exists. A chooser is left alone, because typing while choosing is
         ordinary.
         """
-        if self._action is not None and self._action.tone is Tone.CORRECTION:
+        if self._action is not None and not self._action.rows:
+            # Any message-only surface is transient: the next edit means the
+            # operator has moved on. Leaving an INFO note open made the next
+            # Enter choose/close the note instead of submitting the composer.
             self._action = None
         if self.on_palette_data is not None:
             root, children = self.on_palette_data()
@@ -1060,6 +1064,30 @@ class TranscriptView:
         # modifier to remember.
         self._submit_typed(delivery="steer" if self._running else "now")
         return True
+
+    async def print_above(self, text: str) -> None:
+        """Print text above the live composer without corrupting the screen."""
+        if self._app is None:
+            print(text)
+            return
+        lines = text.splitlines() or [""]
+
+        def write() -> None:
+            print("\n".join(lines), flush=True)
+
+        await run_in_terminal(write)
+
+    async def clear_above(self, line_count: int) -> None:
+        """Best-effort erase of transient lines (e.g. a scanned QR) above the composer."""
+        if self._app is None or line_count <= 0:
+            return
+
+        def write() -> None:
+            for _ in range(line_count):
+                sys.stdout.write("\x1b[1A\x1b[2K")
+            sys.stdout.flush()
+
+        await run_in_terminal(write)
 
     async def read(self) -> PendingLine:
         """Wait for the next submitted line, running the input line meanwhile.

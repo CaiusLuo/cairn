@@ -31,6 +31,7 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("/trace", "Inspect stored execution details"),
     ("/help", "Show command help"),
     ("/exit", "Exit Cairn"),
+    ("/wx", "WeChat login and task service"),
 )
 
 #: The next level a descending command offers: what that command accepts. These are

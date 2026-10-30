@@ -540,7 +540,7 @@ def _expected_approval(provider: object, group: object) -> ProviderApproval:
     )
 
 
-def _run_via_config(
+async def _run_via_config_async(
     *,
     workspace: Path,
     prompt: str,
@@ -557,6 +557,7 @@ def _run_via_config(
     mcp_configs: Sequence[McpServerConfig] = (),
     grant_mcp: bool = False,
     grant_network: bool = False,
+    cancellation_event: asyncio.Event | None = None,
 ) -> HeadlessResult:
     """Build the configured provider runtime and run one task.
 
@@ -596,31 +597,35 @@ def _run_via_config(
     trace_root = trace_dir if trace_dir is not None else workspace / ".cairn" / "traces"
     tracer = Tracer(JsonlTraceSink(trace_root))
     skills = layered_skills(workspace)
-    return asyncio.run(
-        run_headless_task(
-            workspace=workspace,
-            prompt=prompt,
-            grant_workspace_trust=True,
-            grant_shell=grant_shell,
-            llm=runtime.llm,
-            budget=RunBudget(max_steps=max_steps),
-            context_builder=runtime.context_builder,
-            model_executor=runtime.model_executor,
-            task_id=task_id,
-            tracer=tracer,
-            secret_env_keys=secret_env_keys,
-            secret_values=secret_values,
-            trace_ref=trace_ref,
-            check_command=check_command,
-            check_timeout=check_timeout,
-            check_ref=check_ref,
-            skills=skills,
-            selected_skills=selected_skills,
-            mcp_configs=mcp_configs,
-            grant_mcp=grant_mcp,
-            grant_network=grant_network,
-        )
+    return await run_headless_task(
+        workspace=workspace,
+        prompt=prompt,
+        grant_workspace_trust=True,
+        grant_shell=grant_shell,
+        llm=runtime.llm,
+        budget=RunBudget(max_steps=max_steps),
+        context_builder=runtime.context_builder,
+        model_executor=runtime.model_executor,
+        task_id=task_id,
+        tracer=tracer,
+        secret_env_keys=secret_env_keys,
+        secret_values=secret_values,
+        trace_ref=trace_ref,
+        check_command=check_command,
+        check_timeout=check_timeout,
+        check_ref=check_ref,
+        skills=skills,
+        selected_skills=selected_skills,
+        mcp_configs=mcp_configs,
+        grant_mcp=grant_mcp,
+        grant_network=grant_network,
+        cancellation_event=cancellation_event,
     )
+
+
+def _run_via_config(**kwargs: Any) -> HeadlessResult:
+    """Synchronous wrapper for callers that are not already in an event loop."""
+    return asyncio.run(_run_via_config_async(**kwargs))
 
 
 def _build_approval(
