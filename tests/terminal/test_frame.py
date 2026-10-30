@@ -1469,3 +1469,16 @@ def test_info_note_clears_on_edit_so_next_enter_can_submit() -> None:
         # Editing the composer dismisses the transient note; the next Enter is a
         # normal submission rather than the action surface's Enter handler.
         assert view.action is None
+
+
+def test_wx_panel_is_temporary_and_clearable() -> None:
+    with (
+        create_pipe_input() as pipe,
+        create_app_session(input=pipe, output=DummyOutput()),
+    ):
+        view, _, _ = _view()
+        view.show_wx_panel(["QR-1", "QR-2"])
+        assert view._wx_panel == ("QR-1", "QR-2")
+        assert view._wx_panel_control() == "QR-1\nQR-2"
+        view.clear_wx_panel()
+        assert view._wx_panel is None

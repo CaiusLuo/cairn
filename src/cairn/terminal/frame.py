@@ -129,6 +129,7 @@ FRAME_STYLE = Style.from_dict(
         "prompt": "bold #87cefa",
         "live": "dim",
         "palette": "",
+        "wx-panel": "fg:#87cefa",
         "selection-token": "fg:#87cefa bold",
         "queued": "",
         "status": "",
@@ -175,6 +176,7 @@ class TranscriptView:
         # The command surface, opened by typing `/` and closed when the text stops
         # looking like a command.
         self._palette = Palette()
+        self._wx_panel: tuple[str, ...] | None = None
         #: Supplies (root rows, per-command child rows) for the dynamic palette.
         self.on_palette_data: (
             Callable[
@@ -573,6 +575,18 @@ class TranscriptView:
                     style="class:action",
                     dont_extend_height=True,
                 ),
+                # A temporary WeChat QR/status panel. It sits above the palette
+                # and composer so a full QR is never clipped into the transcript;
+                # editing the composer or login completion clears it.
+                Window(
+                    FormattedTextControl(text=self._wx_panel_control),
+                    height=lambda: Dimension.exact(
+                        len(self._wx_panel) if self._wx_panel is not None else 0
+                    ),
+                    wrap_lines=False,
+                    style="class:wx-panel",
+                    dont_extend_height=True,
+                ),
                 # The palette is an action too, so it shares the place above the
                 # composer rather than sitting inside the composer.
                 Window(
@@ -818,6 +832,8 @@ class TranscriptView:
         longer exists. A chooser is left alone, because typing while choosing is
         ordinary.
         """
+        if self._wx_panel is not None:
+            self._wx_panel = None
         if self._action is not None and not self._action.rows:
             # Any message-only surface is transient: the next edit means the
             # operator has moved on. Leaving an INFO note open made the next
@@ -1088,6 +1104,18 @@ class TranscriptView:
             sys.stdout.flush()
 
         await run_in_terminal(write)
+
+    def show_wx_panel(self, lines: Sequence[str]) -> None:
+        self._wx_panel = tuple(lines)
+        self.repaint()
+
+    def clear_wx_panel(self) -> None:
+        if self._wx_panel is not None:
+            self._wx_panel = None
+            self.repaint()
+
+    def _wx_panel_control(self) -> str:
+        return "\n".join(self._wx_panel or ())
 
     async def read(self) -> PendingLine:
         """Wait for the next submitted line, running the input line meanwhile.

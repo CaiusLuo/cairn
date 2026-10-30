@@ -1225,6 +1225,10 @@ async def main(
         task_executor=_wechat_execute,
         emit=((lambda text: frame.print_above(text)) if frame is not None else print),
         clear=((lambda count: frame.clear_above(count)) if frame is not None else None),
+        show_panel=(
+            (lambda lines: frame.show_wx_panel(lines)) if frame is not None else None
+        ),
+        clear_panel=(frame.clear_wx_panel if frame is not None else None),
         prompt_verify=lambda message: typer.prompt(message),
     )
     command_context.wechat_command = wechat_controller.command

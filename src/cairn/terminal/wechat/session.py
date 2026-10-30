@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from inspect import isawaitable
 from pathlib import Path
 from typing import Any
@@ -32,6 +32,8 @@ class WechatSessionController:
         task_executor: TaskExecutor,
         emit: Callable[[str], object],
         clear: Callable[[int], object] | None = None,
+        show_panel: Callable[[Sequence[str]], object] | None = None,
+        clear_panel: Callable[[], object] | None = None,
         prompt_verify: Callable[[str], str] | None = None,
         allow_insecure_local_http: bool = False,
         login_client: object | None = None,
@@ -41,6 +43,8 @@ class WechatSessionController:
         self.task_executor = task_executor
         self.emit = emit
         self.clear = clear
+        self.show_panel = show_panel
+        self.clear_panel = clear_panel
         self._qr_lines = 0
         self._status_history: list[str] = []
         self.allow_insecure_local_http = allow_insecure_local_http
@@ -73,6 +77,18 @@ class WechatSessionController:
             if isawaitable(result):
                 self._schedule(result)
         self._qr_lines = 0
+
+    def _show_panel(self, lines: Sequence[str]) -> None:
+        if self.show_panel is not None:
+            result = self.show_panel(lines)
+            if isawaitable(result):
+                self._schedule(result)
+
+    def _clear_panel(self) -> None:
+        if self.clear_panel is not None:
+            result = self.clear_panel()
+            if isawaitable(result):
+                self._schedule(result)
 
     async def command(self, args: str) -> Action:
         parts = args.split()
@@ -251,9 +267,15 @@ class WechatSessionController:
                 )
             else:
                 lines.append("微信服务: 已停止")
-        return note("\n".join(lines))
+        message = "\n".join(lines)
+        if self.show_panel is not None:
+            self._show_panel(lines)
+            return note("微信状态已显示在临时面板。")
+        return note(message)
 
     async def _stop_all(self) -> Action:
+        self._clear_qr()
+        self._clear_panel()
         stopped_login = False
         login = self._login_task
         if login is not None and not login.done():
