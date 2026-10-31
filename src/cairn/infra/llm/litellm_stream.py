@@ -159,15 +159,14 @@ def _safe_error(error: Exception, api_key: str | None, provisional: bool) -> Exc
     if not provisional or isinstance(error, StreamProtocolError):
         return error
     if isinstance(error, ProviderAPIError):
-        # Keep the typed SDK failure and structured quota chain for the existing
-        # runtime policy. Only the legacy message-only free-tier 403 needs a safe
-        # canonical signature; no provider message or generated content survives.
-        free_tier = getattr(error, "status_code", None) == 403 and is_fallback_error(
-            error
-        )
-        diagnostic = "LLM provider streaming failed."
-        if free_tier:
-            diagnostic += " Free quota exhausted; use free tier only."
+        # Keep an actual provider classification visible without copying its raw
+        # message (which may contain generated content) into terminal/trace.
+        diagnostic = type(error).__name__
+        status = getattr(error, "status_code", None)
+        if isinstance(status, int):
+            diagnostic += f" (status {status})"
+        if status == 403 and is_fallback_error(error):
+            diagnostic += ": Free quota exhausted; use free tier only."
         error.message = diagnostic
         error.args = (diagnostic,)
         return error

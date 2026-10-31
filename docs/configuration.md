@@ -95,14 +95,13 @@ A file that exists but is invalid stops startup rather than falling back to
 ## Session selection and switching
 
 Startup uses the first configured provider, its first model group, and that
-group's first model ID. Startup displays the selection and asks for approval,
-showing the provider name, endpoint, credential variable, and a notice that
-prompts and conversation content are sent to that endpoint.
+group's first model ID. It does not ask for a provider authorization prompt or a
+model chooser.
 
-Each completion starts at the selected group's first ID and, on eligible
-failures, tries the remaining IDs followed by subsequent groups. Other errors
-stop immediately. Fallback never leaves the active provider and does not change
-selection.
+Each completion uses only the selected model ID. A request failure is shown with
+the actual provider error (credentials redacted); it does not automatically retry
+or fall back to another ID or group. The user may switch explicitly with
+`/model use` or `/provider use`.
 
 See the [CLI command table](../README.md#cli-commands) for `/model` and
 `/provider` usage.
@@ -122,10 +121,10 @@ only, so a provider never changes mid-turn.
 - `/model remove flash openai/model-d` removes one.
 - `/model move flash openai/model-b 1` moves an ID to a 1-based position.
 
-Edits preserve comments and remaining order, require a restart and normal
-provider approval to take effect, and apply only to the active provider's group
-in the catalog layout. Groups must already exist; duplicate IDs, removing a
-group's final ID, unknown groups or IDs, and out-of-range positions are rejected.
+Edits preserve comments and remaining order, and apply only to the active
+provider's group in the catalog layout. Groups must already exist; duplicate
+IDs, removing a group's final ID, unknown groups or IDs, and out-of-range
+positions are rejected. Configuration is validated before it is used.
 Moving an ID to its current position does not rewrite the file. Unsupported
 formatting is reported without writing. Cairn does not migrate `.env` or
 hot-reload configuration.

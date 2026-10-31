@@ -25,6 +25,7 @@ class CommandContext:
     provider_catalog: ProviderCatalog | None = None
     active_provider_name: str | None = None
     select_provider: Callable[[str], None] | None = None
+    set_provider_key: Callable[[], Awaitable[Action]] | None = None
     #: Asks for provider trust and then switches, when the caller owns an
     #: interactive surface. Commands return it as their interaction so the question
     #: is answered while the loop keeps drawing, rather than blocking it.

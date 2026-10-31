@@ -141,6 +141,8 @@ class ModelExecutor:
         manager: ModelManager | None = None,
         runtime_factory: Callable[[str], tuple[LLMClient, ContextBuilder]]
         | None = None,
+        *,
+        allow_fallback: bool = True,
     ) -> None:
         if (manager is None) != (runtime_factory is None):
             raise ValueError(
@@ -148,6 +150,7 @@ class ModelExecutor:
             )
         self.manager = manager
         self.runtime_factory = runtime_factory
+        self.allow_fallback = allow_fallback
         self._last_failures: dict[str, ModelFailure] = {}
 
     def failure_for(self, model_id: str) -> ModelFailure | None:
@@ -161,7 +164,11 @@ class ModelExecutor:
         model_id: str | None,
     ) -> tuple[LLMClient, ContextBuilder]:
         selected = self.manager.current_model() if self.manager is not None else None
-        if model is None or (model == selected and model_id == model.model_ids[0]):
+        if model is None or (
+            model == selected
+            and self.manager is not None
+            and model_id == self.manager.current_model_id()
+        ):
             return primary_runtime
         assert self.runtime_factory is not None
         assert model_id is not None
@@ -195,12 +202,24 @@ class ModelExecutor:
         errors: list[tuple[str, Exception]] = []
 
         candidates: Sequence[ModelConfig | None] = (
-            self.manager.candidates() if self.manager is not None else (None,)
+            (
+                self.manager.candidates()
+                if self.allow_fallback
+                else (self.manager.current_model(),)
+            )
+            if self.manager is not None
+            else (None,)
         )
         attempt = 0
         for model in candidates:
             model_ids: Sequence[str | None] = (
-                model.model_ids if model is not None else (None,)
+                (
+                    (self.manager.current_model_id(),)
+                    if self.manager is not None and not self.allow_fallback
+                    else model.model_ids
+                )
+                if model is not None
+                else (None,)
             )
             for model_id in model_ids:
                 llm, builder = self._runtime_for(primary_runtime, model, model_id)
@@ -254,7 +273,8 @@ class ModelExecutor:
                 except Exception as exc:
                     self._note_failure(model_id, exc)
                     fallback = (
-                        model_id is not None
+                        self.allow_fallback
+                        and model_id is not None
                         and not isinstance(
                             exc, (StreamProtocolError, StreamObserverError)
                         )

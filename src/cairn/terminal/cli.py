@@ -30,7 +30,6 @@ from cairn.infra.agent_memory.store import (
 )
 from cairn.infra.config import (
     CAIRN_MAX_STEPS_ENV_NAME,
-    ConfigLayout,
     ProjectProviders,
     default_provider,
     load_project_providers,
@@ -108,7 +107,6 @@ from cairn.terminal.output import (
     console_permission_prompt,
     print_assistant_response,
     print_banner,
-    print_provider_selection,
     print_runtime_error,
     print_turn_separator,
     print_user_message,
@@ -350,24 +348,26 @@ def _resolve_active_runtime(
     """
     provider = default_provider(project, os.environ, env_file_values)
     selected_group = provider.config.model_config[0]
-    if durable is not None or project.layout is not ConfigLayout.ENV:
-        if (
-            confirm_provider_access(provider, selected_group, switching=False)
-            is not True
-        ):
-            raise ValueError(
-                "Project model provider was not approved for this session."
-            )
-        print_provider_selection(provider, selected_group)
-
-    # Only the selected provider's credential is resolved, and only after its
-    # configuration was validated and approved.
-    api_key = resolve_provider_api_key(provider.config, os.environ, env_file_values)
+    # Interactive startup deliberately does not ask for a second provider
+    # approval. The first configured provider/group/ID is the session default.
+    missing_credential: str | None = None
+    try:
+        api_key = resolve_provider_api_key(provider.config, os.environ, env_file_values)
+    except ValueError as exc:
+        # A missing credential is a request-time error, not a startup refusal:
+        # the operator can add it in-session or switch provider later.
+        api_key = None
+        missing_credential = str(exc)
     context_budget = resolve_context_budget(os.environ, env_file_values)
     runtime = build_provider_runtime(
-        provider, api_key, context_budget, group=selected_group.name
+        provider,
+        api_key,
+        context_budget,
+        group=selected_group.name,
+        allow_fallback=False,
+        missing_credential=missing_credential,
     )
-    return runtime, api_key, context_budget
+    return runtime, api_key or "", context_budget
 
 
 async def _run_supervised_turn(
@@ -1413,31 +1413,11 @@ async def main(
         on_commit=mirror_committed_runtime,
     )
 
-    #: The provider the operator has just approved on the surface, for the switch
-    #: currently being performed. The runtime asks ``confirm`` synchronously inside
-    #: its build-before-commit sequence, so the question is asked and answered
-    #: *before* that call: by the time the runtime asks, the answer is known.
-    approved_provider: str | None = None
-
     def select_provider(name: str) -> None:
-        """Switch providers, using the trust decision already taken.
-
-        The runtime keeps build-before-commit: it asks for approval, resolves only
-        the approved provider's credential, builds the replacement and commits it.
-        The question itself was asked on the surface, because a synchronous console
-        prompt would block the loop the surface is drawn on.
-        """
-        nonlocal approved_provider
-
-        def confirm(provider: NamedProvider, group: ModelConfig) -> bool:
-            # Consent is bound to this exact provider. A different target than the
-            # one the operator approved is not consent, however the call arrived.
-            return approved_provider == provider.name
-
+        """Switch providers directly; build-before-commit still protects state."""
         switched = session.select_provider(
             name,
             catalog,
-            confirm=confirm,
             resolve_credential=lambda config: resolve_provider_api_key(
                 config, os.environ, env_file_values
             ),
@@ -1455,39 +1435,11 @@ async def main(
         return note(f"Current provider: {name}")
 
     async def approve_provider(name: str) -> Action:
-        """Ask for trust on the surface, then perform the switch.
-
-        Approval and switching are one step: the answer is stored, the runtime is
-        asked to switch, and the surface reports what happened. A refusal never
-        reaches the runtime, so no credential is resolved for a provider the
-        operator declined.
-        """
-        nonlocal approved_provider
-        target = catalog.by_name(name)
-        if target is None:
-            return refusal(f"Provider {name!r} is not configured in this session.")
-        if target.name == (command_context.active_provider_name or target.name):
-            return note(f"Current provider: {name}")
-        group = target.config.model_config[0]
-        granted = False
-        if frame is not None and _interactive_terminal():
-            granted = await _ask_in_surface(target, group, frame=frame)
-        else:
-            granted = (
-                await asyncio.to_thread(
-                    lambda: confirm_provider_access(target, group, switching=True)
-                )
-                is True
-            )
-        if not granted:
-            return refusal(f"Provider {name!r} was not approved for this session.")
-        approved_provider = target.name
+        """Perform a direct provider switch; no secondary approval prompt."""
         try:
-            select_provider(target.name)
+            select_provider(name)
         except ValueError as exc:
             return refusal(str(exc))
-        finally:
-            approved_provider = None
         return _provider_summary_action(name)
 
     def compact_now() -> Awaitable[CompactionOutcome]:
@@ -1502,6 +1454,32 @@ async def main(
     command_context.compact_now = compact_now if agent.summarizer is not None else None
     command_context.select_model = session.select_model
     command_context.select_provider = select_provider
+
+    async def set_provider_key() -> Action:
+        """Read a credential without echo; keep it out of transcript/history/trace."""
+        import getpass
+
+        try:
+            key = await asyncio.to_thread(getpass.getpass, "Provider API key: ")
+        except (EOFError, KeyboardInterrupt):
+            return refusal("Provider credential was not entered.")
+        if not key.strip():
+            return refusal(
+                "Provider credential was empty; the current binding is unchanged."
+            )
+        try:
+            session.set_credential(key.strip())
+        except Exception as exc:
+            return refusal(
+                f"Provider credential update failed ({type(exc).__name__}); "
+                "the current binding is unchanged."
+            )
+        return note(
+            "Provider credential updated for this session only; "
+            "it was not written to models.toml, command history, trace or logs."
+        )
+
+    command_context.set_provider_key = set_provider_key
     # Provider trust is a decision, so the command returns it as an interaction and
     # the operator answers it on the surface with the loop still drawing.
     command_context.approve_provider = approve_provider

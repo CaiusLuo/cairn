@@ -124,19 +124,19 @@ An unknown command is corrected in place and cleared by the next keystroke:
 ### Choosing a model
 
 `/model` opens the groups the provider actually configures, and expands only the
-one under the cursor — its primary and any fallback IDs, with the most recent
-failure if there was one:
+one under the cursor — its configured model IDs, with the most recent failure
+if there was one:
 
 ```text
 model  deepseek-v4.1
   > flash    current
       primary   openai/deepseek-v4.1-flash-1017
-      fallback  none
+      2. configured-id
     plus
   Up/Down move   Enter select   Esc cancel
 ```
 
-`/model use <group>` and confirming a row run the same command, so the menu and the
+`/model use <group|model-id>` and confirming a row run the same command, so the menu and the
 typed form share one path through the runtime and its build-before-commit rules.
 `/model list` still prints the whole catalogue, for a reader who wants it in the
 scrollback.

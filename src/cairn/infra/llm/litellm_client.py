@@ -113,11 +113,13 @@ class LiteLLMClient:
         api_key: str | None = None,
         api_base: str | None = None,
         max_output_tokens: int | None = None,
+        missing_credential: str | None = None,
     ) -> None:
         self.model = model
         self.api_key = api_key
         self.api_base = api_base
         self.max_output_tokens = max_output_tokens
+        self.missing_credential = missing_credential
 
     @property
     def supports_streaming(self) -> bool:
@@ -150,6 +152,8 @@ class LiteLLMClient:
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncGenerator[LLMStreamChunk, None]:
+        if self.missing_credential:
+            raise RuntimeError(self.missing_credential)
         if not self.supports_streaming:
             raise StreamProtocolError(
                 "Streaming is unsupported for this configuration."
@@ -178,6 +182,8 @@ class LiteLLMClient:
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
+        if self.missing_credential:
+            raise RuntimeError(self.missing_credential)
         lite_messages = [to_llm_message(message) for message in messages]
         completion_options: dict[str, Any] = {}
         if self.max_output_tokens is not None:
@@ -190,6 +196,8 @@ class LiteLLMClient:
                 api_key=self.api_key,
                 api_base=self.api_base,
                 tools=tools,
+                num_retries=0,
+                max_retries=0,
                 **completion_options,
             )
         except Exception as exc:

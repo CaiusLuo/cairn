@@ -1,13 +1,7 @@
-"""`/model`: see which model group is in use, and choose another.
+"""`/model`: see/select the configured model and edit local IDs.
 
-The chooser is the bottom action surface, not a printed list. A model group is
-something the operator selects, and printing five groups with their IDs buried the
-conversation under a wall of text that said nothing once the selection was made.
-
-What the surface shows is the *selected* group's details, because a reader choosing
-between groups needs the primary and fallback IDs of the one under the cursor, not
-of all of them at once. `/model list` still prints everything, for the case where the
-operator wants the whole catalogue in the scrollback.
+Selection is by group or by a concrete model ID. Requests use only the selected
+ID; a failed request is reported directly with no automatic fallback.
 """
 
 import sys
@@ -21,7 +15,8 @@ from cairn.terminal.action import Action, ActionRow, note, refusal
 from cairn.terminal.commands.context import CommandContext
 
 MODEL_USAGE = (
-    "Usage: /model | /model list | /model use <name> | /model add <group> <model-id>"
+    "Usage: /model | /model list | /model use <group|model-id>"
+    " | /model add <group> <model-id>"
     " | /model remove <group> <model-id>"
     " | /model move <group> <model-id> <position>"
 )
@@ -66,23 +61,29 @@ def _summary(context: CommandContext, model: ModelConfig) -> str:
     facts a reader checks after a switch, and naming them in words keeps the line
     readable without a legend.
     """
+    manager = context.model_manager
+    current_id = (
+        manager.current_model_id() if manager is not None else model.model_ids[0]
+    )
     return (
-        f"Current group: {model.name} (primary: {model.model_ids[0]})"
+        f"Current model: {current_id} (group: {model.name})"
         f" | provider: {context.active_provider_name or 'unknown'}"
     )
 
 
 def _details(context: CommandContext, model: ModelConfig) -> list[str]:
     """The selected group's real candidate IDs, primary first."""
-    lines = [
-        f"  primary   {model.model_ids[0]}{_failure_note(context, model.model_ids[0])}"
-    ]
-    if len(model.model_ids) == 1:
-        lines.append("  fallback  none")
-        return lines
-    for position, model_id in enumerate(model.model_ids[1:], start=1):
-        label = "fallback" if position == 1 else "        "
-        lines.append(f"  {label}  {model_id}{_failure_note(context, model_id)}")
+    lines = []
+    current_id = (
+        context.model_manager.current_model_id()
+        if context.model_manager is not None
+        else model.model_ids[0]
+    )
+    for position, model_id in enumerate(model.model_ids, start=1):
+        marker = "*" if model_id == current_id else " "
+        lines.append(
+            f" {marker} {position}. {model_id}{_failure_note(context, model_id)}"
+        )
     return lines
 
 
@@ -196,7 +197,11 @@ def handle_model(
             marker = "*" if model == current else " "
             print(f"{marker} {model.name}")
             for position, model_id in enumerate(model.model_ids, start=1):
-                role = "primary" if position == 1 else f"fallback {position - 1}"
+                role = (
+                    "current"
+                    if model_id == manager.current_model_id()
+                    else "configured"
+                )
                 print(
                     f"    {position}. {model_id} — {role}"
                     f"{_failure_note(context, model_id)}"

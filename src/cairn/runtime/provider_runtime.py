@@ -36,14 +36,19 @@ class ProviderRuntime:
     llm: LLMClient
     context_builder: ContextBuilder
     runtime_factory: RuntimeFactory
+    allow_fallback: bool = True
+    context_budget: ContextBudget | None = None
+    missing_credential: str | None = None
 
 
 def build_provider_runtime(
     provider: NamedProvider,
-    credential: str,
+    credential: str | None,
     context_budget: ContextBudget,
     *,
     group: str | None = None,
+    allow_fallback: bool = True,
+    missing_credential: str | None = None,
 ) -> ProviderRuntime:
     """Construct one provider's runtime without touching any other provider.
 
@@ -63,6 +68,7 @@ def build_provider_runtime(
                 api_key=credential,
                 api_base=provider.config.base_url,
                 max_output_tokens=context_budget.response_tokens,
+                missing_credential=missing_credential,
             ),
             ContextBuilder(
                 budget=context_budget,
@@ -73,17 +79,20 @@ def build_provider_runtime(
     model_manager = ModelManager(provider.config)
     if group is not None:
         model_manager.select_model(group)
-    llm, context_builder = create_model_runtime(
-        model_manager.current_model().model_ids[0]
-    )
+    llm, context_builder = create_model_runtime(model_manager.current_model_id())
 
     return ProviderRuntime(
         provider=provider,
         model_manager=model_manager,
-        model_executor=ModelExecutor(model_manager, create_model_runtime),
+        model_executor=ModelExecutor(
+            model_manager, create_model_runtime, allow_fallback=allow_fallback
+        ),
         llm=llm,
         context_builder=context_builder,
         runtime_factory=create_model_runtime,
+        allow_fallback=allow_fallback,
+        context_budget=context_budget,
+        missing_credential=missing_credential,
     )
 
 
@@ -146,22 +155,51 @@ class ProviderSession:
         runtime = self._runtime
         manager = runtime.model_manager
         previous = manager.current_model()
-        if name == previous.name:
+        if (
+            name == previous.name
+            and manager.current_model_id() == previous.model_ids[0]
+        ):
             return previous
-        selected = find_model(manager, name)
-        next_llm, next_context = runtime.runtime_factory(selected.model_ids[0])
-        manager.select_model(name)
+        try:
+            selected = find_model(manager, name)
+            target_id = selected.model_ids[0]
+        except UnknownModelError:
+            selected = manager.resolve_model_id(name)
+            target_id = name
+        # Build first. Only after successful construction do we mutate the
+        # manager, so a failed switch leaves the current ID and bindings intact.
+        next_llm, next_context = runtime.runtime_factory(target_id)
+        if target_id == selected.model_ids[0]:
+            manager.select_model(selected.name)
+        else:
+            manager.select_model_id(target_id)
         # No await separates the pair, and the existing Agent (state, tools,
         # permissions and tracer) is kept.
         self.commit(replace(runtime, llm=next_llm, context_builder=next_context))
         return selected
+
+    def set_credential(self, credential: str) -> None:
+        """Update only this session's credential without touching workspace TOML."""
+        runtime = self._runtime
+        current = runtime.model_manager.current_model()
+        current_id = runtime.model_manager.current_model_id()
+        candidate = build_provider_runtime(
+            runtime.provider,
+            credential,
+            runtime.context_budget or ContextBudget(),
+            group=current.name,
+            allow_fallback=runtime.allow_fallback,
+            missing_credential=None,
+        )
+        candidate.model_manager.select_model_id(current_id)
+        self.commit(candidate)
 
     def select_provider(
         self,
         name: str,
         catalog: ProviderCatalog,
         *,
-        confirm: Callable[[NamedProvider, ModelConfig], bool],
+        confirm: Callable[[NamedProvider, ModelConfig], bool] | None = None,
         resolve_credential: Callable[[ProviderConfig], str],
         context_budget: ContextBudget,
         commit_guard: Callable[[], AbstractContextManager[None]] = nullcontext,
@@ -188,12 +226,16 @@ class ProviderSession:
             return False
 
         group = target.config.model_config[0]
-        if confirm(target, group) is not True:
+        if confirm is not None and confirm(target, group) is not True:
             raise ValueError(f"Provider {name!r} was not approved for this session.")
         credential = resolve_credential(target.config)
         try:
             candidate = build_provider_runtime(
-                target, credential, context_budget, group=group.name
+                target,
+                credential,
+                context_budget,
+                group=group.name,
+                allow_fallback=runtime.allow_fallback,
             )
         except Exception as exc:
             # Never echo a construction diagnostic that may embed a credential.

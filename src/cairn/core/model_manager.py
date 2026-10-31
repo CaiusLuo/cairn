@@ -27,6 +27,7 @@ class ModelManager:
         # Names are unique, so this lookup is lossless and keeps declaration order.
         self._by_name = {model.name: model for model in config.model_config}
         self.model = config.model_config[0]
+        self._selected_id: str | None = None
 
     def list_models(self) -> tuple[ModelConfig, ...]:
         return self.config.model_config
@@ -36,10 +37,27 @@ class ModelManager:
         if model is None:
             raise ValueError(f"Model '{model_name}' not found in the configuration.")
         self.model = model
+        self._selected_id = model.model_ids[0]
+        return model
+
+    def resolve_model_id(self, model_id: str) -> ModelConfig:
+        for model in self.config.model_config:
+            if model_id in model.model_ids:
+                return model
+        raise ValueError(f"Model id '{model_id}' not found in the configuration.")
+
+    def select_model_id(self, model_id: str) -> ModelConfig:
+        model = self.resolve_model_id(model_id)
+        self.model = model
+        self._selected_id = model_id
         return model
 
     def current_model(self) -> ModelConfig:
         return self.model
+
+    def current_model_id(self) -> str:
+        selected = self._selected_id
+        return selected if selected is not None else self.model.model_ids[0]
 
     def candidates(self) -> tuple[ModelConfig, ...]:
         models = self.list_models()

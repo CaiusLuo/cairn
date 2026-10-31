@@ -793,3 +793,31 @@ def test_group_fallback_restarts_after_tools_and_preserves_loop_recovery(
         assert attempts[-1].attributes["cancelled"] is True
     assert "input_tokens" not in sink.spans[-1].attributes
     assert "output_tokens" not in sink.spans[-1].attributes
+
+
+def test_executor_without_fallback_uses_only_selected_id_and_raises_actual_error() -> (
+    None
+):
+    selected = ScriptedLLM(rate_limit())
+    fallback = ScriptedLLM(LLMResponse(content="should not run"))
+    agent = make_agent(selected, RecordingCounter())
+    manager = make_manager()
+
+    def runtime_factory(model_id: str) -> tuple[LLMClient, ContextBuilder]:
+        assert model_id == "openai/flash"
+        return fallback, agent.context_builder
+
+    executor = ModelExecutor(manager, runtime_factory, allow_fallback=False)
+    with pytest.raises(RateLimitError) as raised:
+        asyncio.run(
+            executor.execute(
+                primary_runtime=(agent.llm, agent.context_builder),
+                system_messages=[],
+                history=agent.state.messages,
+                current_turn_start=0,
+                tools=[],
+            )
+        )
+    assert raised.value is not None
+    assert len(selected.calls) == 1
+    assert fallback.calls == []

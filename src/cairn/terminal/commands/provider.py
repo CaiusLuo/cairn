@@ -1,14 +1,7 @@
 """`/provider`: see where the conversation goes, and switch it.
 
-Switching a provider is a trust decision, so the surface states the whole decision
-before anything happens: the endpoint the conversation would be sent to, the
-credential *variable* it would read, the models it covers, and the fact that the
-history moves with it. The credential is named and never resolved until the operator
-confirms, and the default is to stay.
-
-The facts live here rather than in a printed paragraph because the reader has to
-compare them with what they expected, and a menu that scrolls away cannot be
-compared with anything.
+A manual switch builds the target runtime before committing it; failure leaves the
+current provider unchanged. The selected model remains visible near the composer.
 """
 
 from collections.abc import Awaitable, Callable
@@ -19,7 +12,9 @@ from cairn.core.provider_catalog import NamedProvider
 from cairn.terminal.action import Action, ActionRow, note, refusal
 from cairn.terminal.commands.context import CommandContext
 
-PROVIDER_USAGE = "Usage: /provider | /provider list | /provider use <name>"
+PROVIDER_USAGE = (
+    "Usage: /provider | /provider list | /provider use <name> | /provider key"
+)
 PROVIDER_SUMMARY = "Show or switch the active provider."
 PROVIDER_DETAIL = (
     "Show the active provider, its endpoint, credential variable and\n"
@@ -143,6 +138,9 @@ def handle_provider(
     context: CommandContext, args: list[str]
 ) -> tuple[Action | None, Callable[[], Awaitable[Action | None]] | None]:
     """Answer ``/provider`` on the bottom action surface."""
+    if args == ["key"] and context.set_provider_key is not None:
+        return None, context.set_provider_key
+
     if len(args) == 2 and args[0] == "use" and context.select_provider is not None:
         if context.approve_provider is not None:
             # Trust is a decision the operator makes on the surface, so the command
