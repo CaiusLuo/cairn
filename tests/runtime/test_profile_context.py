@@ -119,3 +119,17 @@ def test_profile_does_not_clear_other_long_term_entries() -> None:
     payload = json.loads(context.render().split("\n", 1)[1])
     assert "Alex Q." in payload["personal_agent_memory"]["profile"]
     assert "concise" in payload["personal_agent_memory"]["memory_md"]
+
+
+def test_long_term_section_facts_are_selected_individually() -> None:
+    facts = "\n".join(f"- [legacy] fact-{i:03d} " + ("记" * 80) for i in range(100))
+    context = PersonalMemoryContext(
+        memory_md=f"## Saved\n{facts}\n",
+        daily=(("2026-11-01", "## 09:00\n- text: recent"),),
+        max_chars=3000,
+    )
+    payload = json.loads(context.render().split("\n", 1)[1])
+    memory = payload["personal_agent_memory"]["memory_md"]
+    assert "fact-000" in memory
+    assert memory.count("fact-") >= 2
+    assert len(context.render()) <= 3000

@@ -134,23 +134,38 @@ class PersonalMemoryContext(BaseModel):
 
     @staticmethod
     def _memory_entries(memory_md: str) -> list[str]:
-        """Split long-term memory into complete entries without breaking blocks."""
-        blocks = [
-            block.strip()
-            for block in re.split(r"(?m)(?=^## )", memory_md)
-            if block.strip()
-        ]
-        if any(block.startswith("## ") for block in blocks):
-            return blocks
+        """Split long-term memory into complete fact entries with their headers.
+
+        A ``## Saved`` section is not one entry: each ``-`` fact (with any
+        continuation lines) is independently selectable. Section headers are
+        separate small entries so a budget can keep the facts without pretending
+        the whole section is one oversized blob.
+        """
         entries: list[str] = []
+        current_header: list[str] = []
+        current_fact: list[str] | None = None
         for line in memory_md.splitlines():
             stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
+            if stripped.startswith("#"):
+                if current_fact is not None:
+                    entries.append("\n".join(current_fact))
+                    current_fact = None
+                current_header.append(stripped)
                 continue
             if stripped.startswith("- "):
-                entries.append(stripped)
-            elif entries:
-                entries[-1] += "\n" + stripped
-            else:
-                entries.append(stripped)
+                if current_fact is not None:
+                    entries.append("\n".join(current_fact))
+                if current_header:
+                    entries.append("\n".join(current_header))
+                    current_header = []
+                current_fact = [stripped]
+                continue
+            if current_fact is not None and stripped:
+                current_fact.append(stripped)
+            elif stripped and current_fact is None:
+                current_header.append(stripped)
+        if current_fact is not None:
+            entries.append("\n".join(current_fact))
+        if current_header:
+            entries.append("\n".join(current_header))
         return entries
