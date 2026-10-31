@@ -57,16 +57,16 @@ def _configure_cli(
 @pytest.mark.parametrize(
     ("host_values", "file_values", "expected"),
     [
-        ({}, {}, ContextBudget()),
+        ({}, {}, ContextBudget(reserve_percent=10)),
         (
             {},
             {"CAIRN_CONTEXT_MAX_TOKENS": "2048", "CAIRN_RESPONSE_MAX_TOKENS": "256"},
-            ContextBudget(max_tokens=2048, response_tokens=256),
+            ContextBudget(max_tokens=2048, response_tokens=256, reserve_percent=10),
         ),
         (
             {"CAIRN_CONTEXT_MAX_TOKENS": "3072", "CAIRN_RESPONSE_MAX_TOKENS": "512"},
             {"CAIRN_CONTEXT_MAX_TOKENS": "2048", "CAIRN_RESPONSE_MAX_TOKENS": "256"},
-            ContextBudget(max_tokens=3072, response_tokens=512),
+            ContextBudget(max_tokens=3072, response_tokens=512, reserve_percent=10),
         ),
     ],
 )
@@ -135,4 +135,4 @@ def test_cli_treats_blank_context_settings_as_unset(
     result = CliRunner().invoke(cli_module.app, [])
 
     assert result.exit_code == 0
-    assert agents[0].context_builder.budget == ContextBudget()
+    assert agents[0].context_builder.budget == ContextBudget(reserve_percent=10)
