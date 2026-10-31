@@ -233,12 +233,9 @@ def default_task_executor(
             personal_context_provider=personal_memory.render_context,
         )
         with contextlib.suppress(Exception):
-            personal_memory.record_task(
-                prompt=prompt,
-                result=result,
-                task_id=task_id,
-                trace_id=result.trace_id,
-            )
+            # Do not copy raw task input/result into the daily journal; memory
+            # tools decide candidates inside the turn.
+            pass
         return result
 
     return execute

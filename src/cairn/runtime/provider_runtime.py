@@ -39,6 +39,16 @@ class ProviderRuntime:
     allow_fallback: bool = True
     context_budget: ContextBudget | None = None
     missing_credential: str | None = None
+    #: Shared with runtime_factory so hot-reloaded estimate reserve reaches
+    #: later model switches and fallback candidates.
+    budget_ref: list[ContextBudget] | None = None
+
+    def update_context_budget(self, budget: ContextBudget) -> None:
+        """Apply a hot-reloaded estimate reserve to future runtime builds."""
+        if self.budget_ref is not None:
+            self.budget_ref[0] = budget
+        object.__setattr__(self, "context_budget", budget)
+        self.context_builder.budget = budget
 
 
 def build_provider_runtime(
@@ -61,17 +71,20 @@ def build_provider_runtime(
     from cairn.infra.llm.litellm_client import LiteLLMClient
     from cairn.infra.llm.token_counter import LiteLLMTokenCounter
 
+    budget_ref = [context_budget]
+
     def create_model_runtime(model_id: str) -> tuple[LLMClient, ContextBuilder]:
+        budget = budget_ref[0]
         return (
             LiteLLMClient(
                 model=model_id,
                 api_key=credential,
                 api_base=provider.config.base_url,
-                max_output_tokens=context_budget.response_tokens,
+                max_output_tokens=budget.response_tokens,
                 missing_credential=missing_credential,
             ),
             ContextBuilder(
-                budget=context_budget,
+                budget=budget,
                 counter=LiteLLMTokenCounter(model_id),
             ),
         )
@@ -93,6 +106,7 @@ def build_provider_runtime(
         allow_fallback=allow_fallback,
         context_budget=context_budget,
         missing_credential=missing_credential,
+        budget_ref=budget_ref,
     )
 
 
@@ -144,6 +158,9 @@ class ProviderSession:
         agent.provider_name = runtime.provider.name
         if self._on_commit is not None:
             self._on_commit(runtime)
+
+    def update_context_budget(self, budget: ContextBudget) -> None:
+        self._runtime.update_context_budget(budget)
 
     def select_model(self, name: str) -> ModelConfig:
         """Select one of the active provider's model groups for later turns.

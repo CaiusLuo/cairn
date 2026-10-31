@@ -921,7 +921,10 @@ def _show_action(
 
 
 def _refresh_context_reserve(
-    agent: Agent, model_path: Path, budget: ContextBudget
+    agent: Agent,
+    model_path: Path,
+    budget: ContextBudget,
+    session: ProviderSession | None = None,
 ) -> ContextBudget:
     """Re-read only the local-estimate reserve; approved routing stays fixed."""
     current = load_project_providers(model_path)
@@ -934,6 +937,8 @@ def _refresh_context_reserve(
         reserve_percent=reserve,
     )
     agent.context_builder.budget = refreshed
+    if session is not None:
+        session.update_context_budget(refreshed)
     return refreshed
 
 
@@ -954,6 +959,7 @@ async def _turn_loop(
     personal_memory: PersonalMemoryService | None = None,
     memory_enabled: bool = True,
     task_gate: asyncio.Lock | None = None,
+    provider_session: ProviderSession | None = None,
 ) -> None:
     """Read input, dispatch commands, and run turns until exit."""
     if frame is not None:
@@ -1070,6 +1076,7 @@ async def _turn_loop(
                 agent,
                 Path(".cairn/models.toml"),
                 agent.context_builder.budget,
+                provider_session,
             )
             if task_gate is not None:
                 if task_gate.locked():
@@ -1129,10 +1136,9 @@ async def _turn_loop(
         else:
             with contextlib.suppress(Exception):
                 if personal_memory is not None and memory_enabled:
-                    personal_memory.record_turn(user_input, response)
-                    agent.personal_context = (
-                        personal_memory.render_context() if memory_enabled else ""
-                    )
+                    # Raw turn text is not journaled. The dialogue model decides
+                    # what is worth remembering through memory_remember.
+                    agent.personal_context = personal_memory.render_context()
             if not streaming_display.final_text_visible:
                 print_assistant_response(response)
         finally:
@@ -1195,7 +1201,7 @@ async def main(
     env_file_values = dotenv_values()
     model_path = Path(".cairn/models.toml")
     project = load_project_providers(model_path)
-    active_runtime, api_key, context_budget = _resolve_active_runtime(
+    active_runtime, api_key, _context_budget = _resolve_active_runtime(
         durable, project, env_file_values
     )
 
@@ -1337,12 +1343,7 @@ async def main(
             ),
         )
         with contextlib.suppress(Exception):
-            personal_memory.record_task(
-                prompt=prompt,
-                result=result,
-                task_id=task_id,
-                trace_id=result.trace_id,
-            )
+            # Task inputs/results are not copied into the daily journal.
             agent.personal_context = personal_memory.render_context()
         return result
 
@@ -1458,7 +1459,7 @@ async def main(
             resolve_credential=lambda config: resolve_provider_api_key(
                 config, os.environ, env_file_values
             ),
-            context_budget=context_budget,
+            context_budget=agent.context_builder.budget,
         )
         if switched:
             permission_handler.reset_grants()
@@ -1646,6 +1647,7 @@ async def main(
             personal_memory=personal_memory,
             memory_enabled=memory_enabled,
             task_gate=task_gate,
+            provider_session=session,
         )
         print("Goodbye! see you next time.")
     except BaseException as exc:

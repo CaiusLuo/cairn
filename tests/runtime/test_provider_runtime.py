@@ -236,3 +236,12 @@ def test_provider_cancellation_after_commit_keeps_new_bindings(
     assert agent.session_owner is session
     assert agent.state.messages == history
     assert observed == [previous, candidate]
+
+
+def test_runtime_factory_uses_latest_hot_reloaded_budget() -> None:
+    runtime = build_provider_runtime(make_provider(), "credential", BUDGET)
+    updated = ContextBudget(max_tokens=100, response_tokens=20, reserve_percent=25)
+    runtime.update_context_budget(updated)
+    _llm, builder = runtime.runtime_factory("openai/model-c")
+    assert builder.budget == updated
+    assert runtime.context_builder.budget == updated

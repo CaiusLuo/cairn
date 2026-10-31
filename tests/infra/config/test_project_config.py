@@ -158,3 +158,25 @@ def test_environment_provider_reports_missing_settings(missing: str) -> None:
 
     with pytest.raises(ValueError, match=missing):
         environment_provider(values, {})
+
+
+def test_context_reserve_percent_is_loaded_and_validated(tmp_path: Path) -> None:
+    path = tmp_path / "models.toml"
+    path.write_text(
+        LEGACY_TOML.replace(
+            'api_key_env = "LEGACY_API_KEY"',
+            'api_key_env = "LEGACY_API_KEY"\ncontext_reserve_percent = 25',
+        ),
+        encoding="utf-8",
+    )
+    project = load_project_providers(path)
+    assert project.context_reserve_percent == 25
+    path.write_text(
+        LEGACY_TOML.replace(
+            'api_key_env = "LEGACY_API_KEY"',
+            'api_key_env = "LEGACY_API_KEY"\ncontext_reserve_percent = 51',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="context_reserve_percent"):
+        load_project_providers(path)

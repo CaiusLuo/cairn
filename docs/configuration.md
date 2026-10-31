@@ -26,6 +26,12 @@ response reserve, which is also sent as the provider's output-token limit. Older
 turns may be omitted from requests while the full conversation stays in memory.
 The current turn and its tool results are never trimmed.
 
+Local token estimates reserve an extra 10% of the input window by default. Set
+`context_reserve_percent` in `.cairn/models.toml` (integer `0..50`) to change it;
+the value is re-read before later requests without changing the approved
+provider/model. The local LiteLLM tokenizer is still labelled as an estimate;
+Cairn does not call an unverified provider count endpoint.
+
 ### `.cairn/models.toml`, legacy layout
 
 A single provider with ordered model groups:
@@ -33,6 +39,7 @@ A single provider with ordered model groups:
 ```toml
 base_url = "https://example.com/v1"
 api_key_env = "BAILIAN_API_KEY"
+context_reserve_percent = 10
 
 [[models]]
 name = "flash"
@@ -77,6 +84,7 @@ file must satisfy the legacy contract. Cairn rejects:
 - empty provider, group or `model_ids` lists;
 - the removed `model_id` field (use `model_ids = [...]`);
 - `api_key_env` values that are not environment-variable names;
+- `context_reserve_percent` outside the integer range `0..50`;
 - `base_url` values with credentials, a query, a fragment, whitespace, or a
   scheme other than HTTPS (loopback HTTP is permitted for local endpoints).
 
