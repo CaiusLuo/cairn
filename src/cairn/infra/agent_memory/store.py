@@ -106,6 +106,13 @@ class AgentMemoryStore:
         self.ensure_initialized()
         _append(self.memory_md_path, text if text.endswith("\n") else text + "\n")
 
+    def write_memory_md(self, text: str) -> None:
+        self.ensure_initialized()
+        _atomic_write(self.memory_md_path, text)
+
+    def write_daily(self, day: date, text: str) -> None:
+        _atomic_write(self.daily_path(day), text)
+
     def _read(self, path: Path, *, limit: int | None = None) -> str:
         try:
             with path.open("r", encoding="utf-8", newline="") as handle:

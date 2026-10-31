@@ -148,7 +148,8 @@ progress is the typing indicator plus the final message.
 
 ## Scheduled tasks (first version)
 
-Host-authored tasks can be created from the interactive session:
+Scheduled tasks are created by the Agent after a user-confirmed brief. The
+`/schedule` commands below remain available as an admin/debug surface:
 
 ```text
 /schedule add once 2026-11-01T09:00:00+08:00 <prompt>

@@ -225,6 +225,100 @@ class PersonalMemoryService:
                 break
         return candidates
 
+    def remember_fact(self, text: str, *, now: datetime | None = None) -> bool:
+        """Agent-authored durable fact; duplicate facts are ignored."""
+        if not self.enabled:
+            raise ValueError("personal agent memory is disabled")
+        clean = self.redact(" ".join(text.split()).strip())
+        if not clean:
+            raise ValueError("memory fact cannot be empty")
+        existing = self.store.read_memory_md()
+        if any(
+            self._normalize_fact(line.strip()[2:]) == self._normalize_fact(clean)
+            for line in existing.splitlines()
+            if line.strip().startswith("- ")
+        ):
+            return False
+        moment = now or self.clock()
+        self.store.append_memory_md(
+            f"\n## Remembered {moment:%Y-%m-%d}\n"
+            f"- [agent] {moment.date().isoformat()}: {clean[:2000]}\n"
+        )
+        self.store.append_audit(
+            f"\n## {moment:%Y-%m-%d %H:%M:%S} remembered fact\n- text: {clean[:2000]}\n"
+        )
+        return True
+
+    def forget_fact(self, query: str, *, now: datetime | None = None) -> bool:
+        """Remove matching facts from long-term memory and recent daily candidates."""
+        if not self.enabled:
+            raise ValueError("personal agent memory is disabled")
+        needle = self._normalize_fact(query)
+        if not needle:
+            raise ValueError("memory query cannot be empty")
+        moment = now or self.clock()
+        changed = False
+        memory = self.store.read_memory_md()
+        kept = []
+        for line in memory.splitlines():
+            if line.strip().startswith("- ") and needle in self._normalize_fact(
+                line.strip()[2:]
+            ):
+                changed = True
+                continue
+            kept.append(line)
+        if changed:
+            self.store.write_memory_md("\n".join(kept).rstrip() + "\n")
+        for day in self.store.list_daily_days()[-31:]:
+            body = self.store.read_daily(day)
+            lines = []
+            day_changed = False
+            for line in body.splitlines():
+                if needle in self._normalize_fact(line):
+                    day_changed = True
+                    continue
+                lines.append(line)
+            if day_changed:
+                changed = True
+                self.store.write_daily(day, "\n".join(lines).rstrip() + "\n")
+        if changed:
+            self.store.append_audit(
+                f"\n## {moment:%Y-%m-%d %H:%M:%S} forgot fact\n"
+                f"- query: {self.redact(query)[:500]}\n"
+            )
+        return changed
+
+    def correct_fact(self, old: str, new: str, *, now: datetime | None = None) -> bool:
+        """Replace a matching fact and keep the correction auditable."""
+        if not self.enabled:
+            raise ValueError("personal agent memory is disabled")
+        needle = self._normalize_fact(old)
+        replacement = self.redact(" ".join(new.split()).strip())
+        if not needle or not replacement:
+            raise ValueError("old and new memory facts must be non-empty")
+        moment = now or self.clock()
+        changed = False
+        memory = self.store.read_memory_md()
+        lines = []
+        for line in memory.splitlines():
+            if line.strip().startswith("- ") and needle in self._normalize_fact(
+                line.strip()[2:]
+            ):
+                lines.append(
+                    f"- [agent] {moment.date().isoformat()}: {replacement[:2000]}"
+                )
+                changed = True
+            else:
+                lines.append(line)
+        if changed:
+            self.store.write_memory_md("\n".join(lines).rstrip() + "\n")
+        if changed:
+            self.store.append_audit(
+                f"\n## {moment:%Y-%m-%d %H:%M:%S} corrected fact\n"
+                f"- old: {self.redact(old)[:500]}\n- new: {replacement[:2000]}\n"
+            )
+        return changed
+
     def distill(self, *, days: int = 7, now: datetime | None = None) -> int:
         if not self.enabled:
             return 0

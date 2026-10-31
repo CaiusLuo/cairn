@@ -1,7 +1,8 @@
 """Durable scheduled-task values and occurrence rules.
 
-The values are host-authored: a model never creates a schedule. They are kept
-small and serialisable so a JSON store can survive restarts without a database.
+The values are host-owned: an Agent may propose a schedule after a user brief,
+but the host supplies ownership and a job is persisted only after confirmation.
+They are kept small and serialisable so a JSON store can survive restarts.
 """
 
 from __future__ import annotations

@@ -50,6 +50,12 @@ from cairn.infra.wechat.state import default_state_dir
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.agent_memory.service import PersonalMemoryService
+from cairn.runtime.agent_memory.tools import (
+    MemoryCorrectTool,
+    MemoryForgetTool,
+    MemoryRememberTool,
+    MemorySearchTool,
+)
 from cairn.runtime.assembly import build_agent
 from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.lifecycle import await_owned, settle_owned
@@ -59,6 +65,11 @@ from cairn.runtime.provider_runtime import (
     ProviderRuntime,
     ProviderSession,
     build_provider_runtime,
+)
+from cairn.runtime.scheduling.tools import (
+    ScheduleCreateTool,
+    ScheduleListTool,
+    ScheduleManageTool,
 )
 from cairn.runtime.session import SessionState
 from cairn.runtime.turn.compaction import CompactionOutcome
@@ -1341,6 +1352,28 @@ async def main(
         emit=((lambda text: frame.print_above(text)) if frame is not None else print),
     )
     command_context.schedule_command = schedule_controller.command
+    for schedule_tool in (
+        ScheduleCreateTool(
+            store=schedule_controller.store,
+            workspace=schedule_controller.workspace_key,
+            recipient=wechat_controller.recipient_id,
+            account_id=wechat_controller.account_id,
+            redact=personal_memory.redact,
+        ),
+        ScheduleListTool(
+            store=schedule_controller.store,
+            workspace=schedule_controller.workspace_key,
+            recipient=wechat_controller.recipient_id,
+            account_id=wechat_controller.account_id,
+        ),
+        ScheduleManageTool(
+            store=schedule_controller.store,
+            workspace=schedule_controller.workspace_key,
+            recipient=wechat_controller.recipient_id,
+            account_id=wechat_controller.account_id,
+        ),
+    ):
+        agent.tools.register_tool(schedule_tool)
 
     def _refresh_personal_prompt() -> None:
         agent.personal_context = personal_memory.render_context()
@@ -1351,6 +1384,13 @@ async def main(
         on_agent_changed=_refresh_personal_prompt,
     )
     command_context.memory_command = memory_controller.command
+    for memory_tool in (
+        MemorySearchTool(personal_memory),
+        MemoryRememberTool(personal_memory),
+        MemoryForgetTool(personal_memory),
+        MemoryCorrectTool(personal_memory),
+    ):
+        agent.tools.register_tool(memory_tool)
 
     def _publish_identity(provider_name: str) -> None:
         """Tell the status which model and provider the session now talks to."""
