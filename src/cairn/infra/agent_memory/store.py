@@ -150,6 +150,23 @@ class AgentMemoryStore:
                 result.append((day.isoformat(), body))
         return tuple(result)
 
+    def recent_daily_entries(
+        self, now: datetime, days: int = 2, *, max_entries: int = 24
+    ) -> tuple[tuple[str, str], ...]:
+        """Recent complete journal entries, never a character-sliced tail."""
+        result: list[tuple[str, str]] = []
+        for delta in range(days):
+            day = now.date() - timedelta(days=delta)
+            body = self.read_daily(day)
+            blocks = [
+                block.strip()
+                for block in re.split(r"(?m)(?=^## )", body)
+                if block.strip().startswith("## ")
+            ]
+            if blocks:
+                result.append((day.isoformat(), "\n\n".join(blocks[-max_entries:])))
+        return tuple(result)
+
     def list_daily_days(self) -> tuple[date, ...]:
         found: list[date] = []
         for path in sorted(self.memory_dir.glob("*/*/*.md")):

@@ -48,14 +48,46 @@ class PersonalMemoryService:
         if not self.enabled:
             return PersonalMemoryContext()
         moment = now or self.clock()
+        agent_md = self.redact(self.store.read_agent_md())
         return PersonalMemoryContext(
-            agent_md=self.redact(self.store.read_agent_md()),
+            profile=self._profile(agent_md, self.redact(self.store.read_memory_md())),
+            agent_md=agent_md,
             memory_md=self.redact(self.store.read_memory_md()),
             daily=tuple(
                 (day, self.redact(body))
-                for day, body in self.store.recent_daily(moment)
+                for day, body in self.store.recent_daily_entries(moment)
             ),
         )
+
+    @staticmethod
+    def _profile(agent_md: str, memory_md: str = "") -> str:
+        """Stable profile facts, falling back to existing long-term records."""
+        lines = agent_md.splitlines()
+        values: list[str] = []
+        in_preferences = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("## "):
+                in_preferences = stripped.casefold() == "## preferences"
+                continue
+            if in_preferences and stripped and not stripped.startswith("#"):
+                values.append(stripped.removeprefix("- ").strip())
+            if len(values) >= 12:
+                break
+        if not values and agent_md.strip() != DEFAULT_MEMORY_AGENT_MD.strip():
+            values = [
+                line.strip()
+                for line in lines
+                if line.strip() and not line.lstrip().startswith("#")
+            ][:5]
+        if not values:
+            # Existing installations may keep the identity only in MEMORY.md.
+            values = [
+                line.strip()[2:].strip()
+                for line in memory_md.splitlines()
+                if line.strip().startswith("- ")
+            ][:5]
+        return "\n".join(values)[:600]
 
     def render_context(self, now: datetime | None = None) -> str:
         """Empty until the personal store has content beyond its templates."""
