@@ -38,6 +38,7 @@ page is the map for everything else.
 | [Tracing and opt-in OTLP export](guides/tracing-and-otlp.md) | Session/task/turn correlation, compaction/fallback trigger reasons, default-off OTLP export and redaction |
 | [RepoGraph](guides/repo-graph.md) | Bounded repository inventory and Python structure queries |
 | [Project Memory](guides/project-memory.md) | Evidence-backed memory candidates, freshness and retrieval |
+| [Personal Agent Memory](guides/personal-agent-memory.md) | Personal AGENT.md, daily journal and human-approved evolution |
 | [Session checkpoint performance](performance/session-checkpoints.md) | Checkpoint sizing options, the incremental V2 design, measurements, and verification limits |
 | [Schema V4 fence performance](performance/schema-v4-fences.md) | V3/V4 append cost, the per-stage breakdown, and what the numbers do not claim |
 
