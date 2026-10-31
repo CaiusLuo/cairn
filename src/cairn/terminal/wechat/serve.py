@@ -20,7 +20,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dotenv import dotenv_values
+
+from cairn.infra.agent_memory.store import (
+    AgentMemoryStore,
+    default_agent_home,
+)
+from cairn.infra.agent_memory.store import (
+    ensure_outside_workspace as ensure_agent_home_outside_workspace,
+)
+from cairn.infra.config import default_provider, load_project_providers
 from cairn.infra.mcp.config import McpServerConfig
+from cairn.infra.schedule.store import ScheduleStore
+from cairn.infra.schedule.store import (
+    ensure_outside_workspace as ensure_schedule_outside_workspace,
+)
 from cairn.infra.wechat.ilink import (
     ILinkClient,
     ILinkError,
@@ -32,7 +46,9 @@ from cairn.infra.wechat.state import (
     WechatState,
     ensure_outside_workspace,
 )
+from cairn.runtime.agent_memory.service import PersonalMemoryService
 from cairn.runtime.lifecycle import await_owned
+from cairn.runtime.scheduling.runner import ScheduleRunner
 from cairn.terminal.headless import (
     DEFAULT_CHECK_TIMEOUT_S,
     DEFAULT_MAX_STEPS,
@@ -63,6 +79,9 @@ class ServeConfig:
     poll_timeout_ms: int | None = None
     poll_interval: float = 0.0
     max_polls: int | None = None
+    schedule_store: Path | None = None
+    schedule_poll_interval: float = 1.0
+    redact_text: Callable[[str], str] | None = None
 
 
 @dataclass(slots=True)
@@ -73,6 +92,8 @@ class ServeReport:
     replies_sent: int = 0
     errors: int = 0
     interrupted: int = 0
+    scheduled_jobs: int = 0
+    scheduled_delivered: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,11 +168,53 @@ def _format_result(result: HeadlessResult) -> str:
     return text[:4000]
 
 
-def default_task_executor(config: ServeConfig) -> TaskExecutor:
+def _known_credential_values(
+    workspace: Path, extra: Sequence[str] = ()
+) -> tuple[str, ...]:
+    """Only declared provider credential values plus explicit extras.
+
+    ``.env`` often contains ordinary settings (DEBUG=1); treating every value as
+    a secret would redact unrelated text in memory and results.
+    """
+    values: list[str] = []
+    env_file = dotenv_values(workspace / ".env")
+    try:
+        project = load_project_providers(workspace / ".cairn" / "models.toml")
+        provider = default_provider(project, os.environ, env_file)
+        names = {
+            named.config.api_key_env for named in (project.providers or (provider,))
+        }
+    except (OSError, ValueError):
+        names = set()
+    for name in names:
+        value = os.environ.get(name) or env_file.get(name)
+        if isinstance(value, str) and value:
+            values.append(value)
+    for value in extra:
+        if isinstance(value, str) and value:
+            values.append(value)
+    return tuple(dict.fromkeys(values))
+
+
+def default_task_executor(
+    config: ServeConfig,
+    *,
+    on_secrets_resolved: Callable[[Sequence[str]], None] | None = None,
+) -> TaskExecutor:
+    agent_home = default_agent_home()
+    ensure_agent_home_outside_workspace(agent_home, config.workspace)
+    personal_memory = PersonalMemoryService(AgentMemoryStore(agent_home))
+    personal_memory.add_secret_values((config.account.bot_token,))
+
+    def remember_secrets(values: Sequence[str]) -> None:
+        personal_memory.add_secret_values(values)
+        if on_secrets_resolved is not None:
+            on_secrets_resolved(values)
+
     async def execute(
         prompt: str, cancel: asyncio.Event, task_id: str
     ) -> HeadlessResult:
-        return await _run_via_config_async(
+        result = await _run_via_config_async(
             workspace=config.workspace,
             prompt=prompt,
             task_id=task_id,
@@ -166,7 +229,17 @@ def default_task_executor(config: ServeConfig) -> TaskExecutor:
             grant_mcp=config.allow_mcp,
             grant_network=config.allow_network,
             cancellation_event=cancel,
+            on_secrets_resolved=remember_secrets,
+            personal_context_provider=personal_memory.render_context,
         )
+        with contextlib.suppress(Exception):
+            personal_memory.record_task(
+                prompt=prompt,
+                result=result,
+                task_id=task_id,
+                trace_id=result.trace_id,
+            )
+        return result
 
     return execute
 
@@ -181,6 +254,7 @@ class _Service:
         executor: TaskExecutor,
         report: ServeReport,
         stop_event: asyncio.Event | None,
+        redact_text: Callable[[str], str] | None = None,
     ) -> None:
         self.config = config
         self.state = state
@@ -188,6 +262,7 @@ class _Service:
         self.executor = executor
         self.report = report
         self.stop_event = stop_event
+        self.redact_text = redact_text
         self._current: asyncio.Task[None] | None = None
         self._current_key: str | None = None
         self._current_started = 0.0
@@ -199,6 +274,8 @@ class _Service:
     async def _reply(self, sender: str, context: str, text: str) -> None:
         if not sender or not context:
             return
+        if self.redact_text is not None:
+            text = self.redact_text(text)
         for attempt in range(2):
             try:
                 await self.client.send_text(
@@ -376,6 +453,8 @@ class _Service:
             self.report.interrupted += 1
             sender = str(record.get("sender", ""))
             context = str(record.get("context_token", ""))
+            if sender not in self.config.allowed_senders:
+                continue
             await self._safe_reply(
                 sender,
                 context,
@@ -507,17 +586,80 @@ async def serve_wechat(
         )
     )
     active_state = state if state is not None else WechatState(config.state_dir)
+    known_secrets: list[str] = [config.account.bot_token]
+
+    def remember_known_secrets(values: Sequence[str]) -> None:
+        for value in values:
+            if isinstance(value, str) and value and value not in known_secrets:
+                known_secrets.append(value)
+
+    def redact_text(text: str) -> str:
+        cleaned = config.redact_text(text) if config.redact_text is not None else text
+        for value in known_secrets:
+            if value:
+                cleaned = cleaned.replace(value, "[REDACTED]")
+        return cleaned
+
     executor = (
-        task_executor if task_executor is not None else default_task_executor(config)
+        task_executor
+        if task_executor is not None
+        else default_task_executor(config, on_secrets_resolved=remember_known_secrets)
     )
     report = ServeReport()
+    task_gate = asyncio.Lock()
+
+    async def gated_executor(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        async with task_gate:
+            return await executor(prompt, cancel, task_id)
+
+    scheduler_task: asyncio.Task[object] | None = None
+    scheduler_stop: asyncio.Event | None = None
+    scheduler_runner: ScheduleRunner | None = None
+    if config.schedule_store is not None:
+        ensure_schedule_outside_workspace(config.schedule_store, config.workspace)
+
+        async def deliver_scheduled(sender: str, text: str) -> bool:
+            if sender not in config.allowed_senders:
+                return False
+            context = active_state.latest_context(sender)
+            if not context:
+                return False
+            try:
+                await active_client.send_text(
+                    to_user_id=sender, text=text, context_token=context
+                )
+                return True
+            except Exception:
+                return False
+
+        # The account's login identity is not an authorization: only a sender
+        # explicitly present in this serve invocation may receive work.
+        scheduler_owner = (
+            config.account.ilink_user_id
+            if config.account.ilink_user_id in config.allowed_senders
+            else ""
+        )
+        scheduler_runner = ScheduleRunner(
+            store=ScheduleStore(config.schedule_store),
+            executor=gated_executor,
+            deliver=deliver_scheduled,
+            recipient=lambda: scheduler_owner or None,
+            poll_interval=config.schedule_poll_interval,
+            workspace=str(config.workspace.resolve()),
+            account_id=config.account.ilink_bot_id,
+            result_redactor=redact_text,
+        )
+        scheduler_stop = None
     service = _Service(
         config=config,
         state=active_state,
         client=active_client,
-        executor=executor,
+        executor=gated_executor,
         report=report,
         stop_event=stop_event,
+        redact_text=redact_text,
     )
     stored_account = active_state.load_account()
     if (
@@ -532,9 +674,22 @@ async def serve_wechat(
             f"workspace={config.workspace}"
         )
     )
+    # Start background work only after every identity/directory/lock check
+    # succeeded. A failed startup must leave no executor task behind.
+    if scheduler_runner is not None:
+        scheduler_stop = asyncio.Event()
+        scheduler_task = asyncio.create_task(scheduler_runner.run(scheduler_stop))
     try:
         return await service.run()
     finally:
+        if scheduler_task is not None:
+            if scheduler_stop is not None:
+                scheduler_stop.set()
+            scheduler_task.cancel()
+            await await_owned(scheduler_task)
+            if scheduler_runner is not None:
+                report.scheduled_jobs = scheduler_runner.report.jobs_run
+                report.scheduled_delivered = scheduler_runner.report.delivered
         try:
             close_task = asyncio.create_task(active_client.close())
             await await_owned(close_task)

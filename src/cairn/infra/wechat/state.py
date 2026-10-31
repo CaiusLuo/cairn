@@ -161,6 +161,20 @@ class WechatState:
         self.load()["cursor"] = cursor
         self.flush()
 
+    def latest_context(self, sender: str) -> str | None:
+        """Latest reply context for a sender, for owner-directed delivery."""
+        latest: tuple[float, str] | None = None
+        for record in self.load().get("messages", {}).values():
+            if not isinstance(record, dict) or record.get("sender") != sender:
+                continue
+            context = record.get("context_token")
+            updated = record.get("updated")
+            if isinstance(context, str) and context:
+                stamp = float(updated) if isinstance(updated, (int, float)) else 0.0
+                if latest is None or stamp >= latest[0]:
+                    latest = (stamp, context)
+        return latest[1] if latest is not None else None
+
     def get_record(self, key: str) -> dict[str, Any] | None:
         record = self.load()["messages"].get(key)
         return record if isinstance(record, dict) else None

@@ -9,6 +9,7 @@ from typing import Annotated
 import typer
 
 from cairn.infra.mcp.config import McpServerConfig, load_mcp_servers
+from cairn.infra.schedule.store import default_schedule_dir
 from cairn.infra.skills import layered_skills, resolve_skills
 from cairn.infra.wechat.ilink import ILinkError
 from cairn.infra.wechat.state import (
@@ -196,6 +197,7 @@ def wechat_serve(
         mcp_configs=mcp_configs,
         poll_timeout_ms=poll_timeout_ms,
         poll_interval=poll_interval,
+        schedule_store=default_schedule_dir(),
     )
     try:
         report = asyncio.run(serve_wechat(config=config, state=state))
@@ -209,5 +211,7 @@ def wechat_serve(
         "wechat serve stopped: "
         f"polls={report.polls} messages={report.messages_seen} "
         f"tasks={report.tasks_started} replies={report.replies_sent} "
-        f"interrupted={report.interrupted} errors={report.errors}"
+        f"interrupted={report.interrupted} errors={report.errors} "
+        f"scheduled={report.scheduled_jobs} "
+        f"scheduled_delivered={report.scheduled_delivered}"
     )

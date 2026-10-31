@@ -20,7 +20,7 @@ import asyncio
 import math
 import os
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -308,6 +308,8 @@ async def run_headless_task(
     mcp_configs: Sequence[McpServerConfig] = (),
     grant_mcp: bool = False,
     grant_network: bool = False,
+    system_prompt: str | None = None,
+    personal_context: str = "",
 ) -> HeadlessResult:
     """Run one task against ``workspace`` and return a machine-readable result.
 
@@ -403,6 +405,8 @@ async def run_headless_task(
             secret_env_keys=secret_env_keys,
             skills=skills,
             extra_tools=mcp_tools,
+            system_prompt=system_prompt,
+            personal_context=personal_context,
         )
         return await run_task_with_check(
             runner=runner,
@@ -558,6 +562,10 @@ async def _run_via_config_async(
     grant_mcp: bool = False,
     grant_network: bool = False,
     cancellation_event: asyncio.Event | None = None,
+    system_prompt: str | None = None,
+    personal_context: str = "",
+    on_secrets_resolved: Callable[[Sequence[str]], None] | None = None,
+    personal_context_provider: Callable[[], str] | None = None,
 ) -> HeadlessResult:
     """Build the configured provider runtime and run one task.
 
@@ -586,14 +594,20 @@ async def _run_via_config_async(
             f"(approved {approval}; configured {expected})"
         )
     api_key = resolve_provider_api_key(provider.config, os.environ, env_file_values)
-    context_budget = resolve_context_budget(os.environ, env_file_values)
-    runtime = build_provider_runtime(
-        provider, api_key, context_budget, group=group.name
-    )
     secret_env_keys = frozenset(
         named.config.api_key_env for named in project.providers or (provider,)
     )
     secret_values = _secret_values(secret_env_keys, env_file_values)
+    # The key has now been resolved after approval. Teach the caller's redactor
+    # before any runtime construction can raise with that key in its message.
+    if on_secrets_resolved is not None:
+        on_secrets_resolved(secret_values)
+    if personal_context_provider is not None:
+        personal_context = personal_context_provider()
+    context_budget = resolve_context_budget(os.environ, env_file_values)
+    runtime = build_provider_runtime(
+        provider, api_key, context_budget, group=group.name
+    )
     trace_root = trace_dir if trace_dir is not None else workspace / ".cairn" / "traces"
     tracer = Tracer(JsonlTraceSink(trace_root))
     skills = layered_skills(workspace)
@@ -620,6 +634,8 @@ async def _run_via_config_async(
         grant_mcp=grant_mcp,
         grant_network=grant_network,
         cancellation_event=cancellation_event,
+        system_prompt=system_prompt,
+        personal_context=personal_context,
     )
 
 

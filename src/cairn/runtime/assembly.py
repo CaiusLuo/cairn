@@ -13,7 +13,7 @@ from cairn.infra.skills import SkillLibrary
 from cairn.infra.tools import build_default_registry
 from cairn.infra.tools.base import Tool
 from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.agent import Agent
+from cairn.runtime.agent import DEFAULT_SYSTEM_PROMPT, Agent
 from cairn.runtime.model_executor import ModelExecutor
 
 if TYPE_CHECKING:
@@ -32,6 +32,8 @@ def build_agent(
     model_executor: ModelExecutor | None = None,
     memory_reader: "MemoryReader | None" = None,
     skills: SkillLibrary | None = None,
+    system_prompt: str | None = None,
+    personal_context: str = "",
     extra_tools: Sequence[Tool] = (),
     summarize: bool = True,
     summarizer: Summarizer | None = None,
@@ -53,6 +55,8 @@ def build_agent(
 
     return Agent(
         llm=llm,
+        system_prompt=system_prompt or DEFAULT_SYSTEM_PROMPT,
+        personal_context=personal_context,
         tools=registry,
         permission_handler=permission_handler,
         event_handler=event_handler,

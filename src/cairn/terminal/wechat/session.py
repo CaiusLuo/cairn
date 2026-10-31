@@ -15,7 +15,12 @@ from inspect import isawaitable
 from pathlib import Path
 from typing import Any
 
-from cairn.infra.wechat.state import WechatAccount, WechatState
+from cairn.infra.wechat.ilink import ILinkClient
+from cairn.infra.wechat.state import (
+    WechatAccount,
+    WechatState,
+    ensure_outside_workspace,
+)
 from cairn.runtime.lifecycle import await_owned
 from cairn.terminal.action import Action, correction, note
 from cairn.terminal.wechat.login import run_login
@@ -37,6 +42,8 @@ class WechatSessionController:
         prompt_verify: Callable[[str], str] | None = None,
         allow_insecure_local_http: bool = False,
         login_client: object | None = None,
+        on_account_changed: Callable[[], None] | None = None,
+        redact_text: Callable[[str], str] | None = None,
     ) -> None:
         self.workspace = workspace
         self.state_dir = state_dir
@@ -49,7 +56,10 @@ class WechatSessionController:
         self._status_history: list[str] = []
         self.allow_insecure_local_http = allow_insecure_local_http
         self.login_client = login_client
+        self.on_account_changed = on_account_changed
+        self.redact_text = redact_text
         self._state = WechatState(state_dir)
+        ensure_outside_workspace(state_dir, workspace)
         self._task: asyncio.Task[object] | None = None
         self._stop: asyncio.Event | None = None
         self._login_task: asyncio.Task[WechatAccount] | None = None
@@ -147,6 +157,8 @@ class WechatSessionController:
             return
         if self._closing:
             return
+        if self.on_account_changed is not None:
+            self.on_account_changed()
         action = await self._start(account)
         self._say(getattr(action, "message", "微信已启动。"))
 
@@ -200,7 +212,7 @@ class WechatSessionController:
 
     async def _start(self, account: WechatAccount) -> Action:
         senders = set(self._allowed_senders)
-        if not senders and account.ilink_user_id:
+        if account.ilink_user_id:
             senders.add(account.ilink_user_id)
         if not senders:
             return correction(
@@ -214,6 +226,7 @@ class WechatSessionController:
             approval=None,
             allowed_senders=frozenset(senders),
             poll_interval=0.2,
+            redact_text=self.redact_text,
         )
         task = asyncio.create_task(
             serve_wechat(
@@ -300,6 +313,84 @@ class WechatSessionController:
         if stopped_login:
             return note("微信登录已取消。")
         return note("微信当前没有运行。")
+
+    def recipient_id(self) -> str | None:
+        try:
+            account = self._state.load_account()
+        except ValueError:
+            return None
+        return account.ilink_user_id or None if account is not None else None
+
+    def secret_values(self) -> tuple[str, ...]:
+        try:
+            account = self._state.load_account()
+        except ValueError:
+            return ()
+        return (account.bot_token,) if account is not None and account.bot_token else ()
+
+    def account_id(self) -> str | None:
+        try:
+            account = self._state.load_account()
+        except ValueError:
+            return None
+        return account.ilink_bot_id or None if account is not None else None
+
+    def _latest_context(self, sender: str) -> str | None:
+        try:
+            messages = self._state.load().get("messages", {})
+        except ValueError:
+            return None
+        latest: tuple[float, str] | None = None
+        for record in messages.values():
+            if not isinstance(record, dict) or record.get("sender") != sender:
+                continue
+            context = record.get("context_token")
+            updated = record.get("updated")
+            if isinstance(context, str) and context:
+                stamp = float(updated) if isinstance(updated, (int, float)) else 0.0
+                if latest is None or stamp >= latest[0]:
+                    latest = (stamp, context)
+        return latest[1] if latest is not None else None
+
+    async def deliver_for_account(
+        self, sender: str, text: str, account_id: str
+    ) -> bool:
+        """Send only through the exact account that claimed the task."""
+        try:
+            account = self._state.load_account()
+        except ValueError:
+            return False
+        if (
+            account is None
+            or account.ilink_bot_id != account_id
+            or not sender
+            or not text
+            or sender != account.ilink_user_id
+        ):
+            return False
+        context = self._latest_context(sender)
+        if not context:
+            return False
+        client = ILinkClient(
+            base_url=account.base_url,
+            bot_token=account.bot_token,
+            allow_insecure_local=self.allow_insecure_local_http,
+        )
+        try:
+            await client.send_text(to_user_id=sender, text=text, context_token=context)
+            return True
+        except Exception:
+            return False
+        finally:
+            with contextlib.suppress(Exception):
+                await client.close()
+
+    async def deliver(self, sender: str, text: str) -> bool:
+        """Best-effort push through the currently selected account only."""
+        account_id = self.account_id()
+        if account_id is None:
+            return False
+        return await self.deliver_for_account(sender, text, account_id)
 
     async def close(self) -> None:
         self._closing = True

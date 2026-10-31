@@ -60,6 +60,8 @@ class CodingTaskRunner:
         secret_env_keys: frozenset[str] = frozenset(),
         skills: SkillLibrary | None = None,
         extra_tools: Sequence[Tool] = (),
+        system_prompt: str | None = None,
+        personal_context: str = "",
     ) -> None:
         if context_builder is not None and context_budget is not None:
             raise ValueError("Provide context_builder or context_budget, not both")
@@ -78,6 +80,8 @@ class CodingTaskRunner:
         self.secret_env_keys = secret_env_keys
         self.skills = skills
         self.extra_tools = extra_tools
+        self.system_prompt = system_prompt
+        self.personal_context = personal_context
         self.last_summary: TaskExecutionSummary | None = None
 
     async def run(
@@ -366,6 +370,8 @@ class CodingTaskRunner:
                         skills=self.skills,
                         extra_tools=self.extra_tools,
                         secret_env_keys=self.secret_env_keys,
+                        system_prompt=self.system_prompt,
+                        personal_context=self.personal_context,
                     )
                     if selected_skills:
                         response = await self._turn(

@@ -38,6 +38,10 @@ class CommandContext:
     has_action_surface: bool = False
     #: In-session `/wx` controller bound by the CLI; None in non-interactive callers.
     wechat_command: Callable[[str], Awaitable[Action]] | None = None
+    #: In-session `/schedule` controller bound by the CLI.
+    schedule_command: Callable[[str], Awaitable[Action]] | None = None
+    #: In-session `/memory` controller bound by the CLI.
+    memory_command: Callable[[str], Awaitable[Action]] | None = None
 
     def chooser_available(self) -> bool:
         """Whether a chooser can be shown and answered."""

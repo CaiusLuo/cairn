@@ -127,6 +127,12 @@ cairn                 # normal interactive session
 /wx allow <sender>    # add a trusted sender (login user id is trusted by default)
 ```
 
+In an interactive `/wx` session the login owner is trusted by default. `/wx allow`
+only appends additional task initiators; it does **not** change the scheduled
+result recipient, which remains the login owner. The headless
+`cairn wechat serve --allow-sender ...` entry keeps its explicit allowlist and
+does not implicitly add the owner.
+
 `/wx` without an existing account performs the login first and then starts the
 same single-task WeChat service; `/wx stop` stops it. The service uses the
 current session's provider/runtime and the same `run_headless_task`/`run_turn`
@@ -138,3 +144,33 @@ from the composer-adjacent screen after login resolves. While a WeChat task runs
 the bot sends iLink `sendTyping` (status 1) and cancels it (status 2) when the
 result is sent; iLink has no token-streaming sendMessage, so the observable
 progress is the typing indicator plus the final message.
+
+
+## Scheduled tasks (first version)
+
+Host-authored tasks can be created from the interactive session:
+
+```text
+/schedule add once 2026-11-01T09:00:00+08:00 <prompt>
+/schedule add daily 09:00 <prompt>
+/schedule add interval 3600 <prompt>
+/schedule list
+/schedule history [job-id]
+/schedule pause <job-id>
+/schedule resume <job-id>
+/schedule remove <job-id>
+```
+
+Jobs and a bounded run history are stored host-privately under
+`$XDG_STATE_HOME/cairn/schedule` (0700/0600), never in the Workspace. Both the interactive Cairn session and `cairn wechat serve` start the scheduler;
+a due task uses the same task chain as `/wx`, then pushes its result to the
+latest known WeChat context for the account owner. If no inbound context exists yet, delivery is
+recorded as not delivered instead of inventing a conversation. `/schedule list` shows the last status/time and `/schedule history` shows bounded
+run facts (status, task id, trace id, delivery). One task is executed at a time:
+the scheduler holds a cross-process `runner.lock` across claim and execution, and
+the interactive WeChat/scheduler entry points share a process task gate. The
+durable next-run fact is saved before execution, so a restart does not replay a
+started task. After acquiring the execution lock, a runner marks its own
+previously started, unfinished jobs as interrupted and records delivery as
+unknown; it does not infer whether a message was already sent. Waiting on the
+lock is cancellable without waiting for the other process to finish.

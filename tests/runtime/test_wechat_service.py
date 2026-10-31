@@ -648,3 +648,76 @@ def test_default_provider_approval_is_rejected_before_credentials_or_model(
             )
         )
     assert called == []
+
+
+def test_recovery_marks_interrupted_but_does_not_message_revoked_sender(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    state = WechatState(state_dir)
+    state.record_received(
+        "msg:revoked",
+        sender="revoked",
+        context_token="ctx-revoked",
+        text="old task",
+    )
+    state.mark("msg:revoked", "started", sender="revoked", context_token="ctx-revoked")
+    with FakeILink() as fake:
+        report = asyncio.run(
+            serve_wechat(
+                config=_config(fake, workspace, state_dir, max_polls=1),
+                client=_client(fake),
+                state=state,
+                allow_insecure_local_http=True,
+            )
+        )
+    assert report.interrupted == 1
+    assert fake.sent == []
+    record = WechatState(state_dir).get_record("msg:revoked")
+    assert record is not None and record["state"] == "interrupted"
+
+
+def test_runtime_build_failure_after_approval_can_redact_resolved_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    (workspace / ".cairn").mkdir(parents=True)
+    (workspace / ".cairn" / "models.toml").write_text(
+        'base_url = "https://x.test/v1"\napi_key_env = "FAKE_KEY"\n'
+        '\n[[models]]\nname = "primary"\nmodel_ids = ["m"]\n',
+        encoding="utf-8",
+    )
+    captured: list[tuple[str, ...]] = []
+    approval = ProviderApproval(
+        name="default",
+        endpoint="https://x.test/v1",
+        group="primary",
+        key_env="FAKE_KEY",
+        model_ids=("m",),
+    )
+    monkeypatch.setenv("FAKE_KEY", "fake-provider-key")
+    monkeypatch.setattr(
+        "cairn.terminal.headless.resolve_provider_api_key",
+        lambda *_a, **_k: "fake-provider-key",
+    )
+
+    def fail_runtime(*_a: object, **_k: object) -> object:
+        raise RuntimeError("runtime failed with fake-provider-key")
+
+    monkeypatch.setattr("cairn.terminal.headless.build_provider_runtime", fail_runtime)
+    with pytest.raises(RuntimeError, match="fake-provider-key"):
+        asyncio.run(
+            _run_via_config_async(
+                workspace=workspace,
+                prompt="x",
+                task_id=None,
+                grant_shell=False,
+                approval=approval,
+                max_steps=2,
+                trace_dir=tmp_path / "traces",
+                on_secrets_resolved=lambda values: captured.append(tuple(values)),
+            )
+        )
+    assert captured and "fake-provider-key" in captured[0]

@@ -179,3 +179,140 @@ def test_wx_stop_cancels_running_service(tmp_path: Path, monkeypatch) -> None:  
         assert controller._task is None
 
     asyncio.run(scenario())
+
+
+def test_deliver_uses_latest_saved_context_for_proactive_push(tmp_path: Path) -> None:
+    from cairn.infra.wechat.state import WechatAccount, WechatState
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    state = WechatState(state_dir)
+    with FakeILink() as fake:
+        state.save_account(
+            WechatAccount(
+                bot_token="token-delivery",
+                ilink_bot_id="bot-delivery",
+                base_url=fake.url,
+                ilink_user_id="owner",
+            )
+        )
+        state.load()["messages"]["msg:1"] = {
+            "sender": "owner",
+            "context_token": "ctx-delivery",
+            "updated": 1.0,
+        }
+        state.flush()
+
+        async def executor(
+            prompt: str, cancel: asyncio.Event, task_id: str
+        ) -> HeadlessResult:
+            return HeadlessResult(
+                task_id=task_id,
+                status=HeadlessStatus.COMPLETED,
+                workspace=str(tmp_path),
+            )
+
+        controller = WechatSessionController(
+            workspace=workspace,
+            state_dir=state_dir,
+            task_executor=executor,
+            emit=lambda _line: None,
+            allow_insecure_local_http=True,
+        )
+        assert asyncio.run(controller.deliver("owner", "scheduled result")) is True
+
+    assert fake.sent
+    assert fake.sent[-1]["context_token"] == "ctx-delivery"
+
+
+def test_wx_allow_controls_scheduler_recipient_and_delivery(tmp_path: Path) -> None:
+    from cairn.infra.wechat.state import WechatAccount, WechatState
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    WechatState(state_dir).save_account(
+        WechatAccount(
+            bot_token="fake-token",
+            ilink_bot_id="bot-test",
+            base_url="https://example.test",
+            ilink_user_id="owner",
+        )
+    )
+
+    async def executor(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        return HeadlessResult(
+            task_id=task_id,
+            status=HeadlessStatus.COMPLETED,
+            workspace=str(workspace),
+        )
+
+    controller = WechatSessionController(
+        workspace=workspace,
+        state_dir=state_dir,
+        task_executor=executor,
+        emit=lambda _line: None,
+    )
+    assert controller.recipient_id() == "owner"
+    asyncio.run(controller.command("allow another-person"))
+    # Allowing incoming tasks must not change the scheduled delivery owner.
+    assert controller.recipient_id() == "owner"
+    assert not asyncio.run(
+        controller.deliver_for_account("another-person", "private result", "bot-test")
+    )
+
+
+def test_wx_allow_adds_sender_without_revoking_login_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cairn.terminal.wechat.session as session_module
+    from cairn.infra.wechat.state import WechatAccount, WechatState
+    from cairn.terminal.wechat.serve import ServeConfig
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    WechatState(state_dir).save_account(
+        WechatAccount(
+            bot_token="fake-token",
+            ilink_bot_id="bot-test",
+            base_url="https://example.test",
+            ilink_user_id="owner",
+        )
+    )
+    allowed: list[frozenset[str]] = []
+
+    async def fake_serve(
+        *, config: ServeConfig, stop_event: asyncio.Event, **kwargs: object
+    ) -> None:
+        allowed.append(config.allowed_senders)
+        await stop_event.wait()
+
+    async def executor(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        return HeadlessResult(
+            task_id=task_id,
+            status=HeadlessStatus.COMPLETED,
+            workspace=str(workspace),
+        )
+
+    monkeypatch.setattr(session_module, "serve_wechat", fake_serve)
+    controller = WechatSessionController(
+        workspace=workspace,
+        state_dir=state_dir,
+        task_executor=executor,
+        emit=lambda _line: None,
+    )
+
+    async def scenario() -> None:
+        await controller.command("allow another-person")
+        await controller.command("")
+        await asyncio.sleep(0)
+        assert allowed == [frozenset({"owner", "another-person"})]
+        await controller.close()
+
+    asyncio.run(scenario())

@@ -58,6 +58,7 @@ class Agent:
         llm: LLMClient,
         tools: ToolRegistry,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        personal_context: str = "",
         event_handler: EventHandler | None = None,
         permission_handler: PermissionHandler | None = None,
         tracer: Tracer | None = None,
@@ -72,6 +73,9 @@ class Agent:
         self.llm = llm
         self.tools = tools
         self.system_prompt = system_prompt
+        #: Lower-trust personal data supplied as a separate user message, never
+        #: merged into the system prompt or treated as policy.
+        self.personal_context = personal_context
         self.event_handler = event_handler
         self.permission_handler = permission_handler
         self.tracer = tracer

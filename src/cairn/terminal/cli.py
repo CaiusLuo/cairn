@@ -21,6 +21,13 @@ from cairn.core.permissions import (
     SessionPermissionHandler,
 )
 from cairn.core.provider_catalog import NamedProvider, ProviderCatalog
+from cairn.infra.agent_memory.store import (
+    AgentMemoryStore,
+    default_agent_home,
+)
+from cairn.infra.agent_memory.store import (
+    ensure_outside_workspace as ensure_agent_home_outside_workspace,
+)
 from cairn.infra.config import (
     CAIRN_MAX_STEPS_ENV_NAME,
     ConfigLayout,
@@ -35,12 +42,14 @@ from cairn.infra.observability.otlp import OtlpSpanExporter, build_exporter
 from cairn.infra.observability.sinks import FanoutTraceSink, JsonlTraceSink
 from cairn.infra.observability.storage import TraceStore
 from cairn.infra.observability.tracer import Tracer
+from cairn.infra.schedule.store import ScheduleStore, default_schedule_dir
 from cairn.infra.sessions.models import SessionStoreError
 from cairn.infra.skills import SkillLibrary, layered_skills, resolve_skills
 from cairn.infra.tools.filesystem_access import normalize_access_root
 from cairn.infra.wechat.state import default_state_dir
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
+from cairn.runtime.agent_memory.service import PersonalMemoryService
 from cairn.runtime.assembly import build_agent
 from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.lifecycle import await_owned, settle_owned
@@ -79,6 +88,7 @@ from cairn.terminal.durable import (
 from cairn.terminal.frame import TranscriptView, frame_live_region
 from cairn.terminal.headless import HeadlessResult, run_headless_task, task_app
 from cairn.terminal.input import CliInput
+from cairn.terminal.memory.controller import MemoryController
 from cairn.terminal.output import (
     StreamingDisplay,
     confirm_provider_access,
@@ -92,6 +102,7 @@ from cairn.terminal.output import (
     print_turn_separator,
     print_user_message,
 )
+from cairn.terminal.schedule.controller import ScheduleController
 from cairn.terminal.selection import parse_selection_tokens
 from cairn.terminal.submission import PendingLine
 from cairn.terminal.wechat.app import wechat_app
@@ -897,6 +908,9 @@ async def _turn_loop(
     mcp_servers: Sequence[McpServerConfig],
     secret_values: Sequence[str],
     mcp_config_error: str | None = None,
+    personal_memory: PersonalMemoryService | None = None,
+    memory_enabled: bool = True,
+    task_gate: asyncio.Lock | None = None,
 ) -> None:
     """Read input, dispatch commands, and run turns until exit."""
     if frame is not None:
@@ -1003,20 +1017,47 @@ async def _turn_loop(
         # A single flag records whether the turn reported its own outcome, so the
         # cleanup path cannot swallow an ordinary failure or a budget stop.
         settled = False
-        try:
-            response = await _run_supervised_turn_with_mcp(
+
+        async def _run_local_turn(
+            _user_input: str = user_input,
+            _selected_skills: tuple[str, ...] = selected_skills,
+            _selected_mcp: tuple[str, ...] = selected_mcp,
+        ) -> str:
+            if task_gate is not None:
+                if task_gate.locked():
+                    print("后台微信/定时任务正在执行, 本地请求将等待其完成...")
+                async with task_gate:
+                    return await _run_supervised_turn_with_mcp(
+                        agent=agent,
+                        user_input=_user_input,
+                        frame=frame,
+                        input_reader=input_reader,
+                        streaming=streaming_display,
+                        durable_session=durable_session,
+                        selected_skills=_selected_skills,
+                        mcp_configs=tuple(
+                            server
+                            for server in mcp_servers
+                            if server.name in _selected_mcp
+                        ),
+                        secret_values=secret_values,
+                    )
+            return await _run_supervised_turn_with_mcp(
                 agent=agent,
-                user_input=user_input,
+                user_input=_user_input,
                 frame=frame,
                 input_reader=input_reader,
                 streaming=streaming_display,
                 durable_session=durable_session,
-                selected_skills=selected_skills,
+                selected_skills=_selected_skills,
                 mcp_configs=tuple(
-                    server for server in mcp_servers if server.name in selected_mcp
+                    server for server in mcp_servers if server.name in _selected_mcp
                 ),
                 secret_values=secret_values,
             )
+
+        try:
+            response = await _run_local_turn()
         except TurnStopped:
             # `settle_interrupt` already replaced the partial attempt with the
             # receipt; nothing more belongs in the transcript.
@@ -1038,6 +1079,12 @@ async def _turn_loop(
                     "Durable turn failed. Check committed status; inspect before recovery."
                 )
         else:
+            with contextlib.suppress(Exception):
+                if personal_memory is not None and memory_enabled:
+                    personal_memory.record_turn(user_input, response)
+                    agent.personal_context = (
+                        personal_memory.render_context() if memory_enabled else ""
+                    )
             if not streaming_display.final_text_visible:
                 print_assistant_response(response)
         finally:
@@ -1175,6 +1222,20 @@ async def main(
     )
 
     skill_catalog = layered_skills(workspace.root)
+    agent_home = default_agent_home()
+    ensure_agent_home_outside_workspace(agent_home, workspace.root)
+    personal_memory = PersonalMemoryService(AgentMemoryStore(agent_home))
+    provider_secret_values = tuple(
+        value
+        for key in secret_env_keys
+        if (value := os.environ.get(key) or env_file_values.get(key))
+    )
+    personal_memory.add_secret_values(provider_secret_values)
+    memory_enabled = os.environ.get("CAIRN_AGENT_MEMORY", "on").lower() not in {
+        "off",
+        "0",
+        "false",
+    }
     try:
         mcp_servers = load_mcp_servers(workspace.root)
         mcp_config_error: str | None = None
@@ -1191,16 +1252,22 @@ async def main(
         secret_env_keys=secret_env_keys,
         model_executor=active_runtime.model_executor,
         skills=skill_catalog,
+        personal_context=(personal_memory.render_context() if memory_enabled else ""),
     )
 
-    async def _wechat_execute(
+    task_gate = asyncio.Lock()
+
+    async def _execute_wechat_locked(
         prompt: str, cancel: asyncio.Event, task_id: str
     ) -> HeadlessResult:
         grants = permission_handler.grants
         wechat_secret_values = tuple(
-            value for key in secret_env_keys if (value := os.environ.get(key))
+            value
+            for key in secret_env_keys
+            if (value := os.environ.get(key) or env_file_values.get(key))
         )
-        return await run_headless_task(
+        personal_memory.add_secret_values(wechat_secret_values)
+        result = await run_headless_task(
             workspace=workspace.root,
             prompt=prompt,
             grant_workspace_trust=True,
@@ -1217,7 +1284,33 @@ async def main(
             grant_mcp=PermissionCapability.MCP_SERVER in grants,
             grant_network=PermissionCapability.NETWORK in grants,
             cancellation_event=cancel,
+            personal_context=(
+                personal_memory.render_context() if memory_enabled else ""
+            ),
         )
+        with contextlib.suppress(Exception):
+            personal_memory.record_task(
+                prompt=prompt,
+                result=result,
+                task_id=task_id,
+                trace_id=result.trace_id,
+            )
+            agent.personal_context = personal_memory.render_context()
+        return result
+
+    async def _wechat_execute(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        # WeChat inbound tasks and due scheduled jobs share this process; this
+        # gate keeps the two entry points at one task at a time. Cross-process
+        # scheduling is additionally serialized by ScheduleStore.execution_lock.
+        async with task_gate:
+            return await _execute_wechat_locked(prompt, cancel, task_id)
+
+    def _refresh_wechat_identity() -> None:
+        personal_memory.add_secret_values(wechat_controller.secret_values())
+        if memory_enabled:
+            agent.personal_context = personal_memory.render_context()
 
     wechat_controller = WechatSessionController(
         workspace=workspace.root,
@@ -1230,8 +1323,34 @@ async def main(
         ),
         clear_panel=(frame.clear_wx_panel if frame is not None else None),
         prompt_verify=lambda message: typer.prompt(message),
+        on_account_changed=_refresh_wechat_identity,
+        redact_text=personal_memory.redact,
     )
     command_context.wechat_command = wechat_controller.command
+    _refresh_wechat_identity()
+
+    schedule_controller = ScheduleController(
+        workspace=workspace.root,
+        store=ScheduleStore(default_schedule_dir()),
+        executor=_wechat_execute,
+        deliver=wechat_controller.deliver,
+        deliver_for_account=wechat_controller.deliver_for_account,
+        recipient=wechat_controller.recipient_id,
+        account_id=wechat_controller.account_id,
+        result_redactor=personal_memory.redact,
+        emit=((lambda text: frame.print_above(text)) if frame is not None else print),
+    )
+    command_context.schedule_command = schedule_controller.command
+
+    def _refresh_personal_prompt() -> None:
+        agent.personal_context = personal_memory.render_context()
+
+    memory_controller = MemoryController(
+        personal_memory,
+        emit=((lambda text: frame.print_above(text)) if frame is not None else print),
+        on_agent_changed=_refresh_personal_prompt,
+    )
+    command_context.memory_command = memory_controller.command
 
     def _publish_identity(provider_name: str) -> None:
         """Tell the status which model and provider the session now talks to."""
@@ -1450,8 +1569,12 @@ async def main(
                 return
             _print_durable_intro(durable_session)
         secret_values = tuple(
-            value for key in secret_env_keys if (value := os.environ.get(key))
+            value
+            for key in secret_env_keys
+            if (value := os.environ.get(key) or env_file_values.get(key))
         )
+        personal_memory.add_secret_values(secret_values)
+        await schedule_controller.start()
         await _turn_loop(
             agent=agent,
             input_reader=input_reader,
@@ -1465,6 +1588,9 @@ async def main(
             mcp_servers=mcp_servers,
             secret_values=secret_values,
             mcp_config_error=mcp_config_error,
+            personal_memory=personal_memory,
+            memory_enabled=memory_enabled,
+            task_gate=task_gate,
         )
         print("Goodbye! see you next time.")
     except BaseException as exc:
@@ -1473,6 +1599,8 @@ async def main(
     finally:
         cleanup_error: BaseException | None = None
         cancellation: asyncio.CancelledError | None = None
+        with contextlib.suppress(Exception):
+            await schedule_controller.close()
         with contextlib.suppress(Exception):
             await wechat_controller.close()
         try:

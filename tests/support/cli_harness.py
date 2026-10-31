@@ -193,6 +193,11 @@ def isolate_cli(
     Callers add their own provider, credential and LLM monkeypatches on top.
     """
     monkeypatch.chdir(tmp_path)
+    # Keep personal AGENT.md/daily memory out of the host and out of every test.
+    monkeypatch.setenv(
+        "CAIRN_AGENT_HOME", str(tmp_path.parent / (tmp_path.name + "-agent-home"))
+    )
+    monkeypatch.setenv("CAIRN_AGENT_MEMORY", "off")
     monkeypatch.setattr(cli_module, "dotenv_values", lambda: {})
     monkeypatch.setattr(cli_module, "print_banner", lambda: None)
     monkeypatch.setattr(cli_module, "CliInput", lambda: ScriptedInput(*commands))

@@ -30,6 +30,8 @@ async def build_system_messages(
     inspection, never a second one for the same request.
     """
     messages = [Message(role="system", content=agent.system_prompt)]
+    if agent.personal_context.strip():
+        messages.append(Message(role="user", content=agent.personal_context))
     notice = session.recovery_notice if isinstance(session, DurableSession) else None
     if notice is not None:
         messages.append(Message(role="system", content=notice))

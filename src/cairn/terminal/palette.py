@@ -32,6 +32,8 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("/help", "Show command help"),
     ("/exit", "Exit Cairn"),
     ("/wx", "WeChat login and task service"),
+    ("/schedule", "Manage scheduled tasks"),
+    ("/memory", "Personal AGENT.md and daily memory"),
 )
 
 #: The next level a descending command offers: what that command accepts. These are
