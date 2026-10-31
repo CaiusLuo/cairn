@@ -348,6 +348,19 @@ class TranscriptView:
             has no row for, is submitted exactly as typed: the palette is a way to
             type a command, not a filter on which ones count.
             """
+            # At the root, Enter runs the selected command. Right/Tab (or typing
+            # a space) is what opens a child level. This keeps a bare "/wx"
+            # executable while "/wx " still offers its subcommands.
+            if self._palette.depth == 1:
+                typed = self._buffer.text.strip()
+                if len(typed.split(maxsplit=1)) >= 2:
+                    # A typed command with arguments is already complete; do not
+                    # replace it with the root catalogue row (e.g. /trace ...).
+                    self._palette.close()
+                else:
+                    self._complete_palette()
+                self._submit_typed(delivery="steer" if self._running else "now")
+                return
             if self._palette.descend():
                 self.repaint()
                 return

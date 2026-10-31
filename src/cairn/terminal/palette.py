@@ -270,7 +270,7 @@ class Palette:
             return "Up/Down move · Enter run · Left back · Esc close"
         if self.settles():
             return "Up/Down move · Enter run · Esc close"
-        return "Up/Down move · Enter open · Tab complete · Esc close"
+        return "Up/Down move · Enter run · Right open · Tab complete · Esc close"
 
     # -- internals -------------------------------------------------------
 

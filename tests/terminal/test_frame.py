@@ -963,7 +963,7 @@ def test_pipe_ctrl_c_dismisses_the_action_owner() -> None:
     asyncio.run(scenario())
 
 
-def test_pipe_enter_descends_the_selected_palette_command() -> None:
+def test_pipe_right_descends_the_selected_palette_command() -> None:
     async def scenario() -> None:
         with (
             create_pipe_input() as pipe,
@@ -974,7 +974,7 @@ def test_pipe_enter_descends_the_selected_palette_command() -> None:
             assert app is not None
             task = asyncio.create_task(app.run_async())
             await asyncio.sleep(0)
-            pipe.send_text("/\r")
+            pipe.send_text("/\x1b[C")
             for _ in range(100):
                 if view._palette.depth == 2:
                     break
@@ -1049,10 +1049,11 @@ def test_pipe_enter_submits_a_command_the_list_does_not_carry() -> None:
     [
         ("/\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\r", "/exit"),
         ("/ex\r", "/exit"),
-        ("/model\r\x1b[B\r", "/model list"),
-        ("/provider\r\x1b[B\r", "/provider list"),
+        ("/model\x1b[C\x1b[B\r", "/model list"),
+        ("/provider\x1b[C\x1b[B\r", "/provider list"),
         ("/trace del --tail 2\r", "/trace del --tail 2"),
         ("/nosuchcommand\r", "/nosuchcommand"),
+        ("/wx\r", "/wx"),
     ],
 )
 def test_pipe_enter_submits_the_selected_command_or_typed_line(
@@ -1508,7 +1509,7 @@ def test_palette_visual_gap_highlight_and_always_visible_hint() -> None:
     control = view._palette_control().value
     assert control.startswith("\n")
     assert "\x1b[48;5;236m" in control
-    assert "Up/Down move · Enter open" in control
+    assert "Up/Down move · Enter run · Right open" in control
 
     view._palette.update("/zzz")
     empty = view._palette_control().value

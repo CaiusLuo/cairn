@@ -215,7 +215,8 @@ def test_the_hint_names_what_enter_does_to_the_choice() -> None:
     assert "Enter run" in palette.hint()
 
     palette.update("/model")
-    assert "Enter open" in palette.hint()
+    assert "Enter run" in palette.hint()
+    assert "Right open" in palette.hint()
 
 
 def test_typing_returns_to_the_root_level() -> None:
