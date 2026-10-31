@@ -129,7 +129,9 @@ class Palette:
         self._command_text = command_text
         head, _, remainder = command_text.partition(" ")
         head = head.lower()
-        if head in CHILDREN and (typed.endswith(" ") or remainder):
+        if head in CHILDREN and (
+            typed.endswith(" ") or (remainder and " " not in remainder)
+        ):
             query = remainder.strip().lower()
             rows = tuple(
                 item

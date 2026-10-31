@@ -1515,3 +1515,21 @@ def test_palette_visual_gap_highlight_and_always_visible_hint() -> None:
     empty = view._palette_control().value
     assert "No matching command" in empty
     assert "Up/Down move" in empty
+
+
+def test_history_recalls_prompts_and_commands_and_restores_draft() -> None:
+    view, _, _ = _view()
+    view._buffer.insert_text("first prompt")
+    view._submit_typed(delivery="now")
+    view._buffer.insert_text("/wx")
+    view._submit_typed(delivery="now")
+
+    view._buffer.insert_text("draft text")
+    view._recall_history(-1)
+    assert view._buffer.text == "/wx"
+    view._recall_history(-1)
+    assert view._buffer.text == "first prompt"
+    view._recall_history(1)
+    assert view._buffer.text == "/wx"
+    view._recall_history(1)
+    assert view._buffer.text == "draft text"

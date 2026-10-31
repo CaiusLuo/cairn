@@ -221,6 +221,11 @@ class TranscriptView:
         #: rows to choose from.
         self.on_action_command: Callable[[str], None] | None = None
 
+        #: Submitted lines for this process only; commands and prompts share one
+        #: chronological history. The draft is preserved while browsing history.
+        self._history: list[str] = []
+        self._history_index: int | None = None
+        self._history_draft = ""
         self._buffer = Buffer(
             multiline=True,
             accept_handler=self._on_accept,
@@ -252,6 +257,32 @@ class TranscriptView:
         )
         def newline(event: object) -> None:
             self._buffer.insert_text("\n")
+
+        @bindings.add(
+            "up",
+            filter=Condition(
+                lambda: (
+                    bool(self._history)
+                    and not self._action_open()
+                    and not self._palette.open
+                )
+            ),
+        )
+        def history_previous(event: object) -> None:
+            self._recall_history(-1)
+
+        @bindings.add(
+            "down",
+            filter=Condition(
+                lambda: (
+                    bool(self._history)
+                    and not self._action_open()
+                    and not self._palette.open
+                )
+            ),
+        )
+        def history_next(event: object) -> None:
+            self._recall_history(1)
 
         @bindings.add(
             "tab",
@@ -373,7 +404,14 @@ class TranscriptView:
             # command directly (e.g. "/wx dis" + Enter runs "/wx disconnect"),
             # instead of submitting the partial filter text and making the user
             # press Enter a second time.
-            if self._palette.depth > 1 or len(typed.split(maxsplit=1)) < 2:
+            if self._palette.depth > 1:
+                parts = typed.split()
+                selected = self._palette.selected_name()
+                if len(parts) > 2 and len(parts) > 1 and parts[1] == selected:
+                    self._palette.close()
+                else:
+                    self._complete_palette()
+            elif len(typed.split(maxsplit=1)) < 2:
                 self._complete_palette()
             self._submit_typed(delivery="steer" if self._running else "now")
 
@@ -1062,6 +1100,36 @@ class TranscriptView:
         hint = self._queue_view.hint(running=self._running)
         return len(rows) + int(bool(hint))
 
+    def _recall_history(self, step: int) -> None:
+        """Move through submitted lines; preserve the current draft at the end."""
+        if not self._history:
+            return
+        if self._history_index is None:
+            if step > 0:
+                return
+            self._history_draft = self._buffer.text
+            self._history_index = len(self._history) - 1
+        else:
+            target = self._history_index + step
+            if target < 0:
+                target = 0
+            if target >= len(self._history):
+                self._history_index = None
+                text = self._history_draft
+            else:
+                self._history_index = target
+                text = self._history[target]
+        if self._history_index is None:
+            text = self._history_draft
+        else:
+            text = self._history[self._history_index]
+        self._buffer.reset()
+        if text:
+            self._buffer.insert_text(text)
+            self._buffer.cursor_position = len(text)
+        self._palette.close()
+        self.repaint()
+
     def _submit_typed(self, *, delivery: Delivery) -> None:
         """Submit the composer's text, restoring pasted payloads first.
 
@@ -1071,6 +1139,10 @@ class TranscriptView:
         saw two surfaces stacked and could not tell which one the arrows belonged to.
         """
         text = self._buffer.text
+        if text.strip() and (not self._history or self._history[-1] != text):
+            self._history.append(text)
+        self._history_index = None
+        self._history_draft = ""
         self._buffer.reset()
         self._palette.close()
         expanded = self._pastes.expand(text)
