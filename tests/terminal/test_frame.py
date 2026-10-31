@@ -1500,3 +1500,17 @@ def test_pipe_enter_submits_filtered_child_command_directly() -> None:
             await view.aclose()
 
     asyncio.run(scenario())
+
+
+def test_palette_visual_gap_highlight_and_always_visible_hint() -> None:
+    view, _, _ = _view()
+    view._palette.update("/")
+    control = view._palette_control().value
+    assert control.startswith("\n")
+    assert "\x1b[48;5;236m" in control
+    assert "Up/Down move · Enter open" in control
+
+    view._palette.update("/zzz")
+    empty = view._palette_control().value
+    assert "No matching command" in empty
+    assert "Up/Down move" in empty

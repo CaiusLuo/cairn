@@ -69,8 +69,8 @@ from cairn.terminal.transcript import TRANSCRIPT_GAP_LINES, Transcript
 #: turn never makes it taller.
 ACTIVITY_ROWS = 3
 
-#: Rows the palette may occupy, plus one for its key hint.
-PALETTE_ROWS = 6
+#: Rows the palette may occupy, plus a leading gap and its key hint.
+PALETTE_ROWS = 8
 
 #: Rows the action surface may occupy: a correction, or a chooser with its decision
 #: facts and its key hint. Bounded so it can never push the composer or the status
@@ -594,7 +594,7 @@ class TranscriptView:
                 Window(
                     FormattedTextControl(text=self._palette_control),
                     height=lambda: Dimension.exact(
-                        PALETTE_ROWS + 1 if self._palette_focused() else 0
+                        PALETTE_ROWS + 2 if self._palette_focused() else 0
                     ),
                     wrap_lines=False,
                     style="class:palette",
@@ -962,13 +962,21 @@ class TranscriptView:
         """
         if not self._palette_focused():
             return ANSI("")
-        lines = []
-        for row in self._palette.rows():
+        # One blank row separates the transient palette from the transcript.
+        lines = [""]
+        rows = self._palette.rows()
+        if not rows:
+            lines.append("No matching command")
+        for row in rows:
             marker = ">" if row.selected else " "
-            lines.append(f"{marker} {row.name:<10} {row.description}")
+            text = f"{marker} {row.name:<10} {row.description}"
+            if row.selected:
+                # Background + arrow only; no bold, so the surface stays calm.
+                text = f"\x1b[48;5;236m\x1b[38;5;255m{text}\x1b[0m"
+            lines.append(text)
         hint = self._palette.hint()
         if hint:
-            lines.append(f"  {hint}")
+            lines.append(f"\x1b[2m  {hint}\x1b[0m")
         return ANSI("\n".join(lines))
 
     def _queue_control(self) -> ANSI:
@@ -1022,7 +1030,7 @@ class TranscriptView:
         )
         composer_rows = min(COMPOSER_MAX_LINES, composer_rows)
         action_rows = ACTION_ROWS if self._action is not None else 0
-        palette_rows = PALETTE_ROWS + 1 if self._palette_focused() else 0
+        palette_rows = PALETTE_ROWS + 2 if self._palette_focused() else 0
         queue_rows = min(QUEUE_STACK_LINES, self._queue_rows())
         reserved = (
             STATUS_LINES
