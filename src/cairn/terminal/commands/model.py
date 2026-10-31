@@ -62,9 +62,12 @@ def _summary(context: CommandContext, model: ModelConfig) -> str:
     readable without a legend.
     """
     manager = context.model_manager
-    current_id = (
-        manager.current_model_id() if manager is not None else model.model_ids[0]
-    )
+    if manager is not None and manager.current_model() == model:
+        current_id = manager.current_model_id()
+    else:
+        # A chooser/test embedder may report a selected group without rebinding
+        # the manager yet; show that group's primary ID rather than a stale one.
+        current_id = model.model_ids[0]
     return (
         f"Current model: {current_id} (group: {model.name})"
         f" | provider: {context.active_provider_name or 'unknown'}"
@@ -178,13 +181,11 @@ def handle_model(
         if sys.stdin.isatty() and context.choose_model and context.select_model:
             return None, partial(_choose, context)
         current = manager.current_model()
-        fallbacks = " -> ".join(current.model_ids[1:]) or "none"
         return (
             Action(
                 message=(
                     f"{_summary(context, current)}\n"
-                    f"Fallbacks: {fallbacks}\n"
-                    "Use /model list to see groups, or /model use <group> to switch."
+                    "Use /model list to see groups, or /model use <group|model-id> to switch."
                 )
             ),
             None,

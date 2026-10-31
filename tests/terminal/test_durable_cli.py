@@ -168,6 +168,7 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[Harness]:
             budget: ContextBudget,
             *,
             group: str,
+            **_: object,
         ) -> ProviderRuntime:
             client = result.client_type(list(result.responses))
             result.clients.append(client)

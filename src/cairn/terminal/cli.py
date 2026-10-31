@@ -348,8 +348,12 @@ def _resolve_active_runtime(
     """
     provider = default_provider(project, os.environ, env_file_values)
     selected_group = provider.config.model_config[0]
-    # Interactive startup deliberately does not ask for a second provider
-    # approval. The first configured provider/group/ID is the session default.
+    # Normal interactive startup deliberately does not ask for a second
+    # provider approval. Durable mode keeps its explicit host acknowledgement.
+    if durable is not None and (
+        confirm_provider_access(provider, selected_group, switching=False) is not True
+    ):
+        raise ValueError("Project model provider was not approved for this session.")
     missing_credential: str | None = None
     try:
         api_key = resolve_provider_api_key(provider.config, os.environ, env_file_values)
@@ -359,14 +363,21 @@ def _resolve_active_runtime(
         api_key = None
         missing_credential = str(exc)
     context_budget = resolve_context_budget(os.environ, env_file_values)
-    runtime = build_provider_runtime(
-        provider,
-        api_key,
-        context_budget,
-        group=selected_group.name,
-        allow_fallback=False,
-        missing_credential=missing_credential,
-    )
+    if durable is not None:
+        # Durable composition keeps its established constructor contract; the
+        # no-fallback startup policy applies to the normal interactive session.
+        runtime = build_provider_runtime(
+            provider, api_key, context_budget, group=selected_group.name
+        )
+    else:
+        runtime = build_provider_runtime(
+            provider,
+            api_key,
+            context_budget,
+            group=selected_group.name,
+            allow_fallback=False,
+            missing_credential=missing_credential,
+        )
     return runtime, api_key or "", context_budget
 
 

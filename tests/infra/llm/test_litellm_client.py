@@ -190,6 +190,8 @@ def test_generate_forwards_request_and_parses_tool_calls(
         assert captured.pop("max_tokens") == max_output_tokens
     assert captured == {
         "model": "provider/model",
+        "num_retries": 0,
+        "max_retries": 0,
         "messages": [
             {"role": "user", "content": "hello"},
             {

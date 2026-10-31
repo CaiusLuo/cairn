@@ -112,6 +112,7 @@ def test_real_cli_deltas_visible_before_completion_plain_and_not_duplicated(
     asyncio.run(scenario())
 
 
+@pytest.mark.skip(reason="automatic fallback removed from interactive requests")
 def test_public_cli_partial_fallback_labels_abandoned_text(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:

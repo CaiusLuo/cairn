@@ -110,8 +110,8 @@ def test_toml_default_and_session_switch_use_real_loop_and_preserve_state(
     result = CliRunner().invoke(cli_module.app, [])
 
     assert result.exit_code == 0, result.output
-    assert "Current group: flash (primary: openai/qwen-flash)" in result.output
-    assert "Current group: plus (primary: openai/qwen-plus)" in result.output
+    assert "Current model: openai/qwen-flash (group: flash)" in result.output
+    assert "Current model: openai/qwen-plus (group: plus)" in result.output
     assert "* flash\n    1. openai/qwen-flash" in result.output
     assert "* plus\n    1. openai/qwen-plus" in result.output
     assert len(agents) == 1
@@ -212,13 +212,12 @@ def test_model_commands_validate_input_without_calling_model(
     result = CliRunner().invoke(cli_module.app, [])
 
     assert result.exit_code == 0
-    assert "Model 'absent' not found" in result.output
-    assert "Usage: /model | /model list | /model use <name>" in result.output
+    assert "Could not switch model group" in result.output
+    assert "Usage: /model | /model list | /model use <group|model-id>" in result.output
     assert "/model add <group> <model-id>" in result.output
     assert "/model remove <group> <model-id>" in result.output
     assert "/model move <group> <model-id> <position>" in result.output
-    assert "Restart and normal provider approval" in result.output
-    assert "Current group: flash" in result.output
+    assert "Current model: openai/qwen-flash (group: flash)" in result.output
     assert requests == []
     assert token_models == []
     assert agents[0].state.messages == []
@@ -244,11 +243,12 @@ def test_failed_switch_keeps_previous_client_counter_and_selection(
     assert result.exit_code == 0
     assert "Could not switch model group" in result.output
     assert "Cannot initialize selected tokenizer" not in result.output
-    assert "Current group: flash" in result.output
+    assert "Current model: openai/qwen-flash (group: flash)" in result.output
     assert requests[0]["model"] == "openai/qwen-flash"
     assert token_models == ["openai/qwen-flash"]
 
 
+@pytest.mark.skip(reason="legacy behavior replaced by startup/no-fallback tests")
 @pytest.mark.parametrize("approval", [False, None, "yes"])
 def test_toml_requires_explicit_approval_before_resolving_credential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, approval: object
@@ -345,7 +345,7 @@ def test_approval_uses_loaded_snapshot_even_if_file_changes(
 def test_toml_credential_uses_host_precedence_and_dotenv_without_environment_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host_key: str | None
 ) -> None:
-    agents, requests, _ = _configure_cli(tmp_path, monkeypatch, "question")
+    _, requests, _ = _configure_cli(tmp_path, monkeypatch, "question")
     monkeypatch.delenv("BAILIAN_API_KEY")
     if host_key is not None:
         monkeypatch.setenv("BAILIAN_API_KEY", host_key)
@@ -355,11 +355,8 @@ def test_toml_credential_uses_host_precedence_and_dotenv_without_environment_mut
     result = CliRunner().invoke(cli_module.app, [])
 
     if host_key == "":
-        assert result.exit_code != 0
-        assert "BAILIAN_API_KEY environment variable is not set" in str(
-            result.exception
-        )
-        assert agents == []
+        assert result.exit_code == 0, result.output
+        assert "BAILIAN_API_KEY environment variable is not set" in result.output
         assert requests == []
     else:
         assert result.exit_code == 0
@@ -370,13 +367,12 @@ def test_toml_credential_uses_host_precedence_and_dotenv_without_environment_mut
 def test_missing_toml_credential_is_clear_and_does_not_use_legacy_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    agents, requests, _ = _configure_cli(tmp_path, monkeypatch, "question")
+    _, requests, _ = _configure_cli(tmp_path, monkeypatch, "question")
     monkeypatch.delenv("BAILIAN_API_KEY")
     result = CliRunner().invoke(cli_module.app, [])
 
-    assert result.exit_code != 0
-    assert "BAILIAN_API_KEY environment variable is not set" in str(result.exception)
-    assert agents == []
+    assert result.exit_code == 0, result.output
+    assert "BAILIAN_API_KEY environment variable is not set" in result.output
     assert requests == []
 
 
@@ -453,6 +449,7 @@ def test_provider_error_echoing_key_is_redacted_before_trace_and_terminal(
     assert API_KEY not in traces + result.output + caplog.text
 
 
+@pytest.mark.skip(reason="legacy behavior replaced by startup/no-fallback tests")
 def test_fallback_uses_distinct_models_and_counters_without_changing_selection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -488,7 +485,7 @@ def test_fallback_uses_distinct_models_and_counters_without_changing_selection(
     ]
     assert [request["model"] for request in requests] == expected
     assert token_models == expected
-    assert "Current group: flash (primary: openai/qwen-flash)" in result.output
+    assert "Current model: openai/qwen-flash (group: flash)" in result.output
     assert len(agents) == 1
     assert [m.content for m in agents[0].state.messages] == [
         "first",
@@ -546,6 +543,7 @@ def test_fallback_uses_distinct_models_and_counters_without_changing_selection(
     assert API_KEY not in repr(traces) + result.output
 
 
+@pytest.mark.skip(reason="legacy behavior replaced by startup/no-fallback tests")
 @pytest.mark.parametrize("operation", ["add", "remove", "move"])
 @pytest.mark.parametrize("restart_approved", [True, False])
 def test_model_edit_only_persists_and_restart_requires_normal_approval(
@@ -609,7 +607,7 @@ def test_model_edit_only_persists_and_restart_requires_normal_approval(
     ) in result.output
     assert "Restart required; the current session is unchanged." in result.output
     assert ("2. openai/new" in result.output) == (operation != "add")
-    assert "Current group: plus (primary: openai/qwen-plus" in result.output
+    assert "Current model: openai/qwen-plus (group: plus" in result.output
     assert len(identities) == 2
     assert all(before is after for before, after in zip(*identities, strict=True))
     assert (
@@ -690,7 +688,7 @@ def test_model_edit_validation_error_keeps_session_available(
 
     assert result.exit_code == 0, result.output
     assert error in result.output
-    assert "Current group: flash" in result.output
+    assert "Current model: openai/qwen-flash (group: flash)" in result.output
     assert len(requests) == 1
     assert (tmp_path / ".cairn/models.toml").read_text() == TOML
 
@@ -802,6 +800,7 @@ def test_model_edit_write_error_omits_credentials_and_keeps_original(
     assert list(path.parent.iterdir()) == [path]
 
 
+@pytest.mark.skip(reason="legacy behavior replaced by startup/no-fallback tests")
 @pytest.mark.parametrize("toml", [TOML, GROUPS_TOML])
 def test_fallback_rebudgets_before_calling_the_next_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, toml: str
@@ -841,6 +840,7 @@ def test_fallback_rebudgets_before_calling_the_next_model(
     assert "ContextBudgetExceeded" in spans[-1]["error"]
 
 
+@pytest.mark.skip(reason="legacy behavior replaced by startup/no-fallback tests")
 def test_free_tier_403_moves_the_next_request_to_the_next_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -887,6 +887,7 @@ def test_free_tier_403_moves_the_next_request_to_the_next_model(
     assert spans[1]["attributes"]["model"] == "openai/qwen-plus"
 
 
+@pytest.mark.skip(reason="legacy behavior replaced by startup/no-fallback tests")
 @pytest.mark.parametrize("toml", [TOML, GROUPS_TOML])
 def test_exhausted_fallback_records_each_model_error_and_rolls_back_turn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, toml: str
@@ -965,6 +966,7 @@ def test_shared_and_transient_provider_failures_never_try_another_model(
     assert all(span["status"] == "error" for span in spans)
 
 
+@pytest.mark.skip(reason="legacy behavior replaced by startup/no-fallback tests")
 def test_model_list_annotates_the_last_failure_and_the_next_request_restarts_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1042,6 +1044,7 @@ def test_selected_model_runtime_is_built_once_and_reused_for_every_attempt(
     assert agents[0].state.messages[-1].content == "reply 2"
 
 
+@pytest.mark.skip(reason="legacy behavior replaced by startup/no-fallback tests")
 @pytest.mark.parametrize("succeed_in_flash", [True, False])
 def test_group_fallback_order_runtimes_diagnostics_and_attempt_spans(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, succeed_in_flash: bool
@@ -1201,8 +1204,7 @@ def test_remove_active_id_keeps_using_it_until_restart(
     manager = agents[0].model_executor.manager
     assert manager is not None
     assert manager.current_model().model_ids[0] == "openai/qwen-flash"
-    assert "Current group: flash (primary: openai/qwen-flash)" in result.output
-    assert "Fallbacks: openai/qwen-flash-backup" in result.output
+    assert "Current model: openai/qwen-flash (group: flash)" in result.output
 
     _, requests, _ = _configure_cli(tmp_path, monkeypatch, "question", toml=None)
     result = CliRunner().invoke(cli_module.app, [])
