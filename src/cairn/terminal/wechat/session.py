@@ -81,6 +81,11 @@ class WechatSessionController:
         if isawaitable(result):
             self._schedule(result)
 
+    def _say_qr(self, text: str) -> None:
+        """Emit QR-related lines and remember how many need clearing."""
+        self._qr_lines += len(text.splitlines() or [""])
+        self._say(text)
+
     def _clear_qr(self) -> None:
         if self._qr_lines and self.clear is not None:
             result = self.clear(self._qr_lines)
@@ -162,11 +167,13 @@ class WechatSessionController:
         if self._login_task is task:
             self._login_task = None
         if task.cancelled():
+            self._clear_qr()
             self._say("微信登录已取消。")
             return
         try:
             account = task.result()
         except Exception as exc:
+            self._clear_qr()
             self._say(f"微信登录失败: {type(exc).__name__}: {exc}")
             return
         if self._closing:
@@ -174,19 +181,28 @@ class WechatSessionController:
         if self.on_account_changed is not None:
             self.on_account_changed()
         action = await self._start(account)
-        self._say(getattr(action, "message", "微信已启动。"))
+        # The QR belongs only to the pre-login phase. Clear it before reporting
+        # success so the transcript does not keep a stale login image.
+        self._clear_qr()
+        message = getattr(action, "message", "微信已启动。")
+        if getattr(action, "tone", None) is None or "已启动" in message:
+            self._say(f"\x1b[32m微信登录成功: {message}\x1b[0m")
+        else:
+            self._say(message)
 
     async def _login(self) -> WechatAccount:
         self._say("微信未登录, 正在获取二维码...")
 
         def on_qr(qr) -> None:  # type: ignore[no-untyped-def]
-            self._say("请使用微信扫描下面的二维码(完整静区已包含): ")
+            # A refreshed QR replaces the previous one instead of stacking images.
+            self._clear_qr()
+            self._say_qr("请使用微信扫描下面的二维码(完整静区已包含): ")
             try:
-                self._say(render_ascii_qr(qr.image_content or qr.qrcode))
+                self._say_qr(render_ascii_qr(qr.image_content or qr.qrcode))
             except Exception as exc:
-                self._say(f"二维码渲染失败: {exc}")
+                self._say_qr(f"二维码渲染失败: {exc}")
             if qr.image_content:
-                self._say(f"若二维码无法显示, 可访问: {qr.image_content}")
+                self._say_qr(f"若二维码无法显示, 可访问: {qr.image_content}")
 
         def on_status(status: str) -> None:
             self._status_history.append(status)

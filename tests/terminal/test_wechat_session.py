@@ -316,3 +316,57 @@ def test_wx_allow_adds_sender_without_revoking_login_owner(
         await controller.close()
 
     asyncio.run(scenario())
+
+
+def test_wx_login_clears_qr_and_emits_green_success(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    emits: list[str] = []
+    cleared: list[int] = []
+
+    async def executor(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        return HeadlessResult(
+            task_id=task_id,
+            status=HeadlessStatus.COMPLETED,
+            workspace=str(workspace),
+        )
+
+    with FakeILink() as fake:
+        fake.qr_statuses = [{"status": "confirmed"}]
+        fake.confirm = {
+            "bot_token": "fake-token",
+            "ilink_bot_id": "bot-qr",
+            "baseurl": fake.url,
+            "ilink_user_id": "owner",
+        }
+        from cairn.infra.wechat.ilink import ILinkClient
+
+        login_client = ILinkClient(
+            base_url=fake.url, bot_token=None, allow_insecure_local=True
+        )
+        controller = WechatSessionController(
+            workspace=workspace,
+            state_dir=state_dir,
+            task_executor=executor,
+            emit=emits.append,
+            clear=cleared.append,
+            prompt_verify=lambda _m: "",
+            allow_insecure_local_http=True,
+            login_client=login_client,
+        )
+
+        async def scenario() -> None:
+            await controller.command("")
+            for _ in range(300):
+                if any("微信登录成功" in line for line in emits):
+                    break
+                await asyncio.sleep(0.01)
+            assert cleared
+            assert any("微信登录成功" in line and "\x1b[32m" in line for line in emits)
+            await controller.command("stop")
+            await login_client.close()
+
+        asyncio.run(scenario())
