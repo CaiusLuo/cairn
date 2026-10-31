@@ -329,10 +329,11 @@ class PersonalMemoryService:
                         )
                     )
         scored: list[tuple[int, str, str, str]] = []
-        strong = False
+        exact_match = False
         for source, date, fact in facts:
             folded = fact.casefold()
             exact = normalized in folded
+            exact_match = exact_match or exact
             # A single generic CJK character is not enough to claim a direct
             # hit; it may still seed the clearly-labelled candidate fallback.
             token_hits = [
@@ -342,23 +343,26 @@ class PersonalMemoryService:
             ]
             if exact:
                 score = 100
-                strong = True
             elif token_hits:
                 score = len(token_hits)
-                strong = True
             else:
                 score = 0
             if score:
                 scored.append((score, source, date, fact))
         scored.sort(key=lambda item: item[0], reverse=True)
-        if strong:
-            return [(source, date, fact) for _, source, date, fact in scored[:limit]]
+        direct = [(source, date, fact) for _, source, date, fact in scored[:limit]]
+        if exact_match:
+            return direct
+        # A weak token hit can be accidental (e.g. "我是" inside a sentence), so
+        # attach a small, explicitly unconfirmed set of long-term candidates for
+        # the current model to judge. This is not a second search model.
+        seen = {(source, fact) for source, _, fact in direct}
         candidates = [
             ("MEMORY.md (long-term candidate; not confirmed)", "", fact)
             for source, _, fact in facts
-            if source == "MEMORY.md"
-        ][: min(5, limit)]
-        return candidates
+            if source == "MEMORY.md" and ("MEMORY.md", fact) not in seen
+        ][:5]
+        return (direct + candidates)[: limit + 5]
 
     def remember_fact(self, text: str, *, now: datetime | None = None) -> bool:
         """Agent-authored durable fact; duplicate facts are ignored."""
