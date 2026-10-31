@@ -106,7 +106,13 @@ CATALOG = CommandCatalog(
             ("list", "Show configured providers"),
         ),
         _root("/compact", "Reduce conversation context"),
-        _root("/trace", "Inspect stored execution details"),
+        _root(
+            "/trace",
+            "Inspect stored execution details",
+            ("list", "Show recent completed traces"),
+            ("count", "Count stored traces"),
+            ("del", "Delete a trace or oldest traces"),
+        ),
         _root(
             "/help",
             "Show command help",

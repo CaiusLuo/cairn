@@ -37,3 +37,16 @@ def test_router_handles_help_flag_for_all_commands(capsys, tmp_path) -> None:  #
         result = router.handle(f"{command} --help", context)
         assert result.handled
         assert "Usage:" in capsys.readouterr().out
+
+
+def test_trace_has_secondary_commands_in_palette_and_help(capsys) -> None:  # type: ignore[no-untyped-def]
+    from cairn.terminal.palette import Palette
+
+    palette = Palette()
+    palette.update("/trace ")
+    assert [row.name for row in palette.rows()] == ["list", "count", "del"]
+
+    handle_help(["trace"])
+    output = capsys.readouterr().out
+    assert "Subcommands:" in output
+    assert "list" in output and "count" in output and "del" in output
