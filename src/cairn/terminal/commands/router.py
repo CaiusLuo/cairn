@@ -49,6 +49,13 @@ class CommandRouter:
 
         if command == "/exit":
             return CommandResult(handled=True, should_exit=True)
+        if command != "/help" and ("--help" in args or "-h" in args):
+            path = [
+                command.lstrip("/"),
+                *[arg for arg in args if arg not in {"--help", "-h"}],
+            ]
+            handle_help(path)
+            return CommandResult(handled=True)
 
         if command == "/trace":
             handle_trace(context, args)

@@ -1,0 +1,39 @@
+from __future__ import annotations
+
+from cairn.terminal.commands.catalog import CATALOG
+from cairn.terminal.commands.help import handle_help
+
+
+def test_catalog_resolves_root_and_nested_commands() -> None:
+    assert CATALOG.find(("wx",)) is not None
+    entry = CATALOG.find(("wx", "disconnect"))
+    assert entry is not None
+    assert "clear" in entry.summary
+
+
+def test_help_prints_subcommands_for_every_nested_command(capsys) -> None:  # type: ignore[no-untyped-def]
+    for root in ("wx", "schedule", "memory", "model", "provider"):
+        handle_help([root])
+        output = capsys.readouterr().out
+        assert "Subcommands:" in output
+        assert root in output
+
+
+def test_help_prints_a_nested_command(capsys) -> None:  # type: ignore[no-untyped-def]
+    handle_help(["wx", "disconnect"])
+    output = capsys.readouterr().out
+    assert "Usage: disconnect" in output
+    assert "fresh scan" in output
+
+
+def test_router_handles_help_flag_for_all_commands(capsys, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from cairn.infra.observability.storage import TraceStore
+    from cairn.terminal.commands.context import CommandContext
+    from cairn.terminal.commands.router import CommandRouter
+
+    router = CommandRouter()
+    context = CommandContext(trace_store=TraceStore(tmp_path))
+    for command in ("/wx", "/schedule", "/memory", "/model", "/provider"):
+        result = router.handle(f"{command} --help", context)
+        assert result.handled
+        assert "Usage:" in capsys.readouterr().out

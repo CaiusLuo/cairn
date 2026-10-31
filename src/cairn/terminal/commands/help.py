@@ -1,3 +1,4 @@
+from cairn.terminal.commands.catalog import CATALOG, CommandEntry
 from cairn.terminal.commands.compact import (
     COMPACT_DETAIL,
     COMPACT_SUMMARY,
@@ -48,26 +49,37 @@ HELP_TEXT: dict[str, dict[str, str]] = {
 }
 
 
+def _entry_help(entry: CommandEntry) -> str:
+    info = HELP_TEXT.get(entry.name.lstrip("/"), {})
+    usage = str(info.get("usage") or entry.usage or entry.name)
+    detail = str(info.get("detail") or entry.detail or entry.summary)
+    lines: list[str] = [f"Usage: {usage}", detail]
+    if entry.children:
+        lines.append("Subcommands:")
+        lines.extend(f"  {child.name:<12} {child.summary}" for child in entry.children)
+    return "\n".join(lines)
+
+
 def print_available_commands() -> None:
     print("Available commands:")
-    for name, info in HELP_TEXT.items():
-        print(f"  /{name:<5}  {info['description']}")
-        # Skip a usage line that only repeats the command name.
-        if info["usage"] != f"/{name}":
-            print(f"{'':<10}usage: {info['usage']}")
-    print("Run /help COMMAND for details, e.g. /help trace.")
+    for entry in CATALOG.roots:
+        print(f"  {entry.name:<10} {entry.summary}")
+        if entry.children:
+            print(
+                f"{'':<12}subcommands: "
+                + ", ".join(child.name for child in entry.children)
+            )
+    print("Run /help COMMAND [SUBCOMMAND] for details, e.g. /help wx disconnect.")
 
 
 def handle_help(args: list[str] | None = None) -> None:
     if not args:
         print_available_commands()
         return
-
-    for name in args:
-        info = HELP_TEXT.get(name)
-        if info:
-            print(f"Usage: {info['usage']}")
-            print(info.get("detail", info["description"]))
-        else:
-            print(f"No help available for command: {name}")
-            print_available_commands()
+    path = tuple(part.lstrip("/") for part in args)
+    entry = CATALOG.find(path)
+    if entry is None:
+        print(f"No help available for command: {' '.join(args)}")
+        print_available_commands()
+        return
+    print(_entry_help(entry))
