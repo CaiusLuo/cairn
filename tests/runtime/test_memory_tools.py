@@ -27,7 +27,10 @@ def test_memory_tools_remember_search_correct_forget(tmp_path: Path) -> None:
     assert "prefer concise answers" in found.stdout
 
     assert (
-        asyncio.run(correct.execute({"old": "concise", "new": "short"})).exit_code == 0
+        asyncio.run(
+            correct.execute({"old": "prefer concise answers", "new": "short"})
+        ).exit_code
+        == 0
     )
     assert "prefer concise answers" not in service.store.read_memory_md()
     assert "short" in service.store.read_memory_md()

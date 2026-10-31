@@ -196,7 +196,26 @@ class PersonalMemoryService:
             text = text[len("MEMORY.md:") :].strip()
         text = re.sub(r"^\[[^]]+\]\s*", "", text)
         text = re.sub(r"^\d{4}-\d{2}-\d{2}\s*:\s*", "", text)
+        if text.startswith("text:"):
+            text = text[len("text:") :].strip()
+        elif text.startswith("lesson:"):
+            text = text[len("lesson:") :].strip()
         return " ".join(text.split()).casefold()
+
+    @classmethod
+    def _fact_keys(cls, text: str) -> frozenset[str]:
+        """Exact keys for a fact: full normalized text and a labeled value.
+
+        Deletion/correction compares these keys for equality only; it never
+        performs a substring or fuzzy search.
+        """
+        full = cls._normalize_fact(text)
+        keys = {full} if full else set()
+        if ": " in full:
+            suffix = full.split(": ", 1)[1].strip()
+            if suffix:
+                keys.add(suffix)
+        return frozenset(keys)
 
     def _candidates(
         self, *, days: int, include_memory: bool = False
@@ -257,6 +276,90 @@ class PersonalMemoryService:
                 break
         return candidates
 
+    @staticmethod
+    def _search_tokens(query: str) -> tuple[str, ...]:
+        """Local tokenization for CJK short words and English names.
+
+        No vector store or second model is involved. A CJK run contributes the
+        whole run plus its characters and adjacent bigrams, so a short Chinese
+        name still matches without hardcoding names.
+        """
+        normalized = " ".join(query.split()).casefold()
+        tokens: list[str] = [normalized] if normalized else []
+        for word in re.findall(r"[a-z0-9_]+", normalized):
+            if word not in tokens:
+                tokens.append(word)
+        for run in re.findall(r"[\u3400-\u9fff]+", normalized):
+            if run not in tokens:
+                tokens.append(run)
+            for char in run:
+                if char not in tokens:
+                    tokens.append(char)
+            for index in range(len(run) - 1):
+                pair = run[index : index + 2]
+                if pair not in tokens:
+                    tokens.append(pair)
+        return tuple(tokens)
+
+    def search_facts(self, query: str, *, limit: int = 8) -> list[tuple[str, str, str]]:
+        """Return ``(source, date, fact)`` matches from local memory only.
+
+        Direct matches are ranked first. When nothing matches directly, a small
+        set of long-term facts is returned explicitly marked as unconfirmed
+        candidates for the current conversation model to judge.
+        """
+        normalized = " ".join(query.split()).casefold()
+        if not normalized:
+            return []
+        tokens = self._search_tokens(normalized)
+        facts: list[tuple[str, str, str]] = []
+        for line in self.store.read_memory_md().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("- "):
+                facts.append(("MEMORY.md", "", self.redact(stripped[2:].strip())))
+        for day in self.store.list_daily_days()[-31:]:
+            for line in self.store.read_daily(day).splitlines():
+                stripped = line.strip()
+                if stripped.startswith("- text:") or stripped.startswith("- lesson:"):
+                    facts.append(
+                        (
+                            day.isoformat(),
+                            "",
+                            self.redact(stripped.split(":", 1)[1].strip()),
+                        )
+                    )
+        scored: list[tuple[int, str, str, str]] = []
+        strong = False
+        for source, date, fact in facts:
+            folded = fact.casefold()
+            exact = normalized in folded
+            # A single generic CJK character is not enough to claim a direct
+            # hit; it may still seed the clearly-labelled candidate fallback.
+            token_hits = [
+                token
+                for token in tokens
+                if token and token in folded and (len(token) >= 2 or exact)
+            ]
+            if exact:
+                score = 100
+                strong = True
+            elif token_hits:
+                score = len(token_hits)
+                strong = True
+            else:
+                score = 0
+            if score:
+                scored.append((score, source, date, fact))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        if strong:
+            return [(source, date, fact) for _, source, date, fact in scored[:limit]]
+        candidates = [
+            ("MEMORY.md (long-term candidate; not confirmed)", "", fact)
+            for source, _, fact in facts
+            if source == "MEMORY.md"
+        ][: min(5, limit)]
+        return candidates
+
     def remember_fact(self, text: str, *, now: datetime | None = None) -> bool:
         """Agent-authored durable fact; duplicate facts are ignored."""
         if not self.enabled:
@@ -293,7 +396,7 @@ class PersonalMemoryService:
         memory = self.store.read_memory_md()
         kept = []
         for line in memory.splitlines():
-            if line.strip().startswith("- ") and needle in self._normalize_fact(
+            if line.strip().startswith("- ") and needle in self._fact_keys(
                 line.strip()[2:]
             ):
                 changed = True
@@ -306,7 +409,7 @@ class PersonalMemoryService:
             lines = []
             day_changed = False
             for line in body.splitlines():
-                if needle in self._normalize_fact(line):
+                if needle in self._fact_keys(line):
                     day_changed = True
                     continue
                 lines.append(line)
@@ -333,7 +436,7 @@ class PersonalMemoryService:
         memory = self.store.read_memory_md()
         lines = []
         for line in memory.splitlines():
-            if line.strip().startswith("- ") and needle in self._normalize_fact(
+            if line.strip().startswith("- ") and needle in self._fact_keys(
                 line.strip()[2:]
             ):
                 lines.append(

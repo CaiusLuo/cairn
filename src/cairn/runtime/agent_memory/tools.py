@@ -53,15 +53,16 @@ class MemorySearchTool(_MemoryTool):
         self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
     ) -> ToolResult:
         self.validate(arguments)
-        result = self._result
-        needle = self.service.redact(str(arguments.get("query", "")).strip()).casefold()
-        memory = self.service.store.read_memory_md()
-        matches = [
-            line.strip() for line in memory.splitlines() if needle in line.casefold()
-        ]
+        query = str(arguments.get("query", "")).strip()
+        matches = self.service.search_facts(query)
         if not matches:
-            return result("No matching personal memory.")
-        return result("\n".join(matches[:20]))
+            return self._result("No matching personal memory.")
+        return self._result(
+            "\n".join(
+                f"[{source}] {date + ': ' if date else ''}{fact}"
+                for source, date, fact in matches
+            )
+        )
 
 
 class MemoryRememberTool(_MemoryTool):
