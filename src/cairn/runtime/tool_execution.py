@@ -448,6 +448,7 @@ async def execute_tool_call(
     mark_tool_execution_started: Callable[[], None],
     consume_tool_call: Callable[[], None],
     before_execute: Callable[[], None] | None = None,
+    trusted_user_text: str = "",
 ) -> None:
     """Validate, authorize and execute one tool call from the current turn.
 
@@ -533,6 +534,9 @@ async def execute_tool_call(
             # model-provided arguments.
             context=ToolExecutionContext(
                 accessible_roots=_accessible_roots(permission),
+                trusted_user_text=(
+                    trusted_user_text if tool_call.name.startswith("memory_") else ""
+                ),
             ),
         )
 

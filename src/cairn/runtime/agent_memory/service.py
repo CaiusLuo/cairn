@@ -10,8 +10,10 @@ from typing import Any
 
 from cairn.core.agent_memory import (
     MemoryKind,
+    MemorySource,
     PersonalMemoryContext,
 )
+from cairn.core.models import Message
 from cairn.infra.agent_memory.store import AgentMemoryStore
 from cairn.runtime.scheduling.runner import TaskOutcome, current_time
 
@@ -49,8 +51,18 @@ class PersonalMemoryService:
             return PersonalMemoryContext()
         moment = now or self.clock()
         agent_md = self.redact(self.store.read_agent_md())
+        stored_profile = self.redact(self.store.read_profile()).strip()
+        profile = (
+            "\n".join(
+                line.strip()[2:].strip()
+                for line in stored_profile.splitlines()
+                if line.strip().startswith("- ")
+            )
+            if stored_profile != "# Personal profile"
+            else self._profile(agent_md, self.redact(self.store.read_memory_md()))
+        )
         return PersonalMemoryContext(
-            profile=self._profile(agent_md, self.redact(self.store.read_memory_md())),
+            profile=profile,
             agent_md=agent_md,
             memory_md=self.redact(self.store.read_memory_md()),
             daily=tuple(
@@ -201,6 +213,16 @@ class PersonalMemoryService:
         elif text.startswith("lesson:"):
             text = text[len("lesson:") :].strip()
         return " ".join(text.split()).casefold()
+
+    @classmethod
+    def _profile_keys(cls, line: str) -> frozenset[str]:
+        text = line.strip()
+        if text.startswith("- "):
+            text = text[2:].strip()
+        if text.startswith("[file: ") and "]" in text:
+            text = text.split("]", 1)[1].strip()
+        text = text.lstrip("- ").strip()
+        return cls._fact_keys(text)
 
     @classmethod
     def _fact_keys(cls, text: str) -> frozenset[str]:
@@ -366,7 +388,138 @@ class PersonalMemoryService:
         ][:5]
         return (direct + candidates)[: limit + 5]
 
-    def remember_fact(self, text: str, *, now: datetime | None = None) -> bool:
+    async def ensure_profile(self, llm: object) -> str | None:
+        """Extract a persistent profile from existing long-term records once.
+
+        The current session model is used; no paid call is made by tests. A
+        failure returns a redacted diagnostic and leaves the original records
+        untouched.
+        """
+        if not self.enabled:
+            return None
+        if self.store.read_profile().strip() != "# Personal profile":
+            return None
+        snapshot = (
+            self.store.read_profile(),
+            self.store.read_memory_md(),
+            self.store.read_agent_md(),
+        )
+        memory = self.redact(snapshot[1]).strip()
+        agent = self.redact(snapshot[2]).strip()
+        has_agent_facts = agent != DEFAULT_MEMORY_AGENT_MD.strip() and any(
+            line.strip().startswith("- ") for line in agent.splitlines()
+        )
+        has_memory_facts = memory != "# Long-term Memory" and any(
+            line.strip().startswith("- ") for line in memory.splitlines()
+        )
+        if not has_agent_facts and not has_memory_facts:
+            return None
+        prompt = (
+            "Extract stable personal profile facts (name, role, enduring preferences) "
+            "from the supplied long-term records. Return one fact per line prefixed "
+            "with its exact source: '[MEMORY.md] fact' or '[AGENT.md] fact'. Copy "
+            "only facts present in the input; never invent or include credentials."
+        )
+        messages = [
+            Message(role="system", content=prompt),
+            Message(role="user", content=f"AGENT.md:\n{agent}\n\nMEMORY.md:\n{memory}"),
+        ]
+        try:
+            response = await llm.generate(messages)  # type: ignore[attr-defined]
+        except Exception as exc:
+            return self.redact(
+                f"profile extraction failed: {type(exc).__name__}: {exc}"
+            )
+        text = (getattr(response, "content", None) or "").strip()
+        source_lines = {
+            "AGENT.md": [
+                line.strip()
+                for line in agent.splitlines()
+                if line.strip().startswith("- ")
+            ],
+            "MEMORY.md": [
+                line.strip()
+                for line in memory.splitlines()
+                if line.strip().startswith("- ")
+            ],
+        }
+        source_entries = {
+            source: {self._normalize_fact(line[2:]) for line in lines}
+            for source, lines in source_lines.items()
+        }
+        facts: list[tuple[str, str]] = []
+        for line in text.splitlines():
+            match = re.match(r"^\[(AGENT\.md|MEMORY\.md)\]\s*(.+)$", line.strip())
+            if match is None:
+                continue
+            source = match.group(1)
+            fact = self.redact(" ".join(match.group(2).split()))[:500]
+            normalized = self._normalize_fact(fact)
+            # Complete normalized entry equality: a substring such as
+            # "喜欢喝茶" must not migrate "不喜欢喝茶".
+            if normalized and normalized in source_entries[source]:
+                original = next(
+                    line
+                    for line in source_lines[source]
+                    if self._normalize_fact(line[2:]) == normalized
+                )
+                facts.append((source, original))
+        if not facts:
+            return "profile extraction returned no verifiable sourced facts"
+        body = (
+            "# Personal profile\n"
+            + "\n".join(f"- [file: {source}] {fact}" for source, fact in facts[:20])
+            + "\n"
+        )
+        with self.store.profile_lock():
+            if (
+                self.store.read_profile(),
+                self.store.read_memory_md(),
+                self.store.read_agent_md(),
+            ) != snapshot:
+                return "profile sources changed during extraction; not written"
+            # Revalidate against the current sources before the CAS write.
+            current_memory = self.redact(self.store.read_memory_md())
+            current_agent = self.redact(self.store.read_agent_md())
+            current_lines = {
+                "AGENT.md": [
+                    line.strip()
+                    for line in current_agent.splitlines()
+                    if line.strip().startswith("- ")
+                ],
+                "MEMORY.md": [
+                    line.strip()
+                    for line in current_memory.splitlines()
+                    if line.strip().startswith("- ")
+                ],
+            }
+            verified = []
+            for source, original in facts:
+                normalized = self._normalize_fact(original[2:])
+                if any(
+                    self._normalize_fact(line[2:]) == normalized
+                    for line in current_lines[source]
+                ):
+                    verified.append((source, original))
+            if not verified:
+                return "profile sources changed during extraction; not written"
+            body = (
+                "# Personal profile\n"
+                + "\n".join(
+                    f"- [file: {source}] {fact}" for source, fact in verified[:20]
+                )
+                + "\n"
+            )
+            self.store.write_profile(body)
+        return None
+
+    def remember_fact(
+        self,
+        text: str,
+        *,
+        source: MemorySource = MemorySource.AGENT_INFERRED,
+        now: datetime | None = None,
+    ) -> bool:
         """Agent-authored durable fact; duplicate facts are ignored."""
         if not self.enabled:
             raise ValueError("personal agent memory is disabled")
@@ -381,16 +534,29 @@ class PersonalMemoryService:
         ):
             return False
         moment = now or self.clock()
-        self.store.append_memory_md(
-            f"\n## Remembered {moment:%Y-%m-%d}\n"
-            f"- [agent] {moment.date().isoformat()}: {clean[:2000]}\n"
-        )
+        if source is MemorySource.USER_EXPLICIT:
+            self.store.append_memory_md(
+                f"\n## Remembered {moment:%Y-%m-%d}\n"
+                f"- [user_explicit] {moment.date().isoformat()}: {clean[:2000]}\n"
+            )
+        else:
+            self.store.append_daily(
+                moment.date(),
+                f"\n## {moment:%H:%M} candidate\n"
+                f"- source: agent_inferred\n"
+                f"- text: {clean[:2000]}\n",
+            )
         self.store.append_audit(
-            f"\n## {moment:%Y-%m-%d %H:%M:%S} remembered fact\n- text: {clean[:2000]}\n"
+            f"\n## {moment:%Y-%m-%d %H:%M:%S} remembered fact\n"
+            f"- source: {source.value}\n- text: {clean[:2000]}\n"
         )
         return True
 
     def forget_fact(self, query: str, *, now: datetime | None = None) -> bool:
+        with self.store.profile_lock():
+            return self._forget_fact_unlocked(query, now=now)
+
+    def _forget_fact_unlocked(self, query: str, *, now: datetime | None = None) -> bool:
         """Remove matching facts from long-term memory and recent daily candidates."""
         if not self.enabled:
             raise ValueError("personal agent memory is disabled")
@@ -410,6 +576,17 @@ class PersonalMemoryService:
             kept.append(line)
         if changed:
             self.store.write_memory_md("\n".join(kept).rstrip() + "\n")
+        profile = self.store.read_profile()
+        profile_lines = []
+        profile_changed = False
+        for line in profile.splitlines():
+            if line.strip().startswith("- ") and needle in self._profile_keys(line):
+                profile_changed = True
+                continue
+            profile_lines.append(line)
+        if profile_changed:
+            self.store.write_profile("\n".join(profile_lines).rstrip() + "\n")
+            changed = True
         for day in self.store.list_daily_days()[-31:]:
             body = self.store.read_daily(day)
             lines = []
@@ -430,6 +607,12 @@ class PersonalMemoryService:
         return changed
 
     def correct_fact(self, old: str, new: str, *, now: datetime | None = None) -> bool:
+        with self.store.profile_lock():
+            return self._correct_fact_unlocked(old, new, now=now)
+
+    def _correct_fact_unlocked(
+        self, old: str, new: str, *, now: datetime | None = None
+    ) -> bool:
         """Replace a matching fact and keep the correction auditable."""
         if not self.enabled:
             raise ValueError("personal agent memory is disabled")
@@ -453,6 +636,39 @@ class PersonalMemoryService:
                 lines.append(line)
         if changed:
             self.store.write_memory_md("\n".join(lines).rstrip() + "\n")
+        for day in self.store.list_daily_days()[-31:]:
+            body = self.store.read_daily(day)
+            daily_lines = []
+            daily_changed = False
+            for line in body.splitlines():
+                stripped = line.strip()
+                if stripped.startswith(("- text:", "- lesson:")):
+                    label = stripped.split(":", 1)[0].removeprefix("- ").strip()
+                    if needle in self._fact_keys(stripped):
+                        daily_lines.append(f"- {label}: {replacement[:2000]}")
+                        daily_changed = True
+                        continue
+                daily_lines.append(line)
+            if daily_changed:
+                self.store.write_daily(day, "\n".join(daily_lines).rstrip() + "\n")
+                changed = True
+        profile = self.store.read_profile()
+        profile_lines = []
+        profile_changed = False
+        for line in profile.splitlines():
+            if line.strip().startswith("- ") and needle in self._profile_keys(line):
+                # Preserve the file/source metadata and any [legacy]/[agent]
+                # marker, replacing only the fact text.
+                head, _, rest = line.partition("] ")
+                marker = re.match(r"^(?:- \[[^]]+\] )*", rest)
+                prefix = marker.group(0) if marker else ""
+                profile_lines.append(f"{head}] {prefix}{replacement[:2000]}")
+                profile_changed = True
+            else:
+                profile_lines.append(line)
+        if profile_changed:
+            self.store.write_profile("\n".join(profile_lines).rstrip() + "\n")
+            changed = True
         if changed:
             self.store.append_audit(
                 f"\n## {moment:%Y-%m-%d %H:%M:%S} corrected fact\n"

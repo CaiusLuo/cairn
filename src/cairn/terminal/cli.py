@@ -1383,6 +1383,10 @@ async def main(
     )
     command_context.wechat_command = wechat_controller.command
     _refresh_wechat_identity()
+    if memory_enabled:
+        profile_error = await personal_memory.ensure_profile(active_runtime.llm)
+        if profile_error is not None:
+            typer.echo(f"Personal profile: {profile_error}", err=True)
 
     schedule_controller = ScheduleController(
         workspace=workspace.root,

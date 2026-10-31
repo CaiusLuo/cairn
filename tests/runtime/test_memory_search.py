@@ -61,3 +61,17 @@ def test_search_redacts_known_secrets(tmp_path: Path) -> None:
     matches = service.search_facts("secret")
     assert matches and all("fake-provider-key" not in fact for _, _, fact in matches)
     assert any("[REDACTED]" in fact for _, _, fact in matches)
+
+
+def test_correct_fact_replaces_daily_candidate_before_distill(tmp_path: Path) -> None:
+    store = AgentMemoryStore(tmp_path / "agent")
+    service = PersonalMemoryService(store)
+    service.remember_fact("prefers tea")
+    assert service.correct_fact("prefers tea", "prefers coffee") is True
+    daily = "\n".join(body for _, body in store.recent_daily_entries(service.clock()))
+    assert "prefers coffee" in daily
+    assert "prefers tea" not in daily
+    assert service.distill(days=1) == 1
+    memory = store.read_memory_md()
+    assert "prefers coffee" in memory
+    assert "prefers tea" not in memory

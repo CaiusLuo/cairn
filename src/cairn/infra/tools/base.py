@@ -88,6 +88,8 @@ class ToolExecutionContext:
     """
 
     accessible_roots: tuple[Path, ...] = ()
+    #: Current turn's trusted user text; model arguments cannot forge this.
+    trusted_user_text: str = ""
 
 
 class Tool(Protocol):

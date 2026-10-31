@@ -285,6 +285,7 @@ async def run_turn(
                         mark_tool_execution_started=mark_tool_execution_started,
                         consume_tool_call=consume_tool_call,
                         before_execute=before_execute if durable is not None else None,
+                        trusted_user_text=user_input,
                     )
 
                 # Every call in this batch has settled, so the conversation is

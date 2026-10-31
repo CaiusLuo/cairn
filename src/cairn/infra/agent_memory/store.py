@@ -7,11 +7,13 @@ the personal Agent and live outside every Agent-writable Workspace.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import tempfile
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -86,6 +88,7 @@ class AgentMemoryStore:
         self.memory_dir = root / "memory"
         self.audit_path = root / "memory" / "AGENT_CHANGES.md"
         self.proposal_path = root / "pending_agent_update.json"
+        self.profile_path = root / "PROFILE.md"
 
     def ensure_initialized(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -95,12 +98,31 @@ class AgentMemoryStore:
             _atomic_write(self.agent_md_path, DEFAULT_AGENT_MD)
         if not self.memory_md_path.exists():
             _atomic_write(self.memory_md_path, DEFAULT_MEMORY_MD)
+        if not self.profile_path.exists():
+            _atomic_write(self.profile_path, "# Personal profile\n")
 
     def read_agent_md(self) -> str:
         return self._read(self.agent_md_path)
 
     def read_memory_md(self) -> str:
         return self._read(self.memory_md_path)
+
+    def read_profile(self) -> str:
+        return self._read(self.profile_path)
+
+    def write_profile(self, text: str) -> None:
+        _atomic_write(self.profile_path, text)
+
+    @contextmanager
+    def profile_lock(self) -> Iterator[None]:
+        lock_path = self.root / "PROFILE.lock"
+        self.root.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def append_memory_md(self, text: str) -> None:
         self.ensure_initialized()

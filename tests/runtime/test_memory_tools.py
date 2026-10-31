@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 
 from cairn.infra.agent_memory.store import AgentMemoryStore
+from cairn.infra.tools.base import ToolExecutionContext
 from cairn.runtime.agent_memory.service import PersonalMemoryService
 from cairn.runtime.agent_memory.tools import (
     MemoryCorrectTool,
@@ -21,7 +22,15 @@ def test_memory_tools_remember_search_correct_forget(tmp_path: Path) -> None:
     forget = MemoryForgetTool(service)
 
     assert (
-        asyncio.run(remember.execute({"text": "prefer concise answers"})).exit_code == 0
+        asyncio.run(
+            remember.execute(
+                {"text": "prefer concise answers", "explicit": True},
+                context=ToolExecutionContext(
+                    trusted_user_text="remember prefer concise answers"
+                ),
+            )
+        ).exit_code
+        == 0
     )
     found = asyncio.run(search.execute({"query": "concise"}))
     assert "prefer concise answers" in found.stdout
