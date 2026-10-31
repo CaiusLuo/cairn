@@ -196,7 +196,7 @@ def test_smoke_uses_first_configured_provider_group_and_model(
     assert metrics is not None
     assert metrics.model_identifier == model
     assert metrics.provider_max_output_tokens == 20
-    assert metrics.request_token_counts_estimated is False
+    assert metrics.request_token_counts_estimated is True
     output = capsys.readouterr().out
     # The startup line names the model in use and the provider it came from, which
     # is what a reader needs on screen; the full group was shown at approval.
