@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -289,5 +290,15 @@ class ScheduleRunner:
         )
 
     def _say(self, text: str) -> None:
-        if self.emit is not None:
-            self.emit(self.result_redactor(text) if self.result_redactor else text)
+        if self.emit is None:
+            return
+        result = self.emit(self.result_redactor(text) if self.result_redactor else text)
+        if inspect.isawaitable(result):
+            task = asyncio.ensure_future(result)
+            task.add_done_callback(self._consume_emit)
+
+    @staticmethod
+    def _consume_emit(task: asyncio.Future[Any]) -> None:
+        """Retrieve an async UI failure so it is not reported as unhandled."""
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            task.exception()

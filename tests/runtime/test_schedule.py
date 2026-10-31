@@ -795,3 +795,35 @@ def test_recovery_keeps_a_persisted_terminal_fact_after_job_write_failure(
     assert [row["status"] for row in rows] == [terminal_status, "started"]
     assert rows[0]["run_key"] == run_key
     assert rows[0]["delivered"] is (True if terminal_status == "completed" else None)
+
+
+def test_runner_supports_async_emit_callback(tmp_path: Path) -> None:
+    store = ScheduleStore(tmp_path / "schedule")
+    store.save_jobs((_job(),))
+    emitted: list[str] = []
+
+    async def executor(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        return _result(task_id)
+
+    async def deliver(sender: str, text: str) -> bool:
+        return True
+
+    async def emit(text: str) -> None:
+        emitted.append(text)
+
+    async def scenario() -> None:
+        runner = ScheduleRunner(
+            store=store,
+            executor=executor,
+            deliver=deliver,
+            recipient=lambda: "owner",
+            emit=emit,
+            clock=lambda: NOW,
+        )
+        await runner.run_due(NOW)
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+    assert any("定时任务 job-1" in text for text in emitted)
