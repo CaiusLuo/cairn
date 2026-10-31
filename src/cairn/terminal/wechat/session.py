@@ -103,6 +103,18 @@ class WechatSessionController:
     async def command(self, args: str) -> Action:
         parts = args.split()
         verb = parts[0].lower() if parts else ""
+        if verb in {"help", "--help", "-h"}:
+            return note(
+                "/wx 登录并启动微信服务 (已有账号默认复用)\n"
+                "/wx status 查看登录/服务状态\n"
+                "/wx verify <code> 提交手机验证码\n"
+                "/wx allow <sender> 追加可信发送者\n"
+                "/wx stop 仅停止服务, 保留账号供下次复用\n"
+                "/wx disconnect 停止服务并清理本地账号/游标, 下次重新扫码\n"
+                "别名: /wx logout"
+            )
+        if verb in {"disconnect", "logout", "reset"}:
+            return await self._disconnect()
         if verb == "stop":
             return await self._stop_all()
         if verb == "status":
@@ -112,6 +124,8 @@ class WechatSessionController:
         if verb == "allow" and len(parts) == 2:
             self._allowed_senders.add(parts[1])
             return note(f"已信任微信发送者: {parts[1]}")
+        if verb not in {"", "login"}:
+            return correction(f"未知 /wx 子命令: {verb}; 使用 /wx help 查看可用命令。")
         if self._login_task is not None and not self._login_task.done():
             hint = (
                 "; 需要验证码时请输入 /wx verify <code>"
@@ -248,6 +262,18 @@ class WechatSessionController:
         return note(
             f"微信已启动, 受信任发送者: {', '.join(sorted(senders))}。使用 /wx stop 停止。"
         )
+
+    async def _disconnect(self) -> Action:
+        """Stop owned work and remove local account/cursor state."""
+        await self._stop_all()
+        try:
+            self._state.clear_connection()
+        except OSError as exc:
+            return correction(f"微信本地状态清理失败: {exc}")
+        self._allowed_senders.clear()
+        self._status_history.append("disconnected")
+        self._clear_panel()
+        return note("微信已断开并清理本地账号/游标; 使用 /wx 重新扫码连接。")
 
     def _status(self) -> Action:
         lines: list[str] = []

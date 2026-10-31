@@ -104,6 +104,12 @@ class WechatState:
         except KeyError:
             raise ValueError("WeChat account state is incomplete") from None
 
+    def clear_connection(self) -> None:
+        """Remove the local account/cursor so the next /wx performs a new login."""
+        for path in (self.account_path, self.state_path):
+            path.unlink(missing_ok=True)
+        self._state = None
+
     def save_account(self, account: WechatAccount) -> None:
         _atomic_write(
             self.account_path,

@@ -51,6 +51,34 @@ CHILDREN: dict[str, tuple[tuple[str, str], ...]] = {
         ("use", "Switch the conversation provider"),
         ("list", "Show configured providers"),
     ),
+    "/wx": (
+        ("help", "List WeChat commands"),
+        ("login", "Start a fresh QR login"),
+        ("status", "Show login and service state"),
+        ("verify", "Submit a phone verification code"),
+        ("allow", "Add a trusted sender"),
+        ("stop", "Stop the service but keep the account"),
+        ("disconnect", "Stop and clear the local account for a fresh scan"),
+    ),
+    "/schedule": (
+        ("list", "Show scheduled tasks"),
+        ("history", "Show recent run history"),
+        ("add", "Create a scheduled task"),
+        ("pause", "Pause a task"),
+        ("resume", "Resume a task"),
+        ("remove", "Remove a task"),
+    ),
+    "/memory": (
+        ("show", "Show memory paths and sizes"),
+        ("agent", "Show AGENT.md"),
+        ("note", "Record an explicit note"),
+        ("distill", "Distill recent candidates"),
+        ("pending", "Show the pending AGENT update"),
+        ("approve", "Approve the pending update"),
+        ("reject", "Reject the pending update"),
+        ("rollback", "Roll back AGENT.md"),
+        ("files", "Show memory file paths"),
+    ),
 }
 
 #: Commands that open a further level rather than acting immediately. A command not
@@ -59,7 +87,7 @@ DESCENDS = frozenset(CHILDREN)
 
 #: Rows shown before a level scrolls. Small enough that the composer keeps its place;
 #: the lists are short enough that scrolling is rare.
-MAX_ROWS = 6
+MAX_ROWS = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +187,18 @@ class Palette:
         self._command_text = command_text
         head, _, remainder = command_text.partition(" ")
         head = head.lower()
+        if head == "/wx" and head in CHILDREN:
+            query = remainder.strip().lower()
+            rows = tuple(
+                item
+                for item in CHILDREN[head]
+                if not query or query in item[0].lower() or query in item[1].lower()
+            )
+            self._typed = typed
+            self._open = True
+            self._stack = [(self._matching_root(), 0), (rows, 0)]
+            self._trail = [head]
+            return
         if head in self._dynamic_children:
             query = remainder.strip().lower()
             rows = tuple(

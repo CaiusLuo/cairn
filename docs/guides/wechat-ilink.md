@@ -125,6 +125,8 @@ cairn                 # normal interactive session
 /wx verify <code>     # answer a phone verification code while waiting
 /wx stop              # cancel login or stop receiving; finish owned cleanup
 /wx allow <sender>    # add a trusted sender (login user id is trusted by default)
+/wx help              # list available /wx commands
+/wx disconnect        # stop service and clear local account/cursor; next /wx rescans
 ```
 
 In an interactive `/wx` session the login owner is trusted by default. `/wx allow`
