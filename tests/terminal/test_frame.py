@@ -1533,3 +1533,54 @@ def test_history_recalls_prompts_and_commands_and_restores_draft() -> None:
     assert view._buffer.text == "/wx"
     view._recall_history(1)
     assert view._buffer.text == "draft text"
+
+
+def test_arrow_history_through_real_key_bindings() -> None:
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            view, _, _ = _view()
+            reader = asyncio.create_task(view.read())
+            await asyncio.sleep(0)
+            pipe.send_text("first prompt\r")
+            first = await asyncio.wait_for(reader, timeout=1)
+            assert first.text == "first prompt"
+
+            reader = asyncio.create_task(view.read())
+            await asyncio.sleep(0.01)
+            pipe.send_text("\x1b[A\r")
+            recalled = await asyncio.wait_for(reader, timeout=1)
+            assert recalled.text == "first prompt"
+            await view.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_history_up_handler_is_active_after_submit() -> None:
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            view, _, _ = _view()
+            reader = asyncio.create_task(view.read())
+            await asyncio.sleep(0)
+            pipe.send_text("first prompt\r")
+            await asyncio.wait_for(reader, timeout=2)
+            assert view._history == ["first prompt"]
+            assert _live_handler(view, Keys.Up) == "history_previous"
+            await view.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_history_up_binding_recalls_when_buffer_empty() -> None:
+    view, _, _ = _view()
+    view._history = ["/wx", "first prompt"]
+    view._buffer.reset()
+    _press_by_name(view, "history_previous")
+    assert view._buffer.text == "first prompt"
+    _press_by_name(view, "history_previous")
+    assert view._buffer.text == "/wx"
