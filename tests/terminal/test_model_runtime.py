@@ -143,7 +143,7 @@ def test_toml_default_and_session_switch_use_real_loop_and_preserve_state(
         "reply 2",
     ]
     assert agents[0].context_builder.budget == ContextBudget(
-        max_tokens=100, response_tokens=20
+        max_tokens=100, response_tokens=20, reserve_percent=10
     )
     assert (tmp_path / ".cairn/models.toml").read_text() == TOML
     assert API_KEY not in result.output

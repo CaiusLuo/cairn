@@ -362,7 +362,11 @@ def _resolve_active_runtime(
         # the operator can add it in-session or switch provider later.
         api_key = None
         missing_credential = str(exc)
-    context_budget = resolve_context_budget(os.environ, env_file_values)
+    context_budget = resolve_context_budget(
+        os.environ,
+        env_file_values,
+        reserve_percent=project.context_reserve_percent,
+    )
     if durable is not None:
         # Durable composition keeps its established constructor contract; the
         # no-fallback startup policy applies to the normal interactive session.
@@ -916,6 +920,23 @@ def _show_action(
     print(action.message)
 
 
+def _refresh_context_reserve(
+    agent: Agent, model_path: Path, budget: ContextBudget
+) -> ContextBudget:
+    """Re-read only the local-estimate reserve; approved routing stays fixed."""
+    current = load_project_providers(model_path)
+    reserve = current.context_reserve_percent
+    if budget.reserve_percent == reserve:
+        return budget
+    refreshed = ContextBudget(
+        max_tokens=budget.max_tokens,
+        response_tokens=budget.response_tokens,
+        reserve_percent=reserve,
+    )
+    agent.context_builder.budget = refreshed
+    return refreshed
+
+
 async def _turn_loop(
     *,
     agent: Agent,
@@ -1045,6 +1066,11 @@ async def _turn_loop(
             _selected_skills: tuple[str, ...] = selected_skills,
             _selected_mcp: tuple[str, ...] = selected_mcp,
         ) -> str:
+            _refresh_context_reserve(
+                agent,
+                Path(".cairn/models.toml"),
+                agent.context_builder.budget,
+            )
             if task_gate is not None:
                 if task_gate.locked():
                     print("后台微信/定时任务正在执行, 本地请求将等待其完成...")

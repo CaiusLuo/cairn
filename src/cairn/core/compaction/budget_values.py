@@ -18,6 +18,10 @@ DEFAULT_RESPONSE_MAX_TOKENS = 8192
 class ContextBudget:
     max_tokens: int = DEFAULT_CONTEXT_MAX_TOKENS
     response_tokens: int = DEFAULT_RESPONSE_MAX_TOKENS
+    #: Extra input headroom for local estimates, as a percentage of the
+    #: remaining window. Zero keeps existing programmatic budgets unchanged;
+    #: the CLI configures the product default from models.toml.
+    reserve_percent: int = 0
 
     def __post_init__(self) -> None:
         if type(self.max_tokens) is not int or self.max_tokens < 1:
@@ -26,11 +30,18 @@ class ContextBudget:
             raise ValueError("response_tokens must be a positive integer")
         if self.response_tokens >= self.max_tokens:
             raise ValueError("response_tokens must be smaller than max_tokens")
+        if type(self.reserve_percent) is not int or not 0 <= self.reserve_percent <= 50:
+            raise ValueError("reserve_percent must be an integer between 0 and 50")
 
     @property
     def input_tokens(self) -> int:
         """Largest input the request may carry and still be admitted."""
         return self.max_tokens - self.response_tokens
+
+    @property
+    def estimated_input_tokens(self) -> int:
+        """Input ceiling for an estimate, including the configured reserve."""
+        return self.input_tokens * (100 - self.reserve_percent) // 100
 
 
 @dataclass(frozen=True, slots=True)

@@ -169,6 +169,9 @@ class ProviderSession:
         # Build first. Only after successful construction do we mutate the
         # manager, so a failed switch leaves the current ID and bindings intact.
         next_llm, next_context = runtime.runtime_factory(target_id)
+        # The live builder may have received a hot-reloaded estimate reserve.
+        # Keep the selected model on the latest budget, not the build-time copy.
+        next_context.budget = runtime.context_builder.budget
         if target_id == selected.model_ids[0]:
             manager.select_model(selected.name)
         else:
@@ -186,7 +189,7 @@ class ProviderSession:
         candidate = build_provider_runtime(
             runtime.provider,
             credential,
-            runtime.context_budget or ContextBudget(),
+            runtime.context_builder.budget or ContextBudget(),
             group=current.name,
             allow_fallback=runtime.allow_fallback,
             missing_credential=None,

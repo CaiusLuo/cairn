@@ -37,7 +37,10 @@ class LiteLLMTokenCounter:
             tokens = self._count_with_litellm(payload, tools)
         except Exception:
             return self.fallback.count(messages, tools)
-        return TokenCount(tokens=tokens, is_estimate=False)
+        # LiteLLM's local tokenizer is useful but it is not a provider-reported
+        # usage fact. Keep it labelled as an estimate; no remote count endpoint
+        # is called here (Bailian compatibility evidence is insufficient).
+        return TokenCount(tokens=tokens, is_estimate=True)
 
     def _count_with_litellm(
         self,

@@ -155,10 +155,15 @@ class ContextBudgetExceeded(Exception):
                 f"{name} {count}" for name, count in self.components.items()
             )
             detail = f" Never-trimmed content: {breakdown}."
+        effective = (
+            budget.estimated_input_tokens if tokens.is_estimate else budget.input_tokens
+        )
+        reserve = budget.reserve_percent if tokens.is_estimate else 0
         super().__init__(
             "Required context exceeds the context budget: "
-            f"{mode} input {self.input_tokens} + response reserve "
-            f"{self.response_tokens} > limit {self.max_tokens}.{detail} "
+            f"{mode} input {self.input_tokens} > effective input limit "
+            f"{effective} (window {self.max_tokens}, response reserve "
+            f"{self.response_tokens}, estimate reserve {reserve}%).{detail} "
             "The current turn and tool results cannot be trimmed; raise "
             "CAIRN_CONTEXT_MAX_TOKENS or lower CAIRN_RESPONSE_MAX_TOKENS."
         )
@@ -287,7 +292,12 @@ class ContextBuilder:
         return count
 
     def _fits(self, count: TokenCount) -> bool:
-        return count.tokens + self.budget.response_tokens <= self.budget.max_tokens
+        limit = (
+            self.budget.estimated_input_tokens
+            if count.is_estimate
+            else self.budget.input_tokens
+        )
+        return count.tokens <= limit
 
     def _components(
         self,

@@ -53,6 +53,14 @@ class ProjectProviders:
 
     layout: ConfigLayout
     providers: tuple[NamedProvider, ...]
+    context_reserve_percent: int = 10
+
+
+def parse_context_reserve_percent(values: Mapping[str, object]) -> int:
+    value = values.get("context_reserve_percent", 10)
+    if type(value) is not int or not 0 <= value <= 50:
+        raise ValueError("context_reserve_percent must be an integer between 0 and 50")
+    return value
 
 
 def _required_string(value: object, field: str) -> str:

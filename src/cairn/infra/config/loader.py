@@ -16,6 +16,7 @@ from cairn.infra.config.schema import (
     DEFAULT_PROVIDER_NAME,
     ConfigLayout,
     ProjectProviders,
+    parse_context_reserve_percent,
     parse_model_config,
     parse_provider_catalog,
     validate_runtime_provider,
@@ -37,7 +38,9 @@ def load_project_providers(
     try:
         path.lstat()
     except FileNotFoundError:
-        return ProjectProviders(layout=ConfigLayout.ENV, providers=())
+        return ProjectProviders(
+            layout=ConfigLayout.ENV, providers=(), context_reserve_percent=10
+        )
 
     with path.open("rb") as source:
         values = tomllib.load(source)
@@ -47,6 +50,7 @@ def load_project_providers(
         return ProjectProviders(
             layout=ConfigLayout.CATALOG,
             providers=catalog.providers,
+            context_reserve_percent=parse_context_reserve_percent(values),
         )
 
     provider = parse_model_config(values)
@@ -54,6 +58,7 @@ def load_project_providers(
     return ProjectProviders(
         layout=ConfigLayout.LEGACY,
         providers=(NamedProvider(name=DEFAULT_PROVIDER_NAME, config=provider),),
+        context_reserve_percent=parse_context_reserve_percent(values),
     )
 
 

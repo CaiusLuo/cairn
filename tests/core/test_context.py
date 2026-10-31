@@ -345,7 +345,7 @@ def test_budget_error_without_components_still_reads_clearly() -> None:
     )
 
     assert error.components == {}
-    assert "estimated input 11 + response reserve 2 > limit 10" in str(error)
+    assert "estimated input 11 > effective input limit 8" in str(error)
     assert "Never-trimmed content" not in str(error)
     assert "The current turn and tool results cannot be trimmed" in str(error)
 

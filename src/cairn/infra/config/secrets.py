@@ -77,6 +77,8 @@ def environment_provider(
 def resolve_context_budget(
     host_env: Mapping[str, str],
     env_file_values: Mapping[str, str | None],
+    *,
+    reserve_percent: int = 10,
 ) -> ContextBudget:
     defaults = ContextBudget()
 
@@ -94,4 +96,5 @@ def resolve_context_budget(
         response_tokens=integer_setting(
             "CAIRN_RESPONSE_MAX_TOKENS", defaults.response_tokens
         ),
+        reserve_percent=reserve_percent,
     )

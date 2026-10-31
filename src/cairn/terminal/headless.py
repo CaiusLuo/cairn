@@ -604,7 +604,11 @@ async def _run_via_config_async(
         on_secrets_resolved(secret_values)
     if personal_context_provider is not None:
         personal_context = personal_context_provider()
-    context_budget = resolve_context_budget(os.environ, env_file_values)
+    context_budget = resolve_context_budget(
+        os.environ,
+        env_file_values,
+        reserve_percent=project.context_reserve_percent,
+    )
     runtime = build_provider_runtime(
         provider, api_key, context_budget, group=group.name
     )

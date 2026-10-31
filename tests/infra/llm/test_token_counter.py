@@ -9,14 +9,14 @@ from cairn.infra.llm.litellm_client import to_llm_message
 from cairn.infra.llm.token_counter import LiteLLMTokenCounter
 
 
-def test_real_tokenizer_counts_are_marked_exact_and_grow_with_content() -> None:
+def test_local_tokenizer_counts_are_marked_estimates_and_grow_with_content() -> None:
     counter = LiteLLMTokenCounter("gpt-4o")
     short = counter.count([Message(role="user", content="hi")], [])
     long = counter.count([Message(role="user", content="hi " * 200)], [])
     tools = [{"type": "function", "function": {"name": "bash", "description": "run"}}]
     with_tools = counter.count([Message(role="user", content="hi")], tools)
 
-    assert short.is_estimate is False
+    assert short.is_estimate is True
     assert short.tokens > 0
     assert short.tokens < long.tokens
     assert short.tokens < with_tools.tokens
@@ -50,7 +50,7 @@ def test_counts_exactly_the_payload_that_is_sent(
 
     count = LiteLLMTokenCounter("provider/model").count(messages, tools)
 
-    assert count == TokenCount(42, is_estimate=False)
+    assert count == TokenCount(42, is_estimate=True)
     assert captured["model"] == "provider/model"
     assert captured["messages"] == [to_llm_message(message) for message in messages]
     assert captured["tools"] == tools
@@ -102,7 +102,7 @@ def test_empty_tool_lists_are_not_forwarded_to_litellm(
         [Message(role="user", content="x")], list(tools or [])
     )
 
-    assert count == TokenCount(1, is_estimate=False)
+    assert count == TokenCount(1, is_estimate=True)
     assert captured["tools"] is None
 
 
