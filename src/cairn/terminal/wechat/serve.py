@@ -47,6 +47,12 @@ from cairn.infra.wechat.state import (
     ensure_outside_workspace,
 )
 from cairn.runtime.agent_memory.service import PersonalMemoryService
+from cairn.runtime.agent_memory.tools import (
+    MemoryCorrectTool,
+    MemoryForgetTool,
+    MemoryRememberTool,
+    MemorySearchTool,
+)
 from cairn.runtime.lifecycle import await_owned
 from cairn.runtime.scheduling.runner import ScheduleRunner
 from cairn.terminal.headless import (
@@ -205,6 +211,12 @@ def default_task_executor(
     ensure_agent_home_outside_workspace(agent_home, config.workspace)
     personal_memory = PersonalMemoryService(AgentMemoryStore(agent_home))
     personal_memory.add_secret_values((config.account.bot_token,))
+    memory_tools = (
+        MemorySearchTool(personal_memory),
+        MemoryRememberTool(personal_memory),
+        MemoryForgetTool(personal_memory),
+        MemoryCorrectTool(personal_memory),
+    )
 
     def remember_secrets(values: Sequence[str]) -> None:
         personal_memory.add_secret_values(values)
@@ -231,6 +243,7 @@ def default_task_executor(
             cancellation_event=cancel,
             on_secrets_resolved=remember_secrets,
             personal_context_provider=personal_memory.render_context,
+            extra_tools=memory_tools,
         )
         with contextlib.suppress(Exception):
             # Do not copy raw task input/result into the daily journal; memory

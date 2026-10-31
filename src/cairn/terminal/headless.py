@@ -310,6 +310,7 @@ async def run_headless_task(
     grant_network: bool = False,
     system_prompt: str | None = None,
     personal_context: str = "",
+    extra_tools: Sequence[Tool] = (),
 ) -> HeadlessResult:
     """Run one task against ``workspace`` and return a machine-readable result.
 
@@ -404,7 +405,7 @@ async def run_headless_task(
             tracer=_redacting_tracer(tracer, secret_values),
             secret_env_keys=secret_env_keys,
             skills=skills,
-            extra_tools=mcp_tools,
+            extra_tools=(*mcp_tools, *extra_tools),
             system_prompt=system_prompt,
             personal_context=personal_context,
         )
@@ -566,6 +567,7 @@ async def _run_via_config_async(
     personal_context: str = "",
     on_secrets_resolved: Callable[[Sequence[str]], None] | None = None,
     personal_context_provider: Callable[[], str] | None = None,
+    extra_tools: Sequence[Tool] = (),
 ) -> HeadlessResult:
     """Build the configured provider runtime and run one task.
 
@@ -607,7 +609,7 @@ async def _run_via_config_async(
     context_budget = resolve_context_budget(
         os.environ,
         env_file_values,
-        reserve_percent=project.context_reserve_percent,
+        reserve_percent=getattr(project, "context_reserve_percent", 10),
     )
     runtime = build_provider_runtime(
         provider, api_key, context_budget, group=group.name
@@ -640,6 +642,7 @@ async def _run_via_config_async(
         cancellation_event=cancellation_event,
         system_prompt=system_prompt,
         personal_context=personal_context,
+        extra_tools=extra_tools,
     )
 
 

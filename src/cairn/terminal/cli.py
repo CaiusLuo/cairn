@@ -1341,6 +1341,12 @@ async def main(
             personal_context=(
                 personal_memory.render_context() if memory_enabled else ""
             ),
+            extra_tools=(
+                MemorySearchTool(personal_memory),
+                MemoryRememberTool(personal_memory),
+                MemoryForgetTool(personal_memory),
+                MemoryCorrectTool(personal_memory),
+            ),
         )
         with contextlib.suppress(Exception):
             # Task inputs/results are not copied into the daily journal.

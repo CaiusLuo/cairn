@@ -50,8 +50,9 @@ def test_local_turn_is_remembered_across_turns_and_provider_switch(
         for message in latest
         if "personal_agent_memory" in str(message.get("content", ""))
     ]
-    assert memory_messages
-    assert "first question" in memory_messages[0]
+    # Raw turn text is no longer auto-journaled; the dialogue model decides
+    # what to remember through memory_remember.
+    assert all("first question" not in message for message in memory_messages)
 
 
 def test_first_cli_request_redacts_saved_wechat_token(
