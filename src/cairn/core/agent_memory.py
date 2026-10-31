@@ -75,6 +75,15 @@ class PersonalMemoryContext(BaseModel):
             for block in blocks:
                 daily_entries.append((day, block))
 
+        def _day_time(item: tuple[str, str]) -> tuple[str, int]:
+            day, block = item
+            match = re.search(r"(?m)^##\s*(\d{1,2}):(\d{2})", block)
+            minutes = int(match.group(1)) * 60 + int(match.group(2)) if match else -1
+            return (day, minutes)
+
+        # Select newest complete entries first regardless of caller order.
+        daily_entries.sort(key=_day_time, reverse=True)
+
         selected_memory: list[str] = []
         selected_daily: list[tuple[str, str]] = []
         selected_agent = ""
@@ -114,6 +123,7 @@ class PersonalMemoryContext(BaseModel):
             selected_daily = trial_daily
             if len(build()) > self.max_chars:
                 selected_daily = previous_daily
+        selected_daily.sort(key=_day_time)
         # Keep the agent profile body only when it still fits; it is secondary
         # to the fixed profile and the complete long-term/daily entries above.
         if agent_text.strip() and agent_text.strip() != profile:
@@ -124,13 +134,23 @@ class PersonalMemoryContext(BaseModel):
 
     @staticmethod
     def _memory_entries(memory_md: str) -> list[str]:
-        """Split long-term memory into complete fact lines, preserving headers."""
+        """Split long-term memory into complete entries without breaking blocks."""
+        blocks = [
+            block.strip()
+            for block in re.split(r"(?m)(?=^## )", memory_md)
+            if block.strip()
+        ]
+        if any(block.startswith("## ") for block in blocks):
+            return blocks
         entries: list[str] = []
-        header: list[str] = []
         for line in memory_md.splitlines():
             stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
             if stripped.startswith("- "):
                 entries.append(stripped)
-            elif stripped and not stripped.startswith("#"):
-                header.append(stripped)
-        return (["\n".join(header)] if header else []) + entries
+            elif entries:
+                entries[-1] += "\n" + stripped
+            else:
+                entries.append(stripped)
+        return entries

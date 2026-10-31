@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from cairn.core.agent_memory import PersonalMemoryContext
 
 
 def test_profile_survives_budget_pressure_and_chinese_json() -> None:
     context = PersonalMemoryContext(
-        profile="姓名:张三\n偏好:中文",
-        agent_md="## Preferences\n- 姓名:张三\n" + ("A" * 4000),
+        profile="姓名：张三\n偏好：中文",
+        agent_md="## Preferences\n- 姓名：张三\n" + ("A" * 4000),
         memory_md="MEMORY.md:" + ("记忆" * 2000),
         daily=(("2026-11-01", "## 09:00\n- text: 今天讨论部署"),),
         max_chars=1800,
@@ -39,18 +38,48 @@ def test_daily_shrinking_drops_complete_entries_not_half_an_entry() -> None:
 
 
 def test_existing_long_term_memory_supplies_profile_when_agent_md_is_template(
-    tmp_path: Path,
+    tmp_path,
 ) -> None:
     from cairn.infra.agent_memory.store import AgentMemoryStore
     from cairn.runtime.agent_memory.service import PersonalMemoryService
 
     store = AgentMemoryStore(tmp_path / "agent")
     store.ensure_initialized()
-    store.append_memory_md("\n- 姓名:李四\n- 喜欢中文\n")
+    store.append_memory_md("\n- 姓名：李四\n- 喜欢中文\n")
     service = PersonalMemoryService(store)
     context = service.bootstrap()
     assert "李四" in context.profile
     assert "李四" in service.render_context()
+
+
+def test_daily_selection_prefers_newest_entries_and_keeps_reading_order() -> None:
+    body = "\n\n".join(
+        f"## {hour:02d}:00\n- text: item-{hour:02d} " + ("长" * 400)
+        for hour in range(20)
+    )
+    context = PersonalMemoryContext(
+        daily=(("2026-11-01", body),),
+        max_chars=1600,
+    )
+    payload = json.loads(context.render().split("\n", 1)[1])
+    daily = payload["personal_agent_memory"]["daily"]
+    assert daily
+    texts = "\n".join(item["text"] for item in daily)
+    assert "item-19" in texts
+    assert "item-00" not in texts
+
+
+def test_daily_selection_does_not_depend_on_caller_day_order() -> None:
+    first = "## 09:00\n- text: old"
+    second = "## 09:00\n- text: new"
+    context = PersonalMemoryContext(
+        daily=(("2026-11-02", second), ("2026-11-01", first)),
+        max_chars=1200,
+    )
+    payload = json.loads(context.render().split("\n", 1)[1])
+    daily = payload["personal_agent_memory"]["daily"]
+    assert daily
+    assert daily[0]["text"].endswith("old")
 
 
 def test_realistic_large_daily_and_long_term_entries_are_not_all_dropped() -> None:
