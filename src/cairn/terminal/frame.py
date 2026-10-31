@@ -1100,6 +1100,15 @@ class TranscriptView:
         hint = self._queue_view.hint(running=self._running)
         return len(rows) + int(bool(hint))
 
+    def record_history(self, text: str) -> None:
+        """Record one submitted command/prompt for this session's arrow history."""
+        if not text or not text.strip():
+            return
+        if not self._history or self._history[-1] != text:
+            self._history.append(text)
+        self._history_index = None
+        self._history_draft = ""
+
     def _recall_history(self, step: int) -> None:
         """Move through submitted lines; preserve the current draft at the end."""
         if not self._history:
@@ -1139,10 +1148,7 @@ class TranscriptView:
         saw two surfaces stacked and could not tell which one the arrows belonged to.
         """
         text = self._buffer.text
-        if text.strip() and (not self._history or self._history[-1] != text):
-            self._history.append(text)
-        self._history_index = None
-        self._history_draft = ""
+        self.record_history(text)
         self._buffer.reset()
         self._palette.close()
         expanded = self._pastes.expand(text)

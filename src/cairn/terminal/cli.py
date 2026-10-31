@@ -1001,6 +1001,10 @@ async def _turn_loop(
             break
         if not user_input or user_input.isspace():
             continue
+        if frame is not None:
+            # The frame records normal submissions; this also covers command
+            # paths that are dispatched before a turn is built.
+            frame.record_history(user_input)
         selection = parse_selection_tokens(user_input)
         selected_skills: tuple[str, ...] = ()
         selected_mcp: tuple[str, ...] = ()
