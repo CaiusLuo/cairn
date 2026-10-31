@@ -1482,3 +1482,21 @@ def test_wx_panel_is_temporary_and_clearable() -> None:
         assert view._wx_panel_control() == "QR-1\nQR-2"
         view.clear_wx_panel()
         assert view._wx_panel is None
+
+
+def test_pipe_enter_submits_filtered_child_command_directly() -> None:
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            view, _, _ = _view()
+            reader = asyncio.create_task(view.read())
+            await asyncio.sleep(0)
+            pipe.send_text("/wx dis\r")
+            line = await asyncio.wait_for(reader, timeout=1)
+            assert line.text == "/wx disconnect"
+            assert line.delivery == "now"
+            await view.aclose()
+
+    asyncio.run(scenario())

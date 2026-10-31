@@ -356,9 +356,11 @@ class TranscriptView:
                 self._insert_palette_token(token)
                 return
             typed = self._buffer.text.strip()
-            if len(typed.split(maxsplit=1)) < 2:
-                # A palette choice may be more complete than the composer text:
-                # submit the selected command, including any navigated submenu.
+            # A selected child row is already the complete command. Submit that
+            # command directly (e.g. "/wx dis" + Enter runs "/wx disconnect"),
+            # instead of submitting the partial filter text and making the user
+            # press Enter a second time.
+            if self._palette.depth > 1 or len(typed.split(maxsplit=1)) < 2:
                 self._complete_palette()
             self._submit_typed(delivery="steer" if self._running else "now")
 
