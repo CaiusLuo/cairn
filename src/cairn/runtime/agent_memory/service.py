@@ -308,6 +308,8 @@ class PersonalMemoryService:
         set of long-term facts is returned explicitly marked as unconfirmed
         candidates for the current conversation model to judge.
         """
+        if not self.enabled:
+            return []
         normalized = " ".join(query.split()).casefold()
         if not normalized:
             return []

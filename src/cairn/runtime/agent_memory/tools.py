@@ -19,6 +19,11 @@ class _MemoryTool:
     def __init__(self, service: PersonalMemoryService) -> None:
         self.service = service
 
+    def _disabled(self) -> ToolResult | None:
+        if not self.service.enabled:
+            return self._result("personal memory is disabled", ok=False)
+        return None
+
     @staticmethod
     def _result(text: str, *, ok: bool = True) -> ToolResult:
         return ToolResult(
@@ -53,6 +58,8 @@ class MemorySearchTool(_MemoryTool):
         self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
     ) -> ToolResult:
         self.validate(arguments)
+        if disabled := self._disabled():
+            return disabled
         query = str(arguments.get("query", "")).strip()
         matches = self.service.search_facts(query)
         if not matches:
@@ -93,6 +100,8 @@ class MemoryRememberTool(_MemoryTool):
         self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
     ) -> ToolResult:
         self.validate(arguments)
+        if disabled := self._disabled():
+            return disabled
         try:
             changed = self.service.remember_fact(arguments["text"].strip())
         except (OSError, ValueError) as exc:
@@ -126,6 +135,8 @@ class MemoryForgetTool(_MemoryTool):
         self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
     ) -> ToolResult:
         self.validate(arguments)
+        if disabled := self._disabled():
+            return disabled
         try:
             changed = self.service.forget_fact(arguments["query"].strip())
         except (OSError, ValueError) as exc:
