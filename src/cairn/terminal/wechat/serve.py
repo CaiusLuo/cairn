@@ -22,6 +22,7 @@ from typing import Any
 
 from dotenv import dotenv_values
 
+from cairn.core.task_board import TaskSource
 from cairn.infra.agent_memory.store import (
     AgentMemoryStore,
     default_agent_home,
@@ -35,6 +36,7 @@ from cairn.infra.schedule.store import ScheduleStore
 from cairn.infra.schedule.store import (
     ensure_outside_workspace as ensure_schedule_outside_workspace,
 )
+from cairn.infra.task_board.store import TaskBoardStore, default_task_board_dir
 from cairn.infra.wechat.ilink import (
     ILinkClient,
     ILinkError,
@@ -55,6 +57,14 @@ from cairn.runtime.agent_memory.tools import (
 )
 from cairn.runtime.lifecycle import await_owned
 from cairn.runtime.scheduling.runner import ScheduleRunner
+from cairn.runtime.task_board.service import TaskBoardService
+from cairn.runtime.task_board.tools import (
+    TaskCreateTool,
+    TaskDetailTool,
+    TaskListTool,
+    TaskTodoTool,
+    TaskUpdateTool,
+)
 from cairn.terminal.headless import (
     DEFAULT_CHECK_TIMEOUT_S,
     DEFAULT_MAX_STEPS,
@@ -221,6 +231,21 @@ def default_task_executor(
         MemoryForgetTool(personal_memory),
         MemoryCorrectTool(personal_memory),
     )
+    task_board_root = default_task_board_dir()
+    ensure_outside_workspace(task_board_root, config.workspace)
+    task_board = TaskBoardService(
+        TaskBoardStore(task_board_root),
+        project=str(config.workspace),
+        session_id=f"wechat:{config.workspace}",
+        source=TaskSource.WECHAT,
+    )
+    task_tools = (
+        TaskCreateTool(task_board),
+        TaskDetailTool(task_board),
+        TaskListTool(task_board),
+        TaskUpdateTool(task_board),
+        TaskTodoTool(task_board),
+    )
 
     def remember_secrets(values: Sequence[str]) -> None:
         personal_memory.add_secret_values(values)
@@ -247,7 +272,7 @@ def default_task_executor(
             cancellation_event=cancel,
             on_secrets_resolved=remember_secrets,
             personal_context_provider=personal_memory.render_context,
-            extra_tools=memory_tools,
+            extra_tools=(*memory_tools, *task_tools),
         )
         with contextlib.suppress(Exception):
             # Do not copy raw task input/result into the daily journal; memory

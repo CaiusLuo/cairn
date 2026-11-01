@@ -1237,6 +1237,12 @@ async def main(
     command_context = CommandContext(trace_store=TraceStore(trace_root))
     task_controller = TaskBoardController(task_board_service)
     command_context.task_command = task_controller.command
+    wechat_task_service = TaskBoardService(
+        TaskBoardStore(task_board_root),
+        project=str(workspace.root),
+        session_id=f"wechat:{workspace.root}",
+        source=TaskSource.WECHAT,
+    )
     # The prompt is bound once the frame exists, because the surface is where an
     # approval is given. Until then the console prompt is the only option, and it is
     # what the startup bootstrap uses.
@@ -1398,6 +1404,11 @@ async def main(
                 MemoryRememberTool(personal_memory),
                 MemoryForgetTool(personal_memory),
                 MemoryCorrectTool(personal_memory),
+                TaskCreateTool(wechat_task_service),
+                TaskDetailTool(wechat_task_service),
+                TaskListTool(wechat_task_service),
+                TaskUpdateTool(wechat_task_service),
+                TaskTodoTool(wechat_task_service),
             ),
         )
         with contextlib.suppress(Exception):

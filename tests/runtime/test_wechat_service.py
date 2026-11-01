@@ -1009,3 +1009,71 @@ def test_cancel_before_coroutine_starts_is_persisted_cancelled(tmp_path: Path) -
         assert record is not None and record["state"] == "cancelled"
 
     asyncio.run(scenario())
+
+
+def test_default_wechat_executor_exposes_shared_task_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cairn.infra.wechat.state import WechatAccount
+    from cairn.terminal.wechat.serve import ServeConfig, default_task_executor
+
+    captured: list[object] = []
+
+    async def fake_run(**kwargs: object) -> HeadlessResult:
+        captured.extend(kwargs.get("extra_tools", ()))  # type: ignore[arg-type]
+        return HeadlessResult(
+            task_id="t", status=HeadlessStatus.COMPLETED, workspace=str(tmp_path)
+        )
+
+    monkeypatch.setattr("cairn.terminal.wechat.serve._run_via_config_async", fake_run)
+    safe_root = tmp_path.parent / (tmp_path.name + "-tasks-safe")
+    monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(safe_root))
+    config = ServeConfig(
+        workspace=tmp_path,
+        state_dir=tmp_path / "state",
+        account=WechatAccount(
+            bot_token="token", ilink_bot_id="bot", base_url="http://127.0.0.1"
+        ),
+        approval=None,
+        allowed_senders=frozenset({"u1"}),
+    )
+    executor = default_task_executor(config)
+
+    async def run_it() -> None:
+        await executor("hello", asyncio.Event(), "t")
+
+    asyncio.run(run_it())
+    names = {getattr(tool, "name", "") for tool in captured}
+    assert {
+        "task_create",
+        "task_list",
+        "task_detail",
+        "task_update",
+        "task_todo",
+    } <= names
+
+
+def test_default_wechat_executor_rejects_task_board_inside_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cairn.infra.wechat.state import WechatAccount
+    from cairn.terminal.wechat.serve import ServeConfig, default_task_executor
+
+    config = ServeConfig(
+        workspace=tmp_path,
+        state_dir=tmp_path.parent / (tmp_path.name + "-state"),
+        account=WechatAccount(
+            bot_token="token", ilink_bot_id="bot", base_url="http://127.0.0.1"
+        ),
+        approval=None,
+        allowed_senders=frozenset({"u1"}),
+    )
+    monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(tmp_path / "tasks"))
+    with pytest.raises(ValueError):
+        default_task_executor(config)
+
+    link = tmp_path.parent / (tmp_path.name + "-tasks-link")
+    link.symlink_to(tmp_path / "tasks", target_is_directory=True)
+    monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(link))
+    with pytest.raises(ValueError):
+        default_task_executor(config)

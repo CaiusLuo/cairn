@@ -236,9 +236,9 @@ def test_task_todo_repeated_done_is_success(tmp_path: Path) -> None:
 
     service = TaskBoardService(TaskBoardStore(tmp_path / "tasks"))
     task = service.create("todo idempotence")
-    task = service.add_todo(task.task_id, "once")
-    assert task is not None
-    todo_id = task.todos[0].todo_id
+    with_todo = service.add_todo(task.task_id, "once")
+    assert with_todo is not None
+    todo_id = with_todo.todos[0].todo_id
     tool = TaskTodoTool(service)
 
     async def flow() -> None:
