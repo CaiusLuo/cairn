@@ -154,7 +154,8 @@ filtering for each request. Explicit shell, MCP and network options authorize
 only those capabilities for the current request; grants are not restored from
 a previous Session. When a configured check fails, the service permits one
 repair turn and reruns the same check; it preserves the original task ID in
-the result.
+the result. A session cleanup failure is reported rather than treated as
+success; the service retains its owner and retries cleanup before new work.
 
 When a trusted sender's valid text task is durably accepted,
 the bot sends one immediate receipt (`已收到，正在安排处理`) before execution,

@@ -1633,3 +1633,370 @@ def test_wechat_durable_failed_check_can_repair_and_recheck(
             for message in messages
         )
         assert (workspace / "repaired").read_text() == "ok"
+
+
+@pytest.mark.parametrize("primary_cancelled", [False, True])
+def test_wechat_session_close_failure_retains_owner_and_primary(
+    monkeypatch: pytest.MonkeyPatch, primary_cancelled: bool
+) -> None:
+    from tempfile import TemporaryDirectory
+
+    from cairn.runtime.durable_session import DurableSession
+    from cairn.terminal.wechat.serve import default_task_executor
+    from tests.support.git import initialize_repository
+
+    with TemporaryDirectory(prefix="cairn-wechat-close-", dir=Path.home()) as root_text:
+        root = Path(root_text)
+        workspace = root / "workspace"
+        workspace.mkdir()
+        initialize_repository(workspace)
+        monkeypatch.setenv("CAIRN_AGENT_HOME", str(root / "agent"))
+        monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(root / "board"))
+        llm = SequenceLLM(
+            [LLMResponse(content="first answer"), LLMResponse(content="second answer")]
+        )
+        config = ServeConfig(
+            workspace=workspace,
+            state_dir=root / "state",
+            account=WechatAccount(
+                bot_token="fake-bot-token-very-long",
+                ilink_bot_id="bot",
+                base_url="https://example.test",
+            ),
+            approval=None,
+            allowed_senders=frozenset({"u1"}),
+            max_steps=20,
+        )
+        original_close = DurableSession.close
+        failures = 0
+
+        def fail_close_once(session: DurableSession) -> None:
+            nonlocal failures
+            if failures == 0:
+                failures += 1
+                raise OSError("private synthetic cleanup detail")
+            original_close(session)
+
+        monkeypatch.setattr(DurableSession, "close", fail_close_once)
+        runs = 0
+
+        async def fake_run(**kwargs: object) -> HeadlessResult:
+            nonlocal runs
+            runs += 1
+            result = await run_headless_task(
+                workspace=workspace,
+                prompt=str(kwargs["prompt"]),
+                task_id=str(kwargs["task_id"]),
+                grant_workspace_trust=True,
+                grant_shell=False,
+                llm=llm,
+                budget=RunBudget(max_steps=20),
+                durable_session_factory=kwargs["durable_session_factory"],  # type: ignore[arg-type]
+            )
+            if primary_cancelled and runs == 1:
+                raise asyncio.CancelledError("first cancellation")
+            return result
+
+        monkeypatch.setattr(
+            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+        )
+
+        async def flow() -> HeadlessResult:
+            execute = default_task_executor(config)
+            if primary_cancelled:
+                with pytest.raises(asyncio.CancelledError) as caught:
+                    await execute("first", asyncio.Event(), "one", sender="u1")  # type: ignore[call-arg]
+                assert caught.value.args == ("first cancellation",)
+                notes = " ".join(getattr(caught.value, "__notes__", ()))
+                assert "cleanup" in notes.lower()
+                assert "private synthetic cleanup detail" not in notes
+            else:
+                with pytest.raises(OSError):
+                    await execute("first", asyncio.Event(), "one", sender="u1")  # type: ignore[call-arg]
+            return await execute("second", asyncio.Event(), "two", sender="u1")  # type: ignore[call-arg]
+
+        result = asyncio.run(flow())
+        assert result.status is HeadlessStatus.COMPLETED
+        assert len(llm.calls) == 2
+        assert any(
+            message.role == "assistant" and message.content == "first answer"
+            for message in llm.calls[1][0]
+        )
+
+
+def test_wechat_reopen_failure_releases_attached_session_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tempfile import TemporaryDirectory
+
+    from cairn.runtime.durable_session import DurableSession
+    from cairn.terminal.wechat.serve import default_task_executor
+    from tests.support.git import initialize_repository
+
+    with TemporaryDirectory(
+        prefix="cairn-wechat-reopen-", dir=Path.home()
+    ) as root_text:
+        root = Path(root_text)
+        workspace = root / "workspace"
+        workspace.mkdir()
+        initialize_repository(workspace)
+        monkeypatch.setenv("CAIRN_AGENT_HOME", str(root / "agent"))
+        monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(root / "board"))
+        llm = SequenceLLM(
+            [LLMResponse(content="first answer"), LLMResponse(content="second answer")]
+        )
+        config = ServeConfig(
+            workspace=workspace,
+            state_dir=root / "state",
+            account=WechatAccount(
+                bot_token="fake-bot-token-very-long",
+                ilink_bot_id="bot",
+                base_url="https://example.test",
+            ),
+            approval=None,
+            allowed_senders=frozenset({"u1"}),
+            max_steps=20,
+        )
+        original_inspect = DurableSession.inspect
+        original_close = DurableSession.close
+        close_calls = 0
+
+        def fail_inspection(_session: DurableSession) -> object:
+            raise OSError("synthetic inspection failure")
+
+        def fail_close_once(session: DurableSession) -> None:
+            nonlocal close_calls
+            close_calls += 1
+            if close_calls == 1:
+                raise OSError("synthetic cleanup failure")
+            original_close(session)
+
+        async def fake_run(**kwargs: object) -> HeadlessResult:
+            return await run_headless_task(
+                workspace=workspace,
+                prompt=str(kwargs["prompt"]),
+                task_id=str(kwargs["task_id"]),
+                grant_workspace_trust=True,
+                grant_shell=False,
+                llm=llm,
+                budget=RunBudget(max_steps=20),
+                durable_session_factory=kwargs["durable_session_factory"],  # type: ignore[arg-type]
+            )
+
+        monkeypatch.setattr(
+            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+        )
+
+        async def flow() -> tuple[HeadlessResult, HeadlessResult, HeadlessResult]:
+            execute = default_task_executor(config)
+            first = await execute("first", asyncio.Event(), "one", sender="u1")  # type: ignore[call-arg]
+            monkeypatch.setattr(DurableSession, "inspect", fail_inspection)
+            monkeypatch.setattr(DurableSession, "close", fail_close_once)
+            failed = await execute("second", asyncio.Event(), "two", sender="u1")  # type: ignore[call-arg]
+            assert close_calls == 1
+            monkeypatch.setattr(DurableSession, "inspect", original_inspect)
+            later = await execute("later", asyncio.Event(), "three", sender="u1")  # type: ignore[call-arg]
+            return first, failed, later
+
+        first, failed, later = asyncio.run(flow())
+        assert first.status is HeadlessStatus.COMPLETED
+        assert failed.status is HeadlessStatus.RUNTIME_ERROR
+        assert later.status is HeadlessStatus.COMPLETED
+        assert len(llm.calls) == 2
+        assert close_calls >= 2
+        assert any(
+            message.role == "assistant" and message.content == "first answer"
+            for message in llm.calls[1][0]
+        )
+
+
+def test_wechat_repeated_cancellation_settles_before_close_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tempfile import TemporaryDirectory
+    from typing import Any
+
+    from cairn.core.models import Message
+    from cairn.runtime.durable_session import DurableSession
+    from cairn.terminal.wechat.serve import default_task_executor
+    from tests.support.git import initialize_repository
+
+    with TemporaryDirectory(
+        prefix="cairn-wechat-cancel-", dir=Path.home()
+    ) as root_text:
+        root = Path(root_text)
+        workspace = root / "workspace"
+        workspace.mkdir()
+        initialize_repository(workspace)
+        monkeypatch.setenv("CAIRN_AGENT_HOME", str(root / "agent"))
+        monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(root / "board"))
+        config = ServeConfig(
+            workspace=workspace,
+            state_dir=root / "state",
+            account=WechatAccount(
+                bot_token="fake-bot-token-very-long",
+                ilink_bot_id="bot",
+                base_url="https://example.test",
+            ),
+            approval=None,
+            allowed_senders=frozenset({"u1"}),
+            max_steps=20,
+        )
+        started = asyncio.Event()
+        settled = asyncio.Event()
+        closes = 0
+        original_close = DurableSession.close
+
+        class BlockingModel:
+            calls = 0
+
+            async def generate(
+                self, messages: list[Message], tools: list[dict[str, Any]] | None = None
+            ) -> LLMResponse:
+                self.calls += 1
+                if self.calls == 1:
+                    started.set()
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        settled.set()
+                return LLMResponse(content="later")
+
+        llm = BlockingModel()
+
+        def fail_close_once(session: DurableSession) -> None:
+            nonlocal closes
+            closes += 1
+            assert settled.is_set()
+            if closes == 1:
+                raise OSError("synthetic close failure")
+            original_close(session)
+
+        monkeypatch.setattr(DurableSession, "close", fail_close_once)
+
+        async def fake_run(**kwargs: object) -> HeadlessResult:
+            return await run_headless_task(
+                workspace=workspace,
+                prompt=str(kwargs["prompt"]),
+                task_id=str(kwargs["task_id"]),
+                grant_workspace_trust=True,
+                grant_shell=False,
+                llm=llm,
+                budget=RunBudget(max_steps=20),
+                durable_session_factory=kwargs["durable_session_factory"],  # type: ignore[arg-type]
+            )
+
+        monkeypatch.setattr(
+            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+        )
+
+        async def flow() -> HeadlessResult:
+            execute = default_task_executor(config)
+            pending: asyncio.Future[HeadlessResult] = asyncio.ensure_future(
+                execute("first", asyncio.Event(), "one", sender="u1")  # type: ignore[call-arg]
+            )
+            await asyncio.wait_for(started.wait(), timeout=5)
+            pending.cancel("first cancellation")
+            await asyncio.sleep(0)
+            pending.cancel("second cancellation")
+            with pytest.raises(asyncio.CancelledError) as caught:
+                await pending
+            assert caught.value.args == ("first cancellation",)
+            assert "cleanup" in " ".join(getattr(caught.value, "__notes__", ())).lower()
+            assert settled.is_set()
+            return await execute("later", asyncio.Event(), "two", sender="u1")  # type: ignore[call-arg]
+
+        later = asyncio.run(flow())
+        assert closes >= 2
+        assert later.status is HeadlessStatus.COMPLETED
+        assert llm.calls == 2
+
+
+def test_wechat_attachment_failure_retains_unclosed_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tempfile import TemporaryDirectory
+
+    from cairn.infra.sessions.host import observe_workspace
+    from cairn.infra.sessions.models import WorkspaceBinding
+    from cairn.infra.sessions.store import SessionStore
+    from cairn.infra.workspace.workspace import Workspace
+    from cairn.terminal.wechat.serve import default_task_executor
+    from tests.support.git import initialize_repository
+
+    with TemporaryDirectory(
+        prefix="cairn-wechat-attach-", dir=Path.home()
+    ) as root_text:
+        root = Path(root_text)
+        workspace = root / "workspace"
+        workspace.mkdir()
+        initialize_repository(workspace)
+        monkeypatch.setenv("CAIRN_AGENT_HOME", str(root / "agent"))
+        monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(root / "board"))
+        llm = SequenceLLM([LLMResponse(content="later answer")])
+        config = ServeConfig(
+            workspace=workspace,
+            state_dir=root / "state",
+            account=WechatAccount(
+                bot_token="fake-bot-token-very-long",
+                ilink_bot_id="bot",
+                base_url="https://example.test",
+            ),
+            approval=None,
+            allowed_senders=frozenset({"u1"}),
+            max_steps=20,
+        )
+        observations = 0
+        closes = 0
+        original_close = SessionStore.close
+
+        def fail_observation_once(
+            target: Workspace, secret_env_keys: frozenset[str]
+        ) -> WorkspaceBinding:
+            nonlocal observations
+            observations += 1
+            if observations == 1:
+                raise OSError("synthetic observation failure")
+            return observe_workspace(target, secret_env_keys)
+
+        def fail_close_once(store: SessionStore) -> None:
+            nonlocal closes
+            closes += 1
+            if closes == 1:
+                raise OSError("synthetic close failure")
+            original_close(store)
+
+        monkeypatch.setattr(
+            "cairn.terminal.wechat.serve.observe_workspace", fail_observation_once
+        )
+        monkeypatch.setattr(SessionStore, "close", fail_close_once)
+
+        async def fake_run(**kwargs: object) -> HeadlessResult:
+            return await run_headless_task(
+                workspace=workspace,
+                prompt=str(kwargs["prompt"]),
+                task_id=str(kwargs["task_id"]),
+                grant_workspace_trust=True,
+                grant_shell=False,
+                llm=llm,
+                budget=RunBudget(max_steps=20),
+                durable_session_factory=kwargs["durable_session_factory"],  # type: ignore[arg-type]
+            )
+
+        monkeypatch.setattr(
+            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+        )
+
+        async def flow() -> tuple[HeadlessResult, HeadlessResult]:
+            execute = default_task_executor(config)
+            failed = await execute("first", asyncio.Event(), "one", sender="u1")  # type: ignore[call-arg]
+            later = await execute("later", asyncio.Event(), "two", sender="u1")  # type: ignore[call-arg]
+            return failed, later
+
+        failed, later = asyncio.run(flow())
+        assert failed.status is HeadlessStatus.RUNTIME_ERROR
+        assert "synthetic observation failure" in (failed.error or "")
+        assert "synthetic close failure" not in (failed.error or "")
+        assert later.status is HeadlessStatus.COMPLETED
+        assert closes >= 2
+        assert len(llm.calls) == 1

@@ -46,6 +46,7 @@ from cairn.infra.sessions.models import (
     SessionBinding,
     SessionStoreError,
 )
+from cairn.infra.sessions.store import SessionStore
 from cairn.infra.task_board.store import TaskBoardStore, default_task_board_dir
 from cairn.infra.tools.base import Tool
 from cairn.infra.wechat.ilink import (
@@ -280,6 +281,22 @@ def default_task_executor(
 
     session_root = config.state_dir / "sessions"
     ensure_outside_workspace(session_root, config.workspace)
+    retained_sessions: list[DurableSession] = []
+    retained_stores: list[SessionStore] = []
+
+    def close_sessions(sessions: list[DurableSession]) -> None:
+        while sessions:
+            sessions[-1].close()
+            sessions.pop()
+
+    def release_sessions(sessions: list[DurableSession]) -> None:
+        try:
+            close_sessions(sessions)
+        except BaseException:
+            # Keep ownership and its writer lock for an idle retry.
+            retained_sessions.extend(sessions)
+            sessions.clear()
+            raise
 
     def durable_factory(
         sender: str, active_sessions: list[DurableSession]
@@ -334,66 +351,67 @@ def default_task_executor(
         def build(agent: Agent) -> DurableSession:
             # A check/repair may start another Turn before the overall request
             # returns. Release the settled Session before opening its successor.
-            while active_sessions:
-                active_sessions[-1].close()
-                active_sessions.pop()
+            close_sessions(active_sessions)
             store = open_store(
                 session_root,
                 Workspace(config.workspace),
                 secret_env_keys=secret_keys(agent),
                 sensitive_values=tuple(known_secret_values),
             )
+            session: DurableSession | None = None
             try:
                 observation = make_binding(agent)
-                store.inspect(session_id)
-            except SessionStoreError as exc:
-                if exc.code not in {"session_missing", "session_not_found"}:
-                    store.close()
-                    raise
                 try:
+                    store.inspect(session_id)
+                except SessionStoreError as exc:
+                    if exc.code not in {"session_missing", "session_not_found"}:
+                        raise
                     session = DurableSession.create(
                         store,
                         agent=agent,
                         binding=observation,
                         observe_binding=lambda: make_binding(agent),
                     )
-                    active_sessions.append(session)
-                    return session
-                except BaseException:
-                    store.close()
-                    raise
-            except BaseException:
-                store.close()
-                raise
-            try:
-                session = DurableSession.reopen(
-                    store,
-                    session_id,
-                    agent=agent,
-                    binding=observation,
-                    observe_binding=lambda: make_binding(agent),
-                )
-                report = session.inspect()
-                if report.status != "clean":
-                    store.close()
-                    raise SessionStoreError("recovery_required")
-                final_binding = make_binding(agent)
-                session.reconcile(
-                    report,
-                    host_resolution=HostResolution(
-                        session_id=session_id,
-                        turn_id=None,
-                        actor="wechat-host",
-                        resolved_at_utc=datetime.now(UTC)
-                        .isoformat()
-                        .replace("+00:00", "Z"),
-                        binding=final_binding,
-                    ),
-                )
+                else:
+                    session = DurableSession.reopen(
+                        store,
+                        session_id,
+                        agent=agent,
+                        binding=observation,
+                        observe_binding=lambda: make_binding(agent),
+                    )
+                    report = session.inspect()
+                    if report.status != "clean":
+                        raise SessionStoreError("recovery_required")
+                    final_binding = make_binding(agent)
+                    session.reconcile(
+                        report,
+                        host_resolution=HostResolution(
+                            session_id=session_id,
+                            turn_id=None,
+                            actor="wechat-host",
+                            resolved_at_utc=datetime.now(UTC)
+                            .isoformat()
+                            .replace("+00:00", "Z"),
+                            binding=final_binding,
+                        ),
+                    )
                 active_sessions.append(session)
                 return session
-            except BaseException:
-                store.close()
+            except BaseException as primary:
+                try:
+                    if session is None:
+                        store.close()
+                    else:
+                        session.close()
+                except BaseException as cleanup:
+                    if session is None:
+                        retained_stores.append(store)
+                    else:
+                        retained_sessions.append(session)
+                    primary.add_note(
+                        f"Durable session cleanup failed: {type(cleanup).__name__}."
+                    )
                 raise
 
         return build
@@ -401,6 +419,10 @@ def default_task_executor(
     async def execute(
         prompt: str, cancel: asyncio.Event, task_id: str, *, sender: str = ""
     ) -> HeadlessResult:
+        close_sessions(retained_sessions)
+        while retained_stores:
+            retained_stores[-1].close()
+            retained_stores.pop()
         task_tools = wechat_task_tools
         if task_source is TaskSource.SCHEDULE:
             task_tools = board_tools(
@@ -435,16 +457,17 @@ def default_task_executor(
                 if sender
                 else None,
             )
-        finally:
-            for session in active_sessions:
-                with contextlib.suppress(Exception):
-                    session.close()
-            active_sessions.clear()
-        with contextlib.suppress(Exception):
-            # Do not copy raw task input/result into the daily journal; memory
-            # tools decide candidates inside the turn.
-            pass
-        return result
+        except BaseException as primary:
+            try:
+                release_sessions(active_sessions)
+            except BaseException as cleanup:
+                primary.add_note(
+                    f"Durable session cleanup failed: {type(cleanup).__name__}."
+                )
+            raise
+        else:
+            release_sessions(active_sessions)
+            return result
 
     return execute
 
