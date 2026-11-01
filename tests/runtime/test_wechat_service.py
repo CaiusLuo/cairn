@@ -1418,3 +1418,122 @@ def test_wechat_workspace_observation_uses_current_secret_names(
         result = asyncio.run(flow())
         assert result.status is HeadlessStatus.COMPLETED
         assert observed and all(current_keys <= keys for keys in observed)
+
+
+@pytest.mark.parametrize("capability", ["shell", "network", "mcp"])
+@pytest.mark.parametrize("allowed", [True, False])
+def test_wechat_durable_session_respects_explicit_capabilities(
+    monkeypatch: pytest.MonkeyPatch, capability: str, allowed: bool
+) -> None:
+    from tempfile import TemporaryDirectory
+    from typing import Any
+
+    from cairn.core.models import ToolResult
+    from cairn.core.permissions import CapabilityRequest, PermissionCapability
+    from cairn.infra.tools.base import ToolExecutionContext
+    from cairn.terminal.wechat.serve import default_task_executor
+    from tests.support.git import initialize_repository
+
+    with TemporaryDirectory(
+        prefix="cairn-wechat-permissions-", dir=Path.home()
+    ) as root_text:
+        root = Path(root_text)
+        workspace = root / "workspace"
+        workspace.mkdir()
+        initialize_repository(workspace)
+        monkeypatch.setenv("CAIRN_AGENT_HOME", str(root / "agent"))
+        monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(root / "board"))
+        invoked: list[str] = []
+
+        class CapabilityTool:
+            name = "capability_probe"
+            description = "A fake tool for testing explicit permission."
+            requires_authorization = True
+
+            def schema(self) -> dict[str, Any]:
+                return {"name": self.name, "description": self.description}
+
+            def validate(self, arguments: dict[str, Any]) -> None:
+                assert arguments == {}
+
+            def requested_capability(
+                self, arguments: dict[str, Any]
+            ) -> CapabilityRequest:
+                selected = (
+                    PermissionCapability.NETWORK
+                    if capability == "network"
+                    else PermissionCapability.MCP_TOOL
+                )
+                return CapabilityRequest(capability=selected)
+
+            async def execute(
+                self,
+                arguments: dict[str, Any],
+                *,
+                context: ToolExecutionContext | None = None,
+            ) -> ToolResult:
+                invoked.append(capability)
+                return ToolResult(stdout="completed", exit_code=0)
+
+        tool = CapabilityTool()
+        call = (
+            ToolCall(
+                id="capability",
+                name="bash",
+                arguments={"command": "printf ok > shell-marker"},
+            )
+            if capability == "shell"
+            else ToolCall(id="capability", name=tool.name, arguments={})
+        )
+        llm = SequenceLLM(
+            [LLMResponse(tool_calls=[call]), LLMResponse(content="finished")]
+        )
+        config = ServeConfig(
+            workspace=workspace,
+            state_dir=root / "state",
+            account=WechatAccount(
+                bot_token="fake-bot-token-very-long",
+                ilink_bot_id="bot",
+                base_url="https://example.test",
+            ),
+            approval=None,
+            allowed_senders=frozenset({"u1"}),
+            allow_shell=allowed if capability == "shell" else capability == "network",
+            allow_network=allowed if capability == "network" else capability == "mcp",
+            allow_mcp=allowed if capability == "mcp" else capability == "shell",
+            max_steps=20,
+        )
+
+        async def fake_run(**kwargs: object) -> HeadlessResult:
+            return await run_headless_task(
+                workspace=workspace,
+                prompt=str(kwargs["prompt"]),
+                task_id=str(kwargs["task_id"]),
+                grant_workspace_trust=True,
+                grant_shell=bool(kwargs["grant_shell"]),
+                grant_mcp=bool(kwargs["grant_mcp"]),
+                grant_network=bool(kwargs["grant_network"]),
+                llm=llm,
+                budget=RunBudget(max_steps=20),
+                extra_tools=(tool,),
+                durable_session_factory=kwargs["durable_session_factory"],  # type: ignore[arg-type]
+            )
+
+        monkeypatch.setattr(
+            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+        )
+
+        async def flow() -> HeadlessResult:
+            execute = default_task_executor(config)
+            return await execute("run the task", asyncio.Event(), "first", sender="u1")  # type: ignore[call-arg]
+
+        result = asyncio.run(flow())
+        assert result.status is HeadlessStatus.COMPLETED
+        assert len(llm.calls) == 2
+        executed = (
+            (workspace / "shell-marker").exists()
+            if capability == "shell"
+            else bool(invoked)
+        )
+        assert executed is allowed
+        assert result.permission_denied is not allowed

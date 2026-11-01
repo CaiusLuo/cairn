@@ -34,7 +34,12 @@ from cairn.core.budget import RunBudget
 from cairn.core.context import ContextBudget, ContextBuilder
 from cairn.core.events import Event
 from cairn.core.llm import LLMClient
-from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
+from cairn.core.permissions import (
+    PermissionCapability,
+    PermissionChoice,
+    PermissionRequest,
+    SessionPermissionHandler,
+)
 from cairn.core.tasks import TaskCheckStatus, TaskSpec, TaskStatus
 from cairn.infra.config import (
     default_provider,
@@ -161,12 +166,12 @@ def build_headless_permission_handler(
     grant_shell: bool,
     grant_mcp: bool = False,
     grant_network: bool = False,
+    per_request_grants: bool = False,
 ) -> SessionPermissionHandler:
-    """Non-interactive grants only.
+    """Apply only the host's explicit non-interactive capability grants.
 
-    ``prompt``/``prompt_async`` are deliberately left ``None``: an ASK for a
-    capability the operator did not grant is denied at once instead of waiting on
-    input that will never arrive.
+    Durable Sessions start with fresh permissions. Their approved capabilities
+    are authorized per request instead of being carried as session grants.
     """
     handler = SessionPermissionHandler(
         prompt=None,
@@ -176,13 +181,25 @@ def build_headless_permission_handler(
     )
     if grant_workspace_trust:
         handler.grants.add(PermissionCapability.WORKSPACE_TRUST)
+    approved: set[PermissionCapability] = set()
     if grant_shell:
-        handler.grants.add(PermissionCapability.LOCAL_SHELL)
+        approved.add(PermissionCapability.LOCAL_SHELL)
     if grant_mcp:
-        handler.grants.add(PermissionCapability.MCP_SERVER)
-        handler.grants.add(PermissionCapability.MCP_TOOL)
+        approved.update(
+            (PermissionCapability.MCP_SERVER, PermissionCapability.MCP_TOOL)
+        )
     if grant_network:
-        handler.grants.add(PermissionCapability.NETWORK)
+        approved.add(PermissionCapability.NETWORK)
+    if per_request_grants:
+
+        def choose(request: PermissionRequest) -> PermissionChoice:
+            if any(request.capability is capability for capability in approved):
+                return PermissionChoice.ALLOW_ONCE
+            return PermissionChoice.DENY
+
+        handler.prompt = choose
+    else:
+        handler.grants.update(approved)
     return handler
 
 
@@ -375,6 +392,7 @@ async def run_headless_task(
         grant_shell=grant_shell,
         grant_mcp=grant_mcp,
         grant_network=grant_network,
+        per_request_grants=durable_session_factory is not None,
     )
 
     def observe(event: Event) -> None:
