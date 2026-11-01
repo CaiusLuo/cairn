@@ -963,3 +963,49 @@ def test_lost_ack_response_is_not_retried(tmp_path: Path) -> None:
 
     asyncio.run(scenario())
     assert ack_calls == 1
+
+
+def test_cancel_before_coroutine_starts_is_persisted_cancelled(tmp_path: Path) -> None:
+    from cairn.terminal.wechat.serve import ServeReport, _Inbound, _Service
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state = WechatState(tmp_path / "state")
+
+    class Client:
+        async def send_text(self, **_kwargs: object) -> dict[str, object]:
+            return {}
+
+        async def send_typing(self, **_kwargs: object) -> dict[str, object]:
+            return {}
+
+        async def get_config(self, **_kwargs: object) -> dict[str, object]:
+            return {"typing_ticket": "t"}
+
+    async def executor(*_args: object) -> HeadlessResult:
+        raise AssertionError("must not start")
+
+    async def scenario() -> None:
+        service = _Service(
+            config=type("C", (), {"redact_text": None})(),
+            state=state,
+            client=Client(),  # type: ignore[arg-type]
+            executor=executor,
+            report=ServeReport(),
+            stop_event=None,
+        )
+        service._start_task(
+            "msg:race",
+            _Inbound(
+                key="msg:race",
+                sender="u1",
+                context_token="ctx",
+                text="task",
+                stable=True,
+            ),
+        )
+        assert await service._cancel_current() is True
+        record = state.get_record("msg:race")
+        assert record is not None and record["state"] == "cancelled"
+
+    asyncio.run(scenario())

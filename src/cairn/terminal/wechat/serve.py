@@ -428,7 +428,15 @@ class _Service:
         self._current = task
         self._current_key = key
 
-        def _clear(_: asyncio.Task[None]) -> None:
+        def _clear(done: asyncio.Task[None]) -> None:
+            # A task can be cancelled before its coroutine gets its first step.
+            # In that case _run_task's try/except never executes; settle the
+            # persisted fact here, but never overwrite a completed/cancelled
+            # record from a later task.
+            if done.cancelled():
+                record = self.state.get_record(key) or {}
+                if record.get("state") == "started":
+                    self.state.mark(key, "cancelled")
             if self._current is task:
                 self._current = None
                 self._current_key = None
