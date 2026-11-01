@@ -362,13 +362,16 @@ class _Service:
                 # Mark the attempt before I/O so a crash cannot ack twice, and
                 # keep the wait bounded so a slow receipt cannot block execution.
                 self.state.mark(key, "started", ack_attempted=True)
-                preview = " ".join(inbound.text.split())[:80]
+                # Do not echo inbound text before the full trusted redactor and
+                # provider approval are available. A generic receipt cannot leak
+                # a key prefix at a truncation boundary; the task's content is
+                # explained later in the normal result message.
                 try:
                     acknowledged = await asyncio.wait_for(
                         self._safe_reply(
                             inbound.sender,
                             inbound.context_token,
-                            f"已收到\uff0c正在安排处理\uff1a{preview}",
+                            "已收到\uff0c正在安排处理",
                             retries=1,
                         ),
                         timeout=ACK_TIMEOUT_SECONDS,

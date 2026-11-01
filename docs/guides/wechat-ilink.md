@@ -143,8 +143,8 @@ for headless/server operation. A complete terminal QR is rendered from the iLink
 bounded half-block glyphs (quiet zone included; refuses to clip on a terminal too
 narrow for the matrix); the URL is also printed as a fallback. The QR is cleared
 from the composer-adjacent screen after login resolves. When a trusted sender's valid text task is durably accepted,
-the bot sends one immediate receipt (`已收到，正在安排处理：<task summary>`) before
-execution, then still sends the final result. The receipt is a separate node from
+the bot sends one immediate receipt (`已收到，正在安排处理`) before execution,
+without echoing the inbound prompt; it then still sends the final result. The receipt is a separate node from
 the task result. Because iLink `send_text` does not provide a stable client-id
 identity here, the receipt is sent once and never retried: if the response is
 lost, the state records the receipt as unknown rather than risking a duplicate.

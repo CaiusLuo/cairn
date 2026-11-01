@@ -313,7 +313,7 @@ def test_serve_runs_trusted_text_and_dedupes_redelivery(tmp_path: Path) -> None:
         assert WechatState(state_dir).get_cursor() == "cur-2"
         replies = "\n".join(str(msg.get("item_list")) for msg in fake.sent)
         assert "已收到" in str(fake.sent[0].get("item_list"))
-        assert "do it" in str(fake.sent[0].get("item_list"))
+        assert "do it" not in str(fake.sent[0].get("item_list"))
         assert replies.count("已收到") == 1
         assert "done" in replies and "completed" in replies
         assert TOKEN not in replies
@@ -843,6 +843,65 @@ def test_cancel_during_ack_marks_cancelled_not_started(tmp_path: Path) -> None:
         assert record.get("ack_attempted") is True
 
     asyncio.run(scenario())
+
+
+def test_ack_never_echoes_input_before_provider_secrets_are_resolved(
+    tmp_path: Path,
+) -> None:
+    from cairn.terminal.wechat.serve import ServeReport, _Inbound, _Service
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state = WechatState(tmp_path / "state")
+    sent: list[str] = []
+    synthetic = "sk-synthetic-secret-" + "x" * 70
+
+    class Client:
+        async def send_text(self, **kwargs: object) -> dict[str, object]:
+            sent.append(str(kwargs.get("text")))
+            return {}
+
+        async def send_typing(self, **_kwargs: object) -> dict[str, object]:
+            return {}
+
+        async def get_config(self, **_kwargs: object) -> dict[str, object]:
+            return {"typing_ticket": "t"}
+
+    async def executor(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        return HeadlessResult(
+            task_id=task_id,
+            status=HeadlessStatus.COMPLETED,
+            workspace=str(workspace),
+        )
+
+    async def scenario() -> None:
+        service = _Service(
+            config=type("C", (), {"redact_text": None})(),
+            state=state,
+            client=Client(),  # type: ignore[arg-type]
+            executor=executor,
+            report=ServeReport(),
+            stop_event=None,
+        )
+        service._start_task(
+            "msg:secret",
+            _Inbound(
+                key="msg:secret",
+                sender="u1",
+                context_token="ctx",
+                text="prefix " + synthetic,
+                stable=True,
+            ),
+        )
+        assert service._current is not None
+        await asyncio.wait_for(service._current, timeout=3)
+
+    asyncio.run(scenario())
+    assert sent and "已收到" in sent[0]
+    assert synthetic not in sent[0]
+    assert "sk-synthetic" not in sent[0]
 
 
 def test_lost_ack_response_is_not_retried(tmp_path: Path) -> None:
