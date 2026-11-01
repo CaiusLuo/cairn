@@ -21,6 +21,7 @@ from cairn.core.permissions import (
     SessionPermissionHandler,
 )
 from cairn.core.provider_catalog import NamedProvider, ProviderCatalog
+from cairn.core.task_board import TaskSource
 from cairn.infra.agent_memory.store import (
     AgentMemoryStore,
     default_agent_home,
@@ -44,6 +45,11 @@ from cairn.infra.observability.tracer import Tracer
 from cairn.infra.schedule.store import ScheduleStore, default_schedule_dir
 from cairn.infra.sessions.models import SessionStoreError
 from cairn.infra.skills import SkillLibrary, layered_skills, resolve_skills
+from cairn.infra.task_board.store import (
+    TaskBoardStore,
+    default_task_board_dir,
+    ensure_outside_workspace,
+)
 from cairn.infra.tools.filesystem_access import normalize_access_root
 from cairn.infra.wechat.state import default_state_dir
 from cairn.infra.workspace.workspace import Workspace
@@ -71,6 +77,14 @@ from cairn.runtime.scheduling.tools import (
     ScheduleManageTool,
 )
 from cairn.runtime.session import SessionState
+from cairn.runtime.task_board.service import TaskBoardService
+from cairn.runtime.task_board.tools import (
+    TaskCreateTool,
+    TaskDetailTool,
+    TaskListTool,
+    TaskTodoTool,
+    TaskUpdateTool,
+)
 from cairn.runtime.turn.compaction import CompactionOutcome
 from cairn.runtime.turn.hook import run_compaction
 from cairn.runtime.turn.steering import PendingMessage, SteerQueue
@@ -114,6 +128,7 @@ from cairn.terminal.output import (
 from cairn.terminal.schedule.controller import ScheduleController
 from cairn.terminal.selection import parse_selection_tokens
 from cairn.terminal.submission import PendingLine
+from cairn.terminal.task_board.controller import TaskBoardController
 from cairn.terminal.wechat.app import wechat_app
 from cairn.terminal.wechat.session import WechatSessionController
 
@@ -1208,10 +1223,20 @@ async def main(
     print_banner()
 
     workspace = Workspace(Path.cwd())
+    task_board_root = default_task_board_dir()
+    ensure_outside_workspace(task_board_root, workspace.root)
+    task_board_service = TaskBoardService(
+        TaskBoardStore(task_board_root),
+        project=str(workspace.root),
+        session_id=f"cli-{os.getpid()}",
+        source=TaskSource.CLI,
+    )
     trace_root = Path(".cairn/traces")
     exporter, trace_sink = _build_trace_sink(trace_root, env_file_values)
     tracer = Tracer(trace_sink)
     command_context = CommandContext(trace_store=TraceStore(trace_root))
+    task_controller = TaskBoardController(task_board_service)
+    command_context.task_command = task_controller.command
     # The prompt is bound once the frame exists, because the surface is where an
     # approval is given. Until then the console prompt is the only option, and it is
     # what the startup bootstrap uses.
@@ -1239,11 +1264,24 @@ async def main(
     # application repaints over. Off terminal there is nothing to repaint, and the
     # display already falls back to printing each block once.
     frame = TranscriptView() if _interactive_terminal() else None
+
     # With a surface to ask on, tool approvals go there: the console prompt would
     # block the loop the surface is drawn on, so it could never be answered. Without
     # one, the handler keeps the prompt it was built with.
+    def _refresh_task_board() -> None:
+        if frame is not None:
+            frame.set_task_board(task_controller.render_lines())
+
     if frame is not None:
         permission_handler.prompt_async = _permission_prompt_for(frame)
+        _refresh_task_board()
+
+        async def _task_command(args: str) -> object:
+            action = await task_controller.command(args)
+            _refresh_task_board()
+            return action
+
+        command_context.task_command = _task_command  # type: ignore[assignment]
     streaming_display = StreamingDisplay(
         live_factory=frame_live_region(frame) if frame is not None else None,
         # Session facts belong under the input when there is one: they are read
@@ -1308,6 +1346,15 @@ async def main(
         skills=skill_catalog,
         personal_context=(personal_memory.render_context() if memory_enabled else ""),
     )
+
+    for task_tool in (
+        TaskCreateTool(task_board_service),
+        TaskListTool(task_board_service),
+        TaskDetailTool(task_board_service),
+        TaskUpdateTool(task_board_service),
+        TaskTodoTool(task_board_service),
+    ):
+        agent.tools.register_tool(task_tool)
 
     task_gate = asyncio.Lock()
 

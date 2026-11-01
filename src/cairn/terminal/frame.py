@@ -177,6 +177,8 @@ class TranscriptView:
         # looking like a command.
         self._palette = Palette()
         self._wx_panel: tuple[str, ...] | None = None
+        #: Optional shared-task bar above the queue; empty means no row at all.
+        self._task_board: tuple[str, ...] = ()
         #: Supplies (root rows, per-command child rows) for the dynamic palette.
         self.on_palette_data: (
             Callable[
@@ -637,6 +639,15 @@ class TranscriptView:
                     dont_extend_height=True,
                 ),
                 Window(height=TRANSCRIPT_GAP_LINES),
+                # The current shared task and its ASCII todos sit just above the
+                # queue, where they are visible while choosing what to do next.
+                Window(
+                    FormattedTextControl(text=self._task_board_control),
+                    height=lambda: Dimension.exact(len(self._task_board)),
+                    wrap_lines=False,
+                    style="class:task-board",
+                    dont_extend_height=True,
+                ),
                 # The queued messages, oldest first, above the composer. Shown as a
                 # stack so a message typed for later stays visible: one that is
                 # accepted and then forgotten is indistinguishable from a dropped
@@ -1015,6 +1026,14 @@ class TranscriptView:
             lines.append(f"\x1b[2m  {hint}\x1b[0m")
         return ANSI("\n".join(lines))
 
+    def set_task_board(self, lines: tuple[str, ...]) -> None:
+        """Set the optional current-task bar; an empty tuple hides it entirely."""
+        self._task_board = tuple(line for line in lines if line.strip())
+        self.repaint()
+
+    def _task_board_control(self) -> ANSI:
+        return ANSI("\n".join(self._task_board))
+
     def _queue_control(self) -> ANSI:
         """The queued messages, with the selected one marked.
 
@@ -1076,6 +1095,7 @@ class TranscriptView:
             + action_rows
             + palette_rows
             + queue_rows
+            + len(self._task_board)
         )
         return max(0, size.rows - reserved)
 

@@ -18,6 +18,7 @@ from cairn.terminal.commands.memory import handle_memory
 from cairn.terminal.commands.model import handle_model
 from cairn.terminal.commands.provider import handle_provider
 from cairn.terminal.commands.schedule import handle_schedule
+from cairn.terminal.commands.task import handle_task
 from cairn.terminal.commands.trace import handle_trace
 from cairn.terminal.commands.wechat import handle_wechat
 
@@ -68,6 +69,15 @@ class CommandRouter:
         if command == "/provider":
             action, interaction = handle_provider(context, args)
             return CommandResult(handled=True, action=action, interaction=interaction)
+
+        if command == "/task":
+            action, interaction = handle_task(context, args)
+            return CommandResult(
+                handled=True,
+                should_exit=False,
+                interaction=interaction,
+                action=action,
+            )
 
         if command == "/memory":
             action, interaction = handle_memory(context, args)
