@@ -285,12 +285,14 @@ class _Service:
         self._startup_pending: list[tuple[str, dict[str, Any]]] = []
         self._typing_tickets: dict[str, str] = {}
 
-    async def _reply(self, sender: str, context: str, text: str) -> bool:
+    async def _reply(
+        self, sender: str, context: str, text: str, *, retries: int = 2
+    ) -> bool:
         if not sender or not context:
             return False
         if self.redact_text is not None:
             text = self.redact_text(text)
-        for attempt in range(2):
+        for attempt in range(retries):
             try:
                 await self.client.send_text(
                     to_user_id=sender, text=text, context_token=context
@@ -303,9 +305,11 @@ class _Service:
         self.report.errors += 1
         return False
 
-    async def _safe_reply(self, sender: str, context: str, text: str) -> bool:
+    async def _safe_reply(
+        self, sender: str, context: str, text: str, *, retries: int = 2
+    ) -> bool:
         with contextlib.suppress(Exception):
-            return await self._reply(sender, context, text)
+            return await self._reply(sender, context, text, retries=retries)
         return False
 
     def _status_text(self) -> str:
@@ -365,13 +369,20 @@ class _Service:
                             inbound.sender,
                             inbound.context_token,
                             f"已收到\uff0c正在安排处理\uff1a{preview}",
+                            retries=1,
                         ),
                         timeout=ACK_TIMEOUT_SECONDS,
                     )
                 except TimeoutError:
                     acknowledged = False
                 if acknowledged:
-                    self.state.mark(key, "started", ack_sent=True)
+                    self.state.mark(key, "started", ack_sent=True, ack_state="sent")
+                else:
+                    # One attempt only: iLink send_text has no stable client_id
+                    # identity here, so a retry could duplicate the receipt when
+                    # the first response was lost. Record the uncertainty; do
+                    # not lose or replay the task.
+                    self.state.mark(key, "started", ack_state="unknown")
             await self._send_typing(inbound, 1)
             result = await self.executor(inbound.text, cancel, task_id)
         except asyncio.CancelledError:

@@ -142,10 +142,15 @@ chain. The standalone `cairn wechat login` / `cairn wechat serve` commands remai
 for headless/server operation. A complete terminal QR is rendered from the iLink `qrcode_img_content` using
 bounded half-block glyphs (quiet zone included; refuses to clip on a terminal too
 narrow for the matrix); the URL is also printed as a fallback. The QR is cleared
-from the composer-adjacent screen after login resolves. While a WeChat task runs,
-the bot sends iLink `sendTyping` (status 1) and cancels it (status 2) when the
-result is sent; iLink has no token-streaming sendMessage, so the observable
-progress is the typing indicator plus the final message.
+from the composer-adjacent screen after login resolves. When a trusted sender's valid text task is durably accepted,
+the bot sends one immediate receipt (`已收到，正在安排处理：<task summary>`) before
+execution, then still sends the final result. The receipt is a separate node from
+the task result. Because iLink `send_text` does not provide a stable client-id
+identity here, the receipt is sent once and never retried: if the response is
+lost, the state records the receipt as unknown rather than risking a duplicate.
+While a WeChat task runs, the bot sends iLink `sendTyping` (status 1) and cancels
+it (status 2) when the result is sent; iLink has no token-streaming sendMessage,
+so the observable progress is the typing indicator plus the final message.
 
 
 ## Scheduled tasks (first version)

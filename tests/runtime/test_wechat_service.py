@@ -843,3 +843,64 @@ def test_cancel_during_ack_marks_cancelled_not_started(tmp_path: Path) -> None:
         assert record.get("ack_attempted") is True
 
     asyncio.run(scenario())
+
+
+def test_lost_ack_response_is_not_retried(tmp_path: Path) -> None:
+    from cairn.terminal.wechat.serve import ServeReport, _Inbound, _Service
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state = WechatState(tmp_path / "state")
+    ack_calls = 0
+
+    class LostAckClient:
+        async def send_text(self, **kwargs: object) -> dict[str, object]:
+            nonlocal ack_calls
+            if "已收到" in str(kwargs.get("text")):
+                ack_calls += 1
+                raise ILinkError("response lost after send")
+            return {}
+
+        async def send_typing(self, **_kwargs: object) -> dict[str, object]:
+            return {}
+
+        async def get_config(self, **_kwargs: object) -> dict[str, object]:
+            return {"typing_ticket": "t"}
+
+    async def executor(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        return HeadlessResult(
+            task_id=task_id,
+            status=HeadlessStatus.COMPLETED,
+            workspace=str(workspace),
+        )
+
+    async def scenario() -> None:
+        service = _Service(
+            config=type("C", (), {"redact_text": None})(),
+            state=state,
+            client=LostAckClient(),  # type: ignore[arg-type]
+            executor=executor,
+            report=ServeReport(),
+            stop_event=None,
+        )
+        service._start_task(
+            "msg:3",
+            _Inbound(
+                key="msg:3",
+                sender="u1",
+                context_token="ctx",
+                text="do it",
+                stable=True,
+            ),
+        )
+        assert service._current is not None
+        await asyncio.wait_for(service._current, timeout=3)
+        record = state.get_record("msg:3")
+        assert record is not None and record["state"] == "completed"
+        assert record.get("ack_attempted") is True
+        assert record.get("ack_state") == "unknown"
+
+    asyncio.run(scenario())
+    assert ack_calls == 1
