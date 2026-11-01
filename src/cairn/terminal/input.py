@@ -21,6 +21,10 @@ def _create_key_bindings() -> KeyBindings:
     def insert_newline(event: KeyPressEvent) -> None:
         event.current_buffer.insert_text("\n")
 
+    @bindings.add("c-j")
+    def insert_newline_control_j(event: KeyPressEvent) -> None:
+        event.current_buffer.insert_text("\n")
+
     return bindings
 
 

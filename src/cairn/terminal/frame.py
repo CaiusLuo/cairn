@@ -119,7 +119,7 @@ QUEUE_STACK_LINES = 3
 #: transcript keeps most of the screen; the shipped agents use 10 (Gemini) or
 #: two-thirds of the screen (Codex), which suits a full-screen layout but not an
 #: inline one.
-COMPOSER_MAX_LINES = 4
+COMPOSER_MAX_LINES = 10
 
 #: Styling for the owned region. Colours are foreground-only on purpose: a filled
 #: pane is indistinguishable from unreadable once a different palette renders it.
@@ -258,6 +258,13 @@ class TranscriptView:
             filter=~Condition(lambda: self._action_open() or self._palette.open),
         )
         def newline(event: object) -> None:
+            self._buffer.insert_text("\n")
+
+        @bindings.add(
+            "c-j",
+            filter=~Condition(lambda: self._action_open() or self._palette.open),
+        )
+        def control_j_newline(event: object) -> None:
             self._buffer.insert_text("\n")
 
         @bindings.add(
@@ -664,11 +671,10 @@ class TranscriptView:
                 HorizontalLine(),
                 Window(
                     BufferControl(buffer=self._buffer, lexer=SelectionTokenLexer()),
-                    # Four lines is the readable size at the bottom of a terminal:
-                    # enough for a pasted sentence or a short list, small enough to
-                    # leave the transcript most of the screen. Beyond it the buffer
-                    # scrolls internally so the transcript never jumps.
+                    # Grow to a typical pasted note, then scroll inside the
+                    # composer so the transcript keeps its place.
                     height=Dimension(min=1, max=COMPOSER_MAX_LINES),
+                    wrap_lines=True,
                     style="class:input",
                     dont_extend_height=True,
                 ),

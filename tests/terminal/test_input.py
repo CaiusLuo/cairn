@@ -75,3 +75,16 @@ def test_ctrl_d_eof_and_partial_buffer_behavior(
                     await cli_input.read()
 
     asyncio.run(scenario())
+
+
+def test_control_j_inserts_newline_instead_of_submitting() -> None:
+    async def scenario() -> None:
+        with create_pipe_input() as pipe_input:
+            cli_input = CliInput(input=pipe_input, output=DummyOutput())
+            read_task = asyncio.create_task(cli_input.read())
+            pipe_input.send_text("line 1\n")
+            await _assert_still_editing(read_task)
+            pipe_input.send_text("line 2\r")
+            assert await asyncio.wait_for(read_task, timeout=1) == "line 1\nline 2"
+
+    asyncio.run(scenario())

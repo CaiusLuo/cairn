@@ -103,7 +103,7 @@ def test_the_application_does_not_own_the_screen() -> None:
 
 def test_the_composer_is_capped_at_four_lines() -> None:
     """Beyond the cap the buffer scrolls internally, so the transcript never jumps."""
-    assert COMPOSER_MAX_LINES == 4
+    assert COMPOSER_MAX_LINES == 10
 
 
 def test_the_activity_slot_is_bounded() -> None:
@@ -1814,6 +1814,25 @@ def test_real_keys_multiline_history_moves_within_record_then_older() -> None:
             reader.cancel()
             with suppress(asyncio.CancelledError):
                 await reader
+            await view.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_frame_control_j_inserts_newline_not_submit() -> None:
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            view, _, _ = _view()
+            reader = asyncio.create_task(view.read())
+            await asyncio.sleep(0)
+            pipe.send_text("line 1\n")
+            await asyncio.sleep(0.05)
+            assert view._buffer.text == "line 1\n"
+            pipe.send_text("line 2\r")
+            assert (await asyncio.wait_for(reader, timeout=2)).text == "line 1\nline 2"
             await view.aclose()
 
     asyncio.run(scenario())
