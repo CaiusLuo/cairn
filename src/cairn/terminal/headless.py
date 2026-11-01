@@ -49,7 +49,9 @@ from cairn.infra.skills import SkillLibrary, layered_skills, resolve_skills
 from cairn.infra.tools.base import Tool
 from cairn.infra.tools.filesystem_access import normalize_access_root
 from cairn.infra.workspace.workspace import Workspace
+from cairn.runtime.agent import Agent
 from cairn.runtime.artifacts import atomic_write_text
+from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.mcp.activation import McpActivationError, open_mcp_servers
 from cairn.runtime.model_executor import ModelExecutor
 from cairn.runtime.provider_runtime import build_provider_runtime
@@ -311,6 +313,8 @@ async def run_headless_task(
     system_prompt: str | None = None,
     personal_context: str = "",
     extra_tools: Sequence[Tool] = (),
+    durable_session_factory: Callable[[Agent], DurableSession] | None = None,
+    provider_name: str | None = None,
 ) -> HeadlessResult:
     """Run one task against ``workspace`` and return a machine-readable result.
 
@@ -406,6 +410,8 @@ async def run_headless_task(
             secret_env_keys=secret_env_keys,
             skills=skills,
             extra_tools=(*mcp_tools, *extra_tools),
+            durable_session_factory=durable_session_factory,
+            provider_name=provider_name,
             system_prompt=system_prompt,
             personal_context=personal_context,
         )
@@ -568,6 +574,8 @@ async def _run_via_config_async(
     on_secrets_resolved: Callable[[Sequence[str]], None] | None = None,
     personal_context_provider: Callable[[], str] | None = None,
     extra_tools: Sequence[Tool] = (),
+    durable_session_factory: Callable[[Agent], DurableSession] | None = None,
+    provider_name: str | None = None,
 ) -> HeadlessResult:
     """Build the configured provider runtime and run one task.
 
@@ -643,6 +651,8 @@ async def _run_via_config_async(
         system_prompt=system_prompt,
         personal_context=personal_context,
         extra_tools=extra_tools,
+        durable_session_factory=durable_session_factory,
+        provider_name=provider_name,
     )
 
 

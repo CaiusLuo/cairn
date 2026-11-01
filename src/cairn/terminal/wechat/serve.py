@@ -12,11 +12,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import inspect
 import json
 import os
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +39,14 @@ from cairn.infra.schedule.store import ScheduleStore
 from cairn.infra.schedule.store import (
     ensure_outside_workspace as ensure_schedule_outside_workspace,
 )
+from cairn.infra.sessions.host import observe_workspace
+from cairn.infra.sessions.models import (
+    HostResolution,
+    ProviderReference,
+    SessionBinding,
+    SessionStoreError,
+)
+from cairn.infra.sessions.store import SessionStore
 from cairn.infra.task_board.store import TaskBoardStore, default_task_board_dir
 from cairn.infra.tools.base import Tool
 from cairn.infra.wechat.ilink import (
@@ -49,6 +60,8 @@ from cairn.infra.wechat.state import (
     WechatState,
     ensure_outside_workspace,
 )
+from cairn.infra.workspace.workspace import Workspace
+from cairn.runtime.agent import Agent
 from cairn.runtime.agent_memory.service import PersonalMemoryService
 from cairn.runtime.agent_memory.tools import (
     MemoryCorrectTool,
@@ -56,6 +69,7 @@ from cairn.runtime.agent_memory.tools import (
     MemoryRememberTool,
     MemorySearchTool,
 )
+from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.lifecycle import await_owned
 from cairn.runtime.scheduling.runner import ScheduleRunner
 from cairn.runtime.task_board.service import TaskBoardService
@@ -228,13 +242,24 @@ def default_task_executor(
     agent_home = default_agent_home()
     ensure_agent_home_outside_workspace(agent_home, config.workspace)
     personal_memory = PersonalMemoryService(AgentMemoryStore(agent_home))
-    personal_memory.add_secret_values((config.account.bot_token,))
+    known_secret_values: list[str] = [config.account.bot_token]
+    personal_memory.add_secret_values(tuple(known_secret_values))
     memory_tools = (
         MemorySearchTool(personal_memory),
         MemoryRememberTool(personal_memory),
         MemoryForgetTool(personal_memory),
         MemoryCorrectTool(personal_memory),
     )
+    try:
+        project = load_project_providers(config.workspace / ".cairn" / "models.toml")
+        provider = default_provider(
+            project, os.environ, dotenv_values(config.workspace / ".env")
+        )
+        secret_env_keys = frozenset(
+            named.config.api_key_env for named in (project.providers or (provider,))
+        )
+    except (OSError, ValueError):
+        secret_env_keys = frozenset()
     task_board_root = default_task_board_dir()
     ensure_outside_workspace(task_board_root, config.workspace)
     task_board = TaskBoardService(
@@ -256,12 +281,124 @@ def default_task_executor(
     wechat_task_tools = board_tools(task_board)
 
     def remember_secrets(values: Sequence[str]) -> None:
+        for value in values:
+            if isinstance(value, str) and value and value not in known_secret_values:
+                known_secret_values.append(value)
         personal_memory.add_secret_values(values)
         if on_secrets_resolved is not None:
             on_secrets_resolved(values)
 
+    session_root = config.state_dir / "sessions"
+    ensure_outside_workspace(session_root, config.workspace)
+    session_root.mkdir(parents=True, exist_ok=True)
+    session_root.chmod(0o700)
+    active_sessions: list[DurableSession] = []
+
+    def durable_factory(sender: str):  # type: ignore[no-untyped-def]
+        digest = hashlib.sha256(f"wechat:{config.workspace}:{sender}".encode()).digest()
+        session_id = str(uuid.UUID(bytes=digest[:16], version=4))
+
+        def provider_reference(agent: Agent) -> ProviderReference | None:
+            manager = agent.model_executor.manager
+            if manager is None:
+                return None
+            group = manager.current_model()
+            provider_config = manager.config
+            return ProviderReference(
+                provider=agent.provider_name or "",
+                model_group=group.name,
+                model_ids=group.model_ids,
+                config_digest=hashlib.sha256(
+                    json.dumps(
+                        [
+                            provider_config.base_url,
+                            provider_config.api_key_env,
+                            group.name,
+                            group.model_ids,
+                        ]
+                    ).encode("utf-8")
+                ).hexdigest(),
+                system_prompt_digest=hashlib.sha256(
+                    agent.system_prompt.encode("utf-8")
+                ).hexdigest(),
+                context_budget=agent.context_builder.budget.max_tokens,
+                output_reserve=agent.context_builder.budget.response_tokens,
+                max_steps=config.max_steps,
+            )
+
+        def make_binding(agent: Agent) -> SessionBinding:
+            return SessionBinding(
+                session_id=session_id,
+                workspace=observe_workspace(
+                    Workspace(config.workspace), secret_env_keys
+                ),
+                provider=provider_reference(agent),
+                observed_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            )
+
+        def build(agent: Agent) -> DurableSession:
+            store = SessionStore(
+                session_root,
+                forbidden_roots=(config.workspace,),
+                sensitive_values=tuple(known_secret_values),
+            )
+            try:
+                observation = make_binding(agent)
+                store.inspect(session_id)
+            except SessionStoreError as exc:
+                if exc.code not in {"session_missing", "session_not_found"}:
+                    store.close()
+                    raise
+                try:
+                    session = DurableSession.create(
+                        store,
+                        agent=agent,
+                        binding=observation,
+                        observe_binding=lambda: make_binding(agent),
+                    )
+                    active_sessions.append(session)
+                    return session
+                except BaseException:
+                    store.close()
+                    raise
+            except BaseException:
+                store.close()
+                raise
+            try:
+                session = DurableSession.reopen(
+                    store,
+                    session_id,
+                    agent=agent,
+                    binding=observation,
+                    observe_binding=lambda: make_binding(agent),
+                )
+                report = session.inspect()
+                if report.status != "clean":
+                    store.close()
+                    raise SessionStoreError("recovery_required")
+                final_binding = make_binding(agent)
+                session.reconcile(
+                    report,
+                    host_resolution=HostResolution(
+                        session_id=session_id,
+                        turn_id=None,
+                        actor="wechat-host",
+                        resolved_at_utc=datetime.now(UTC)
+                        .isoformat()
+                        .replace("+00:00", "Z"),
+                        binding=final_binding,
+                    ),
+                )
+                active_sessions.append(session)
+                return session
+            except BaseException:
+                store.close()
+                raise
+
+        return build
+
     async def execute(
-        prompt: str, cancel: asyncio.Event, task_id: str
+        prompt: str, cancel: asyncio.Event, task_id: str, *, sender: str = ""
     ) -> HeadlessResult:
         task_tools = wechat_task_tools
         if task_source is TaskSource.SCHEDULE:
@@ -273,25 +410,33 @@ def default_task_executor(
                     source=TaskSource.SCHEDULE,
                 )
             )
-        result = await _run_via_config_async(
-            workspace=config.workspace,
-            prompt=prompt,
-            task_id=task_id,
-            grant_shell=config.allow_shell,
-            approval=config.approval,
-            max_steps=config.max_steps,
-            trace_dir=config.trace_dir,
-            check_command=config.check_command,
-            check_timeout=config.check_timeout,
-            selected_skills=config.selected_skills,
-            mcp_configs=config.mcp_configs,
-            grant_mcp=config.allow_mcp,
-            grant_network=config.allow_network,
-            cancellation_event=cancel,
-            on_secrets_resolved=remember_secrets,
-            personal_context_provider=personal_memory.render_context,
-            extra_tools=(*memory_tools, *task_tools),
-        )
+        active_sessions.clear()
+        try:
+            result = await _run_via_config_async(
+                workspace=config.workspace,
+                prompt=prompt,
+                task_id=task_id,
+                grant_shell=config.allow_shell,
+                approval=config.approval,
+                max_steps=config.max_steps,
+                trace_dir=config.trace_dir,
+                check_command=config.check_command,
+                check_timeout=config.check_timeout,
+                selected_skills=config.selected_skills,
+                mcp_configs=config.mcp_configs,
+                grant_mcp=config.allow_mcp,
+                grant_network=config.allow_network,
+                cancellation_event=cancel,
+                on_secrets_resolved=remember_secrets,
+                personal_context_provider=personal_memory.render_context,
+                extra_tools=(*memory_tools, *task_tools),
+                durable_session_factory=durable_factory(sender) if sender else None,
+            )
+        finally:
+            for session in active_sessions:
+                with contextlib.suppress(Exception):
+                    session.close()
+            active_sessions.clear()
         with contextlib.suppress(Exception):
             # Do not copy raw task input/result into the daily journal; memory
             # tools decide candidates inside the turn.
@@ -320,6 +465,7 @@ class _Service:
         self.report = report
         self.stop_event = stop_event
         self.redact_text = redact_text
+        self._executor_takes_sender = "sender" in inspect.signature(executor).parameters
         self._current: asyncio.Task[None] | None = None
         self._current_key: str | None = None
         self._current_started = 0.0
@@ -430,7 +576,12 @@ class _Service:
                     # not lose or replay the task.
                     self.state.mark(key, "started", ack_state="unknown")
             await self._send_typing(inbound, 1)
-            result = await self.executor(inbound.text, cancel, task_id)
+            if self._executor_takes_sender:
+                result = await self.executor(  # type: ignore[call-arg]
+                    inbound.text, cancel, task_id, sender=inbound.sender
+                )
+            else:
+                result = await self.executor(inbound.text, cancel, task_id)
         except asyncio.CancelledError:
             self.state.mark(key, "cancelled")
             if not self._stopping:
@@ -706,10 +857,16 @@ async def serve_wechat(
     report = ServeReport()
     task_gate = asyncio.Lock()
 
+    executor_takes_sender = "sender" in inspect.signature(executor).parameters
+
     async def gated_executor(
-        prompt: str, cancel: asyncio.Event, task_id: str
+        prompt: str, cancel: asyncio.Event, task_id: str, *, sender: str = ""
     ) -> HeadlessResult:
         async with task_gate:
+            if executor_takes_sender:
+                return await executor(  # type: ignore[call-arg]
+                    prompt, cancel, task_id, sender=sender
+                )
             return await executor(prompt, cancel, task_id)
 
     scheduler_task: asyncio.Task[object] | None = None

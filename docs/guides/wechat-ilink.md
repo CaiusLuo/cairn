@@ -142,7 +142,15 @@ chain. The standalone `cairn wechat login` / `cairn wechat serve` commands remai
 for headless/server operation. A complete terminal QR is rendered from the iLink `qrcode_img_content` using
 bounded half-block glyphs (quiet zone included; refuses to clip on a terminal too
 narrow for the matrix); the URL is also printed as a fallback. The QR is cleared
-from the composer-adjacent screen after login resolves. When a trusted sender's valid text task is durably accepted,
+from the composer-adjacent screen after login resolves. Standalone WeChat conversations use the existing durable SessionStore/DurableSession
+path: each sender is bound to a stable Session ID, and the next request reopens
+the committed checkpoint (including tool calls/results) before `run_turn`.
+The service refuses to create a new Session when an existing one is unreadable
+or requires recovery; it does not silently substitute a blank conversation.
+Session stores and conversation snapshots live under the host-private state
+directory, outside the Agent-writable Workspace.
+
+When a trusted sender's valid text task is durably accepted,
 the bot sends one immediate receipt (`已收到，正在安排处理`) before execution,
 without echoing the inbound prompt; it then still sends the final result. The receipt is a separate node from
 the task result. Because iLink `send_text` does not provide a stable client-id

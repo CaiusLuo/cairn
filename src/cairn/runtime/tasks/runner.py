@@ -1,6 +1,6 @@
 import asyncio
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import ExitStack, suppress
 from time import perf_counter
 
@@ -62,6 +62,8 @@ class CodingTaskRunner:
         extra_tools: Sequence[Tool] = (),
         system_prompt: str | None = None,
         personal_context: str = "",
+        provider_name: str | None = None,
+        durable_session_factory: Callable[[Agent], DurableSession] | None = None,
     ) -> None:
         if context_builder is not None and context_budget is not None:
             raise ValueError("Provide context_builder or context_budget, not both")
@@ -82,6 +84,8 @@ class CodingTaskRunner:
         self.extra_tools = extra_tools
         self.system_prompt = system_prompt
         self.personal_context = personal_context
+        self.durable_session_factory = durable_session_factory
+        self.provider_name = provider_name
         self.last_summary: TaskExecutionSummary | None = None
 
     async def run(
@@ -331,6 +335,24 @@ class CodingTaskRunner:
 
         try:
             try:
+                if durable_session is None and self.durable_session_factory is not None:
+                    agent = build_agent(
+                        workspace=self.workspace,
+                        llm=self.llm,
+                        permission_handler=self.permission_handler,
+                        event_handler=self.event_handler,
+                        tracer=self.tracer,
+                        context_builder=self.context_builder,
+                        model_executor=self.model_executor,
+                        skills=self.skills,
+                        extra_tools=self.extra_tools,
+                        secret_env_keys=self.secret_env_keys,
+                        system_prompt=self.system_prompt,
+                        personal_context=self.personal_context,
+                    )
+                    if self.provider_name is not None:
+                        agent.provider_name = self.provider_name
+                    durable_session = self.durable_session_factory(agent)
                 if cancellation_event is not None and cancellation_event.is_set():
                     status = TaskStatus.CANCELLED
                 elif durable_session is not None:
@@ -373,6 +395,8 @@ class CodingTaskRunner:
                         system_prompt=self.system_prompt,
                         personal_context=self.personal_context,
                     )
+                    if self.provider_name is not None:
+                        agent.provider_name = self.provider_name
                     if selected_skills:
                         response = await self._turn(
                             agent,

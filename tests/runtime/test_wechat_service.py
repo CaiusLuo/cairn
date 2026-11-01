@@ -187,7 +187,7 @@ def test_login_rejects_insecure_confirmed_base_url(tmp_path: Path) -> None:
         with pytest.raises(QRLoginError):
             asyncio.run(
                 run_login(
-                    state_dir=tmp_path / "state",
+                    state_dir=tmp_path.parent / (tmp_path.name + "-state"),
                     workspace=workspace,
                     base_url=fake.url,
                     sleep=_noop,
@@ -1030,9 +1030,11 @@ def test_default_wechat_executor_exposes_shared_task_tools(
     monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(safe_root))
     config = ServeConfig(
         workspace=tmp_path,
-        state_dir=tmp_path / "state",
+        state_dir=tmp_path.parent / (tmp_path.name + "-state"),
         account=WechatAccount(
-            bot_token="token", ilink_bot_id="bot", base_url="http://127.0.0.1"
+            bot_token="bot-token-very-long-123",
+            ilink_bot_id="bot",
+            base_url="http://127.0.0.1",
         ),
         approval=None,
         allowed_senders=frozenset({"u1"}),
@@ -1063,7 +1065,9 @@ def test_default_wechat_executor_rejects_task_board_inside_workspace(
         workspace=tmp_path,
         state_dir=tmp_path.parent / (tmp_path.name + "-state"),
         account=WechatAccount(
-            bot_token="token", ilink_bot_id="bot", base_url="http://127.0.0.1"
+            bot_token="bot-token-very-long-123",
+            ilink_bot_id="bot",
+            base_url="http://127.0.0.1",
         ),
         approval=None,
         allowed_senders=frozenset({"u1"}),
@@ -1077,3 +1081,67 @@ def test_default_wechat_executor_rejects_task_board_inside_workspace(
     monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(link))
     with pytest.raises(ValueError):
         default_task_executor(config)
+
+
+def test_default_wechat_executor_restores_durable_history_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    from cairn.core.budget import RunBudget
+    from cairn.core.context import ContextBudget
+    from cairn.core.models import LLMResponse
+    from cairn.infra.wechat.state import WechatAccount
+    from cairn.terminal.headless import run_headless_task
+    from cairn.terminal.wechat.serve import ServeConfig, default_task_executor
+    from tests.support.git import initialize_repository
+    from tests.support.runtime import SequenceLLM
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    initialize_repository(workspace)
+    safe_board = tmp_path.parent / (tmp_path.name + "-board")
+    safe_state = tmp_path.parent / (tmp_path.name + "-state")
+    monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(safe_board))
+    llm = SequenceLLM(
+        [LLMResponse(content="first answer"), LLMResponse(content="second answer")]
+    )
+
+    async def fake_run(**kwargs: object) -> HeadlessResult:
+        return await run_headless_task(
+            workspace=workspace,
+            prompt=str(kwargs["prompt"]),
+            grant_workspace_trust=True,
+            grant_shell=False,
+            llm=llm,
+            budget=RunBudget(max_steps=20),
+            context_budget=ContextBudget(max_tokens=100000, response_tokens=1000),
+            task_id=str(kwargs["task_id"]),
+            durable_session_factory=kwargs.get("durable_session_factory"),  # type: ignore[arg-type]
+            provider_name=None,
+        )
+
+    monkeypatch.setattr("cairn.terminal.wechat.serve._run_via_config_async", fake_run)
+    config = ServeConfig(
+        workspace=workspace,
+        state_dir=safe_state,
+        account=WechatAccount(
+            bot_token="bot-token-very-long-123",
+            ilink_bot_id="bot",
+            base_url="http://127.0.0.1",
+        ),
+        approval=None,
+        allowed_senders=frozenset({"u1"}),
+    )
+
+    async def flow() -> None:
+        first = default_task_executor(config)
+        await first("first prompt", asyncio.Event(), "one", sender="u1")  # type: ignore[call-arg]
+        # Simulate service restart: a fresh executor with the same host-private state.
+        second = default_task_executor(config)
+        await second("second prompt", asyncio.Event(), "two", sender="u1")  # type: ignore[call-arg]
+
+    asyncio.run(flow())
+    assert len(llm.calls) == 2
+    assert "first prompt" in [m.content for m in llm.calls[1][0]]
+    assert "first answer" in [m.content for m in llm.calls[1][0]]
