@@ -21,7 +21,6 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from dotenv import dotenv_values
 
@@ -509,7 +508,7 @@ class _Service:
         self._current_started = 0.0
         self._current_cancel: asyncio.Event | None = None
         self._stopping = False
-        self._startup_pending: list[tuple[str, dict[str, Any]]] = []
+        self._queue_error: Exception | None = None
         self._typing_tickets: dict[str, str] = {}
 
     async def _reply(
@@ -540,10 +539,11 @@ class _Service:
         return False
 
     def _status_text(self) -> str:
+        queued = len(self.state.records_in_states(frozenset({"queueing", "queued"})))
         if self._current is None:
-            return "当前没有运行中的任务。"
+            return f"当前没有运行中的任务\uff0c排队 {queued} 项。"
         elapsed = max(0.0, time.monotonic() - self._current_started)
-        return f"任务正在执行(已运行 {elapsed:.0f}s)。"
+        return f"任务正在执行(已运行 {elapsed:.0f}s)\uff0c排队 {queued} 项。"
 
     async def _cancel_current(self) -> bool:
         task = self._current
@@ -662,19 +662,91 @@ class _Service:
 
         def _clear(done: asyncio.Task[None]) -> None:
             # A task can be cancelled before its coroutine gets its first step.
-            # In that case _run_task's try/except never executes; settle the
-            # persisted fact here, but never overwrite a completed/cancelled
-            # record from a later task.
-            if done.cancelled():
-                record = self.state.get_record(key) or {}
-                if record.get("state") == "started":
-                    self.state.mark(key, "cancelled")
-            if self._current is task:
-                self._current = None
-                self._current_key = None
-                self._current_cancel = None
+            try:
+                if done.cancelled():
+                    record = self.state.get_record(key) or {}
+                    if record.get("state") == "started":
+                        self.state.mark(key, "cancelled")
+                else:
+                    error = done.exception()
+                    if error is not None:
+                        raise error
+                if self._current is task:
+                    self._current = None
+                    self._current_key = None
+                    self._current_cancel = None
+                    self._start_next_queued()
+            except Exception as exc:
+                # Persistence/dispatch failures stop admission instead of losing
+                # a queued task or silently launching later work.
+                self._queue_error = exc
+                self._stopping = True
 
         task.add_done_callback(_clear)
+
+    def _start_next_queued(self) -> None:
+        if (
+            self._stopping
+            or self._current is not None
+            or (self.stop_event is not None and self.stop_event.is_set())
+        ):
+            return
+        for key, record in self.state.records_in_state("queued"):
+            sender = record.get("sender")
+            context = record.get("context_token")
+            text = record.get("text")
+            if (
+                not isinstance(sender, str)
+                or sender not in self.config.allowed_senders
+                or not isinstance(context, str)
+                or not context
+                or not isinstance(text, str)
+                or record.get("is_text", bool(text)) is not True
+                or record.get("stable", True) is not True
+            ):
+                self.state.mark(key, "rejected", reason="invalid_queued_message")
+                continue
+            self._start_task(
+                key, _Inbound(key=key, sender=sender, context_token=context, text=text)
+            )
+            return
+
+    async def _queue_inbound(self, inbound: _Inbound) -> None:
+        assert inbound.key is not None
+        key = inbound.key
+        record = self.state.get_record(key) or {}
+        if record.get("state") == "queued":
+            self._start_next_queued()
+            return
+        if record.get("state") == "queueing" or record.get("ack_attempted"):
+            # A lost acknowledgement is not repeated, but the unstarted task
+            # remains eligible for execution.
+            self.state.mark(key, "queued", ack_state=record.get("ack_state", "unknown"))
+            self._start_next_queued()
+            return
+
+        self.state.mark(key, "queueing", ack_attempted=True)
+        text = (
+            "已收到\uff0c已加入队列"
+            if self._current is not None
+            else "已收到\uff0c正在安排处理"
+        )
+        try:
+            acknowledged = await asyncio.wait_for(
+                self._safe_reply(
+                    inbound.sender, inbound.context_token, text, retries=1
+                ),
+                timeout=ACK_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            acknowledged = False
+        self.state.mark(
+            key,
+            "queued",
+            ack_sent=acknowledged,
+            ack_state="sent" if acknowledged else "unknown",
+        )
+        self._start_next_queued()
 
     async def _handle(self, inbound: _Inbound) -> None:
         if not inbound.sender or inbound.context_token == "":
@@ -724,15 +796,7 @@ class _Service:
                     inbound.sender, inbound.context_token, "当前没有可取消的任务。"
                 )
             return
-        if self._current is not None:
-            self.state.mark(inbound.key, "busy")
-            await self._safe_reply(
-                inbound.sender,
-                inbound.context_token,
-                "当前有任务正在执行, 请稍后重新发送。",
-            )
-            return
-        self._start_task(inbound.key, inbound)
+        await self._queue_inbound(inbound)
 
     async def _recover(self) -> None:
         for key, record in self.state.records_in_state("started"):
@@ -747,7 +811,24 @@ class _Service:
                 context,
                 "上次任务在服务重启/中断时状态不确定, 已标记中断, 不会自动重放。",
             )
-        self._startup_pending = self.state.records_in_state("received")
+        for key, record in self.state.records_in_states(
+            frozenset({"received", "queueing", "queued"})
+        ):
+            if record.get("state") == "queued":
+                continue
+            raw_text = record.get("text")
+            is_text = record.get("is_text", bool(raw_text)) is True
+            raw_sender = record.get("sender")
+            raw_context = record.get("context_token")
+            recovered = _Inbound(
+                key=key,
+                sender=raw_sender if isinstance(raw_sender, str) else "",
+                context_token=raw_context if isinstance(raw_context, str) else "",
+                text=raw_text if is_text and isinstance(raw_text, str) else None,
+                stable=record.get("stable", True) is True,
+            )
+            await self._handle(recovered)
+        self._start_next_queued()
 
     async def run(self) -> ServeReport:
         ensure_outside_workspace(self.config.state_dir, self.config.workspace)
@@ -764,17 +845,6 @@ class _Service:
                     and self.report.polls >= self.config.max_polls
                 ):
                     break
-                if self._current is None and self._startup_pending:
-                    key, record = self._startup_pending.pop(0)
-                    recovered = _Inbound(
-                        key=key,
-                        sender=str(record.get("sender", "")),
-                        context_token=str(record.get("context_token", "")),
-                        text=str(record.get("text", "")),
-                        stable=bool(record.get("stable", True)),
-                    )
-                    await self._handle(recovered)
-                    continue
                 self.report.polls += 1
                 try:
                     data = await self.client.get_updates(
@@ -826,6 +896,7 @@ class _Service:
                         context_token=stored.context_token,
                         text=stored.text or "",
                         stable=stable,
+                        is_text=stored.text is not None,
                     )
                     pending.append((key, stored, stable))
                 if isinstance(next_cursor, str) and next_cursor:
@@ -845,6 +916,8 @@ class _Service:
             with contextlib.suppress(ILinkError, asyncio.CancelledError):
                 notify = asyncio.create_task(self.client.notify_stop())
                 await await_owned(notify)
+        if self._queue_error is not None:
+            raise self._queue_error
         return self.report
 
 

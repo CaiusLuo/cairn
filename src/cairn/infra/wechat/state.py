@@ -134,6 +134,7 @@ class WechatState:
             self._state = {
                 "version": STATE_VERSION,
                 "cursor": "",
+                "next_sequence": 1,
                 "messages": {},
             }
             return self._state
@@ -149,9 +150,21 @@ class WechatState:
             # A damaged state file must fail closed: silently starting from an
             # empty dedupe map could re-execute an already-started task.
             raise ValueError("WeChat runtime state is damaged")
+        sequences: set[int] = set()
+        for record in messages.values():
+            if not isinstance(record, dict) or "sequence" not in record:
+                continue
+            sequence = record["sequence"]
+            if type(sequence) is not int or sequence < 1 or sequence in sequences:
+                raise ValueError("WeChat message ordering is damaged")
+            sequences.add(sequence)
+        next_sequence = raw.get("next_sequence", max(sequences, default=0) + 1)
+        if type(next_sequence) is not int or next_sequence <= max(sequences, default=0):
+            raise ValueError("WeChat message ordering is damaged")
         self._state = {
             "version": STATE_VERSION,
             "cursor": cursor,
+            "next_sequence": next_sequence,
             "messages": messages,
         }
         return self._state
@@ -193,17 +206,23 @@ class WechatState:
         context_token: str,
         text: str,
         stable: bool = True,
+        is_text: bool = True,
     ) -> bool:
         """Persist a new received fact; False when the key already exists."""
-        messages = self.load()["messages"]
+        state = self.load()
+        messages = state["messages"]
         if key in messages:
             return False
+        sequence = state["next_sequence"]
+        state["next_sequence"] = sequence + 1
         messages[key] = {
             "state": "received",
+            "sequence": sequence,
             "sender": sender,
             "context_token": context_token,
             "text": text,
             "stable": stable,
+            "is_text": is_text,
             "updated": time.time(),
         }
         self.flush()
@@ -221,12 +240,31 @@ class WechatState:
         self.flush()
 
     def records_in_state(self, state: str) -> list[tuple[str, dict[str, Any]]]:
+        return self.records_in_states(frozenset({state}))
+
+    def records_in_states(
+        self, states: frozenset[str]
+    ) -> list[tuple[str, dict[str, Any]]]:
         messages = self.load()["messages"]
-        return [
+        records = [
             (key, record)
             for key, record in messages.items()
-            if isinstance(record, dict) and record.get("state") == state
+            if isinstance(record, dict) and record.get("state") in states
         ]
+
+        def order(item: tuple[str, dict[str, Any]]) -> tuple[int, float | int, str]:
+            key, record = item
+            sequence = record.get("sequence")
+            if type(sequence) is int:
+                return (1, sequence, key)
+            updated = record.get("updated")
+            return (
+                0,
+                float(updated) if isinstance(updated, (int, float)) else 0.0,
+                key,
+            )
+
+        return sorted(records, key=order)
 
 
 class WechatLockError(RuntimeError):

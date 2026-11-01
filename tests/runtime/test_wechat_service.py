@@ -328,7 +328,8 @@ def test_serve_status_busy_and_cancel(tmp_path: Path) -> None:
 
     async def slow(prompt: str, cancel: asyncio.Event, task_id: str) -> HeadlessResult:
         calls.append(prompt)
-        await asyncio.sleep(30)
+        if prompt == "slow task":
+            await asyncio.sleep(30)
         return HeadlessResult(
             task_id=task_id, status=HeadlessStatus.COMPLETED, workspace=str(workspace)
         )
@@ -350,13 +351,16 @@ def test_serve_status_busy_and_cancel(tmp_path: Path) -> None:
             )
         )
         replies = "\n".join(str(msg.get("item_list")) for msg in fake.sent)
-        assert calls == ["slow task"]
+        assert calls == ["slow task", "another"]
         assert "正在执行" in replies
-        assert "当前有任务正在执行" in replies
+        assert "已加入队列" in replies
         assert "取消" in replies
-        assert replies.count("已收到") == 1
-        record = WechatState(state_dir).get_record("msg:1")
+        assert replies.count("已收到") == 2
+        reloaded = WechatState(state_dir)
+        record = reloaded.get_record("msg:1")
         assert record is not None and record["state"] == "cancelled"
+        queued = reloaded.get_record("msg:3")
+        assert queued is not None and queued["state"] == "completed"
 
 
 def test_serve_restart_marks_started_as_interrupted_and_never_replays(
@@ -2124,3 +2128,388 @@ def test_wechat_tasks_link_to_their_persistent_sender_session(
             tasks["A first"].session_id.removeprefix("wechat:"),
             tasks["B first"].session_id.removeprefix("wechat:"),
         } == session_ids
+
+
+def test_serve_queues_busy_messages_in_received_order(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state = WechatState(tmp_path / "state")
+    calls: list[str] = []
+
+    async def flow(fake: FakeILink) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        stop = asyncio.Event()
+
+        async def execute(
+            prompt: str, cancel: asyncio.Event, task_id: str
+        ) -> HeadlessResult:
+            calls.append(prompt)
+            if prompt == "first":
+                started.set()
+                await release.wait()
+            return HeadlessResult(
+                task_id=task_id,
+                status=HeadlessStatus.COMPLETED,
+                workspace=str(workspace),
+                final_response="done",
+            )
+
+        fake.updates = [
+            {"ret": 0, "msgs": [_msg("first", mid=99)], "get_updates_buf": "c1"},
+            {
+                "ret": 0,
+                "msgs": [_msg("A", mid=10), _msg("B", mid=2), _msg("C", mid=1)],
+                "get_updates_buf": "c2",
+            },
+            {"ret": 0, "msgs": [_msg("A", mid=10)], "get_updates_buf": "c3"},
+        ]
+        config = _config(fake, workspace, state.root, max_polls=None)
+        service = asyncio.create_task(
+            serve_wechat(
+                config=config,
+                client=_client(fake),
+                state=state,
+                task_executor=execute,
+                stop_event=stop,
+                allow_insecure_local_http=True,
+            )
+        )
+
+        async def wait_for_state(keys: tuple[str, ...], expected: str) -> None:
+            while not all(
+                (state.get_record(key) or {}).get("state") == expected for key in keys
+            ):
+                await asyncio.sleep(0.01)
+
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            await asyncio.wait_for(
+                wait_for_state(("msg:10", "msg:2", "msg:1"), "queued"), timeout=5
+            )
+            assert calls == ["first"]
+            release.set()
+            await asyncio.wait_for(
+                wait_for_state(("msg:99", "msg:10", "msg:2", "msg:1"), "completed"),
+                timeout=5,
+            )
+        finally:
+            stop.set()
+            release.set()
+            await asyncio.wait_for(service, timeout=5)
+
+    with FakeILink() as fake:
+        asyncio.run(flow(fake))
+        receipts = "\n".join(str(message.get("item_list")) for message in fake.sent)
+        assert receipts.count("已收到") == 4
+    assert calls == ["first", "A", "B", "C"]
+
+
+def test_queued_messages_resume_after_restart_without_replaying_started(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    calls: list[str] = []
+
+    async def flow(fake: FakeILink) -> None:
+        state = WechatState(state_dir)
+        started = asyncio.Event()
+        stop_first = asyncio.Event()
+
+        async def first_executor(
+            prompt: str, cancel: asyncio.Event, task_id: str
+        ) -> HeadlessResult:
+            calls.append(prompt)
+            started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        batch = {
+            "ret": 0,
+            "msgs": [
+                _msg("interrupted", mid=99),
+                _msg("A", mid=10),
+                _msg("B", mid=2),
+                _msg("C", mid=1),
+            ],
+            "get_updates_buf": "c1",
+        }
+        fake.updates = [batch]
+        config = _config(fake, workspace, state_dir, max_polls=None)
+        service = asyncio.create_task(
+            serve_wechat(
+                config=config,
+                client=_client(fake),
+                state=state,
+                task_executor=first_executor,
+                stop_event=stop_first,
+                allow_insecure_local_http=True,
+            )
+        )
+
+        async def wait_for_queued() -> None:
+            while not all(
+                (state.get_record(key) or {}).get("state") == "queued"
+                for key in ("msg:10", "msg:2", "msg:1")
+            ):
+                await asyncio.sleep(0.01)
+
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            await asyncio.wait_for(wait_for_queued(), timeout=5)
+        finally:
+            stop_first.set()
+            await asyncio.wait_for(service, timeout=5)
+
+        assert calls == ["interrupted"]
+        reloaded = WechatState(state_dir)
+        assert (reloaded.get_record("msg:99") or {}).get("state") == "cancelled"
+        assert all(
+            (reloaded.get_record(key) or {}).get("state") == "queued"
+            for key in ("msg:10", "msg:2", "msg:1")
+        )
+
+        async def later_executor(
+            prompt: str, cancel: asyncio.Event, task_id: str
+        ) -> HeadlessResult:
+            calls.append(prompt)
+            return HeadlessResult(
+                task_id=task_id,
+                status=HeadlessStatus.COMPLETED,
+                workspace=str(workspace),
+                final_response="done",
+            )
+
+        fake.updates = [batch]
+        await serve_wechat(
+            config=_config(fake, workspace, state_dir, max_polls=80),
+            client=_client(fake),
+            state=reloaded,
+            task_executor=later_executor,
+            allow_insecure_local_http=True,
+        )
+
+    with FakeILink() as fake:
+        asyncio.run(flow(fake))
+        receipts = "\n".join(str(message.get("item_list")) for message in fake.sent)
+        assert receipts.count("已收到") == 4
+    assert calls == ["interrupted", "A", "B", "C"]
+    reloaded = WechatState(state_dir)
+    assert all(
+        (reloaded.get_record(key) or {}).get("state") == "completed"
+        for key in ("msg:10", "msg:2", "msg:1")
+    )
+
+
+def test_queued_work_starts_while_poll_is_blocked(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state = WechatState(tmp_path / "state")
+
+    async def flow() -> None:
+        first_started = asyncio.Event()
+        finish_first = asyncio.Event()
+        second_started = asyncio.Event()
+        poll_waiting = asyncio.Event()
+        release_poll = asyncio.Event()
+        stop = asyncio.Event()
+
+        class BlockingClient:
+            calls = 0
+
+            async def notify_start(self) -> None:
+                return None
+
+            async def notify_stop(self) -> None:
+                return None
+
+            async def get_updates(
+                self, cursor: str, **kwargs: object
+            ) -> dict[str, object]:
+                self.calls += 1
+                if self.calls == 1:
+                    return {
+                        "ret": 0,
+                        "msgs": [_msg("first", mid=1), _msg("second", mid=2)],
+                        "get_updates_buf": "c1",
+                    }
+                poll_waiting.set()
+                await release_poll.wait()
+                return {"ret": 0, "msgs": [], "get_updates_buf": cursor}
+
+            async def send_text(self, **kwargs: object) -> None:
+                return None
+
+            async def get_config(self, **kwargs: object) -> dict[str, object]:
+                return {}
+
+            async def send_typing(self, **kwargs: object) -> None:
+                return None
+
+            async def close(self) -> None:
+                return None
+
+        async def execute(
+            prompt: str, cancel: asyncio.Event, task_id: str
+        ) -> HeadlessResult:
+            if prompt == "first":
+                first_started.set()
+                await finish_first.wait()
+            else:
+                second_started.set()
+            return HeadlessResult(
+                task_id=task_id,
+                status=HeadlessStatus.COMPLETED,
+                workspace=str(workspace),
+            )
+
+        client = BlockingClient()
+        config = ServeConfig(
+            workspace=workspace,
+            state_dir=state.root,
+            account=WechatAccount(
+                bot_token=TOKEN, ilink_bot_id="bot", base_url="http://127.0.0.1:1"
+            ),
+            approval=None,
+            allowed_senders=frozenset({"u1"}),
+            max_polls=None,
+        )
+        service = asyncio.create_task(
+            serve_wechat(
+                config=config,
+                client=client,  # type: ignore[arg-type]
+                state=state,
+                task_executor=execute,
+                stop_event=stop,
+                allow_insecure_local_http=True,
+            )
+        )
+        try:
+            await asyncio.wait_for(first_started.wait(), timeout=5)
+            await asyncio.wait_for(poll_waiting.wait(), timeout=5)
+            finish_first.set()
+            await asyncio.wait_for(second_started.wait(), timeout=5)
+            while (state.get_record("msg:2") or {}).get("state") != "completed":
+                await asyncio.sleep(0.01)
+        finally:
+            stop.set()
+            release_poll.set()
+            finish_first.set()
+            await asyncio.wait_for(service, timeout=5)
+
+    asyncio.run(flow())
+
+
+def test_recovery_checks_queued_sender_and_does_not_replay_started(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    state = WechatState(state_dir)
+    for key, sender, text, status in (
+        ("msg:99", "u1", "interrupted", "started"),
+        ("msg:10", "revoked", "revoked task", "queued"),
+        ("msg:2", "u1", "valid task", "queued"),
+    ):
+        state.record_received(key, sender=sender, context_token="ctx", text=text)
+        state.mark(key, status, ack_attempted=True)
+    calls: list[str] = []
+
+    async def execute(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        calls.append(prompt)
+        return HeadlessResult(
+            task_id=task_id, status=HeadlessStatus.COMPLETED, workspace=str(workspace)
+        )
+
+    with FakeILink() as fake:
+        asyncio.run(
+            serve_wechat(
+                config=_config(fake, workspace, state_dir, max_polls=50),
+                client=_client(fake),
+                state=WechatState(state_dir),
+                task_executor=execute,
+                allow_insecure_local_http=True,
+            )
+        )
+        assert not any(message.get("to_user_id") == "revoked" for message in fake.sent)
+    reopened = WechatState(state_dir)
+    assert calls == ["valid task"]
+    assert (reopened.get_record("msg:99") or {}).get("state") == "interrupted"
+    assert (reopened.get_record("msg:10") or {}).get("state") == "rejected"
+    assert (reopened.get_record("msg:2") or {}).get("state") == "completed"
+
+
+def test_recovered_non_text_message_never_starts_task(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    state = WechatState(state_dir)
+    state.record_received(
+        "msg:image", sender="u1", context_token="ctx", text="", is_text=False
+    )
+    calls: list[str] = []
+
+    async def execute(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        calls.append(prompt)
+        return HeadlessResult(
+            task_id=task_id, status=HeadlessStatus.COMPLETED, workspace=str(workspace)
+        )
+
+    with FakeILink() as fake:
+        asyncio.run(
+            serve_wechat(
+                config=_config(fake, workspace, state_dir, max_polls=5),
+                client=_client(fake),
+                state=WechatState(state_dir),
+                task_executor=execute,
+                allow_insecure_local_http=True,
+            )
+        )
+    assert calls == []
+    assert (WechatState(state_dir).get_record("msg:image") or {}).get(
+        "state"
+    ) == "rejected"
+
+
+def test_recovery_does_not_resend_an_uncertain_queue_receipt(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    state = WechatState(state_dir)
+    state.record_received(
+        "msg:pending", sender="u1", context_token="ctx", text="queued task"
+    )
+    state.mark("msg:pending", "queueing", ack_attempted=True)
+    calls: list[str] = []
+
+    async def execute(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        calls.append(prompt)
+        return HeadlessResult(
+            task_id=task_id, status=HeadlessStatus.COMPLETED, workspace=str(workspace)
+        )
+
+    with FakeILink() as fake:
+        asyncio.run(
+            serve_wechat(
+                config=_config(fake, workspace, state_dir, max_polls=50),
+                client=_client(fake),
+                state=WechatState(state_dir),
+                task_executor=execute,
+                allow_insecure_local_http=True,
+            )
+        )
+        replies = "\n".join(str(message.get("item_list")) for message in fake.sent)
+        assert "已收到" not in replies
+    assert calls == ["queued task"]
+    record = WechatState(state_dir).get_record("msg:pending")
+    assert record is not None and record["state"] == "completed"
+    assert record["ack_state"] == "unknown"
