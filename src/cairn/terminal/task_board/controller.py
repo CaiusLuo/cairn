@@ -43,13 +43,16 @@ class TaskBoardController:
     def __init__(self, service: TaskBoardService) -> None:
         self.service = service
 
-    def render_lines(self) -> tuple[str, ...]:
+    async def render_lines(self) -> tuple[str, ...]:
         task_id = self.service.current_task_id
         if not task_id:
             return ()
-        task = self.service.current_task
-        if task is None or task.task_id != task_id:
+        # Read the shared store rather than a service-local cache: another
+        # session/service may have added a todo or changed the status.
+        task = await self.service.aget(task_id)
+        if task is None:
             return ()
+        self.service.current_task = task
         lines = [f"TASK {task.task_id} [{task.status.value}] {task.title}"]
         for todo in task.todos[:3]:
             lines.append(f"  [{'x' if todo.done else ' '}] {todo.text}")

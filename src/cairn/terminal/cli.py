@@ -1268,17 +1268,22 @@ async def main(
     # With a surface to ask on, tool approvals go there: the console prompt would
     # block the loop the surface is drawn on, so it could never be answered. Without
     # one, the handler keeps the prompt it was built with.
-    def _refresh_task_board() -> None:
-        if frame is not None:
-            frame.set_task_board(task_controller.render_lines())
+    async def _refresh_task_board() -> None:
+        if frame is None:
+            return
+        try:
+            frame.set_task_board(await task_controller.render_lines())
+        except Exception:
+            # A transient board read must never interrupt the conversation.
+            return
 
     if frame is not None:
         permission_handler.prompt_async = _permission_prompt_for(frame)
-        _refresh_task_board()
+        await _refresh_task_board()
 
         async def _task_command(args: str) -> object:
             action = await task_controller.command(args)
-            _refresh_task_board()
+            await _refresh_task_board()
             return action
 
         command_context.task_command = _task_command  # type: ignore[assignment]
@@ -1688,24 +1693,36 @@ async def main(
         )
         personal_memory.add_secret_values(secret_values)
         await schedule_controller.start()
-        await _turn_loop(
-            agent=agent,
-            input_reader=input_reader,
-            frame=frame,
-            router=router,
-            command_context=command_context,
-            streaming_display=streaming_display,
-            pending_trace_finish=pending_trace_finish,
-            durable_session=durable_session,
-            skill_catalog=skill_catalog,
-            mcp_servers=mcp_servers,
-            secret_values=secret_values,
-            mcp_config_error=mcp_config_error,
-            personal_memory=personal_memory,
-            memory_enabled=memory_enabled,
-            task_gate=task_gate,
-            provider_session=session,
-        )
+
+        async def _task_board_refresher() -> None:
+            while True:
+                await asyncio.sleep(1.0)
+                await _refresh_task_board()
+
+        task_board_refresher = asyncio.create_task(_task_board_refresher())
+        try:
+            await _turn_loop(
+                agent=agent,
+                input_reader=input_reader,
+                frame=frame,
+                router=router,
+                command_context=command_context,
+                streaming_display=streaming_display,
+                pending_trace_finish=pending_trace_finish,
+                durable_session=durable_session,
+                skill_catalog=skill_catalog,
+                mcp_servers=mcp_servers,
+                secret_values=secret_values,
+                mcp_config_error=mcp_config_error,
+                personal_memory=personal_memory,
+                memory_enabled=memory_enabled,
+                task_gate=task_gate,
+                provider_session=session,
+            )
+        finally:
+            task_board_refresher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task_board_refresher
         print("Goodbye! see you next time.")
     except BaseException as exc:
         primary_error = exc

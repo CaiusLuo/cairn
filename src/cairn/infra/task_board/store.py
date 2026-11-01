@@ -245,8 +245,10 @@ class TaskBoardStore:
                         )
                     except ValueError:
                         raise TaskBoardValidationError("invalid todo state") from None
-                    if todos == task.todos:
+                    if not any(todo.todo_id == todo_id for todo in task.todos):
                         return None
+                    if todos == task.todos:
+                        return task
                     updated = TaskBoardItem.model_validate(
                         {
                             **task.model_dump(),

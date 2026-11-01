@@ -208,3 +208,51 @@ def test_controller_invalid_update_is_not_not_found(tmp_path: Path) -> None:
         assert "未知状态" in action.message
 
     asyncio.run(flow())
+
+
+def test_task_bar_reads_fresh_shared_state_across_services(tmp_path: Path) -> None:
+    from cairn.runtime.task_board.service import TaskBoardService
+    from cairn.terminal.task_board.controller import TaskBoardController
+
+    store_a = TaskBoardStore(tmp_path / "tasks")
+    service_a = TaskBoardService(store_a)
+    service_b = TaskBoardService(TaskBoardStore(tmp_path / "tasks"))
+    controller_a = TaskBoardController(service_a)
+
+    task = service_a.create("shared task")
+    service_a.current_task_id = task.task_id
+    service_b.add_todo(task.task_id, "from B")
+
+    async def flow() -> None:
+        lines = await controller_a.render_lines()
+        assert any("from B" in line for line in lines)
+
+    asyncio.run(flow())
+
+
+def test_task_todo_repeated_done_is_success(tmp_path: Path) -> None:
+    from cairn.runtime.task_board.service import TaskBoardService
+    from cairn.runtime.task_board.tools import TaskTodoTool
+
+    service = TaskBoardService(TaskBoardStore(tmp_path / "tasks"))
+    task = service.create("todo idempotence")
+    task = service.add_todo(task.task_id, "once")
+    assert task is not None
+    todo_id = task.todos[0].todo_id
+    tool = TaskTodoTool(service)
+
+    async def flow() -> None:
+        first = await tool.execute(
+            {"task_id": task.task_id, "todo_id": todo_id, "done": True}
+        )
+        second = await tool.execute(
+            {"task_id": task.task_id, "todo_id": todo_id, "done": True}
+        )
+        assert first.exit_code == 0 and second.exit_code == 0
+        assert "once" in second.stdout
+        missing = await tool.execute(
+            {"task_id": task.task_id, "todo_id": "missing", "done": True}
+        )
+        assert missing.exit_code != 0
+
+    asyncio.run(flow())
