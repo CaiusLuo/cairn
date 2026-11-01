@@ -4,10 +4,11 @@ import asyncio
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from cairn.core.task_board import TaskBoardStatus
+from cairn.core.task_board import TaskBoardItem, TaskBoardStatus
 from cairn.infra.task_board.store import (
     TaskBoardBusy,
     TaskBoardStore,
@@ -342,5 +343,55 @@ def test_cli_rejects_oversized_todo_without_truncating(tmp_path: Path) -> None:
         result = await controller.command(f"todo {task.task_id} " + "x" * 2001)
         assert "at most 2000" in result.message
         assert store.load()[0].todos == ()
+
+    asyncio.run(flow())
+
+
+@pytest.mark.parametrize("write_fails", [False, True])
+def test_repeated_cancellation_waits_for_update_and_preserves_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write_fails: bool
+) -> None:
+    store = TaskBoardStore(tmp_path / "tasks")
+    service = TaskBoardService(store)
+    task = service.create("Preserve update outcome")
+    started = threading.Event()
+    release = threading.Event()
+    update = service.update
+
+    def delayed_update(*args: Any, **kwargs: Any) -> TaskBoardItem | None:
+        started.set()
+        if not release.wait(timeout=5):
+            raise TimeoutError("Test failed to release the update")
+        if write_fails:
+            raise OSError("sensitive write failure")
+        return update(*args, **kwargs)
+
+    monkeypatch.setattr(service, "update", delayed_update)
+
+    async def flow() -> None:
+        pending = asyncio.create_task(
+            service.aupdate(task.task_id, progress="finished")
+        )
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            pending.cancel("first")
+            await asyncio.sleep(0)
+            pending.cancel("second")
+            await asyncio.sleep(0)
+            assert not pending.done()
+        finally:
+            release.set()
+
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await pending
+        assert caught.value.args == ("first",)
+        notes = " ".join(getattr(caught.value, "__notes__", ()))
+        assert "cancellation" in notes.lower()
+        if write_fails:
+            assert "OSError" in notes
+            assert "sensitive write failure" not in notes
+            assert store.load()[0].progress == ()
+        else:
+            assert store.load()[0].progress == ("finished",)
 
     asyncio.run(flow())

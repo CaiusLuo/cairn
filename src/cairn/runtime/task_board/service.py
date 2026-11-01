@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from cairn.core.task_board import TaskBoardItem, TaskBoardStatus, TaskSource
 from cairn.infra.task_board.store import TaskBoardStore
+from cairn.runtime.lifecycle import await_owned
 
 
 class TaskBoardService:
@@ -32,14 +33,22 @@ class TaskBoardService:
         task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
         try:
             return await asyncio.shield(task)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as primary:
             # The sync store may already be writing. Wait for that owned write
             # to settle instead of leaking a background mutation.
-            late = await __import__(
-                "cairn.runtime.lifecycle", fromlist=["await_owned"]
-            ).await_owned(task)
+            late = await await_owned(task)
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                primary.add_note("Task board operation was cancelled while settling.")
+            except Exception as exc:
+                primary.add_note(
+                    f"Task board operation failed while settling: {type(exc).__name__}."
+                )
             if late is not None:
-                raise late from None
+                primary.add_note(
+                    "Another cancellation arrived while task board work settled."
+                )
             raise
 
     async def acreate(self, title: str, description: str = "") -> TaskBoardItem:
