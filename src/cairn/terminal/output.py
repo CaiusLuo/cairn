@@ -19,6 +19,8 @@ from cairn.core.events import Event
 from cairn.core.model_manager import ModelConfig
 from cairn.core.permissions import PermissionChoice, PermissionRequest
 from cairn.core.provider_catalog import NamedProvider
+from cairn.infra.agent_memory.store import ensure_outside_workspace
+from cairn.infra.trust.store import TrustedWorkspaceStore, TrustStoreError
 from cairn.terminal.activity import Activity, ActivityKind
 from cairn.terminal.interrupt import Interruption
 from cairn.terminal.live import LiveRegion
@@ -1549,24 +1551,36 @@ _STREAMING_HANDLERS: dict[str, Callable[["StreamingDisplay", Event], None]] = {
 
 
 def confirm_workspace_trust(workspace_root: Path) -> bool:
-    """Ask once whether this session may read and write the started directory.
+    """Reuse a previously approved workspace, otherwise ask once and remember it.
 
-    Cairn edits files in the directory it was started in, so that directory is
-    trusted explicitly before the first turn. Without an interactive terminal or
-    on end of input, trust fails closed.
+    The store lives in the host-private agent home and only records workspace
+    consent, never shell/network/MCP grants. A damaged store fails closed.
     """
+    store = TrustedWorkspaceStore()
+    ensure_outside_workspace(store.root, workspace_root)
+    try:
+        if store.is_trusted(workspace_root):
+            return True
+    except TrustStoreError as exc:
+        raise ValueError(str(exc)) from exc
     if not sys.stdin.isatty():
         raise ValueError("Workspace trust requires an interactive terminal.")
-    # The consent question, and the one fact that makes it meaningful. The rest of
-    # the boundary is documented in the sandbox guide; repeating it here delayed the
-    # first turn without changing the decision.
+    # The consent question, and the one fact that makes it meaningful.
     console.print(f"\nWork in {workspace_root}?\n", markup=False)
     try:
-        return Confirm.ask(
+        approved = Confirm.ask(
             "Trust this directory for this session?", default=False, console=console
         )
     except EOFError:
         return False
+    if not approved:
+        return False
+    try:
+        store.remember(workspace_root)
+    except (OSError, TrustStoreError) as exc:
+        # The current explicit approval still applies; only persistence failed.
+        console.print(f"Workspace trust was not persisted: {exc}", markup=False)
+    return True
 
 
 def console_permission_prompt(request: PermissionRequest) -> PermissionChoice:

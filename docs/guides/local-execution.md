@@ -57,8 +57,13 @@ Cairn will read and write files in this directory:
 Trust this directory for this session? [y/N]
 ```
 
-Denial — or no interactive terminal — stops before any turn runs. The grant lives
-in the process and is never written to disk.
+Denial — or no interactive terminal — stops before any turn runs. An approved
+workspace is remembered in the host-private agent state as
+`~/.local/state/cairn/agent/trusted_workspaces.json` (path plus device/inode
+identity); starting Cairn again in the same directory reuses that consent
+without asking. A changed or replaced directory asks again, a damaged trust
+store fails closed, and only workspace trust is persisted — shell, network and
+MCP grants still require their own approval.
 
 Once trusted, reads and writes inside the directory need no further approval.
 A path **outside** it is handled differently:
