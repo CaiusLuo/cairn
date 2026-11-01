@@ -280,9 +280,10 @@ def default_task_executor(
 
     session_root = config.state_dir / "sessions"
     ensure_outside_workspace(session_root, config.workspace)
-    active_sessions: list[DurableSession] = []
 
-    def durable_factory(sender: str):  # type: ignore[no-untyped-def]
+    def durable_factory(
+        sender: str, active_sessions: list[DurableSession]
+    ) -> Callable[[Agent], DurableSession]:
         digest = hashlib.sha256(f"wechat:{config.workspace}:{sender}".encode()).digest()
         session_id = str(uuid.UUID(bytes=digest[:16], version=4))
 
@@ -331,6 +332,11 @@ def default_task_executor(
             )
 
         def build(agent: Agent) -> DurableSession:
+            # A check/repair may start another Turn before the overall request
+            # returns. Release the settled Session before opening its successor.
+            while active_sessions:
+                active_sessions[-1].close()
+                active_sessions.pop()
             store = open_store(
                 session_root,
                 Workspace(config.workspace),
@@ -405,7 +411,7 @@ def default_task_executor(
                     source=TaskSource.SCHEDULE,
                 )
             )
-        active_sessions.clear()
+        active_sessions: list[DurableSession] = []
         try:
             result = await _run_via_config_async(
                 workspace=config.workspace,
@@ -425,7 +431,9 @@ def default_task_executor(
                 on_secrets_resolved=remember_secrets,
                 personal_context_provider=personal_memory.render_context,
                 extra_tools=(*memory_tools, *task_tools),
-                durable_session_factory=durable_factory(sender) if sender else None,
+                durable_session_factory=durable_factory(sender, active_sessions)
+                if sender
+                else None,
             )
         finally:
             for session in active_sessions:

@@ -18,6 +18,7 @@ surfaces as a negative return code).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -341,9 +342,14 @@ async def run_task_with_check(
             output=check_run.output,
             secret_values=secret_values,
         )
-        repair_spec = TaskSpec(
-            task_id=spec.task_id, prompt=repair_prompt, name="repair"
-        )
+        # The durable Task ledger admits each Turn once. Keep the repair's
+        # ledger identity distinct while preserving the caller's task identity.
+        repair_id = spec.task_id
+        if runner.durable_session_factory is not None:
+            repair_id = (
+                "repair-" + hashlib.sha256(spec.task_id.encode("utf-8")).hexdigest()
+            )
+        repair_spec = TaskSpec(task_id=repair_id, prompt=repair_prompt, name="repair")
         repair = (
             await runner.run(
                 repair_spec,
@@ -353,6 +359,8 @@ async def run_task_with_check(
             if selected_skills
             else await runner.run(repair_spec, cancellation_event=cancellation_event)
         )
+        if repair_id != spec.task_id:
+            repair = repair.model_copy(update={"task_id": spec.task_id})
         if repair.status is not TaskStatus.COMPLETED:
             return _outcome(
                 task=repair,

@@ -1537,3 +1537,99 @@ def test_wechat_durable_session_respects_explicit_capabilities(
         )
         assert executed is allowed
         assert result.permission_denied is not allowed
+
+
+def test_wechat_durable_failed_check_can_repair_and_recheck(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tempfile import TemporaryDirectory
+
+    from cairn.core.tasks import TaskCheckStatus
+    from cairn.terminal.wechat.serve import default_task_executor
+    from tests.support.git import initialize_repository
+
+    with TemporaryDirectory(
+        prefix="cairn-wechat-repair-", dir=Path.home()
+    ) as root_text:
+        root = Path(root_text)
+        workspace = root / "workspace"
+        workspace.mkdir()
+        initialize_repository(workspace)
+        monkeypatch.setenv("CAIRN_AGENT_HOME", str(root / "agent"))
+        monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(root / "board"))
+        llm = SequenceLLM(
+            [
+                LLMResponse(content="first answer"),
+                LLMResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="repair",
+                            name="write_file",
+                            arguments={"path": "repaired", "content": "ok"},
+                        )
+                    ]
+                ),
+                LLMResponse(content="fixed"),
+                LLMResponse(content="later answer"),
+            ]
+        )
+        config = ServeConfig(
+            workspace=workspace,
+            state_dir=root / "state",
+            account=WechatAccount(
+                bot_token="fake-bot-token-very-long",
+                ilink_bot_id="bot",
+                base_url="https://example.test",
+            ),
+            approval=None,
+            allowed_senders=frozenset({"u1"}),
+            max_steps=20,
+            allow_shell=True,
+            check_command="test -f repaired",
+        )
+
+        async def fake_run(**kwargs: object) -> HeadlessResult:
+            return await run_headless_task(
+                workspace=workspace,
+                prompt=str(kwargs["prompt"]),
+                task_id=str(kwargs["task_id"]),
+                grant_workspace_trust=True,
+                grant_shell=bool(kwargs["grant_shell"]),
+                llm=llm,
+                budget=RunBudget(max_steps=20),
+                check_command=str(kwargs["check_command"]),
+                durable_session_factory=kwargs["durable_session_factory"],  # type: ignore[arg-type]
+            )
+
+        monkeypatch.setattr(
+            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+        )
+
+        async def flow() -> tuple[HeadlessResult, HeadlessResult]:
+            execute = default_task_executor(config)
+            first = await execute(
+                "make a file", asyncio.Event(), "task-one", sender="u1"
+            )  # type: ignore[call-arg]
+            later = await execute("continue", asyncio.Event(), "task-two", sender="u1")  # type: ignore[call-arg]
+            return first, later
+
+        result, followup = asyncio.run(flow())
+        assert result.status is HeadlessStatus.COMPLETED, result.error
+        assert result.task_id == "task-one"
+        assert result.check_status is TaskCheckStatus.PASSED
+        assert result.check_attempts == 2
+        assert result.verified
+        assert followup.status is HeadlessStatus.COMPLETED
+        assert followup.check_status is TaskCheckStatus.PASSED
+        assert len(llm.calls) == 4
+        messages = llm.calls[3][0]
+        assert any(
+            message.role == "assistant"
+            and any(call.id == "repair" for call in message.tool_calls)
+            for message in messages
+        )
+        assert any(
+            message.role == "tool" and message.tool_call_id == "repair"
+            for message in messages
+        )
+        assert (workspace / "repaired").read_text() == "ok"

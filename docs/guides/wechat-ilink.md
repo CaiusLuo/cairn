@@ -152,7 +152,9 @@ directory, outside the Agent-writable Workspace, effective temporary directory
 and uv cache. Workspace observations use the active provider's credential
 filtering for each request. Explicit shell, MCP and network options authorize
 only those capabilities for the current request; grants are not restored from
-a previous Session.
+a previous Session. When a configured check fails, the service permits one
+repair turn and reruns the same check; it preserves the original task ID in
+the result.
 
 When a trusted sender's valid text task is durably accepted,
 the bot sends one immediate receipt (`已收到，正在安排处理`) before execution,
