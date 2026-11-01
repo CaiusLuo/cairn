@@ -37,6 +37,7 @@ from cairn.infra.schedule.store import (
     ensure_outside_workspace as ensure_schedule_outside_workspace,
 )
 from cairn.infra.task_board.store import TaskBoardStore, default_task_board_dir
+from cairn.infra.tools.base import Tool
 from cairn.infra.wechat.ilink import (
     ILinkClient,
     ILinkError,
@@ -220,7 +221,10 @@ def default_task_executor(
     config: ServeConfig,
     *,
     on_secrets_resolved: Callable[[Sequence[str]], None] | None = None,
+    task_source: TaskSource = TaskSource.WECHAT,
 ) -> TaskExecutor:
+    if task_source is not TaskSource.WECHAT and task_source is not TaskSource.SCHEDULE:
+        raise ValueError("unsupported task source for WeChat executor")
     agent_home = default_agent_home()
     ensure_agent_home_outside_workspace(agent_home, config.workspace)
     personal_memory = PersonalMemoryService(AgentMemoryStore(agent_home))
@@ -239,13 +243,17 @@ def default_task_executor(
         session_id=f"wechat:{config.workspace}",
         source=TaskSource.WECHAT,
     )
-    task_tools = (
-        TaskCreateTool(task_board),
-        TaskDetailTool(task_board),
-        TaskListTool(task_board),
-        TaskUpdateTool(task_board),
-        TaskTodoTool(task_board),
-    )
+
+    def board_tools(service: TaskBoardService) -> tuple[Tool, ...]:
+        return (
+            TaskCreateTool(service),
+            TaskDetailTool(service),
+            TaskListTool(service),
+            TaskUpdateTool(service),
+            TaskTodoTool(service),
+        )
+
+    wechat_task_tools = board_tools(task_board)
 
     def remember_secrets(values: Sequence[str]) -> None:
         personal_memory.add_secret_values(values)
@@ -255,6 +263,16 @@ def default_task_executor(
     async def execute(
         prompt: str, cancel: asyncio.Event, task_id: str
     ) -> HeadlessResult:
+        task_tools = wechat_task_tools
+        if task_source is TaskSource.SCHEDULE:
+            task_tools = board_tools(
+                TaskBoardService(
+                    TaskBoardStore(task_board_root),
+                    project=str(config.workspace),
+                    session_id=f"schedule:{task_id}",
+                    source=TaskSource.SCHEDULE,
+                )
+            )
         result = await _run_via_config_async(
             workspace=config.workspace,
             prompt=prompt,
@@ -721,9 +739,25 @@ async def serve_wechat(
             if config.account.ilink_user_id in config.allowed_senders
             else ""
         )
+        scheduled_executor = (
+            task_executor
+            if task_executor is not None
+            else default_task_executor(
+                config,
+                on_secrets_resolved=remember_known_secrets,
+                task_source=TaskSource.SCHEDULE,
+            )
+        )
+
+        async def gated_schedule_executor(
+            prompt: str, cancel: asyncio.Event, task_id: str
+        ) -> HeadlessResult:
+            async with task_gate:
+                return await scheduled_executor(prompt, cancel, task_id)
+
         scheduler_runner = ScheduleRunner(
             store=ScheduleStore(config.schedule_store),
-            executor=gated_executor,
+            executor=gated_schedule_executor,
             deliver=deliver_scheduled,
             recipient=lambda: scheduler_owner or None,
             poll_interval=config.schedule_poll_interval,

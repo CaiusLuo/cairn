@@ -437,3 +437,92 @@ def test_serve_default_executor_redacts_provider_secret_in_error_history(
     run = schedule.load_runs()[0]
     assert "fake-provider-key" not in str(run.get("error"))
     assert "token-serve-schedule" not in str(run.get("error"))
+
+
+def test_default_serve_distinguishes_scheduled_and_wechat_task_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typing import Any
+
+    from cairn.core.task_board import TaskSource
+    from cairn.infra.task_board.store import TaskBoardStore
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "wechat"
+    board_dir = tmp_path / "board"
+    monkeypatch.setenv("CAIRN_AGENT_HOME", str(tmp_path / "agent"))
+    monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(board_dir))
+    state = WechatState(state_dir)
+    state.load()["messages"]["seed"] = {
+        "sender": "owner",
+        "context_token": "ctx-serve",
+        "updated": 1.0,
+    }
+    state.flush()
+    schedule = ScheduleStore(state_dir / "schedule")
+    schedule.save_jobs(
+        (
+            ScheduleJob(
+                job_id="job-source",
+                prompt="scheduled task",
+                workspace=str(workspace),
+                recipient="owner",
+                account_id="bot-serve",
+                kind=ScheduleKind.ONCE,
+                at=NOW,
+                created_at=NOW,
+                next_run_at=NOW,
+            ),
+        )
+    )
+
+    async def fake_headless(**kwargs: Any) -> HeadlessResult:
+        tool = next(
+            tool for tool in kwargs["extra_tools"] if tool.name == "task_create"
+        )
+        created = await tool.execute({"title": kwargs["prompt"]})
+        assert created.exit_code == 0
+        return HeadlessResult(
+            task_id=kwargs["task_id"],
+            status=HeadlessStatus.COMPLETED,
+            final_response="done",
+            workspace=str(workspace),
+        )
+
+    monkeypatch.setattr(
+        "cairn.terminal.wechat.serve._run_via_config_async", fake_headless
+    )
+    with FakeILink() as fake:
+        fake.updates = [
+            {
+                "ret": 0,
+                "msgs": [
+                    {
+                        "message_type": 1,
+                        "from_user_id": "owner",
+                        "context_token": "ctx-serve",
+                        "message_id": 91,
+                        "item_list": [
+                            {"type": 1, "text_item": {"text": "wechat task"}}
+                        ],
+                    }
+                ],
+                "get_updates_buf": "cursor-1",
+            }
+        ]
+        asyncio.run(
+            serve_wechat(
+                config=_config(fake, workspace, state_dir),
+                client=_client(fake),
+                state=state,
+                allow_insecure_local_http=True,
+            )
+        )
+
+    tasks = {task.title: task for task in TaskBoardStore(board_dir).load()}
+    assert set(tasks) == {"scheduled task", "wechat task"}
+    assert tasks["scheduled task"].source is TaskSource.SCHEDULE
+    assert tasks["scheduled task"].session_id == "schedule:scheduled-job-source"
+    assert tasks["wechat task"].source is TaskSource.WECHAT
+    assert tasks["wechat task"].session_id.startswith("wechat:")

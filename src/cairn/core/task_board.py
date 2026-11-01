@@ -16,6 +16,7 @@ class TaskSource(StrEnum):
     LOCAL = "local"
     CLI = "cli"
     WECHAT = "wechat"
+    SCHEDULE = "schedule"
     GITHUB = "github"
     WEB = "web"
 

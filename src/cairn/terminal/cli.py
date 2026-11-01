@@ -1369,8 +1369,11 @@ async def main(
 
     task_gate = asyncio.Lock()
 
-    async def _execute_wechat_locked(
-        prompt: str, cancel: asyncio.Event, task_id: str
+    async def _execute_headless_locked(
+        prompt: str,
+        cancel: asyncio.Event,
+        task_id: str,
+        task_service: TaskBoardService,
     ) -> HeadlessResult:
         grants = permission_handler.grants
         wechat_secret_values = tuple(
@@ -1404,11 +1407,11 @@ async def main(
                 MemoryRememberTool(personal_memory),
                 MemoryForgetTool(personal_memory),
                 MemoryCorrectTool(personal_memory),
-                TaskCreateTool(wechat_task_service),
-                TaskDetailTool(wechat_task_service),
-                TaskListTool(wechat_task_service),
-                TaskUpdateTool(wechat_task_service),
-                TaskTodoTool(wechat_task_service),
+                TaskCreateTool(task_service),
+                TaskDetailTool(task_service),
+                TaskListTool(task_service),
+                TaskUpdateTool(task_service),
+                TaskTodoTool(task_service),
             ),
         )
         with contextlib.suppress(Exception):
@@ -1423,7 +1426,23 @@ async def main(
         # gate keeps the two entry points at one task at a time. Cross-process
         # scheduling is additionally serialized by ScheduleStore.execution_lock.
         async with task_gate:
-            return await _execute_wechat_locked(prompt, cancel, task_id)
+            return await _execute_headless_locked(
+                prompt, cancel, task_id, wechat_task_service
+            )
+
+    async def _schedule_execute(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        # Scheduled work shares the same execution gate, but its task facts
+        # belong to the schedule rather than the WeChat conversation.
+        async with task_gate:
+            task_service = TaskBoardService(
+                TaskBoardStore(task_board_root),
+                project=str(workspace.root),
+                session_id=f"schedule:{task_id}",
+                source=TaskSource.SCHEDULE,
+            )
+            return await _execute_headless_locked(prompt, cancel, task_id, task_service)
 
     def _refresh_wechat_identity() -> None:
         personal_memory.add_secret_values(wechat_controller.secret_values())
@@ -1454,7 +1473,7 @@ async def main(
     schedule_controller = ScheduleController(
         workspace=workspace.root,
         store=ScheduleStore(default_schedule_dir()),
-        executor=_wechat_execute,
+        executor=_schedule_execute,
         deliver=wechat_controller.deliver,
         deliver_for_account=wechat_controller.deliver_for_account,
         recipient=wechat_controller.recipient_id,

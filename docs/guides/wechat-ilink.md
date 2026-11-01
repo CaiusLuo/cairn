@@ -155,6 +155,11 @@ so the observable progress is the typing indicator plus the final message.
 
 ## Scheduled tasks (first version)
 
+A task created by a scheduled execution records `schedule` as its source and a
+job-scoped association on the shared board. A task created by a WeChat message
+records `wechat`; delivering a scheduled result through WeChat does not change
+its source.
+
 Scheduled tasks are created by the Agent after a user-confirmed brief. The
 `/schedule` commands below remain available as an admin/debug surface:
 
