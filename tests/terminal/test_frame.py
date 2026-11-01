@@ -1644,3 +1644,176 @@ def test_plain_action_does_not_block_history_recall() -> None:
     _press_by_name(view, "select_previous")
     assert view._buffer.text == "hlo"
     assert view.action is None
+
+
+async def _wait_for(predicate, message: str) -> None:  # type: ignore[no-untyped-def]
+    for _ in range(100):
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(message)
+
+
+async def _wait_for_history_buffer(view: TranscriptView, expected: str) -> None:
+    for _ in range(100):
+        if view._buffer.text == expected:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"buffer is {view._buffer.text!r}, expected {expected!r}")
+
+
+def test_real_keys_recall_hlo_and_trace_list_with_csi_and_ss3() -> None:
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            view, _, _ = _view()
+            reader = asyncio.create_task(view.read())
+            await asyncio.sleep(0)
+            pipe.send_text("hlo\r")
+            assert (await asyncio.wait_for(reader, timeout=2)).text == "hlo"
+
+            reader = asyncio.create_task(view.read())
+            await asyncio.sleep(0.01)
+            pipe.send_text("/trace list\r")
+            assert (await asyncio.wait_for(reader, timeout=2)).text == "/trace list"
+
+            reader = asyncio.create_task(view.read())
+            await asyncio.sleep(0.01)
+            pipe.send_text("\x1b[A")
+            await _wait_for_history_buffer(view, "/trace list")
+            pipe.send_text("\x1b[A")
+            await _wait_for_history_buffer(view, "hlo")
+            pipe.send_text("\x1b[B")
+            await _wait_for_history_buffer(view, "/trace list")
+            pipe.send_text("\x1b[B")
+            await _wait_for_history_buffer(view, "")
+            reader.cancel()
+            with suppress(asyncio.CancelledError):
+                await reader
+            await view.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_real_keys_ss3_arrows_recall_history() -> None:
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            view, _, _ = _view()
+            view._history = ["one", "two"]
+            reader = asyncio.create_task(view.read())
+            await asyncio.sleep(0)
+            pipe.send_text("\x1bOA")
+            await _wait_for_history_buffer(view, "two")
+            pipe.send_text("\x1bOA")
+            await _wait_for_history_buffer(view, "one")
+            pipe.send_text("\x1bOB")
+            await _wait_for_history_buffer(view, "two")
+            reader.cancel()
+            with suppress(asyncio.CancelledError):
+                await reader
+            await view.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_real_keys_running_queue_wins_over_history() -> None:
+    from cairn.runtime.turn.steering import PendingMessage
+
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            view, _, _ = _view()
+            view._history = ["old prompt"]
+            view._running = True
+            view._pending.push(PendingMessage(text="queued one", delivery="queue"))
+            view._pending.push(PendingMessage(text="queued two", delivery="queue"))
+            reader = asyncio.create_task(view.read())
+            await asyncio.sleep(0)
+            pipe.send_text("\x1b[A")
+            await _wait_for(
+                lambda: view._queue_view.selected == 0,
+                "queue selection did not move up",
+            )
+            assert view._buffer.text == ""
+            pipe.send_text("\x1b[B")
+            await _wait_for(
+                lambda: view._queue_view.selected == 1,
+                "queue selection did not move down",
+            )
+            reader.cancel()
+            with suppress(asyncio.CancelledError):
+                await reader
+            await view.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_real_keys_plain_notice_then_history_and_chooser_owns_arrows() -> None:
+    from cairn.terminal.action import ActionRow
+
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            view, _, _ = _view()
+            view._history = ["hlo"]
+            view.show_action(correction("plain notice"))
+            reader = asyncio.create_task(view.read())
+            await asyncio.sleep(0)
+            pipe.send_text("\x1b[A")
+            await _wait_for_history_buffer(view, "hlo")
+            assert view.action is None
+
+            view._history = ["hlo"]
+            view.show_action(
+                Action(message="choose", rows=(ActionRow("a"), ActionRow("b")))
+            )
+            pipe.send_text("\x1b[B")
+            await _wait_for(
+                lambda: getattr(view.action, "selected", -1) == 1,
+                "chooser selection did not move",
+            )
+            assert view._buffer.text == "hlo"
+            reader.cancel()
+            with suppress(asyncio.CancelledError):
+                await reader
+            await view.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_real_keys_multiline_history_moves_within_record_then_older() -> None:
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            view, _, _ = _view()
+            view._history = ["older", "alpha\nbeta"]
+            reader = asyncio.create_task(view.read())
+            await asyncio.sleep(0)
+            pipe.send_text("\x1b[A")
+            await _wait_for_history_buffer(view, "alpha\nbeta")
+            assert view._buffer.document.cursor_position_row == 1
+            pipe.send_text("\x1b[A")
+            await _wait_for(
+                lambda: view._buffer.document.cursor_position_row == 0,
+                "multiline history did not move to its first line",
+            )
+            assert view._buffer.text == "alpha\nbeta"
+            pipe.send_text("\x1b[A")
+            await _wait_for_history_buffer(view, "older")
+            reader.cancel()
+            with suppress(asyncio.CancelledError):
+                await reader
+            await view.aclose()
+
+    asyncio.run(scenario())
