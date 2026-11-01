@@ -8,7 +8,11 @@ from pathlib import Path
 import pytest
 
 from cairn.core.task_board import TaskBoardStatus
-from cairn.infra.task_board.store import TaskBoardBusy, TaskBoardStore
+from cairn.infra.task_board.store import (
+    TaskBoardBusy,
+    TaskBoardStore,
+    TaskBoardValidationError,
+)
 from cairn.infra.tools.base import InvalidArguments
 from cairn.runtime.task_board.service import TaskBoardService
 from cairn.runtime.task_board.tools import (
@@ -22,7 +26,8 @@ from cairn.runtime.task_board.tools import (
 def test_invalid_update_does_not_corrupt_board(tmp_path: Path) -> None:
     store = TaskBoardStore(tmp_path / "tasks")
     task = store.create(title="Valid")
-    assert store.update(task.task_id, title="") is None
+    with pytest.raises(TaskBoardValidationError):
+        store.update(task.task_id, title="")
     assert store.load()[0].title == "Valid"
     updated = store.update(task.task_id, status=TaskBoardStatus.COMPLETED)
     assert updated is not None and updated.status is TaskBoardStatus.COMPLETED
@@ -41,7 +46,8 @@ def test_set_todo_done_invalid_value_does_not_corrupt(tmp_path: Path) -> None:
     with_todo = store.add_todo(task.task_id, "item")
     assert with_todo is not None
     todo_id = with_todo.todos[0].todo_id
-    assert store.set_todo_done(task.task_id, todo_id, "invalid") is None  # type: ignore[arg-type]
+    with pytest.raises(TaskBoardValidationError):
+        store.set_todo_done(task.task_id, todo_id, "invalid")  # type: ignore[arg-type]
     assert store.load()[0].todos[0].done is False
 
 
@@ -163,5 +169,42 @@ def test_task_controller_local_idea_and_ascii_todos(tmp_path: Path) -> None:
         assert task_id in listed.message
         shown = await controller.command(f"show {task_id}")
         assert "Title: Local idea" in shown.message
+
+    asyncio.run(flow())
+
+
+def test_controller_reports_busy_without_raising(tmp_path: Path) -> None:
+    from cairn.runtime.task_board.service import TaskBoardService
+    from cairn.terminal.task_board.controller import TaskBoardController
+
+    store = TaskBoardStore(tmp_path / "tasks", lock_timeout=0.1)
+    controller = TaskBoardController(TaskBoardService(store))
+
+    def hold() -> None:
+        with store._locked():
+            time.sleep(0.3)
+
+    async def flow() -> None:
+        holder = threading.Thread(target=hold)
+        holder.start()
+        await asyncio.sleep(0.03)
+        action = await controller.command("list")
+        assert "暂忙" in action.message
+        holder.join(timeout=1)
+
+    asyncio.run(flow())
+
+
+def test_controller_invalid_update_is_not_not_found(tmp_path: Path) -> None:
+    from cairn.runtime.task_board.service import TaskBoardService
+    from cairn.terminal.task_board.controller import TaskBoardController
+
+    service = TaskBoardService(TaskBoardStore(tmp_path / "tasks"))
+    controller = TaskBoardController(service)
+    task = service.create("Valid")
+
+    async def flow() -> None:
+        action = await controller.command(f"status {task.task_id} not-a-status")
+        assert "未知状态" in action.message
 
     asyncio.run(flow())

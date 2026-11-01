@@ -29,6 +29,10 @@ class TaskBoardBusy(RuntimeError):
     """The shared board lock did not become available within the bounded wait."""
 
 
+class TaskBoardValidationError(ValueError):
+    """A mutation was rejected before it could be written."""
+
+
 def default_task_board_dir() -> Path:
     override = os.environ.get(TASK_BOARD_DIR_ENV)
     if override:
@@ -194,7 +198,7 @@ class TaskBoardStore:
                             {**task.model_dump(), **updates}
                         )
                     except ValueError:
-                        return None
+                        raise TaskBoardValidationError("invalid task update") from None
                     tasks[index] = updated
                     self._save_unlocked(tuple(tasks))
                     return updated
@@ -219,7 +223,7 @@ class TaskBoardStore:
                             }
                         )
                     except ValueError:
-                        return None
+                        raise TaskBoardValidationError("invalid todo") from None
                     tasks[index] = updated
                     self._save_unlocked(tuple(tasks))
                     return updated
@@ -240,7 +244,7 @@ class TaskBoardStore:
                             for todo in task.todos
                         )
                     except ValueError:
-                        return None
+                        raise TaskBoardValidationError("invalid todo state") from None
                     if todos == task.todos:
                         return None
                     updated = TaskBoardItem.model_validate(

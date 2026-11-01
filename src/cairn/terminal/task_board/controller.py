@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from cairn.core.task_board import TaskBoardItem, TaskBoardStatus
+from cairn.infra.task_board.store import TaskBoardBusy, TaskBoardValidationError
 from cairn.runtime.task_board.service import TaskBoardService
 from cairn.terminal.action import Action, correction, note
 
@@ -55,6 +56,14 @@ class TaskBoardController:
         return tuple(lines)
 
     async def command(self, args: str) -> Action:
+        try:
+            return await self._command(args)
+        except TaskBoardBusy:
+            return correction("任务面板暂忙\uff0c请稍后重试。")
+        except (TaskBoardValidationError, OSError, ValueError) as exc:
+            return correction(f"任务面板操作失败: {exc}")
+
+    async def _command(self, args: str) -> Action:
         parts = args.split()
         verb = parts[0].lower() if parts else "list"
         if verb in {"help", "--help", "-h"}:
