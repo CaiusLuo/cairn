@@ -652,7 +652,9 @@ async def _run_via_config_async(
         personal_context=personal_context,
         extra_tools=extra_tools,
         durable_session_factory=durable_session_factory,
-        provider_name=provider_name,
+        provider_name=(
+            provider.name if durable_session_factory is not None else provider_name
+        ),
     )
 
 

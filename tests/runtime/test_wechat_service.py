@@ -1145,3 +1145,131 @@ def test_default_wechat_executor_restores_durable_history_after_restart(
     assert len(llm.calls) == 2
     assert "first prompt" in [m.content for m in llm.calls[1][0]]
     assert "first answer" in [m.content for m in llm.calls[1][0]]
+
+
+def test_configured_wechat_restores_tool_facts_after_service_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise the configured provider and both WeChat service lifecycles offline."""
+    from tempfile import TemporaryDirectory
+
+    from cairn.core.context import ContextBudget, ContextBuilder
+    from cairn.core.model_manager import ModelManager
+    from cairn.core.provider_catalog import NamedProvider
+    from cairn.runtime.model_executor import ModelExecutor
+    from cairn.runtime.provider_runtime import ProviderRuntime
+    from tests.support.git import initialize_repository
+
+    with TemporaryDirectory(
+        prefix="cairn-wechat-restart-", dir=Path.home()
+    ) as root_text:
+        root = Path(root_text)
+        workspace = root / "workspace"
+        workspace.mkdir()
+        initialize_repository(workspace)
+        config_dir = workspace / ".cairn"
+        config_dir.mkdir()
+        (config_dir / "models.toml").write_text(
+            'base_url = "https://example.test/v1"\n'
+            'api_key_env = "CAIRN_TEST_WECHAT_KEY"\n'
+            '\n[[models]]\nname = "primary"\nmodel_ids = ["fake-model"]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("CAIRN_TEST_WECHAT_KEY", "fake-provider-secret")
+        monkeypatch.setenv("CAIRN_AGENT_HOME", str(root / "agent"))
+        monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(root / "board"))
+        llm = SequenceLLM(
+            [
+                LLMResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="read-before-restart",
+                            name="read_file",
+                            arguments={"path": "tracked.txt"},
+                        )
+                    ]
+                ),
+                LLMResponse(content="first answer"),
+                LLMResponse(content="second answer"),
+            ]
+        )
+
+        def fake_provider_runtime(
+            provider: NamedProvider,
+            credential: str | None,
+            context_budget: ContextBudget,
+            *,
+            group: str | None = None,
+        ) -> ProviderRuntime:
+            assert credential == "fake-provider-secret"
+            manager = ModelManager(provider.config)
+            if group is not None:
+                manager.select_model(group)
+            builder = ContextBuilder(context_budget)
+
+            def runtime_factory(_model_id: str) -> tuple[SequenceLLM, ContextBuilder]:
+                return llm, builder
+
+            return ProviderRuntime(
+                provider=provider,
+                model_manager=manager,
+                model_executor=ModelExecutor(manager, runtime_factory),
+                llm=llm,
+                context_builder=builder,
+                runtime_factory=runtime_factory,
+            )
+
+        monkeypatch.setattr(
+            "cairn.terminal.headless.build_provider_runtime", fake_provider_runtime
+        )
+        approval = ProviderApproval(
+            name="default",
+            endpoint="https://example.test/v1",
+            group="primary",
+            key_env="CAIRN_TEST_WECHAT_KEY",
+            model_ids=("fake-model",),
+        )
+        state_dir = root / "state"
+        with FakeILink() as fake:
+            config = ServeConfig(
+                workspace=workspace,
+                state_dir=state_dir,
+                account=_account(fake),
+                approval=approval,
+                allowed_senders=frozenset({"u1"}),
+                max_steps=20,
+                max_polls=100,
+                poll_interval=0.02,
+                trace_dir=root / "traces",
+            )
+
+            async def exchange(message: dict[str, object], cursor: str) -> None:
+                fake.updates = [
+                    {"ret": 0, "msgs": [message], "get_updates_buf": cursor}
+                ]
+                await serve_wechat(config=config, allow_insecure_local_http=True)
+
+            asyncio.run(exchange(_msg("first question", mid=101), "first"))
+            first = WechatState(state_dir).get_record("msg:101")
+            assert first is not None and first["state"] == "completed"
+            asyncio.run(exchange(_msg("second question", mid=102), "second"))
+            second = WechatState(state_dir).get_record("msg:102")
+            assert second is not None and second["state"] == "completed"
+
+        assert len(llm.calls) == 3
+        messages = llm.calls[2][0]
+        assert any(m.role == "user" and m.content == "first question" for m in messages)
+        assert any(
+            m.role == "assistant"
+            and any(call.id == "read-before-restart" for call in m.tool_calls)
+            for m in messages
+        )
+        assert any(
+            m.role == "tool"
+            and m.tool_call_id == "read-before-restart"
+            and "before" in (m.content or "")
+            for m in messages
+        )
+        assert any(
+            m.role == "assistant" and m.content == "first answer" for m in messages
+        )
