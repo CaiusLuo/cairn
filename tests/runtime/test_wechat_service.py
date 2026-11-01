@@ -2513,3 +2513,74 @@ def test_recovery_does_not_resend_an_uncertain_queue_receipt(tmp_path: Path) -> 
     record = WechatState(state_dir).get_record("msg:pending")
     assert record is not None and record["state"] == "completed"
     assert record["ack_state"] == "unknown"
+
+
+def test_damaged_queued_record_fails_before_start_and_releases_lock(
+    tmp_path: Path,
+) -> None:
+    from cairn.infra.wechat.state import WechatServeLock
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    state = WechatState(state_dir)
+    state.record_received("msg:bad", sender="u1", context_token="ctx", text="task")
+    state.mark("msg:bad", "queued")
+    state.load()["messages"]["msg:bad"].pop("text")
+    state.flush()
+
+    with FakeILink() as fake, pytest.raises(ValueError, match="damaged"):
+        asyncio.run(
+            serve_wechat(
+                config=_config(fake, workspace, state_dir, max_polls=1),
+                client=_client(fake),
+                state=state,
+                task_executor=_completed(workspace),
+                allow_insecure_local_http=True,
+            )
+        )
+    probe = WechatServeLock(state_dir)
+    probe.acquire(description="probe")
+    probe.release()
+
+
+def test_recovery_cancellation_waits_for_started_task_cleanup(
+    tmp_path: Path,
+) -> None:
+    from cairn.infra.wechat.state import WechatServeLock
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    state = WechatState(state_dir)
+    state.record_received("msg:start", sender="u1", context_token="ctx", text="task")
+    started = asyncio.Event()
+
+    async def blocking(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    with FakeILink() as fake:
+
+        async def scenario() -> None:
+            task = asyncio.create_task(
+                serve_wechat(
+                    config=_config(fake, workspace, state_dir, max_polls=None),
+                    client=_client(fake),
+                    state=state,
+                    task_executor=blocking,
+                    allow_insecure_local_http=True,
+                )
+            )
+            await asyncio.wait_for(started.wait(), timeout=3)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(scenario())
+    probe = WechatServeLock(state_dir)
+    probe.acquire(description="probe")
+    probe.release()

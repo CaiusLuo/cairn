@@ -697,14 +697,15 @@ class _Service:
             text = record.get("text")
             if (
                 not isinstance(sender, str)
-                or sender not in self.config.allowed_senders
                 or not isinstance(context, str)
                 or not context
                 or not isinstance(text, str)
                 or record.get("is_text", bool(text)) is not True
                 or record.get("stable", True) is not True
             ):
-                self.state.mark(key, "rejected", reason="invalid_queued_message")
+                raise ValueError("WeChat queued message record is damaged")
+            if sender not in self.config.allowed_senders:
+                self.state.mark(key, "rejected", reason="untrusted_sender")
                 continue
             self._start_task(
                 key, _Inbound(key=key, sender=sender, context_token=context, text=text)
@@ -798,6 +799,33 @@ class _Service:
             return
         await self._queue_inbound(inbound)
 
+    def _validate_recovery_record(
+        self, key: str, record: dict[str, object]
+    ) -> _Inbound:
+        sender = record.get("sender")
+        context = record.get("context_token")
+        text = record.get("text")
+        is_text = record.get("is_text", bool(text)) is True
+        stable = record.get("stable", True) is True
+        if (
+            not isinstance(key, str)
+            or not isinstance(sender, str)
+            or not sender
+            or not isinstance(context, str)
+            or not context
+            or not isinstance(stable, bool)
+            or not isinstance(is_text, bool)
+            or (is_text and not isinstance(text, str))
+        ):
+            raise ValueError("WeChat message record is damaged")
+        return _Inbound(
+            key=key,
+            sender=sender,
+            context_token=context,
+            text=text if is_text and isinstance(text, str) else None,
+            stable=stable,
+        )
+
     async def _recover(self) -> None:
         for key, record in self.state.records_in_state("started"):
             self.state.mark(key, "interrupted")
@@ -811,22 +839,19 @@ class _Service:
                 context,
                 "上次任务在服务重启/中断时状态不确定, 已标记中断, 不会自动重放。",
             )
-        for key, record in self.state.records_in_states(
+        pending = self.state.records_in_states(
             frozenset({"received", "queueing", "queued"})
-        ):
+        )
+        # Validate the whole recovery set before any task is started or any
+        # acknowledgement is sent. A damaged record is a startup error, not a
+        # record to skip silently.
+        recovered_items = [
+            (key, record, self._validate_recovery_record(key, record))
+            for key, record in pending
+        ]
+        for _key, record, recovered in recovered_items:
             if record.get("state") == "queued":
                 continue
-            raw_text = record.get("text")
-            is_text = record.get("is_text", bool(raw_text)) is True
-            raw_sender = record.get("sender")
-            raw_context = record.get("context_token")
-            recovered = _Inbound(
-                key=key,
-                sender=raw_sender if isinstance(raw_sender, str) else "",
-                context_token=raw_context if isinstance(raw_context, str) else "",
-                text=raw_text if is_text and isinstance(raw_text, str) else None,
-                stable=record.get("stable", True) is True,
-            )
             await self._handle(recovered)
         self._start_next_queued()
 
@@ -834,7 +859,13 @@ class _Service:
         ensure_outside_workspace(self.config.state_dir, self.config.workspace)
         with contextlib.suppress(ILinkError):
             await self.client.notify_start()
-        await self._recover()
+        try:
+            await self._recover()
+        except BaseException:
+            self._stopping = True
+            with contextlib.suppress(Exception):
+                await self._cancel_current()
+            raise
         consecutive_errors = 0
         try:
             while not self._stopping:

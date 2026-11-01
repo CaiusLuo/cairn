@@ -151,8 +151,12 @@ class WechatState:
             # empty dedupe map could re-execute an already-started task.
             raise ValueError("WeChat runtime state is damaged")
         sequences: set[int] = set()
-        for record in messages.values():
-            if not isinstance(record, dict) or "sequence" not in record:
+        for _key, record in messages.items():
+            if not isinstance(record, dict):
+                raise ValueError("WeChat message record is damaged")
+            if not isinstance(record.get("state"), str):
+                raise ValueError("WeChat message record is damaged")
+            if "sequence" not in record:
                 continue
             sequence = record["sequence"]
             if type(sequence) is not int or sequence < 1 or sequence in sequences:

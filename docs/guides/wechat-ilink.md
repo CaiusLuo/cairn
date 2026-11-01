@@ -164,6 +164,15 @@ without echoing the inbound prompt; it then still sends the final result. The re
 the task result. Because iLink `send_text` does not provide a stable client-id
 identity here, the receipt is sent once and never retried: if the response is
 lost, the state records the receipt as unknown rather than risking a duplicate.
+A busy task is durably queued instead of rejected. Queued messages keep their
+arrival order and resume after a service restart; a task that was already
+started is marked interrupted and is never replayed automatically. Recovery
+validates every pending record before starting any task: a damaged record is a
+startup error, not a silently skipped message. If recovery is cancelled or
+fails after a task was admitted, the service waits for that task's owned cleanup
+before releasing the serve lock. `sendTyping` progress and the final reply are
+unchanged.
+
 While a WeChat task runs, the bot sends iLink `sendTyping` (status 1) and cancels
 it (status 2) when the result is sent; iLink has no token-streaming sendMessage,
 so the observable progress is the typing indicator plus the final message.
