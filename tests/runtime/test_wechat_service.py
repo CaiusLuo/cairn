@@ -312,6 +312,9 @@ def test_serve_runs_trusted_text_and_dedupes_redelivery(tmp_path: Path) -> None:
         assert report.tasks_started == 1
         assert WechatState(state_dir).get_cursor() == "cur-2"
         replies = "\n".join(str(msg.get("item_list")) for msg in fake.sent)
+        assert "已收到" in str(fake.sent[0].get("item_list"))
+        assert "do it" in str(fake.sent[0].get("item_list"))
+        assert replies.count("已收到") == 1
         assert "done" in replies and "completed" in replies
         assert TOKEN not in replies
         assert [call.get("status") for call in fake.typing_calls] == [1, 2]
@@ -351,6 +354,7 @@ def test_serve_status_busy_and_cancel(tmp_path: Path) -> None:
         assert "正在执行" in replies
         assert "当前有任务正在执行" in replies
         assert "取消" in replies
+        assert replies.count("已收到") == 1
         record = WechatState(state_dir).get_record("msg:1")
         assert record is not None and record["state"] == "cancelled"
 
@@ -586,9 +590,9 @@ def test_real_offline_task_chain_edits_workspace_and_replies_same_context(
     assert note.read_text(encoding="utf-8") == "good\n"
     assert fake.sent, "expected a reply for the same conversation"
     assert fake.sent[0].get("context_token") == "ctx-e2e"
-    reply_text = str(fake.sent[0].get("item_list"))
-    assert "completed" in reply_text
-    assert "task finished" in reply_text
+    all_replies = "\n".join(str(msg.get("item_list")) for msg in fake.sent)
+    assert "completed" in all_replies
+    assert "task finished" in all_replies
 
 
 def test_default_provider_approval_is_rejected_before_credentials_or_model(
@@ -721,3 +725,121 @@ def test_runtime_build_failure_after_approval_can_redact_resolved_key(
             )
         )
     assert captured and "fake-provider-key" in captured[0]
+
+
+def test_ack_failure_does_not_lose_task_or_claim_ack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cairn.terminal.wechat.serve import ServeReport, _Inbound, _Service
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state = WechatState(tmp_path / "state")
+    calls: list[str] = []
+
+    class FailingClient:
+        async def send_text(self, **_kwargs: object) -> dict[str, object]:
+            raise ILinkError("send failed")
+
+        async def send_typing(self, **_kwargs: object) -> dict[str, object]:
+            return {}
+
+        async def get_config(self, **_kwargs: object) -> dict[str, object]:
+            return {"typing_ticket": "t"}
+
+    async def executor(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        calls.append(prompt)
+        return HeadlessResult(
+            task_id=task_id,
+            status=HeadlessStatus.COMPLETED,
+            workspace=str(workspace),
+        )
+
+    async def scenario() -> None:
+        service = _Service(
+            config=type("C", (), {"redact_text": None})(),
+            state=state,
+            client=FailingClient(),  # type: ignore[arg-type]
+            executor=executor,
+            report=ServeReport(),
+            stop_event=None,
+        )
+        service._start_task(
+            "msg:1",
+            _Inbound(
+                key="msg:1",
+                sender="u1",
+                context_token="ctx",
+                text="do it",
+                stable=True,
+            ),
+        )
+        assert service._current is not None
+        await asyncio.wait_for(service._current, timeout=3)
+        record = state.get_record("msg:1")
+        assert record is not None and record["state"] == "completed"
+        assert record.get("ack_attempted") is True
+        assert record.get("ack_sent") is not True
+
+    asyncio.run(scenario())
+    assert calls == ["do it"]
+
+
+def test_cancel_during_ack_marks_cancelled_not_started(tmp_path: Path) -> None:
+    from cairn.terminal.wechat.serve import ServeReport, _Inbound, _Service
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state = WechatState(tmp_path / "state")
+    started = asyncio.Event()
+
+    class SlowAckClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def send_text(self, **kwargs: object) -> dict[str, object]:
+            self.calls += 1
+            if "已收到" in str(kwargs.get("text")):
+                started.set()
+                await asyncio.Event().wait()
+            return {}
+
+        async def send_typing(self, **_kwargs: object) -> dict[str, object]:
+            return {}
+
+        async def get_config(self, **_kwargs: object) -> dict[str, object]:
+            return {"typing_ticket": "t"}
+
+    async def executor(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        raise AssertionError("executor must not run while ack is blocked")
+
+    async def scenario() -> None:
+        service = _Service(
+            config=type("C", (), {"redact_text": None})(),
+            state=state,
+            client=SlowAckClient(),  # type: ignore[arg-type]
+            executor=executor,
+            report=ServeReport(),
+            stop_event=None,
+        )
+        service._start_task(
+            "msg:2",
+            _Inbound(
+                key="msg:2",
+                sender="u1",
+                context_token="ctx",
+                text="do it",
+                stable=True,
+            ),
+        )
+        await asyncio.wait_for(started.wait(), timeout=2)
+        assert await service._cancel_current() is True
+        record = state.get_record("msg:2")
+        assert record is not None and record["state"] == "cancelled"
+        assert record.get("ack_attempted") is True
+
+    asyncio.run(scenario())

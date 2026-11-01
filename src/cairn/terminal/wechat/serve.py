@@ -66,6 +66,10 @@ from cairn.terminal.headless import (
 TaskExecutor = Callable[[str, asyncio.Event, str], Awaitable[HeadlessResult]]
 
 
+#: An immediate receipt must not block the actual task indefinitely.
+ACK_TIMEOUT_SECONDS = 5.0
+
+
 @dataclass(frozen=True, slots=True)
 class ServeConfig:
     workspace: Path
@@ -281,9 +285,9 @@ class _Service:
         self._startup_pending: list[tuple[str, dict[str, Any]]] = []
         self._typing_tickets: dict[str, str] = {}
 
-    async def _reply(self, sender: str, context: str, text: str) -> None:
+    async def _reply(self, sender: str, context: str, text: str) -> bool:
         if not sender or not context:
-            return
+            return False
         if self.redact_text is not None:
             text = self.redact_text(text)
         for attempt in range(2):
@@ -292,15 +296,17 @@ class _Service:
                     to_user_id=sender, text=text, context_token=context
                 )
                 self.report.replies_sent += 1
-                return
+                return True
             except ILinkError:
                 if attempt == 0:
                     await asyncio.sleep(0.5)
         self.report.errors += 1
+        return False
 
-    async def _safe_reply(self, sender: str, context: str, text: str) -> None:
+    async def _safe_reply(self, sender: str, context: str, text: str) -> bool:
         with contextlib.suppress(Exception):
-            await self._reply(sender, context, text)
+            return await self._reply(sender, context, text)
+        return False
 
     def _status_text(self) -> str:
         if self._current is None:
@@ -345,11 +351,28 @@ class _Service:
         self._current_cancel = cancel
         self._current_started = time.monotonic()
         task_id = "wechat-" + (key.split(":", 1)[1] if ":" in key else key)
-        self.state.mark(
-            key, "started", sender=inbound.sender, context_token=inbound.context_token
-        )
-        await self._send_typing(inbound, 1)
         try:
+            record = self.state.get_record(key) or {}
+            if not record.get("ack_attempted"):
+                # The task is admitted and owns the single execution slot now.
+                # Mark the attempt before I/O so a crash cannot ack twice, and
+                # keep the wait bounded so a slow receipt cannot block execution.
+                self.state.mark(key, "started", ack_attempted=True)
+                preview = " ".join(inbound.text.split())[:80]
+                try:
+                    acknowledged = await asyncio.wait_for(
+                        self._safe_reply(
+                            inbound.sender,
+                            inbound.context_token,
+                            f"已收到\uff0c正在安排处理\uff1a{preview}",
+                        ),
+                        timeout=ACK_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError:
+                    acknowledged = False
+                if acknowledged:
+                    self.state.mark(key, "started", ack_sent=True)
+            await self._send_typing(inbound, 1)
             result = await self.executor(inbound.text, cancel, task_id)
         except asyncio.CancelledError:
             self.state.mark(key, "cancelled")
