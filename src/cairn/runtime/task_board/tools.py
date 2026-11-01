@@ -5,14 +5,21 @@ from __future__ import annotations
 from typing import Any
 
 from cairn.core.models import ToolResult
-from cairn.core.task_board import TaskBoardStatus
+from cairn.core.task_board import (
+    TASK_DESCRIPTION_MAX_LENGTH,
+    TASK_DETAIL_MAX_LENGTH,
+    TASK_TITLE_MAX_LENGTH,
+    TaskBoardStatus,
+)
 from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
 from cairn.runtime.task_board.service import TaskBoardService
 
 
-def _text(value: object, name: str) -> str:
+def _text(value: object, name: str, *, max_length: int | None = None) -> str:
     if not isinstance(value, str) or not value.strip():
         raise InvalidArguments(f"{name} must be a non-empty string")
+    if max_length is not None and len(value) > max_length:
+        raise InvalidArguments(f"{name} must be at most {max_length} characters")
     return value.strip()
 
 
@@ -42,8 +49,11 @@ class TaskCreateTool(_TaskTool):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "title": {"type": "string"},
-                        "description": {"type": "string"},
+                        "title": {"type": "string", "maxLength": TASK_TITLE_MAX_LENGTH},
+                        "description": {
+                            "type": "string",
+                            "maxLength": TASK_DESCRIPTION_MAX_LENGTH,
+                        },
                     },
                     "required": ["title"],
                     "additionalProperties": False,
@@ -54,10 +64,14 @@ class TaskCreateTool(_TaskTool):
     def validate(self, arguments: dict[str, Any]) -> None:
         if set(arguments) - {"title", "description"}:
             raise InvalidArguments("task_create accepts only title and description")
-        _text(arguments.get("title"), "title")
+        _text(arguments.get("title"), "title", max_length=TASK_TITLE_MAX_LENGTH)
         description = arguments.get("description", "")
         if not isinstance(description, str):
             raise InvalidArguments("description must be a string")
+        if len(description) > TASK_DESCRIPTION_MAX_LENGTH:
+            raise InvalidArguments(
+                f"description must be at most {TASK_DESCRIPTION_MAX_LENGTH} characters"
+            )
 
     async def execute(
         self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
@@ -182,8 +196,14 @@ class TaskUpdateTool(_TaskTool):
                             "type": "string",
                             "enum": [s.value for s in TaskBoardStatus],
                         },
-                        "description": {"type": "string"},
-                        "progress": {"type": "string"},
+                        "description": {
+                            "type": "string",
+                            "maxLength": TASK_DESCRIPTION_MAX_LENGTH,
+                        },
+                        "progress": {
+                            "type": "string",
+                            "maxLength": TASK_DETAIL_MAX_LENGTH,
+                        },
                     },
                     "required": ["task_id"],
                     "additionalProperties": False,
@@ -200,9 +220,17 @@ class TaskUpdateTool(_TaskTool):
             or arguments["status"] not in {status.value for status in TaskBoardStatus}
         ):
             raise InvalidArguments("status must be a valid task status")
-        for name in ("description", "progress"):
-            if name in arguments and not isinstance(arguments[name], str):
-                raise InvalidArguments(f"{name} must be a string")
+        for name, max_length in (
+            ("description", TASK_DESCRIPTION_MAX_LENGTH),
+            ("progress", TASK_DETAIL_MAX_LENGTH),
+        ):
+            if name in arguments:
+                if not isinstance(arguments[name], str):
+                    raise InvalidArguments(f"{name} must be a string")
+                if len(arguments[name]) > max_length:
+                    raise InvalidArguments(
+                        f"{name} must be at most {max_length} characters"
+                    )
         if not any(name in arguments for name in ("status", "description", "progress")):
             raise InvalidArguments(
                 "task_update requires status, description or progress"
@@ -241,7 +269,10 @@ class TaskTodoTool(_TaskTool):
                     "type": "object",
                     "properties": {
                         "task_id": {"type": "string"},
-                        "text": {"type": "string"},
+                        "text": {
+                            "type": "string",
+                            "maxLength": TASK_DETAIL_MAX_LENGTH,
+                        },
                         "todo_id": {"type": "string"},
                         "done": {"type": "boolean"},
                     },
@@ -260,7 +291,7 @@ class TaskTodoTool(_TaskTool):
         if has_text == has_todo:
             raise InvalidArguments("provide exactly one of text or todo_id")
         if has_text:
-            _text(arguments.get("text"), "text")
+            _text(arguments.get("text"), "text", max_length=TASK_DETAIL_MAX_LENGTH)
         if has_todo:
             _text(arguments.get("todo_id"), "todo_id")
             if not isinstance(arguments.get("done", False), bool):

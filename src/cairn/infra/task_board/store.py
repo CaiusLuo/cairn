@@ -18,7 +18,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from cairn.core.task_board import TaskBoardItem, TaskBoardStatus, TaskSource, TaskTodo
+from cairn.core.task_board import (
+    TASK_DETAIL_MAX_LENGTH,
+    TaskBoardItem,
+    TaskBoardStatus,
+    TaskSource,
+    TaskTodo,
+)
 
 TASK_BOARD_DIR_ENV = "CAIRN_TASK_BOARD_DIR"
 STORE_VERSION = 1
@@ -192,7 +198,12 @@ class TaskBoardStore:
                         if value is not None:
                             updates[key] = value
                     if progress:
-                        updates["progress"] = (*task.progress, progress.strip()[:2000])
+                        progress_text = progress.strip()
+                        if len(progress_text) > TASK_DETAIL_MAX_LENGTH:
+                            raise TaskBoardValidationError(
+                                f"progress must be at most {TASK_DETAIL_MAX_LENGTH} characters"
+                            )
+                        updates["progress"] = (*task.progress, progress_text)
                     try:
                         updated = TaskBoardItem.model_validate(
                             {**task.model_dump(), **updates}
@@ -209,9 +220,14 @@ class TaskBoardStore:
             tasks = list(self._load_unlocked())
             for index, task in enumerate(tasks):
                 if task.task_id == task_id:
+                    todo_text = text.strip()
+                    if len(todo_text) > TASK_DETAIL_MAX_LENGTH:
+                        raise TaskBoardValidationError(
+                            f"todo must be at most {TASK_DETAIL_MAX_LENGTH} characters"
+                        )
                     todo = TaskTodo(
                         todo_id="todo-" + uuid.uuid4().hex[:10],
-                        text=text.strip()[:2000],
+                        text=todo_text,
                     )
                     try:
                         updated = TaskBoardItem.model_validate(

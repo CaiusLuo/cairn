@@ -7,6 +7,10 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+TASK_TITLE_MAX_LENGTH = 300
+TASK_DESCRIPTION_MAX_LENGTH = 8000
+TASK_DETAIL_MAX_LENGTH = 2000
+
 
 class TaskSource(StrEnum):
     LOCAL = "local"
@@ -29,7 +33,7 @@ class TaskBoardStatus(StrEnum):
 class TaskTodo(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
     todo_id: str = Field(min_length=1, max_length=80)
-    text: str = Field(min_length=1, max_length=2000)
+    text: str = Field(min_length=1, max_length=TASK_DETAIL_MAX_LENGTH)
     done: bool = False
 
 
@@ -37,8 +41,8 @@ class TaskBoardItem(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
     task_id: str = Field(min_length=1, max_length=100)
     project: str = Field(default="", max_length=4096)
-    title: str = Field(min_length=1, max_length=300)
-    description: str = Field(default="", max_length=8000)
+    title: str = Field(min_length=1, max_length=TASK_TITLE_MAX_LENGTH)
+    description: str = Field(default="", max_length=TASK_DESCRIPTION_MAX_LENGTH)
     source: TaskSource = TaskSource.LOCAL
     session_id: str = Field(default="", max_length=200)
     status: TaskBoardStatus = TaskBoardStatus.TODO

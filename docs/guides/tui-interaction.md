@@ -26,8 +26,9 @@ main  ·  provider bailian               <- action: a decision or a correction
 ↑ 1.2k  ↓ 84  ·  28 tok/s  ·  ctx [##--------] 18%
 ```
 
-Nothing else is permanent. The activity slot and the action slot collapse when
-empty. One intentional blank row separates the newest output from the composer.
+The current task bar remains visible while a task is selected. The activity slot
+and the action slot collapse when empty. One intentional blank row separates the
+newest output from the composer.
 That keeps the composer and the two status rows in the same place while the
 transient surfaces open and close.
 
@@ -40,8 +41,23 @@ Every surface exists because of how long its content is worth keeping:
 | Transcript | Permanent | The prompt, the final answer, one reasoning receipt |
 | Activity | While the turn runs | Thinking preview, running tool, interrupt message |
 | Action | Until answered or replaced | Corrections, refusals, `/model` and `/provider` choosers |
+| Current task | While selected | Task status and up to three ASCII todos |
 | Composer | Always | The line being typed |
 | Status | Session | Two rows: model and provider, then usage |
+
+## Shared tasks
+
+Use `/task add <title>` to create a local task, `/task list` to see all tasks,
+`/task use <id>` to select one, and `/task show <id>` for its details.
+`/task todo <id> <text>` adds a todo; `/task done <id> <todo-id>` and
+`/task undo <id> <todo-id>` change its state. `/task help` lists the other
+commands. Agent task
+tools can create and update the same shared board. The selected task bar refreshes
+from the store and shows up to three todos.
+
+Titles are limited to 300 characters, descriptions to 8,000, and individual
+todos and progress notes to 2,000. Oversized values are rejected rather than
+truncated. A rejected edit leaves the saved task unchanged.
 
 ## The transcript
 

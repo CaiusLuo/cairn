@@ -13,7 +13,7 @@ from cairn.infra.task_board.store import (
     TaskBoardStore,
     TaskBoardValidationError,
 )
-from cairn.infra.tools.base import InvalidArguments
+from cairn.infra.tools.base import InvalidArguments, Tool
 from cairn.runtime.task_board.service import TaskBoardService
 from cairn.runtime.task_board.tools import (
     TaskCreateTool,
@@ -254,5 +254,93 @@ def test_task_todo_repeated_done_is_success(tmp_path: Path) -> None:
             {"task_id": task.task_id, "todo_id": "missing", "done": True}
         )
         assert missing.exit_code != 0
+
+    asyncio.run(flow())
+
+
+def test_oversized_todo_and_progress_leave_existing_task_intact(tmp_path: Path) -> None:
+    store = TaskBoardStore(tmp_path / "tasks")
+    task = store.create(title="Keep details")
+    before = store.load()
+
+    with pytest.raises(TaskBoardValidationError, match="at most 2000"):
+        store.add_todo(task.task_id, "字" * 2001)
+    with pytest.raises(TaskBoardValidationError, match="at most 2000"):
+        store.update(task.task_id, progress="x" * 2001)
+    assert store.load() == before
+
+    with_todo = store.add_todo(task.task_id, "字" * 2000)
+    assert with_todo is not None and with_todo.todos[0].text == "字" * 2000
+    with_progress = store.update(task.task_id, progress="x" * 2000)
+    assert with_progress is not None and with_progress.progress == ("x" * 2000,)
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("task_create", {"title": "x" * 301}),
+        ("task_create", {"title": "valid", "description": "x" * 8001}),
+        ("task_update", {"task_id": "task-1", "description": "x" * 8001}),
+        ("task_update", {"task_id": "task-1", "progress": "x" * 2001}),
+        ("task_todo", {"task_id": "task-1", "text": "字" * 2001}),
+    ],
+)
+def test_oversized_task_tool_arguments_fail_before_permission(
+    tmp_path: Path, tool_name: str, arguments: dict[str, str]
+) -> None:
+    import json
+
+    from cairn.core.models import LLMResponse, ToolCall
+    from cairn.infra.observability.tracer import Tracer
+    from cairn.runtime.loop import run_turn
+    from tests.support.runtime import (
+        TEST_BUDGET,
+        RecordingSink,
+        SequenceLLM,
+        make_agent,
+    )
+
+    store = TaskBoardStore(tmp_path / "tasks")
+    service = TaskBoardService(store)
+    tools: dict[str, Tool] = {
+        "task_create": TaskCreateTool(service),
+        "task_update": TaskUpdateTool(service),
+        "task_todo": TaskTodoTool(service),
+    }
+    tool = tools[tool_name]
+    llm = SequenceLLM(
+        [
+            LLMResponse(
+                tool_calls=[ToolCall(id="invalid", name=tool_name, arguments=arguments)]
+            ),
+            LLMResponse(content="recovered"),
+        ]
+    )
+    sink = RecordingSink()
+    agent = make_agent(llm, tool, [])
+    agent.tracer = Tracer(sink)
+    assert asyncio.run(run_turn(agent, "try oversized input", budget=TEST_BUDGET)) == (
+        "recovered"
+    )
+    failure = json.loads(agent.state.messages[2].content or "")
+    assert failure["type"] == "InvalidArguments"
+    assert "at most" in failure["error"]
+    assert not [span for span in sink.spans if span.name == "permission.check"]
+    assert not [span for span in sink.spans if span.name == "tool.execute"]
+    assert not store.path.exists()
+
+
+def test_cli_rejects_oversized_todo_without_truncating(tmp_path: Path) -> None:
+    from cairn.terminal.task_board.controller import TaskBoardController
+
+    store = TaskBoardStore(tmp_path / "tasks")
+    service = TaskBoardService(store)
+    controller = TaskBoardController(service)
+    task = service.create("Keep details")
+
+    async def flow() -> None:
+        result = await controller.command(f"todo {task.task_id} " + "x" * 2001)
+        assert "at most 2000" in result.message
+        assert store.load()[0].todos == ()
 
     asyncio.run(flow())
