@@ -148,7 +148,9 @@ the committed checkpoint (including tool calls/results) before `run_turn`.
 The service refuses to create a new Session when an existing one is unreadable
 or requires recovery; it does not silently substitute a blank conversation.
 Session stores and conversation snapshots live under the host-private state
-directory, outside the Agent-writable Workspace.
+directory, outside the Agent-writable Workspace, effective temporary directory
+and uv cache. Workspace observations use the active provider's credential
+filtering for each request.
 
 When a trusted sender's valid text task is durably accepted,
 the bot sends one immediate receipt (`已收到，正在安排处理`) before execution,

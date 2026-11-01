@@ -46,7 +46,6 @@ from cairn.infra.sessions.models import (
     SessionBinding,
     SessionStoreError,
 )
-from cairn.infra.sessions.store import SessionStore
 from cairn.infra.task_board.store import TaskBoardStore, default_task_board_dir
 from cairn.infra.tools.base import Tool
 from cairn.infra.wechat.ilink import (
@@ -80,6 +79,7 @@ from cairn.runtime.task_board.tools import (
     TaskTodoTool,
     TaskUpdateTool,
 )
+from cairn.terminal.durable import open_store
 from cairn.terminal.headless import (
     DEFAULT_CHECK_TIMEOUT_S,
     DEFAULT_MAX_STEPS,
@@ -250,16 +250,6 @@ def default_task_executor(
         MemoryForgetTool(personal_memory),
         MemoryCorrectTool(personal_memory),
     )
-    try:
-        project = load_project_providers(config.workspace / ".cairn" / "models.toml")
-        provider = default_provider(
-            project, os.environ, dotenv_values(config.workspace / ".env")
-        )
-        secret_env_keys = frozenset(
-            named.config.api_key_env for named in (project.providers or (provider,))
-        )
-    except (OSError, ValueError):
-        secret_env_keys = frozenset()
     task_board_root = default_task_board_dir()
     ensure_outside_workspace(task_board_root, config.workspace)
     task_board = TaskBoardService(
@@ -290,8 +280,6 @@ def default_task_executor(
 
     session_root = config.state_dir / "sessions"
     ensure_outside_workspace(session_root, config.workspace)
-    session_root.mkdir(parents=True, exist_ok=True)
-    session_root.chmod(0o700)
     active_sessions: list[DurableSession] = []
 
     def durable_factory(sender: str):  # type: ignore[no-untyped-def]
@@ -326,20 +314,27 @@ def default_task_executor(
                 max_steps=config.max_steps,
             )
 
+        def secret_keys(agent: Agent) -> frozenset[str]:
+            provider = agent.repo_context_provider
+            if provider is None:
+                raise ValueError("Durable WeChat session requires a workspace observer")
+            return provider.secret_env_keys
+
         def make_binding(agent: Agent) -> SessionBinding:
             return SessionBinding(
                 session_id=session_id,
                 workspace=observe_workspace(
-                    Workspace(config.workspace), secret_env_keys
+                    Workspace(config.workspace), secret_keys(agent)
                 ),
                 provider=provider_reference(agent),
                 observed_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             )
 
         def build(agent: Agent) -> DurableSession:
-            store = SessionStore(
+            store = open_store(
                 session_root,
-                forbidden_roots=(config.workspace,),
+                Workspace(config.workspace),
+                secret_env_keys=secret_keys(agent),
                 sensitive_values=tuple(known_secret_values),
             )
             try:

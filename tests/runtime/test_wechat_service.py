@@ -1273,3 +1273,148 @@ def test_configured_wechat_restores_tool_facts_after_service_restart(
         assert any(
             m.role == "assistant" and m.content == "first answer" for m in messages
         )
+
+
+@pytest.mark.parametrize(
+    ("variable", "through_symlink"),
+    [
+        ("TMPDIR", False),
+        ("TMPDIR", True),
+        ("UV_CACHE_DIR", False),
+        ("UV_CACHE_DIR", True),
+    ],
+)
+def test_wechat_session_refuses_agent_writable_storage(
+    monkeypatch: pytest.MonkeyPatch, variable: str, through_symlink: bool
+) -> None:
+    from tempfile import TemporaryDirectory
+
+    from cairn.terminal.wechat.serve import default_task_executor
+    from tests.support.git import initialize_repository
+
+    with TemporaryDirectory(
+        prefix="cairn-wechat-writable-", dir=Path.home()
+    ) as root_text:
+        root = Path(root_text)
+        workspace = root / "workspace"
+        workspace.mkdir()
+        initialize_repository(workspace)
+        writable = root / "writable"
+        writable.mkdir()
+        state_parent = writable
+        if through_symlink:
+            state_parent = root / "alias"
+            state_parent.symlink_to(writable, target_is_directory=True)
+        monkeypatch.setenv(variable, str(writable))
+        monkeypatch.setenv("CAIRN_AGENT_HOME", str(root / "agent"))
+        monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(root / "board"))
+        llm = SequenceLLM([LLMResponse(content="should not run")])
+        config = ServeConfig(
+            workspace=workspace,
+            state_dir=state_parent / "state",
+            account=WechatAccount(
+                bot_token="fake-bot-token-very-long",
+                ilink_bot_id="bot",
+                base_url="https://example.test",
+            ),
+            approval=None,
+            allowed_senders=frozenset({"u1"}),
+            max_steps=20,
+        )
+
+        async def fake_run(**kwargs: object) -> HeadlessResult:
+            return await run_headless_task(
+                workspace=workspace,
+                prompt=str(kwargs["prompt"]),
+                task_id=str(kwargs["task_id"]),
+                grant_workspace_trust=True,
+                grant_shell=False,
+                llm=llm,
+                budget=RunBudget(max_steps=20),
+                durable_session_factory=kwargs["durable_session_factory"],  # type: ignore[arg-type]
+            )
+
+        monkeypatch.setattr(
+            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+        )
+
+        async def flow() -> HeadlessResult:
+            execute = default_task_executor(config)
+            return await execute("hello", asyncio.Event(), "first", sender="u1")  # type: ignore[call-arg]
+
+        result = asyncio.run(flow())
+        assert result.status is HeadlessStatus.RUNTIME_ERROR
+        assert llm.calls == []
+        assert not (writable / "state" / "sessions").exists()
+
+
+def test_wechat_workspace_observation_uses_current_secret_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tempfile import TemporaryDirectory
+
+    from cairn.infra.sessions.host import observe_workspace
+    from cairn.infra.sessions.models import WorkspaceBinding
+    from cairn.infra.workspace.workspace import Workspace
+    from cairn.terminal.wechat.serve import default_task_executor
+    from tests.support.git import initialize_repository
+
+    with TemporaryDirectory(
+        prefix="cairn-wechat-credentials-", dir=Path.home()
+    ) as root_text:
+        root = Path(root_text)
+        workspace = root / "workspace"
+        workspace.mkdir()
+        initialize_repository(workspace)
+        monkeypatch.setenv("CAIRN_AGENT_HOME", str(root / "agent"))
+        monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(root / "board"))
+        llm = SequenceLLM([LLMResponse(content="done")])
+        observed: list[frozenset[str]] = []
+        current_keys = frozenset({"CAIRN_TEST_CURRENT_PROVIDER_SECRET"})
+
+        def record_observation(
+            target: Workspace, secret_env_keys: frozenset[str]
+        ) -> WorkspaceBinding:
+            observed.append(secret_env_keys)
+            return observe_workspace(target, secret_env_keys)
+
+        monkeypatch.setattr(
+            "cairn.terminal.wechat.serve.observe_workspace", record_observation
+        )
+        config = ServeConfig(
+            workspace=workspace,
+            state_dir=root / "state",
+            account=WechatAccount(
+                bot_token="fake-bot-token-very-long",
+                ilink_bot_id="bot",
+                base_url="https://example.test",
+            ),
+            approval=None,
+            allowed_senders=frozenset({"u1"}),
+            max_steps=20,
+        )
+
+        async def fake_run(**kwargs: object) -> HeadlessResult:
+            return await run_headless_task(
+                workspace=workspace,
+                prompt=str(kwargs["prompt"]),
+                task_id=str(kwargs["task_id"]),
+                grant_workspace_trust=True,
+                grant_shell=False,
+                llm=llm,
+                budget=RunBudget(max_steps=20),
+                secret_env_keys=current_keys,
+                durable_session_factory=kwargs["durable_session_factory"],  # type: ignore[arg-type]
+            )
+
+        monkeypatch.setattr(
+            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+        )
+
+        async def flow() -> HeadlessResult:
+            execute = default_task_executor(config)
+            return await execute("hello", asyncio.Event(), "first", sender="u1")  # type: ignore[call-arg]
+
+        result = asyncio.run(flow())
+        assert result.status is HeadlessStatus.COMPLETED
+        assert observed and all(current_keys <= keys for keys in observed)
