@@ -198,6 +198,7 @@ def test_deliver_uses_latest_saved_context_for_proactive_push(tmp_path: Path) ->
             )
         )
         state.load()["messages"]["msg:1"] = {
+            "state": "completed",
             "sender": "owner",
             "context_token": "ctx-delivery",
             "updated": 1.0,
