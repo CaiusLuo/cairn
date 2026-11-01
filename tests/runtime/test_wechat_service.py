@@ -2000,3 +2000,127 @@ def test_wechat_attachment_failure_retains_unclosed_store(
         assert later.status is HeadlessStatus.COMPLETED
         assert closes >= 2
         assert len(llm.calls) == 1
+
+
+def test_wechat_tasks_link_to_their_persistent_sender_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tempfile import TemporaryDirectory
+    from typing import Any
+
+    from cairn.core.task_board import TaskSource
+    from cairn.infra.sessions.store import SessionStore
+    from cairn.infra.task_board.store import TaskBoardStore
+    from tests.support.git import initialize_repository
+
+    with TemporaryDirectory(
+        prefix="cairn-wechat-task-session-", dir=Path.home()
+    ) as root_text:
+        root = Path(root_text)
+        workspace = root / "workspace"
+        workspace.mkdir()
+        initialize_repository(workspace)
+        board_dir = root / "board"
+        state_dir = root / "state"
+        monkeypatch.setenv("CAIRN_AGENT_HOME", str(root / "agent"))
+        monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(board_dir))
+        llm = SequenceLLM(
+            [
+                LLMResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="a1", name="task_create", arguments={"title": "A first"}
+                        )
+                    ]
+                ),
+                LLMResponse(content="A first done"),
+                LLMResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="b1", name="task_create", arguments={"title": "B first"}
+                        )
+                    ]
+                ),
+                LLMResponse(content="B first done"),
+                LLMResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="a2", name="task_create", arguments={"title": "A later"}
+                        )
+                    ]
+                ),
+                LLMResponse(content="A later done"),
+            ]
+        )
+
+        async def fake_run(**kwargs: Any) -> HeadlessResult:
+            return await run_headless_task(
+                workspace=workspace,
+                prompt=kwargs["prompt"],
+                task_id=kwargs["task_id"],
+                grant_workspace_trust=True,
+                grant_shell=False,
+                llm=llm,
+                budget=RunBudget(max_steps=20),
+                extra_tools=kwargs["extra_tools"],
+                durable_session_factory=kwargs["durable_session_factory"],
+            )
+
+        monkeypatch.setattr(
+            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+        )
+        with FakeILink() as fake:
+            config = ServeConfig(
+                workspace=workspace,
+                state_dir=state_dir,
+                account=_account(fake),
+                approval=None,
+                allowed_senders=frozenset({"u1", "u2"}),
+                max_steps=20,
+                max_polls=70,
+                poll_interval=0.02,
+            )
+
+            async def exchange(
+                sender: str, message: str, message_id: int, cursor: str
+            ) -> None:
+                fake.updates = [
+                    {
+                        "ret": 0,
+                        "msgs": [_msg(message, sender=sender, mid=message_id)],
+                        "get_updates_buf": cursor,
+                    }
+                ]
+                await serve_wechat(config=config, allow_insecure_local_http=True)
+
+            asyncio.run(exchange("u1", "A first request", 201, "first"))
+            asyncio.run(exchange("u2", "B first request", 202, "second"))
+            asyncio.run(exchange("u1", "A later request", 203, "third"))
+
+        for message_id in (201, 202, 203):
+            record = WechatState(state_dir).get_record(f"msg:{message_id}")
+            assert record is not None and record["state"] == "completed"
+        assert len(llm.calls) == 6
+        b_context = llm.calls[2][0]
+        a_context = llm.calls[4][0]
+        assert not any(m.content == "A first request" for m in b_context)
+        assert any(m.content == "A first request" for m in a_context)
+        assert not any(m.content == "B first request" for m in a_context)
+
+        tasks = {task.title: task for task in TaskBoardStore(board_dir).load()}
+        assert set(tasks) == {"A first", "B first", "A later"}
+        assert all(task.source is TaskSource.WECHAT for task in tasks.values())
+        assert tasks["A first"].session_id == tasks["A later"].session_id
+        assert tasks["A first"].session_id != tasks["B first"].session_id
+
+        store = SessionStore(
+            state_dir / "sessions", mode="inspect", forbidden_roots=(workspace,)
+        )
+        try:
+            session_ids = {summary.session_id for summary in store.list_sessions()}
+        finally:
+            store.close()
+        assert {
+            tasks["A first"].session_id.removeprefix("wechat:"),
+            tasks["B first"].session_id.removeprefix("wechat:"),
+        } == session_ids

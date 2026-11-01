@@ -145,6 +145,7 @@ narrow for the matrix); the URL is also printed as a fallback. The QR is cleared
 from the composer-adjacent screen after login resolves. Standalone WeChat conversations use the existing durable SessionStore/DurableSession
 path: each sender is bound to a stable Session ID, and the next request reopens
 the committed checkpoint (including tool calls/results) before `run_turn`.
+Tasks created by that sender carry the same Session ID with a `wechat:` prefix.
 The service refuses to create a new Session when an existing one is unreadable
 or requires recovery; it does not silently substitute a blank conversation.
 Session stores and conversation snapshots live under the host-private state

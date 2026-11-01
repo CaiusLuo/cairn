@@ -298,11 +298,14 @@ def default_task_executor(
             sessions.clear()
             raise
 
+    def sender_session_id(sender: str) -> str:
+        digest = hashlib.sha256(f"wechat:{config.workspace}:{sender}".encode()).digest()
+        return str(uuid.UUID(bytes=digest[:16], version=4))
+
     def durable_factory(
         sender: str, active_sessions: list[DurableSession]
     ) -> Callable[[Agent], DurableSession]:
-        digest = hashlib.sha256(f"wechat:{config.workspace}:{sender}".encode()).digest()
-        session_id = str(uuid.UUID(bytes=digest[:16], version=4))
+        session_id = sender_session_id(sender)
 
         def provider_reference(agent: Agent) -> ProviderReference | None:
             manager = agent.model_executor.manager
@@ -431,6 +434,15 @@ def default_task_executor(
                     project=str(config.workspace),
                     session_id=f"schedule:{task_id}",
                     source=TaskSource.SCHEDULE,
+                )
+            )
+        elif sender:
+            task_tools = board_tools(
+                TaskBoardService(
+                    TaskBoardStore(task_board_root),
+                    project=str(config.workspace),
+                    session_id=f"wechat:{sender_session_id(sender)}",
+                    source=TaskSource.WECHAT,
                 )
             )
         active_sessions: list[DurableSession] = []
