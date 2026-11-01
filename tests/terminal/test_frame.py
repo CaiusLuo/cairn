@@ -739,8 +739,9 @@ def _live_handler(view: TranscriptView, key: Keys) -> str:
     candidates = [binding for binding in bindings.get_bindings_for_keys((key,))]
     active = [binding for binding in candidates if binding.filter()]
     assert active, f"no active binding for {key}"
-    # prompt_toolkit takes the first match in registration order.
-    return active[0].handler.__name__
+    # prompt_toolkit KeyProcessor._process executes matches[-1], the last
+    # active binding, not the first.
+    return active[-1].handler.__name__
 
 
 def _chooser(rows: tuple[str, ...], selected: int = 0) -> Action:
@@ -1570,7 +1571,7 @@ def test_history_up_handler_is_active_after_submit() -> None:
             pipe.send_text("first prompt\r")
             await asyncio.wait_for(reader, timeout=2)
             assert view._history == ["first prompt"]
-            assert _live_handler(view, Keys.Up) == "history_previous"
+            assert _live_handler(view, Keys.Up) == "select_previous"
             await view.aclose()
 
     asyncio.run(scenario())
@@ -1580,7 +1581,66 @@ def test_history_up_binding_recalls_when_buffer_empty() -> None:
     view, _, _ = _view()
     view._history = ["/wx", "first prompt"]
     view._buffer.reset()
-    _press_by_name(view, "history_previous")
+    _press_by_name(view, "select_previous")
     assert view._buffer.text == "first prompt"
-    _press_by_name(view, "history_previous")
+    _press_by_name(view, "select_previous")
     assert view._buffer.text == "/wx"
+
+
+def test_bracketed_paste_is_recorded_once_as_submitted_text() -> None:
+    async def scenario() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            view, _, _ = _view()
+            reader = asyncio.create_task(view.read())
+            await asyncio.sleep(0)
+            pipe.send_text("\x1b[200~alpha\nbeta\ngamma\x1b[201~\r")
+            line = await asyncio.wait_for(reader, timeout=2)
+            assert line.text == "alpha\nbeta\ngamma"
+            assert view._history == ["alpha\nbeta\ngamma"]
+            assert "[pasted" not in view._history[0]
+
+            reader = asyncio.create_task(view.read())
+            await asyncio.sleep(0.01)
+            pipe.send_text("\x1b[A\r")
+            recalled = await asyncio.wait_for(reader, timeout=2)
+            assert recalled.text == "alpha\nbeta\ngamma"
+            await view.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_running_queue_wins_over_history_when_input_empty() -> None:
+    from cairn.runtime.turn.steering import PendingMessage
+
+    view, _, _ = _view()
+    view._history = ["older prompt"]
+    view._running = True
+    view._pending.push(PendingMessage(text="queued one", delivery="queue"))
+    view._pending.push(PendingMessage(text="queued two", delivery="queue"))
+    view._buffer.reset()
+    _press_by_name(view, "select_previous")
+    assert view._queue_view.selected == 0
+    assert view._buffer.text == ""
+
+
+def test_multiline_up_stays_cursor_movement_even_with_history() -> None:
+    view, _, _ = _view()
+    view._history = ["older prompt"]
+    view._buffer.insert_text("alpha\nbeta")
+    view._buffer.cursor_position = len(view._buffer.text)
+    _press_by_name(view, "select_previous")
+    assert view._buffer.text == "alpha\nbeta"
+    assert view._buffer.document.cursor_position_row == 0
+
+
+def test_plain_action_does_not_block_history_recall() -> None:
+    view, _, _ = _view()
+    view._history = ["hlo"]
+    view.show_action(correction("plain notice"))
+    assert view.action is not None and not view.action.choosable
+    _press_by_name(view, "select_previous")
+    assert view._buffer.text == "hlo"
+    assert view.action is None

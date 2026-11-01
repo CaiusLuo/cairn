@@ -259,32 +259,6 @@ class TranscriptView:
             self._buffer.insert_text("\n")
 
         @bindings.add(
-            "up",
-            filter=Condition(
-                lambda: (
-                    bool(self._history)
-                    and not self._action_open()
-                    and not self._palette.open
-                )
-            ),
-        )
-        def history_previous(event: object) -> None:
-            self._recall_history(-1)
-
-        @bindings.add(
-            "down",
-            filter=Condition(
-                lambda: (
-                    bool(self._history)
-                    and not self._action_open()
-                    and not self._palette.open
-                )
-            ),
-        )
-        def history_next(event: object) -> None:
-            self._recall_history(1)
-
-        @bindings.add(
             "tab",
             filter=Condition(
                 lambda: (
@@ -443,30 +417,41 @@ class TranscriptView:
 
         @bindings.add(
             "up",
-            filter=~Condition(lambda: self._action_open() or self._palette.open),
+            filter=~Condition(lambda: self._choosable_action() or self._palette.open),
         )
         def select_previous(event: object) -> None:
-            """Move the selection up through the queued messages.
-
-            Only when the composer is empty: with text in it the arrow keys belong
-            to editing, which is what a reader expects while typing.
-            """
-            if self._buffer.text:
-                self._buffer.history_backward()
+            """Queue while a turn is running, history when idle, editing inside text."""
+            text = self._buffer.text
+            if text and "\n" in text and self._buffer.document.cursor_position_row > 0:
+                self._buffer.cursor_up()
                 return
-            self._queue_view.move_up(self._pending)
-            self.repaint()
+            if self._running and not text and self._pending.queued():
+                self._queue_view.move_up(self._pending)
+                self.repaint()
+                return
+            if self._history:
+                self._recall_history(-1)
 
         @bindings.add(
             "down",
-            filter=~Condition(lambda: self._action_open() or self._palette.open),
+            filter=~Condition(lambda: self._choosable_action() or self._palette.open),
         )
         def select_next(event: object) -> None:
-            if self._buffer.text:
-                self._buffer.history_forward()
+            text = self._buffer.text
+            if (
+                text
+                and "\n" in text
+                and self._buffer.document.cursor_position_row
+                < len(self._buffer.document.lines) - 1
+            ):
+                self._buffer.cursor_down()
                 return
-            self._queue_view.move_down(self._pending)
-            self.repaint()
+            if self._running and not text and self._pending.queued():
+                self._queue_view.move_down(self._pending)
+                self.repaint()
+                return
+            if self._history and self._history_index is not None:
+                self._recall_history(1)
 
         @bindings.add(
             "delete",
@@ -1113,6 +1098,9 @@ class TranscriptView:
         """Move through submitted lines; preserve the current draft at the end."""
         if not self._history:
             return
+        if self._action is not None:
+            # Only non-choosable notices reach here; a chooser keeps the arrows.
+            self._dismiss_action()
         if self._history_index is None:
             if step > 0:
                 return
@@ -1148,7 +1136,6 @@ class TranscriptView:
         saw two surfaces stacked and could not tell which one the arrows belonged to.
         """
         text = self._buffer.text
-        self.record_history(text)
         self._buffer.reset()
         self._palette.close()
         expanded = self._pastes.expand(text)
@@ -1156,6 +1143,10 @@ class TranscriptView:
         if not expanded.strip():
             self.repaint()
             return
+        # Record the submitted, expanded content exactly once. Recording before
+        # expansion stored the [pasted N lines] placeholder and made the next
+        # recall submit literal placeholder text.
+        self.record_history(expanded)
         selection = parse_selection_tokens(expanded)
         if self._running and (selection.skills or selection.mcp_servers):
             delivery = "queue"
