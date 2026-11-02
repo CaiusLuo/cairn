@@ -3183,3 +3183,43 @@ def test_sigterm_style_stop_wakes_slow_poll(tmp_path: Path) -> None:
             await asyncio.wait_for(task, timeout=2)
 
     asyncio.run(scenario())
+
+
+def test_poll_updates_cancels_owned_poll_and_stop_waiter(tmp_path: Path) -> None:
+    from cairn.terminal.wechat.serve import ServeReport, _Service
+
+    class PollClient:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.finished = asyncio.Event()
+
+        async def get_updates(
+            self, *args: object, **kwargs: object
+        ) -> dict[str, object]:
+            self.started.set()
+            try:
+                await asyncio.sleep(30)
+                return {}
+            finally:
+                self.finished.set()
+
+    async def scenario() -> None:
+        client = PollClient()
+        stop = asyncio.Event()
+        service = _Service(
+            config=type("C", (), {"poll_timeout_ms": None})(),  # type: ignore[arg-type]
+            state=WechatState(tmp_path / "state"),
+            client=client,  # type: ignore[arg-type]
+            executor=lambda *args: None,  # type: ignore[arg-type]
+            report=ServeReport(),
+            stop_event=stop,
+        )
+        task = asyncio.create_task(service._poll_updates())
+        await asyncio.wait_for(client.started.wait(), timeout=2)
+        task.cancel()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert client.finished.is_set()
+
+    asyncio.run(scenario())

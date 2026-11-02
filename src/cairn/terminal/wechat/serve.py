@@ -1273,10 +1273,11 @@ class _Service:
                 return poll.result()
             return await poll
         finally:
-            if not stop.done():
-                stop.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await stop
+            # Every exit path owns both children: an external cancellation at
+            # ``asyncio.wait`` must not leave a live long-poll behind. Cancelling
+            # stop and poll is bounded and repeated cancellation is absorbed by
+            # settle_owned; the original CancelledError still propagates.
+            await settle_owned(poll, stop)
 
     async def run(self) -> ServeReport:
         ensure_outside_workspace(self.config.state_dir, self.config.workspace)
