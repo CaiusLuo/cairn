@@ -1,0 +1,37 @@
+[Unit]
+Description=Cairn WeChat durable task service
+Documentation=file://__CAIRN_ROOT__/docs/guides/persistent-wechat-service.md
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=__CAIRN_USER__
+Group=__CAIRN_USER__
+WorkingDirectory=__CAIRN_ROOT__
+Environment=HOME=__CAIRN_HOME__
+Environment=XDG_STATE_HOME=__CAIRN_XDG_STATE_HOME__
+EnvironmentFile=-/etc/cairn/cairn-wechat.env
+ExecStart=__CAIRN_ROOT__/.venv/bin/cairn wechat serve \
+  --workspace __CAIRN_ROOT__ \
+  --allow-sender __WECHAT_SENDER__ \
+  --trust-workspace \
+  --approve-provider-name __PROVIDER_NAME__ \
+  --approve-provider-endpoint __PROVIDER_ENDPOINT__ \
+  --approve-provider-group __PROVIDER_GROUP__ \
+  --approve-provider-key-env __PROVIDER_KEY_ENV__ \
+  --approve-provider-models __PROVIDER_MODELS__
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

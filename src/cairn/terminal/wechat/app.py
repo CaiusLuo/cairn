@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 from pathlib import Path
 from typing import Annotated
 
@@ -24,7 +25,7 @@ from cairn.terminal.headless import (
     _build_approval,
 )
 from cairn.terminal.wechat.login import QRLoginError, run_login
-from cairn.terminal.wechat.serve import ServeConfig, serve_wechat
+from cairn.terminal.wechat.serve import ServeConfig, ServeReport, serve_wechat
 
 wechat_app = typer.Typer(help="Login to WeChat iLink and serve text coding tasks.")
 
@@ -199,8 +200,25 @@ def wechat_serve(
         poll_interval=poll_interval,
         schedule_store=default_schedule_dir(),
     )
+
+    async def _run_with_stop() -> ServeReport:
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        installed: list[signal.Signals] = []
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(signum, stop.set)
+                installed.append(signum)
+            except (NotImplementedError, RuntimeError):
+                pass
+        try:
+            return await serve_wechat(config=config, state=state, stop_event=stop)
+        finally:
+            for signum in installed:
+                loop.remove_signal_handler(signum)
+
     try:
-        report = asyncio.run(serve_wechat(config=config, state=state))
+        report = asyncio.run(_run_with_stop())
     except WechatLockError as exc:
         typer.echo(f"WeChat serve lock: {exc}", err=True)
         raise typer.Exit(3) from None
