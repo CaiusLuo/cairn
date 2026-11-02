@@ -554,28 +554,49 @@ def default_conversation_classifier(config: ServeConfig) -> ConversationClassifi
 
 
 def default_conversation_executor(config: ServeConfig) -> ConversationExecutor:
-    """Read-only conversation over the configured provider; no task ledger."""
+    """Full-capability background conversation; same provider/tool policy as tasks."""
+    agent_home = default_agent_home()
+    ensure_agent_home_outside_workspace(agent_home, config.workspace)
+    personal_memory = PersonalMemoryService(AgentMemoryStore(agent_home))
+    memory_tools: tuple[Tool, ...] = (
+        MemorySearchTool(personal_memory),
+        MemoryRememberTool(personal_memory),
+        MemoryForgetTool(personal_memory),
+        MemoryCorrectTool(personal_memory),
+    )
+    task_board = TaskBoardService(
+        TaskBoardStore(default_task_board_dir()),
+        project=str(config.workspace),
+        session_id=f"wechat:{config.workspace}",
+        source=TaskSource.WECHAT,
+    )
+    task_tools: tuple[Tool, ...] = (
+        TaskCreateTool(task_board),
+        TaskDetailTool(task_board),
+        TaskListTool(task_board),
+        TaskUpdateTool(task_board),
+        TaskTodoTool(task_board),
+    )
 
     async def execute(question: str, sender: str, snapshot: str) -> str:
-        prompt = (
-            "You are answering a progress/chat question while another coding task runs. "
-            "Do not edit files, do not run shell commands and do not start work. "
-            "Use only the bounded facts below. Keep the answer suitable for WeChat.\n"
-            f"FACTS: {snapshot}\nQUESTION: {question}"
-        )
         result = await _run_via_config_async(
             workspace=config.workspace,
-            prompt=prompt,
-            task_id="wechat-chat",
-            grant_shell=False,
+            prompt=(
+                "You are the persistent Cairn assistant for this WeChat sender. "
+                "You have the same tools and memory as task work. Use tools when "
+                "needed. The bounded current-task facts are:\n"
+                f"{snapshot}\nUser message:\n{question}"
+            ),
+            task_id=f"wechat-chat-{sender[-8:]}",
+            grant_shell=config.allow_shell,
             approval=config.approval,
-            max_steps=min(config.max_steps, 4),
+            max_steps=min(config.max_steps, 20),
             trace_dir=config.trace_dir,
             cancellation_event=None,
-            read_only=True,
-            extra_tools=(),
+            read_only=False,
+            extra_tools=(*memory_tools, *task_tools),
         )
-        return result.final_response or "暂时没有可展示的进度。"
+        return result.final_response or "暂时没有可展示的回复。"
 
     return execute
 

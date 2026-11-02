@@ -1429,31 +1429,42 @@ async def main(
     async def _wechat_conversation_execute(
         question: str, sender: str, snapshot: str
     ) -> str:
-        """Read-only, independent Agent for busy-time chat; never touches tasks."""
+        """Full-capability conversation; same tools and memory as task work."""
         result = await run_headless_task(
             workspace=workspace.root,
             prompt=(
-                "Answer this progress/chat question using only the facts below. "
-                "Do not edit files, run shell commands or start work.\n"
-                f"FACTS: {snapshot}\nQUESTION: {question}"
+                "You are the persistent Cairn assistant for this WeChat sender. "
+                "You have the same tools and memory as task work. Use tools when "
+                "needed. Bounded current-task facts:\n"
+                f"{snapshot}\nUser message:\n{question}"
             ),
             grant_workspace_trust=True,
-            grant_shell=False,
+            grant_shell=PermissionCapability.LOCAL_SHELL in permission_handler.grants,
             llm=active_runtime.llm,
-            budget=RunBudget(max_steps=4),
+            budget=RunBudget(max_steps=20),
             context_budget=ContextBudget(
-                max_tokens=min(active_runtime.context_builder.budget.max_tokens, 8192),
+                max_tokens=min(active_runtime.context_builder.budget.max_tokens, 32768),
                 response_tokens=min(
-                    active_runtime.context_builder.budget.response_tokens, 512
+                    active_runtime.context_builder.budget.response_tokens, 1024
                 ),
             ),
             task_id=f"wechat-chat-{sender[-8:]}",
             tracer=tracer,
             secret_env_keys=secret_env_keys,
-            read_only=True,
-            extra_tools=(),
+            read_only=False,
+            extra_tools=(
+                MemorySearchTool(personal_memory),
+                MemoryRememberTool(personal_memory),
+                MemoryForgetTool(personal_memory),
+                MemoryCorrectTool(personal_memory),
+                TaskCreateTool(wechat_task_service),
+                TaskDetailTool(wechat_task_service),
+                TaskListTool(wechat_task_service),
+                TaskUpdateTool(wechat_task_service),
+                TaskTodoTool(wechat_task_service),
+            ),
         )
-        return result.final_response or "暂时没有可展示的进度。"
+        return result.final_response or "暂时没有可展示的回复。"
 
     wechat_worker_progress = "idle"
 
