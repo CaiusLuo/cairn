@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import os
 import shutil
 import sys
@@ -130,6 +131,10 @@ from cairn.terminal.selection import parse_selection_tokens
 from cairn.terminal.submission import PendingLine
 from cairn.terminal.task_board.controller import TaskBoardController
 from cairn.terminal.wechat.app import wechat_app
+from cairn.terminal.wechat.serve import (
+    ConversationDecision,
+    parse_conversation_decision,
+)
 from cairn.terminal.wechat.session import WechatSessionController
 
 app = typer.Typer(
@@ -1450,14 +1455,15 @@ async def main(
 
     wechat_worker_progress = "idle"
 
-    async def _wechat_conversation_classifier(text: str) -> bool:
+    async def _wechat_conversation_classifier(text: str) -> ConversationDecision:
         result = await run_headless_task(
             workspace=workspace.root,
             prompt=(
-                "Classify the user message as exactly CHAT or TASK. CHAT means a "
-                "progress/status question or ordinary conversation. TASK means new "
-                "work, including an action phrased as a question. Reply one word.\n"
-                "MESSAGE: " + text
+                "Classify the user message. Return strict JSON only: "
+                '{"intent":"CHAT|TASK|UNKNOWN"}. CHAT means progress, status or '
+                "ordinary conversation. TASK means new work, including an action "
+                "phrased as a question. UNKNOWN means genuinely ambiguous.\n"
+                "MESSAGE: " + text[:2000]
             ),
             grant_workspace_trust=True,
             grant_shell=False,
@@ -1470,7 +1476,17 @@ async def main(
             read_only=True,
             extra_tools=(),
         )
-        return (result.final_response or "").strip().upper() == "CHAT"
+        if result.error is not None or result.status.value != "completed":
+            raise RuntimeError(
+                result.error or f"classifier status {result.status.value}"
+            )
+        try:
+            payload = json.loads((result.final_response or "").strip())
+        except (TypeError, ValueError):
+            return ConversationDecision.UNKNOWN
+        if not isinstance(payload, dict) or set(payload) != {"intent"}:
+            return ConversationDecision.UNKNOWN
+        return parse_conversation_decision(payload["intent"])
 
     def _wechat_progress() -> str:
         return wechat_worker_progress

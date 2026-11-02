@@ -32,7 +32,7 @@ from cairn.terminal.headless import (
     run_headless_task,
 )
 from cairn.terminal.wechat.login import QRLoginError, run_login
-from cairn.terminal.wechat.serve import ServeConfig, serve_wechat
+from cairn.terminal.wechat.serve import ConversationDecision, ServeConfig, serve_wechat
 from tests.support.fake_ilink import FakeILink
 from tests.support.runtime import SequenceLLM
 
@@ -2745,8 +2745,10 @@ def test_busy_progress_chat_answers_without_waiting_or_duplicate_task(
         assert "任务摘要" in snapshot
         return "任务仍在运行\uff0c进度正常。"
 
-    async def classifier(text: str) -> bool:
-        return "进度" in text
+    async def classifier(text: str) -> ConversationDecision:
+        return (
+            ConversationDecision.CHAT if "进度" in text else ConversationDecision.TASK
+        )
 
     async def scenario() -> None:
         with FakeILink() as fake:
@@ -2805,12 +2807,12 @@ def test_status_command_bypasses_slow_classifier(tmp_path: Path) -> None:
         await asyncio.Event().wait()
         raise AssertionError("unreachable")
 
-    async def classifier(text: str) -> bool:
+    async def classifier(text: str) -> ConversationDecision:
         if "slow task" in text:
-            return False
+            return ConversationDecision.TASK
         classifier_started.set()
         await release_classifier.wait()
-        return True
+        return ConversationDecision.CHAT
 
     async def scenario() -> None:
         with FakeILink() as fake:
@@ -2834,8 +2836,16 @@ def test_status_command_bypasses_slow_classifier(tmp_path: Path) -> None:
                 fake.updates.append(
                     {
                         "ret": 0,
-                        "msgs": [_msg("/status", mid=2)],
+                        "msgs": [_msg("进度怎么样", mid=3)],
                         "get_updates_buf": "c2",
+                    }
+                )
+                await asyncio.wait_for(classifier_started.wait(), timeout=3)
+                fake.updates.append(
+                    {
+                        "ret": 0,
+                        "msgs": [_msg("/status", mid=2)],
+                        "get_updates_buf": "c3",
                     }
                 )
                 for _ in range(100):
@@ -2845,14 +2855,7 @@ def test_status_command_bypasses_slow_classifier(tmp_path: Path) -> None:
                         break
                     await asyncio.sleep(0.01)
                 assert any("任务正在执行" in str(m.get("item_list")) for m in fake.sent)
-                fake.updates.append(
-                    {
-                        "ret": 0,
-                        "msgs": [_msg("进度怎么样", mid=3)],
-                        "get_updates_buf": "c3",
-                    }
-                )
-                await asyncio.wait_for(classifier_started.wait(), timeout=3)
+                assert not release_classifier.is_set()
             finally:
                 release_classifier.set()
                 stop.set()
@@ -2882,8 +2885,8 @@ def test_action_question_with_classifier_task_goes_to_queue_not_chat(
         chats.append(question)
         return "不应调用"
 
-    async def classifier(text: str) -> bool:
-        return False
+    async def classifier(text: str) -> ConversationDecision:
+        return ConversationDecision.TASK
 
     async def scenario() -> None:
         with FakeILink() as fake:
@@ -2929,8 +2932,8 @@ def test_restart_pending_chat_answers_and_sending_unknown_does_not_replay(
         chats.append(question)
         return "恢复后的回答"
 
-    async def classifier(text: str) -> bool:
-        return True
+    async def classifier(text: str) -> ConversationDecision:
+        return ConversationDecision.CHAT
 
     async def scenario() -> None:
         with FakeILink() as fake:
@@ -2951,3 +2954,175 @@ def test_restart_pending_chat_answers_and_sending_unknown_does_not_replay(
     assert (WechatState(state_dir).get_record("msg:sent") or {}).get(
         "state"
     ) == "chat_delivery_unknown"
+
+
+def test_parse_conversation_decision_is_strict() -> None:
+    from cairn.terminal.wechat.serve import (
+        ConversationDecision,
+        parse_conversation_decision,
+    )
+
+    assert parse_conversation_decision("CHAT") is ConversationDecision.CHAT
+    assert parse_conversation_decision('"TASK"') is ConversationDecision.TASK
+    assert parse_conversation_decision("maybe") is ConversationDecision.UNKNOWN
+    assert parse_conversation_decision(None) is ConversationDecision.UNKNOWN
+
+
+def test_unknown_clarification_persists_and_consumes_reply_once(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    release = asyncio.Event()
+    chats: list[str] = []
+
+    async def execute(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        await release.wait()
+        return HeadlessResult(
+            task_id=task_id, status=HeadlessStatus.COMPLETED, workspace=str(workspace)
+        )
+
+    async def chat(question: str, sender: str, snapshot: str) -> str:
+        chats.append(question)
+        return "已查询到进度。"
+
+    async def classifier(text: str) -> ConversationDecision:
+        if "slow task" in text:
+            return ConversationDecision.TASK
+        return ConversationDecision.UNKNOWN
+
+    async def scenario() -> None:
+        with FakeILink() as fake:
+            fake.updates = [
+                {
+                    "ret": 0,
+                    "msgs": [_msg("slow task", mid=1), _msg("那个东西呢", mid=2)],
+                    "get_updates_buf": "c1",
+                }
+            ]
+            stop = asyncio.Event()
+            service = asyncio.create_task(
+                serve_wechat(
+                    config=_config(fake, workspace, state_dir, max_polls=30),
+                    client=_client(fake),
+                    state=WechatState(state_dir),
+                    task_executor=execute,
+                    conversation_executor=chat,
+                    conversation_classifier=classifier,
+                    stop_event=stop,
+                    allow_insecure_local_http=True,
+                )
+            )
+            try:
+                for _ in range(100):
+                    if any("意图不明确" in str(m.get("item_list")) for m in fake.sent):
+                        break
+                    await asyncio.sleep(0.01)
+                assert any("意图不明确" in str(m.get("item_list")) for m in fake.sent)
+                fake.updates.append(
+                    {
+                        "ret": 0,
+                        "msgs": [_msg("查询进度", mid=3)],
+                        "get_updates_buf": "c2",
+                    }
+                )
+                for _ in range(100):
+                    if any(
+                        "已查询到进度" in str(m.get("item_list")) for m in fake.sent
+                    ):
+                        break
+                    await asyncio.sleep(0.01)
+                assert any("已查询到进度" in str(m.get("item_list")) for m in fake.sent)
+                # Duplicate reply ID is already consumed and must not create work.
+                fake.updates.append(
+                    {
+                        "ret": 0,
+                        "msgs": [_msg("安排新任务", mid=3)],
+                        "get_updates_buf": "c3",
+                    }
+                )
+                await asyncio.sleep(0.05)
+                record = WechatState(state_dir).get_record("msg:3")
+                assert (
+                    record is not None and record["state"] == "clarification_consumed"
+                )
+            finally:
+                release.set()
+                stop.set()
+                await asyncio.wait_for(service, timeout=5)
+
+    asyncio.run(scenario())
+    assert chats and chats[0] == "那个东西呢"
+
+
+def test_classifier_provider_error_keeps_service_alive(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    release = asyncio.Event()
+
+    async def execute(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        await release.wait()
+        return HeadlessResult(
+            task_id=task_id, status=HeadlessStatus.COMPLETED, workspace=str(workspace)
+        )
+
+    async def classifier(text: str) -> ConversationDecision:
+        if "slow task" in text:
+            return ConversationDecision.TASK
+        raise RuntimeError("provider-secret-ABC")
+
+    async def scenario() -> None:
+        with FakeILink() as fake:
+            fake.updates = [
+                {
+                    "ret": 0,
+                    "msgs": [_msg("slow task", mid=1), _msg("进度怎么样", mid=2)],
+                    "get_updates_buf": "c1",
+                }
+            ]
+            stop = asyncio.Event()
+            service = asyncio.create_task(
+                serve_wechat(
+                    config=_config(fake, workspace, state_dir, max_polls=30),
+                    client=_client(fake),
+                    state=WechatState(state_dir),
+                    task_executor=execute,
+                    conversation_classifier=classifier,
+                    stop_event=stop,
+                    allow_insecure_local_http=True,
+                )
+            )
+            try:
+                for _ in range(100):
+                    if any(
+                        "provider-secret" in str(m.get("item_list")) for m in fake.sent
+                    ):
+                        break
+                    await asyncio.sleep(0.01)
+                assert any(
+                    "provider-secret" in str(m.get("item_list")) for m in fake.sent
+                )
+                fake.updates.append(
+                    {
+                        "ret": 0,
+                        "msgs": [_msg("/status", mid=3)],
+                        "get_updates_buf": "c2",
+                    }
+                )
+                for _ in range(100):
+                    if any(
+                        "任务正在执行" in str(m.get("item_list")) for m in fake.sent
+                    ):
+                        break
+                    await asyncio.sleep(0.01)
+                assert any("任务正在执行" in str(m.get("item_list")) for m in fake.sent)
+            finally:
+                release.set()
+                stop.set()
+                await asyncio.wait_for(service, timeout=5)
+
+    asyncio.run(scenario())

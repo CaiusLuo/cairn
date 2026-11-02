@@ -243,6 +243,33 @@ class WechatState:
         messages[key] = record
         self.flush()
 
+    def resolve_clarification(
+        self,
+        original_key: str,
+        reply_key: str,
+        *,
+        target_state: str,
+        context_token: str,
+    ) -> bool:
+        """Consume a clarification reply and transition its original once."""
+        messages = self.load()["messages"]
+        original = messages.get(original_key)
+        reply = messages.get(reply_key)
+        if (
+            not isinstance(original, dict)
+            or not isinstance(reply, dict)
+            or original.get("state") != "clarifying"
+            or reply.get("state") != "received"
+        ):
+            return False
+        now = time.time()
+        original.update(state=target_state, context_token=context_token, updated=now)
+        reply.update(
+            state="clarification_consumed", context_token=context_token, updated=now
+        )
+        self.flush()
+        return True
+
     def records_in_state(self, state: str) -> list[tuple[str, dict[str, Any]]]:
         return self.records_in_states(frozenset({state}))
 

@@ -165,6 +165,15 @@ without echoing the inbound prompt; it then still sends the final result. The re
 the task result. Because iLink `send_text` does not provide a stable client-id
 identity here, the receipt is sent once and never retried: if the response is
 lost, the state records the receipt as unknown rather than risking a duplicate.
+While a task runs, free-form messages are routed by a bounded semantic
+classifier that returns exactly `CHAT`, `TASK`, or `UNKNOWN`; explicit commands
+such as `/status` and `/cancel` never invoke that model. `CHAT` uses the
+independent read-only conversation path, `TASK` remains in the durable work
+queue, and `UNKNOWN` keeps the original message and asks the trusted sender to
+choose "查询当前任务" or "安排新任务" without executing it. Classifier timeouts,
+provider errors and malformed output are per-message failures with redacted
+detail; they do not stop the WeChat service or cancel the running worker.
+
 A busy task is durably queued instead of rejected. Queued messages keep their
 arrival order and resume after a service restart; a task that was already
 started is marked interrupted and is never replayed automatically. Recovery

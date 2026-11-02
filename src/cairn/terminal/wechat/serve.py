@@ -18,8 +18,9 @@ import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 
 from dotenv import dotenv_values
@@ -90,11 +91,31 @@ from cairn.terminal.headless import (
 
 TaskExecutor = Callable[[str, asyncio.Event, str], Awaitable[HeadlessResult]]
 ConversationExecutor = Callable[[str, str, str], Awaitable[str]]
-ConversationClassifier = Callable[[str], Awaitable[bool]]
+
+
+class ConversationDecision(StrEnum):
+    CHAT = "CHAT"
+    TASK = "TASK"
+    UNKNOWN = "UNKNOWN"
+
+
+ConversationClassifier = Callable[[str], Awaitable[ConversationDecision]]
+
+
+def parse_conversation_decision(value: object) -> ConversationDecision:
+    """Parse exactly one of the three labels; malformed output is UNKNOWN."""
+    if not isinstance(value, str):
+        return ConversationDecision.UNKNOWN
+    text = value.strip().strip('"').upper()
+    try:
+        return ConversationDecision(text)
+    except ValueError:
+        return ConversationDecision.UNKNOWN
 
 
 #: An immediate receipt must not block the actual task indefinitely.
 ACK_TIMEOUT_SECONDS = 5.0
+CLASSIFIER_TIMEOUT_SECONDS = 8.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -486,54 +507,47 @@ def default_task_executor(
 
 
 def default_conversation_classifier(config: ServeConfig) -> ConversationClassifier:
-    """Conservative public fallback; callers can inject a semantic classifier."""
+    """Bounded semantic classifier; malformed output is UNKNOWN, never TASK."""
 
-    async def classify(text: str) -> bool:
-        lowered = text.casefold()
-        actions = (
-            "实现",
-            "修复",
-            "处理",
-            "添加",
-            "创建",
-            "开发",
-            "执行",
-            "运行",
-            "修改",
-            "更新",
-            "提交",
-            "部署",
-            "帮我做",
-            "做一个",
-            "写一个",
+    async def classify(text: str) -> ConversationDecision:
+        bounded = text[:2000]
+        prompt = (
+            "Classify the user message. Return strict JSON only: "
+            '{"intent":"CHAT|TASK|UNKNOWN"}. CHAT means progress, status or '
+            "ordinary conversation. TASK means new work, including an action "
+            "phrased as a question. UNKNOWN means genuinely ambiguous.\n"
+            f"MESSAGE: {bounded}"
         )
-        if any(verb in lowered for verb in actions):
-            return False
-        markers = (
-            "进展",
-            "进度",
-            "怎么样",
-            "如何",
-            "为什么",
-            "什么",
-            "还要多久",
-            "完成了吗",
-            "卡住",
-            "阻塞",
-            "状态",
-            "你好",
-            "在吗",
-            "谢谢",
-            "辛苦",
-            "blocked",
-            "progress",
-            "status",
-        )
-        return (
-            any(marker in lowered for marker in markers)
-            or "?" in text
-            or "\uff1f" in text
-        )
+        try:
+            result = await asyncio.wait_for(
+                _run_via_config_async(
+                    workspace=config.workspace,
+                    prompt=prompt,
+                    task_id="wechat-intent",
+                    grant_shell=False,
+                    approval=config.approval,
+                    max_steps=1,
+                    trace_dir=config.trace_dir,
+                    read_only=True,
+                    extra_tools=(),
+                    durable_session_factory=None,
+                    provider_name=None,
+                ),
+                timeout=CLASSIFIER_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            raise
+        if result.error is not None or result.status.value != "completed":
+            raise RuntimeError(
+                result.error or f"classifier status {result.status.value}"
+            )
+        try:
+            payload = json.loads((result.final_response or "").strip())
+        except (TypeError, ValueError):
+            return ConversationDecision.UNKNOWN
+        if not isinstance(payload, dict) or set(payload) != {"intent"}:
+            return ConversationDecision.UNKNOWN
+        return parse_conversation_decision(payload["intent"])
 
     return classify
 
@@ -601,6 +615,7 @@ class _Service:
         self._intent_tasks: set[asyncio.Task[None]] = set()
         self._chat_locks: dict[str, asyncio.Lock] = {}
         self._intent_locks: dict[str, asyncio.Lock] = {}
+        self._clarifications: dict[str, str] = {}
         self._typing_tickets: dict[str, str] = {}
 
     async def _reply(
@@ -734,56 +749,12 @@ class _Service:
             f"任务摘要={task_text or '-'}; 最近事件={progress or '-'}"
         )
 
-    async def _classify_conversation(self, text: str) -> bool:
-        if self._conversation_classifier is not None:
-            return bool(await self._conversation_classifier(text))
-        lowered = text.casefold()
-        actions = (
-            "实现",
-            "修复",
-            "处理",
-            "添加",
-            "创建",
-            "开发",
-            "执行",
-            "运行",
-            "修改",
-            "更新",
-            "提交",
-            "部署",
-            "帮我做",
-            "做一个",
-            "写一个",
-        )
-        if any(verb in lowered for verb in actions):
-            return False
-        return (
-            any(
-                marker in lowered
-                for marker in (
-                    "进展",
-                    "进度",
-                    "怎么样",
-                    "如何",
-                    "为什么",
-                    "什么",
-                    "还要多久",
-                    "完成了吗",
-                    "卡住",
-                    "阻塞",
-                    "状态",
-                    "你好",
-                    "在吗",
-                    "谢谢",
-                    "辛苦",
-                    "blocked",
-                    "progress",
-                    "status",
-                )
-            )
-            or "?" in text
-            or "\uff1f" in text
-        )
+    async def _classify_conversation(self, text: str) -> ConversationDecision:
+        if self._conversation_classifier is None:
+            # Internal callers that did not opt into semantic chat keep the
+            # conservative work-dispatch behavior.
+            return ConversationDecision.TASK
+        return await self._conversation_classifier(text)
 
     async def _conversation_call(self, inbound: _Inbound, snapshot: str) -> None:
         assert inbound.text is not None
@@ -866,15 +837,88 @@ class _Service:
         lock = self._intent_locks.setdefault(inbound.sender, asyncio.Lock())
         async with lock:
             try:
-                if await self._classify_conversation(inbound.text or ""):
+                decision = await self._classify_conversation(inbound.text or "")
+                if decision is ConversationDecision.CHAT:
                     await self._start_conversation(inbound)
-                    return
-                await self._queue_inbound(inbound)
+                elif decision is ConversationDecision.TASK:
+                    await self._queue_inbound(inbound)
+                else:
+                    self._ask_clarification(inbound)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._queue_error = exc
-                self._stopping = True
+                # Classification failure is per-message and must not stop the
+                # WeChat service or execute the message as work.
+                self.state.mark(
+                    inbound.key or "",
+                    "classification_failed",
+                    error_type=type(exc).__name__,
+                )
+                if not self._stopping:
+                    detail = str(exc)
+                    if self.redact_text is not None:
+                        detail = self.redact_text(detail)
+                    await self._safe_reply(
+                        inbound.sender,
+                        inbound.context_token,
+                        f"暂时无法判断意图\uff08{type(exc).__name__}: {detail[:160]}\uff09。"
+                        "请重试或明确说明是查询当前任务还是安排新任务。",
+                    )
+
+    def _ask_clarification(self, inbound: _Inbound) -> None:
+        assert inbound.key is not None
+        self._clarifications[inbound.sender] = inbound.key
+        self.state.mark(inbound.key, "clarifying", command=(inbound.text or "")[:40])
+        self._schedule_clarification(inbound)
+
+    def _schedule_clarification(self, inbound: _Inbound) -> None:
+        async def send() -> None:
+            if not self._stopping:
+                await self._safe_reply(
+                    inbound.sender,
+                    inbound.context_token,
+                    "这条消息的意图不明确\uff1a你是想查询当前任务进度\uff0c还是安排一个新任务\uff1f",
+                )
+
+        task = asyncio.create_task(send())
+        self._intent_tasks.add(task)
+        task.add_done_callback(self._intent_tasks.discard)
+
+    async def _resolve_clarification(self, inbound: _Inbound) -> bool:
+        key = self._clarifications.get(inbound.sender)
+        if key is None:
+            return False
+        record = self.state.get_record(key) or {}
+        original = self._validate_recovery_record(key, record) if record else None
+        if original is None:
+            self._clarifications.pop(inbound.sender, None)
+            return False
+        text = " ".join((inbound.text or "").strip().casefold().split())
+        current = replace(original, context_token=inbound.context_token)
+        if text in {"查询当前任务", "查询进度", "查看进度", "查看状态", "查询"}:
+            if not self.state.resolve_clarification(
+                key,
+                inbound.key or "",
+                target_state="chat_pending",
+                context_token=inbound.context_token,
+            ):
+                return False
+            self._clarifications.pop(inbound.sender, None)
+            await self._start_conversation(current)
+            return True
+        if text in {"新任务", "安排新任务", "执行新任务", "排队", "排队执行"}:
+            if not self.state.resolve_clarification(
+                key,
+                inbound.key or "",
+                target_state="queued",
+                context_token=inbound.context_token,
+            ):
+                return False
+            self._clarifications.pop(inbound.sender, None)
+            await self._queue_inbound(current)
+            return True
+        # A different message is not swallowed: classify it on its own.
+        return False
 
     async def _run_task(self, key: str, inbound: _Inbound) -> None:
         assert inbound.text is not None
@@ -1071,6 +1115,9 @@ class _Service:
                 inbound.sender, inbound.context_token, "消息缺少稳定 ID, 未启动任务。"
             )
             return
+        record = self.state.get_record(inbound.key)
+        if record is not None and record.get("state") == "clarification_consumed":
+            return
         if inbound.text is None:
             self.state.mark(inbound.key, "rejected", reason="non_text")
             await self._safe_reply(
@@ -1097,14 +1144,16 @@ class _Service:
                     inbound.sender, inbound.context_token, "当前没有可取消的任务。"
                 )
             return
+        if await self._resolve_clarification(inbound):
+            return
         if self._conversation_classifier is None:
-            # Preserve the existing synchronous dispatch when no semantic
-            # classifier is supplied; the background intent path is only for
-            # callers that opted into the slow classifier.
-            if await self._classify_conversation(inbound.text):
+            decision = await self._classify_conversation(inbound.text)
+            if decision is ConversationDecision.CHAT:
                 self._start_conversation(inbound)
-            else:
+            elif decision is ConversationDecision.TASK:
                 await self._queue_inbound(inbound)
+            else:
+                self._ask_clarification(inbound)
             return
         self.state.mark(inbound.key, "classifying", command=command[:40])
         self._start_intent(inbound)
@@ -1161,6 +1210,7 @@ class _Service:
                     "chat_pending",
                     "chat_sending",
                     "chat_interrupted",
+                    "clarifying",
                 }
             )
         )
@@ -1174,6 +1224,10 @@ class _Service:
         for _key, record, recovered in recovered_items:
             state = record.get("state")
             if state == "queued":
+                continue
+            if state == "clarifying":
+                sender = recovered.sender
+                self._clarifications[sender] = _key
                 continue
             if state == "chat_sending":
                 self.state.mark(_key, "chat_delivery_unknown")
