@@ -478,6 +478,13 @@ def test_default_serve_distinguishes_scheduled_and_wechat_task_sources(
     )
 
     async def fake_headless(**kwargs: Any) -> HeadlessResult:
+        if str(kwargs.get("prompt", "")).startswith("Classify the user message"):
+            return HeadlessResult(
+                task_id=kwargs["task_id"],
+                status=HeadlessStatus.COMPLETED,
+                final_response='{"intent":"TASK"}',
+                workspace=str(workspace),
+            )
         tool = next(
             tool for tool in kwargs["extra_tools"] if tool.name == "task_create"
         )

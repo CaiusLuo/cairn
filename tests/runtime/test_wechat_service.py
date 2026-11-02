@@ -39,6 +39,10 @@ from tests.support.runtime import SequenceLLM
 TOKEN = "secret-bot-token-do-not-leak"
 
 
+async def _task_only_classifier(_text: str) -> ConversationDecision:
+    return ConversationDecision.TASK
+
+
 def _account(fake: FakeILink) -> WechatAccount:
     return WechatAccount(
         bot_token=TOKEN,
@@ -326,6 +330,11 @@ def test_serve_status_busy_and_cancel(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     calls: list[str] = []
 
+    async def classifier(text: str) -> ConversationDecision:
+        return (
+            ConversationDecision.CHAT if "进度" in text else ConversationDecision.TASK
+        )
+
     async def slow(prompt: str, cancel: asyncio.Event, task_id: str) -> HeadlessResult:
         calls.append(prompt)
         if prompt == "slow task":
@@ -351,6 +360,7 @@ def test_serve_status_busy_and_cancel(tmp_path: Path) -> None:
                 client=_client(fake),
                 state=WechatState(state_dir),
                 task_executor=slow,
+                conversation_classifier=classifier,
                 allow_insecure_local_http=True,
             )
         )
@@ -1255,7 +1265,11 @@ def test_configured_wechat_restores_tool_facts_after_service_restart(
                 fake.updates = [
                     {"ret": 0, "msgs": [message], "get_updates_buf": cursor}
                 ]
-                await serve_wechat(config=config, allow_insecure_local_http=True)
+                await serve_wechat(
+                    config=config,
+                    allow_insecure_local_http=True,
+                    conversation_classifier=_task_only_classifier,
+                )
 
             asyncio.run(exchange(_msg("first question", mid=101), "first"))
             first = WechatState(state_dir).get_record("msg:101")
@@ -2099,7 +2113,11 @@ def test_wechat_tasks_link_to_their_persistent_sender_session(
                         "get_updates_buf": cursor,
                     }
                 ]
-                await serve_wechat(config=config, allow_insecure_local_http=True)
+                await serve_wechat(
+                    config=config,
+                    allow_insecure_local_http=True,
+                    conversation_classifier=_task_only_classifier,
+                )
 
             asyncio.run(exchange("u1", "A first request", 201, "first"))
             asyncio.run(exchange("u2", "B first request", 202, "second"))
