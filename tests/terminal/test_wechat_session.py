@@ -371,3 +371,43 @@ def test_wx_login_clears_qr_and_emits_green_success(tmp_path: Path) -> None:
             await login_client.close()
 
         asyncio.run(scenario())
+
+
+def test_background_owner_detaches_on_close_and_stops_explicitly(
+    tmp_path: Path,
+) -> None:
+    import subprocess
+
+    from cairn.infra.wechat.state import WechatAccount, WechatState
+    from cairn.terminal.wechat.session import WechatSessionController
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    state = WechatState(state_dir)
+    account = WechatAccount(
+        bot_token="t", ilink_bot_id="b", base_url="http://127.0.0.1", ilink_user_id="u1"
+    )
+    state.save_account(account)
+    proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    controller = WechatSessionController(
+        workspace=workspace,
+        state_dir=state_dir,
+        task_executor=lambda *args: None,  # type: ignore[arg-type]
+        background_launcher=lambda *args: _launch(),  # type: ignore[arg-type]
+        emit=lambda text: None,
+    )
+
+    async def _launch() -> tuple[int, str]:
+        return proc.pid, "session-test"
+
+    async def scenario() -> None:
+        action = await controller._start(account)
+        assert "后台服务已启动" in action.message
+        await controller.close()
+        assert proc.poll() is None
+        action = await controller._stop_all()
+        assert "已停止" in action.message
+        assert proc.poll() is not None
+
+    asyncio.run(scenario())

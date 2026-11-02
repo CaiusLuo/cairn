@@ -1,5 +1,15 @@
 # Persistent WeChat service (Debian systemd)
 
+In the interactive `/wx` flow, starting WeChat also starts this service as a
+detached host process with its own process group and a host-private
+`background-owner.json` containing the pid and a stable session label. Closing
+the CLI/SSH UI detaches only; it does not stop the background owner. A later
+`/wx` status/resume discovers the same pid/session, and only `/wx stop` sends
+SIGTERM and waits for the owner's cleanup. The detached process reuses the same
+WeChat account, state directory, queues and scheduler store. If the process died,
+the next start treats prior `started` work under the existing interrupted
+recovery policy; it never claims the old process stayed alive.
+
 This service hosts the existing `cairn wechat serve` entry point so it is not
 owned by an SSH PTY. It does not make the foreground `uv run cairn` + in-process
 `/wx` mode a daemon.

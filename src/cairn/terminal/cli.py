@@ -3,7 +3,9 @@ import contextlib
 import json
 import os
 import shutil
+import subprocess
 import sys
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Annotated
@@ -1532,10 +1534,60 @@ async def main(
         if memory_enabled:
             agent.personal_context = personal_memory.render_context()
 
+    async def _launch_wechat_background(
+        account: object, senders: frozenset[str]
+    ) -> tuple[int, str]:
+        executable = shutil.which("cairn") or str(
+            Path(sys.executable).with_name("cairn")
+        )
+        provider = active_runtime.provider
+        group = active_runtime.model_manager.current_model()
+        state_dir = default_state_dir()
+        state_dir.mkdir(parents=True, exist_ok=True)
+        log_path = state_dir / "background.log"
+        session_id = str(uuid.uuid4())
+        command = [
+            executable,
+            "wechat",
+            "serve",
+            "--workspace",
+            str(workspace.root),
+            "--state-dir",
+            str(state_dir),
+            "--allow-sender",
+            getattr(account, "ilink_user_id", "") or next(iter(senders)),
+            "--trust-workspace",
+            "--approve-provider-name",
+            provider.name,
+            "--approve-provider-endpoint",
+            provider.config.base_url,
+            "--approve-provider-group",
+            group.name,
+            "--approve-provider-key-env",
+            provider.config.api_key_env,
+            "--approve-provider-models",
+            ",".join(group.model_ids),
+        ]
+        log = log_path.open("ab")
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=str(workspace.root),
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                close_fds=True,
+            )
+        finally:
+            log.close()
+        return process.pid, session_id
+
     wechat_controller = WechatSessionController(
         workspace=workspace.root,
         state_dir=default_state_dir(),
         task_executor=_wechat_execute,
+        background_launcher=_launch_wechat_background,
         conversation_executor=_wechat_conversation_execute,
         conversation_classifier=_wechat_conversation_classifier,
         progress_provider=_wechat_progress,

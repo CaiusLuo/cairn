@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import os
+import signal
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from inspect import isawaitable
 from pathlib import Path
@@ -41,6 +45,10 @@ class WechatSessionController:
         workspace: Path,
         state_dir: Path,
         task_executor: TaskExecutor,
+        background_launcher: Callable[
+            [WechatAccount, frozenset[str]], Awaitable[tuple[int, str]]
+        ]
+        | None = None,
         conversation_executor: ConversationExecutor | None = None,
         conversation_classifier: ConversationClassifier | None = None,
         progress_provider: object | None = None,
@@ -57,6 +65,10 @@ class WechatSessionController:
         self.workspace = workspace
         self.state_dir = state_dir
         self.task_executor = task_executor
+        self.background_launcher = background_launcher
+        self._background_path = state_dir / "background-owner.json"
+        self._background_pid: int | None = None
+        self._background_session_id: str | None = None
         self.conversation_executor = conversation_executor
         self.conversation_classifier = conversation_classifier
         self.progress_provider = progress_provider
@@ -71,6 +83,13 @@ class WechatSessionController:
         self.on_account_changed = on_account_changed
         self.redact_text = redact_text
         self._state = WechatState(state_dir)
+        try:
+            raw = json.loads(self._background_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and isinstance(raw.get("pid"), int):
+                self._background_pid = raw["pid"]
+                self._background_session_id = str(raw.get("session_id", ""))
+        except (OSError, ValueError):
+            pass
         ensure_outside_workspace(state_dir, workspace)
         self._task: asyncio.Task[object] | None = None
         self._stop: asyncio.Event | None = None
@@ -252,6 +271,52 @@ class WechatSessionController:
         self._verify_event.set()
         return note("已提交验证码, 继续登录。")
 
+    def _background_alive(self) -> bool:
+        if self._background_pid is None:
+            return False
+        try:
+            os.kill(self._background_pid, 0)
+            return True
+        except OSError:
+            self._background_pid = None
+            self._background_session_id = None
+            with contextlib.suppress(OSError):
+                self._background_path.unlink()
+            return False
+
+    def _save_background(self, pid: int, session_id: str) -> None:
+        self._background_pid = pid
+        self._background_session_id = session_id
+        self._background_path.parent.mkdir(parents=True, exist_ok=True)
+        self._background_path.write_text(
+            json.dumps({"pid": pid, "session_id": session_id}, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        with contextlib.suppress(OSError):
+            self._background_path.chmod(0o600)
+
+    async def _stop_background(self) -> bool:
+        pid = self._background_pid
+        if pid is None:
+            return False
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            self._background_pid = None
+            return False
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                break
+            await asyncio.sleep(0.05)
+        self._background_pid = None
+        self._background_session_id = None
+        with contextlib.suppress(OSError):
+            self._background_path.unlink()
+        return True
+
     async def _start(self, account: WechatAccount) -> Action:
         senders = set(self._allowed_senders)
         if account.ilink_user_id:
@@ -259,6 +324,20 @@ class WechatSessionController:
         if not senders:
             return correction(
                 "登录响应没有用户 ID; 请使用 /wx allow <sender-id> 指定受信任发送者。"
+            )
+        if self._background_alive():
+            return note(
+                f"微信后台服务已在运行 (session={self._background_session_id}); "
+                "使用 /wx status 查看\uff0c/wx stop 停止。"
+            )
+        if self.background_launcher is not None:
+            pid, session_id = await self.background_launcher(
+                account, frozenset(senders)
+            )
+            self._save_background(pid, session_id)
+            return note(
+                f"微信后台服务已启动 (pid={pid}, session={session_id}); "
+                "退出当前界面不会停止它\uff0c/wx stop 才会停止。"
             )
         self._stop = asyncio.Event()
         config = ServeConfig(
@@ -322,7 +401,12 @@ class WechatSessionController:
         if self._login_task is not None and not self._login_task.done():
             suffix = "; 等待 /wx verify <code>" if self._verify_requested else ""
             lines.append(f"微信登录: 等待扫码{suffix}")
-        if self._task is None:
+        if self._background_alive():
+            lines.append(
+                f"微信服务: 后台运行中 (pid={self._background_pid}, "
+                f"session={self._background_session_id})"
+            )
+        elif self._task is None:
             lines.append("微信服务: 未运行")
         elif not self._task.done():
             lines.append("微信服务: 运行中")
@@ -354,8 +438,9 @@ class WechatSessionController:
             stopped_login = True
         self._login_task = None
         self._verify_requested = False
+        stopped_background = await self._stop_background()
         task = self._task
-        stopped_service = False
+        stopped_service = stopped_background
         if task is not None and not task.done():
             # A long-poll may be in flight; set the cooperative stop event and
             # cancel the owned task so /wx stop returns after cleanup promptly.
@@ -451,5 +536,9 @@ class WechatSessionController:
 
     async def close(self) -> None:
         self._closing = True
+        # A detached background owner is explicitly not owned by this CLI
+        # lifecycle. Closing the UI detaches; only /wx stop terminates it.
+        if self._background_alive():
+            return
         with contextlib.suppress(Exception):
             await self._stop_all()
