@@ -120,8 +120,8 @@ Login is optional after `cairn` starts; it is not a prerequisite command:
 ```text
 cairn                 # normal interactive session
 /wx                   # if needed: fetch QR, render an ASCII QR in the terminal,
-                      # wait for scan/verification, save account, then start
-                      # receiving WeChat text and scheduling tasks in this process
+                      # wait for scan/verification, save account, then ensure a
+                      # detached background owner receives WeChat text and schedules tasks
 /wx status            # login (bot id), service state and login-status history
 /wx verify <code>     # answer a phone verification code while waiting
 /wx stop              # cancel login or stop receiving; finish owned cleanup
@@ -136,11 +136,14 @@ result recipient, which remains the login owner. The headless
 `cairn wechat serve --allow-sender ...` entry keeps its explicit allowlist and
 does not implicitly add the owner.
 
-`/wx` without an existing account performs the login first and then starts the
-same single-task WeChat service; `/wx stop` stops it. The service uses the
-current session's provider/runtime and the same `run_headless_task`/`run_turn`
-chain. The standalone `cairn wechat login` / `cairn wechat serve` commands remain
-for headless/server operation. A complete terminal QR is rendered from the iLink `qrcode_img_content` using
+`/wx` without an existing account performs the login first and then ensures a
+detached host background owner using the same account, state directory, provider
+approval, queue and scheduler store. Closing the CLI/SSH UI detaches only; the
+owner keeps receiving WeChat and running accepted work. `/wx stop` is the
+explicit operation that sends SIGTERM and waits for owned cleanup. The standalone
+`cairn wechat login` / `cairn wechat serve` commands remain available for
+systemd/headless operation and do not create a second consumer while the
+background owner is alive. A complete terminal QR is rendered from the iLink `qrcode_img_content` using
 bounded half-block glyphs (quiet zone included; refuses to clip on a terminal too
 narrow for the matrix); the URL is also printed as a fallback. The QR is cleared
 from the composer-adjacent screen after login resolves. Standalone WeChat conversations use the existing durable SessionStore/DurableSession
@@ -167,12 +170,14 @@ identity here, the receipt is sent once and never retried: if the response is
 lost, the state records the receipt as unknown rather than risking a duplicate.
 While a task runs, free-form messages are routed by a bounded semantic
 classifier that returns exactly `CHAT`, `TASK`, or `UNKNOWN`; explicit commands
-such as `/status` and `/cancel` never invoke that model. `CHAT` uses the
-independent read-only conversation path, `TASK` remains in the durable work
-queue, and `UNKNOWN` keeps the original message and asks the trusted sender to
-choose "查询当前任务" or "安排新任务" without executing it. Classifier timeouts,
-provider errors and malformed output are per-message failures with redacted
-detail; they do not stop the WeChat service or cancel the running worker.
+such as `/status` and `/cancel` never invoke that model. `CHAT` uses the same
+full-capability agent tools and memory as task work, including shell, file,
+MCP and extra tools subject to the active permission policy; it may also use
+task tools. `TASK` remains in the durable work queue, and `UNKNOWN` keeps the
+original message and asks the trusted sender to choose "查询当前任务" or
+"安排新任务" without executing it. Classifier timeouts, provider errors and
+malformed output are per-message failures with redacted detail; they do not
+stop the WeChat service or cancel the running worker.
 
 A busy task is durably queued instead of rejected. Queued messages keep their
 arrival order and resume after a service restart; a task that was already

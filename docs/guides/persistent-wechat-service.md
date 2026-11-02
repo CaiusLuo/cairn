@@ -11,8 +11,9 @@ the next start treats prior `started` work under the existing interrupted
 recovery policy; it never claims the old process stayed alive.
 
 This service hosts the existing `cairn wechat serve` entry point so it is not
-owned by an SSH PTY. It does not make the foreground `uv run cairn` + in-process
-`/wx` mode a daemon.
+owned by an SSH PTY. The default `/wx` flow already uses the same detached
+background-owner model; this systemd unit is the optional production way to
+supervise that owner across reboots and crashes.
 
 ## Prerequisites
 
