@@ -331,6 +331,7 @@ async def run_headless_task(
     personal_context: str = "",
     extra_tools: Sequence[Tool] = (),
     read_only: bool = False,
+    conversation_only: bool = False,
     durable_session_factory: Callable[[Agent], DurableSession] | None = None,
     provider_name: str | None = None,
 ) -> HeadlessResult:
@@ -436,6 +437,7 @@ async def run_headless_task(
             skills=skills,
             extra_tools=(*mcp_tools, *extra_tools),
             read_only=read_only,
+            conversation_only=conversation_only,
             durable_session_factory=durable_session_factory,
             provider_name=provider_name,
             system_prompt=system_prompt,
@@ -601,6 +603,7 @@ async def _run_via_config_async(
     personal_context_provider: Callable[[], str] | None = None,
     extra_tools: Sequence[Tool] = (),
     read_only: bool = False,
+    conversation_only: bool = False,
     durable_session_factory: Callable[[Agent], DurableSession] | None = None,
     provider_name: str | None = None,
 ) -> HeadlessResult:
@@ -679,6 +682,7 @@ async def _run_via_config_async(
         personal_context=personal_context,
         extra_tools=extra_tools,
         read_only=read_only,
+        conversation_only=conversation_only,
         durable_session_factory=durable_session_factory,
         provider_name=(
             provider.name if durable_session_factory is not None else provider_name

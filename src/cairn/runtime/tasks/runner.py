@@ -61,6 +61,7 @@ class CodingTaskRunner:
         skills: SkillLibrary | None = None,
         extra_tools: Sequence[Tool] = (),
         read_only: bool = False,
+        conversation_only: bool = False,
         system_prompt: str | None = None,
         personal_context: str = "",
         provider_name: str | None = None,
@@ -84,6 +85,7 @@ class CodingTaskRunner:
         self.skills = skills
         self.extra_tools = extra_tools
         self.read_only = read_only
+        self.conversation_only = conversation_only
         self.system_prompt = system_prompt
         self.personal_context = personal_context
         self.durable_session_factory = durable_session_factory
@@ -356,7 +358,26 @@ class CodingTaskRunner:
                     if self.provider_name is not None:
                         agent.provider_name = self.provider_name
                     durable_session = self.durable_session_factory(agent)
-                if cancellation_event is not None and cancellation_event.is_set():
+                if self.conversation_only:
+                    if durable_session is None:
+                        raise RuntimeError(
+                            "conversation_only requires a durable session"
+                        )
+                    self._validate_durable_agent(durable_session)
+                    agent = durable_session.agent
+                    original_handler = agent.event_handler
+                    agent.event_handler = forward_event
+                    ownership.callback(
+                        setattr, agent, "event_handler", original_handler
+                    )
+                    response = await self._turn(
+                        agent, spec.prompt, cancellation_event, durable_session
+                    )
+                    if response is None:
+                        status = TaskStatus.CANCELLED
+                    else:
+                        final_response = response
+                elif cancellation_event is not None and cancellation_event.is_set():
                     status = TaskStatus.CANCELLED
                 elif durable_session is not None:
                     # Revalidate even model_copy/model_construct inputs. Task

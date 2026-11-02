@@ -504,6 +504,7 @@ def default_task_executor(
             release_sessions(active_sessions)
             return result
 
+    execute.durable_factory = durable_factory  # type: ignore[attr-defined]
     return execute
 
 
@@ -553,7 +554,10 @@ def default_conversation_classifier(config: ServeConfig) -> ConversationClassifi
     return classify
 
 
-def default_conversation_executor(config: ServeConfig) -> ConversationExecutor:
+def default_conversation_executor(
+    config: ServeConfig,
+    durable_factory: object | None = None,
+) -> ConversationExecutor:
     """Full-capability background conversation; same provider/tool policy as tasks."""
     agent_home = default_agent_home()
     ensure_agent_home_outside_workspace(agent_home, config.workspace)
@@ -579,6 +583,12 @@ def default_conversation_executor(config: ServeConfig) -> ConversationExecutor:
     )
 
     async def execute(question: str, sender: str, snapshot: str) -> str:
+        active_sessions: list[DurableSession] = []
+        factory = (
+            durable_factory(sender, active_sessions)
+            if callable(durable_factory)
+            else None
+        )
         result = await _run_via_config_async(
             workspace=config.workspace,
             prompt=(
@@ -594,6 +604,8 @@ def default_conversation_executor(config: ServeConfig) -> ConversationExecutor:
             trace_dir=config.trace_dir,
             cancellation_event=None,
             read_only=False,
+            conversation_only=factory is not None,
+            durable_session_factory=factory,
             extra_tools=(*memory_tools, *task_tools),
         )
         return result.final_response or "暂时没有可展示的回复。"
@@ -1455,7 +1467,9 @@ async def serve_wechat(
         else default_task_executor(config, on_secrets_resolved=remember_known_secrets)
     )
     if conversation_executor is None and task_executor is None:
-        conversation_executor = default_conversation_executor(config)
+        conversation_executor = default_conversation_executor(
+            config, getattr(executor, "durable_factory", None)
+        )
     if conversation_classifier is None and task_executor is None:
         conversation_classifier = default_conversation_classifier(config)
     report = ServeReport()
