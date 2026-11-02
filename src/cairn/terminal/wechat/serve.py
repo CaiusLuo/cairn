@@ -22,6 +22,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 from dotenv import dotenv_values
 
@@ -1241,6 +1242,42 @@ class _Service:
             await self._handle(recovered)
         self._start_next_queued()
 
+    async def _wait_or_stop(self, delay: float) -> bool:
+        if self.stop_event is None:
+            await asyncio.sleep(delay)
+            return False
+        try:
+            await asyncio.wait_for(self.stop_event.wait(), timeout=delay)
+            return True
+        except TimeoutError:
+            return False
+
+    async def _poll_updates(self) -> dict[str, Any] | None:
+        poll = asyncio.create_task(
+            self.client.get_updates(
+                self.state.get_cursor(),
+                longpoll_timeout_ms=self.config.poll_timeout_ms,
+            )
+        )
+        if self.stop_event is None:
+            return await poll
+        stop = asyncio.create_task(self.stop_event.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {poll, stop}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if stop in done and not poll.done():
+                await settle_owned(poll)
+                return None
+            if poll.done():
+                return poll.result()
+            return await poll
+        finally:
+            if not stop.done():
+                stop.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await stop
+
     async def run(self) -> ServeReport:
         ensure_outside_workspace(self.config.state_dir, self.config.workspace)
         with contextlib.suppress(ILinkError):
@@ -1264,15 +1301,15 @@ class _Service:
                     break
                 self.report.polls += 1
                 try:
-                    data = await self.client.get_updates(
-                        self.state.get_cursor(),
-                        longpoll_timeout_ms=self.config.poll_timeout_ms,
-                    )
+                    data = await self._poll_updates()
+                    if data is None:
+                        break
                     consecutive_errors = 0
                 except ILinkError:
                     self.report.errors += 1
                     consecutive_errors += 1
-                    await asyncio.sleep(min(5.0, 0.2 * consecutive_errors))
+                    if await self._wait_or_stop(min(5.0, 0.2 * consecutive_errors)):
+                        break
                     continue
                 ret = data.get("ret")
                 errcode = data.get("errcode")
@@ -1318,6 +1355,9 @@ class _Service:
                     pending.append((key, stored, stable))
                 if isinstance(next_cursor, str) and next_cursor:
                     self.state.set_cursor(next_cursor)
+                if self.stop_event is not None and self.stop_event.is_set():
+                    # Persist the batch/cursor but do not start new work.
+                    break
                 for key, inbound, _stable in pending:
                     stored_record = self.state.get_record(key)
                     if stored_record is None:
@@ -1325,8 +1365,12 @@ class _Service:
                     if stored_record.get("state") != "received":
                         continue
                     await self._handle(inbound)
-                if not messages and self.config.poll_interval:
-                    await asyncio.sleep(self.config.poll_interval)
+                if (
+                    not messages
+                    and self.config.poll_interval
+                    and await self._wait_or_stop(self.config.poll_interval)
+                ):
+                    break
         finally:
             self._stopping = True
             await self._cancel_current()

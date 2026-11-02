@@ -3126,3 +3126,60 @@ def test_classifier_provider_error_keeps_service_alive(tmp_path: Path) -> None:
                 await asyncio.wait_for(service, timeout=5)
 
     asyncio.run(scenario())
+
+
+def test_sigterm_style_stop_wakes_slow_poll(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    stop = asyncio.Event()
+
+    class SlowClient:
+        def __init__(self) -> None:
+            self.get_called = asyncio.Event()
+            self.notify_stopped = False
+            self.closed = False
+
+        async def notify_start(self) -> None:
+            return None
+
+        async def notify_stop(self) -> None:
+            self.notify_stopped = True
+
+        async def close(self) -> None:
+            self.closed = True
+
+        async def get_updates(
+            self, *args: object, **kwargs: object
+        ) -> dict[str, object]:
+            self.get_called.set()
+            await asyncio.sleep(30)
+            return {"ret": 0, "msgs": [], "get_updates_buf": "late"}
+
+        async def send_text(self, **kwargs: object) -> dict[str, object]:
+            return {}
+
+        async def get_config(self, **kwargs: object) -> dict[str, object]:
+            return {}
+
+        async def send_typing(self, **kwargs: object) -> dict[str, object]:
+            return {}
+
+    async def scenario() -> None:
+        client = SlowClient()
+        with FakeILink() as fake:
+            task = asyncio.create_task(
+                serve_wechat(
+                    config=_config(fake, workspace, state_dir, max_polls=1),
+                    client=client,  # type: ignore[arg-type]
+                    state=WechatState(state_dir),
+                    task_executor=_completed(workspace),
+                    stop_event=stop,
+                    allow_insecure_local_http=True,
+                )
+            )
+            await asyncio.wait_for(client.get_called.wait(), timeout=2)
+            stop.set()
+            await asyncio.wait_for(task, timeout=2)
+
+    asyncio.run(scenario())
