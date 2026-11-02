@@ -394,7 +394,7 @@ def test_background_owner_detaches_on_close_and_stops_explicitly(
         workspace=workspace,
         state_dir=state_dir,
         task_executor=lambda *args: None,  # type: ignore[arg-type]
-        background_launcher=lambda *args: _launch(),  # type: ignore[arg-type]
+        background_launcher=lambda *args: _launch(),
         emit=lambda text: None,
     )
 

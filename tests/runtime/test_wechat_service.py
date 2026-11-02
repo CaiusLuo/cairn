@@ -3207,7 +3207,7 @@ def test_poll_updates_cancels_owned_poll_and_stop_waiter(tmp_path: Path) -> None
         client = PollClient()
         stop = asyncio.Event()
         service = _Service(
-            config=type("C", (), {"poll_timeout_ms": None})(),  # type: ignore[arg-type]
+            config=type("C", (), {"poll_timeout_ms": None})(),
             state=WechatState(tmp_path / "state"),
             client=client,  # type: ignore[arg-type]
             executor=lambda *args: None,  # type: ignore[arg-type]
