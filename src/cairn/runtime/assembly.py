@@ -35,6 +35,7 @@ def build_agent(
     system_prompt: str | None = None,
     personal_context: str = "",
     extra_tools: Sequence[Tool] = (),
+    read_only: bool = False,
     summarize: bool = True,
     summarizer: Summarizer | None = None,
 ) -> Agent:
@@ -51,6 +52,7 @@ def build_agent(
         secret_env_keys=secret_env_keys,
         skills=skills,
         extra_tools=extra_tools,
+        read_only=read_only,
     )
 
     return Agent(

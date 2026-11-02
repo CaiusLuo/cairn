@@ -25,7 +25,13 @@ from cairn.runtime.lifecycle import await_owned
 from cairn.terminal.action import Action, correction, note
 from cairn.terminal.wechat.login import run_login
 from cairn.terminal.wechat.qr import render_ascii_qr
-from cairn.terminal.wechat.serve import ServeConfig, TaskExecutor, serve_wechat
+from cairn.terminal.wechat.serve import (
+    ConversationClassifier,
+    ConversationExecutor,
+    ServeConfig,
+    TaskExecutor,
+    serve_wechat,
+)
 
 
 class WechatSessionController:
@@ -35,6 +41,9 @@ class WechatSessionController:
         workspace: Path,
         state_dir: Path,
         task_executor: TaskExecutor,
+        conversation_executor: ConversationExecutor | None = None,
+        conversation_classifier: ConversationClassifier | None = None,
+        progress_provider: object | None = None,
         emit: Callable[[str], object],
         clear: Callable[[int], object] | None = None,
         show_panel: Callable[[Sequence[str]], object] | None = None,
@@ -48,6 +57,9 @@ class WechatSessionController:
         self.workspace = workspace
         self.state_dir = state_dir
         self.task_executor = task_executor
+        self.conversation_executor = conversation_executor
+        self.conversation_classifier = conversation_classifier
+        self.progress_provider = progress_provider
         self.emit = emit
         self.clear = clear
         self.show_panel = show_panel
@@ -263,6 +275,9 @@ class WechatSessionController:
                 config=config,
                 state=self._state,
                 task_executor=self.task_executor,
+                conversation_executor=self.conversation_executor,
+                conversation_classifier=self.conversation_classifier,
+                progress_provider=self.progress_provider,  # type: ignore[arg-type]
                 stop_event=self._stop,
                 allow_insecure_local_http=self.allow_insecure_local_http,
             )

@@ -69,7 +69,7 @@ from cairn.runtime.agent_memory.tools import (
     MemorySearchTool,
 )
 from cairn.runtime.durable_session import DurableSession
-from cairn.runtime.lifecycle import await_owned
+from cairn.runtime.lifecycle import await_owned, settle_owned
 from cairn.runtime.scheduling.runner import ScheduleRunner
 from cairn.runtime.task_board.service import TaskBoardService
 from cairn.runtime.task_board.tools import (
@@ -89,6 +89,8 @@ from cairn.terminal.headless import (
 )
 
 TaskExecutor = Callable[[str, asyncio.Event, str], Awaitable[HeadlessResult]]
+ConversationExecutor = Callable[[str, str, str], Awaitable[str]]
+ConversationClassifier = Callable[[str], Awaitable[bool]]
 
 
 #: An immediate receipt must not block the actual task indefinitely.
@@ -483,6 +485,86 @@ def default_task_executor(
     return execute
 
 
+def default_conversation_classifier(config: ServeConfig) -> ConversationClassifier:
+    """Conservative public fallback; callers can inject a semantic classifier."""
+
+    async def classify(text: str) -> bool:
+        lowered = text.casefold()
+        actions = (
+            "实现",
+            "修复",
+            "处理",
+            "添加",
+            "创建",
+            "开发",
+            "执行",
+            "运行",
+            "修改",
+            "更新",
+            "提交",
+            "部署",
+            "帮我做",
+            "做一个",
+            "写一个",
+        )
+        if any(verb in lowered for verb in actions):
+            return False
+        markers = (
+            "进展",
+            "进度",
+            "怎么样",
+            "如何",
+            "为什么",
+            "什么",
+            "还要多久",
+            "完成了吗",
+            "卡住",
+            "阻塞",
+            "状态",
+            "你好",
+            "在吗",
+            "谢谢",
+            "辛苦",
+            "blocked",
+            "progress",
+            "status",
+        )
+        return (
+            any(marker in lowered for marker in markers)
+            or "?" in text
+            or "\uff1f" in text
+        )
+
+    return classify
+
+
+def default_conversation_executor(config: ServeConfig) -> ConversationExecutor:
+    """Read-only conversation over the configured provider; no task ledger."""
+
+    async def execute(question: str, sender: str, snapshot: str) -> str:
+        prompt = (
+            "You are answering a progress/chat question while another coding task runs. "
+            "Do not edit files, do not run shell commands and do not start work. "
+            "Use only the bounded facts below. Keep the answer suitable for WeChat.\n"
+            f"FACTS: {snapshot}\nQUESTION: {question}"
+        )
+        result = await _run_via_config_async(
+            workspace=config.workspace,
+            prompt=prompt,
+            task_id="wechat-chat",
+            grant_shell=False,
+            approval=config.approval,
+            max_steps=min(config.max_steps, 4),
+            trace_dir=config.trace_dir,
+            cancellation_event=None,
+            read_only=True,
+            extra_tools=(),
+        )
+        return result.final_response or "暂时没有可展示的进度。"
+
+    return execute
+
+
 class _Service:
     def __init__(
         self,
@@ -494,6 +576,9 @@ class _Service:
         report: ServeReport,
         stop_event: asyncio.Event | None,
         redact_text: Callable[[str], str] | None = None,
+        conversation_executor: ConversationExecutor | None = None,
+        conversation_classifier: ConversationClassifier | None = None,
+        progress_provider: Callable[[], str] | None = None,
     ) -> None:
         self.config = config
         self.state = state
@@ -509,6 +594,13 @@ class _Service:
         self._current_cancel: asyncio.Event | None = None
         self._stopping = False
         self._queue_error: Exception | None = None
+        self._conversation_executor = conversation_executor
+        self._conversation_classifier = conversation_classifier
+        self._progress_provider = progress_provider
+        self._chat_tasks: set[asyncio.Task[None]] = set()
+        self._intent_tasks: set[asyncio.Task[None]] = set()
+        self._chat_locks: dict[str, asyncio.Lock] = {}
+        self._intent_locks: dict[str, asyncio.Lock] = {}
         self._typing_tickets: dict[str, str] = {}
 
     async def _reply(
@@ -575,6 +667,214 @@ class _Service:
             )
         except Exception:
             return
+
+    @staticmethod
+    def _is_conversation(text: str) -> bool:
+        """Classify progress/chat without stealing clear execution requests."""
+        lowered = text.casefold()
+        execution_verbs = (
+            "实现",
+            "修复",
+            "处理",
+            "添加",
+            "创建",
+            "开发",
+            "执行",
+            "运行",
+            "修改",
+            "更新",
+            "提交",
+            "部署",
+            "帮我做",
+            "做一个",
+            "写一个",
+        )
+        if any(verb in lowered for verb in execution_verbs):
+            return False
+        markers = (
+            "进展",
+            "进度",
+            "怎么样",
+            "如何",
+            "为什么",
+            "什么",
+            "还要多久",
+            "完成了吗",
+            "卡住",
+            "阻塞",
+            "状态",
+            "你好",
+            "在吗",
+            "谢谢",
+            "辛苦",
+            "blocked",
+            "progress",
+            "status",
+        )
+        return (
+            any(marker in lowered for marker in markers)
+            or "?" in text
+            or "\uff1f" in text
+        )
+
+    def _progress_snapshot(self) -> str:
+        record = self.state.get_record(self._current_key or "") or {}
+        queued = len(self.state.records_in_states(frozenset({"queueing", "queued"})))
+        elapsed = (
+            time.monotonic() - self._current_started if self._current is not None else 0
+        )
+        raw_text = str(record.get("text", "")).strip().replace("\n", " ")[:160]
+        task_text = self.redact_text(raw_text) if self.redact_text else raw_text
+        status = str(record.get("state", "idle"))
+        progress = self._progress_provider() if self._progress_provider else ""
+        if progress:
+            progress = self.redact_text(progress) if self.redact_text else progress
+        return (
+            f"当前任务状态={status}; 已运行={elapsed:.0f}s; 排队={queued}; "
+            f"任务摘要={task_text or '-'}; 最近事件={progress or '-'}"
+        )
+
+    async def _classify_conversation(self, text: str) -> bool:
+        if self._conversation_classifier is not None:
+            return bool(await self._conversation_classifier(text))
+        lowered = text.casefold()
+        actions = (
+            "实现",
+            "修复",
+            "处理",
+            "添加",
+            "创建",
+            "开发",
+            "执行",
+            "运行",
+            "修改",
+            "更新",
+            "提交",
+            "部署",
+            "帮我做",
+            "做一个",
+            "写一个",
+        )
+        if any(verb in lowered for verb in actions):
+            return False
+        return (
+            any(
+                marker in lowered
+                for marker in (
+                    "进展",
+                    "进度",
+                    "怎么样",
+                    "如何",
+                    "为什么",
+                    "什么",
+                    "还要多久",
+                    "完成了吗",
+                    "卡住",
+                    "阻塞",
+                    "状态",
+                    "你好",
+                    "在吗",
+                    "谢谢",
+                    "辛苦",
+                    "blocked",
+                    "progress",
+                    "status",
+                )
+            )
+            or "?" in text
+            or "\uff1f" in text
+        )
+
+    async def _conversation_call(self, inbound: _Inbound, snapshot: str) -> None:
+        assert inbound.text is not None
+        lock = self._chat_locks.setdefault(inbound.sender, asyncio.Lock())
+        async with lock:
+            self.state.mark(
+                inbound.key or "", "chat_pending", command=inbound.text[:40]
+            )
+            try:
+                if self._conversation_executor is None:
+                    answer = f"当前进度\uff1a{snapshot}"
+                else:
+                    answer = await self._conversation_executor(
+                        inbound.text, inbound.sender, snapshot
+                    )
+            except asyncio.CancelledError:
+                # Service shutdown must not turn an already-accepted chat into
+                # a user cancellation; a send attempt has its own unknown state.
+                record = self.state.get_record(inbound.key or "") or {}
+                if record.get("state") == "chat_sending":
+                    self.state.mark(inbound.key or "", "chat_delivery_unknown")
+                else:
+                    self.state.mark(inbound.key or "", "chat_pending")
+                raise
+            except Exception as exc:
+                self.state.mark(
+                    inbound.key or "", "chat_failed", error_type=type(exc).__name__
+                )
+                if not self._stopping:
+                    await self._safe_reply(
+                        inbound.sender,
+                        inbound.context_token,
+                        "暂时无法读取当前进度\uff0c请稍后再问\uff1b正在运行的任务未受影响。",
+                    )
+                return
+            if not self._stopping and answer.strip():
+                # Persist the send attempt before I/O. A crash or lost
+                # acknowledgement must not cause a blind replay of the reply.
+                self.state.mark(inbound.key or "", "chat_sending")
+                try:
+                    sent = await self._safe_reply(
+                        inbound.sender, inbound.context_token, answer
+                    )
+                except asyncio.CancelledError:
+                    self.state.mark(inbound.key or "", "chat_delivery_unknown")
+                    raise
+                self.state.mark(
+                    inbound.key or "",
+                    "chat_replied" if sent else "chat_delivery_unknown",
+                )
+            else:
+                self.state.mark(inbound.key or "", "chat_empty")
+
+    def _start_conversation(self, inbound: _Inbound) -> asyncio.Task[None]:
+        task = asyncio.create_task(
+            self._conversation_call(inbound, self._progress_snapshot())
+        )
+        self._chat_tasks.add(task)
+
+        def _remove(done: asyncio.Task[None]) -> None:
+            self._chat_tasks.discard(done)
+            with contextlib.suppress(Exception):
+                done.exception()
+
+        task.add_done_callback(_remove)
+        return task
+
+    def _start_intent(self, inbound: _Inbound) -> None:
+        task = asyncio.create_task(self._run_intent(inbound))
+        self._intent_tasks.add(task)
+
+        def _remove(done: asyncio.Task[None]) -> None:
+            self._intent_tasks.discard(done)
+            with contextlib.suppress(Exception):
+                done.exception()
+
+        task.add_done_callback(_remove)
+
+    async def _run_intent(self, inbound: _Inbound) -> None:
+        lock = self._intent_locks.setdefault(inbound.sender, asyncio.Lock())
+        async with lock:
+            try:
+                if await self._classify_conversation(inbound.text or ""):
+                    await self._start_conversation(inbound)
+                    return
+                await self._queue_inbound(inbound)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._queue_error = exc
+                self._stopping = True
 
     async def _run_task(self, key: str, inbound: _Inbound) -> None:
         assert inbound.text is not None
@@ -797,7 +1097,17 @@ class _Service:
                     inbound.sender, inbound.context_token, "当前没有可取消的任务。"
                 )
             return
-        await self._queue_inbound(inbound)
+        if self._conversation_classifier is None:
+            # Preserve the existing synchronous dispatch when no semantic
+            # classifier is supplied; the background intent path is only for
+            # callers that opted into the slow classifier.
+            if await self._classify_conversation(inbound.text):
+                self._start_conversation(inbound)
+            else:
+                await self._queue_inbound(inbound)
+            return
+        self.state.mark(inbound.key, "classifying", command=command[:40])
+        self._start_intent(inbound)
 
     def _validate_recovery_record(
         self, key: str, record: dict[str, object]
@@ -842,7 +1152,17 @@ class _Service:
                 "上次任务在服务重启/中断时状态不确定, 已标记中断, 不会自动重放。",
             )
         pending = self.state.records_in_states(
-            frozenset({"received", "queueing", "queued"})
+            frozenset(
+                {
+                    "received",
+                    "queueing",
+                    "queued",
+                    "classifying",
+                    "chat_pending",
+                    "chat_sending",
+                    "chat_interrupted",
+                }
+            )
         )
         # Validate the whole recovery set before any task is started or any
         # acknowledgement is sent. A damaged record is a startup error, not a
@@ -852,7 +1172,17 @@ class _Service:
             for key, record in pending
         ]
         for _key, record, recovered in recovered_items:
-            if record.get("state") == "queued":
+            state = record.get("state")
+            if state == "queued":
+                continue
+            if state == "chat_sending":
+                self.state.mark(_key, "chat_delivery_unknown")
+                continue
+            if state in {"chat_pending", "chat_interrupted"}:
+                self._start_conversation(recovered)
+                continue
+            if state == "classifying":
+                self._start_intent(recovered)
                 continue
             await self._handle(recovered)
         self._start_next_queued()
@@ -946,6 +1276,9 @@ class _Service:
         finally:
             self._stopping = True
             await self._cancel_current()
+            owned = (*tuple(self._intent_tasks), *tuple(self._chat_tasks))
+            if owned:
+                await settle_owned(*owned)
             with contextlib.suppress(ILinkError, asyncio.CancelledError):
                 notify = asyncio.create_task(self.client.notify_stop())
                 await await_owned(notify)
@@ -960,6 +1293,9 @@ async def serve_wechat(
     client: ILinkClient | None = None,
     state: WechatState | None = None,
     task_executor: TaskExecutor | None = None,
+    conversation_executor: ConversationExecutor | None = None,
+    conversation_classifier: ConversationClassifier | None = None,
+    progress_provider: Callable[[], str] | None = None,
     stop_event: asyncio.Event | None = None,
     allow_insecure_local_http: bool = False,
 ) -> ServeReport:
@@ -998,6 +1334,10 @@ async def serve_wechat(
         if task_executor is not None
         else default_task_executor(config, on_secrets_resolved=remember_known_secrets)
     )
+    if conversation_executor is None and task_executor is None:
+        conversation_executor = default_conversation_executor(config)
+    if conversation_classifier is None and task_executor is None:
+        conversation_classifier = default_conversation_classifier(config)
     report = ServeReport()
     task_gate = asyncio.Lock()
 
@@ -1075,6 +1415,9 @@ async def serve_wechat(
         report=report,
         stop_event=stop_event,
         redact_text=redact_text,
+        conversation_executor=conversation_executor,
+        conversation_classifier=conversation_classifier,
+        progress_provider=progress_provider,
     )
     stored_account = active_state.load_account()
     if (

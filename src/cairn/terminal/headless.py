@@ -330,6 +330,7 @@ async def run_headless_task(
     system_prompt: str | None = None,
     personal_context: str = "",
     extra_tools: Sequence[Tool] = (),
+    read_only: bool = False,
     durable_session_factory: Callable[[Agent], DurableSession] | None = None,
     provider_name: str | None = None,
 ) -> HeadlessResult:
@@ -342,6 +343,12 @@ async def run_headless_task(
     """
     resolved_id = task_id or f"task-{uuid.uuid4().hex[:12]}"
     resolved_ws = workspace.resolve()
+    if read_only:
+        # A read-only conversation must not gain an effectful path through MCP,
+        # skill resources or caller-supplied extras.
+        mcp_configs = ()
+        extra_tools = ()
+        selected_skills = ()
     # Always observe the trace id/persisted facts internally; also fill the
     # caller's dict when provided so a cancelled CLI run can read them.
     ref: dict[str, Any] = trace_ref if trace_ref is not None else {}
@@ -428,6 +435,7 @@ async def run_headless_task(
             secret_env_keys=secret_env_keys,
             skills=skills,
             extra_tools=(*mcp_tools, *extra_tools),
+            read_only=read_only,
             durable_session_factory=durable_session_factory,
             provider_name=provider_name,
             system_prompt=system_prompt,
@@ -592,6 +600,7 @@ async def _run_via_config_async(
     on_secrets_resolved: Callable[[Sequence[str]], None] | None = None,
     personal_context_provider: Callable[[], str] | None = None,
     extra_tools: Sequence[Tool] = (),
+    read_only: bool = False,
     durable_session_factory: Callable[[Agent], DurableSession] | None = None,
     provider_name: str | None = None,
 ) -> HeadlessResult:
@@ -669,6 +678,7 @@ async def _run_via_config_async(
         system_prompt=system_prompt,
         personal_context=personal_context,
         extra_tools=extra_tools,
+        read_only=read_only,
         durable_session_factory=durable_session_factory,
         provider_name=(
             provider.name if durable_session_factory is not None else provider_name

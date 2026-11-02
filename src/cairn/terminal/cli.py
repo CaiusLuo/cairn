@@ -1419,16 +1419,83 @@ async def main(
             agent.personal_context = personal_memory.render_context()
         return result
 
+    async def _wechat_conversation_execute(
+        question: str, sender: str, snapshot: str
+    ) -> str:
+        """Read-only, independent Agent for busy-time chat; never touches tasks."""
+        result = await run_headless_task(
+            workspace=workspace.root,
+            prompt=(
+                "Answer this progress/chat question using only the facts below. "
+                "Do not edit files, run shell commands or start work.\n"
+                f"FACTS: {snapshot}\nQUESTION: {question}"
+            ),
+            grant_workspace_trust=True,
+            grant_shell=False,
+            llm=active_runtime.llm,
+            budget=RunBudget(max_steps=4),
+            context_budget=ContextBudget(
+                max_tokens=min(active_runtime.context_builder.budget.max_tokens, 8192),
+                response_tokens=min(
+                    active_runtime.context_builder.budget.response_tokens, 512
+                ),
+            ),
+            task_id=f"wechat-chat-{sender[-8:]}",
+            tracer=tracer,
+            secret_env_keys=secret_env_keys,
+            read_only=True,
+            extra_tools=(),
+        )
+        return result.final_response or "暂时没有可展示的进度。"
+
+    wechat_worker_progress = "idle"
+
+    async def _wechat_conversation_classifier(text: str) -> bool:
+        result = await run_headless_task(
+            workspace=workspace.root,
+            prompt=(
+                "Classify the user message as exactly CHAT or TASK. CHAT means a "
+                "progress/status question or ordinary conversation. TASK means new "
+                "work, including an action phrased as a question. Reply one word.\n"
+                "MESSAGE: " + text
+            ),
+            grant_workspace_trust=True,
+            grant_shell=False,
+            llm=active_runtime.llm,
+            budget=RunBudget(max_steps=1),
+            context_budget=ContextBudget(max_tokens=4096, response_tokens=64),
+            task_id="wechat-intent",
+            tracer=tracer,
+            secret_env_keys=secret_env_keys,
+            read_only=True,
+            extra_tools=(),
+        )
+        return (result.final_response or "").strip().upper() == "CHAT"
+
+    def _wechat_progress() -> str:
+        return wechat_worker_progress
+
     async def _wechat_execute(
         prompt: str, cancel: asyncio.Event, task_id: str
     ) -> HeadlessResult:
+        nonlocal wechat_worker_progress
+        wechat_worker_progress = "started"
         # WeChat inbound tasks and due scheduled jobs share this process; this
         # gate keeps the two entry points at one task at a time. Cross-process
         # scheduling is additionally serialized by ScheduleStore.execution_lock.
-        async with task_gate:
-            return await _execute_headless_locked(
-                prompt, cancel, task_id, wechat_task_service
-            )
+        try:
+            async with task_gate:
+                result = await _execute_headless_locked(
+                    prompt, cancel, task_id, wechat_task_service
+                )
+            wechat_worker_progress = f"finished:{result.status.value}"
+            return result
+        except asyncio.CancelledError:
+            wechat_worker_progress = "cancelled"
+            raise
+        except Exception as exc:
+            wechat_worker_progress = f"error:{type(exc).__name__}"
+            raise
 
     async def _schedule_execute(
         prompt: str, cancel: asyncio.Event, task_id: str
@@ -1453,6 +1520,9 @@ async def main(
         workspace=workspace.root,
         state_dir=default_state_dir(),
         task_executor=_wechat_execute,
+        conversation_executor=_wechat_conversation_execute,
+        conversation_classifier=_wechat_conversation_classifier,
+        progress_provider=_wechat_progress,
         emit=((lambda text: frame.print_above(text)) if frame is not None else print),
         clear=((lambda count: frame.clear_above(count)) if frame is not None else None),
         show_panel=(

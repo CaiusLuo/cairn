@@ -60,6 +60,7 @@ class CodingTaskRunner:
         secret_env_keys: frozenset[str] = frozenset(),
         skills: SkillLibrary | None = None,
         extra_tools: Sequence[Tool] = (),
+        read_only: bool = False,
         system_prompt: str | None = None,
         personal_context: str = "",
         provider_name: str | None = None,
@@ -82,6 +83,7 @@ class CodingTaskRunner:
         self.secret_env_keys = secret_env_keys
         self.skills = skills
         self.extra_tools = extra_tools
+        self.read_only = read_only
         self.system_prompt = system_prompt
         self.personal_context = personal_context
         self.durable_session_factory = durable_session_factory
@@ -346,6 +348,7 @@ class CodingTaskRunner:
                         model_executor=self.model_executor,
                         skills=self.skills,
                         extra_tools=self.extra_tools,
+                        read_only=self.read_only,
                         secret_env_keys=self.secret_env_keys,
                         system_prompt=self.system_prompt,
                         personal_context=self.personal_context,
@@ -391,6 +394,7 @@ class CodingTaskRunner:
                         model_executor=self.model_executor,
                         skills=self.skills,
                         extra_tools=self.extra_tools,
+                        read_only=self.read_only,
                         secret_env_keys=self.secret_env_keys,
                         system_prompt=self.system_prompt,
                         personal_context=self.personal_context,
