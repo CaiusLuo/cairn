@@ -805,16 +805,18 @@ class _Service:
         sender = record.get("sender")
         context = record.get("context_token")
         text = record.get("text")
-        is_text = record.get("is_text", bool(text)) is True
-        stable = record.get("stable", True) is True
+        # ``get(..., default)`` preserves the legacy default only when the key
+        # is absent. An explicit null is a present value and must be rejected.
+        is_text = record.get("is_text", bool(text))
+        stable = record.get("stable", True)
+        if not isinstance(is_text, bool) or not isinstance(stable, bool):
+            raise ValueError("WeChat message record is damaged")
         if (
             not isinstance(key, str)
             or not isinstance(sender, str)
             or not sender
             or not isinstance(context, str)
             or not context
-            or not isinstance(stable, bool)
-            or not isinstance(is_text, bool)
             or (is_text and not isinstance(text, str))
         ):
             raise ValueError("WeChat message record is damaged")

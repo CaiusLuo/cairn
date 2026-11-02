@@ -64,10 +64,11 @@ cairn wechat serve \
 
 ### One task at a time, status and cancel
 
-While a task runs, another accepted text task gets an explicit busy reply and is
-recorded as busy (not silently dropped and not queued). `/status` reports whether
-a task is running and for how long; `/cancel` cancels the running task and waits
-for its owned cleanup before the final reply. The service also refuses to start if
+While a task runs, another accepted text task is durably queued rather than
+rejected or silently dropped; queued work keeps arrival order and resumes after
+a restart. `/status` reports whether a task is running and how many messages are
+queued; `/cancel` cancels the running task and waits for its owned cleanup before
+the final reply. The service also refuses to start if
 another serve process holds the state-directory lock (one account/workspace).
 
 ### Dedupe, cursor and restart

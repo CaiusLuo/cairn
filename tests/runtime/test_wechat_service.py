@@ -2584,3 +2584,132 @@ def test_recovery_cancellation_waits_for_started_task_cleanup(
     probe = WechatServeLock(state_dir)
     probe.acquire(description="probe")
     probe.release()
+
+
+def test_damaged_boolean_recovery_field_fails_before_start(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    state = WechatState(state_dir)
+    state.record_received("msg:bad-bool", sender="u1", context_token="ctx", text="task")
+    state.load()["messages"]["msg:bad-bool"]["stable"] = "false"
+    state.flush()
+
+    with FakeILink() as fake, pytest.raises(ValueError, match="damaged"):
+        asyncio.run(
+            serve_wechat(
+                config=_config(fake, workspace, state_dir, max_polls=1),
+                client=_client(fake),
+                state=state,
+                task_executor=_completed(workspace),
+                allow_insecure_local_http=True,
+            )
+        )
+
+
+@pytest.mark.parametrize("field", ["stable", "is_text"])
+@pytest.mark.parametrize("state_name", ["received", "queueing", "queued"])
+@pytest.mark.parametrize("bad", [None, "false", 1])
+def test_recovery_rejects_explicit_null_or_wrong_boolean(
+    tmp_path: Path, field: str, state_name: str, bad: object
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    state = WechatState(state_dir)
+    state.record_received("msg:bad", sender="u1", context_token="ctx", text="task")
+    state.load()["messages"]["msg:bad"]["state"] = state_name
+    state.load()["messages"]["msg:bad"][field] = bad
+    state.flush()
+    calls: list[str] = []
+
+    async def execute(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        calls.append(prompt)
+        return HeadlessResult(
+            task_id=task_id, status=HeadlessStatus.COMPLETED, workspace=str(workspace)
+        )
+
+    with FakeILink() as fake:
+        with pytest.raises(ValueError, match="damaged"):
+            asyncio.run(
+                serve_wechat(
+                    config=_config(fake, workspace, state_dir, max_polls=1),
+                    client=_client(fake),
+                    state=state,
+                    task_executor=execute,
+                    allow_insecure_local_http=True,
+                )
+            )
+        assert calls == []
+        assert fake.sent == []
+
+
+def test_recovery_missing_legacy_booleans_still_defaults(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    state = WechatState(state_dir)
+    state.record_received("msg:legacy", sender="u1", context_token="ctx", text="task")
+    state.load()["messages"]["msg:legacy"].pop("stable", None)
+    state.load()["messages"]["msg:legacy"].pop("is_text", None)
+    state.flush()
+    calls: list[str] = []
+
+    async def execute(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        calls.append(prompt)
+        return HeadlessResult(
+            task_id=task_id, status=HeadlessStatus.COMPLETED, workspace=str(workspace)
+        )
+
+    with FakeILink() as fake:
+        asyncio.run(
+            serve_wechat(
+                config=_config(fake, workspace, state_dir, max_polls=20),
+                client=_client(fake),
+                state=state,
+                task_executor=execute,
+                allow_insecure_local_http=True,
+            )
+        )
+    assert calls == ["task"]
+
+
+def test_recovery_validates_whole_set_before_start_or_receipt(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    state = WechatState(state_dir)
+    state.record_received(
+        "msg:good", sender="u1", context_token="ctx", text="good task"
+    )
+    state.record_received("msg:bad", sender="u1", context_token="ctx", text="bad task")
+    state.load()["messages"]["msg:bad"]["stable"] = None
+    state.flush()
+    calls: list[str] = []
+
+    async def execute(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        calls.append(prompt)
+        return HeadlessResult(
+            task_id=task_id, status=HeadlessStatus.COMPLETED, workspace=str(workspace)
+        )
+
+    with FakeILink() as fake:
+        with pytest.raises(ValueError, match="damaged"):
+            asyncio.run(
+                serve_wechat(
+                    config=_config(fake, workspace, state_dir, max_polls=1),
+                    client=_client(fake),
+                    state=state,
+                    task_executor=execute,
+                    allow_insecure_local_http=True,
+                )
+            )
+        assert calls == []
+        assert fake.sent == []
+    assert (state.get_record("msg:good") or {}).get("state") == "received"
