@@ -8,19 +8,22 @@ from cairn.core.models import ToolResult
 from cairn.infra.tools.base import Tool, ToolExecutionContext
 from cairn.infra.workspace.lease import WorkspaceLease
 
-_NON_MUTATING_PREFIXES = (
-    "read",
-    "glob",
-    "grep",
-    "memory_",
-    "task_",
+_READ_ONLY_TOOLS = frozenset(
+    {
+        "read_file",
+        "read_skill",
+        "read_skill_resource",
+        "glob",
+        "grep",
+        "memory_search",
+        "task_list",
+        "task_detail",
+    }
 )
 
 
 def _needs_lease(name: str) -> bool:
-    if name.startswith(_NON_MUTATING_PREFIXES):
-        return False
-    return not name.startswith(_NON_MUTATING_PREFIXES)
+    return name not in _READ_ONLY_TOOLS
 
 
 class LeaseTool:
@@ -31,6 +34,7 @@ class LeaseTool:
         self._lease = lease
         self.name = delegate.name
         self.description = delegate.description
+        self.requested_capability = getattr(delegate, "requested_capability", None)
 
     def schema(self) -> dict[str, Any]:
         return self._delegate.schema()
@@ -44,6 +48,8 @@ class LeaseTool:
         *,
         context: ToolExecutionContext | None = None,
     ) -> ToolResult:
+        if not _needs_lease(self.name):
+            return await self._delegate.execute(arguments, context=context)
         if not self._lease.acquire():
             return ToolResult(
                 exit_code=1,

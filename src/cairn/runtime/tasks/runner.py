@@ -368,7 +368,6 @@ class CodingTaskRunner:
                     if self.provider_name is not None:
                         agent.provider_name = self.provider_name
                     durable_session = self.durable_session_factory(agent)
-                    self._wrap_tool_lease(durable_session.agent)
                 if self.conversation_only:
                     if durable_session is None:
                         raise RuntimeError(

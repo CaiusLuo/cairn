@@ -118,6 +118,7 @@ def parse_conversation_decision(value: object) -> ConversationDecision:
 
 #: An immediate receipt must not block the actual task indefinitely.
 ACK_TIMEOUT_SECONDS = 5.0
+PROJECT_LEASE_FILENAME = "project-write.lock"
 CLASSIFIER_TIMEOUT_SECONDS = 8.0
 
 
@@ -260,6 +261,7 @@ def _known_credential_values(
 def default_task_executor(
     config: ServeConfig,
     *,
+    project_lease: WorkspaceLease | None = None,
     on_secrets_resolved: Callable[[Sequence[str]], None] | None = None,
     task_source: TaskSource = TaskSource.WECHAT,
 ) -> TaskExecutor:
@@ -322,6 +324,12 @@ def default_task_executor(
             retained_sessions.extend(sessions)
             sessions.clear()
             raise
+
+    def cleanup_retained() -> None:
+        close_sessions(retained_sessions)
+        while retained_stores:
+            retained_stores[-1].close()
+            retained_stores.pop()
 
     def sender_session_id(sender: str) -> str:
         digest = hashlib.sha256(f"wechat:{config.workspace}:{sender}".encode()).digest()
@@ -447,10 +455,7 @@ def default_task_executor(
     async def _execute(
         prompt: str, cancel: asyncio.Event, task_id: str, *, sender: str = ""
     ) -> HeadlessResult:
-        close_sessions(retained_sessions)
-        while retained_stores:
-            retained_stores[-1].close()
-            retained_stores.pop()
+        cleanup_retained()
         task_tools = wechat_task_tools
         if task_source is TaskSource.SCHEDULE:
             task_tools = board_tools(
@@ -506,12 +511,15 @@ def default_task_executor(
             release_sessions(active_sessions)
             return result
 
-    project_lease = WorkspaceLease(config.state_dir / "project-write.lock")
+    project_lease = project_lease or WorkspaceLease(
+        config.state_dir / PROJECT_LEASE_FILENAME
+    )
 
     async def execute(
         prompt: str, cancel: asyncio.Event, task_id: str, *, sender: str = ""
     ) -> HeadlessResult:
         if not project_lease.acquire():
+            cleanup_retained()
             return HeadlessResult(
                 task_id=task_id,
                 status=HeadlessStatus.RUNTIME_ERROR,
@@ -525,6 +533,7 @@ def default_task_executor(
             project_lease.release()
 
     execute.durable_factory = durable_factory  # type: ignore[attr-defined]
+    execute.project_lease = project_lease  # type: ignore[attr-defined]
     return execute
 
 
@@ -577,6 +586,7 @@ def default_conversation_classifier(config: ServeConfig) -> ConversationClassifi
 def default_conversation_executor(
     config: ServeConfig,
     durable_factory: object | None = None,
+    project_lease: WorkspaceLease | None = None,
 ) -> ConversationExecutor:
     """Full-capability background conversation; same provider/tool policy as tasks."""
     agent_home = default_agent_home()
@@ -602,7 +612,9 @@ def default_conversation_executor(
         TaskTodoTool(task_board),
     )
 
-    project_lease = WorkspaceLease(config.state_dir / "project-write.lock")
+    project_lease = project_lease or WorkspaceLease(
+        config.state_dir / PROJECT_LEASE_FILENAME
+    )
 
     async def execute(question: str, sender: str, snapshot: str) -> str:
         active_sessions: list[DurableSession] = []
@@ -1484,14 +1496,21 @@ async def serve_wechat(
                 cleaned = cleaned.replace(value, "[REDACTED]")
         return cleaned
 
+    project_lease = WorkspaceLease(config.state_dir / PROJECT_LEASE_FILENAME)
     executor = (
         task_executor
         if task_executor is not None
-        else default_task_executor(config, on_secrets_resolved=remember_known_secrets)
+        else default_task_executor(
+            config,
+            project_lease=project_lease,
+            on_secrets_resolved=remember_known_secrets,
+        )
     )
     if conversation_executor is None and task_executor is None:
         conversation_executor = default_conversation_executor(
-            config, getattr(executor, "durable_factory", None)
+            config,
+            getattr(executor, "durable_factory", None),
+            project_lease=project_lease,
         )
     if conversation_classifier is None and task_executor is None:
         conversation_classifier = default_conversation_classifier(config)

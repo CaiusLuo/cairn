@@ -21,15 +21,20 @@ class WorkspaceLease:
 
     def acquire(self) -> bool:
         if self._handle is not None:
-            return True
+            return False
         self.path.parent.mkdir(parents=True, exist_ok=True)
         handle = self.path.open("a+", encoding="utf-8")
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        except BlockingIOError:
             handle.close()
             return False
-        self.path.chmod(0o600)
+        try:
+            self.path.chmod(0o600)
+        except Exception:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
+            raise
         self._handle = handle
         return True
 
@@ -42,11 +47,3 @@ class WorkspaceLease:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()
-
-    def __enter__(self) -> WorkspaceLease:
-        if not self.acquire():
-            raise RuntimeError("project_busy")
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        self.release()
