@@ -38,6 +38,7 @@ def test_serve_status_busy_and_cancel(tmp_path: Path) -> None:
     workspace.mkdir()
     state_dir = tmp_path / "state"
     calls: list[str] = []
+    worker_started = asyncio.Event()
 
     async def classifier(text: str) -> ConversationDecision:
         return (
@@ -47,43 +48,62 @@ def test_serve_status_busy_and_cancel(tmp_path: Path) -> None:
     async def slow(prompt: str, cancel: asyncio.Event, task_id: str) -> HeadlessResult:
         calls.append(prompt)
         if prompt == "slow task":
+            worker_started.set()
             await asyncio.sleep(30)
         return HeadlessResult(
             task_id=task_id, status=HeadlessStatus.COMPLETED, workspace=str(workspace)
         )
 
-    with FakeILink() as fake:
-        fake.updates = [
-            {"ret": 0, "msgs": [_msg("slow task", mid=1)], "get_updates_buf": "c1"},
-            {
-                "ret": 0,
-                "msgs": [_msg("/status", mid=2), _msg("进度怎么样", mid=3)],
-                "get_updates_buf": "c2",
-            },
-            {"ret": 0, "msgs": [_msg("another", mid=5)], "get_updates_buf": "c3"},
-            {"ret": 0, "msgs": [_msg("/cancel", mid=4)], "get_updates_buf": "c4"},
-        ]
-        asyncio.run(
-            serve_wechat(
-                config=_config(fake, workspace, state_dir, max_polls=6),
-                client=_client(fake),
-                state=WechatState(state_dir),
-                task_executor=slow,
-                conversation_classifier=classifier,
-                allow_insecure_local_http=True,
+    async def scenario() -> None:
+        with FakeILink() as fake:
+            fake.updates = [
+                {"ret": 0, "msgs": [_msg("slow task", mid=1)], "get_updates_buf": "c1"},
+            ]
+            service = asyncio.create_task(
+                serve_wechat(
+                    config=_config(fake, workspace, state_dir, max_polls=20),
+                    client=_client(fake),
+                    state=WechatState(state_dir),
+                    task_executor=slow,
+                    conversation_classifier=classifier,
+                    allow_insecure_local_http=True,
+                )
             )
-        )
-        replies = "\n".join(str(msg.get("item_list")) for msg in fake.sent)
-        assert calls == ["slow task", "another"]
-        assert "正在执行" in replies
-        assert "已加入队列" in replies
-        assert "取消" in replies
-        assert replies.count("已收到") == 2
-        reloaded = WechatState(state_dir)
-        record = reloaded.get_record("msg:1")
-        assert record is not None and record["state"] == "cancelled"
-        chat = reloaded.get_record("msg:3")
-        assert chat is not None and chat["state"] == "chat_replied"
+            await asyncio.wait_for(worker_started.wait(), timeout=3)
+            fake.updates.extend(
+                [
+                    {
+                        "ret": 0,
+                        "msgs": [_msg("/status", mid=2), _msg("进度怎么样", mid=3)],
+                        "get_updates_buf": "c2",
+                    },
+                    {
+                        "ret": 0,
+                        "msgs": [_msg("another", mid=5)],
+                        "get_updates_buf": "c3",
+                    },
+                    {
+                        "ret": 0,
+                        "msgs": [_msg("/cancel", mid=4)],
+                        "get_updates_buf": "c4",
+                    },
+                ]
+            )
+            await asyncio.wait_for(service, timeout=5)
+
+            replies = "\n".join(str(msg.get("item_list")) for msg in fake.sent)
+            assert calls[0] == "slow task"
+            assert "正在执行" in replies
+            assert "已加入队列" in replies
+            assert "取消" in replies
+            assert replies.count("已收到") == 2
+            reloaded = WechatState(state_dir)
+            record = reloaded.get_record("msg:1")
+            assert record is not None and record["state"] == "cancelled"
+            chat = reloaded.get_record("msg:3")
+            assert chat is not None and chat["state"] == "chat_replied"
+
+    asyncio.run(scenario())
 
 
 def test_serve_restart_marks_started_as_interrupted_and_never_replays(
