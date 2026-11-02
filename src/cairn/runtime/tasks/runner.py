@@ -25,6 +25,8 @@ from cairn.infra.sessions.task_models import (
 )
 from cairn.infra.skills import SkillLibrary
 from cairn.infra.tools.base import Tool
+from cairn.infra.tools.lease import LeaseTool
+from cairn.infra.workspace.lease import WorkspaceLease
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent, SessionAdmissionError
 from cairn.runtime.assembly import build_agent
@@ -62,6 +64,7 @@ class CodingTaskRunner:
         extra_tools: Sequence[Tool] = (),
         read_only: bool = False,
         conversation_only: bool = False,
+        tool_lease: WorkspaceLease | None = None,
         system_prompt: str | None = None,
         personal_context: str = "",
         provider_name: str | None = None,
@@ -86,6 +89,7 @@ class CodingTaskRunner:
         self.extra_tools = extra_tools
         self.read_only = read_only
         self.conversation_only = conversation_only
+        self.tool_lease = tool_lease
         self.system_prompt = system_prompt
         self.personal_context = personal_context
         self.durable_session_factory = durable_session_factory
@@ -309,6 +313,12 @@ class CodingTaskRunner:
                 report.task.revision.session_id, report.task.revision.task_id
             )
 
+    def _wrap_tool_lease(self, agent: Agent) -> None:
+        if self.tool_lease is None:
+            return
+        for _name, tool in list(agent.tools.tools.items()):
+            agent.tools.override_tool(LeaseTool(tool, self.tool_lease))
+
     async def _execute(
         self,
         spec: TaskSpec,
@@ -358,6 +368,7 @@ class CodingTaskRunner:
                     if self.provider_name is not None:
                         agent.provider_name = self.provider_name
                     durable_session = self.durable_session_factory(agent)
+                    self._wrap_tool_lease(durable_session.agent)
                 if self.conversation_only:
                     if durable_session is None:
                         raise RuntimeError(
@@ -365,6 +376,7 @@ class CodingTaskRunner:
                         )
                     self._validate_durable_agent(durable_session)
                     agent = durable_session.agent
+                    self._wrap_tool_lease(agent)
                     original_handler = agent.event_handler
                     agent.event_handler = forward_event
                     ownership.callback(
@@ -388,6 +400,7 @@ class CodingTaskRunner:
                     task = self._admit_task(durable_session, revision, spec)
                     ownership.enter_context(durable_session.task_execution(task))
                     agent = durable_session.agent
+                    self._wrap_tool_lease(agent)
                     original_handler = agent.event_handler
                     agent.event_handler = forward_event
                     ownership.callback(
@@ -422,6 +435,7 @@ class CodingTaskRunner:
                     )
                     if self.provider_name is not None:
                         agent.provider_name = self.provider_name
+                    self._wrap_tool_lease(agent)
                     if selected_skills:
                         response = await self._turn(
                             agent,

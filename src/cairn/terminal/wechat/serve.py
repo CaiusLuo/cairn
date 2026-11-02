@@ -61,6 +61,7 @@ from cairn.infra.wechat.state import (
     WechatState,
     ensure_outside_workspace,
 )
+from cairn.infra.workspace.lease import WorkspaceLease
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.agent_memory.service import PersonalMemoryService
@@ -86,6 +87,7 @@ from cairn.terminal.headless import (
     DEFAULT_CHECK_TIMEOUT_S,
     DEFAULT_MAX_STEPS,
     HeadlessResult,
+    HeadlessStatus,
     ProviderApproval,
     _run_via_config_async,
 )
@@ -442,7 +444,7 @@ def default_task_executor(
 
         return build
 
-    async def execute(
+    async def _execute(
         prompt: str, cancel: asyncio.Event, task_id: str, *, sender: str = ""
     ) -> HeadlessResult:
         close_sessions(retained_sessions)
@@ -503,6 +505,24 @@ def default_task_executor(
         else:
             release_sessions(active_sessions)
             return result
+
+    project_lease = WorkspaceLease(config.state_dir / "project-write.lock")
+
+    async def execute(
+        prompt: str, cancel: asyncio.Event, task_id: str, *, sender: str = ""
+    ) -> HeadlessResult:
+        if not project_lease.acquire():
+            return HeadlessResult(
+                task_id=task_id,
+                status=HeadlessStatus.RUNTIME_ERROR,
+                workspace=str(config.workspace),
+                error_category="project_busy",
+                error="project_busy: another Cairn worker owns the workspace write lease.",
+            )
+        try:
+            return await _execute(prompt, cancel, task_id, sender=sender)
+        finally:
+            project_lease.release()
 
     execute.durable_factory = durable_factory  # type: ignore[attr-defined]
     return execute
@@ -582,6 +602,8 @@ def default_conversation_executor(
         TaskTodoTool(task_board),
     )
 
+    project_lease = WorkspaceLease(config.state_dir / "project-write.lock")
+
     async def execute(question: str, sender: str, snapshot: str) -> str:
         active_sessions: list[DurableSession] = []
         factory = (
@@ -605,6 +627,7 @@ def default_conversation_executor(
             cancellation_event=None,
             read_only=False,
             conversation_only=factory is not None,
+            tool_lease=project_lease,
             durable_session_factory=factory,
             extra_tools=(*memory_tools, *task_tools),
         )

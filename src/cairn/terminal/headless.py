@@ -53,6 +53,7 @@ from cairn.infra.observability.tracer import Tracer
 from cairn.infra.skills import SkillLibrary, layered_skills, resolve_skills
 from cairn.infra.tools.base import Tool
 from cairn.infra.tools.filesystem_access import normalize_access_root
+from cairn.infra.workspace.lease import WorkspaceLease
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.artifacts import atomic_write_text
@@ -332,6 +333,7 @@ async def run_headless_task(
     extra_tools: Sequence[Tool] = (),
     read_only: bool = False,
     conversation_only: bool = False,
+    tool_lease: WorkspaceLease | None = None,
     durable_session_factory: Callable[[Agent], DurableSession] | None = None,
     provider_name: str | None = None,
 ) -> HeadlessResult:
@@ -438,6 +440,7 @@ async def run_headless_task(
             extra_tools=(*mcp_tools, *extra_tools),
             read_only=read_only,
             conversation_only=conversation_only,
+            tool_lease=tool_lease,
             durable_session_factory=durable_session_factory,
             provider_name=provider_name,
             system_prompt=system_prompt,
@@ -604,6 +607,7 @@ async def _run_via_config_async(
     extra_tools: Sequence[Tool] = (),
     read_only: bool = False,
     conversation_only: bool = False,
+    tool_lease: WorkspaceLease | None = None,
     durable_session_factory: Callable[[Agent], DurableSession] | None = None,
     provider_name: str | None = None,
 ) -> HeadlessResult:
