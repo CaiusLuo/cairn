@@ -1697,9 +1697,19 @@ async def serve_wechat(
             ),
             None,
         )
+        session_id = os.environ.get("CAIRN_WECHAT_SESSION_ID", "")
+        if not session_id:
+            with contextlib.suppress(OSError, ValueError):
+                owner = json.loads(
+                    (config.state_dir / "background-owner.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                if isinstance(owner, dict):
+                    session_id = str(owner.get("session_id", ""))
         return {
             "pid": os.getpid(),
-            "session_id": os.environ.get("CAIRN_WECHAT_SESSION_ID", ""),
+            "session_id": session_id,
             "polls": report.polls,
             "messages_seen": report.messages_seen,
             "tasks_started": report.tasks_started,
