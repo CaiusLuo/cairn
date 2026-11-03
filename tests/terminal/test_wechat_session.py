@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from cairn.infra.wechat.state import WechatAccount
 from cairn.terminal.headless import HeadlessResult, HeadlessStatus
 from cairn.terminal.wechat.qr import render_ascii_qr
 from cairn.terminal.wechat.session import WechatSessionController
@@ -411,3 +412,37 @@ def test_background_owner_detaches_on_close_and_stops_explicitly(
         assert proc.poll() is not None
 
     asyncio.run(scenario())
+
+
+def test_background_start_failure_reports_log(tmp_path: Path) -> None:
+    import subprocess
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "background.log").write_text("provider approval failed\n")
+    dead = subprocess.Popen(
+        ["false"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    dead.wait()
+
+    async def dead_launcher(*args: object) -> tuple[int, str]:
+        return dead.pid, "s"
+
+    controller = WechatSessionController(
+        workspace=workspace,
+        state_dir=state_dir,
+        task_executor=lambda *args: None,  # type: ignore[arg-type]
+        background_launcher=dead_launcher,
+        emit=lambda text: None,
+    )
+    account = WechatAccount(
+        bot_token="t",
+        ilink_bot_id="b",
+        base_url="http://127.0.0.1",
+        ilink_user_id="u1",
+    )
+    action = asyncio.run(controller._start(account))
+    assert "后台启动失败" in action.message
+    assert "provider approval failed" in action.message

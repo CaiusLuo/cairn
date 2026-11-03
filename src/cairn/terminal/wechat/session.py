@@ -287,13 +287,32 @@ class WechatSessionController:
     def _save_background(self, pid: int, session_id: str) -> None:
         self._background_pid = pid
         self._background_session_id = session_id
+        self._background_log_path = self.state_dir / "background.log"
         self._background_path.parent.mkdir(parents=True, exist_ok=True)
         self._background_path.write_text(
-            json.dumps({"pid": pid, "session_id": session_id}, sort_keys=True) + "\n",
+            json.dumps(
+                {
+                    "pid": pid,
+                    "session_id": session_id,
+                    "log": str(self._background_log_path),
+                    "started_at": time.time(),
+                },
+                sort_keys=True,
+            )
+            + "\n",
             encoding="utf-8",
         )
         with contextlib.suppress(OSError):
             self._background_path.chmod(0o600)
+
+    def _background_log_tail(self) -> str:
+        path = self.state_dir / "background.log"
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return "没有生成后台日志"
+        text = data.decode("utf-8", errors="replace").strip()
+        return text[-1000:] if text else "没有生成后台日志"
 
     async def _stop_background(self) -> bool:
         pid = self._background_pid
@@ -334,6 +353,12 @@ class WechatSessionController:
             pid, session_id = await self.background_launcher(
                 account, frozenset(senders)
             )
+            await asyncio.sleep(0.3)
+            if not self._background_alive():
+                detail = self._background_log_tail()
+                with contextlib.suppress(OSError):
+                    self._background_path.unlink()
+                return correction(f"微信后台启动失败: {detail}")
             self._save_background(pid, session_id)
             return note(
                 f"微信后台服务已启动 (pid={pid}, session={session_id}); "
@@ -406,6 +431,7 @@ class WechatSessionController:
                 f"微信服务: 后台运行中 (pid={self._background_pid}, "
                 f"session={self._background_session_id})"
             )
+            lines.append(f"后台日志: {self.state_dir / 'background.log'}")
         elif self._task is None:
             lines.append("微信服务: 未运行")
         elif not self._task.done():
