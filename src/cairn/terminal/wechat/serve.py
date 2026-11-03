@@ -688,8 +688,6 @@ def default_conversation_executor(
                 durable_session_factory=factory,
                 extra_tools=(*memory_tools, *task_tools),
             )
-        except BaseException:
-            raise
         finally:
             cleanup_error = close_conversation_sessions(active_sessions)
         if cleanup_error is not None:
