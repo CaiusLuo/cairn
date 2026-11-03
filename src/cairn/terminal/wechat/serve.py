@@ -1639,6 +1639,7 @@ async def serve_wechat(
             if task_executor is not None
             else default_task_executor(
                 config,
+                project_lease=project_lease,
                 on_secrets_resolved=remember_known_secrets,
                 task_source=TaskSource.SCHEDULE,
             )
