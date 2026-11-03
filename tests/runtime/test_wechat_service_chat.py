@@ -1,12 +1,14 @@
 """Offline WeChat iLink closed-loop regressions: no real WeChat or paid model."""
 
 import asyncio
+from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
 from cairn.infra.wechat.state import (
+    WechatAccount,
     WechatState,
 )
 from cairn.runtime.durable_session import DurableSession
@@ -17,8 +19,10 @@ from cairn.terminal.headless import (
 from cairn.terminal.wechat.serve import (
     ConversationDecision,
     ConversationExecutionError,
+    ServeConfig,
     close_conversation_sessions,
     conversation_text,
+    default_conversation_executor,
     serve_wechat,
 )
 from tests.support.fake_ilink import FakeILink
@@ -485,3 +489,52 @@ def test_close_conversation_sessions_closes_all_and_reports_error() -> None:
     error = close_conversation_sessions(cast(list[DurableSession], [first, second]))
     assert first.closed == 1 and second.closed == 1
     assert isinstance(error, RuntimeError)
+
+
+def test_default_conversation_executor_closes_durable_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cairn.terminal.wechat import serve as serve_module
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("CAIRN_AGENT_HOME", str(tmp_path / "agent"))
+    config = ServeConfig(
+        workspace=workspace,
+        state_dir=state_dir,
+        account=WechatAccount(
+            bot_token="t", ilink_bot_id="b", base_url="http://127.0.0.1"
+        ),
+        approval=None,
+        allowed_senders=frozenset({"u1"}),
+    )
+
+    closed: list[bool] = []
+
+    class Session:
+        def close(self) -> None:
+            closed.append(True)
+
+    def factory(sender: str, active: list[object]) -> object:
+        def build(agent: object) -> object:
+            session = Session()
+            active.append(session)
+            return session
+
+        return build
+
+    async def fake_run(**kwargs: object) -> HeadlessResult:
+        kwargs["durable_session_factory"](object())  # type: ignore[operator]
+        return HeadlessResult(
+            task_id="chat",
+            status=HeadlessStatus.COMPLETED,
+            workspace=str(workspace),
+            final_response="ok",
+        )
+
+    monkeypatch.setattr(serve_module, "_run_via_config_async", fake_run)
+    executor = default_conversation_executor(config, factory)
+    call = cast(Callable[[str, str, str], Coroutine[Any, Any, str]], executor)
+    assert asyncio.run(call("hello", "u1", "snap")) == "ok"
+    assert closed == [True]
