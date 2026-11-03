@@ -7,6 +7,9 @@ from typing import Any, cast
 
 import pytest
 
+from cairn.core.models import ToolResult
+from cairn.infra.tools.base import ToolExecutionContext
+from cairn.infra.tools.lease import LeaseTool
 from cairn.infra.wechat.state import (
     WechatAccount,
     WechatState,
@@ -23,6 +26,7 @@ from cairn.terminal.wechat.serve import (
     close_conversation_sessions,
     conversation_text,
     default_conversation_executor,
+    default_task_executor,
     serve_wechat,
 )
 from tests.support.fake_ilink import FakeILink
@@ -538,3 +542,74 @@ def test_default_conversation_executor_closes_durable_session(
     call = cast(Callable[[str, str, str], Coroutine[Any, Any, str]], executor)
     assert asyncio.run(call("hello", "u1", "snap")) == "ok"
     assert closed == [True]
+
+
+def test_task_holds_lease_while_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("CAIRN_AGENT_HOME", str(tmp_path / "agent"))
+    config = ServeConfig(
+        workspace=workspace,
+        state_dir=state_dir,
+        account=WechatAccount(
+            bot_token="t", ilink_bot_id="b", base_url="http://127.0.0.1"
+        ),
+        approval=None,
+        allowed_senders=frozenset({"u1"}),
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class Tool:
+        name = "write_file"
+        description = "write"
+
+        def schema(self) -> dict[str, object]:
+            return {"name": self.name}
+
+        def validate(self, arguments: dict[str, object]) -> None:
+            return None
+
+        async def execute(
+            self,
+            arguments: dict[str, object],
+            *,
+            context: ToolExecutionContext | None = None,
+        ) -> ToolResult:
+            raise AssertionError("should not execute")
+
+    async def fake_run(**kwargs: object) -> HeadlessResult:
+        started.set()
+        await release.wait()
+        return HeadlessResult(
+            task_id=kwargs["task_id"],  # type: ignore[arg-type]
+            status=HeadlessStatus.COMPLETED,
+            workspace=str(workspace),
+            final_response="done",
+        )
+
+    monkeypatch.setattr("cairn.terminal.wechat.serve._run_via_config_async", fake_run)
+
+    async def scenario() -> None:
+        executor = default_task_executor(config)
+        call = cast(
+            Callable[[str, asyncio.Event, str], Coroutine[Any, Any, HeadlessResult]],
+            executor,
+        )
+        task = asyncio.create_task(call("work", asyncio.Event(), "t1"))
+        await asyncio.wait_for(started.wait(), timeout=2)
+        try:
+            lease = executor.project_lease  # type: ignore[attr-defined]
+            assert lease.acquire() is False
+            result = await LeaseTool(Tool(), lease).execute({})
+            assert result.error_type == "project_busy"
+        finally:
+            release.set()
+            await asyncio.wait_for(task, timeout=2)
+        assert lease.acquire() is True
+        lease.release()
+
+    asyncio.run(scenario())
