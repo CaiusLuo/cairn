@@ -91,6 +91,7 @@ from cairn.terminal.headless import (
     ProviderApproval,
     _run_via_config_async,
 )
+from cairn.terminal.wechat.control import WechatControlServer
 
 TaskExecutor = Callable[[str, asyncio.Event, str], Awaitable[HeadlessResult]]
 ConversationExecutor = Callable[[str, str, str], Awaitable[str]]
@@ -1662,6 +1663,53 @@ async def serve_wechat(
             result_redactor=redact_text,
         )
         scheduler_stop = None
+
+    def control_snapshot(method: str) -> dict[str, object]:
+        messages = active_state.load().get("messages", {})
+        records = [
+            {"key": key, **record}
+            for key, record in messages.items()
+            if isinstance(record, dict)
+        ]
+        if method == "tasks":
+            return {
+                "tasks": [
+                    record
+                    for record in records
+                    if str(record.get("state", "")).startswith("task")
+                    or record.get("state")
+                    in {"queued", "queueing", "started", "interrupted"}
+                ]
+            }
+        if method == "chat":
+            return {
+                "chat": [
+                    record
+                    for record in records
+                    if str(record.get("state", "")).startswith("chat")
+                    or record.get("state") in {"clarifying", "classification_failed"}
+                ]
+            }
+        current = next(
+            (
+                record
+                for record in records
+                if record.get("state") in {"started", "queueing"}
+            ),
+            None,
+        )
+        return {
+            "pid": os.getpid(),
+            "session_id": os.environ.get("CAIRN_WECHAT_SESSION_ID", ""),
+            "polls": report.polls,
+            "messages_seen": report.messages_seen,
+            "tasks_started": report.tasks_started,
+            "queued": sum(
+                1 for record in records if record.get("state") in {"queued", "queueing"}
+            ),
+            "current": current,
+        }
+
     service = _Service(
         config=config,
         state=active_state,
@@ -1673,6 +1721,10 @@ async def serve_wechat(
         conversation_executor=conversation_executor,
         conversation_classifier=conversation_classifier,
         progress_provider=progress_provider,
+    )
+    control = WechatControlServer(
+        config.state_dir / "control.sock",
+        control_snapshot,
     )
     stored_account = active_state.load_account()
     if (
@@ -1693,8 +1745,11 @@ async def serve_wechat(
         scheduler_stop = asyncio.Event()
         scheduler_task = asyncio.create_task(scheduler_runner.run(scheduler_stop))
     try:
+        with contextlib.suppress(OSError):
+            await control.start()
         return await service.run()
     finally:
+        await control.close()
         if scheduler_task is not None:
             if scheduler_stop is not None:
                 scheduler_stop.set()

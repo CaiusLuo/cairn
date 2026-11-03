@@ -13,6 +13,7 @@ import contextlib
 import json
 import os
 import signal
+import socket
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from inspect import isawaitable
@@ -353,6 +354,8 @@ class WechatSessionController:
             pid, session_id = await self.background_launcher(
                 account, frozenset(senders)
             )
+            self._background_pid = pid
+            self._background_session_id = session_id
             await asyncio.sleep(0.3)
             if not self._background_alive():
                 detail = self._background_log_tail()
@@ -410,6 +413,22 @@ class WechatSessionController:
         self._clear_panel()
         return note("微信已断开并清理本地账号/游标; 使用 /wx 重新扫码连接。")
 
+    def _control_status(self) -> dict[str, object] | None:
+        path = self.state_dir / "control.sock"
+        if not path.exists():
+            return None
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(0.3)
+                sock.connect(str(path))
+                sock.sendall(b'{"method":"status"}\n')
+                raw = sock.recv(65536)
+            payload = json.loads(raw.decode("utf-8"))
+            result = payload.get("result") if isinstance(payload, dict) else None
+            return result if isinstance(result, dict) else None
+        except (OSError, ValueError):
+            return None
+
     def _status(self) -> Action:
         lines: list[str] = []
         try:
@@ -432,6 +451,13 @@ class WechatSessionController:
                 f"session={self._background_session_id})"
             )
             lines.append(f"后台日志: {self.state_dir / 'background.log'}")
+            control = self._control_status()
+            if control is not None:
+                lines.append(
+                    "控制面: "
+                    f"pid={control.get('pid')} session={control.get('session_id')} "
+                    f"queued={control.get('queued')} polls={control.get('polls')}"
+                )
         elif self._task is None:
             lines.append("微信服务: 未运行")
         elif not self._task.done():

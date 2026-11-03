@@ -87,7 +87,6 @@ from cairn.runtime.task_board.tools import (
     TaskListTool,
     TaskTodoTool,
     TaskUpdateTool,
-    TaskUseTool,
 )
 from cairn.runtime.turn.compaction import CompactionOutcome
 from cairn.runtime.turn.hook import run_compaction
@@ -1588,7 +1587,11 @@ async def main(
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                env={
+                    **os.environ,
+                    "PYTHONUNBUFFERED": "1",
+                    "CAIRN_WECHAT_SESSION_ID": session_id,
+                },
                 start_new_session=True,
                 close_fds=True,
             )
