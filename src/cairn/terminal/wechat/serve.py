@@ -96,6 +96,36 @@ TaskExecutor = Callable[[str, asyncio.Event, str], Awaitable[HeadlessResult]]
 ConversationExecutor = Callable[[str, str, str], Awaitable[str]]
 
 
+class ConversationExecutionError(RuntimeError):
+    """A structured, user-safe chat failure; never a generic canned reply."""
+
+    def __init__(
+        self, category: str, detail: str, *, trace_id: str | None = None
+    ) -> None:
+        self.category = category
+        self.detail = detail
+        self.trace_id = trace_id
+        super().__init__(f"{category}: {detail}")
+
+
+def conversation_text(result: HeadlessResult) -> str:
+    """Return the model text or raise a structured failure."""
+    if result.status is not HeadlessStatus.COMPLETED:
+        raise ConversationExecutionError(
+            result.status.value,
+            result.error or "conversation did not complete",
+            trace_id=result.trace_id,
+        )
+    text = (result.final_response or "").strip()
+    if not text:
+        raise ConversationExecutionError(
+            "empty_response",
+            "model produced no text reply",
+            trace_id=result.trace_id,
+        )
+    return text
+
+
 class ConversationDecision(StrEnum):
     CHAT = "CHAT"
     TASK = "TASK"
@@ -583,6 +613,18 @@ def default_conversation_classifier(config: ServeConfig) -> ConversationClassifi
     return classify
 
 
+def close_conversation_sessions(sessions: list[DurableSession]) -> BaseException | None:
+    """Close every conversation-owned session; return the first cleanup error."""
+    first_error: BaseException | None = None
+    while sessions:
+        session = sessions.pop()
+        try:
+            session.close()
+        except BaseException as exc:
+            first_error = first_error or exc
+    return first_error
+
+
 def default_conversation_executor(
     config: ServeConfig,
     durable_factory: object | None = None,
@@ -623,27 +665,38 @@ def default_conversation_executor(
             if callable(durable_factory)
             else None
         )
-        result = await _run_via_config_async(
-            workspace=config.workspace,
-            prompt=(
-                "You are the persistent Cairn assistant for this WeChat sender. "
-                "You have the same tools and memory as task work. Use tools when "
-                "needed. The bounded current-task facts are:\n"
-                f"{snapshot}\nUser message:\n{question}"
-            ),
-            task_id=f"wechat-chat-{sender[-8:]}",
-            grant_shell=config.allow_shell,
-            approval=config.approval,
-            max_steps=min(config.max_steps, 20),
-            trace_dir=config.trace_dir,
-            cancellation_event=None,
-            read_only=False,
-            conversation_only=factory is not None,
-            tool_lease=project_lease,
-            durable_session_factory=factory,
-            extra_tools=(*memory_tools, *task_tools),
-        )
-        return result.final_response or "暂时没有可展示的回复。"
+        cleanup_error: BaseException | None = None
+        try:
+            result = await _run_via_config_async(
+                workspace=config.workspace,
+                prompt=(
+                    "You are the persistent Cairn assistant for this WeChat sender. "
+                    "You have the same tools and memory as task work. Use tools when "
+                    "needed. The bounded current-task facts are:\n"
+                    f"{snapshot}\nUser message:\n{question}"
+                ),
+                task_id=f"wechat-chat-{sender[-8:]}",
+                grant_shell=config.allow_shell,
+                approval=config.approval,
+                max_steps=min(config.max_steps, 20),
+                trace_dir=config.trace_dir,
+                cancellation_event=None,
+                read_only=False,
+                conversation_only=factory is not None,
+                tool_lease=project_lease,
+                durable_session_factory=factory,
+                extra_tools=(*memory_tools, *task_tools),
+            )
+        except BaseException:
+            raise
+        finally:
+            cleanup_error = close_conversation_sessions(active_sessions)
+        if cleanup_error is not None:
+            raise ConversationExecutionError(
+                "session_cleanup_failed",
+                type(cleanup_error).__name__,
+            ) from cleanup_error
+        return conversation_text(result)
 
     return execute
 
@@ -848,15 +901,41 @@ class _Service:
                 else:
                     self.state.mark(inbound.key or "", "chat_pending")
                 raise
-            except Exception as exc:
+            except ConversationExecutionError as exc:
+                detail = exc.detail
+                if self.redact_text is not None:
+                    detail = self.redact_text(detail)
                 self.state.mark(
-                    inbound.key or "", "chat_failed", error_type=type(exc).__name__
+                    inbound.key or "",
+                    "chat_failed",
+                    error_type="conversation",
+                    error_category=exc.category,
+                    error=detail[:160],
+                    trace_id=exc.trace_id,
                 )
                 if not self._stopping:
                     await self._safe_reply(
                         inbound.sender,
                         inbound.context_token,
-                        "暂时无法读取当前进度\uff0c请稍后再问\uff1b正在运行的任务未受影响。",
+                        f"本轮没有生成有效回复\uff08{exc.category}\uff09\uff1a{detail[:160]}",
+                    )
+                return
+            except Exception as exc:
+                detail = str(exc)
+                if self.redact_text is not None:
+                    detail = self.redact_text(detail)
+                self.state.mark(
+                    inbound.key or "",
+                    "chat_failed",
+                    error_type=type(exc).__name__,
+                    error_category="runtime_error",
+                    error=detail[:160],
+                )
+                if not self._stopping:
+                    await self._safe_reply(
+                        inbound.sender,
+                        inbound.context_token,
+                        f"本轮聊天失败\uff08{type(exc).__name__}\uff09\uff1a{detail[:160]}",
                     )
                 return
             if not self._stopping and answer.strip():

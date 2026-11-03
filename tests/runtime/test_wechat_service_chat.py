@@ -2,15 +2,25 @@
 
 import asyncio
 from pathlib import Path
+from typing import cast
+
+import pytest
 
 from cairn.infra.wechat.state import (
     WechatState,
 )
+from cairn.runtime.durable_session import DurableSession
 from cairn.terminal.headless import (
     HeadlessResult,
     HeadlessStatus,
 )
-from cairn.terminal.wechat.serve import ConversationDecision, serve_wechat
+from cairn.terminal.wechat.serve import (
+    ConversationDecision,
+    ConversationExecutionError,
+    close_conversation_sessions,
+    conversation_text,
+    serve_wechat,
+)
 from tests.support.fake_ilink import FakeILink
 from tests.support.wechat_service import (
     _client,
@@ -427,3 +437,51 @@ def test_classifier_provider_error_keeps_service_alive(tmp_path: Path) -> None:
                 await asyncio.wait_for(service, timeout=5)
 
     asyncio.run(scenario())
+
+
+def test_conversation_text_returns_structured_empty_and_error() -> None:
+    completed = HeadlessResult(
+        task_id="chat",
+        status=HeadlessStatus.COMPLETED,
+        workspace="/tmp",
+        final_response="hi",
+    )
+    assert conversation_text(completed) == "hi"
+    with pytest.raises(ConversationExecutionError) as empty:
+        conversation_text(
+            HeadlessResult(
+                task_id="chat",
+                status=HeadlessStatus.COMPLETED,
+                workspace="/tmp",
+                final_response="  ",
+            )
+        )
+    assert empty.value.category == "empty_response"
+    with pytest.raises(ConversationExecutionError) as failed:
+        conversation_text(
+            HeadlessResult(
+                task_id="chat",
+                status=HeadlessStatus.RUNTIME_ERROR,
+                workspace="/tmp",
+                error="provider unavailable",
+            )
+        )
+    assert failed.value.category == "runtime_error"
+
+
+def test_close_conversation_sessions_closes_all_and_reports_error() -> None:
+    class Session:
+        def __init__(self, fail: bool = False) -> None:
+            self.closed = 0
+            self.fail = fail
+
+        def close(self) -> None:
+            self.closed += 1
+            if self.fail:
+                raise RuntimeError("close failed")
+
+    first = Session()
+    second = Session(fail=True)
+    error = close_conversation_sessions(cast(list[DurableSession], [first, second]))
+    assert first.closed == 1 and second.closed == 1
+    assert isinstance(error, RuntimeError)
