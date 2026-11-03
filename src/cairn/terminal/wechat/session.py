@@ -356,12 +356,20 @@ class WechatSessionController:
             )
             self._background_pid = pid
             self._background_session_id = session_id
-            await asyncio.sleep(0.3)
-            if not self._background_alive():
+            ready = False
+            for _ in range(30):
+                if not self._background_alive():
+                    break
+                if (self.state_dir / "control.sock").exists():
+                    ready = True
+                    break
+                await asyncio.sleep(0.1)
+            if not ready:
                 detail = self._background_log_tail()
+                await self._stop_background()
                 with contextlib.suppress(OSError):
                     self._background_path.unlink()
-                return correction(f"微信后台启动失败: {detail}")
+                return correction(f"微信后台启动未就绪: {detail}")
             self._save_background(pid, session_id)
             return note(
                 f"微信后台服务已启动 (pid={pid}, session={session_id}); "

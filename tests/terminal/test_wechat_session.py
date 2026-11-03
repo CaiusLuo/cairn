@@ -391,6 +391,7 @@ def test_background_owner_detaches_on_close_and_stops_explicitly(
     )
     state.save_account(account)
     proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    (state_dir / "control.sock").touch()
     controller = WechatSessionController(
         workspace=workspace,
         state_dir=state_dir,
@@ -444,5 +445,5 @@ def test_background_start_failure_reports_log(tmp_path: Path) -> None:
         ilink_user_id="u1",
     )
     action = asyncio.run(controller._start(account))
-    assert "后台启动失败" in action.message
+    assert "后台启动" in action.message
     assert "provider approval failed" in action.message
