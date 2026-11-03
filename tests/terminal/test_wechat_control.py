@@ -32,3 +32,37 @@ def test_control_socket_status_roundtrip(tmp_path: Path) -> None:
     assert payload["ok"] is True
     assert cast(dict[str, Any], payload["result"])["method"] == "status"
     assert not path.exists()
+
+
+from pathlib import Path
+
+from cairn.terminal.wechat.session import WechatSessionController
+
+
+def test_controller_reads_control_status(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    server = WechatControlServer(
+        state_dir / "control.sock",
+        lambda _method: {"pid": 9, "session_id": "session-x", "queued": 2, "polls": 4},
+    )
+
+    async def scenario() -> dict[str, object] | None:
+        await server.start()
+        try:
+            controller = WechatSessionController(
+                workspace=workspace,
+                state_dir=state_dir,
+                task_executor=lambda *args: None,  # type: ignore[arg-type]
+                emit=lambda text: None,
+            )
+            return await asyncio.to_thread(controller._control_status)
+        finally:
+            await server.close()
+
+    result = asyncio.run(scenario())
+    assert result is not None
+    assert result["session_id"] == "session-x"
+    assert result["queued"] == 2
