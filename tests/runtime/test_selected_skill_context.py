@@ -3,8 +3,6 @@
 import asyncio
 from pathlib import Path
 
-import pytest
-
 from cairn.core.budget import RunBudget
 from cairn.core.models import LLMResponse
 from cairn.infra.skills import layered_skills
@@ -39,49 +37,41 @@ def _agent(ws: Path, llm: SequenceLLM):  # type: ignore[no-untyped-def]
     )
 
 
-@pytest.mark.parametrize("skill_name", ["local", "frontend-design"])
-def test_selected_skill_body_is_user_context_not_system(
-    tmp_path: Path, skill_name: str
-) -> None:
+def test_selected_skill_body_is_user_context_not_system(tmp_path: Path) -> None:
     ws = _workspace(tmp_path)
     llm = SequenceLLM([LLMResponse(content="done")])
     agent = _agent(ws, llm)
-    skill = layered_skills(ws).read(skill_name)
-    assert skill is not None
 
     asyncio.run(
         run_turn(
             agent,
             "do the task",
             budget=RunBudget(max_steps=2),
-            selected_skills=[skill_name],
+            selected_skills=["local"],
         )
     )
 
     messages = llm.calls[0][0]
     users = "\n".join(m.content or "" for m in messages if m.role == "user")
     systems = "\n".join(m.content or "" for m in messages if m.role == "system")
-    assert skill.body in users
-    assert skill.body not in systems
+    assert BODY in users
+    assert BODY not in systems
 
 
-@pytest.mark.parametrize("skill_name", ["local", "frontend-design"])
-def test_unselected_skill_body_stays_out_of_request(
-    tmp_path: Path, skill_name: str
-) -> None:
+def test_unselected_skill_body_stays_out_of_request(tmp_path: Path) -> None:
     ws = _workspace(tmp_path)
     llm = SequenceLLM([LLMResponse(content="done")])
     agent = _agent(ws, llm)
-    skill = layered_skills(ws).read(skill_name)
-    assert skill is not None
 
-    asyncio.run(run_turn(agent, "Hello", budget=RunBudget(max_steps=2)))
+    asyncio.run(run_turn(agent, "do the task", budget=RunBudget(max_steps=2)))
 
     contents = "\n".join(m.content or "" for m in llm.calls[0][0])
-    assert skill.body not in contents
+    assert BODY not in contents
 
 
 def test_unknown_selected_skill_never_reaches_model(tmp_path: Path) -> None:
+    import pytest
+
     ws = _workspace(tmp_path)
     llm = SequenceLLM([])
     agent = _agent(ws, llm)

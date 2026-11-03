@@ -69,6 +69,7 @@ from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.lifecycle import await_owned, settle_owned
 from cairn.runtime.loop import run_turn
 from cairn.runtime.mcp.activation import open_mcp_servers
+from cairn.runtime.prompts import system_prompt_for
 from cairn.runtime.provider_runtime import (
     ProviderRuntime,
     ProviderSession,
@@ -1452,6 +1453,7 @@ async def main(
             tracer=tracer,
             secret_env_keys=secret_env_keys,
             read_only=False,
+            system_prompt=system_prompt_for("chat"),
             extra_tools=(
                 MemorySearchTool(personal_memory),
                 MemoryRememberTool(personal_memory),
@@ -1484,6 +1486,7 @@ async def main(
             budget=RunBudget(max_steps=1),
             context_budget=ContextBudget(max_tokens=4096, response_tokens=64),
             task_id="wechat-intent",
+            system_prompt=system_prompt_for("classification"),
             tracer=tracer,
             secret_env_keys=secret_env_keys,
             read_only=True,

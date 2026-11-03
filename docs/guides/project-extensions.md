@@ -22,6 +22,27 @@ IM integration can reuse the existing runtime instead of a second loop.
 A missing directory is not an error: a project simply has no skills or MCP
 servers. Malformed configuration raises instead of falling back silently.
 
+## Built-in system prompts
+
+System rules are separate from Skills. The mixed interactive Agent uses a short
+base policy covering identity, factual evidence, host-granted permissions and
+concise reporting. Known entry points select one task profile at Agent
+construction: coding tasks use development rules, WeChat conversation calls use
+chat rules, intent classifiers use classification rules, and the verified
+read-only reviewer uses its existing structured review contract plus the base
+policy. An explicit host-supplied system prompt remains an exact override.
+
+Selection uses the existing caller's task knowledge; it does not add a model
+classification request, a Skill, a tool, a capability or a second Agent loop.
+The mixed interactive entry does not automatically classify each message; its
+base policy retains a short conditional coding checklist. Prompt profiles guide
+behavior, while the existing permission system remains the authority.
+
+Profiles are fixed before durable binding. An already-bound session is never
+hot-swapped to another prompt; the existing prompt digest and runtime checks
+still require reconciliation when a persisted binding differs. The same
+assembled prompt is used for execution and compaction budgeting.
+
 ## Skills
 
 `SKILL.md` uses ordinary frontmatter; Cairn reads only `name` and `description`
@@ -68,38 +89,6 @@ cairn task run --workspace /srv/proj --prompt "..." --trust-workspace \
 ```
 
 Unknown skills are rejected before any agent turn.
-
-### Bundled frontend design guidance
-
-The [frontend-design skill](../../src/cairn/skills/frontend-design/SKILL.md)
-provides scoped visual implementation guidance for web pages, components and
-HTML/SVG widgets. Its description excludes backend, CLI/TUI, general coding and
-ordinary chat; it is not a default coding-task prompt. The model can load it with
-`read_skill` when relevant, or the operator can select it explicitly:
-
-```sh
-cairn task run --workspace /srv/proj --prompt "Refine the settings page UI" \
-  --trust-workspace --skill frontend-design
-```
-
-In the stateless interactive terminal, select `frontend-design` through
-`/skill`. The existing durable-mode selection restriction still applies.
-
-Only the name and short description are advertised globally. The body enters
-context through an explicit selection or a model tool read; these are task
-instructions, not system policy or permission grants. Relevance is a model
-decision guided by the description, not a deterministic frontend classifier.
-Loading it does not make it a permanent preference, but its text remains ordinary
-conversation history until normal context management removes it. A fresh
-unrelated session avoids carrying previously loaded guidance.
-
-This is a condensed Cairn adaptation of the public
-[Unicorn post](https://x.com/ohayou792/status/2116884456006897800) and its
-[English prompt reply](https://x.com/ohayou792/status/2116884581928296819),
-titled *Imagine — Visual Creation Suite*. It is not an authenticated Anthropic
-release or a verbatim copy. Claude-specific tools, preloaded assets, CSS classes
-and iframe assumptions are replaced with checks of the target environment.
-Project design requirements take precedence over the suggested visual defaults.
 
 ## MCP servers
 
