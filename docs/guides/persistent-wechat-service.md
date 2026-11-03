@@ -105,3 +105,17 @@ sudo journalctl -u cairn-wechat.service -n 50 --no-pager
 
 The service must still be active and reply. This does not test the foreground
 `uv run cairn` + `/wx` mode; that mode remains foreground-only.
+
+## Acceptance matrix
+
+Use an isolated state directory and fake iLink/model for the mechanical checks;
+use the real account only for the final user acceptance.
+
+| Scenario | Expected evidence |
+| --- | --- |
+| Normal chat | Non-empty model reply, or a structured `empty_response`/runtime error; never the old canned sentence |
+| Long task + chat write | Chat receives `project_busy`; no partial file write; task keeps running |
+| SSH/PTY disconnect | Owner remains active; control `status` returns same pid/session |
+| Child crash | Supervisor restarts the child with bounded backoff; journal/log records the exit |
+| Explicit `/wx stop` | SIGTERM forwarded, child cleanup, lease/lock released, no residual child |
+| Multi-turn chat | Same sender Session/context continues; no duplicate consumer or task |
