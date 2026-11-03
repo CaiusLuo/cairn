@@ -54,6 +54,20 @@ The unit runs the service as an explicit user with explicit `HOME` and
 already-bound WeChat account and queues. Do not point it at a new empty state
 directory.
 
+## Runtime control and health
+
+`/wx` launches the detached owner through a bounded supervisor. The supervisor
+restarts an unexpectedly exited child with exponential backoff and forwards
+SIGTERM to the child before exiting. `background-owner.json` records the
+supervisor pid and session label; `background.log` receives child/supervisor
+output. A failed start is reported with the log tail instead of being treated as
+running.
+
+While the owner is alive it opens a 0600 `control.sock` under the host-private
+state directory. `/wx status` queries `status` and can report the real pid,
+session label, poll count and queue depth rather than only a stale pid file.
+`tasks` and `chat` snapshots are also available over the same Unix socket.
+
 ## Operations
 
 ```bash
