@@ -613,3 +613,44 @@ def test_task_holds_lease_while_running(
         lease.release()
 
     asyncio.run(scenario())
+
+
+def test_default_conversation_executor_reports_empty_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cairn.terminal.wechat import serve as serve_module
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("CAIRN_AGENT_HOME", str(tmp_path / "agent"))
+    config = ServeConfig(
+        workspace=workspace,
+        state_dir=state_dir,
+        account=WechatAccount(
+            bot_token="t", ilink_bot_id="b", base_url="http://127.0.0.1"
+        ),
+        approval=None,
+        allowed_senders=frozenset({"u1"}),
+    )
+
+    def factory(sender: str, active: list[object]) -> object:
+        def build(agent: object) -> object:
+            return object()
+
+        return build
+
+    async def fake_run(**kwargs: object) -> HeadlessResult:
+        return HeadlessResult(
+            task_id="chat",
+            status=HeadlessStatus.COMPLETED,
+            workspace=str(workspace),
+            final_response="",
+        )
+
+    monkeypatch.setattr(serve_module, "_run_via_config_async", fake_run)
+    executor = default_conversation_executor(config, factory)
+    call = cast(Callable[[str, str, str], Coroutine[Any, Any, str]], executor)
+    with pytest.raises(ConversationExecutionError) as exc:
+        asyncio.run(call("hello", "u1", "snap"))
+    assert exc.value.category == "empty_response"
