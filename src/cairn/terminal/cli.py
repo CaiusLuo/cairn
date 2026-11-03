@@ -55,6 +55,7 @@ from cairn.infra.task_board.store import (
 )
 from cairn.infra.tools.filesystem_access import normalize_access_root
 from cairn.infra.wechat.state import default_state_dir
+from cairn.infra.workspace.lease import WorkspaceLease
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.agent_memory.service import PersonalMemoryService
@@ -113,7 +114,12 @@ from cairn.terminal.durable import (
     show_report,
 )
 from cairn.terminal.frame import TranscriptView, frame_live_region
-from cairn.terminal.headless import HeadlessResult, run_headless_task, task_app
+from cairn.terminal.headless import (
+    HeadlessResult,
+    HeadlessStatus,
+    run_headless_task,
+    task_app,
+)
 from cairn.terminal.input import CliInput
 from cairn.terminal.memory.controller import MemoryController
 from cairn.terminal.output import (
@@ -134,7 +140,9 @@ from cairn.terminal.submission import PendingLine
 from cairn.terminal.task_board.controller import TaskBoardController
 from cairn.terminal.wechat.app import wechat_app
 from cairn.terminal.wechat.serve import (
+    PROJECT_LEASE_FILENAME,
     ConversationDecision,
+    conversation_text,
     parse_conversation_decision,
 )
 from cairn.terminal.wechat.session import WechatSessionController
@@ -1375,6 +1383,8 @@ async def main(
         agent.tools.register_tool(task_tool)
 
     task_gate = asyncio.Lock()
+    cli_task_lease = WorkspaceLease(default_state_dir() / PROJECT_LEASE_FILENAME)
+    cli_chat_lease = WorkspaceLease(default_state_dir() / PROJECT_LEASE_FILENAME)
 
     async def _execute_headless_locked(
         prompt: str,
@@ -1452,6 +1462,7 @@ async def main(
             tracer=tracer,
             secret_env_keys=secret_env_keys,
             read_only=False,
+            tool_lease=cli_chat_lease,
             extra_tools=(
                 MemorySearchTool(personal_memory),
                 MemoryRememberTool(personal_memory),
@@ -1464,7 +1475,7 @@ async def main(
                 TaskTodoTool(wechat_task_service),
             ),
         )
-        return result.final_response or "暂时没有可展示的回复。"
+        return conversation_text(result)
 
     wechat_worker_progress = "idle"
 
@@ -1531,14 +1542,27 @@ async def main(
     ) -> HeadlessResult:
         # Scheduled work shares the same execution gate, but its task facts
         # belong to the schedule rather than the WeChat conversation.
-        async with task_gate:
-            task_service = TaskBoardService(
-                TaskBoardStore(task_board_root),
-                project=str(workspace.root),
-                session_id=f"schedule:{task_id}",
-                source=TaskSource.SCHEDULE,
+        if not cli_task_lease.acquire():
+            return HeadlessResult(
+                task_id=task_id,
+                status=HeadlessStatus.RUNTIME_ERROR,
+                workspace=str(workspace.root),
+                error_category="project_busy",
+                error="project_busy: another Cairn worker owns the workspace write lease.",
             )
-            return await _execute_headless_locked(prompt, cancel, task_id, task_service)
+        try:
+            async with task_gate:
+                task_service = TaskBoardService(
+                    TaskBoardStore(task_board_root),
+                    project=str(workspace.root),
+                    session_id=f"schedule:{task_id}",
+                    source=TaskSource.SCHEDULE,
+                )
+                return await _execute_headless_locked(
+                    prompt, cancel, task_id, task_service
+                )
+        finally:
+            cli_task_lease.release()
 
     def _refresh_wechat_identity() -> None:
         personal_memory.add_secret_values(wechat_controller.secret_values())
