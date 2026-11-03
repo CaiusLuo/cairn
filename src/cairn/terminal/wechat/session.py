@@ -351,6 +351,8 @@ class WechatSessionController:
                 "使用 /wx status 查看\uff0c/wx stop 停止。"
             )
         if self.background_launcher is not None:
+            with contextlib.suppress(OSError):
+                (self.state_dir / "control.sock").unlink()
             pid, session_id = await self.background_launcher(
                 account, frozenset(senders)
             )

@@ -391,7 +391,6 @@ def test_background_owner_detaches_on_close_and_stops_explicitly(
     )
     state.save_account(account)
     proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
-    (state_dir / "control.sock").touch()
     controller = WechatSessionController(
         workspace=workspace,
         state_dir=state_dir,
@@ -401,6 +400,7 @@ def test_background_owner_detaches_on_close_and_stops_explicitly(
     )
 
     async def _launch() -> tuple[int, str]:
+        (state_dir / "control.sock").touch()
         return proc.pid, "session-test"
 
     async def scenario() -> None:
