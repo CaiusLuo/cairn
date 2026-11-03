@@ -69,6 +69,38 @@ cairn task run --workspace /srv/proj --prompt "..." --trust-workspace \
 
 Unknown skills are rejected before any agent turn.
 
+### Bundled frontend design guidance
+
+The [frontend-design skill](../../src/cairn/skills/frontend-design/SKILL.md)
+provides scoped visual implementation guidance for web pages, components and
+HTML/SVG widgets. Its description excludes backend, CLI/TUI, general coding and
+ordinary chat; it is not a default coding-task prompt. The model can load it with
+`read_skill` when relevant, or the operator can select it explicitly:
+
+```sh
+cairn task run --workspace /srv/proj --prompt "Refine the settings page UI" \
+  --trust-workspace --skill frontend-design
+```
+
+In the stateless interactive terminal, select `frontend-design` through
+`/skill`. The existing durable-mode selection restriction still applies.
+
+Only the name and short description are advertised globally. The body enters
+context through an explicit selection or a model tool read; these are task
+instructions, not system policy or permission grants. Relevance is a model
+decision guided by the description, not a deterministic frontend classifier.
+Loading it does not make it a permanent preference, but its text remains ordinary
+conversation history until normal context management removes it. A fresh
+unrelated session avoids carrying previously loaded guidance.
+
+This is a condensed Cairn adaptation of the public
+[Unicorn post](https://x.com/ohayou792/status/2116884456006897800) and its
+[English prompt reply](https://x.com/ohayou792/status/2116884581928296819),
+titled *Imagine — Visual Creation Suite*. It is not an authenticated Anthropic
+release or a verbatim copy. Claude-specific tools, preloaded assets, CSS classes
+and iframe assumptions are replaced with checks of the target environment.
+Project design requirements take precedence over the suggested visual defaults.
+
 ## MCP servers
 
 Declare servers in `.cairn/mcp.toml`. `env_keys` names host environment variables
