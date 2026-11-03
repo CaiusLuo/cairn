@@ -1581,7 +1581,7 @@ async def main(
         state_dir.mkdir(parents=True, exist_ok=True)
         log_path = state_dir / "background.log"
         session_id = str(uuid.uuid4())
-        command = [
+        serve_command = [
             executable,
             "wechat",
             "serve",
@@ -1602,6 +1602,12 @@ async def main(
             provider.config.api_key_env,
             "--approve-provider-models",
             ",".join(group.model_ids),
+        ]
+        command = [
+            sys.executable,
+            "-c",
+            "from cairn.terminal.wechat.supervisor import main; main()",
+            *serve_command,
         ]
         log = log_path.open("ab")
         try:
