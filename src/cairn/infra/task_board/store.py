@@ -39,6 +39,18 @@ class TaskBoardValidationError(ValueError):
     """A mutation was rejected before it could be written."""
 
 
+class TaskBoardRevisionConflict(RuntimeError):
+    """The task changed after the caller read its revision."""
+
+    def __init__(self, task_id: str, expected: int, actual: int) -> None:
+        self.task_id = task_id
+        self.expected = expected
+        self.actual = actual
+        super().__init__(
+            f"task {task_id} revision {actual} does not match expected {expected}"
+        )
+
+
 def default_task_board_dir() -> Path:
     override = os.environ.get(TASK_BOARD_DIR_ENV)
     if override:
@@ -213,6 +225,44 @@ class TaskBoardStore:
                     tasks[index] = updated
                     self._save_unlocked(tuple(tasks))
                     return updated
+        return None
+
+    def update_status_if_revision(
+        self,
+        task_id: str,
+        expected_revision: int,
+        status: TaskBoardStatus,
+    ) -> TaskBoardItem | None:
+        """Move one task status only when the caller's revision still matches."""
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise TaskBoardValidationError(
+                "expected_revision must be a positive integer"
+            )
+        with self._locked():
+            tasks = list(self._load_unlocked())
+            for index, task in enumerate(tasks):
+                if task.task_id != task_id:
+                    continue
+                if task.revision != expected_revision:
+                    raise TaskBoardRevisionConflict(
+                        task.task_id, expected_revision, task.revision
+                    )
+                if task.status is status:
+                    return task
+                try:
+                    updated = TaskBoardItem.model_validate(
+                        {
+                            **task.model_dump(),
+                            "status": status,
+                            "updated_at": self._now(),
+                            "revision": task.revision + 1,
+                        }
+                    )
+                except ValueError:
+                    raise TaskBoardValidationError("invalid task status") from None
+                tasks[index] = updated
+                self._save_unlocked(tuple(tasks))
+                return updated
         return None
 
     def add_todo(self, task_id: str, text: str) -> TaskBoardItem | None:

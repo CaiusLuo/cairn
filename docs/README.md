@@ -29,6 +29,7 @@ page is the map for everything else.
 | [Offline coding task E2E](guides/offline-coding-e2e.md) | Reproducible scripted coding task, permissions, isolation, final verification and evidence artifacts |
 | [Single-node pilot runbook](guides/pilot-runbook.md) | Offline preflight, per-profile PASS/BLOCKED status, the SIGKILL inspect/confirm/reconcile drill and stop conditions |
 | [Interactive terminal](guides/tui-interaction.md) | Transcript grammar, composer keys, steering a running turn, and what startup asks |
+| [Web surface](guides/web-surface.md) | Two-page browser surface, app login, loopback ASGI entry, snapshot/WS contract and guarded task-status move |
 | [Project skills and MCP servers](guides/project-extensions.md) | `.cairn/skills` and `.cairn/mcp.toml`, `/skill` + `/mcp` selection, authorization, stdio support and current limits |
 | [WeChat iLink text tasks](guides/wechat-ilink.md) | One-account iLink login, detached background owner, trusted senders, full-capability chat, status/cancel, dedupe/restart and host-private state |
 | [Persistent WeChat service](guides/persistent-wechat-service.md) | Detached background owner, CLI detach/attach, systemd 252 template, journal and owned stop |

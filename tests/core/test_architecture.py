@@ -6,12 +6,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_ROOT = ROOT / "src" / "cairn"
-LAYERS = {"core", "infra", "runtime", "terminal"}
+LAYERS = {"core", "infra", "runtime", "terminal", "web"}
 ALLOWED = {
     "core": {"core"},
     "infra": {"core", "infra"},
     "runtime": {"core", "infra", "runtime"},
     "terminal": {"core", "infra", "runtime", "terminal"},
+    "web": {"core", "infra", "runtime", "web"},
 }
 
 #: Concrete adapters and effect modules that a stable domain contract must not
