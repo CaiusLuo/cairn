@@ -496,8 +496,16 @@ def test_sandboxed_bash_hides_host_root(tmp_path: Path) -> None:
 
     if not sandbox.available():
         pytest.skip("bubblewrap sandbox is unavailable")
+    (tmp_path / ".env").write_text("SECRET=hidden\n")
     tool = BashTool(Workspace(tmp_path), sandbox_shell=True)
-    result = asyncio.run(tool.execute({"command": "pwd; test -e /root; echo root=$?"}))
+    result = asyncio.run(
+        tool.execute(
+            {
+                "command": "pwd; test -e /root; echo root=$?; test ! -s .env; echo env_empty=$?"
+            }
+        )
+    )
     assert result.exit_code == 0
     assert str(tmp_path) in result.stdout
     assert "root=1" in result.stdout
+    assert "env_empty=0" in result.stdout

@@ -156,6 +156,8 @@ def parse_conversation_decision(value: object) -> ConversationDecision:
 #: An immediate receipt must not block the actual task indefinitely.
 ACK_TIMEOUT_SECONDS = 5.0
 MAX_QUEUED_INBOUND = 100
+MAX_INTENT_TASKS = 100
+MAX_CHAT_TASKS = 32
 PROJECT_LEASE_FILENAME = "project-write.lock"
 CLASSIFIER_TIMEOUT_SECONDS = 8.0
 
@@ -1061,6 +1063,20 @@ class _Service:
                 self.state.mark(inbound.key or "", "chat_empty")
 
     def _start_conversation(self, inbound: _Inbound) -> asyncio.Task[None]:
+        if len(self._chat_tasks) >= MAX_CHAT_TASKS:
+            self.state.mark(inbound.key or "", "rejected", reason="chat_backlog_full")
+
+            async def _reply_busy() -> None:
+                await self._safe_reply(
+                    inbound.sender,
+                    inbound.context_token,
+                    "当前聊天请求过多\uff0c请稍后再试。",
+                )
+
+            task = asyncio.create_task(_reply_busy())
+            self._intent_tasks.add(task)
+            task.add_done_callback(self._intent_tasks.discard)
+            return task
         task = asyncio.create_task(
             self._conversation_call(inbound, self._progress_snapshot())
         )
@@ -1075,6 +1091,20 @@ class _Service:
         return task
 
     def _start_intent(self, inbound: _Inbound) -> None:
+        if len(self._intent_tasks) >= MAX_INTENT_TASKS:
+            self.state.mark(inbound.key or "", "rejected", reason="intent_backlog_full")
+
+            async def _reply_busy() -> None:
+                await self._safe_reply(
+                    inbound.sender,
+                    inbound.context_token,
+                    "当前消息处理排队过多\uff0c请稍后再试。",
+                )
+
+            task = asyncio.create_task(_reply_busy())
+            self._intent_tasks.add(task)
+            task.add_done_callback(self._intent_tasks.discard)
+            return
         task = asyncio.create_task(self._run_intent(inbound))
         self._intent_tasks.add(task)
 
@@ -1766,6 +1796,9 @@ async def serve_wechat(
             prompt: str, cancel: asyncio.Event, task_id: str
         ) -> HeadlessResult:
             async with task_gate:
+                job_id = task_id.removeprefix("scheduled-")
+                if scheduler_runner is not None:
+                    scheduler_runner.store.mark_execution_started(job_id)
                 return await scheduled_executor(prompt, cancel, task_id)
 
         scheduler_runner = ScheduleRunner(

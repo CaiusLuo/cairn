@@ -535,7 +535,9 @@ async def execute_tool_call(
             context=ToolExecutionContext(
                 accessible_roots=_accessible_roots(permission),
                 trusted_user_text=(
-                    trusted_user_text if tool_call.name.startswith("memory_") else ""
+                    trusted_user_text
+                    if tool_call.name.startswith(("memory_", "schedule_"))
+                    else ""
                 ),
             ),
         )

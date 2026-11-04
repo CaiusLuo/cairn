@@ -227,6 +227,12 @@ def build_shell_argv(workspace: Workspace, command: str) -> list[str]:
         root,
         "--chdir",
         root,
+    ]
+    for credential in (".env", ".env.local", ".env.production"):
+        credential_path = workspace.root / credential
+        if credential_path.exists():
+            argv += ["--ro-bind", "/dev/null", str(credential_path)]
+    argv += [
         "--unshare-all",
         "--share-net",
         "--die-with-parent",

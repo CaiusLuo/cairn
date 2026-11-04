@@ -226,7 +226,8 @@ class ModelExecutor:
                 # Admission failures are not provider failures and must not retry.
                 # Every candidate is admitted against the same substitution, so a
                 # fallback model reads the conversation the primary one would have.
-                request = builder.build(
+                request = await asyncio.to_thread(
+                    builder.build,
                     system_messages=system_messages,
                     history=history,
                     current_turn_start=current_turn_start,

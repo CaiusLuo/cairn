@@ -690,6 +690,7 @@ async def _run_via_config_async(
         extra_tools=extra_tools,
         read_only=read_only,
         conversation_only=conversation_only,
+        sandbox_shell=sandbox_shell,
         tool_lease=tool_lease,
         durable_session_factory=durable_session_factory,
         provider_name=(

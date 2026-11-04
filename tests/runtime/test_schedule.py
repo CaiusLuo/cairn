@@ -262,7 +262,7 @@ def test_two_sessions_do_not_claim_same_due_job(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_claimed_unfinished_job_is_not_replayed_after_restart(tmp_path: Path) -> None:
+def test_claimed_unstarted_job_is_replayed_after_restart(tmp_path: Path) -> None:
     store = ScheduleStore(tmp_path / "schedule")
     store.save_jobs((_job(),))
     claimed = store.claim_due(NOW)
@@ -289,16 +289,12 @@ def test_claimed_unfinished_job_is_not_replayed_after_restart(tmp_path: Path) ->
         )
         await runner.run_due(NOW)
         await runner.run_due(NOW)
-        assert calls == 0
+        assert calls == 1
 
     asyncio.run(scenario())
     saved = store.load_jobs()[0]
-    assert saved.last_status == "interrupted"
+    assert saved.last_status == "completed"
     assert saved.next_run_at is None
-    rows = store.load_runs()
-    assert [row["status"] for row in rows] == ["interrupted", "started"]
-    assert rows[0]["run_key"] == rows[1]["run_key"]
-    assert rows[0]["delivered"] is None
 
 
 def test_recovery_does_not_mark_another_owner_interrupted(tmp_path: Path) -> None:
@@ -743,6 +739,7 @@ def test_recovery_keeps_a_persisted_terminal_fact_after_job_write_failure(
     claim = store.claim_due(NOW)
     assert claim is not None
     _, run_key = claim
+    assert store.mark_execution_started("job-1")
     original_save = store._save_jobs_unlocked
 
     def fail_save(jobs: tuple[ScheduleJob, ...]) -> None:
@@ -882,9 +879,12 @@ def test_schedule_create_uses_trusted_message_and_is_idempotent(tmp_path: Path) 
     }
     context = ToolExecutionContext(trusted_user_text="十分钟后提醒我检查部署")
     first = asyncio.run(tool.execute(args, context=context))
-    second = asyncio.run(tool.execute(args, context=context))
+    changed = dict(args, prompt="changed retry")
+    second = asyncio.run(tool.execute(changed, context=context))
     assert first.exit_code == 0 and "Created" in first.stdout
     assert second.exit_code == 0 and "Existing" in second.stdout
     assert len(store.load_jobs()) == 1
-    denied = asyncio.run(tool.execute(args, context=None))
+    denied = asyncio.run(
+        tool.execute(args, context=ToolExecutionContext(trusted_user_text="你好"))
+    )
     assert denied.exit_code == 1

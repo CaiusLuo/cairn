@@ -38,6 +38,9 @@ class ScheduleJob(BaseModel):
     timezone: str = "Asia/Shanghai"
     #: A reminder is delivered verbatim; it never invokes the model.
     reminder: bool = False
+    #: Claimed but not yet handed to an executor. Such a due slot is recoverable
+    #: after a crash; once true, an interrupted execution is not replayed.
+    execution_started: bool = False
     enabled: bool = True
     created_at: datetime
     next_run_at: datetime | None = None

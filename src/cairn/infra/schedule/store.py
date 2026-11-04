@@ -238,6 +238,7 @@ class ScheduleStore:
                         "next_run_at": next_run_after(job, now),
                         "last_status": "running",
                         "last_error": None,
+                        "execution_started": False,
                     }
                 )
                 jobs[index] = claimed
@@ -271,15 +272,33 @@ class ScheduleStore:
         """
         with self._locked():
             jobs = list(self._load_jobs_unlocked())
-            pending = [
+            claimed = [
                 (index, job)
                 for index, job in enumerate(jobs)
                 if job.last_status == "running"
+                and not job.execution_started
                 and (workspace is None or job.workspace == workspace)
                 and job.recipient == recipient
                 and (account_id is None or job.account_id == account_id)
             ]
-            if not pending:
+            for index, job in claimed:
+                jobs[index] = job.model_copy(
+                    update={
+                        "last_status": "recovered",
+                        "last_error": "claimed but not started; retryable",
+                        "next_run_at": job.last_run_at or now,
+                    }
+                )
+            pending = [
+                (index, job)
+                for index, job in enumerate(jobs)
+                if job.last_status == "running"
+                and job.execution_started
+                and (workspace is None or job.workspace == workspace)
+                and job.recipient == recipient
+                and (account_id is None or job.account_id == account_id)
+            ]
+            if not pending and not claimed:
                 return 0
             runs = self.load_runs(limit=2**31 - 1)
             for index, job in pending:
@@ -341,6 +360,18 @@ class ScheduleStore:
             # update, the next recovery sees that fact and does not append twice.
             self._save_jobs_unlocked(tuple(jobs))
             return len(pending)
+
+    def mark_execution_started(self, job_id: str) -> bool:
+        with self._locked():
+            jobs = list(self._load_jobs_unlocked())
+            for index, job in enumerate(jobs):
+                if job.job_id == job_id:
+                    jobs[index] = job.model_copy(
+                        update={"execution_started": True, "last_status": "running"}
+                    )
+                    self._save_jobs_unlocked(tuple(jobs))
+                    return True
+            return False
 
     def finish_run(
         self,

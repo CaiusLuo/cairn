@@ -1,5 +1,6 @@
 """Workspace content search."""
 
+import asyncio
 import codecs
 import fnmatch
 import re
@@ -192,7 +193,8 @@ class GrepTool:
         )
         context_lines = arguments.get("context_lines", DEFAULT_CONTEXT_LINES)
         limit = arguments.get("limit", DEFAULT_LIMIT)
-        return self._search(
+        return await asyncio.to_thread(
+            self._search,
             expression,
             arguments.get("path"),
             arguments.get("include"),

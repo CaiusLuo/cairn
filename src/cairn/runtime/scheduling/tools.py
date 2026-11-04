@@ -26,6 +26,24 @@ def _text(value: object, name: str) -> str:
     return value.strip()
 
 
+def _has_schedule_intent(text: str) -> bool:
+    lowered = text.casefold()
+    cues = (
+        "提醒",
+        "定时",
+        "日程",
+        "明天",
+        "今天",
+        "分钟后",
+        "小时后",
+        "上午",
+        "下午",
+        "晚上",
+        "点",
+    )
+    return any(cue in lowered for cue in cues)
+
+
 class _ScheduleTool:
     def __init__(
         self,
@@ -176,19 +194,39 @@ class ScheduleCreateTool(_ScheduleTool):
                 )
         elif not arguments.get("confirmed", False):
             return self._result(brief)
-        identity = json.dumps(
-            {
-                "workspace": self.workspace,
-                "owner": owner,
-                "account": account,
-                "prompt": prompt,
-                "kind": kind.value,
-                "when": arguments["when"],
-                "timezone": arguments.get("timezone", "Asia/Shanghai"),
-                "reminder": arguments.get("reminder", False),
-            },
-            sort_keys=True,
-        )
+        if self.require_trusted_message:
+            assert context is not None
+            trusted_text = context.trusted_user_text.strip()
+            if not _has_schedule_intent(trusted_text):
+                return self._result(
+                    "schedule creation requires an explicit scheduling request",
+                    ok=False,
+                )
+            # Stable per trusted message, not a hash of model-chosen arguments:
+            # a retry that changes prompt/when must still be the same request.
+            identity = json.dumps(
+                {
+                    "workspace": self.workspace,
+                    "owner": owner,
+                    "account": account,
+                    "trusted_message": trusted_text,
+                },
+                sort_keys=True,
+            )
+        else:
+            identity = json.dumps(
+                {
+                    "workspace": self.workspace,
+                    "owner": owner,
+                    "account": account,
+                    "prompt": prompt,
+                    "kind": kind.value,
+                    "when": arguments["when"],
+                    "timezone": arguments.get("timezone", "Asia/Shanghai"),
+                    "reminder": arguments.get("reminder", False),
+                },
+                sort_keys=True,
+            )
         job_id = "job-" + hashlib.sha256(identity.encode()).hexdigest()[:12]
         existing = [job for job in self.store.load_jobs() if job.job_id == job_id]
         if existing:
