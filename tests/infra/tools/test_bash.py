@@ -489,3 +489,15 @@ def test_workspace_python_prefers_the_venv_over_the_running_interpreter(
 
     assert selected == str(executable)
     assert selected != sys.executable
+
+
+def test_sandboxed_bash_hides_host_root(tmp_path: Path) -> None:
+    from cairn.infra import sandbox
+
+    if not sandbox.available():
+        pytest.skip("bubblewrap sandbox is unavailable")
+    tool = BashTool(Workspace(tmp_path), sandbox_shell=True)
+    result = asyncio.run(tool.execute({"command": "pwd; test -e /root; echo root=$?"}))
+    assert result.exit_code == 0
+    assert str(tmp_path) in result.stdout
+    assert "root=1" in result.stdout
