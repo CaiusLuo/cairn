@@ -520,7 +520,7 @@ def test_default_conversation_executor_closes_durable_session(
         def close(self) -> None:
             closed.append(True)
 
-    def factory(sender: str, active: list[object]) -> object:
+    def factory(sender: str, active: list[object], *, purpose: str = "task") -> object:
         def build(agent: object) -> object:
             session = Session()
             active.append(session)
@@ -634,7 +634,7 @@ def test_default_conversation_executor_reports_empty_response(
         allowed_senders=frozenset({"u1"}),
     )
 
-    def factory(sender: str, active: list[object]) -> object:
+    def factory(sender: str, active: list[object], *, purpose: str = "task") -> object:
         def build(agent: object) -> object:
             return object()
 

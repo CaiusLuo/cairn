@@ -362,14 +362,19 @@ def default_task_executor(
             retained_stores[-1].close()
             retained_stores.pop()
 
-    def sender_session_id(sender: str) -> str:
-        digest = hashlib.sha256(f"wechat:{config.workspace}:{sender}".encode()).digest()
+    def sender_session_id(sender: str, *, purpose: str = "task") -> str:
+        digest = hashlib.sha256(
+            f"wechat:{config.workspace}:{sender}:{purpose}".encode()
+        ).digest()
         return str(uuid.UUID(bytes=digest[:16], version=4))
 
     def durable_factory(
-        sender: str, active_sessions: list[DurableSession]
+        sender: str,
+        active_sessions: list[DurableSession],
+        *,
+        purpose: str = "task",
     ) -> Callable[[Agent], DurableSession]:
-        session_id = sender_session_id(sender)
+        session_id = sender_session_id(sender, purpose=purpose)
 
         def provider_reference(agent: Agent) -> ProviderReference | None:
             manager = agent.model_executor.manager
@@ -448,6 +453,25 @@ def default_task_executor(
                         observe_binding=lambda: make_binding(agent),
                     )
                     report = session.inspect()
+                    if report.status == "recovery_required":
+                        unresolved = report.unresolved
+                        if unresolved is None:
+                            raise SessionStoreError("recovery_required")
+                        final_binding = make_binding(agent)
+                        session.reconcile(
+                            report,
+                            host_resolution=HostResolution(
+                                session_id=session_id,
+                                turn_id=unresolved.intent.turn_id,
+                                actor="wechat-host",
+                                resolved_at_utc=datetime.now(UTC)
+                                .isoformat()
+                                .replace("+00:00", "Z"),
+                                binding=final_binding,
+                                note="stale WeChat session recovered; turn abandoned without replay",
+                            ),
+                        )
+                        report = session.inspect()
                     if report.status != "clean":
                         raise SessionStoreError("recovery_required")
                     final_binding = make_binding(agent)
@@ -662,7 +686,7 @@ def default_conversation_executor(
     async def execute(question: str, sender: str, snapshot: str) -> str:
         active_sessions: list[DurableSession] = []
         factory = (
-            durable_factory(sender, active_sessions)
+            durable_factory(sender, active_sessions, purpose="chat")
             if callable(durable_factory)
             else None
         )
