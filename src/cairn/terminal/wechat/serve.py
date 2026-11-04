@@ -848,8 +848,13 @@ class _Service:
             return await self._reply(sender, context, text, retries=retries)
         return False
 
-    def _status_text(self) -> str:
-        queued = len(self.state.records_in_states(frozenset({"queueing", "queued"})))
+    async def _queued_count(self) -> int:
+        return await asyncio.to_thread(
+            lambda: len(self.state.records_in_states(frozenset({"queueing", "queued"})))
+        )
+
+    async def _status_text(self) -> str:
+        queued = await self._queued_count()
         if self._current is None:
             return f"当前没有运行中的任务\uff0c排队 {queued} 项。"
         elapsed = max(0.0, time.monotonic() - self._current_started)
@@ -1387,7 +1392,7 @@ class _Service:
         if command == "/status":
             self.state.mark(inbound.key, "command", command="/status")
             await self._safe_reply(
-                inbound.sender, inbound.context_token, self._status_text()
+                inbound.sender, inbound.context_token, await self._status_text()
             )
             return
         if command == "/cancel":
