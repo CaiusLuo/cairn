@@ -197,6 +197,12 @@ class ScheduleCreateTool(_ScheduleTool):
         if self.require_trusted_message:
             assert context is not None
             trusted_text = context.trusted_user_text.strip()
+            trusted_message_id = context.trusted_message_id.strip()
+            if not trusted_message_id:
+                return self._result(
+                    "schedule creation requires a trusted source message id",
+                    ok=False,
+                )
             if not _has_schedule_intent(trusted_text):
                 return self._result(
                     "schedule creation requires an explicit scheduling request",
@@ -209,7 +215,7 @@ class ScheduleCreateTool(_ScheduleTool):
                     "workspace": self.workspace,
                     "owner": owner,
                     "account": account,
-                    "trusted_message": trusted_text,
+                    "trusted_message_id": trusted_message_id,
                 },
                 sort_keys=True,
             )

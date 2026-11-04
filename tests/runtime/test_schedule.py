@@ -877,7 +877,9 @@ def test_schedule_create_uses_trusted_message_and_is_idempotent(tmp_path: Path) 
         "when": (NOW + timedelta(minutes=10)).isoformat(),
         "timezone": "Asia/Shanghai",
     }
-    context = ToolExecutionContext(trusted_user_text="十分钟后提醒我检查部署")
+    context = ToolExecutionContext(
+        trusted_user_text="十分钟后提醒我检查部署", trusted_message_id="msg-1"
+    )
     first = asyncio.run(tool.execute(args, context=context))
     changed = dict(args, prompt="changed retry")
     second = asyncio.run(tool.execute(changed, context=context))

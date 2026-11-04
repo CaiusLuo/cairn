@@ -449,6 +449,7 @@ async def execute_tool_call(
     consume_tool_call: Callable[[], None],
     before_execute: Callable[[], None] | None = None,
     trusted_user_text: str = "",
+    trusted_message_id: str = "",
 ) -> None:
     """Validate, authorize and execute one tool call from the current turn.
 
@@ -538,6 +539,9 @@ async def execute_tool_call(
                     trusted_user_text
                     if tool_call.name.startswith(("memory_", "schedule_"))
                     else ""
+                ),
+                trusted_message_id=(
+                    trusted_message_id if tool_call.name.startswith("schedule_") else ""
                 ),
             ),
         )

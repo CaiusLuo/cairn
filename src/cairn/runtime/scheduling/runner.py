@@ -270,6 +270,9 @@ class ScheduleRunner:
         status = "failed"
         error: str | None = None
         if job.reminder:
+            # Persist the send attempt before network I/O: a crash after this
+            # point is delivery-unknown, never a fresh "unstarted" reminder.
+            self.store.mark_execution_started(job.job_id)
             delivered = False
             payload = job.prompt
             if self.result_redactor is not None:

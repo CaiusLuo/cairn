@@ -159,14 +159,19 @@ class CodingTaskRunner:
         cancellation_event: asyncio.Event | None,
         durable_session: DurableSession | None = None,
         selected_skills: Sequence[str] = (),
+        message_id: str = "",
     ) -> str | None:
         if durable_session is None:
             execution = (
                 run_turn(
-                    agent, prompt, budget=self.budget, selected_skills=selected_skills
+                    agent,
+                    prompt,
+                    budget=self.budget,
+                    selected_skills=selected_skills,
+                    message_id=message_id,
                 )
                 if selected_skills
-                else run_turn(agent, prompt, budget=self.budget)
+                else run_turn(agent, prompt, budget=self.budget, message_id=message_id)
             )
         else:
             execution = (
@@ -176,10 +181,15 @@ class CodingTaskRunner:
                     budget=self.budget,
                     session=durable_session,
                     selected_skills=selected_skills,
+                    message_id=message_id,
                 )
                 if selected_skills
                 else run_turn(
-                    agent, prompt, budget=self.budget, session=durable_session
+                    agent,
+                    prompt,
+                    budget=self.budget,
+                    session=durable_session,
+                    message_id=message_id,
                 )
             )
         if cancellation_event is None:
@@ -388,7 +398,11 @@ class CodingTaskRunner:
                         setattr, agent, "event_handler", original_handler
                     )
                     response = await self._turn(
-                        agent, spec.prompt, cancellation_event, durable_session
+                        agent,
+                        spec.prompt,
+                        cancellation_event,
+                        durable_session,
+                        message_id=spec.task_id,
                     )
                     if response is None:
                         status = TaskStatus.CANCELLED
@@ -417,6 +431,7 @@ class CodingTaskRunner:
                         cancellation_event,
                         durable_session,
                         selected_skills,
+                        message_id=spec.task_id,
                     )
                     if response is None:
                         status = TaskStatus.CANCELLED
@@ -448,6 +463,7 @@ class CodingTaskRunner:
                             spec.prompt,
                             cancellation_event,
                             selected_skills=selected_skills,
+                            message_id=spec.task_id,
                         )
                     else:
                         response = await self._turn(

@@ -108,6 +108,7 @@ async def run_turn(
     session: Session | None = None,
     steering: SteerQueue | None = None,
     selected_skills: Sequence[str] = (),
+    message_id: str = "",
 ) -> str:
     """Run one Agent turn.
 
@@ -286,6 +287,7 @@ async def run_turn(
                         consume_tool_call=consume_tool_call,
                         before_execute=before_execute if durable is not None else None,
                         trusted_user_text=user_input,
+                        trusted_message_id=message_id,
                     )
 
                 # Every call in this batch has settled, so the conversation is

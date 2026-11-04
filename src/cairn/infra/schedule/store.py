@@ -334,6 +334,9 @@ class ScheduleStore:
                     status = str(finished["status"])
                     saved_error = finished.get("error")
                     error = saved_error if isinstance(saved_error, str) else None
+                elif job.reminder:
+                    status = "delivery_unknown"
+                    error = "reminder delivery interrupted; not retried"
                 else:
                     status = "interrupted"
                     error = "execution interrupted; delivery status unknown"
