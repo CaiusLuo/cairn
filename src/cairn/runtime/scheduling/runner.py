@@ -18,6 +18,7 @@ from typing import Any, Protocol
 
 from cairn.core.schedule import ScheduleJob
 from cairn.infra.schedule.store import ScheduleStore
+from cairn.runtime.lifecycle import settle_owned
 
 
 class TaskOutcome(Protocol):
@@ -120,7 +121,11 @@ class ScheduleRunner:
                 now = self.clock()
                 try:
                     await self.run_reminders(now)
-                    if execution_task is None or execution_task.done():
+                    if execution_task is not None and execution_task.done():
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            execution_task.exception()
+                        execution_task = None
+                    if execution_task is None:
                         execution_task = asyncio.create_task(self.run_execution(now))
                 except asyncio.CancelledError:
                     raise
@@ -129,10 +134,8 @@ class ScheduleRunner:
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(waiter.wait(), timeout=self.poll_interval)
         finally:
-            if execution_task is not None and not execution_task.done():
-                execution_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await execution_task
+            if execution_task is not None:
+                await settle_owned(execution_task)
         return self.report
 
     async def _owner(self) -> tuple[str, str | None] | None:
@@ -320,14 +323,17 @@ class ScheduleRunner:
             )
             status = result.status.value
         except asyncio.CancelledError:
-            self._record_finish(
-                job=job,
-                run_key=run_key,
-                status="cancelled",
-                error="cancelled",
-                result=None,
-                delivered=False,
-            )
+            if self.store.job_execution_started(job.job_id):
+                self._record_finish(
+                    job=job,
+                    run_key=run_key,
+                    status="interrupted",
+                    error="execution interrupted during shutdown",
+                    result=None,
+                    delivered=False,
+                )
+            else:
+                self.store.restore_claim(job.job_id)
             raise
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"

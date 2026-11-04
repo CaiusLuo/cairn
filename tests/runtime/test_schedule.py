@@ -490,7 +490,7 @@ def test_controller_close_cancels_waiting_for_execution_lock(tmp_path: Path) -> 
         holder.release()
 
 
-def test_controller_close_marks_running_job_cancelled_and_no_replay(
+def test_controller_close_preserves_waitingjob_for_retry(
     tmp_path: Path,
 ) -> None:
     import time
@@ -531,10 +531,10 @@ def test_controller_close_marks_running_job_cancelled_and_no_replay(
 
     asyncio.run(scenario())
     saved = store.load_jobs()[0]
-    assert saved.last_status == "cancelled"
+    assert saved.last_status == "recoverable"
     runs = store.load_runs()
-    assert runs[0]["status"] == "cancelled"
-    # A restart must not replay the cancelled side effect.
+    assert runs[0]["status"] == "started"
+    # A claimed-but-not-started job is retryable after restart.
     calls = 0
 
     async def late_executor(
@@ -555,7 +555,7 @@ def test_controller_close_marks_running_job_cancelled_and_no_replay(
         await runner.run_due(NOW)
 
     asyncio.run(late_run())
-    assert calls == 0
+    assert calls == 1
 
 
 def test_controller_close_propagates_late_cancellation_after_cleanup(

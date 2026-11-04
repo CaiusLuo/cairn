@@ -13,6 +13,7 @@ import os
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -363,6 +364,35 @@ class ScheduleStore:
             # update, the next recovery sees that fact and does not append twice.
             self._save_jobs_unlocked(tuple(jobs))
             return len(pending)
+
+    def job_execution_started(self, job_id: str) -> bool:
+        with self._locked():
+            jobs = self._load_jobs_unlocked()
+            return any(job.job_id == job_id and job.execution_started for job in jobs)
+
+    def restore_claim(self, job_id: str) -> bool:
+        """Return a claimed-but-not-started once job to the due queue."""
+        with self._locked():
+            jobs = list(self._load_jobs_unlocked())
+            for index, job in enumerate(jobs):
+                if job.job_id == job_id:
+                    jobs[index] = job.model_copy(
+                        update={
+                            "last_status": "recoverable",
+                            "last_error": "shutdown before execution; retryable",
+                            "next_run_at": job.last_run_at or self._clockless_now(),
+                            "execution_started": False,
+                        }
+                    )
+                    self._save_jobs_unlocked(tuple(jobs))
+                    return True
+            return False
+
+    @staticmethod
+    def _clockless_now() -> Any:
+        from datetime import datetime
+
+        return datetime.now(UTC)
 
     def mark_execution_started(self, job_id: str) -> bool:
         with self._locked():
