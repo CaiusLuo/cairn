@@ -370,7 +370,9 @@ def default_task_executor(
             on_secrets_resolved(values)
 
     session_root = config.state_dir / "sessions"
+    chat_session_root = config.state_dir / "sessions-chat"
     ensure_outside_workspace(session_root, config.workspace)
+    ensure_outside_workspace(chat_session_root, config.workspace)
     retained_sessions: list[DurableSession] = []
     retained_stores: list[SessionStore] = []
 
@@ -456,8 +458,9 @@ def default_task_executor(
             # A check/repair may start another Turn before the overall request
             # returns. Release the settled Session before opening its successor.
             close_sessions(active_sessions)
+            store_root = session_root if purpose == "task" else chat_session_root
             store = open_store(
-                session_root,
+                store_root,
                 Workspace(config.workspace),
                 secret_env_keys=secret_keys(agent),
                 sensitive_values=tuple(known_secret_values),
@@ -1344,7 +1347,7 @@ class _Service:
     async def _queue_inbound(self, inbound: _Inbound) -> None:
         assert inbound.key is not None
         key = inbound.key
-        queued = len(self.state.records_in_states(frozenset({"queueing", "queued"})))
+        queued = await self._queued_count()
         if queued >= MAX_QUEUED_INBOUND:
             self.state.mark(key, "rejected", reason="queue_full")
             await self._safe_reply(
