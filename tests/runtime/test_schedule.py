@@ -859,3 +859,32 @@ def test_runner_delivers_reminder_without_invoking_model(tmp_path: Path) -> None
     assert calls == []
     assert sent == [("owner", "check deploy")]
     assert store.load_jobs()[0].last_status == "completed"
+
+
+def test_schedule_create_uses_trusted_message_and_is_idempotent(tmp_path: Path) -> None:
+    from cairn.infra.tools.base import ToolExecutionContext
+    from cairn.runtime.scheduling.tools import ScheduleCreateTool
+
+    store = ScheduleStore(tmp_path / "schedule")
+    tool = ScheduleCreateTool(
+        store=store,
+        workspace="/workspace",
+        recipient=lambda: "owner",
+        account_id=lambda: "bot",
+        clock=lambda: NOW,
+        require_trusted_message=True,
+    )
+    args = {
+        "prompt": "check deploy",
+        "kind": "once",
+        "when": (NOW + timedelta(minutes=10)).isoformat(),
+        "timezone": "Asia/Shanghai",
+    }
+    context = ToolExecutionContext(trusted_user_text="十分钟后提醒我检查部署")
+    first = asyncio.run(tool.execute(args, context=context))
+    second = asyncio.run(tool.execute(args, context=context))
+    assert first.exit_code == 0 and "Created" in first.stdout
+    assert second.exit_code == 0 and "Existing" in second.stdout
+    assert len(store.load_jobs()) == 1
+    denied = asyncio.run(tool.execute(args, context=None))
+    assert denied.exit_code == 1

@@ -7,10 +7,11 @@ never choose another owner.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
-from uuid import uuid4
 
 from cairn.core.models import ToolResult
 from cairn.core.schedule import ScheduleJob, ScheduleKind, initial_next_run
@@ -35,6 +36,7 @@ class _ScheduleTool:
         account_id: Callable[[], str | None],
         clock: Callable[[], datetime] = current_time,
         redact: Callable[[str], str] | None = None,
+        require_trusted_message: bool = False,
     ) -> None:
         self.store = store
         self.workspace = workspace
@@ -42,6 +44,7 @@ class _ScheduleTool:
         self.account_id = account_id
         self.clock = clock
         self.redact = redact or (lambda text: text)
+        self.require_trusted_message = require_trusted_message
 
     def _owner(self) -> tuple[str, str]:
         owner = self.recipient()
@@ -166,10 +169,35 @@ class ScheduleCreateTool(_ScheduleTool):
             f"- note: recurring jobs may spend model requests and send messages.\n"
             "Ask the user to confirm or edit this brief before creating it."
         )
-        if not arguments.get("confirmed", False):
+        if self.require_trusted_message:
+            if context is None or not context.trusted_user_text.strip():
+                return self._result(
+                    "schedule creation requires a trusted user message", ok=False
+                )
+        elif not arguments.get("confirmed", False):
             return self._result(brief)
+        identity = json.dumps(
+            {
+                "workspace": self.workspace,
+                "owner": owner,
+                "account": account,
+                "prompt": prompt,
+                "kind": kind.value,
+                "when": arguments["when"],
+                "timezone": arguments.get("timezone", "Asia/Shanghai"),
+                "reminder": arguments.get("reminder", False),
+            },
+            sort_keys=True,
+        )
+        job_id = "job-" + hashlib.sha256(identity.encode()).hexdigest()[:12]
+        existing = [job for job in self.store.load_jobs() if job.job_id == job_id]
+        if existing:
+            return self._result(
+                f"Existing {job_id}; next run "
+                f"{existing[0].next_run_at.isoformat() if existing[0].next_run_at else '-'}."
+            )
         job = ScheduleJob(
-            job_id="job-" + uuid4().hex[:12],
+            job_id=job_id,
             name=prompt[:60],
             prompt=prompt,
             workspace=self.workspace,

@@ -209,6 +209,7 @@ class ScheduleStore:
         workspace: str | None = None,
         recipient: str | None = None,
         account_id: str | None = None,
+        reminder: bool | None = None,
     ) -> tuple[ScheduleJob, str] | None:
         """Claim one due job, optionally restricted to one exact owner.
 
@@ -227,6 +228,8 @@ class ScheduleStore:
                 if recipient is not None and job.recipient != recipient:
                     continue
                 if account_id is not None and job.account_id != account_id:
+                    continue
+                if reminder is not None and job.reminder != reminder:
                     continue
                 run_key = f"{job.job_id}:{job.next_run_at.isoformat()}"
                 claimed = job.model_copy(

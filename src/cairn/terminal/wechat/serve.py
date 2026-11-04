@@ -343,6 +343,7 @@ def default_task_executor(
             recipient=lambda: config.account.ilink_user_id or None,
             account_id=lambda: config.account.ilink_bot_id,
             redact=personal_memory.redact,
+            require_trusted_message=True,
         ),
         ScheduleListTool(
             store=schedule_store,
@@ -575,6 +576,7 @@ def default_task_executor(
                 mcp_configs=config.mcp_configs,
                 grant_mcp=config.allow_mcp,
                 grant_network=config.allow_network,
+                sandbox_shell=config.allow_shell,
                 cancellation_event=cancel,
                 on_secrets_resolved=remember_secrets,
                 personal_context_provider=personal_memory.render_context,
@@ -716,6 +718,7 @@ def default_conversation_executor(
             recipient=lambda: config.account.ilink_user_id or None,
             account_id=lambda: config.account.ilink_bot_id,
             redact=personal_memory.redact,
+            require_trusted_message=True,
         ),
         ScheduleListTool(
             store=schedule_store,
@@ -760,6 +763,7 @@ def default_conversation_executor(
                 cancellation_event=None,
                 personal_context=personal_memory.render_context(),
                 read_only=False,
+                sandbox_shell=config.allow_shell,
                 system_prompt=system_prompt_for("chat"),
                 conversation_only=factory is not None,
                 tool_lease=project_lease,
@@ -1309,7 +1313,9 @@ class _Service:
         if queued >= MAX_QUEUED_INBOUND:
             self.state.mark(key, "rejected", reason="queue_full")
             await self._safe_reply(
-                inbound.sender, inbound.context_token, "当前排队任务过多\uff0c请稍后再试。"
+                inbound.sender,
+                inbound.context_token,
+                "当前排队任务过多\uff0c请稍后再试。",
             )
             return
         record = self.state.get_record(key) or {}

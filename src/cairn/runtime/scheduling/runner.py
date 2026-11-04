@@ -128,37 +128,57 @@ class ScheduleRunner:
     async def run_due(
         self, now: datetime, *, max_jobs: int | None = None
     ) -> ScheduleReport:
-        # Hold the cross-process execution lock across claim + executor. A
-        # different due job in another session must wait, not run concurrently.
+        owner = self.recipient()
+        account = self.account_id() if callable(self.account_id) else self.account_id
+        if not owner or (self.account_id is not None and not account):
+            return self.report
+
+        # A reminder does not need the execution lock and must not wait behind
+        # a long task. Claim reminders separately first.
+        executed = 0
+        while max_jobs is None or executed < max_jobs:
+            claim = self.store.claim_due(
+                now,
+                workspace=self.workspace or None,
+                recipient=owner,
+                account_id=account if self.account_id is not None else None,
+                reminder=True,
+            )
+            if claim is None:
+                break
+            job, run_key = claim
+            await self._run_job(job, now, run_key, owner, account)
+            executed += 1
+
+        # Execution jobs keep the cross-process lock, but re-read identity after
+        # acquiring it so a changed owner cannot run a stale claim.
         async with _execution_guard(self.store):
-            executed = 0
+            self.store.recover_interrupted(
+                self.clock(),
+                workspace=self.workspace or None,
+                recipient=owner,
+                account_id=account if self.account_id is not None else None,
+            )
             while max_jobs is None or executed < max_jobs:
-                # Re-read identity before every claim: waiting for the lock or
-                # completing a previous job may have changed account/recipient.
                 owner = self.recipient()
                 account = (
                     self.account_id() if callable(self.account_id) else self.account_id
                 )
                 if not owner or (self.account_id is not None and not account):
-                    return self.report
-                self.store.recover_interrupted(
-                    self.clock(),
-                    workspace=self.workspace or None,
-                    recipient=owner,
-                    account_id=account if self.account_id is not None else None,
-                )
+                    break
                 claim = self.store.claim_due(
                     now,
                     workspace=self.workspace or None,
                     recipient=owner,
                     account_id=account if self.account_id is not None else None,
+                    reminder=False,
                 )
                 if claim is None:
-                    return self.report
+                    break
                 job, run_key = claim
                 await self._run_job(job, now, run_key, owner, account)
                 executed += 1
-            return self.report
+        return self.report
 
     def _record_finish(
         self,

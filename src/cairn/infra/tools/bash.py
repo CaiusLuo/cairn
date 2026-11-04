@@ -123,6 +123,7 @@ class BashTool(WorkspaceOnlyTool):
         stderr_limit: int = DEFAULT_STDERR_CAPTURE_LIMIT,
         *,
         secret_env_keys: frozenset[str] = frozenset(),
+        sandbox_shell: bool = False,
     ) -> None:
         if stdout_limit < 0 or stderr_limit < 0:
             raise ValueError("output capture limits must be non-negative")
@@ -133,6 +134,7 @@ class BashTool(WorkspaceOnlyTool):
         self.stdout_limit = stdout_limit
         self.stderr_limit = stderr_limit
         self.secret_env_keys = secret_env_keys
+        self.sandbox_shell = sandbox_shell
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -238,7 +240,18 @@ class BashTool(WorkspaceOnlyTool):
 
         cwd = self.workspace.root
         env = build_command_env(os.environ, self.secret_env_keys)
-        argv = _command_argv(command)
+        if self.sandbox_shell:
+            from cairn.infra import sandbox
+
+            if not sandbox.available():
+                return ToolResult(
+                    stderr="shell sandbox unavailable; refusing host execution",
+                    exit_code=-1,
+                    error_type="sandbox_unavailable",
+                )
+            argv = sandbox.build_shell_argv(self.workspace, command)
+        else:
+            argv = _command_argv(command)
 
         process = await asyncio.create_subprocess_exec(
             *argv,

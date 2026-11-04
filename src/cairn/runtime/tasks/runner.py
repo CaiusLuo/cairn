@@ -66,6 +66,7 @@ class CodingTaskRunner:
         read_only: bool = False,
         conversation_only: bool = False,
         tool_lease: WorkspaceLease | None = None,
+        sandbox_shell: bool = False,
         system_prompt: str | None = None,
         personal_context: str = "",
         provider_name: str | None = None,
@@ -91,6 +92,7 @@ class CodingTaskRunner:
         self.read_only = read_only
         self.conversation_only = conversation_only
         self.tool_lease = tool_lease
+        self.sandbox_shell = sandbox_shell
         self.system_prompt = system_prompt or system_prompt_for(
             "chat" if conversation_only else "development"
         )
@@ -364,6 +366,7 @@ class CodingTaskRunner:
                         skills=self.skills,
                         extra_tools=self.extra_tools,
                         read_only=self.read_only,
+                        sandbox_shell=self.sandbox_shell,
                         secret_env_keys=self.secret_env_keys,
                         system_prompt=self.system_prompt,
                         personal_context=self.personal_context,
@@ -431,6 +434,7 @@ class CodingTaskRunner:
                         skills=self.skills,
                         extra_tools=self.extra_tools,
                         read_only=self.read_only,
+                        sandbox_shell=self.sandbox_shell,
                         secret_env_keys=self.secret_env_keys,
                         system_prompt=self.system_prompt,
                         personal_context=self.personal_context,

@@ -196,6 +196,58 @@ def build_argv(workspace: Workspace, script: str, limits: IsolationLimits) -> li
     return argv
 
 
+def build_shell_argv(workspace: Workspace, command: str) -> list[str]:
+    """Bubblewrap argv for a project shell command.
+
+    The workspace is writable; the host's home, credentials and unrelated
+    projects are not mounted. ``/usr`` and its libraries are read-only, and a
+    private ``/tmp`` prevents writing host temporary files. Network is enabled
+    so project dependency installation can work; host identity/secrets remain
+    outside the mount namespace.
+    """
+    if not isinstance(workspace, Workspace):
+        raise TypeError("sandbox workspace must be a Workspace, not a bare path")
+    bwrap = _bwrap_path()
+    if not bwrap:
+        raise IsolationUnavailable("bubblewrap is unavailable")
+    root = str(workspace.root)
+    argv: list[str] = [bwrap]
+    for path in _RO_BINDS:
+        if os.path.exists(path):
+            argv += ["--ro-bind", path, path]
+    argv += [
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        "--bind",
+        root,
+        root,
+        "--chdir",
+        root,
+        "--unshare-all",
+        "--share-net",
+        "--die-with-parent",
+        "--clearenv",
+        "--setenv",
+        "PATH",
+        f"{root}/.venv/bin:/usr/bin:/bin",
+        "--setenv",
+        "HOME",
+        "/tmp",
+        "--new-session",
+        "--",
+        "/bin/bash",
+        "-o",
+        "pipefail",
+        "-c",
+        command,
+    ]
+    return argv
+
+
 class IsolatedRunner:
     """Runs host-owned scripts inside a fresh bubblewrap sandbox."""
 
