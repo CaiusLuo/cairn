@@ -15,6 +15,7 @@ import hashlib
 import inspect
 import json
 import os
+import shutil
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
@@ -373,6 +374,16 @@ def default_task_executor(
     chat_session_root = config.state_dir / "sessions-chat"
     ensure_outside_workspace(session_root, config.workspace)
     ensure_outside_workspace(chat_session_root, config.workspace)
+    # Preserve legacy chat history instead of silently starting empty. A chat
+    # store is seeded from the existing store once; later turns remain separate.
+    chat_store_file = chat_session_root / "sessions.sqlite3"
+    task_store_file = session_root / "sessions.sqlite3"
+    if not chat_store_file.exists() and task_store_file.exists():
+        chat_session_root.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(task_store_file, chat_store_file)
+        except OSError as exc:
+            raise ValueError("cannot migrate existing WeChat chat history") from exc
     retained_sessions: list[DurableSession] = []
     retained_stores: list[SessionStore] = []
 
@@ -402,13 +413,24 @@ def default_task_executor(
         ).digest()
         return str(uuid.UUID(bytes=digest[:16], version=4))
 
+    def legacy_session_id(sender: str) -> str:
+        digest = hashlib.sha256(f"wechat:{config.workspace}:{sender}".encode()).digest()
+        return str(uuid.UUID(bytes=digest[:16], version=4))
+
     def durable_factory(
         sender: str,
         active_sessions: list[DurableSession],
         *,
         purpose: str = "task",
     ) -> Callable[[Agent], DurableSession]:
-        session_id = sender_session_id(sender, purpose=purpose)
+        session_id = (
+            legacy_session_id(sender)
+            if purpose == "chat"
+            else sender_session_id(sender, purpose=purpose)
+        )
+        purpose_steps = (
+            config.max_steps if purpose == "task" else min(config.max_steps, 20)
+        )
 
         def provider_reference(agent: Agent) -> ProviderReference | None:
             manager = agent.model_executor.manager
@@ -435,7 +457,7 @@ def default_task_executor(
                 ).hexdigest(),
                 context_budget=agent.context_builder.budget.max_tokens,
                 output_reserve=agent.context_builder.budget.response_tokens,
-                max_steps=config.max_steps,
+                max_steps=purpose_steps,
             )
 
         def secret_keys(agent: Agent) -> frozenset[str]:
@@ -763,7 +785,7 @@ def default_conversation_executor(
                 task_id=f"wechat-chat-{sender[-8:]}",
                 grant_shell=config.allow_shell,
                 approval=config.approval,
-                max_steps=config.max_steps,
+                max_steps=min(config.max_steps, 20),
                 trace_dir=config.trace_dir,
                 cancellation_event=None,
                 personal_context=personal_memory.render_context(),
