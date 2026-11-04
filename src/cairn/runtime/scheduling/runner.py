@@ -245,12 +245,25 @@ class ScheduleRunner:
         error: str | None = None
         if job.reminder:
             delivered = False
+            payload = job.prompt
+            if self.result_redactor is not None:
+                payload = self.result_redactor(payload)
             try:
+                current_account = (
+                    self.account_id() if callable(self.account_id) else self.account_id
+                )
                 recipient = self.recipient()
-                if recipient != owner:
+                if (
+                    self.account_id is not None and current_account != account
+                ) or recipient != owner:
                     error = "delivery_owner_changed: reminder retained, not delivered"
                 elif recipient:
-                    delivered = await self.deliver(owner, job.prompt)
+                    if self.deliver_for_account is not None and account is not None:
+                        delivered = await self.deliver_for_account(
+                            recipient, payload, account
+                        )
+                    else:
+                        delivered = await self.deliver(recipient, payload)
             except asyncio.CancelledError:
                 self._record_finish(
                     job=job,
