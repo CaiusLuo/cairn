@@ -872,7 +872,7 @@ def test_schedule_create_uses_trusted_message_and_is_idempotent(tmp_path: Path) 
         require_trusted_message=True,
     )
     args = {
-        "prompt": "check deploy",
+        "prompt": "检查部署",
         "kind": "once",
         "when": (NOW + timedelta(minutes=10)).isoformat(),
         "timezone": "Asia/Shanghai",
@@ -881,7 +881,7 @@ def test_schedule_create_uses_trusted_message_and_is_idempotent(tmp_path: Path) 
         trusted_user_text="十分钟后提醒我检查部署", trusted_message_id="msg-1"
     )
     first = asyncio.run(tool.execute(args, context=context))
-    changed = dict(args, prompt="changed retry")
+    changed = dict(args, when=(NOW + timedelta(minutes=20)).isoformat())
     second = asyncio.run(tool.execute(changed, context=context))
     assert first.exit_code == 0 and "Created" in first.stdout
     assert second.exit_code == 0 and "Existing" in second.stdout

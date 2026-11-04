@@ -203,9 +203,13 @@ class ScheduleCreateTool(_ScheduleTool):
                     "schedule creation requires a trusted source message id",
                     ok=False,
                 )
-            if not _has_schedule_intent(trusted_text):
+            prompt_norm = " ".join(prompt.casefold().split())
+            text_norm = " ".join(trusted_text.casefold().split())
+            if not prompt_norm or (
+                prompt_norm not in text_norm and text_norm not in prompt_norm
+            ):
                 return self._result(
-                    "schedule creation requires an explicit scheduling request",
+                    "schedule content does not match the trusted user message",
                     ok=False,
                 )
             # Stable per trusted message, not a hash of model-chosen arguments:
