@@ -30,7 +30,7 @@
   width: min(356px, calc(100vw - 32px));
   padding: 26px 26px 24px;
   border: 0.5px solid rgba(236, 233, 226, .18);
-  border-radius: 10px;
+  border-radius: var(--radius-dialog);
   background: #12191c;
   box-shadow: 0 24px 56px rgba(0, 0, 0, .38), 0 2px 7px rgba(0, 0, 0, .24);
 }
@@ -45,7 +45,7 @@
   height: 34px;
   padding: 0 9px;
   border: 0.5px solid rgba(236, 233, 226, .24);
-  border-radius: 5px;
+  border-radius: var(--radius-control);
   background: rgba(9, 14, 16, .66);
   color: var(--text);
   font-size: 13px;
@@ -55,7 +55,7 @@
 .login-submit {
   height: 34px;
   margin-top: 5px;
-  border-radius: 5px;
+  border-radius: var(--radius-control);
   background: var(--accent);
   color: var(--accent-ink);
   font-size: 13px;
@@ -64,12 +64,21 @@
 .login-submit:disabled { opacity: .6; cursor: default; }
 .login-error { margin: 0; color: var(--coral); font-size: 12px; }
 
-/* Login card 18px → 5px controls; continuous curvature, normal-round fallback. */
+/* Login card 24px → 8px controls; normal rounded fallback. */
 .login-card {
-  border-radius: 18px;
+  border-radius: var(--radius-dialog);
   corner-shape: superellipse(1.25);
 }
 .login-form input, .login-submit {
   border-radius: var(--radius-control);
   corner-shape: superellipse(1.25);
 }
+
+/* 4px-grid spacing for the login card and its controls. */
+.login-brand { gap: 8px; margin-bottom: 24px; }
+.login-card { padding: 16px; }
+.login-card h1 { margin-bottom: 16px; }
+.login-form { gap: 16px; }
+.login-form label { gap: 8px; }
+.login-form input { height: 36px; padding: 0 8px; }
+.login-submit { height: 36px; margin-top: 8px; }
