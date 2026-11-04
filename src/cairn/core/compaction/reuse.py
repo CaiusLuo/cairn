@@ -1,10 +1,8 @@
 """Carry a compaction across turns so consecutive turns do not repeat it.
 
-Compaction is a substitution: everything before ``retained_from`` is replaced by
-one summary. Recomputing that substitution at the start of every turn would pay
-for the same summary again and again while the conversation merely grows at its
-end, so the agent keeps the last accepted record and reuses it while it still
-describes the same history.
+Compaction records folded results and an optional prefix summary. The agent
+reuses that view while its source messages remain unchanged, avoiding repeated
+summaries and keeping rule-only reductions in subsequent requests.
 
 The record is *not* a snapshot of the conversation. It stores only where the split
 falls, what the replacement text says, and what it saved. The original messages
@@ -13,6 +11,7 @@ record again to a longer history is well defined, and dropping a stale record
 loses nothing but the work.
 """
 
+import hashlib
 from dataclasses import dataclass
 
 from cairn.core.compaction.rules import CompactionRecord
@@ -27,7 +26,7 @@ class StaleCompaction(ValueError):
 class ReusableCompaction:
     """The last accepted substitution plus the history prefix it was built on.
 
-    ``fingerprint`` holds the messages the record replaced. Reuse is only valid
+    ``fingerprint`` identifies the prefix containing every affected message. Reuse is only valid
     while the conversation still begins with exactly those messages: history is
     append-only, so an unchanged prefix means the split point still means what it
     meant when the summary was written.
@@ -47,9 +46,12 @@ class ReusableCompaction:
     def capture(
         cls, history: list[Message], record: CompactionRecord
     ) -> "ReusableCompaction":
-        """Remember ``record`` against the prefix it replaces."""
-        replaced = history[: record.retained_from]
-        if len(replaced) != record.retained_from:
+        """Remember ``record`` against the prefix containing its source messages."""
+        prefix_end = max(
+            record.retained_from, max(record.folded_results, default=-1) + 1
+        )
+        replaced = history[:prefix_end]
+        if len(replaced) != prefix_end:
             raise StaleCompaction("record reaches past the conversation")
         return cls(
             record=record,
@@ -59,9 +61,9 @@ class ReusableCompaction:
 
     def reusable_with(self, history: list[Message]) -> bool:
         """Whether ``history`` still begins with the prefix this record replaced."""
-        if len(history) < self.record.retained_from:
+        if len(history) < self.conversation_length:
             return False
-        return _fingerprint(history[: self.record.retained_from]) == self.fingerprint
+        return _fingerprint(history[: len(self.fingerprint)]) == self.fingerprint
 
     def is_current_for(self, history: list[Message]) -> bool:
         """Whether nothing has been appended since this compaction was accepted.
@@ -85,10 +87,10 @@ class ReusableCompaction:
 def _fingerprint(messages: list[Message]) -> tuple[str, ...]:
     """A compact, order-sensitive identity for a message prefix.
 
-    Roles and bodies identify a message well enough to detect a rewritten or
-    truncated history, without retaining a second copy of the conversation.
+    Include complete tool-call identities and arguments as well as result bodies,
+    without retaining another copy of a potentially large conversation.
     """
     return tuple(
-        f"{message.role}\x00{message.tool_call_id or ''}\x00{message.content or ''}"
+        hashlib.sha256(message.model_dump_json().encode("utf-8")).hexdigest()
         for message in messages
     )

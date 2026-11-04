@@ -158,6 +158,7 @@ async def _reduce(
             turn_start=turn_start,
             system_messages=system_messages,
             tools=tools,
+            previous=reusable_record(agent, agent.state.messages),
         ),
         compactor=compactor,
         summarizer=agent.summarizer,

@@ -15,7 +15,7 @@ from cairn.core.compaction import (
 )
 from cairn.core.context import ContextBudget, ContextBuilder
 from cairn.core.models import Message
-from tests.support.compaction import CharacterCounter, assistant, user
+from tests.support.compaction import CharacterCounter, assistant, tool_call, user
 from tests.support.compaction import group as shared_group
 
 #: This module's fixtures are sized so the summary is unambiguously shorter than
@@ -199,3 +199,123 @@ class TestContextBuilderAppliesCompaction:
         assert request.compacted is False
         assert request.compacted_messages == 0
         assert request.compaction_tokens_saved == 0
+
+
+def test_folding_view_preserves_current_turn_latest_results_and_history() -> None:
+    history = [
+        user("investigate"),
+        *shared_group("old", result_content="x" * 2_000),
+        *shared_group("latest", result_content="new evidence"),
+    ]
+    snapshot = [message.model_copy(deep=True) for message in history]
+    folded = CompactionRecord(
+        retained_from=0,
+        summary="",
+        folded_tokens=2_100,
+        tokens_after=100,
+        folded_results=(2,),
+    )
+    builder = ContextBuilder(
+        budget=ContextBudget(max_tokens=10_000, response_tokens=100),
+        counter=CharacterCounter(),
+    )
+
+    request = builder.build(
+        system_messages=[],
+        history=history,
+        current_turn_start=0,
+        tools=[],
+        compaction=folded,
+    )
+
+    assert request.messages[0] == history[0]
+    assert request.messages[-2:] == history[-2:]
+    assert request.messages[2].content != history[2].content
+    assert request.folded_tool_results == 1
+    assert request.compacted_messages == 0
+    assert not request.compacted, "rule folding is not a model-summary observation"
+    assert request.tokens_after.tokens < 200
+    assert history == snapshot
+
+
+def test_folding_record_cannot_rewrite_a_user_or_a_tool_call() -> None:
+    history = [user("keep"), tool_call("pending")]
+    for index in (0, 1, 2):
+        record = CompactionRecord(
+            retained_from=0,
+            summary="",
+            folded_tokens=100,
+            tokens_after=10,
+            folded_results=(index,),
+        )
+        with pytest.raises(ReplacementError):
+            apply_replacement(history, record)
+
+
+def test_emergency_folding_counts_recorded_results_only_once() -> None:
+    history = [
+        user("task"),
+        *shared_group("old", result_content="x" * 2_000),
+        *shared_group("latest", result_content="y" * 2_000),
+    ]
+    record = CompactionRecord(
+        retained_from=0,
+        summary="",
+        folded_tokens=4_000,
+        tokens_after=2_100,
+        folded_results=(2,),
+    )
+    request = ContextBuilder(
+        budget=ContextBudget(max_tokens=500, response_tokens=100),
+        counter=CharacterCounter(),
+    ).build(
+        system_messages=[],
+        history=history,
+        current_turn_start=0,
+        tools=[],
+        compaction=record,
+    )
+
+    assert request.folded_tool_results == 2
+    assert request.tokens_after.tokens <= 400
+    assert history[-1].content == "y" * 2_000
+
+
+@pytest.mark.parametrize("summary_end", [0, 2])
+def test_reused_fold_and_emergency_folding_really_omit_old_turns(
+    summary_end: int,
+) -> None:
+    history = [
+        user("old question" * 15),
+        assistant("old answer" * 15),
+        user("current"),
+        *shared_group("a", result_content="x" * 1_000),
+        *shared_group("b", result_content="y" * 1_000),
+    ]
+    record = CompactionRecord(
+        retained_from=summary_end,
+        summary="earlier facts" if summary_end else "",
+        folded_tokens=3_000,
+        tokens_after=1_500,
+        folded_results=(4,),
+    )
+    request = ContextBuilder(
+        budget=ContextBudget(max_tokens=800, response_tokens=100),
+        counter=CharacterCounter(),
+    ).build(
+        system_messages=[],
+        history=history,
+        current_turn_start=2,
+        tools=[],
+        compaction=record,
+    )
+
+    assert request.omitted_turns
+    assert request.folded_tool_results == 2
+    assert not request.compacted, "an omitted summary was not used by this request"
+    assert any(message.content == "current" for message in request.messages)
+    assert not any(
+        "old question" in (message.content or "") for message in request.messages
+    )
+    assert request.tokens_after.tokens <= 700
+    assert history[-1].content == "y" * 1_000

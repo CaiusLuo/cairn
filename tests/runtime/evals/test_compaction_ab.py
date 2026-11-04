@@ -512,11 +512,12 @@ def test_valid_when_compaction_occurs_and_facts_preserved(tmp_path: Path) -> Non
 
 
 def test_invalid_when_summary_arm_does_not_compact(tmp_path: Path) -> None:
-    # A generous summary budget means folding/omission suffices, so the
+    # Request-view fixture V2 retains the newest tool group verbatim. Its
+    # generous budget means folding/omission still suffices, so the
     # summarizer never runs; the run must be marked invalid, not successful.
     report = asyncio.run(
         compare_case(
-            _deploy_spec(summary_budget_tokens=2_600),
+            _deploy_spec(summary_budget_tokens=3_600),
             llm_factory=_run_factory(lambda: _inspect_program(3)),
             checks=_deploy_checks(),
             budget=RunBudget(max_steps=12),
