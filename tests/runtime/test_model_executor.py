@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from typing import Any
 
 import httpx
@@ -821,3 +822,65 @@ def test_executor_without_fallback_uses_only_selected_id_and_raises_actual_error
     assert raised.value is not None
     assert len(selected.calls) == 1
     assert fallback.calls == []
+
+
+@pytest.mark.parametrize("worker_fails", [False, True])
+def test_context_build_worker_settles_before_turn_rollback(worker_fails: bool) -> None:
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        observed_history: list[list[Message]] = []
+        unhandled: list[dict[str, Any]] = []
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+
+        class BlockingCounter(RecordingCounter):
+            def count(
+                self, messages: list[Message], tools: list[dict[str, Any]]
+            ) -> TokenCount:
+                loop.call_soon_threadsafe(started.set)
+                try:
+                    if not release.wait(5):
+                        raise TimeoutError("test did not release the context worker")
+                    observed_history.append(list(agent.state.messages))
+                    if worker_fails:
+                        raise RuntimeError("context counter failed during cancellation")
+                    return super().count(messages, tools)
+                finally:
+                    finished.set()
+
+        llm = ScriptedLLM()
+        agent = make_agent(llm, BlockingCounter())
+        original = list(agent.state.messages)
+        running = asyncio.create_task(
+            run_turn(agent, "new task", budget=RunBudget(max_steps=2))
+        )
+        try:
+            await asyncio.wait_for(started.wait(), 5)
+            during_build = list(agent.state.messages)
+            running.cancel("primary cancellation")
+            await asyncio.sleep(0)
+            running.cancel("repeated cancellation")
+            await asyncio.sleep(0)
+
+            assert not running.done(), "turn cleanup must wait for its context worker"
+            assert agent.state.messages == during_build
+            assert not finished.is_set()
+
+            release.set()
+            with pytest.raises(asyncio.CancelledError, match="primary cancellation"):
+                await running
+
+            assert finished.is_set()
+            assert observed_history == [during_build]
+            assert agent.state.messages == original
+            assert llm.calls == [], "cancelled admission must not request a provider"
+            assert unhandled == []
+        finally:
+            release.set()
+            if not running.done():
+                running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+
+    asyncio.run(scenario())

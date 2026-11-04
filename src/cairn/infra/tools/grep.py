@@ -1,4 +1,8 @@
-"""Workspace content search."""
+"""Workspace content search.
+
+A cancelled call retains ownership until its synchronous search has finished,
+including when cancellation repeats. No file reader outlives the tool call.
+"""
 
 import asyncio
 import codecs
@@ -193,14 +197,33 @@ class GrepTool:
         )
         context_lines = arguments.get("context_lines", DEFAULT_CONTEXT_LINES)
         limit = arguments.get("limit", DEFAULT_LIMIT)
-        return await asyncio.to_thread(
-            self._search,
-            expression,
-            arguments.get("path"),
-            arguments.get("include"),
-            context_lines,
-            limit,
+        search = asyncio.create_task(
+            asyncio.to_thread(
+                self._search,
+                expression,
+                arguments.get("path"),
+                arguments.get("include"),
+                context_lines,
+                limit,
+            )
         )
+        cancellation: asyncio.CancelledError | None = None
+        while not search.done():
+            try:
+                await asyncio.shield(search)
+            except asyncio.CancelledError as exc:
+                # Cancelling to_thread only detaches the waiter; the file
+                # reader keeps running. Retain it through repeated cancels.
+                cancellation = cancellation or exc
+            except Exception:
+                break
+        if cancellation is not None:
+            try:
+                search.result()
+            except BaseException:
+                cancellation.add_note("Search failed while cancellation was settling.")
+            raise cancellation
+        return search.result()
 
     def _candidate_files(
         self, raw_path: object, include: str | None

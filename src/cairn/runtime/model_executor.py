@@ -226,15 +226,24 @@ class ModelExecutor:
                 # Admission failures are not provider failures and must not retry.
                 # Every candidate is admitted against the same substitution, so a
                 # fallback model reads the conversation the primary one would have.
-                request = await asyncio.to_thread(
-                    builder.build,
-                    system_messages=system_messages,
-                    history=history,
-                    current_turn_start=current_turn_start,
-                    tools=tools,
-                    project_memory=project_memory,
-                    compaction=compaction,
+                building = asyncio.create_task(
+                    asyncio.to_thread(
+                        builder.build,
+                        system_messages=system_messages,
+                        history=history,
+                        current_turn_start=current_turn_start,
+                        tools=tools,
+                        project_memory=project_memory,
+                        compaction=compaction,
+                    )
                 )
+                try:
+                    request = await asyncio.shield(building)
+                except asyncio.CancelledError:
+                    # A running thread cannot be cancelled. Finish observing it
+                    # before run_turn may roll back the history it is reading.
+                    await await_owned(building)
+                    raise
                 attempt += 1
                 if on_request is not None:
                     on_request(request, builder.budget, model, model_id, attempt)
