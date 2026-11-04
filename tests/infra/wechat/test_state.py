@@ -73,3 +73,21 @@ def test_legacy_pending_records_precede_new_messages(tmp_path: Path) -> None:
         "msg:later",
         "msg:new",
     ]
+
+
+def test_record_received_preserves_first_received_at(tmp_path: Path) -> None:
+    state = WechatState(tmp_path / "state")
+    assert state.record_received("msg:1", sender="user", context_token="ctx", text="hi")
+    first = state.get_record("msg:1")
+    assert first is not None and isinstance(first.get("received_at"), float)
+    stamp = first["received_at"]
+    state.mark("msg:1", "chat_replied", updated=stamp + 100)
+    record = state.get_record("msg:1")
+    assert record is not None
+    assert record["received_at"] == stamp
+    assert (
+        state.record_received("msg:1", sender="user", context_token="ctx", text="retry")
+        is False
+    )
+    retried = state.get_record("msg:1")
+    assert retried is not None and retried["received_at"] == stamp
