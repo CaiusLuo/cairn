@@ -228,6 +228,7 @@ class WechatState:
             "stable": stable,
             "is_text": is_text,
             "updated": time.time(),
+            "received_at": time.time(),
         }
         self.flush()
         return True

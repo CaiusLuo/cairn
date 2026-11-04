@@ -176,6 +176,17 @@ class ScheduleStore:
         with self._locked():
             self._save_jobs_unlocked(jobs)
 
+    def add_or_get_job(self, job: ScheduleJob) -> tuple[ScheduleJob, bool]:
+        """Atomically create a job or return the already-saved exact job."""
+        with self._locked():
+            jobs = list(self._load_jobs_unlocked())
+            existing = next((item for item in jobs if item.job_id == job.job_id), None)
+            if existing is not None:
+                return existing, False
+            jobs.append(job)
+            self._save_jobs_unlocked(tuple(jobs))
+            return job, True
+
     def add_job(self, job: ScheduleJob) -> None:
         with self._locked():
             jobs = list(self._load_jobs_unlocked())

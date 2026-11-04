@@ -75,9 +75,14 @@ from cairn.runtime.agent_memory.tools import (
 from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.lifecycle import await_owned, settle_owned
 from cairn.runtime.prompts import system_prompt_for
+from cairn.runtime.scheduling.requests import (
+    Clarification,
+    NotSchedule,
+    OnceRequest,
+    parse_once_request,
+)
 from cairn.runtime.scheduling.runner import ScheduleRunner
 from cairn.runtime.scheduling.tools import (
-    ScheduleCreateTool,
     ScheduleListTool,
     ScheduleManageTool,
 )
@@ -841,6 +846,9 @@ class _Service:
         self._conversation_executor = conversation_executor
         self._conversation_classifier = conversation_classifier
         self._progress_provider = progress_provider
+        self._schedule_store = schedule_store or (
+            ScheduleStore(config.schedule_store) if config.schedule_store else None
+        )
         self._chat_tasks: set[asyncio.Task[None]] = set()
         self._intent_tasks: set[asyncio.Task[None]] = set()
         self._chat_locks: dict[str, asyncio.Lock] = {}
@@ -1412,6 +1420,126 @@ class _Service:
         )
         self._start_next_queued()
 
+    def _start_schedule_task(
+        self, coro: Coroutine[Any, Any, None], inbound: _Inbound
+    ) -> None:
+        if len(self._intent_tasks) >= MAX_INTENT_TASKS:
+            self.state.mark(
+                inbound.key or "", "rejected", reason="schedule_backlog_full"
+            )
+            return
+        task = asyncio.create_task(coro)
+        self._intent_tasks.add(task)
+        task.add_done_callback(self._intent_tasks.discard)
+
+    async def _schedule_notice(self, inbound: _Inbound, text: str) -> None:
+        await self._safe_reply(inbound.sender, inbound.context_token, text)
+
+    async def _run_host_schedule(self, inbound: _Inbound, parsed: OnceRequest) -> None:
+        record = self.state.get_record(inbound.key or "") or {}
+        received = record.get("received_at")
+        if not isinstance(received, (int, float)):
+            self.state.mark(
+                inbound.key or "",
+                "schedule_clarification",
+                reason="missing_received_at",
+            )
+            await self._safe_reply(
+                inbound.sender,
+                inbound.context_token,
+                "这条定时请求缺少可信的首次接收时间\uff0c无法安全创建\uff1b请重新发送。",
+            )
+            return
+        if record.get("schedule_receipt_state") in {"sending", "sent", "unknown"}:
+            return
+        owner = self.config.account.ilink_user_id
+        if not owner or inbound.sender != owner:
+            self.state.mark(
+                inbound.key or "", "schedule_rejected", reason="not_account_owner"
+            )
+            await self._safe_reply(
+                inbound.sender,
+                inbound.context_token,
+                "当前微信账号不是该调度任务的 owner\uff0c不能创建会永久无人执行的任务。",
+            )
+            return
+        payload = self.redact_text(parsed.prompt) if self.redact_text else parsed.prompt
+        digest = hashlib.sha256(
+            f"{self.config.workspace}:{inbound.sender}:{self.config.account.ilink_bot_id}:{inbound.key}".encode()
+        ).hexdigest()[:12]
+        job = ScheduleJob(
+            job_id=f"job-{digest}",
+            name=payload[:60],
+            prompt=payload,
+            workspace=str(self.config.workspace),
+            recipient=inbound.sender,
+            account_id=self.config.account.ilink_bot_id,
+            kind=ScheduleKind.ONCE,
+            at=parsed.at,
+            timezone="Asia/Shanghai",
+            reminder=parsed.reminder,
+            created_at=datetime.fromtimestamp(float(received), tz=UTC),
+            next_run_at=parsed.at,
+        )
+        assert self._schedule_store is not None
+        saved, _created = await asyncio.to_thread(
+            self._schedule_store.add_or_get_job, job
+        )
+        self.state.mark(
+            inbound.key or "",
+            "schedule_created",
+            schedule_job_id=saved.job_id,
+            schedule_receipt_state="sending",
+        )
+        sent = await self._safe_reply(
+            inbound.sender,
+            inbound.context_token,
+            f"已创建定时任务 {saved.job_id}\uff1a"
+            f"{saved.next_run_at.isoformat() if saved.next_run_at else '-'}"
+            f"\uff1b内容\uff1a{saved.prompt[:200]}\uff1b"
+            f"类型\uff1a{'提醒' if saved.reminder else '执行'}\u3002"
+            f"取消请使用 /schedule remove {saved.job_id}。",
+        )
+        self.state.mark(
+            inbound.key or "",
+            "schedule_receipt_sent" if sent else "schedule_receipt_unknown",
+            schedule_job_id=saved.job_id,
+            schedule_receipt_state="sent" if sent else "unknown",
+        )
+
+    def _try_host_once_schedule(self, inbound: _Inbound) -> bool:
+        """Start host-owned one-shot handling without blocking receive."""
+        if self._schedule_store is None or inbound.key is None:
+            return False
+        record = self.state.get_record(inbound.key) or {}
+        if record.get("state") in {
+            "schedule_pending",
+            "schedule_created",
+            "schedule_receipt_sent",
+            "schedule_receipt_unknown",
+        } or record.get("schedule_receipt_state") in {"sending", "sent", "unknown"}:
+            return True
+        parsed = parse_once_request(
+            inbound.text or "",
+            float(record.get("received_at", 0)),
+            message_id=inbound.key,
+        )
+        if isinstance(parsed, NotSchedule):
+            return False
+        if isinstance(parsed, Clarification):
+            self.state.mark(inbound.key, "schedule_clarification", reason=parsed.reason)
+            self._start_schedule_task(
+                self._schedule_notice(
+                    inbound,
+                    f"无法创建定时任务\uff1a{parsed.reason}\u3002请明确时间和要做的事。",
+                ),
+                inbound,
+            )
+            return True
+        self.state.mark(inbound.key, "schedule_pending")
+        self._start_schedule_task(self._run_host_schedule(inbound, parsed), inbound)
+        return True
+
     async def _handle(self, inbound: _Inbound) -> None:
         if not inbound.sender or inbound.context_token == "":
             if inbound.key is not None:
@@ -1464,6 +1592,8 @@ class _Service:
                 )
             return
         if await self._resolve_clarification(inbound):
+            return
+        if self._try_host_once_schedule(inbound):
             return
         if self._conversation_classifier is None:
             decision = await self._classify_conversation(inbound.text)
