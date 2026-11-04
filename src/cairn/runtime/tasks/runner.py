@@ -34,6 +34,7 @@ from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.lifecycle import settle_owned
 from cairn.runtime.loop import run_turn
 from cairn.runtime.model_executor import ModelExecutor
+from cairn.runtime.prompts import system_prompt_for
 from cairn.runtime.tasks.metrics import TaskExecutionSummary, _TaskObservation
 
 
@@ -90,7 +91,9 @@ class CodingTaskRunner:
         self.read_only = read_only
         self.conversation_only = conversation_only
         self.tool_lease = tool_lease
-        self.system_prompt = system_prompt
+        self.system_prompt = system_prompt or system_prompt_for(
+            "chat" if conversation_only else "development"
+        )
         self.personal_context = personal_context
         self.durable_session_factory = durable_session_factory
         self.provider_name = provider_name

@@ -22,6 +22,27 @@ IM integration can reuse the existing runtime instead of a second loop.
 A missing directory is not an error: a project simply has no skills or MCP
 servers. Malformed configuration raises instead of falling back silently.
 
+## Built-in system prompts
+
+System rules are separate from Skills. The mixed interactive Agent uses a short
+base policy covering identity, factual evidence, host-granted permissions and
+concise reporting. Known entry points select one task profile at Agent
+construction: coding tasks use development rules, WeChat conversation calls use
+chat rules, intent classifiers use classification rules, and the verified
+read-only reviewer uses its existing structured review contract plus the base
+policy. An explicit host-supplied system prompt remains an exact override.
+
+Selection uses the existing caller's task knowledge; it does not add a model
+classification request, a Skill, a tool, a capability or a second Agent loop.
+The mixed interactive entry does not automatically classify each message; its
+base policy retains a short conditional coding checklist. Prompt profiles guide
+behavior, while the existing permission system remains the authority.
+
+Profiles are fixed before durable binding. An already-bound session is never
+hot-swapped to another prompt; the existing prompt digest and runtime checks
+still require reconciliation when a persisted binding differs. The same
+assembled prompt is used for execution and compaction budgeting.
+
 ## Skills
 
 `SKILL.md` uses ordinary frontmatter; Cairn reads only `name` and `description`

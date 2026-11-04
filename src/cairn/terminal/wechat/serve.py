@@ -73,6 +73,7 @@ from cairn.runtime.agent_memory.tools import (
 )
 from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.lifecycle import await_owned, settle_owned
+from cairn.runtime.prompts import system_prompt_for
 from cairn.runtime.scheduling.runner import ScheduleRunner
 from cairn.runtime.task_board.service import TaskBoardService
 from cairn.runtime.task_board.tools import (
@@ -610,6 +611,7 @@ def default_conversation_classifier(config: ServeConfig) -> ConversationClassifi
                     workspace=config.workspace,
                     prompt=prompt,
                     task_id="wechat-intent",
+                    system_prompt=system_prompt_for("classification"),
                     grant_shell=False,
                     approval=config.approval,
                     max_steps=1,
@@ -707,6 +709,7 @@ def default_conversation_executor(
                 trace_dir=config.trace_dir,
                 cancellation_event=None,
                 read_only=False,
+                system_prompt=system_prompt_for("chat"),
                 conversation_only=factory is not None,
                 tool_lease=project_lease,
                 durable_session_factory=factory,
