@@ -827,3 +827,35 @@ def test_runner_supports_async_emit_callback(tmp_path: Path) -> None:
 
     asyncio.run(scenario())
     assert any("定时任务 job-1" in text for text in emitted)
+
+
+def test_runner_delivers_reminder_without_invoking_model(tmp_path: Path) -> None:
+    store = ScheduleStore(tmp_path / "schedule")
+    store.save_jobs((_job(reminder=True, prompt="check deploy"),))
+    calls: list[str] = []
+    sent: list[tuple[str, str]] = []
+
+    async def executor(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        calls.append(prompt)
+        return _result(task_id)
+
+    async def deliver(sender: str, text: str) -> bool:
+        sent.append((sender, text))
+        return True
+
+    async def scenario() -> None:
+        runner = ScheduleRunner(
+            store=store,
+            executor=executor,
+            deliver=deliver,
+            recipient=lambda: "owner",
+            clock=lambda: NOW,
+        )
+        await runner.run_due(NOW)
+
+    asyncio.run(scenario())
+    assert calls == []
+    assert sent == [("owner", "check deploy")]
+    assert store.load_jobs()[0].last_status == "completed"

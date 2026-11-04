@@ -1462,6 +1462,7 @@ async def main(
             task_id=f"wechat-chat-{sender[-8:]}",
             tracer=tracer,
             secret_env_keys=secret_env_keys,
+            personal_context=personal_memory.render_context(),
             read_only=False,
             tool_lease=cli_chat_lease,
             system_prompt=system_prompt_for("chat"),
@@ -1607,6 +1608,13 @@ async def main(
             "--approve-provider-models",
             ",".join(group.model_ids),
         ]
+        grants = permission_handler.grants
+        if PermissionCapability.LOCAL_SHELL in grants:
+            serve_command.append("--allow-shell")
+        if PermissionCapability.MCP_SERVER in grants:
+            serve_command.append("--allow-mcp")
+        if PermissionCapability.NETWORK in grants:
+            serve_command.append("--allow-network")
         command = [
             sys.executable,
             "-c",

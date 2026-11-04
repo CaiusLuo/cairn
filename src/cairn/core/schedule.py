@@ -36,6 +36,8 @@ class ScheduleJob(BaseModel):
     daily_time: str | None = None
     interval_seconds: int | None = Field(default=None, ge=60)
     timezone: str = "Asia/Shanghai"
+    #: A reminder is delivered verbatim; it never invokes the model.
+    reminder: bool = False
     enabled: bool = True
     created_at: datetime
     next_run_at: datetime | None = None

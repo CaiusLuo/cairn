@@ -94,6 +94,11 @@ class ScheduleCreateTool(_ScheduleTool):
                             "description": "ISO datetime for once, HH:MM for daily, or seconds for interval",
                         },
                         "timezone": {"type": "string", "default": "Asia/Shanghai"},
+                        "reminder": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Deliver prompt verbatim without invoking the model.",
+                        },
                         "confirmed": {"type": "boolean", "default": False},
                     },
                     "required": ["prompt", "kind", "when"],
@@ -116,6 +121,8 @@ class ScheduleCreateTool(_ScheduleTool):
             raise InvalidArguments("timezone must be a string")
         if not isinstance(arguments.get("confirmed", False), bool):
             raise InvalidArguments("confirmed must be a boolean")
+        if not isinstance(arguments.get("reminder", False), bool):
+            raise InvalidArguments("reminder must be a boolean")
 
     def _shape(
         self, arguments: dict[str, Any]
@@ -173,6 +180,7 @@ class ScheduleCreateTool(_ScheduleTool):
             daily_time=daily_time,
             interval_seconds=interval_seconds,
             timezone=arguments.get("timezone", "Asia/Shanghai"),
+            reminder=arguments.get("reminder", False),
             created_at=self.clock(),
             next_run_at=next_run,
         )

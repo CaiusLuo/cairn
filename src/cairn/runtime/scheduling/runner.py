@@ -223,6 +223,35 @@ class ScheduleRunner:
         result: TaskOutcome | None = None
         status = "failed"
         error: str | None = None
+        if job.reminder:
+            delivered = False
+            try:
+                recipient = self.recipient()
+                if recipient != owner:
+                    error = "delivery_owner_changed: reminder retained, not delivered"
+                elif recipient:
+                    delivered = await self.deliver(owner, job.prompt)
+            except asyncio.CancelledError:
+                self._record_finish(
+                    job=job,
+                    run_key=run_key,
+                    status="cancelled",
+                    error="delivery_cancelled",
+                    result=None,
+                    delivered=False,
+                )
+                raise
+            except Exception as exc:
+                error = f"delivery: {type(exc).__name__}: {exc}"
+            self._record_finish(
+                job=job,
+                run_key=run_key,
+                status="completed" if delivered else "delivery_failed",
+                error=error,
+                result=None,
+                delivered=delivered,
+            )
+            return
         try:
             result = await self.executor(
                 job.prompt, asyncio.Event(), f"scheduled-{job.job_id}"

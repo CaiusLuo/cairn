@@ -36,7 +36,7 @@ from cairn.infra.agent_memory.store import (
 )
 from cairn.infra.config import default_provider, load_project_providers
 from cairn.infra.mcp.config import McpServerConfig
-from cairn.infra.schedule.store import ScheduleStore
+from cairn.infra.schedule.store import ScheduleStore, default_schedule_dir
 from cairn.infra.schedule.store import (
     ensure_outside_workspace as ensure_schedule_outside_workspace,
 )
@@ -75,6 +75,11 @@ from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.lifecycle import await_owned, settle_owned
 from cairn.runtime.prompts import system_prompt_for
 from cairn.runtime.scheduling.runner import ScheduleRunner
+from cairn.runtime.scheduling.tools import (
+    ScheduleCreateTool,
+    ScheduleListTool,
+    ScheduleManageTool,
+)
 from cairn.runtime.task_board.service import TaskBoardService
 from cairn.runtime.task_board.tools import (
     TaskCreateTool,
@@ -150,6 +155,7 @@ def parse_conversation_decision(value: object) -> ConversationDecision:
 
 #: An immediate receipt must not block the actual task indefinitely.
 ACK_TIMEOUT_SECONDS = 5.0
+MAX_QUEUED_INBOUND = 100
 PROJECT_LEASE_FILENAME = "project-write.lock"
 CLASSIFIER_TIMEOUT_SECONDS = 8.0
 
@@ -329,6 +335,28 @@ def default_task_executor(
         )
 
     wechat_task_tools = board_tools(task_board)
+    schedule_store = ScheduleStore(config.schedule_store or default_schedule_dir())
+    schedule_tools = (
+        ScheduleCreateTool(
+            store=schedule_store,
+            workspace=str(config.workspace),
+            recipient=lambda: config.account.ilink_user_id or None,
+            account_id=lambda: config.account.ilink_bot_id,
+            redact=personal_memory.redact,
+        ),
+        ScheduleListTool(
+            store=schedule_store,
+            workspace=str(config.workspace),
+            recipient=lambda: config.account.ilink_user_id or None,
+            account_id=lambda: config.account.ilink_bot_id,
+        ),
+        ScheduleManageTool(
+            store=schedule_store,
+            workspace=str(config.workspace),
+            recipient=lambda: config.account.ilink_user_id or None,
+            account_id=lambda: config.account.ilink_bot_id,
+        ),
+    )
 
     def remember_secrets(values: Sequence[str]) -> None:
         for value in values:
@@ -550,7 +578,7 @@ def default_task_executor(
                 cancellation_event=cancel,
                 on_secrets_resolved=remember_secrets,
                 personal_context_provider=personal_memory.render_context,
-                extra_tools=(*memory_tools, *task_tools),
+                extra_tools=(*memory_tools, *task_tools, *schedule_tools),
                 durable_session_factory=durable_factory(sender, active_sessions)
                 if sender
                 else None,
@@ -680,6 +708,28 @@ def default_conversation_executor(
         TaskUpdateTool(task_board),
         TaskTodoTool(task_board),
     )
+    schedule_store = ScheduleStore(config.schedule_store or default_schedule_dir())
+    schedule_tools = (
+        ScheduleCreateTool(
+            store=schedule_store,
+            workspace=str(config.workspace),
+            recipient=lambda: config.account.ilink_user_id or None,
+            account_id=lambda: config.account.ilink_bot_id,
+            redact=personal_memory.redact,
+        ),
+        ScheduleListTool(
+            store=schedule_store,
+            workspace=str(config.workspace),
+            recipient=lambda: config.account.ilink_user_id or None,
+            account_id=lambda: config.account.ilink_bot_id,
+        ),
+        ScheduleManageTool(
+            store=schedule_store,
+            workspace=str(config.workspace),
+            recipient=lambda: config.account.ilink_user_id or None,
+            account_id=lambda: config.account.ilink_bot_id,
+        ),
+    )
 
     project_lease = project_lease or WorkspaceLease(
         config.state_dir / PROJECT_LEASE_FILENAME
@@ -705,15 +755,16 @@ def default_conversation_executor(
                 task_id=f"wechat-chat-{sender[-8:]}",
                 grant_shell=config.allow_shell,
                 approval=config.approval,
-                max_steps=min(config.max_steps, 20),
+                max_steps=config.max_steps,
                 trace_dir=config.trace_dir,
                 cancellation_event=None,
+                personal_context=personal_memory.render_context(),
                 read_only=False,
                 system_prompt=system_prompt_for("chat"),
                 conversation_only=factory is not None,
                 tool_lease=project_lease,
                 durable_session_factory=factory,
-                extra_tools=(*memory_tools, *task_tools),
+                extra_tools=(*memory_tools, *task_tools, *schedule_tools),
             )
         finally:
             cleanup_error = close_conversation_sessions(active_sessions)
@@ -946,6 +997,24 @@ class _Service:
                         f"本轮没有生成有效回复\uff08{exc.category}\uff09\uff1a{detail[:160]}",
                     )
                 return
+            except SessionStoreError as exc:
+                detail = str(exc)
+                if self.redact_text is not None:
+                    detail = self.redact_text(detail)
+                self.state.mark(
+                    inbound.key or "",
+                    "chat_failed",
+                    error_type=type(exc).__name__,
+                    error_category="session_store",
+                    error=detail[:160],
+                )
+                if not self._stopping:
+                    await self._safe_reply(
+                        inbound.sender,
+                        inbound.context_token,
+                        f"本轮聊天会话不可用\uff08{exc.code}\uff09\uff0c任务未受影响。",
+                    )
+                return
             except Exception as exc:
                 detail = str(exc)
                 if self.redact_text is not None:
@@ -1009,35 +1078,38 @@ class _Service:
 
     async def _run_intent(self, inbound: _Inbound) -> None:
         lock = self._intent_locks.setdefault(inbound.sender, asyncio.Lock())
-        async with lock:
-            try:
+        try:
+            async with lock:
+                # The lock protects classifier ordering only. Queue/chat work
+                # performs acknowledgement I/O outside it so one slow send
+                # cannot block the next message's classification.
                 decision = await self._classify_conversation(inbound.text or "")
-                if decision is ConversationDecision.CHAT:
-                    await self._start_conversation(inbound)
-                elif decision is ConversationDecision.TASK:
-                    await self._queue_inbound(inbound)
-                else:
-                    self._ask_clarification(inbound)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                # Classification failure is per-message and must not stop the
-                # WeChat service or execute the message as work.
-                self.state.mark(
-                    inbound.key or "",
-                    "classification_failed",
-                    error_type=type(exc).__name__,
+            if decision is ConversationDecision.CHAT:
+                self._start_conversation(inbound)
+            elif decision is ConversationDecision.TASK:
+                await self._queue_inbound(inbound)
+            else:
+                self._ask_clarification(inbound)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Classification failure is per-message and must not stop the
+            # WeChat service or execute the message as work.
+            self.state.mark(
+                inbound.key or "",
+                "classification_failed",
+                error_type=type(exc).__name__,
+            )
+            if not self._stopping:
+                detail = str(exc)
+                if self.redact_text is not None:
+                    detail = self.redact_text(detail)
+                await self._safe_reply(
+                    inbound.sender,
+                    inbound.context_token,
+                    f"暂时无法判断意图\uff08{type(exc).__name__}: {detail[:160]}\uff09。"
+                    "请重试或明确说明是查询当前任务还是安排新任务。",
                 )
-                if not self._stopping:
-                    detail = str(exc)
-                    if self.redact_text is not None:
-                        detail = self.redact_text(detail)
-                    await self._safe_reply(
-                        inbound.sender,
-                        inbound.context_token,
-                        f"暂时无法判断意图\uff08{type(exc).__name__}: {detail[:160]}\uff09。"
-                        "请重试或明确说明是查询当前任务还是安排新任务。",
-                    )
 
     def _ask_clarification(self, inbound: _Inbound) -> None:
         assert inbound.key is not None
@@ -1233,6 +1305,13 @@ class _Service:
     async def _queue_inbound(self, inbound: _Inbound) -> None:
         assert inbound.key is not None
         key = inbound.key
+        queued = len(self.state.records_in_states(frozenset({"queueing", "queued"})))
+        if queued >= MAX_QUEUED_INBOUND:
+            self.state.mark(key, "rejected", reason="queue_full")
+            await self._safe_reply(
+                inbound.sender, inbound.context_token, "当前排队任务过多\uff0c请稍后再试。"
+            )
+            return
         record = self.state.get_record(key) or {}
         if record.get("state") == "queued":
             self._start_next_queued()
