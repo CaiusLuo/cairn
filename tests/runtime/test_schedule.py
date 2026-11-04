@@ -886,6 +886,12 @@ def test_schedule_create_uses_trusted_message_and_is_idempotent(tmp_path: Path) 
     assert first.exit_code == 0 and "Created" in first.stdout
     assert second.exit_code == 0 and "Existing" in second.stdout
     assert len(store.load_jobs()) == 1
+    other_context = ToolExecutionContext(
+        trusted_user_text="十分钟后提醒我检查部署", trusted_message_id="msg-2"
+    )
+    third = asyncio.run(tool.execute(args, context=other_context))
+    assert third.exit_code == 0 and "Created" in third.stdout
+    assert len(store.load_jobs()) == 2
     denied = asyncio.run(
         tool.execute(args, context=ToolExecutionContext(trusted_user_text="你好"))
     )
