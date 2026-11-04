@@ -113,28 +113,42 @@ class ScheduleRunner:
 
     async def run(self, stop: asyncio.Event | None = None) -> ScheduleReport:
         waiter = stop if stop is not None else asyncio.Event()
-        while not waiter.is_set():
-            self.report.ticks += 1
-            try:
-                await self.run_due(self.clock())
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self._say(f"定时任务检查失败: {type(exc).__name__}: {exc}")
-            with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(waiter.wait(), timeout=self.poll_interval)
+        execution_task: asyncio.Task[object] | None = None
+        try:
+            while not waiter.is_set():
+                self.report.ticks += 1
+                now = self.clock()
+                try:
+                    await self.run_reminders(now)
+                    if execution_task is None or execution_task.done():
+                        execution_task = asyncio.create_task(self.run_execution(now))
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._say(f"定时任务检查失败: {type(exc).__name__}: {exc}")
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(waiter.wait(), timeout=self.poll_interval)
+        finally:
+            if execution_task is not None and not execution_task.done():
+                execution_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await execution_task
         return self.report
 
-    async def run_due(
-        self, now: datetime, *, max_jobs: int | None = None
-    ) -> ScheduleReport:
+    async def _owner(self) -> tuple[str, str | None] | None:
         owner = self.recipient()
         account = self.account_id() if callable(self.account_id) else self.account_id
         if not owner or (self.account_id is not None and not account):
-            return self.report
+            return None
+        return owner, account
 
-        # A reminder does not need the execution lock and must not wait behind
-        # a long task. Claim reminders separately first.
+    async def run_reminders(
+        self, now: datetime, *, max_jobs: int | None = None
+    ) -> ScheduleReport:
+        identity = await self._owner()
+        if identity is None:
+            return self.report
+        owner, account = identity
         executed = 0
         while max_jobs is None or executed < max_jobs:
             claim = self.store.claim_due(
@@ -149,9 +163,15 @@ class ScheduleRunner:
             job, run_key = claim
             await self._run_job(job, now, run_key, owner, account)
             executed += 1
+        return self.report
 
-        # Execution jobs keep the cross-process lock, but re-read identity after
-        # acquiring it so a changed owner cannot run a stale claim.
+    async def run_execution(
+        self, now: datetime, *, max_jobs: int | None = None
+    ) -> ScheduleReport:
+        identity = await self._owner()
+        if identity is None:
+            return self.report
+        owner, account = identity
         async with _execution_guard(self.store):
             self.store.recover_interrupted(
                 self.clock(),
@@ -159,13 +179,12 @@ class ScheduleRunner:
                 recipient=owner,
                 account_id=account if self.account_id is not None else None,
             )
+            executed = 0
             while max_jobs is None or executed < max_jobs:
-                owner = self.recipient()
-                account = (
-                    self.account_id() if callable(self.account_id) else self.account_id
-                )
-                if not owner or (self.account_id is not None and not account):
+                identity = await self._owner()
+                if identity is None:
                     break
+                owner, account = identity
                 claim = self.store.claim_due(
                     now,
                     workspace=self.workspace or None,
@@ -178,6 +197,13 @@ class ScheduleRunner:
                 job, run_key = claim
                 await self._run_job(job, now, run_key, owner, account)
                 executed += 1
+        return self.report
+
+    async def run_due(
+        self, now: datetime, *, max_jobs: int | None = None
+    ) -> ScheduleReport:
+        await self.run_reminders(now, max_jobs=max_jobs)
+        await self.run_execution(now, max_jobs=max_jobs)
         return self.report
 
     def _record_finish(
