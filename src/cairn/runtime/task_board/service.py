@@ -65,6 +65,19 @@ class TaskBoardService:
             TaskBoardItem | None, await self._call(self.update, task_id, **kwargs)
         )
 
+    async def amove_status(
+        self, task_id: str, expected_revision: int, status: TaskBoardStatus
+    ) -> TaskBoardItem | None:
+        return cast(
+            TaskBoardItem | None,
+            await self._call(
+                self.store.update_status_if_revision,
+                task_id,
+                expected_revision,
+                status,
+            ),
+        )
+
     async def aadd_todo(self, task_id: str, text: str) -> TaskBoardItem | None:
         return cast(
             TaskBoardItem | None, await self._call(self.add_todo, task_id, text)

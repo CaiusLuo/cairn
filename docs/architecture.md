@@ -122,6 +122,7 @@ These policies remain separate; see
 | `cairn.runtime` | Agent/turn execution and the tool-call boundary, assembly, model selection at execution time, and bounded task, workflow, review, evaluation and memory orchestration |
 | `cairn.infra` | Configuration, provider implementations, token counting, tools, Workspace and Git operations, GitHub transport, RepoGraph and observability storage |
 | `cairn.terminal` | CLI startup, terminal input/output and user commands |
+| `cairn.web` | Browser adapter: loopback ASGI snapshots/history plus guarded human task-status move |
 | `cairn.resources` | Packaged static resources such as the terminal banner |
 
 When adding a feature, put its domain types in `core` only when they are
@@ -184,7 +185,9 @@ never recovery or approval authority; see [ADR 0002](adr/0002-storage-ownership-
 Architecture tests enforce these independent effect boundaries as well as layer
 direction and import cycles, including package-relative imports.
 
-The native Python CLI is the maintained interactive entry point. Retired Pi UI,
+The native Python CLI is the maintained interactive entry point; `cairn.web` is a
+separate outer browser adapter with a guarded human task-status move and does not
+import terminal orchestration. Retired Pi UI,
 Bridge/TUI and ACP code have no compatibility adapters. Repository experiment
 assets live under `evaluation/` (cases, runners and benchmarks); operational
 GitHub and pilot commands live under `scripts/`. Reusable evaluation sequencing
