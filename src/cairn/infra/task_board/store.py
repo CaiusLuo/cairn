@@ -176,6 +176,7 @@ class TaskBoardStore:
         status: TaskBoardStatus | None = None,
         title: str | None = None,
         description: str | None = None,
+        session_id: str | None = None,
         progress: str | None = None,
         issue_url: str | None = None,
         pr_url: str | None = None,
@@ -192,6 +193,7 @@ class TaskBoardStore:
                         ("status", status),
                         ("title", title),
                         ("description", description),
+                        ("session_id", session_id),
                         ("issue_url", issue_url),
                         ("pr_url", pr_url),
                     ):

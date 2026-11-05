@@ -71,7 +71,7 @@ class TaskBoardController:
         verb = parts[0].lower() if parts else "list"
         if verb in {"help", "--help", "-h"}:
             return note(
-                "/task list | /task show <id> | /task add <title> | /task use <id> | /task todo <id> <text> | /task done <id> <todo-id> | /task undo <id> <todo-id> | /task status <id> <status> | /task progress <id> <text>"
+                "/task list | /task show <id> | /task add <title> | /task use <id> | /task continue <id> | /task todo <id> <text> | /task done <id> <todo-id> | /task undo <id> <todo-id> | /task status <id> <status> | /task progress <id> <text>"
             )
         if verb == "list":
             tasks = await self.service.alist()
@@ -90,8 +90,12 @@ class TaskBoardController:
             task = await self.service.acreate(title)
             self.service.current_task_id = task.task_id
             return note(f"已创建任务 {task.task_id}: {task.title}")
-        if verb == "use" and len(parts) == 2:
-            task = await self.service.aget(parts[1])
+        if verb in {"use", "continue"} and len(parts) == 2:
+            task = (
+                await self.service.acontinue(parts[1])
+                if verb == "continue"
+                else await self.service.aget(parts[1])
+            )
             if task is None:
                 return correction("任务不存在或前缀不唯一。")
             self.service.current_task_id = task.task_id

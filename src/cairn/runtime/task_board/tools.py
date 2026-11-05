@@ -176,6 +176,48 @@ class TaskDetailTool(_TaskTool):
         return self._result(_format_task(task))
 
 
+class TaskUseTool(_TaskTool):
+    name = "task_use"
+    description = (
+        "Select an existing task in the current project and associate it with "
+        "this session; this updates task-board metadata without resuming execution."
+    )
+
+    def schema(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {"task_id": {"type": "string"}},
+                    "required": ["task_id"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+
+    def validate(self, arguments: dict[str, Any]) -> None:
+        if set(arguments) != {"task_id"}:
+            raise InvalidArguments("task_use requires only task_id")
+        _text(arguments.get("task_id"), "task_id")
+
+    async def execute(
+        self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
+    ) -> ToolResult:
+        self.validate(arguments)
+        try:
+            task = await self.service.acontinue(arguments["task_id"].strip())
+        except (OSError, ValueError) as exc:
+            return self._result(
+                f"could not select task: {type(exc).__name__}", ok=False
+            )
+        if task is None:
+            return self._result("task not found", ok=False)
+        return self._result(_format_task(task))
+
+
 class TaskUpdateTool(_TaskTool):
     name = "task_update"
     description = (

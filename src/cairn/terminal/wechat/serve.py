@@ -82,6 +82,7 @@ from cairn.runtime.task_board.tools import (
     TaskListTool,
     TaskTodoTool,
     TaskUpdateTool,
+    TaskUseTool,
 )
 from cairn.terminal.durable import open_store
 from cairn.terminal.headless import (
@@ -326,6 +327,7 @@ def default_task_executor(
             TaskListTool(service),
             TaskUpdateTool(service),
             TaskTodoTool(service),
+            TaskUseTool(service),
         )
 
     wechat_task_tools = board_tools(task_board)
@@ -679,6 +681,7 @@ def default_conversation_executor(
         TaskListTool(task_board),
         TaskUpdateTool(task_board),
         TaskTodoTool(task_board),
+        TaskUseTool(task_board),
     )
 
     project_lease = project_lease or WorkspaceLease(

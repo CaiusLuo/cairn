@@ -133,6 +133,23 @@ class TaskBoardService:
             self.current_task = updated
         return updated
 
+    async def acontinue(self, task_id: str) -> TaskBoardItem | None:
+        return cast(
+            TaskBoardItem | None,
+            await self._call(self.continue_task, task_id),
+        )
+
+    def continue_task(self, task_id: str) -> TaskBoardItem | None:
+        """Select this project's task and associate its board metadata only."""
+        task = self.get(task_id)
+        if task is None or task.project != self.project or not self.session_id:
+            return None
+        updated = self.store.update(task.task_id, session_id=self.session_id)
+        if updated is not None:
+            self.current_task_id = updated.task_id
+            self.current_task = updated
+        return updated
+
     def add_todo(self, task_id: str, text: str) -> TaskBoardItem | None:
         task = self.get(task_id)
         updated = None if task is None else self.store.add_todo(task.task_id, text)

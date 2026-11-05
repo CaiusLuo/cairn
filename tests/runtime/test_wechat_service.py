@@ -658,18 +658,26 @@ def test_lost_ack_response_is_not_retried(tmp_path: Path) -> None:
     assert ack_calls == 1
 
 
+@pytest.mark.parametrize("purpose", ["task", "chat"])
 def test_default_wechat_executor_exposes_shared_task_tools(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, purpose: str
 ) -> None:
     from cairn.infra.wechat.state import WechatAccount
-    from cairn.terminal.wechat.serve import ServeConfig, default_task_executor
+    from cairn.terminal.wechat.serve import (
+        ServeConfig,
+        default_conversation_executor,
+        default_task_executor,
+    )
 
     captured: list[object] = []
 
     async def fake_run(**kwargs: object) -> HeadlessResult:
         captured.extend(kwargs.get("extra_tools", ()))  # type: ignore[arg-type]
         return HeadlessResult(
-            task_id="t", status=HeadlessStatus.COMPLETED, workspace=str(tmp_path)
+            task_id="t",
+            status=HeadlessStatus.COMPLETED,
+            workspace=str(tmp_path),
+            final_response="ok",
         )
 
     monkeypatch.setattr("cairn.terminal.wechat.serve._run_via_config_async", fake_run)
@@ -686,10 +694,20 @@ def test_default_wechat_executor_exposes_shared_task_tools(
         approval=None,
         allowed_senders=frozenset({"u1"}),
     )
-    executor = default_task_executor(config)
+    monkeypatch.setenv(
+        "CAIRN_AGENT_HOME", str(tmp_path.parent / (tmp_path.name + "-agent"))
+    )
+    executor = (
+        default_task_executor(config)
+        if purpose == "task"
+        else default_conversation_executor(config)
+    )
 
     async def run_it() -> None:
-        await executor("hello", asyncio.Event(), "t")
+        if purpose == "task":
+            await executor("hello", asyncio.Event(), "t")  # type: ignore[arg-type]
+        else:
+            await executor("hello", "u1", "snapshot")  # type: ignore[arg-type]
 
     asyncio.run(run_it())
     names = {getattr(tool, "name", "") for tool in captured}
@@ -699,6 +717,7 @@ def test_default_wechat_executor_exposes_shared_task_tools(
         "task_detail",
         "task_update",
         "task_todo",
+        "task_use",
     } <= names
 
 

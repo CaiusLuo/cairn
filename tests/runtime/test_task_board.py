@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from cairn.core.task_board import TaskBoardItem, TaskBoardStatus
+from cairn.core.task_board import TaskBoardItem, TaskBoardStatus, TaskSource
 from cairn.infra.task_board.store import (
     TaskBoardBusy,
     TaskBoardStore,
@@ -53,10 +53,13 @@ def test_set_todo_done_invalid_value_does_not_corrupt(tmp_path: Path) -> None:
 
 
 def test_task_tool_argument_contracts(tmp_path: Path) -> None:
+    from cairn.runtime.task_board.tools import TaskUseTool
+
     service = TaskBoardService(TaskBoardStore(tmp_path / "tasks"))
     create = TaskCreateTool(service)
     update = TaskUpdateTool(service)
     todo = TaskTodoTool(service)
+    use = TaskUseTool(service)
 
     for tool, bad in (
         (create, {"title": "x", "description": 123}),
@@ -65,6 +68,8 @@ def test_task_tool_argument_contracts(tmp_path: Path) -> None:
         (update, {"task_id": "x"}),
         (todo, {"task_id": "x", "text": "   "}),
         (todo, {"task_id": "x", "text": "a", "todo_id": "b"}),
+        (use, {"task_id": "x", "unexpected": True}),
+        (use, {"task_id": None}),
     ):
         with pytest.raises(InvalidArguments):
             tool.validate(bad)
@@ -393,5 +398,139 @@ def test_repeated_cancellation_waits_for_update_and_preserves_first(
             assert store.load()[0].progress == ()
         else:
             assert store.load()[0].progress == ("finished",)
+
+    asyncio.run(flow())
+
+
+def test_task_use_links_existing_task_to_current_session(tmp_path: Path) -> None:
+    from cairn.runtime.task_board.service import TaskBoardService
+    from cairn.runtime.task_board.tools import TaskUseTool
+
+    creator = TaskBoardService(
+        TaskBoardStore(tmp_path / "tasks"), session_id="old-session"
+    )
+    task = creator.create("Continue me")
+    follower = TaskBoardService(
+        TaskBoardStore(tmp_path / "tasks"), session_id="new-session"
+    )
+    tool = TaskUseTool(follower)
+
+    async def flow() -> None:
+        result = await tool.execute({"task_id": task.task_id})
+        assert result.exit_code == 0
+        continued = await follower.aget(task.task_id)
+        assert continued is not None and continued.session_id == "new-session"
+        assert follower.current_task_id == task.task_id
+        missing = await tool.execute({"task_id": "missing"})
+        assert missing.exit_code != 0
+
+    asyncio.run(flow())
+
+
+def test_task_controller_continue_does_not_create_a_new_task(tmp_path: Path) -> None:
+    from cairn.runtime.task_board.service import TaskBoardService
+    from cairn.terminal.task_board.controller import TaskBoardController
+
+    service = TaskBoardService(
+        TaskBoardStore(tmp_path / "tasks"), session_id="new-session"
+    )
+    task = service.create("Existing")
+    controller = TaskBoardController(service)
+
+    async def flow() -> None:
+        before = len(service.list())
+        action = await controller.command(f"continue {task.task_id}")
+        assert "Existing" in action.message
+        assert len(service.list()) == before
+        assert service.current_task_id == task.task_id
+
+    asyncio.run(flow())
+
+
+@pytest.mark.parametrize("project", ["current-project", "other-project"])
+def test_task_use_preserves_facts_and_cannot_reassign_another_project(
+    tmp_path: Path,
+    project: str,
+) -> None:
+    from cairn.runtime.task_board.tools import TaskUseTool
+
+    store = TaskBoardStore(tmp_path / "tasks")
+    creator = TaskBoardService(
+        store,
+        project=project,
+        session_id="original-session",
+        source=TaskSource.WECHAT,
+    )
+    task = creator.create("Existing", "Keep the original facts")
+    creator.add_todo(task.task_id, "remaining work")
+    original = creator.update(task.task_id, progress="verified progress")
+    assert original is not None
+    current = TaskBoardService(
+        store, project="current-project", session_id="current-session"
+    )
+    before = store.load()
+    result = asyncio.run(TaskUseTool(current).execute({"task_id": task.task_id}))
+    if project != current.project:
+        assert result.exit_code != 0
+        assert store.load() == before
+        assert current.current_task_id is None
+        return
+    assert result.exit_code == 0
+    selected = current.get(task.task_id)
+    assert selected is not None
+    assert selected.session_id == "current-session"
+    assert current.current_task_id == original.task_id
+    assert len(store.load()) == len(before)
+    for field in (
+        "task_id",
+        "project",
+        "source",
+        "created_at",
+        "title",
+        "description",
+        "status",
+        "progress",
+        "todos",
+    ):
+        assert getattr(selected, field) == getattr(original, field)
+
+
+def test_continue_without_current_session_keeps_original_association(
+    tmp_path: Path,
+) -> None:
+    store = TaskBoardStore(tmp_path / "tasks")
+    original = store.create(
+        title="Existing", project="project", session_id="original-session"
+    )
+    current = TaskBoardService(store, project="project")
+    assert asyncio.run(current.acontinue(original.task_id)) is None
+    assert store.load() == (original,)
+    assert current.current_task_id is None
+
+
+def test_use_selects_locally_while_continue_updates_board_association(
+    tmp_path: Path,
+) -> None:
+    from cairn.terminal.task_board.controller import TaskBoardController
+
+    store = TaskBoardStore(tmp_path / "tasks")
+    original = store.create(
+        title="Existing",
+        project="project",
+        session_id="original-session",
+        source=TaskSource.SCHEDULE,
+    )
+    current = TaskBoardService(store, project="project", session_id="current-session")
+    controller = TaskBoardController(current)
+
+    async def flow() -> None:
+        await controller.command(f"use {original.task_id}")
+        assert current.current_task_id == original.task_id
+        assert store.load() == (original,)
+        await controller.command(f"continue {original.task_id}")
+        saved = store.load()
+        assert len(saved) == 1 and saved[0].session_id == "current-session"
+        assert saved[0].source is TaskSource.SCHEDULE
+        assert saved[0].created_at == original.created_at
 
     asyncio.run(flow())

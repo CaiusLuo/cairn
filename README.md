@@ -144,8 +144,14 @@ These commands are available at the `cairn>` prompt.
 | `/provider`, `/provider list` | Inspect providers and the active one |
 | `/provider use <name>` | Switch provider after approval; resets session grants |
 | `/trace`, `/trace <ID>`, `/trace list [N]` | Inspect saved traces |
+| `/task use <id>`, `/task continue <id>` | Select a shared task; `continue` associates a current-project task with this session |
 | `/help [COMMAND]` | Full command usage, including trace management |
 | `/exit`, `/quit` | End the session |
+
+Shared task-board selection does not resume an old Agent turn or replay tools.
+`/task use` changes only the local selection; `/task continue` and `task_use`
+also associate the current project's existing board item with this session.
+The task source, creation time, progress and task count are preserved.
 
 Traces are saved under `.cairn/traces/`. Default conversation state and approvals
 last only for the current process. Opt into local durable conversation state with

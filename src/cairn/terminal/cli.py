@@ -89,6 +89,7 @@ from cairn.runtime.task_board.tools import (
     TaskListTool,
     TaskTodoTool,
     TaskUpdateTool,
+    TaskUseTool,
 )
 from cairn.runtime.turn.compaction import CompactionOutcome
 from cairn.runtime.turn.hook import run_compaction
@@ -1380,6 +1381,7 @@ async def main(
         TaskDetailTool(task_board_service),
         TaskUpdateTool(task_board_service),
         TaskTodoTool(task_board_service),
+        TaskUseTool(task_board_service),
     ):
         agent.tools.register_tool(task_tool)
 
@@ -1430,6 +1432,7 @@ async def main(
                 TaskListTool(task_service),
                 TaskUpdateTool(task_service),
                 TaskTodoTool(task_service),
+                TaskUseTool(task_service),
             ),
         )
         with contextlib.suppress(Exception):
@@ -1475,6 +1478,7 @@ async def main(
                 TaskListTool(wechat_task_service),
                 TaskUpdateTool(wechat_task_service),
                 TaskTodoTool(wechat_task_service),
+                TaskUseTool(wechat_task_service),
             ),
         )
         return conversation_text(result)
