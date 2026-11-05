@@ -18,7 +18,7 @@ one case that is genuinely unrecoverable.
 """
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
@@ -27,11 +27,11 @@ from cairn.core.compaction import (
     CompactionPolicy,
     CompactionRecord,
     CompactionStatus,
-    CutPointError,
     RetentionWindow,
     apply_replacement,
-    choose_boundary,
+    count_groups,
     folded_placeholder,
+    legal_cut_points,
     summarizer_reserve,
 )
 from cairn.core.compaction.summarizer import Summarizer
@@ -53,7 +53,7 @@ class CompactionStep(StrEnum):
 class CompactionOutcome:
     """What one attempt produced, in a form safe to trace.
 
-    The summary text lives only inside ``record``. Every other field is a status,
+    The summary text and reusable fold indices live only inside ``record``. Every other field is a status,
     a count or a token figure, so a trace never carries conversation content.
     """
 
@@ -79,6 +79,7 @@ class CompactionInput:
     turn_start: int
     system_messages: list[Message]
     tools: list[dict[str, Any]]
+    previous: CompactionRecord | None = None
 
 
 class RequestCompactor:
@@ -111,9 +112,9 @@ class RequestCompactor:
 
     def fold(self, messages: list[Message], *, up_to: int) -> list[Message]:
         """Replace older settled tool-result bodies, keeping every message in place."""
-        protected = self._newest_groups(messages, up_to)
+        protected = self._newest_groups(messages, len(messages))
         return [
-            self._fold_result(message, index in protected)
+            self._fold_result(message, index in protected or index >= up_to)
             for index, message in enumerate(messages)
         ]
 
@@ -133,9 +134,10 @@ class RequestCompactor:
     def _fold_result(self, message: Message, protected: bool) -> Message:
         if message.role != "tool" or protected or not message.content:
             return message
-        return message.model_copy(
-            update={"content": folded_placeholder(len(message.content))}
-        )
+        placeholder = folded_placeholder(len(message.content))
+        if len(placeholder) >= len(message.content):
+            return message
+        return message.model_copy(update={"content": placeholder})
 
 
 async def compact(
@@ -158,14 +160,26 @@ async def compact(
         return _unchanged(measured)
 
     boundary = _boundary(source, compactor)
-    folded = compactor.fold(source.messages, up_to=boundary.retained_from)
-    folded_tokens = _measure(compactor, source, folded)
+    folded = compactor.fold(source.messages, up_to=len(source.messages))
     view = FoldedView(
         boundary=boundary,
         messages=folded,
-        tokens=folded_tokens,
+        tokens=0,
         count=folded_result_count(source.messages, folded),
+        indices=tuple(
+            index
+            for index, (old, new) in enumerate(
+                zip(source.messages, folded, strict=True)
+            )
+            if old != new
+        ),
+        previous=source.previous,
     )
+    # Keep an accepted summary while trying the free rule stage. Otherwise each
+    # batch would pay to summarize the same original prefix again.
+    record = view._record(measured)
+    effective = apply_replacement(source.messages, record) if record else folded
+    view = replace(view, tokens=_measure(compactor, source, effective))
     if not forced and not compactor.over_threshold(view.tokens):
         return view.outcome(measured)
     if summarizer is None or not _worth_summarizing(compactor, boundary):
@@ -221,6 +235,9 @@ async def _summarize(
         summary=summary.text,
         folded_tokens=folded.tokens,
         tokens_after=after,
+        folded_results=tuple(
+            index for index in folded.indices if index >= folded.boundary.retained_from
+        ),
     )
     if record.is_gainless():
         # The summary did not shrink anything; keep the folded view rather than
@@ -244,6 +261,8 @@ class FoldedView:
     messages: list[Message]
     tokens: int
     count: int
+    indices: tuple[int, ...]
+    previous: CompactionRecord | None
 
     def outcome(
         self, before: int, status: CompactionStatus | None = None
@@ -251,6 +270,7 @@ class FoldedView:
         """Report this view as the final result of folding alone."""
         return CompactionOutcome(
             step=CompactionStep.FOLDED,
+            record=self._record(before),
             status=status,
             folded_messages=self.count,
             tokens_before=before,
@@ -261,11 +281,34 @@ class FoldedView:
         """Keep this view and report that no summary replaced it."""
         return CompactionOutcome(
             step=CompactionStep.FOLDED,
+            record=self._record(before),
             status=CompactionStatus.SUMMARIZER_FAILED,
             folded_messages=self.count,
             tokens_before=before,
             tokens_after=self.tokens,
             usage=usage,
+        )
+
+    def _record(self, before: int) -> CompactionRecord | None:
+        previous = self.previous
+        retained_from = previous.retained_from if previous is not None else 0
+        indices = tuple(
+            sorted(
+                index
+                for index in set(
+                    (*self.indices, *(previous.folded_results if previous else ()))
+                )
+                if index >= retained_from
+            )
+        )
+        if (not indices and not retained_from) or self.tokens >= before:
+            return None
+        return CompactionRecord(
+            retained_from=retained_from,
+            summary=previous.summary if previous is not None else "",
+            folded_tokens=before,
+            tokens_after=self.tokens,
+            folded_results=indices,
         )
 
 
@@ -301,10 +344,17 @@ def _measure(
 def _boundary(
     source: CompactionInput, compactor: RequestCompactor
 ) -> CompactionBoundary:
-    try:
-        return choose_boundary(
-            source.messages, window=compactor.window, turn_start=source.turn_start
-        )
-    except CutPointError:
-        # Nothing settled can be replaced; the caller keeps the plain overflow.
-        return CompactionBoundary(retained_from=0)
+    if not 0 <= source.turn_start <= len(source.messages):
+        raise ValueError("turn_start must index the current turn")
+    # Rule folding has already made older outputs cheap. Summarizing just the
+    # earliest legal group can then cost more than that folded group. Replace
+    # the largest settled prefix while retaining the newest complete groups;
+    # never pay for a second summary just to try a different boundary.
+    required_groups = min(
+        count_groups(source.messages),
+        max(compactor.window.minimum_groups, compactor.keep_groups),
+    )
+    for cut in reversed(legal_cut_points(source.messages, upper=source.turn_start)):
+        if cut > 0 and count_groups(source.messages[cut:]) >= required_groups:
+            return CompactionBoundary(retained_from=cut)
+    return CompactionBoundary(retained_from=0)

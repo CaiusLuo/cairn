@@ -18,6 +18,7 @@ from typing import Any, Protocol
 
 from cairn.core.schedule import ScheduleJob
 from cairn.infra.schedule.store import ScheduleStore
+from cairn.runtime.lifecycle import settle_owned
 
 
 class TaskOutcome(Protocol):
@@ -96,6 +97,7 @@ class ScheduleRunner:
         workspace: str = "",
         account_id: str | Callable[[], str | None] | None = None,
         result_redactor: Callable[[str], str] | None = None,
+        execution_gate: asyncio.Lock | None = None,
     ) -> None:
         self.store = store
         self.executor = executor
@@ -105,6 +107,7 @@ class ScheduleRunner:
         self.workspace = workspace
         self.account_id = account_id
         self.result_redactor = result_redactor
+        self.execution_gate = execution_gate
         self.clock = clock
         self.sleep = sleep
         self.poll_interval = max(0.05, poll_interval)
@@ -113,52 +116,106 @@ class ScheduleRunner:
 
     async def run(self, stop: asyncio.Event | None = None) -> ScheduleReport:
         waiter = stop if stop is not None else asyncio.Event()
-        while not waiter.is_set():
-            self.report.ticks += 1
-            try:
-                await self.run_due(self.clock())
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self._say(f"定时任务检查失败: {type(exc).__name__}: {exc}")
-            with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(waiter.wait(), timeout=self.poll_interval)
+        execution_task: asyncio.Task[object] | None = None
+        try:
+            while not waiter.is_set():
+                self.report.ticks += 1
+                now = self.clock()
+                try:
+                    await self.run_reminders(now)
+                    if execution_task is not None and execution_task.done():
+                        if not execution_task.cancelled():
+                            failure = execution_task.exception()
+                            if failure is not None:
+                                self.report.failed += 1
+                                self._say(
+                                    "定时任务执行检查失败: "
+                                    f"{type(failure).__name__}: {failure}"
+                                )
+                        execution_task = None
+                    if execution_task is None:
+                        execution_task = asyncio.create_task(self.run_execution(now))
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._say(f"定时任务检查失败: {type(exc).__name__}: {exc}")
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(waiter.wait(), timeout=self.poll_interval)
+        finally:
+            if execution_task is not None:
+                await settle_owned(execution_task)
         return self.report
 
-    async def run_due(
+    async def _owner(self) -> tuple[str, str | None] | None:
+        owner = self.recipient()
+        account = self.account_id() if callable(self.account_id) else self.account_id
+        if not owner or (self.account_id is not None and not account):
+            return None
+        return owner, account
+
+    async def run_reminders(
         self, now: datetime, *, max_jobs: int | None = None
     ) -> ScheduleReport:
-        # Hold the cross-process execution lock across claim + executor. A
-        # different due job in another session must wait, not run concurrently.
+        identity = await self._owner()
+        if identity is None:
+            return self.report
+        owner, account = identity
+        executed = 0
+        while max_jobs is None or executed < max_jobs:
+            claim = self.store.claim_due(
+                now,
+                workspace=self.workspace or None,
+                recipient=owner,
+                account_id=account if self.account_id is not None else None,
+                reminder=True,
+            )
+            if claim is None:
+                break
+            job, run_key = claim
+            await self._run_job(job, now, run_key, owner, account)
+            executed += 1
+        return self.report
+
+    async def run_execution(
+        self, now: datetime, *, max_jobs: int | None = None
+    ) -> ScheduleReport:
+        identity = await self._owner()
+        if identity is None:
+            return self.report
+        owner, account = identity
         async with _execution_guard(self.store):
+            self.store.recover_interrupted(
+                self.clock(),
+                workspace=self.workspace or None,
+                recipient=owner,
+                account_id=account if self.account_id is not None else None,
+            )
             executed = 0
             while max_jobs is None or executed < max_jobs:
-                # Re-read identity before every claim: waiting for the lock or
-                # completing a previous job may have changed account/recipient.
-                owner = self.recipient()
-                account = (
-                    self.account_id() if callable(self.account_id) else self.account_id
-                )
-                if not owner or (self.account_id is not None and not account):
-                    return self.report
-                self.store.recover_interrupted(
-                    self.clock(),
-                    workspace=self.workspace or None,
-                    recipient=owner,
-                    account_id=account if self.account_id is not None else None,
-                )
+                identity = await self._owner()
+                if identity is None:
+                    break
+                owner, account = identity
                 claim = self.store.claim_due(
                     now,
                     workspace=self.workspace or None,
                     recipient=owner,
                     account_id=account if self.account_id is not None else None,
+                    reminder=False,
                 )
                 if claim is None:
-                    return self.report
+                    break
                 job, run_key = claim
                 await self._run_job(job, now, run_key, owner, account)
                 executed += 1
-            return self.report
+        return self.report
+
+    async def run_due(
+        self, now: datetime, *, max_jobs: int | None = None
+    ) -> ScheduleReport:
+        await self.run_reminders(now, max_jobs=max_jobs)
+        await self.run_execution(now, max_jobs=max_jobs)
+        return self.report
 
     def _record_finish(
         self,
@@ -223,20 +280,73 @@ class ScheduleRunner:
         result: TaskOutcome | None = None
         status = "failed"
         error: str | None = None
-        try:
-            result = await self.executor(
-                job.prompt, asyncio.Event(), f"scheduled-{job.job_id}"
-            )
-            status = result.status.value
-        except asyncio.CancelledError:
+        if job.reminder:
+            # Persist the send attempt before network I/O: a crash after this
+            # point is delivery-unknown, never a fresh "unstarted" reminder.
+            self.store.mark_execution_started(job.job_id)
+            delivered = False
+            payload = job.prompt
+            if self.result_redactor is not None:
+                payload = self.result_redactor(payload)
+            try:
+                current_account = (
+                    self.account_id() if callable(self.account_id) else self.account_id
+                )
+                recipient = self.recipient()
+                if (
+                    self.account_id is not None and current_account != account
+                ) or recipient != owner:
+                    error = "delivery_owner_changed: reminder retained, not delivered"
+                elif recipient:
+                    if self.deliver_for_account is not None and account is not None:
+                        delivered = await self.deliver_for_account(
+                            recipient, payload, account
+                        )
+                    else:
+                        delivered = await self.deliver(recipient, payload)
+            except asyncio.CancelledError:
+                self._record_finish(
+                    job=job,
+                    run_key=run_key,
+                    status="cancelled",
+                    error="delivery_cancelled",
+                    result=None,
+                    delivered=False,
+                )
+                raise
+            except Exception as exc:
+                error = f"delivery: {type(exc).__name__}: {exc}"
             self._record_finish(
                 job=job,
                 run_key=run_key,
-                status="cancelled",
-                error="cancelled",
+                status="completed" if delivered else "delivery_failed",
+                error=error,
                 result=None,
-                delivered=False,
+                delivered=delivered,
             )
+            return
+        try:
+            # The runner owns the effect boundary for every adapter. Waiting
+            # for a host gate is still a claim; only entry to the executor makes
+            # an interrupted occurrence unsafe to replay.
+            async with self.execution_gate or contextlib.nullcontext():
+                self.store.mark_execution_started(job.job_id)
+                result = await self.executor(
+                    job.prompt, asyncio.Event(), f"scheduled-{job.job_id}"
+                )
+            status = result.status.value
+        except asyncio.CancelledError:
+            if self.store.job_execution_started(job.job_id):
+                self._record_finish(
+                    job=job,
+                    run_key=run_key,
+                    status="interrupted",
+                    error="execution interrupted during shutdown",
+                    result=None,
+                    delivered=False,
+                )
+            else:
+                self.store.restore_claim(job.job_id)
             raise
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"

@@ -147,11 +147,26 @@ background owner is alive. A complete terminal QR is rendered from the iLink `qr
 bounded half-block glyphs (quiet zone included; refuses to clip on a terminal too
 narrow for the matrix); the URL is also printed as a fallback. The QR is cleared
 from the composer-adjacent screen after login resolves. Standalone WeChat conversations use the existing durable SessionStore/DurableSession
-path: each sender is bound to a stable Session ID, and the next request reopens
-the committed checkpoint (including tool calls/results) before `run_turn`.
-Tasks created by that sender carry the same Session ID with a `wechat:` prefix.
-The service refuses to create a new Session when an existing one is unreadable
-or requires recovery; it does not silently substitute a blank conversation.
+path: each sender has separate stable task and chat Session IDs in one
+service-owned Store writer. Each path reopens its own committed checkpoint
+(including tool calls/results) before `run_turn`; closing one borrowed Session
+cannot release another request's writer. Chat execution and its provider binding
+both use `min(config.max_steps, 20)`, while tasks retain the configured budget.
+An unreadable or unfinished Session fails closed and is never automatically
+abandoned. A known task recovery requirement does not block the independent chat
+Session; a genuine Store fault still blocks all durable admission.
+
+Legacy mixed task/chat history remains under its original Session ID. An existing
+purpose-specific task Session takes precedence; otherwise task work retains that
+legacy owner, including its recovery gate. A newly separated chat explicitly
+reports the retained legacy source ID/checkpoint instead of claiming to inherit
+its full history. History forking and a WeChat host recovery UI are not yet
+implemented. If a prior service created a separate `sessions-chat` database,
+chat reports `chat_store_migration_required`; it does not copy, overwrite, or
+silently ignore that potentially diverged history. The host must reconcile the
+two histories before chat can use the shared Store. Service shutdown settles all
+owned work before closing its writer. Direct hosts of `default_task_executor`
+must likewise call its `close()` after settling their requests.
 Session stores and conversation snapshots live under the host-private state
 directory, outside the Agent-writable Workspace, effective temporary directory
 and uv cache. Workspace observations use the active provider's credential
@@ -200,8 +215,24 @@ job-scoped association on the shared board. A task created by a WeChat message
 records `wechat`; delivering a scheduled result through WeChat does not change
 its source.
 
-Scheduled tasks are created by the Agent after a user-confirmed brief. The
-`/schedule` commands below remain available as an admin/debug surface:
+The background WeChat service accepts a bounded set of explicit one-shot
+requests, such as “十分钟后提醒我检查部署结果” and
+“明天上午九点检查这个项目的 CI，把结果发给我”. The host binds the original
+message ID and first received time, creates the job without a classifier/model
+call, and returns the saved ID, full timestamp, content and cancellation command.
+The default timezone is Asia/Shanghai. Ambiguous, unsupported or expired time
+expressions ask for clarification. Only the configured account owner is supported
+by this first scheduling entry; other senders are explicitly rejected.
+
+Creation is idempotent by account, workspace, sender and message ID. A restart
+recovers pending creation and an unattempted receipt; a sending/unknown receipt
+is not resent. Blocking storage work settles before shutdown completes. Creation
+receipts have one send attempt. A reminder delivers directly without a model;
+execution jobs use the existing serialized task chain. The background Agent
+retains schedule list/manage tools, while free-form schedule creation remains a
+host operation. The interactive CLI retains its confirmed Agent tools.
+
+The `/schedule` commands below remain available as an admin/debug surface:
 
 ```text
 /schedule add once 2026-11-01T09:00:00+08:00 <prompt>
@@ -222,8 +253,12 @@ recorded as not delivered instead of inventing a conversation. `/schedule list` 
 run facts (status, task id, trace id, delivery). One task is executed at a time:
 the scheduler holds a cross-process `runner.lock` across claim and execution, and
 the interactive WeChat/scheduler entry points share a process task gate. The
-durable next-run fact is saved before execution, so a restart does not replay a
-started task. After acquiring the execution lock, a runner marks its own
+durable next-run fact is saved at claim. The runtime runner waits for the host
+execution gate, then persists the started fact immediately before entering the
+executor. A cancelled claim that never entered the executor remains retryable;
+a started task is not replayed after cancellation or restart. Both CLI and
+background adapters pass their gate to the runner instead of marking starts
+inside an executor wrapper. After acquiring the execution lock, a runner marks its own
 previously started, unfinished jobs as interrupted and records delivery as
 unknown; it does not infer whether a message was already sent. Waiting on the
 lock is cancellable without waiting for the other process to finish.

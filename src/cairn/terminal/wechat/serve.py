@@ -15,9 +15,10 @@ import hashlib
 import inspect
 import json
 import os
+import sys
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -26,6 +27,7 @@ from typing import Any
 
 from dotenv import dotenv_values
 
+from cairn.core.schedule import ScheduleJob, ScheduleKind
 from cairn.core.task_board import TaskSource
 from cairn.infra.agent_memory.store import (
     AgentMemoryStore,
@@ -36,7 +38,7 @@ from cairn.infra.agent_memory.store import (
 )
 from cairn.infra.config import default_provider, load_project_providers
 from cairn.infra.mcp.config import McpServerConfig
-from cairn.infra.schedule.store import ScheduleStore
+from cairn.infra.schedule.store import ScheduleStore, default_schedule_dir
 from cairn.infra.schedule.store import (
     ensure_outside_workspace as ensure_schedule_outside_workspace,
 )
@@ -74,7 +76,17 @@ from cairn.runtime.agent_memory.tools import (
 from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.lifecycle import await_owned, settle_owned
 from cairn.runtime.prompts import system_prompt_for
+from cairn.runtime.scheduling.requests import (
+    Clarification,
+    NotSchedule,
+    OnceRequest,
+    parse_once_request,
+)
 from cairn.runtime.scheduling.runner import ScheduleRunner
+from cairn.runtime.scheduling.tools import (
+    ScheduleListTool,
+    ScheduleManageTool,
+)
 from cairn.runtime.task_board.service import TaskBoardService
 from cairn.runtime.task_board.tools import (
     TaskCreateTool,
@@ -151,6 +163,9 @@ def parse_conversation_decision(value: object) -> ConversationDecision:
 
 #: An immediate receipt must not block the actual task indefinitely.
 ACK_TIMEOUT_SECONDS = 5.0
+MAX_QUEUED_INBOUND = 100
+MAX_INTENT_TASKS = 100
+MAX_CHAT_TASKS = 32
 PROJECT_LEASE_FILENAME = "project-write.lock"
 CLASSIFIER_TIMEOUT_SECONDS = 8.0
 
@@ -331,6 +346,21 @@ def default_task_executor(
         )
 
     wechat_task_tools = board_tools(task_board)
+    schedule_store = ScheduleStore(config.schedule_store or default_schedule_dir())
+    schedule_tools = (
+        ScheduleListTool(
+            store=schedule_store,
+            workspace=str(config.workspace),
+            recipient=lambda: config.account.ilink_user_id or None,
+            account_id=lambda: config.account.ilink_bot_id,
+        ),
+        ScheduleManageTool(
+            store=schedule_store,
+            workspace=str(config.workspace),
+            recipient=lambda: config.account.ilink_user_id or None,
+            account_id=lambda: config.account.ilink_bot_id,
+        ),
+    )
 
     def remember_secrets(values: Sequence[str]) -> None:
         for value in values:
@@ -341,9 +371,12 @@ def default_task_executor(
             on_secrets_resolved(values)
 
     session_root = config.state_dir / "sessions"
+    chat_session_root = config.state_dir / "sessions-chat"
     ensure_outside_workspace(session_root, config.workspace)
+    ensure_outside_workspace(chat_session_root, config.workspace)
+    shared_store: SessionStore | None = None
     retained_sessions: list[DurableSession] = []
-    retained_stores: list[SessionStore] = []
+    history_notices: dict[str, str] = {}
 
     def close_sessions(sessions: list[DurableSession]) -> None:
         while sessions:
@@ -354,21 +387,30 @@ def default_task_executor(
         try:
             close_sessions(sessions)
         except BaseException:
-            # Keep ownership and its writer lock for an idle retry.
+            # Retain the exact failed close for an idle retry; borrowed Sessions
+            # cannot release the shared writer while another request owns work.
             retained_sessions.extend(sessions)
             sessions.clear()
             raise
 
     def cleanup_retained() -> None:
         close_sessions(retained_sessions)
-        while retained_stores:
-            retained_stores[-1].close()
-            retained_stores.pop()
+
+    def close_store() -> None:
+        nonlocal shared_store
+        cleanup_retained()
+        if shared_store is not None:
+            shared_store.close()
+            shared_store = None
 
     def sender_session_id(sender: str, *, purpose: str = "task") -> str:
         digest = hashlib.sha256(
             f"wechat:{config.workspace}:{sender}:{purpose}".encode()
         ).digest()
+        return str(uuid.UUID(bytes=digest[:16], version=4))
+
+    def legacy_session_id(sender: str) -> str:
+        digest = hashlib.sha256(f"wechat:{config.workspace}:{sender}".encode()).digest()
         return str(uuid.UUID(bytes=digest[:16], version=4))
 
     def durable_factory(
@@ -378,6 +420,9 @@ def default_task_executor(
         purpose: str = "task",
     ) -> Callable[[Agent], DurableSession]:
         session_id = sender_session_id(sender, purpose=purpose)
+        purpose_steps = (
+            config.max_steps if purpose == "task" else min(config.max_steps, 20)
+        )
 
         def provider_reference(agent: Agent) -> ProviderReference | None:
             manager = agent.model_executor.manager
@@ -404,7 +449,7 @@ def default_task_executor(
                 ).hexdigest(),
                 context_budget=agent.context_builder.budget.max_tokens,
                 output_reserve=agent.context_builder.budget.response_tokens,
-                max_steps=config.max_steps,
+                max_steps=purpose_steps,
             )
 
         def secret_keys(agent: Agent) -> frozenset[str]:
@@ -424,15 +469,38 @@ def default_task_executor(
             )
 
         def build(agent: Agent) -> DurableSession:
-            # A check/repair may start another Turn before the overall request
-            # returns. Release the settled Session before opening its successor.
+            nonlocal shared_store, session_id
             close_sessions(active_sessions)
-            store = open_store(
-                session_root,
-                Workspace(config.workspace),
-                secret_env_keys=secret_keys(agent),
-                sensitive_values=tuple(known_secret_values),
-            )
+            chat_database = chat_session_root / "sessions.sqlite3"
+            if purpose == "chat" and (
+                chat_database.exists() or chat_database.is_symlink()
+            ):
+                # A prior release created another durable owner. Never overwrite
+                # it or silently choose one of two potentially diverged histories.
+                raise SessionStoreError("chat_store_migration_required")
+            if shared_store is None:
+                shared_store = open_store(
+                    session_root,
+                    Workspace(config.workspace),
+                    secret_env_keys=secret_keys(agent),
+                    sensitive_values=tuple(known_secret_values),
+                )
+            store = shared_store
+            store.sensitive_values = tuple(known_secret_values)
+            legacy_report = None
+            try:
+                legacy_report = store.inspect(legacy_session_id(sender))
+            except SessionStoreError as exc:
+                if exc.code not in {"session_missing", "session_not_found"}:
+                    raise
+            if purpose == "task":
+                try:
+                    store.inspect(session_id)
+                except SessionStoreError as exc:
+                    if exc.code not in {"session_missing", "session_not_found"}:
+                        raise
+                    if legacy_report is not None:
+                        session_id = legacy_report.revision.session_id
             session: DurableSession | None = None
             try:
                 observation = make_binding(agent)
@@ -446,6 +514,7 @@ def default_task_executor(
                         agent=agent,
                         binding=observation,
                         observe_binding=lambda: make_binding(agent),
+                        owns_store=False,
                     )
                 else:
                     session = DurableSession.reopen(
@@ -454,27 +523,9 @@ def default_task_executor(
                         agent=agent,
                         binding=observation,
                         observe_binding=lambda: make_binding(agent),
+                        owns_store=False,
                     )
                     report = session.inspect()
-                    if report.status == "recovery_required":
-                        unresolved = report.unresolved
-                        if unresolved is None:
-                            raise SessionStoreError("recovery_required")
-                        final_binding = make_binding(agent)
-                        session.reconcile(
-                            report,
-                            host_resolution=HostResolution(
-                                session_id=session_id,
-                                turn_id=unresolved.intent.turn_id,
-                                actor="wechat-host",
-                                resolved_at_utc=datetime.now(UTC)
-                                .isoformat()
-                                .replace("+00:00", "Z"),
-                                binding=final_binding,
-                                note="stale WeChat session recovered; turn abandoned without replay",
-                            ),
-                        )
-                        report = session.inspect()
                     if report.status != "clean":
                         raise SessionStoreError("recovery_required")
                     final_binding = make_binding(agent)
@@ -490,18 +541,25 @@ def default_task_executor(
                             binding=final_binding,
                         ),
                     )
+                if (
+                    purpose == "chat"
+                    and legacy_report is not None
+                    and session.receipt.revision.head_seq == 0
+                ):
+                    history_notices[sender] = (
+                        "当前为独立聊天; 原会话历史仍保留"
+                        + (", 原会话待恢复" if legacy_report.status != "clean" else "")
+                        + f"。来源 session={legacy_report.revision.session_id}, "
+                        + f"已提交 checkpoint={legacy_report.receipt.revision.head_seq}。"
+                    )
                 active_sessions.append(session)
                 return session
             except BaseException as primary:
                 try:
-                    if session is None:
-                        store.close()
-                    else:
+                    if session is not None:
                         session.close()
                 except BaseException as cleanup:
-                    if session is None:
-                        retained_stores.append(store)
-                    else:
+                    if session is not None:
                         retained_sessions.append(session)
                     primary.add_note(
                         f"Durable session cleanup failed: {type(cleanup).__name__}."
@@ -549,10 +607,11 @@ def default_task_executor(
                 mcp_configs=config.mcp_configs,
                 grant_mcp=config.allow_mcp,
                 grant_network=config.allow_network,
+                sandbox_shell=config.allow_shell,
                 cancellation_event=cancel,
                 on_secrets_resolved=remember_secrets,
                 personal_context_provider=personal_memory.render_context,
-                extra_tools=(*memory_tools, *task_tools),
+                extra_tools=(*memory_tools, *task_tools, *schedule_tools),
                 durable_session_factory=durable_factory(sender, active_sessions)
                 if sender
                 else None,
@@ -590,8 +649,11 @@ def default_task_executor(
         finally:
             project_lease.release()
 
+    durable_factory.release_sessions = release_sessions  # type: ignore[attr-defined]
+    durable_factory.history_notice = history_notices.pop  # type: ignore[attr-defined]
     execute.durable_factory = durable_factory  # type: ignore[attr-defined]
     execute.project_lease = project_lease  # type: ignore[attr-defined]
+    execute.close = close_store  # type: ignore[attr-defined]
     return execute
 
 
@@ -683,6 +745,21 @@ def default_conversation_executor(
         TaskTodoTool(task_board),
         TaskUseTool(task_board),
     )
+    schedule_store = ScheduleStore(config.schedule_store or default_schedule_dir())
+    schedule_tools = (
+        ScheduleListTool(
+            store=schedule_store,
+            workspace=str(config.workspace),
+            recipient=lambda: config.account.ilink_user_id or None,
+            account_id=lambda: config.account.ilink_bot_id,
+        ),
+        ScheduleManageTool(
+            store=schedule_store,
+            workspace=str(config.workspace),
+            recipient=lambda: config.account.ilink_user_id or None,
+            account_id=lambda: config.account.ilink_bot_id,
+        ),
+    )
 
     project_lease = project_lease or WorkspaceLease(
         config.state_dir / PROJECT_LEASE_FILENAME
@@ -711,21 +788,38 @@ def default_conversation_executor(
                 max_steps=min(config.max_steps, 20),
                 trace_dir=config.trace_dir,
                 cancellation_event=None,
+                personal_context=personal_memory.render_context(),
                 read_only=False,
+                sandbox_shell=config.allow_shell,
                 system_prompt=system_prompt_for("chat"),
                 conversation_only=factory is not None,
                 tool_lease=project_lease,
                 durable_session_factory=factory,
-                extra_tools=(*memory_tools, *task_tools),
+                extra_tools=(*memory_tools, *task_tools, *schedule_tools),
             )
         finally:
-            cleanup_error = close_conversation_sessions(active_sessions)
+            primary_error = sys.exception()
+            release = getattr(durable_factory, "release_sessions", None)
+            if callable(release):
+                try:
+                    release(active_sessions)
+                except BaseException as exc:
+                    cleanup_error = exc
+            else:
+                cleanup_error = close_conversation_sessions(active_sessions)
+            if cleanup_error is not None and primary_error is not None:
+                primary_error.add_note(
+                    f"Durable session cleanup failed: {type(cleanup_error).__name__}."
+                )
         if cleanup_error is not None:
             raise ConversationExecutionError(
                 "session_cleanup_failed",
                 type(cleanup_error).__name__,
             ) from cleanup_error
-        return conversation_text(result)
+        text = conversation_text(result)
+        notice = getattr(durable_factory, "history_notice", None)
+        history_notice = notice(sender, "") if callable(notice) else ""
+        return f"{history_notice}\n\n{text}" if history_notice else text
 
     return execute
 
@@ -744,6 +838,7 @@ class _Service:
         conversation_executor: ConversationExecutor | None = None,
         conversation_classifier: ConversationClassifier | None = None,
         progress_provider: Callable[[], str] | None = None,
+        schedule_store: ScheduleStore | None = None,
     ) -> None:
         self.config = config
         self.state = state
@@ -762,6 +857,9 @@ class _Service:
         self._conversation_executor = conversation_executor
         self._conversation_classifier = conversation_classifier
         self._progress_provider = progress_provider
+        self._schedule_store = schedule_store or (
+            ScheduleStore(config.schedule_store) if config.schedule_store else None
+        )
         self._chat_tasks: set[asyncio.Task[None]] = set()
         self._intent_tasks: set[asyncio.Task[None]] = set()
         self._chat_locks: dict[str, asyncio.Lock] = {}
@@ -796,8 +894,13 @@ class _Service:
             return await self._reply(sender, context, text, retries=retries)
         return False
 
-    def _status_text(self) -> str:
-        queued = len(self.state.records_in_states(frozenset({"queueing", "queued"})))
+    async def _queued_count(self) -> int:
+        return await asyncio.to_thread(
+            lambda: len(self.state.records_in_states(frozenset({"queueing", "queued"})))
+        )
+
+    async def _status_text(self) -> str:
+        queued = await self._queued_count()
         if self._current is None:
             return f"当前没有运行中的任务\uff0c排队 {queued} 项。"
         elapsed = max(0.0, time.monotonic() - self._current_started)
@@ -949,6 +1052,24 @@ class _Service:
                         f"本轮没有生成有效回复\uff08{exc.category}\uff09\uff1a{detail[:160]}",
                     )
                 return
+            except SessionStoreError as exc:
+                detail = str(exc)
+                if self.redact_text is not None:
+                    detail = self.redact_text(detail)
+                self.state.mark(
+                    inbound.key or "",
+                    "chat_failed",
+                    error_type=type(exc).__name__,
+                    error_category="session_store",
+                    error=detail[:160],
+                )
+                if not self._stopping:
+                    await self._safe_reply(
+                        inbound.sender,
+                        inbound.context_token,
+                        f"本轮聊天会话不可用\uff08{exc.code}\uff09\uff0c任务未受影响。",
+                    )
+                return
             except Exception as exc:
                 detail = str(exc)
                 if self.redact_text is not None:
@@ -986,6 +1107,20 @@ class _Service:
                 self.state.mark(inbound.key or "", "chat_empty")
 
     def _start_conversation(self, inbound: _Inbound) -> asyncio.Task[None]:
+        if len(self._chat_tasks) >= MAX_CHAT_TASKS:
+            self.state.mark(inbound.key or "", "rejected", reason="chat_backlog_full")
+
+            async def _reply_busy() -> None:
+                await self._safe_reply(
+                    inbound.sender,
+                    inbound.context_token,
+                    "当前聊天请求过多\uff0c请稍后再试。",
+                )
+
+            task = asyncio.create_task(_reply_busy())
+            self._intent_tasks.add(task)
+            task.add_done_callback(self._intent_tasks.discard)
+            return task
         task = asyncio.create_task(
             self._conversation_call(inbound, self._progress_snapshot())
         )
@@ -1000,6 +1135,20 @@ class _Service:
         return task
 
     def _start_intent(self, inbound: _Inbound) -> None:
+        if len(self._intent_tasks) >= MAX_INTENT_TASKS:
+            self.state.mark(inbound.key or "", "rejected", reason="intent_backlog_full")
+
+            async def _reply_busy() -> None:
+                await self._safe_reply(
+                    inbound.sender,
+                    inbound.context_token,
+                    "当前消息处理排队过多\uff0c请稍后再试。",
+                )
+
+            task = asyncio.create_task(_reply_busy())
+            self._intent_tasks.add(task)
+            task.add_done_callback(self._intent_tasks.discard)
+            return
         task = asyncio.create_task(self._run_intent(inbound))
         self._intent_tasks.add(task)
 
@@ -1012,35 +1161,38 @@ class _Service:
 
     async def _run_intent(self, inbound: _Inbound) -> None:
         lock = self._intent_locks.setdefault(inbound.sender, asyncio.Lock())
-        async with lock:
-            try:
+        try:
+            async with lock:
+                # The lock protects classifier ordering only. Queue/chat work
+                # performs acknowledgement I/O outside it so one slow send
+                # cannot block the next message's classification.
                 decision = await self._classify_conversation(inbound.text or "")
-                if decision is ConversationDecision.CHAT:
-                    await self._start_conversation(inbound)
-                elif decision is ConversationDecision.TASK:
-                    await self._queue_inbound(inbound)
-                else:
-                    self._ask_clarification(inbound)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                # Classification failure is per-message and must not stop the
-                # WeChat service or execute the message as work.
-                self.state.mark(
-                    inbound.key or "",
-                    "classification_failed",
-                    error_type=type(exc).__name__,
+            if decision is ConversationDecision.CHAT:
+                self._start_conversation(inbound)
+            elif decision is ConversationDecision.TASK:
+                await self._queue_inbound(inbound)
+            else:
+                self._ask_clarification(inbound)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Classification failure is per-message and must not stop the
+            # WeChat service or execute the message as work.
+            self.state.mark(
+                inbound.key or "",
+                "classification_failed",
+                error_type=type(exc).__name__,
+            )
+            if not self._stopping:
+                detail = str(exc)
+                if self.redact_text is not None:
+                    detail = self.redact_text(detail)
+                await self._safe_reply(
+                    inbound.sender,
+                    inbound.context_token,
+                    f"暂时无法判断意图\uff08{type(exc).__name__}: {detail[:160]}\uff09。"
+                    "请重试或明确说明是查询当前任务还是安排新任务。",
                 )
-                if not self._stopping:
-                    detail = str(exc)
-                    if self.redact_text is not None:
-                        detail = self.redact_text(detail)
-                    await self._safe_reply(
-                        inbound.sender,
-                        inbound.context_token,
-                        f"暂时无法判断意图\uff08{type(exc).__name__}: {detail[:160]}\uff09。"
-                        "请重试或明确说明是查询当前任务还是安排新任务。",
-                    )
 
     def _ask_clarification(self, inbound: _Inbound) -> None:
         assert inbound.key is not None
@@ -1236,6 +1388,15 @@ class _Service:
     async def _queue_inbound(self, inbound: _Inbound) -> None:
         assert inbound.key is not None
         key = inbound.key
+        queued = await self._queued_count()
+        if queued >= MAX_QUEUED_INBOUND:
+            self.state.mark(key, "rejected", reason="queue_full")
+            await self._safe_reply(
+                inbound.sender,
+                inbound.context_token,
+                "当前排队任务过多\uff0c请稍后再试。",
+            )
+            return
         record = self.state.get_record(key) or {}
         if record.get("state") == "queued":
             self._start_next_queued()
@@ -1269,6 +1430,208 @@ class _Service:
             ack_state="sent" if acknowledged else "unknown",
         )
         self._start_next_queued()
+
+    def _start_schedule_task(
+        self, coro: Coroutine[Any, Any, None], inbound: _Inbound
+    ) -> None:
+        if len(self._intent_tasks) >= MAX_INTENT_TASKS:
+            coro.close()
+            self.state.mark(
+                inbound.key or "", "rejected", reason="schedule_backlog_full"
+            )
+            return
+
+        async def guarded() -> None:
+            try:
+                await coro
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                detail = str(exc)
+                if self.redact_text is not None:
+                    detail = self.redact_text(detail)
+                self.state.mark(
+                    inbound.key or "",
+                    "schedule_failed",
+                    schedule_error_type=type(exc).__name__,
+                    schedule_error=detail[:160],
+                )
+                await self._safe_reply(
+                    inbound.sender,
+                    inbound.context_token,
+                    f"定时任务创建失败\uff08{type(exc).__name__}\uff09\uff1a{detail[:160]}"
+                    "\u3002未确认创建\uff0c请稍后重试。",
+                )
+
+        task = asyncio.create_task(guarded())
+        self._intent_tasks.add(task)
+        task.add_done_callback(self._intent_tasks.discard)
+
+    async def _schedule_notice(self, inbound: _Inbound, text: str) -> None:
+        await self._safe_reply(inbound.sender, inbound.context_token, text)
+
+    async def _run_host_schedule(self, inbound: _Inbound, parsed: OnceRequest) -> None:
+        record = self.state.get_record(inbound.key or "") or {}
+        received = record.get("received_at")
+        if not isinstance(received, (int, float)):
+            self.state.mark(
+                inbound.key or "",
+                "schedule_clarification",
+                reason="missing_received_at",
+            )
+            await self._safe_reply(
+                inbound.sender,
+                inbound.context_token,
+                "这条定时请求缺少可信的首次接收时间\uff0c无法安全创建\uff1b请重新发送。",
+            )
+            return
+        if record.get("schedule_receipt_state") in {"sending", "sent", "unknown"}:
+            return
+        owner = self.config.account.ilink_user_id
+        if not owner or inbound.sender != owner:
+            self.state.mark(
+                inbound.key or "", "schedule_rejected", reason="not_account_owner"
+            )
+            await self._safe_reply(
+                inbound.sender,
+                inbound.context_token,
+                "当前微信账号不是该调度任务的 owner\uff0c不能创建会永久无人执行的任务。",
+            )
+            return
+        payload = self.redact_text(parsed.prompt) if self.redact_text else parsed.prompt
+        digest = hashlib.sha256(
+            f"{self.config.workspace}:{inbound.sender}:{self.config.account.ilink_bot_id}:{inbound.key}".encode()
+        ).hexdigest()[:12]
+        job = ScheduleJob(
+            job_id=f"job-{digest}",
+            name=payload[:60],
+            prompt=payload,
+            workspace=str(self.config.workspace),
+            recipient=inbound.sender,
+            account_id=self.config.account.ilink_bot_id,
+            kind=ScheduleKind.ONCE,
+            at=parsed.at,
+            timezone="Asia/Shanghai",
+            reminder=parsed.reminder,
+            created_at=datetime.fromtimestamp(float(received), tz=UTC),
+            next_run_at=parsed.at,
+        )
+        assert self._schedule_store is not None
+        worker = asyncio.create_task(
+            asyncio.to_thread(self._schedule_store.add_or_get_job, job)
+        )
+        try:
+            saved, _created = await asyncio.shield(worker)
+        except asyncio.CancelledError as primary:
+            # The blocking flock/fsync owns a thread that cannot be cancelled.
+            # Observe it to completion, then persist the saved fact so restart
+            # can decide the receipt without replaying a send.
+            await await_owned(worker)
+            try:
+                saved, _created = worker.result()
+            except BaseException:
+                primary.add_note(
+                    "Schedule storage did not confirm creation during cleanup."
+                )
+                raise primary from None
+            self.state.mark(
+                inbound.key or "",
+                "schedule_created",
+                schedule_job_id=saved.job_id,
+                schedule_receipt_state="pending",
+            )
+            raise
+        self.state.mark(
+            inbound.key or "",
+            "schedule_created",
+            schedule_job_id=saved.job_id,
+            schedule_receipt_state="sending",
+        )
+        sent = await self._safe_reply(
+            inbound.sender,
+            inbound.context_token,
+            f"已创建定时任务 {saved.job_id}\uff1a"
+            f"{saved.next_run_at.isoformat() if saved.next_run_at else '-'}"
+            f"\uff1b内容\uff1a{saved.prompt[:200]}\uff1b"
+            f"类型\uff1a{'提醒' if saved.reminder else '执行'}\u3002"
+            f"取消请使用 /schedule remove {saved.job_id}。",
+            retries=1,
+        )
+        self.state.mark(
+            inbound.key or "",
+            "schedule_receipt_sent" if sent else "schedule_receipt_unknown",
+            schedule_job_id=saved.job_id,
+            schedule_receipt_state="sent" if sent else "unknown",
+        )
+
+    def _try_host_once_schedule(self, inbound: _Inbound) -> bool:
+        """Start host-owned one-shot handling without blocking receive."""
+        if self._schedule_store is None or inbound.key is None:
+            return False
+        record = self.state.get_record(inbound.key) or {}
+        if record.get("state") in {
+            "schedule_pending",
+            "schedule_created",
+            "schedule_receipt_sent",
+            "schedule_receipt_unknown",
+        } or record.get("schedule_receipt_state") in {"sending", "sent", "unknown"}:
+            return True
+        try:
+            parsed = parse_once_request(
+                inbound.text or "",
+                float(record.get("received_at", 0)),
+                message_id=inbound.key,
+            )
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            parsed = Clarification("invalid time")
+        if isinstance(parsed, NotSchedule):
+            return False
+        if isinstance(parsed, Clarification):
+            self.state.mark(inbound.key, "schedule_clarification", reason=parsed.reason)
+            self._start_schedule_task(
+                self._schedule_notice(
+                    inbound,
+                    f"无法创建定时任务\uff1a{parsed.reason}\u3002请明确时间和要做的事。",
+                ),
+                inbound,
+            )
+            return True
+        self.state.mark(inbound.key, "schedule_pending")
+        self._start_schedule_task(self._run_host_schedule(inbound, parsed), inbound)
+        return True
+
+    async def _recover_schedule(
+        self, inbound: _Inbound, record: dict[str, object]
+    ) -> None:
+        state = record.get("state")
+        receipt = record.get("schedule_receipt_state")
+        if state == "schedule_receipt_unknown" or receipt == "unknown":
+            return
+        if state == "schedule_receipt_sending" or receipt == "sending":
+            self.state.mark(
+                inbound.key or "",
+                "schedule_receipt_unknown",
+                schedule_receipt_state="unknown",
+            )
+            return
+        if state == "schedule_created" and receipt == "sent":
+            return
+        received_at = record.get("received_at")
+        parsed = parse_once_request(
+            inbound.text or "",
+            float(received_at) if isinstance(received_at, (int, float)) else 0.0,
+            message_id=inbound.key or "",
+            now=datetime.now(UTC),
+        )
+        if isinstance(parsed, OnceRequest):
+            self.state.mark(inbound.key or "", "schedule_pending")
+            await self._run_host_schedule(inbound, parsed)
+        else:
+            self.state.mark(
+                inbound.key or "",
+                "schedule_clarification",
+                reason=getattr(parsed, "reason", "not_a_schedule"),
+            )
 
     async def _handle(self, inbound: _Inbound) -> None:
         if not inbound.sender or inbound.context_token == "":
@@ -1305,7 +1668,7 @@ class _Service:
         if command == "/status":
             self.state.mark(inbound.key, "command", command="/status")
             await self._safe_reply(
-                inbound.sender, inbound.context_token, self._status_text()
+                inbound.sender, inbound.context_token, await self._status_text()
             )
             return
         if command == "/cancel":
@@ -1322,6 +1685,8 @@ class _Service:
                 )
             return
         if await self._resolve_clarification(inbound):
+            return
+        if self._try_host_once_schedule(inbound):
             return
         if self._conversation_classifier is None:
             decision = await self._classify_conversation(inbound.text)
@@ -1388,6 +1753,10 @@ class _Service:
                     "chat_sending",
                     "chat_interrupted",
                     "clarifying",
+                    "schedule_pending",
+                    "schedule_created",
+                    "schedule_receipt_sending",
+                    "schedule_receipt_unknown",
                 }
             )
         )
@@ -1400,6 +1769,14 @@ class _Service:
         ]
         for _key, record, recovered in recovered_items:
             state = record.get("state")
+            if state in {
+                "schedule_pending",
+                "schedule_created",
+                "schedule_receipt_sending",
+                "schedule_receipt_unknown",
+            }:
+                await self._recover_schedule(recovered, record)
+                continue
             if state == "queued":
                 continue
             if state == "clarifying":
@@ -1459,15 +1836,9 @@ class _Service:
         ensure_outside_workspace(self.config.state_dir, self.config.workspace)
         with contextlib.suppress(ILinkError):
             await self.client.notify_start()
-        try:
-            await self._recover()
-        except BaseException:
-            self._stopping = True
-            with contextlib.suppress(Exception):
-                await self._cancel_current()
-            raise
         consecutive_errors = 0
         try:
+            await self._recover()
             while not self._stopping:
                 if self.stop_event is not None and self.stop_event.is_set():
                     break
@@ -1550,13 +1921,40 @@ class _Service:
                     break
         finally:
             self._stopping = True
-            await self._cancel_current()
-            owned = (*tuple(self._intent_tasks), *tuple(self._chat_tasks))
-            if owned:
-                await settle_owned(*owned)
-            with contextlib.suppress(ILinkError, asyncio.CancelledError):
-                notify = asyncio.create_task(self.client.notify_stop())
-                await await_owned(notify)
+            primary_error = sys.exception()
+
+            async def cleanup_work() -> None:
+                first_error: BaseException | None = None
+                try:
+                    await self._cancel_current()
+                except BaseException as exc:
+                    first_error = exc
+                owned = (*tuple(self._intent_tasks), *tuple(self._chat_tasks))
+                if owned:
+                    await settle_owned(*owned)
+                try:
+                    await self.client.notify_stop()
+                except (ILinkError, asyncio.CancelledError):
+                    pass
+                except Exception as exc:
+                    first_error = first_error or exc
+                if first_error is not None:
+                    raise RuntimeError(
+                        f"WeChat work cleanup failed: {type(first_error).__name__}."
+                    ) from None
+
+            cleanup = asyncio.create_task(cleanup_work())
+            late_cancellation = await await_owned(cleanup)
+            cleanup_error = cleanup.exception() if not cleanup.cancelled() else None
+            if primary_error is not None:
+                if cleanup_error is not None:
+                    primary_error.add_note(str(cleanup_error))
+            elif late_cancellation is not None:
+                if cleanup_error is not None:
+                    late_cancellation.add_note(str(cleanup_error))
+                raise late_cancellation
+            elif cleanup_error is not None:
+                raise cleanup_error
         if self._queue_error is not None:
             raise self._queue_error
         return self.report
@@ -1675,15 +2073,10 @@ async def serve_wechat(
             )
         )
 
-        async def gated_schedule_executor(
-            prompt: str, cancel: asyncio.Event, task_id: str
-        ) -> HeadlessResult:
-            async with task_gate:
-                return await scheduled_executor(prompt, cancel, task_id)
-
         scheduler_runner = ScheduleRunner(
             store=ScheduleStore(config.schedule_store),
-            executor=gated_schedule_executor,
+            executor=scheduled_executor,
+            execution_gate=task_gate,
             deliver=deliver_scheduled,
             recipient=lambda: scheduler_owner or None,
             poll_interval=config.schedule_poll_interval,
@@ -1788,17 +2181,58 @@ async def serve_wechat(
             await control.start()
         return await service.run()
     finally:
-        await control.close()
-        if scheduler_task is not None:
-            if scheduler_stop is not None:
-                scheduler_stop.set()
-            scheduler_task.cancel()
-            await await_owned(scheduler_task)
-            if scheduler_runner is not None:
-                report.scheduled_jobs = scheduler_runner.report.jobs_run
-                report.scheduled_delivered = scheduler_runner.report.delivered
-        try:
-            close_task = asyncio.create_task(active_client.close())
-            await await_owned(close_task)
-        finally:
-            lock.release()
+        primary_error = sys.exception()
+
+        async def cleanup_service() -> None:
+            first_error: BaseException | None = None
+            try:
+                try:
+                    await control.close()
+                except BaseException as exc:
+                    first_error = exc
+                if scheduler_task is not None:
+                    if scheduler_stop is not None:
+                        scheduler_stop.set()
+                    scheduler_task.cancel()
+                    await await_owned(scheduler_task)
+                    if not scheduler_task.cancelled():
+                        first_error = first_error or scheduler_task.exception()
+                    if scheduler_runner is not None:
+                        report.scheduled_jobs = scheduler_runner.report.jobs_run
+                        report.scheduled_delivered = scheduler_runner.report.delivered
+                try:
+                    await active_client.close()
+                except BaseException as exc:
+                    first_error = first_error or exc
+                if task_executor is None:
+                    owners = [executor]
+                    if scheduler_runner is not None:
+                        owners.append(scheduled_executor)
+                    for owner in owners:
+                        close = getattr(owner, "close", None)
+                        if callable(close):
+                            try:
+                                close()
+                            except BaseException as exc:
+                                # Store close itself refuses an unsettled owner;
+                                # keep that writer rather than force-release it.
+                                first_error = first_error or exc
+            finally:
+                lock.release()
+            if first_error is not None:
+                raise RuntimeError(
+                    f"WeChat service cleanup failed: {type(first_error).__name__}."
+                ) from None
+
+        cleanup = asyncio.create_task(cleanup_service())
+        late_cancellation = await await_owned(cleanup)
+        cleanup_error = cleanup.exception() if not cleanup.cancelled() else None
+        if primary_error is not None:
+            if cleanup_error is not None:
+                primary_error.add_note(str(cleanup_error))
+        elif late_cancellation is not None:
+            if cleanup_error is not None:
+                late_cancellation.add_note(str(cleanup_error))
+            raise late_cancellation
+        elif cleanup_error is not None:
+            raise cleanup_error

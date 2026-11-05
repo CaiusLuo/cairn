@@ -66,6 +66,7 @@ class CodingTaskRunner:
         read_only: bool = False,
         conversation_only: bool = False,
         tool_lease: WorkspaceLease | None = None,
+        sandbox_shell: bool = False,
         system_prompt: str | None = None,
         personal_context: str = "",
         provider_name: str | None = None,
@@ -91,6 +92,7 @@ class CodingTaskRunner:
         self.read_only = read_only
         self.conversation_only = conversation_only
         self.tool_lease = tool_lease
+        self.sandbox_shell = sandbox_shell
         self.system_prompt = system_prompt or system_prompt_for(
             "chat" if conversation_only else "development"
         )
@@ -157,14 +159,19 @@ class CodingTaskRunner:
         cancellation_event: asyncio.Event | None,
         durable_session: DurableSession | None = None,
         selected_skills: Sequence[str] = (),
+        message_id: str = "",
     ) -> str | None:
         if durable_session is None:
             execution = (
                 run_turn(
-                    agent, prompt, budget=self.budget, selected_skills=selected_skills
+                    agent,
+                    prompt,
+                    budget=self.budget,
+                    selected_skills=selected_skills,
+                    message_id=message_id,
                 )
                 if selected_skills
-                else run_turn(agent, prompt, budget=self.budget)
+                else run_turn(agent, prompt, budget=self.budget, message_id=message_id)
             )
         else:
             execution = (
@@ -174,10 +181,15 @@ class CodingTaskRunner:
                     budget=self.budget,
                     session=durable_session,
                     selected_skills=selected_skills,
+                    message_id=message_id,
                 )
                 if selected_skills
                 else run_turn(
-                    agent, prompt, budget=self.budget, session=durable_session
+                    agent,
+                    prompt,
+                    budget=self.budget,
+                    session=durable_session,
+                    message_id=message_id,
                 )
             )
         if cancellation_event is None:
@@ -364,6 +376,7 @@ class CodingTaskRunner:
                         skills=self.skills,
                         extra_tools=self.extra_tools,
                         read_only=self.read_only,
+                        sandbox_shell=self.sandbox_shell,
                         secret_env_keys=self.secret_env_keys,
                         system_prompt=self.system_prompt,
                         personal_context=self.personal_context,
@@ -385,7 +398,11 @@ class CodingTaskRunner:
                         setattr, agent, "event_handler", original_handler
                     )
                     response = await self._turn(
-                        agent, spec.prompt, cancellation_event, durable_session
+                        agent,
+                        spec.prompt,
+                        cancellation_event,
+                        durable_session,
+                        message_id=spec.task_id,
                     )
                     if response is None:
                         status = TaskStatus.CANCELLED
@@ -414,6 +431,7 @@ class CodingTaskRunner:
                         cancellation_event,
                         durable_session,
                         selected_skills,
+                        message_id=spec.task_id,
                     )
                     if response is None:
                         status = TaskStatus.CANCELLED
@@ -431,6 +449,7 @@ class CodingTaskRunner:
                         skills=self.skills,
                         extra_tools=self.extra_tools,
                         read_only=self.read_only,
+                        sandbox_shell=self.sandbox_shell,
                         secret_env_keys=self.secret_env_keys,
                         system_prompt=self.system_prompt,
                         personal_context=self.personal_context,
@@ -444,6 +463,7 @@ class CodingTaskRunner:
                             spec.prompt,
                             cancellation_event,
                             selected_skills=selected_skills,
+                            message_id=spec.task_id,
                         )
                     else:
                         response = await self._turn(

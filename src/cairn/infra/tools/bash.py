@@ -1,12 +1,12 @@
-"""Execute shell commands on the host, from the Workspace root.
+"""Execute approved shell commands, with an optional Linux project boundary.
 
 Cairn is local-first: a command runs as the invoking user, with the invoking
-user's environment, in the Workspace directory. There is no OS sandbox, so this
-module makes no isolation claim. It owns exactly the guarantees a local process
-can keep:
+user's environment, in the Workspace directory. With ``sandbox_shell=True`` the
+host instead selects the bubblewrap boundary in ``infra.sandbox``; unavailable
+isolation never falls back to host execution. Both modes keep:
 
-* the child starts in the Workspace and inherits the host environment minus
-  Cairn-owned credentials;
+* the child starts in the Workspace; host mode inherits the environment minus
+  Cairn-owned credentials, while sandbox mode clears it;
 * stdout/stderr are captured with a fixed byte ceiling and a fixed timeout;
 * the whole process group is killed on timeout or cancellation, and the group is
   always reaped before ``execute`` returns;
@@ -22,8 +22,9 @@ import codecs
 import os
 import signal
 import sys
+import tempfile
 from collections.abc import Mapping
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import Any
 
@@ -123,6 +124,7 @@ class BashTool(WorkspaceOnlyTool):
         stderr_limit: int = DEFAULT_STDERR_CAPTURE_LIMIT,
         *,
         secret_env_keys: frozenset[str] = frozenset(),
+        sandbox_shell: bool = False,
     ) -> None:
         if stdout_limit < 0 or stderr_limit < 0:
             raise ValueError("output capture limits must be non-negative")
@@ -133,6 +135,16 @@ class BashTool(WorkspaceOnlyTool):
         self.stdout_limit = stdout_limit
         self.stderr_limit = stderr_limit
         self.secret_env_keys = secret_env_keys
+        self.sandbox_shell = sandbox_shell
+        if sandbox_shell:
+            self.description = (
+                "Run a shell command in the writable project workspace, without "
+                "changing its root directory. System files, credentials, other "
+                "projects and raw Git metadata are unavailable. Python, uv and "
+                "project dependency installation are supported. Git operations "
+                "require a trusted host Git tool; retrying raw Git in this shell "
+                "cannot grant access. Network access is enabled."
+            )
 
     def schema(self) -> dict[str, Any]:
         return {
@@ -238,16 +250,70 @@ class BashTool(WorkspaceOnlyTool):
 
         cwd = self.workspace.root
         env = build_command_env(os.environ, self.secret_env_keys)
-        argv = _command_argv(command)
+        with ExitStack() as resources:
+            inherited_fds: list[int] = []
 
-        process = await asyncio.create_subprocess_exec(
-            *argv,
-            cwd=cwd,
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
+            def empty_file_fd() -> int:
+                empty = resources.enter_context(tempfile.TemporaryFile())
+                inherited_fds.append(empty.fileno())
+                return empty.fileno()
+
+            if self.sandbox_shell:
+                from cairn.infra import sandbox
+
+                def discover_paths() -> list[Path]:
+                    if not sandbox.available():
+                        raise sandbox.IsolationUnavailable("shell sandbox unavailable")
+                    return sandbox.shell_private_paths(self.workspace.root)
+
+                try:
+                    inventory = asyncio.create_task(asyncio.to_thread(discover_paths))
+                    cancellation: asyncio.CancelledError | None = None
+                    while not inventory.done():
+                        try:
+                            await asyncio.shield(inventory)
+                        except asyncio.CancelledError as exc:
+                            # A cancelled to_thread waiter does not stop the walk.
+                            # Keep ownership until it finishes, before any spawn.
+                            cancellation = cancellation or exc
+                        except Exception:
+                            break
+                    if cancellation is not None:
+                        try:
+                            inventory.result()
+                        except BaseException:
+                            cancellation.add_note(
+                                "Sandbox inventory failed while cancellation settled."
+                            )
+                        raise cancellation
+                    private_paths = inventory.result()
+                    argv = sandbox.build_shell_argv(
+                        self.workspace,
+                        command,
+                        empty_file_fd=empty_file_fd,
+                        private_paths=private_paths,
+                    )
+                except (sandbox.IsolationUnavailable, OSError, ValueError):
+                    return ToolResult(
+                        stderr="shell sandbox could not establish the project boundary",
+                        exit_code=-1,
+                        error_type="sandbox_unavailable",
+                    )
+            else:
+                argv = _command_argv(command)
+
+            spawn_options: dict[str, Any] = (
+                {"pass_fds": tuple(inherited_fds)} if inherited_fds else {}
+            )
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                cwd=cwd,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+                **spawn_options,
+            )
 
         # Keep draining the pipes while terminating the group: otherwise a full
         # pipe can prevent asyncio's process waiter from completing after exit.

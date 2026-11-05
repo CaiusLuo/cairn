@@ -92,6 +92,8 @@ def _shift(current_turn_start: int, record: CompactionRecord) -> int:
     Only messages strictly before the current turn can be summarized, so the
     turn moves earlier by however many messages the substitution removed.
     """
+    if not record.retained_from:
+        return current_turn_start
     if current_turn_start < record.retained_from:
         raise ValueError("compaction must not reach into the current turn")
     return current_turn_start - record.retained_from + 1
@@ -344,31 +346,46 @@ class ContextBuilder:
             if compaction is None
             else _shift(current_turn_start, compaction)
         )
-        baseline = self._with_memory(
-            self._build_baseline(
-                system_messages=system_messages,
-                history=source,
-                current_turn_start=turn_start,
-                tools=tools,
-            ),
-            project_memory,
-            system_messages,
-            tools,
+        baseline = self._build_baseline(
+            system_messages=system_messages,
+            history=source,
+            current_turn_start=turn_start,
+            tools=tools,
         )
         if compaction is None:
-            return baseline
+            return self._with_memory(baseline, project_memory, system_messages, tools)
         # Measured against the conversation as recorded, so the saving is the
         # whole benefit of the substitution rather than the part turn trimming
         # happened to leave behind.
         uncompacted = self._count([*system_messages, *history], tools)
-        return replace(
+        summary_offset = int(bool(compaction.retained_from))
+        original_start = max(
+            compaction.retained_from,
+            baseline.omitted_messages + compaction.retained_from - summary_offset,
+        )
+        view_start = (
+            len(system_messages)
+            + bool(baseline.omitted_turns)
+            + bool(summary_offset and not baseline.omitted_messages)
+        )
+        folded_results = sum(
+            original.role == "tool" and original.content != sent.content
+            for original, sent in zip(
+                history[original_start:], baseline.messages[view_start:], strict=True
+            )
+        )
+        baseline = replace(
             baseline,
-            compacted=True,
-            compacted_messages=compaction.retained_from,
+            compacted=bool(compaction.retained_from and not baseline.omitted_messages),
+            compacted_messages=compaction.retained_from
+            if not baseline.omitted_messages
+            else 0,
+            folded_tool_results=folded_results,
             compaction_tokens_saved=max(
                 0, uncompacted.tokens - baseline.tokens_after.tokens
             ),
         )
+        return self._with_memory(baseline, project_memory, system_messages, tools)
 
     def _with_memory(
         self,
@@ -443,7 +460,7 @@ class ContextBuilder:
                 update={"content": folded_placeholder(len(original.content or ""))}
             )
             folded_count += 1
-            view = [*system_messages, *notice, *folded]
+            view = [*system_messages, *notice, *folded[omission.messages :]]
             count = self._count(view, tools)
             if not self._fits(count):
                 continue

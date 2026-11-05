@@ -39,13 +39,17 @@ stateless work in progress are required. Failed attachment leaves that owner
 closed forever and leaves the supplied Store with the host for cleanup. An
 omitted/wrong Session can never downgrade a bound Agent to stateless execution.
 
-After successful attachment the DurableSession owns the dedicated Store's
-writer lifetime. Do not share that instance between Sessions or close it behind
-the owner. `session.close()` blocks new admission immediately; during execution
-it defers Store close until work, cleanup, trace and lifecycle delivery settle.
-It never cancels work or detaches the Agent. Idle close is idempotent. If storage
-inspection/release fails, resources and the writer lock remain held; inspect or
-retry close after storage is available. No force-close path exists.
+By default (`owns_store=True`), successful attachment makes the DurableSession
+own the dedicated Store's writer lifetime. `session.close()` blocks new admission
+immediately and defers Store close until work, cleanup, trace and lifecycle
+delivery settle. A service that owns one writer across independent Sessions may
+pass `owns_store=False` to `create` or `reopen`. Such borrowed Sessions still own
+their Agent, Turn and cleanup, but never close the Store, including after a
+requested close during execution. The host must settle every borrower before
+closing that exact Store; the Store's owned-Turn/Task checks remain enforced.
+Close never cancels work or detaches the Agent. Idle close is idempotent. If
+storage inspection/release fails, resources and the writer lock remain held;
+inspect or retry close after storage is available. No force-close path exists.
 
 The host supplies canonical Workspace/Git identities and approved provider
 references. Runtime validates descriptor shapes/secrets, live path identities,

@@ -14,6 +14,7 @@ from cairn.core.compaction import (
     StaleCompaction,
 )
 from cairn.core.models import Message
+from tests.support.compaction import group
 
 
 def user(content: str) -> Message:
@@ -89,3 +90,57 @@ class TestReuse:
         ]
 
         assert captured.reusable_with(swapped) is False
+
+
+def test_fold_reuse_checks_the_result_and_the_call_arguments() -> None:
+    history = [user("task"), *group("old", result_content="x" * 500)]
+    record = CompactionRecord(
+        retained_from=0,
+        summary="",
+        folded_tokens=600,
+        tokens_after=100,
+        folded_results=(2,),
+    )
+    captured = ReusableCompaction.capture(history, record)
+
+    assert captured.reusable_with([*history, *group("new")])
+    for index, changed in (
+        (2, history[2].model_copy(update={"content": "different"})),
+        (1, history[1].model_copy(update={"tool_calls": []})),
+        (
+            1,
+            history[1].model_copy(
+                update={
+                    "tool_calls": [
+                        history[1]
+                        .tool_calls[0]
+                        .model_copy(update={"arguments": {"path": "other"}})
+                    ]
+                }
+            ),
+        ),
+    ):
+        rewritten = list(history)
+        rewritten[index] = changed
+        assert not captured.reusable_with(rewritten)
+    assert not captured.reusable_with(history[:2])
+
+
+def test_fold_reuse_rejects_truncation_of_the_protected_suffix() -> None:
+    history = [
+        user("task"),
+        *group("old", result_content="x" * 500),
+        *group("latest", result_content="new evidence"),
+    ]
+    record = CompactionRecord(
+        retained_from=0,
+        summary="",
+        folded_tokens=600,
+        tokens_after=100,
+        folded_results=(2,),
+    )
+    captured = ReusableCompaction.capture(history, record)
+
+    assert not captured.reusable_with(history[:3])
+    with pytest.raises(StaleCompaction):
+        captured.record_for(history[:3])

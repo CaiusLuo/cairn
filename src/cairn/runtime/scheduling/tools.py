@@ -7,10 +7,11 @@ never choose another owner.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
-from uuid import uuid4
 
 from cairn.core.models import ToolResult
 from cairn.core.schedule import ScheduleJob, ScheduleKind, initial_next_run
@@ -25,6 +26,24 @@ def _text(value: object, name: str) -> str:
     return value.strip()
 
 
+def _has_schedule_intent(text: str) -> bool:
+    lowered = text.casefold()
+    cues = (
+        "提醒",
+        "定时",
+        "日程",
+        "明天",
+        "今天",
+        "分钟后",
+        "小时后",
+        "上午",
+        "下午",
+        "晚上",
+        "点",
+    )
+    return any(cue in lowered for cue in cues)
+
+
 class _ScheduleTool:
     def __init__(
         self,
@@ -35,6 +54,7 @@ class _ScheduleTool:
         account_id: Callable[[], str | None],
         clock: Callable[[], datetime] = current_time,
         redact: Callable[[str], str] | None = None,
+        require_trusted_message: bool = False,
     ) -> None:
         self.store = store
         self.workspace = workspace
@@ -42,6 +62,7 @@ class _ScheduleTool:
         self.account_id = account_id
         self.clock = clock
         self.redact = redact or (lambda text: text)
+        self.require_trusted_message = require_trusted_message
 
     def _owner(self) -> tuple[str, str]:
         owner = self.recipient()
@@ -94,6 +115,11 @@ class ScheduleCreateTool(_ScheduleTool):
                             "description": "ISO datetime for once, HH:MM for daily, or seconds for interval",
                         },
                         "timezone": {"type": "string", "default": "Asia/Shanghai"},
+                        "reminder": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Deliver prompt verbatim without invoking the model.",
+                        },
                         "confirmed": {"type": "boolean", "default": False},
                     },
                     "required": ["prompt", "kind", "when"],
@@ -116,6 +142,8 @@ class ScheduleCreateTool(_ScheduleTool):
             raise InvalidArguments("timezone must be a string")
         if not isinstance(arguments.get("confirmed", False), bool):
             raise InvalidArguments("confirmed must be a boolean")
+        if not isinstance(arguments.get("reminder", False), bool):
+            raise InvalidArguments("reminder must be a boolean")
 
     def _shape(
         self, arguments: dict[str, Any]
@@ -159,10 +187,65 @@ class ScheduleCreateTool(_ScheduleTool):
             f"- note: recurring jobs may spend model requests and send messages.\n"
             "Ask the user to confirm or edit this brief before creating it."
         )
-        if not arguments.get("confirmed", False):
+        if self.require_trusted_message:
+            if context is None or not context.trusted_user_text.strip():
+                return self._result(
+                    "schedule creation requires a trusted user message", ok=False
+                )
+        elif not arguments.get("confirmed", False):
             return self._result(brief)
+        if self.require_trusted_message:
+            assert context is not None
+            trusted_text = context.trusted_user_text.strip()
+            trusted_message_id = context.trusted_message_id.strip()
+            if not trusted_message_id:
+                return self._result(
+                    "schedule creation requires a trusted source message id",
+                    ok=False,
+                )
+            prompt_norm = " ".join(prompt.casefold().split())
+            text_norm = " ".join(trusted_text.casefold().split())
+            if not prompt_norm or (
+                prompt_norm not in text_norm and text_norm not in prompt_norm
+            ):
+                return self._result(
+                    "schedule content does not match the trusted user message",
+                    ok=False,
+                )
+            # Stable per trusted message, not a hash of model-chosen arguments:
+            # a retry that changes prompt/when must still be the same request.
+            identity = json.dumps(
+                {
+                    "workspace": self.workspace,
+                    "owner": owner,
+                    "account": account,
+                    "trusted_message_id": trusted_message_id,
+                },
+                sort_keys=True,
+            )
+        else:
+            identity = json.dumps(
+                {
+                    "workspace": self.workspace,
+                    "owner": owner,
+                    "account": account,
+                    "prompt": prompt,
+                    "kind": kind.value,
+                    "when": arguments["when"],
+                    "timezone": arguments.get("timezone", "Asia/Shanghai"),
+                    "reminder": arguments.get("reminder", False),
+                },
+                sort_keys=True,
+            )
+        job_id = "job-" + hashlib.sha256(identity.encode()).hexdigest()[:12]
+        existing = [job for job in self.store.load_jobs() if job.job_id == job_id]
+        if existing:
+            return self._result(
+                f"Existing {job_id}; next run "
+                f"{existing[0].next_run_at.isoformat() if existing[0].next_run_at else '-'}."
+            )
         job = ScheduleJob(
-            job_id="job-" + uuid4().hex[:12],
+            job_id=job_id,
             name=prompt[:60],
             prompt=prompt,
             workspace=self.workspace,
@@ -173,6 +256,7 @@ class ScheduleCreateTool(_ScheduleTool):
             daily_time=daily_time,
             interval_seconds=interval_seconds,
             timezone=arguments.get("timezone", "Asia/Shanghai"),
+            reminder=arguments.get("reminder", False),
             created_at=self.clock(),
             next_run_at=next_run,
         )

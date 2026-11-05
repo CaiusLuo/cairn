@@ -9,6 +9,7 @@ never ends a turn.
 import asyncio
 from typing import Any
 
+from cairn.core.compaction import SUMMARY_PREFIX
 from cairn.core.compaction.summarizer import SummaryResult
 from cairn.core.context import ContextBudget, ContextBuilder
 from cairn.core.models import LLMResponse, Message, ToolCall, ToolResult
@@ -141,6 +142,62 @@ def test_within_budget_turns_never_summarize() -> None:
 
     assert summarizer.calls == []
     assert agent.compaction is None
+
+
+def _several_tool_responses() -> list[LLMResponse]:
+    return [
+        LLMResponse(
+            content=None,
+            tool_calls=[
+                ToolCall(id=f"call-{index}", name="big", arguments={"value": index})
+            ],
+        )
+        for index in range(4)
+    ] + [LLMResponse(content="finished")]
+
+
+def test_first_turn_reuses_safe_folds_before_the_next_request() -> None:
+    summarizer = StubSummarizer()
+    agent = build_agent(
+        _several_tool_responses(), summarizer=summarizer, budget_tokens=4_000
+    )
+
+    assert asyncio.run(run_turn(agent, "investigate", budget=TEST_BUDGET)) == "finished"
+
+    assert isinstance(agent.llm, SequenceLLM)
+    sent, _ = agent.llm.calls[-1]
+    original_results = [
+        message for message in agent.state.messages if message.role == "tool"
+    ]
+    sent_results = [message for message in sent if message.role == "tool"]
+    assert all(len(message.content or "") > 900 for message in original_results)
+    assert sent_results[-1] == original_results[-1]
+    assert sum(len(message.content or "") for message in sent_results) < 1_500
+    assert summarizer.calls == []
+
+
+def test_later_rule_folding_preserves_an_accepted_summary() -> None:
+    summarizer = StubSummarizer("verified earlier work")
+    agent = build_agent(
+        _several_tool_responses(), summarizer=summarizer, budget_tokens=4_000
+    )
+    for index in range(3):
+        agent.state.add_user_message(f"task {index} " + "x" * 200)
+        agent.state.add_assistant_message(f"answer {index} " + "y" * 200)
+    first = asyncio.run(run_compaction(agent))
+    assert first.record is not None
+    assert first.record.summary
+
+    asyncio.run(run_turn(agent, "continue", budget=TEST_BUDGET))
+
+    assert agent.compaction is not None
+    assert agent.compaction.record.summary == first.record.summary
+    assert agent.compaction.record.folded_results
+    assert len(summarizer.calls) == 1, "rule folding must reuse the accepted summary"
+    assert isinstance(agent.llm, SequenceLLM)
+    sent, _ = agent.llm.calls[-1]
+    assert any((message.content or "").startswith(SUMMARY_PREFIX) for message in sent)
+    assert sent[-1] == agent.state.messages[-2]
 
 
 def test_manual_compaction_reduces_the_view_and_is_reused_by_the_next_turn() -> None:

@@ -52,7 +52,7 @@ Failed Git inspection must not be represented as observed non-Git.
 | `begin_turn(Revision, TurnIntent)` | Ready state, exact start binding/head/message boundary, fresh Turn ID and SHA-256 of user UTF-8 input. Intent only, version + 1; raw input is not in intent. |
 | `fence_tool(Revision, ToolFence)` | Exact active Turn begun by this Store instance; monotone unique invocation reference. Fence only, version + 1. |
 | `commit_turn(Revision, SettledTurn)` | Same live Turn, settled by runtime; exact prefix/input/binding/fence relationships. One checkpoint, terminal attempt and head/version advance atomically. Duplicate commit rejects. |
-| `require_recovery(Revision, reason_code)` | Fixed `storage_failed`, `finalization_failed` or `binding_unavailable`; marks Session/active attempt and latches admission, version + 1. |
+| `require_recovery(Revision, reason_code)` | Fixed `storage_failed`, `finalization_failed` or `binding_unavailable`; marks Session/active attempt and blocks that Session, version + 1. A prior storage fault remains store-wide. |
 | `release_turn(Revision, turn_id)` | Trusted owner confirms a faulted local Turn's execution **and all cleanup/finalization have ended**. Exact current Revision and owned Turn required, including a possibly committed receipt after uncertain COMMIT. Local-only: changes no rows/revisions and grants no admission. Invalidates prior inspection. |
 | `reconcile(Revision, HostResolution)` | Exact revision from explicit successful inspect; typed host `abandon_without_replay` only. Rejects any still-owned Turn in that Session, including during cleanup or after a write fault. Abandons exact unresolved Turn or acknowledges a clean binding. Retains history/fences; version + 1, head unchanged. |
 | `close()` | Writer rejects locally owned Turns or Tasks with fixed `turn_still_owned` or `task_still_owned` before closing SQLite or either lock; preserves ownership/connection/locks without latching a fault. Successful terminal commit or explicit faulted Turn release, and settled Task ownership, permit close. SQLite then closes under the effect guard; busy guard retains resources. Inspector close and successful repeated close remain ordinary cleanup. Never unlinks stable locks. |
@@ -173,8 +173,13 @@ on a clean Session if needed. Reserved accounting is never stored as a resolutio
 | Uncertain COMMIT acknowledgement | Raise `commit_uncertain`; inspect exact Turn/receipt to distinguish old versus committed state. Never automatically retry settlement/execution. |
 | Bad/missing head, digest, JSON, FK or schema | Fail closed; no older checkpoint promoted as recovered head. |
 
-Mutation failure latches writes while **retaining** live attempt ownership.
-`require_recovery` and inspection are not evidence that execution has ended.
+Mutation/codec/transaction failure latches all Store writes while **retaining**
+live attempt ownership. A successful `require_recovery` write records a recovery
+requirement for its one Session and does not block unrelated Sessions on the same
+host-owned writer. It never clears an already latched Store fault. Local release
+recognizes that exact Session marker; persisted recovery still requires explicit
+host reconciliation. `require_recovery` and inspection are not evidence that
+execution has ended.
 Rejected live reconciliation leaves ordinary owned execution usable; it does not
 latch a new fault. Another Session's reconciliation cannot clear that Session's
 fault. Reopened writers lack ownership of pre-existing attempts. Host abandonment

@@ -22,6 +22,7 @@ def build_default_registry(
     skills: SkillLibrary | None = None,
     extra_tools: Sequence[Tool] = (),
     read_only: bool = False,
+    sandbox_shell: bool = False,
 ) -> ToolRegistry:
     """Create a fresh registry in model-visible declaration order.
 
@@ -38,7 +39,13 @@ def build_default_registry(
         return ToolRegistry()
     registry = ToolRegistry()
     if not read_only:
-        registry.register_tool(BashTool(workspace, secret_env_keys=secret_env_keys))
+        registry.register_tool(
+            BashTool(
+                workspace,
+                secret_env_keys=secret_env_keys,
+                sandbox_shell=sandbox_shell,
+            )
+        )
     registry.register_tool(ReadFileTool(workspace))
     if not read_only:
         registry.register_tool(EditFileTool(workspace))

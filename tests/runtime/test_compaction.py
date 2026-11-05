@@ -172,7 +172,9 @@ class TestFailureChain:
 
         assert outcome.step is CompactionStep.FOLDED
         assert outcome.status is CompactionStatus.SUMMARIZER_FAILED
-        assert outcome.record is None
+        assert outcome.record is not None
+        assert outcome.record.retained_from == 0
+        assert not outcome.record.summary
 
     def test_model_error_degrades_to_folding(self) -> None:
         outcome = run(
@@ -186,7 +188,9 @@ class TestFailureChain:
 
         assert outcome.step is CompactionStep.FOLDED
         assert outcome.status is CompactionStatus.SUMMARIZER_FAILED
-        assert outcome.record is None
+        assert outcome.record is not None
+        assert outcome.record.retained_from == 0
+        assert not outcome.record.summary
 
     def test_summary_that_does_not_shrink_is_rejected(self) -> None:
         fat = "y" * 5_000
@@ -200,7 +204,10 @@ class TestFailureChain:
             )
         )
 
-        assert outcome.record is None, "a summary that grows the request is not kept"
+        assert outcome.record is not None, "safe folds survive a rejected summary"
+        assert not outcome.record.summary, (
+            "the summary that grows the request is rejected"
+        )
         assert outcome.status is CompactionStatus.SUMMARIZER_FAILED
 
     def test_missing_summarizer_reports_exhaustion(self) -> None:
@@ -214,7 +221,8 @@ class TestFailureChain:
         )
 
         assert outcome.status is CompactionStatus.EXHAUSTED
-        assert outcome.record is None
+        assert outcome.record is not None
+        assert outcome.record.retained_from == 0
 
     def test_cancellation_propagates_without_a_record(self) -> None:
         summarizer = StubSummarizer(error=asyncio.CancelledError())
@@ -237,6 +245,35 @@ class TestFailureChain:
 
 
 class TestFolding:
+    def test_fold_limit_does_not_rewrite_newer_results(self) -> None:
+        messages = history(groups=3)
+
+        folded = compactor(100_000).fold(messages, up_to=3)
+
+        assert folded[2] != messages[2]
+        assert folded[3:] == messages[3:]
+
+    def test_latest_batch_keeps_all_results_after_an_older_boundary(self) -> None:
+        messages = [
+            user("task"),
+            tool_call("old"),
+            tool_result("old", content="x" * 400),
+        ]
+        latest = tool_call("a")
+        latest.tool_calls.append(tool_call("b").tool_calls[0])
+        messages.extend(
+            [
+                latest,
+                tool_result("a", content="a" * 400),
+                tool_result("b", content="b" * 400),
+            ]
+        )
+
+        folded = compactor(100_000).fold(messages, up_to=len(messages))
+
+        assert folded[2] != messages[2]
+        assert folded[3:] == messages[3:]
+
     def test_folding_keeps_every_message_in_place(self) -> None:
         messages = history(groups=3)
         request = compactor(100_000)

@@ -29,10 +29,14 @@ import contextlib
 import os
 import shutil
 import subprocess
+import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from cairn.core.models import ToolResult
+from cairn.infra.credential_paths import is_credential_path
 from cairn.infra.workspace.workspace import Workspace
 
 #: Default resource and time ceilings for one isolated behavior run.
@@ -194,6 +198,189 @@ def build_argv(workspace: Workspace, script: str, limits: IsolationLimits) -> li
         _bootstrap(script, limits),
     ]
     return argv
+
+
+def build_shell_argv(
+    workspace: Workspace,
+    command: str,
+    *,
+    empty_file_fd: Callable[[], int],
+    private_paths: Sequence[Path] | None = None,
+) -> list[str]:
+    """Bubblewrap argv for a project shell command.
+
+    Only this project and a read-only host toolchain are mounted. Git metadata
+    is withheld; credentials use the same path policy as file tools. Capabilities
+    are dropped so a root caller cannot undo those mounts. Network is shared for
+    dependency installation; this is a filesystem boundary, not network policy.
+    """
+    if not isinstance(workspace, Workspace):
+        raise TypeError("sandbox workspace must be a Workspace, not a bare path")
+    bwrap = _bwrap_path()
+    if not bwrap:
+        raise IsolationUnavailable("bubblewrap is unavailable")
+    _validate_shell_root(workspace.root)
+    root = str(workspace.root)
+    argv: list[str] = [bwrap]
+    for ro_path in _RO_BINDS:
+        if os.path.exists(ro_path):
+            argv += ["--ro-bind", ro_path, ro_path]
+    argv += [
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        "--bind",
+        root,
+        root,
+        "--chdir",
+        root,
+    ]
+    # sys.base_prefix describes the already-running host interpreter, rather
+    # than a project-controlled .venv symlink that could request another mount.
+    python_root = Path(sys.base_prefix).resolve(strict=True)
+    if python_root.is_relative_to(workspace.root) or python_root == Path("/"):
+        raise IsolationUnavailable(
+            "host Python installation is not an isolated toolchain"
+        )
+    if not any(python_root.is_relative_to(Path(path)) for path in _RO_BINDS):
+        argv += ["--ro-bind", str(python_root), str(python_root)]
+    tool_bin = "/run/cairn/bin"
+    argv += ["--dir", tool_bin]
+    original_interpreter = Path(getattr(sys, "_base_executable", sys.executable))
+    interpreter = original_interpreter.resolve(strict=True)
+    if original_interpreter != interpreter and not any(
+        original_interpreter.is_relative_to(path)
+        for path in (python_root, *(Path(path) for path in _RO_BINDS))
+    ):
+        # uv-created venvs may name a host-owned version alias. Expose only the
+        # trusted executable alias, not its parent home or sibling installs.
+        argv += ["--symlink", str(interpreter), str(original_interpreter)]
+    argv += ["--symlink", str(interpreter), tool_bin + "/python"]
+    uv = _host_uv(workspace)
+    if uv is not None:
+        argv += ["--ro-bind", str(uv), tool_bin + "/uv"]
+    # Supply public resolver/CA data without exposing the rest of /etc.
+    for system_file in (
+        "/etc/resolv.conf",
+        "/etc/hosts",
+        "/etc/nsswitch.conf",
+        "/etc/ssl/certs/ca-certificates.crt",
+    ):
+        if Path(system_file).is_file():
+            argv += ["--ro-bind", system_file, system_file]
+    # A credential-shaped file may also be present in historical Git objects.
+    # Withhold raw metadata instead of exposing it behind a file-only mask.
+    if private_paths is None:
+        private_paths = shell_private_paths(workspace.root)
+    for private in private_paths:
+        if private.is_symlink():
+            raise IsolationUnavailable("private workspace path is a symlink")
+        if private.is_dir():
+            argv += ["--tmpfs", str(private), "--remount-ro", str(private)]
+        else:
+            argv += ["--ro-bind-data", str(empty_file_fd()), str(private)]
+    argv += [
+        "--unshare-all",
+        "--share-net",
+        "--unshare-user",
+        "--cap-drop",
+        "ALL",
+        "--disable-userns",
+        "--assert-userns-disabled",
+        "--die-with-parent",
+        "--clearenv",
+        "--setenv",
+        "PATH",
+        f"{root}/.venv/bin:{tool_bin}:/usr/bin:/bin",
+        "--setenv",
+        "HOME",
+        "/tmp",
+        "--setenv",
+        "UV_PYTHON",
+        str(interpreter),
+        "--setenv",
+        "UV_PYTHON_DOWNLOADS",
+        "never",
+        "--setenv",
+        "UV_CACHE_DIR",
+        f"{root}/.cairn/cache/uv",
+        "--setenv",
+        "GIT_CONFIG_NOSYSTEM",
+        "1",
+        "--setenv",
+        "GIT_CONFIG_GLOBAL",
+        "/dev/null",
+        "--setenv",
+        "GIT_TERMINAL_PROMPT",
+        "0",
+        "--new-session",
+        "--",
+        "/bin/bash",
+        "-o",
+        "pipefail",
+        "-c",
+        command,
+    ]
+    return argv
+
+
+def _host_uv(workspace: Workspace) -> Path | None:
+    """Select a host binary without following a project-controlled PATH entry."""
+    search = os.pathsep.join(
+        entry
+        for entry in os.environ.get("PATH", os.defpath).split(os.pathsep)
+        if entry and not Path(entry).resolve().is_relative_to(workspace.root)
+    )
+    binary = shutil.which("uv", path=search)
+    if binary is None:
+        return None
+    path = Path(binary).resolve(strict=True)
+    if path.is_relative_to(workspace.root):
+        raise IsolationUnavailable("uv toolchain points into the project")
+    return path
+
+
+def _validate_shell_root(root: Path) -> None:
+    protected = (*_RO_BINDS, "/etc", "/sbin", "/boot", "/dev", "/proc", "/sys", "/run")
+    if (
+        root in (Path("/"), Path.home(), Path("/home"), Path("/tmp"))
+        or is_credential_path(root)
+        or any(part.casefold() == ".git" for part in root.parts)
+        or any(root.is_relative_to(Path(path).resolve()) for path in protected)
+    ):
+        raise IsolationUnavailable("shell workspace overlaps a protected root")
+
+
+def shell_private_paths(root: Path) -> list[Path]:
+    """Bounded discovery; never follow links into another host directory."""
+    _validate_shell_root(root)
+    result: list[Path] = []
+    examined = 0
+
+    def fail(error: OSError) -> None:
+        raise IsolationUnavailable(
+            "workspace credential inventory could not complete"
+        ) from error
+
+    for directory, dirs, files in os.walk(root, followlinks=False, onerror=fail):
+        examined += len(dirs) + len(files)
+        if examined > 200_000:
+            raise IsolationUnavailable(
+                "workspace credential inventory exceeds its limit"
+            )
+        for name in list(dirs):
+            path = Path(directory) / name
+            if name.casefold() == ".git" or is_credential_path(path):
+                result.append(path)
+                dirs.remove(name)
+        for name in files:
+            path = Path(directory) / name
+            if name.casefold() == ".git" or is_credential_path(path):
+                result.append(path)
+    return result
 
 
 class IsolatedRunner:

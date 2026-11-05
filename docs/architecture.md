@@ -42,6 +42,18 @@ same one, so a compaction decision is made against the request the model actuall
 receives rather than a smaller subset. Each contributing capability is read once
 per request; `runtime.turn.hook` still owns when a reduction runs.
 
+The V2 request-view contract retains an immutable record for both rule-folded tool
+results and optional summaries. `core.context.ContextBuilder` applies that record
+to each candidate request; the original history and durable tool facts remain
+unchanged. Normal folding retains the newest complete tool groups. If even that
+view cannot fit, the existing context-admission fallback may fold further or
+reject the request. Reuse checks every affected message, including tool-call
+arguments, and later folding preserves an already accepted summary. Request
+metrics report the folded results actually retained in the sent view.
+Rule-only folding does not claim model-summary usage; the non-frozen comparison
+fixture budgets account for retaining the newest group. Frozen evaluation
+assets and their verdict rules remain unchanged.
+
 For a streaming client it owns one provisional `ResponseAssembler` per attempt.
 Only a validated response after provider finish, clean exhaustion and stream
 cleanup crosses the existing `(request, response)` boundary. Text deltas go to

@@ -1,4 +1,4 @@
-"""Replace a settled range of a conversation with its summary, in place.
+"""Apply folded tool bodies and prefix summaries to an immutable request view.
 
 Compaction is a substitution, not an append: the summarized range becomes one
 message at the exact index the range started, so everything after it keeps its
@@ -37,14 +37,23 @@ class ReplacementError(ValueError):
 def apply_replacement(
     history: list[Message], record: CompactionRecord
 ) -> list[Message]:
-    """Substitute the prefix ``history[:retained_from]`` with one summary message.
+    """Apply a recorded fold and optional prefix summary to one request view.
 
     The original list is never mutated: compaction changes what a request sends,
     never what the conversation recorded.
     """
     end = record.retained_from
-    _validate_range(history, 0, end)
-    return [summary_message(record.summary), *history[end:]]
+    if end:
+        _validate_range(history, 0, end)
+    folded = list(history)
+    for index in record.folded_results:
+        if index >= len(history) or history[index].role != "tool":
+            raise ReplacementError("folded result does not identify a tool message")
+        original = history[index]
+        folded[index] = original.model_copy(
+            update={"content": folded_placeholder(len(original.content or ""))}
+        )
+    return [summary_message(record.summary), *folded[end:]] if end else folded
 
 
 def summary_message(summary: str) -> Message:

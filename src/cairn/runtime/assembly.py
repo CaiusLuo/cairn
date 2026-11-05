@@ -36,6 +36,7 @@ def build_agent(
     personal_context: str = "",
     extra_tools: Sequence[Tool] = (),
     read_only: bool = False,
+    sandbox_shell: bool = False,
     summarize: bool = True,
     summarizer: Summarizer | None = None,
 ) -> Agent:
@@ -53,6 +54,7 @@ def build_agent(
         skills=skills,
         extra_tools=extra_tools,
         read_only=read_only,
+        sandbox_shell=sandbox_shell,
     )
 
     return Agent(

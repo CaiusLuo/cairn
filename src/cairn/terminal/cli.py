@@ -1465,6 +1465,7 @@ async def main(
             task_id=f"wechat-chat-{sender[-8:]}",
             tracer=tracer,
             secret_env_keys=secret_env_keys,
+            personal_context=personal_memory.render_context(),
             read_only=False,
             tool_lease=cli_chat_lease,
             system_prompt=system_prompt_for("chat"),
@@ -1558,16 +1559,13 @@ async def main(
                 error="project_busy: another Cairn worker owns the workspace write lease.",
             )
         try:
-            async with task_gate:
-                task_service = TaskBoardService(
-                    TaskBoardStore(task_board_root),
-                    project=str(workspace.root),
-                    session_id=f"schedule:{task_id}",
-                    source=TaskSource.SCHEDULE,
-                )
-                return await _execute_headless_locked(
-                    prompt, cancel, task_id, task_service
-                )
+            task_service = TaskBoardService(
+                TaskBoardStore(task_board_root),
+                project=str(workspace.root),
+                session_id=f"schedule:{task_id}",
+                source=TaskSource.SCHEDULE,
+            )
+            return await _execute_headless_locked(prompt, cancel, task_id, task_service)
         finally:
             cli_task_lease.release()
 
@@ -1611,6 +1609,13 @@ async def main(
             "--approve-provider-models",
             ",".join(group.model_ids),
         ]
+        grants = permission_handler.grants
+        if PermissionCapability.LOCAL_SHELL in grants:
+            serve_command.append("--allow-shell")
+        if PermissionCapability.MCP_SERVER in grants:
+            serve_command.append("--allow-mcp")
+        if PermissionCapability.NETWORK in grants:
+            serve_command.append("--allow-network")
         command = [
             sys.executable,
             "-c",
@@ -1666,6 +1671,7 @@ async def main(
         workspace=workspace.root,
         store=ScheduleStore(default_schedule_dir()),
         executor=_schedule_execute,
+        execution_gate=task_gate,
         deliver=wechat_controller.deliver,
         deliver_for_account=wechat_controller.deliver_for_account,
         recipient=wechat_controller.recipient_id,

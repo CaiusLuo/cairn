@@ -13,6 +13,7 @@ import os
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -175,6 +176,17 @@ class ScheduleStore:
         with self._locked():
             self._save_jobs_unlocked(jobs)
 
+    def add_or_get_job(self, job: ScheduleJob) -> tuple[ScheduleJob, bool]:
+        """Atomically create a job or return the already-saved exact job."""
+        with self._locked():
+            jobs = list(self._load_jobs_unlocked())
+            existing = next((item for item in jobs if item.job_id == job.job_id), None)
+            if existing is not None:
+                return existing, False
+            jobs.append(job)
+            self._save_jobs_unlocked(tuple(jobs))
+            return job, True
+
     def add_job(self, job: ScheduleJob) -> None:
         with self._locked():
             jobs = list(self._load_jobs_unlocked())
@@ -209,6 +221,7 @@ class ScheduleStore:
         workspace: str | None = None,
         recipient: str | None = None,
         account_id: str | None = None,
+        reminder: bool | None = None,
     ) -> tuple[ScheduleJob, str] | None:
         """Claim one due job, optionally restricted to one exact owner.
 
@@ -228,6 +241,8 @@ class ScheduleStore:
                     continue
                 if account_id is not None and job.account_id != account_id:
                     continue
+                if reminder is not None and job.reminder != reminder:
+                    continue
                 run_key = f"{job.job_id}:{job.next_run_at.isoformat()}"
                 claimed = job.model_copy(
                     update={
@@ -235,6 +250,7 @@ class ScheduleStore:
                         "next_run_at": next_run_after(job, now),
                         "last_status": "running",
                         "last_error": None,
+                        "execution_started": False,
                     }
                 )
                 jobs[index] = claimed
@@ -268,15 +284,33 @@ class ScheduleStore:
         """
         with self._locked():
             jobs = list(self._load_jobs_unlocked())
-            pending = [
+            claimed = [
                 (index, job)
                 for index, job in enumerate(jobs)
                 if job.last_status == "running"
+                and not job.execution_started
                 and (workspace is None or job.workspace == workspace)
                 and job.recipient == recipient
                 and (account_id is None or job.account_id == account_id)
             ]
-            if not pending:
+            for index, job in claimed:
+                jobs[index] = job.model_copy(
+                    update={
+                        "last_status": "recovered",
+                        "last_error": "claimed but not started; retryable",
+                        "next_run_at": job.last_run_at or now,
+                    }
+                )
+            pending = [
+                (index, job)
+                for index, job in enumerate(jobs)
+                if job.last_status == "running"
+                and job.execution_started
+                and (workspace is None or job.workspace == workspace)
+                and job.recipient == recipient
+                and (account_id is None or job.account_id == account_id)
+            ]
+            if not pending and not claimed:
                 return 0
             runs = self.load_runs(limit=2**31 - 1)
             for index, job in pending:
@@ -312,6 +346,9 @@ class ScheduleStore:
                     status = str(finished["status"])
                     saved_error = finished.get("error")
                     error = saved_error if isinstance(saved_error, str) else None
+                elif job.reminder:
+                    status = "delivery_unknown"
+                    error = "reminder delivery interrupted; not retried"
                 else:
                     status = "interrupted"
                     error = "execution interrupted; delivery status unknown"
@@ -338,6 +375,47 @@ class ScheduleStore:
             # update, the next recovery sees that fact and does not append twice.
             self._save_jobs_unlocked(tuple(jobs))
             return len(pending)
+
+    def job_execution_started(self, job_id: str) -> bool:
+        with self._locked():
+            jobs = self._load_jobs_unlocked()
+            return any(job.job_id == job_id and job.execution_started for job in jobs)
+
+    def restore_claim(self, job_id: str) -> bool:
+        """Return a claimed-but-not-started once job to the due queue."""
+        with self._locked():
+            jobs = list(self._load_jobs_unlocked())
+            for index, job in enumerate(jobs):
+                if job.job_id == job_id:
+                    jobs[index] = job.model_copy(
+                        update={
+                            "last_status": "recoverable",
+                            "last_error": "shutdown before execution; retryable",
+                            "next_run_at": job.last_run_at or self._clockless_now(),
+                            "execution_started": False,
+                        }
+                    )
+                    self._save_jobs_unlocked(tuple(jobs))
+                    return True
+            return False
+
+    @staticmethod
+    def _clockless_now() -> Any:
+        from datetime import datetime
+
+        return datetime.now(UTC)
+
+    def mark_execution_started(self, job_id: str) -> bool:
+        with self._locked():
+            jobs = list(self._load_jobs_unlocked())
+            for index, job in enumerate(jobs):
+                if job.job_id == job_id:
+                    jobs[index] = job.model_copy(
+                        update={"execution_started": True, "last_status": "running"}
+                    )
+                    self._save_jobs_unlocked(tuple(jobs))
+                    return True
+            return False
 
     def finish_run(
         self,

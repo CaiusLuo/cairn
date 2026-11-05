@@ -262,7 +262,7 @@ def test_two_sessions_do_not_claim_same_due_job(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_claimed_unfinished_job_is_not_replayed_after_restart(tmp_path: Path) -> None:
+def test_claimed_unstarted_job_is_replayed_after_restart(tmp_path: Path) -> None:
     store = ScheduleStore(tmp_path / "schedule")
     store.save_jobs((_job(),))
     claimed = store.claim_due(NOW)
@@ -289,16 +289,12 @@ def test_claimed_unfinished_job_is_not_replayed_after_restart(tmp_path: Path) ->
         )
         await runner.run_due(NOW)
         await runner.run_due(NOW)
-        assert calls == 0
+        assert calls == 1
 
     asyncio.run(scenario())
     saved = store.load_jobs()[0]
-    assert saved.last_status == "interrupted"
+    assert saved.last_status == "completed"
     assert saved.next_run_at is None
-    rows = store.load_runs()
-    assert [row["status"] for row in rows] == ["interrupted", "started"]
-    assert rows[0]["run_key"] == rows[1]["run_key"]
-    assert rows[0]["delivered"] is None
 
 
 def test_recovery_does_not_mark_another_owner_interrupted(tmp_path: Path) -> None:
@@ -494,7 +490,7 @@ def test_controller_close_cancels_waiting_for_execution_lock(tmp_path: Path) -> 
         holder.release()
 
 
-def test_controller_close_marks_running_job_cancelled_and_no_replay(
+def test_controller_close_retains_started_job_without_replay(
     tmp_path: Path,
 ) -> None:
     import time
@@ -535,10 +531,10 @@ def test_controller_close_marks_running_job_cancelled_and_no_replay(
 
     asyncio.run(scenario())
     saved = store.load_jobs()[0]
-    assert saved.last_status == "cancelled"
+    assert saved.last_status == "interrupted"
     runs = store.load_runs()
-    assert runs[0]["status"] == "cancelled"
-    # A restart must not replay the cancelled side effect.
+    assert {row["status"] for row in runs} == {"started", "interrupted"}
+    # An entered executor may have effects; restart must not replay it.
     calls = 0
 
     async def late_executor(
@@ -743,6 +739,7 @@ def test_recovery_keeps_a_persisted_terminal_fact_after_job_write_failure(
     claim = store.claim_due(NOW)
     assert claim is not None
     _, run_key = claim
+    assert store.mark_execution_started("job-1")
     original_save = store._save_jobs_unlocked
 
     def fail_save(jobs: tuple[ScheduleJob, ...]) -> None:
@@ -827,3 +824,177 @@ def test_runner_supports_async_emit_callback(tmp_path: Path) -> None:
 
     asyncio.run(scenario())
     assert any("定时任务 job-1" in text for text in emitted)
+
+
+def test_runner_delivers_reminder_without_invoking_model(tmp_path: Path) -> None:
+    store = ScheduleStore(tmp_path / "schedule")
+    store.save_jobs((_job(reminder=True, prompt="check deploy"),))
+    calls: list[str] = []
+    sent: list[tuple[str, str]] = []
+
+    async def executor(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        calls.append(prompt)
+        return _result(task_id)
+
+    async def deliver(sender: str, text: str) -> bool:
+        sent.append((sender, text))
+        return True
+
+    async def scenario() -> None:
+        runner = ScheduleRunner(
+            store=store,
+            executor=executor,
+            deliver=deliver,
+            recipient=lambda: "owner",
+            clock=lambda: NOW,
+        )
+        await runner.run_due(NOW)
+
+    asyncio.run(scenario())
+    assert calls == []
+    assert sent == [("owner", "check deploy")]
+    assert store.load_jobs()[0].last_status == "completed"
+
+
+def test_schedule_create_uses_trusted_message_and_is_idempotent(tmp_path: Path) -> None:
+    from cairn.infra.tools.base import ToolExecutionContext
+    from cairn.runtime.scheduling.tools import ScheduleCreateTool
+
+    store = ScheduleStore(tmp_path / "schedule")
+    tool = ScheduleCreateTool(
+        store=store,
+        workspace="/workspace",
+        recipient=lambda: "owner",
+        account_id=lambda: "bot",
+        clock=lambda: NOW,
+        require_trusted_message=True,
+    )
+    args = {
+        "prompt": "检查部署",
+        "kind": "once",
+        "when": (NOW + timedelta(minutes=10)).isoformat(),
+        "timezone": "Asia/Shanghai",
+    }
+    context = ToolExecutionContext(
+        trusted_user_text="十分钟后提醒我检查部署", trusted_message_id="msg-1"
+    )
+    first = asyncio.run(tool.execute(args, context=context))
+    changed = dict(args, when=(NOW + timedelta(minutes=20)).isoformat())
+    second = asyncio.run(tool.execute(changed, context=context))
+    assert first.exit_code == 0 and "Created" in first.stdout
+    assert second.exit_code == 0 and "Existing" in second.stdout
+    assert len(store.load_jobs()) == 1
+    other_context = ToolExecutionContext(
+        trusted_user_text="十分钟后提醒我检查部署", trusted_message_id="msg-2"
+    )
+    third = asyncio.run(tool.execute(args, context=other_context))
+    assert third.exit_code == 0 and "Created" in third.stdout
+    assert len(store.load_jobs()) == 2
+    denied = asyncio.run(
+        tool.execute(args, context=ToolExecutionContext(trusted_user_text="你好"))
+    )
+    assert denied.exit_code == 1
+
+
+def test_waiting_host_gate_is_retryable_without_entering_executor(
+    tmp_path: Path,
+) -> None:
+    store = ScheduleStore(tmp_path / "schedule")
+    store.save_jobs((_job(),))
+    calls: list[str] = []
+
+    async def executor(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        calls.append(task_id)
+        return _result(task_id)
+
+    async def deliver(sender: str, text: str) -> bool:
+        return True
+
+    async def scenario() -> None:
+        gate = asyncio.Lock()
+        await gate.acquire()
+        runner = ScheduleRunner(
+            store=store,
+            executor=executor,
+            deliver=deliver,
+            recipient=lambda: "owner",
+            clock=lambda: NOW,
+            execution_gate=gate,
+        )
+        pending = asyncio.create_task(runner.run_due(NOW))
+        try:
+            await asyncio.sleep(0)
+            assert store.load_jobs()[0].last_status == "running"
+            assert not store.load_jobs()[0].execution_started
+            assert calls == []
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+            assert store.load_jobs()[0].last_status == "recoverable"
+        finally:
+            gate.release()
+            if not pending.done():
+                pending.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await pending
+        restarted = ScheduleRunner(
+            store=ScheduleStore(tmp_path / "schedule"),
+            executor=executor,
+            deliver=deliver,
+            recipient=lambda: "owner",
+            clock=lambda: NOW,
+        )
+        await restarted.run_due(NOW)
+        assert calls == ["scheduled-job-1"]
+        assert store.load_jobs()[0].last_status == "completed"
+
+    asyncio.run(scenario())
+
+
+def test_background_execution_failure_is_observed_and_reported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def executor(
+        prompt: str, cancel: asyncio.Event, task_id: str
+    ) -> HeadlessResult:
+        raise AssertionError("no job expected")
+
+    async def deliver(sender: str, text: str) -> bool:
+        return True
+
+    async def scenario() -> None:
+        stop = asyncio.Event()
+        messages: list[str] = []
+
+        def emit(text: str) -> None:
+            messages.append(text)
+            stop.set()
+
+        runner = ScheduleRunner(
+            store=ScheduleStore(tmp_path / "schedule"),
+            executor=executor,
+            deliver=deliver,
+            recipient=lambda: "owner",
+            clock=lambda: NOW,
+            poll_interval=0.05,
+            emit=emit,
+            result_redactor=lambda text: text.replace("private-value", "[redacted]"),
+        )
+
+        async def fail_execution(now: datetime) -> None:
+            raise ValueError("private-value")
+
+        monkeypatch.setattr(runner, "run_execution", fail_execution)
+        report = await asyncio.wait_for(runner.run(stop), timeout=2)
+        assert report.failed > 0
+        assert any(
+            "ValueError" in message and "[redacted]" in message for message in messages
+        )
+        assert all("private-value" not in message for message in messages)
+
+    asyncio.run(scenario())

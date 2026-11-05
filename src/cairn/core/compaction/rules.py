@@ -269,29 +269,41 @@ def count_groups(messages: list[Message]) -> int:
 
 @dataclass(frozen=True, slots=True)
 class CompactionRecord:
-    """One compaction already applied to a conversation.
+    """An immutable request view over the unchanged conversation.
 
-    Immutable, append-only evidence: the conversation it describes is never
-    rewritten, so a later compaction extends a list of these instead of
-    replacing one.
+    A view may fold tool results, replace an older prefix with a summary, or do
+    both. Indices always address the original history, before substitution.
     """
 
     #: Index of the first message the summary did not replace. Everything before
     #: it was replaced by one summary message, so this is also the count replaced.
     retained_from: int
     summary: str
-    #: Request size once rule folding ran, which is what the summary replaced.
+    #: Request size before this replacement (after folding for a new summary).
     folded_tokens: int
     #: Request size after substituting the summary.
     tokens_after: int
+    #: Original indices of tool-result bodies shortened in the retained suffix.
+    folded_results: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.retained_from < 1:
-            raise ValueError("a compaction must replace at least one message")
+        if self.retained_from < 0:
+            raise ValueError("retained_from must not be negative")
         if self.folded_tokens < 0 or self.tokens_after < 0:
             raise ValueError("token counts must not be negative")
-        if not self.summary.strip():
+        if self.retained_from and not self.summary.strip():
             raise ValueError("a compaction record requires a nonblank summary")
+        if not self.retained_from and (self.summary or not self.folded_results):
+            raise ValueError("a folding-only record needs results and no summary")
+        if (
+            not isinstance(self.folded_results, tuple)
+            or any(
+                type(index) is not int or index < self.retained_from
+                for index in self.folded_results
+            )
+            or self.folded_results != tuple(sorted(set(self.folded_results)))
+        ):
+            raise ValueError("folded results must be ordered retained indices")
 
     def is_gainless(self) -> bool:
         """Whether this compaction failed to shrink the request."""
