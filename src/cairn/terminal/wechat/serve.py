@@ -1775,6 +1775,16 @@ class _Service:
                 "schedule_receipt_sending",
                 "schedule_receipt_unknown",
             }:
+                if (
+                    recovered.sender not in self.config.allowed_senders
+                    or recovered.sender != self.config.account.ilink_user_id
+                    or not recovered.stable
+                    or recovered.text is None
+                ):
+                    self.state.mark(
+                        _key, "rejected", reason="schedule_recovery_not_authorized"
+                    )
+                    continue
                 await self._recover_schedule(recovered, record)
                 continue
             if state == "queued":

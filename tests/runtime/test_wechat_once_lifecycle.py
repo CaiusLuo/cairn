@@ -406,3 +406,36 @@ def test_unconfirmed_creation_receipt_is_not_retried(harness: Harness) -> None:
         assert restarted_client.sent == []
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("change", ["revoked", "unstable", "non_text", "owner_changed"])
+def test_schedule_recovery_rechecks_current_authorization(
+    harness: Harness, change: str
+) -> None:
+    from dataclasses import replace
+
+    harness.inbound()
+    harness.state.mark("msg:1", "schedule_pending")
+    if change == "revoked":
+        harness.config = replace(harness.config, allowed_senders=frozenset({"other"}))
+    elif change == "unstable":
+        harness.state.mark("msg:1", "schedule_pending", stable=False)
+    elif change == "non_text":
+        harness.state.mark("msg:1", "schedule_pending", is_text=False)
+    else:
+        harness.config = replace(
+            harness.config,
+            account=replace(harness.config.account, ilink_user_id="other"),
+        )
+
+    async def scenario() -> None:
+        client = Client()
+        service = harness.service(client=client)
+        await service._recover()
+        assert await drain(service) == []
+        assert harness.store.load_jobs() == ()
+        assert client.sent == []
+        assert harness.model_inputs == []
+        assert (harness.state.get_record("msg:1") or {}).get("state") == "rejected"
+
+    asyncio.run(scenario())
