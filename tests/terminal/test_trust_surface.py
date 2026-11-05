@@ -43,12 +43,15 @@ class _Frame:
 
     def __init__(self) -> None:
         self.shown: list[Action | None] = []
+        self.rendered = asyncio.Event()
         self.on_action_choose: Any = None
         self.on_action_command: Any = None
         self.on_action_move: Any = None
 
     def show_action(self, action: Action | None) -> None:
         self.shown.append(action)
+        if action is not None:
+            self.rendered.set()
 
 
 def _answer_with(frame: _Frame, row: str | None) -> None:
@@ -258,10 +261,7 @@ def test_real_runtime_permission_bridge_awaits_the_live_surface() -> None:
 
     async def scenario() -> Any:
         check = asyncio.create_task(_check_tool_permission_async(agent, call, None))
-        for _ in range(100):
-            if frame.shown:
-                break
-            await asyncio.sleep(0)
+        await asyncio.wait_for(frame.rendered.wait(), timeout=1)
         assert frame.shown, "permission surface was not rendered"
         action = frame.shown[0]
         assert action is not None
@@ -307,10 +307,7 @@ def test_real_runtime_permission_bridge_fails_closed(
 
     async def scenario() -> Any:
         check = asyncio.create_task(_check_tool_permission_async(agent, call, None))
-        for _ in range(100):
-            if frame.shown:
-                break
-            await asyncio.sleep(0)
+        await asyncio.wait_for(frame.rendered.wait(), timeout=1)
         assert frame.shown, "permission surface was not rendered"
         if outcome == "close":
             assert frame.on_action_command is not None
@@ -377,10 +374,7 @@ def test_cancelling_a_real_turn_during_approval_does_not_advance_or_execute() ->
 
     async def scenario() -> None:
         turn = asyncio.create_task(run_turn(agent, "run command", budget=TEST_BUDGET))
-        for _ in range(100):
-            if frame.shown:
-                break
-            await asyncio.sleep(0)
+        await asyncio.wait_for(frame.rendered.wait(), timeout=1)
         assert frame.shown, "permission surface was not rendered"
         turn.cancel()
         with pytest.raises(asyncio.CancelledError):
