@@ -9,7 +9,6 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import tempfile
 import time
 import uuid
 from collections.abc import Iterator
@@ -25,6 +24,7 @@ from cairn.core.task_board import (
     TaskSource,
     TaskTodo,
 )
+from cairn.infra.atomic_json import atomic_write as _atomic_write
 
 TASK_BOARD_DIR_ENV = "CAIRN_TASK_BOARD_DIR"
 STORE_VERSION = 1
@@ -65,25 +65,6 @@ def ensure_outside_workspace(state_root: Path, workspace: Path) -> None:
     root = workspace.resolve()
     if state == root or state.is_relative_to(root):
         raise ValueError("Task board directory must live outside the Workspace")
-
-
-def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with suppress(OSError):
-        path.parent.chmod(0o700)
-    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-    except BaseException:
-        with suppress(OSError):
-            os.unlink(tmp)
-        raise
 
 
 class TaskBoardStore:
