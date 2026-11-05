@@ -1410,11 +1410,35 @@ class _Service:
         self, coro: Coroutine[Any, Any, None], inbound: _Inbound
     ) -> None:
         if len(self._intent_tasks) >= MAX_INTENT_TASKS:
+            coro.close()
             self.state.mark(
                 inbound.key or "", "rejected", reason="schedule_backlog_full"
             )
             return
-        task = asyncio.create_task(coro)
+
+        async def guarded() -> None:
+            try:
+                await coro
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                detail = str(exc)
+                if self.redact_text is not None:
+                    detail = self.redact_text(detail)
+                self.state.mark(
+                    inbound.key or "",
+                    "schedule_failed",
+                    schedule_error_type=type(exc).__name__,
+                    schedule_error=detail[:160],
+                )
+                await self._safe_reply(
+                    inbound.sender,
+                    inbound.context_token,
+                    f"定时任务创建失败\uff08{type(exc).__name__}\uff09\uff1a{detail[:160]}"
+                    "\u3002未确认创建\uff0c请稍后重试。",
+                )
+
+        task = asyncio.create_task(guarded())
         self._intent_tasks.add(task)
         task.add_done_callback(self._intent_tasks.discard)
 
