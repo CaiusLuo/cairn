@@ -99,6 +99,40 @@ def _bwrap_path() -> str:
     return shutil.which("bwrap") or ""
 
 
+#: Feature support per resolved bwrap path, so `--help` is not run per command.
+_userns_lock_cache: dict[str, bool] = {}
+
+
+def _bwrap_supports_userns_lock(bwrap: str) -> bool:
+    """Whether this bwrap can forbid nested user namespaces.
+
+    Ubuntu 22.04 still ships bubblewrap 0.6.1, which rejects the newer
+    ``--disable-userns`` / ``--assert-userns-disabled`` options at argv parsing
+    time. Feature detection keeps the stronger contract on newer hosts while
+    letting the older sandbox run with its existing unshare/capability boundary.
+    """
+    cached = _userns_lock_cache.get(bwrap)
+    if cached is not None:
+        return cached
+    try:
+        result = subprocess.run(
+            [bwrap, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        _userns_lock_cache[bwrap] = False
+        return False
+    help_text = f"{result.stdout or ''}{result.stderr or ''}"
+    supported = (
+        "--disable-userns" in help_text and "--assert-userns-disabled" in help_text
+    )
+    _userns_lock_cache[bwrap] = supported
+    return supported
+
+
 def available() -> bool:
     """Whether a real sandbox can run here (bwrap present and namespaces work)."""
     global _probe_cache
@@ -282,14 +316,17 @@ def build_shell_argv(
             argv += ["--tmpfs", str(private), "--remount-ro", str(private)]
         else:
             argv += ["--ro-bind-data", str(empty_file_fd()), str(private)]
-    argv += [
+    userns_lock = _bwrap_supports_userns_lock(bwrap)
+    isolation: list[str] = [
         "--unshare-all",
         "--share-net",
         "--unshare-user",
         "--cap-drop",
         "ALL",
-        "--disable-userns",
-        "--assert-userns-disabled",
+    ]
+    if userns_lock:
+        isolation += ["--disable-userns", "--assert-userns-disabled"]
+    isolation += [
         "--die-with-parent",
         "--clearenv",
         "--setenv",
@@ -324,6 +361,7 @@ def build_shell_argv(
         "-c",
         command,
     ]
+    argv += isolation
     return argv
 
 

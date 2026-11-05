@@ -7,6 +7,7 @@ import sys
 import zipfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -272,3 +273,42 @@ def test_shell_rejects_protected_workspace(
         sandbox.build_shell_argv(
             Workspace(Path(root)), "true", empty_file_fd=lambda: -1
         )
+
+
+def test_bwrap_userns_lock_detection_uses_help_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def new_help(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            stdout="--disable-userns\n--assert-userns-disabled\n", stderr=""
+        )
+
+    def old_help(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(stdout="bubblewrap 0.6.1\n--unshare-user\n", stderr="")
+
+    monkeypatch.setattr(sandbox, "_userns_lock_cache", {})
+    monkeypatch.setattr(subprocess, "run", new_help)
+    assert sandbox._bwrap_supports_userns_lock("/usr/bin/bwrap") is True
+
+    monkeypatch.setattr(sandbox, "_userns_lock_cache", {})
+    monkeypatch.setattr(subprocess, "run", old_help)
+    assert sandbox._bwrap_supports_userns_lock("/usr/bin/bwrap") is False
+
+
+@pytest.mark.parametrize("supported", [False, True])
+def test_shell_argv_adapts_to_bwrap_userns_lock_support(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, supported: bool
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    monkeypatch.setattr(sandbox, "_bwrap_path", lambda: "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_userns_lock_cache", {"/usr/bin/bwrap": supported})
+    argv = sandbox.build_shell_argv(
+        Workspace(root), "true", empty_file_fd=lambda: -1, private_paths=[]
+    )
+    assert argv[0] == "/usr/bin/bwrap"
+    assert "--unshare-user" in argv
+    assert "--cap-drop" in argv
+    assert argv[argv.index("--cap-drop") + 1] == "ALL"
+    assert ("--disable-userns" in argv) is supported
+    assert ("--assert-userns-disabled" in argv) is supported
