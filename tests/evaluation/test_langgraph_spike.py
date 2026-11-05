@@ -54,13 +54,13 @@ def test_chat_finishes_without_a_tool() -> None:
     assert [m.role for m in spike.messages] == ["user", "assistant"]
 
 
-def test_tool_result_reaches_model_and_matches_old_loop(
+def test_tool_result_reaches_model_through_same_turn_owner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Even an environment requesting tracing must not cause an export.
     monkeypatch.setenv("LANGSMITH_TRACING", "true")
     results = asyncio.run(compare_offline())
-    old, graph = results["cairn_loop"], results["langgraph"]
+    old, graph = results["direct_agent"], results["facade"]
     assert old["answer"] == graph["answer"] == "Answer: offline fixture"
     assert old["model_requests"] == graph["model_requests"] == 2
     assert old["tool_executions"] == graph["tool_executions"] == 1

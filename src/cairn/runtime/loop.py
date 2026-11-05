@@ -69,6 +69,11 @@ cancellation:
 import asyncio
 from collections import deque
 from collections.abc import Sequence
+from typing import Any, Literal, TypedDict
+
+from langgraph.errors import NodeCancelledError
+from langgraph.graph import END, START, StateGraph
+from langsmith import tracing_context
 
 from cairn.core.budget import (
     BudgetReason,
@@ -78,9 +83,10 @@ from cairn.core.budget import (
 from cairn.core.context import ContextBudgetExceeded
 from cairn.core.events import Event
 from cairn.core.memory.context import MemoryContext
-from cairn.core.models import ToolCall, ToolFailure
+from cairn.core.models import Message, ToolCall, ToolFailure
 from cairn.runtime.agent import Agent
 from cairn.runtime.durable_session import DurableSession
+from cairn.runtime.lifecycle import settle_owned
 from cairn.runtime.session import Session, SessionAdmissionError, TurnOutcome
 from cairn.runtime.tool_execution import execute_tool_call
 from cairn.runtime.turn.context import build_system_messages
@@ -90,6 +96,12 @@ from cairn.runtime.turn.hook import (
 )
 from cairn.runtime.turn.steering import SteerQueue
 from cairn.runtime.turn_trace import AttemptContext, TurnTrace
+
+
+class _GraphState(TypedDict):
+    step: int
+    done: bool
+    answer: str
 
 
 def _context_limit(agent: Agent) -> int | None:
@@ -163,7 +175,13 @@ async def run_turn(
             # compaction; external instructions never become system authority.
             agent.state.add_user_message("\n\n".join((*selected_context, user_input)))
 
-            for step in range(budget.max_steps):
+            system_messages: list[Message] = []
+            tool_schemas: list[dict[str, Any]] = []
+
+            async def model_node(state: _GraphState) -> _GraphState:
+                nonlocal pending_tool_calls, outcome, system_messages, tool_schemas
+                assert trace is not None
+                step = state["step"]
                 # Instructions that arrived during the previous step join the
                 # conversation here, before the request is built. This is the only
                 # safe boundary: the tool batch has settled, so no call group is
@@ -247,7 +265,7 @@ async def run_turn(
                     # check. Returning here would discard it and leave the operator
                     # believing they redirected work that continued unchanged.
                     if steering is not None and steering.has_pending_steers:
-                        continue
+                        return {"step": step + 1, "done": False, "answer": ""}
                     agent.emit(
                         Event(
                             type="agent_finish",
@@ -259,7 +277,16 @@ async def run_turn(
                     )
 
                     outcome = TurnOutcome.COMPLETED
-                    return response.content or ""
+                    return {
+                        "step": step + 1,
+                        "done": True,
+                        "answer": response.content or "",
+                    }
+
+                return {"step": step + 1, "done": False, "answer": ""}
+
+            async def tool_node(state: _GraphState) -> _GraphState:
+                assert trace is not None
 
                 def mark_tool_execution_started() -> None:
                     nonlocal tool_execution_started
@@ -271,7 +298,7 @@ async def run_turn(
                     pending.popleft()
 
                 assistant_index = len(agent.state.messages) - 1
-                for tool_call in response.tool_calls:
+                for tool_call in tuple(pending_tool_calls):
 
                     def before_execute(
                         call: ToolCall = tool_call, index: int = assistant_index
@@ -301,6 +328,67 @@ async def run_turn(
                     turn_start=turn_start,
                     trace=trace,
                 )
+
+                return state
+
+            def after_model(state: _GraphState) -> Literal["model", "tools", "end"]:
+                if state["done"]:
+                    return "end"
+                if pending_tool_calls:
+                    return "tools"
+                return "model" if state["step"] < budget.max_steps else "end"
+
+            def after_tools(state: _GraphState) -> Literal["model", "end"]:
+                return "model" if state["step"] < budget.max_steps else "end"
+
+            graph = StateGraph(_GraphState)
+            graph.add_node("model", model_node)
+            graph.add_node("tools", tool_node)
+            graph.add_edge(START, "model")
+            graph.add_conditional_edges(
+                "model", after_model, {"model": "model", "tools": "tools", "end": END}
+            )
+            graph.add_conditional_edges(
+                "tools", after_tools, {"model": "model", "end": END}
+            )
+            compiled = graph.compile()
+            # LangGraph schedules nodes; this existing turn remains the sole
+            # admission/fence/rollback/commit owner. No graph retry/checkpointer.
+            with tracing_context(enabled=False):
+                execution = asyncio.create_task(
+                    compiled.ainvoke(
+                        {"step": 0, "done": False, "answer": ""},
+                        config={"recursion_limit": 2 * budget.max_steps + 2},
+                    )
+                )
+                try:
+                    graph_result = await asyncio.shield(execution)
+                except NodeCancelledError as exc:
+                    await settle_owned(execution)
+                    # LangGraph wraps cancellation raised by a node; Cairn's
+                    # public turn API keeps its existing cancellation contract.
+                    if isinstance(exc.__cause__, asyncio.CancelledError):
+                        raise exc.__cause__ from None
+                    raise
+                except BaseException as primary:
+                    await settle_owned(execution)
+                    # A shielded caller cancellation must not erase a model or
+                    # tool cleanup failure. Task callers retain their own stop
+                    # policy above this boundary, just as with direct awaits.
+                    try:
+                        execution.result()
+                    except asyncio.CancelledError as owned:
+                        for note in getattr(owned, "__notes__", ()):
+                            primary.add_note(note)
+                    except NodeCancelledError as owned:
+                        for note in getattr(owned.__cause__, "__notes__", ()):
+                            primary.add_note(note)
+                    except BaseException as failure:
+                        if isinstance(primary, asyncio.CancelledError):
+                            raise failure from None
+                    raise
+            if graph_result["done"]:
+                return str(graph_result["answer"])
 
             agent.emit(
                 Event(
