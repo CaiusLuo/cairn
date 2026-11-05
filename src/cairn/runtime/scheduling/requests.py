@@ -176,7 +176,7 @@ def parse_once_request(
         return Clarification("multiple times are ambiguous")
     try:
         parsed = _explicit_time(raw, received, zone)
-    except (ValueError, OverflowError):
+    except (KeyError, ValueError, OverflowError):
         return Clarification("invalid time")
     if parsed is None:
         if any(cue in raw for cue in ("提醒", "定时", "安排", "晚点", "稍后")):

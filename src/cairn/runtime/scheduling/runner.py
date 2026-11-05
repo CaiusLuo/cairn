@@ -97,6 +97,7 @@ class ScheduleRunner:
         workspace: str = "",
         account_id: str | Callable[[], str | None] | None = None,
         result_redactor: Callable[[str], str] | None = None,
+        execution_gate: asyncio.Lock | None = None,
     ) -> None:
         self.store = store
         self.executor = executor
@@ -106,6 +107,7 @@ class ScheduleRunner:
         self.workspace = workspace
         self.account_id = account_id
         self.result_redactor = result_redactor
+        self.execution_gate = execution_gate
         self.clock = clock
         self.sleep = sleep
         self.poll_interval = max(0.05, poll_interval)
@@ -122,8 +124,14 @@ class ScheduleRunner:
                 try:
                     await self.run_reminders(now)
                     if execution_task is not None and execution_task.done():
-                        with contextlib.suppress(asyncio.CancelledError, Exception):
-                            execution_task.exception()
+                        if not execution_task.cancelled():
+                            failure = execution_task.exception()
+                            if failure is not None:
+                                self.report.failed += 1
+                                self._say(
+                                    "定时任务执行检查失败: "
+                                    f"{type(failure).__name__}: {failure}"
+                                )
                         execution_task = None
                     if execution_task is None:
                         execution_task = asyncio.create_task(self.run_execution(now))
@@ -318,9 +326,14 @@ class ScheduleRunner:
             )
             return
         try:
-            result = await self.executor(
-                job.prompt, asyncio.Event(), f"scheduled-{job.job_id}"
-            )
+            # The runner owns the effect boundary for every adapter. Waiting
+            # for a host gate is still a claim; only entry to the executor makes
+            # an interrupted occurrence unsafe to replay.
+            async with self.execution_gate or contextlib.nullcontext():
+                self.store.mark_execution_started(job.job_id)
+                result = await self.executor(
+                    job.prompt, asyncio.Event(), f"scheduled-{job.job_id}"
+                )
             status = result.status.value
         except asyncio.CancelledError:
             if self.store.job_execution_started(job.job_id):

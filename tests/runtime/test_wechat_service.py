@@ -1265,7 +1265,7 @@ def test_wechat_reopen_failure_releases_attached_session_owner(
         )
 
 
-def test_wechat_attachment_failure_retains_unclosed_store(
+def test_wechat_attachment_failure_keeps_writer_for_host_close_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from tempfile import TemporaryDirectory
@@ -1343,7 +1343,12 @@ def test_wechat_attachment_failure_retains_unclosed_store(
         async def flow() -> tuple[HeadlessResult, HeadlessResult]:
             execute = default_task_executor(config)
             failed = await execute("first", asyncio.Event(), "one", sender="u1")  # type: ignore[call-arg]
+            # The host, rather than an attachment failure, now owns Store close.
+            # A failed host close must keep the exact writer for a later retry.
+            with pytest.raises(OSError, match="synthetic close failure"):
+                execute.close()  # type: ignore[attr-defined]
             later = await execute("later", asyncio.Event(), "two", sender="u1")  # type: ignore[call-arg]
+            execute.close()  # type: ignore[attr-defined]
             return failed, later
 
         failed, later = asyncio.run(flow())

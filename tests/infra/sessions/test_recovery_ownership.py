@@ -259,3 +259,54 @@ def test_uncertain_commit_keeps_ownership_until_exact_faulted_release(
         )
     finally:
         api.close()
+
+
+@pytest.mark.parametrize("fault", ["codec", "transaction"])
+def test_persisted_recovery_is_local_but_storage_fault_still_blocks_all_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    other_session = "00000000-0000-4000-8000-000000000009"
+    api = store(tmp_path)
+    first_binding = binding(tmp_path)
+    other_binding = binding(tmp_path, session_id=other_session)
+    try:
+        initial = api.create(first_binding).revision
+        other = api.create(other_binding).revision
+        turn = intent(first_binding, initial)
+        active = api.begin_turn(initial, turn)
+        active = api.require_recovery(active, "finalization_failed")
+        failed = api.inspect(SESSION)
+        assert failed.local_fault and failed.status == "recovery_required"
+        assert api.inspect(other_session).status == "clean"
+        assert not api.inspect(other_session).local_fault
+        other_turn = intent(other_binding, other, turn_id=OTHER_TURN)
+        other_active = api.begin_turn(other, other_turn)
+        assert api.commit_turn(other_active, settled(other_turn)).revision.head_seq == 1
+        assert api.inspect(SESSION) == failed
+        api.release_turn(active, TURN)
+        # Neither invalid encoded input nor a real transaction failure may
+        # downgrade a Store-wide trust-boundary fault to one Session marker.
+        if fault == "codec":
+            with pytest.raises(SessionStoreError):
+                api.create(other_binding.model_copy(update={"session_id": "invalid"}))
+        else:
+
+            def failed_commit(conn: sqlite3.Connection) -> None:
+                raise sqlite3.OperationalError("opaque transaction failure")
+
+            with monkeypatch.context() as injection:
+                injection.setattr(api, "_commit", failed_commit)
+                third = binding(
+                    tmp_path, session_id="00000000-0000-4000-8000-000000000008"
+                )
+                with pytest.raises(SessionStoreError, match="commit_uncertain"):
+                    api.create(third)
+        other_report = api.inspect(other_session)
+        assert other_report.status == "recovery_required"
+        assert other_report.local_fault
+        with pytest.raises(SessionStoreError, match="recovery_required"):
+            api.begin_turn(
+                other_report.revision, intent(other_binding, other_report.revision)
+            )
+    finally:
+        api.close()

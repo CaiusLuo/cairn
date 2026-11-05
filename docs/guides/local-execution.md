@@ -1,12 +1,48 @@
 # Local command execution
 
 Cairn is **local-first**. The `bash` tool runs a command as the invoking user, in
-the Workspace directory, with the invoking user's environment. There is no OS
-sandbox on any platform, and this document makes no isolation claim: a command
+the Workspace directory, with the invoking user's environment. This default
+mode has no OS sandbox and makes no isolation claim: a command
 can read and write whatever the user can, including files outside the Workspace
 and the network.
 
 The operator, not a mount namespace, decides whether Cairn may run a shell.
+
+## Optional Linux project shell
+
+A trusted host may select `sandbox_shell=True` after granting the shell
+capability. The tool then requires bubblewrap and working user namespaces; a
+missing or invalid boundary never falls back to the host. This selection does
+not grant a permission by itself.
+
+The project is writable, system binaries and the selected host Python/uv
+toolchain are read-only, and unrelated projects and the host home are not
+mounted. Only the Python installation may appear beneath otherwise empty home
+parent directories. The sandbox has private process, mount and temporary-file
+namespaces; capabilities are dropped and nested user namespaces are disabled so
+root commands cannot unmount credential masks or remount protected files. The
+workspace must not overlap protected system roots.
+
+Credential paths use `infra.credential_paths`, including nested `.env.*`, private
+keys and credential directories. Files are replaced with readable, read-only
+empty regular files, and credential directories with empty read-only mounts.
+The inventory is bounded and does not follow directory symlinks; enumeration
+errors block execution. Availability probing and the inventory run in an owned
+worker thread so they do not stall message handling. Cancellation waits for that
+worker through repeated cancellation before returning and never starts the shell.
+Argument construction and empty-file descriptors remain owned by the calling
+task. The environment is cleared. Public DNS and CA files are supplied for dependency installation;
+network access is shared, so this is a filesystem boundary, not a network
+isolation claim.
+
+Raw `.git` directories and linked-worktree pointer files are hidden behind
+read-only empty mounts. Historical Git objects could contain credentials even
+when current credential files are masked, so the shell does not expose the
+common repository or worktree administration directories. Git operations need a
+separate trusted host tool; retrying shell commands does not change this fixed
+restriction. Python, project source edits, tests and dependency installation
+remain available. Credential-shaped fixture names such as `.env.example` follow
+the same shared path policy and are masked as well.
 
 ## What the tool still guarantees
 
@@ -23,7 +59,7 @@ The operator, not a mount namespace, decides whether Cairn may run a shell.
 Cancellation is handled the same way: the group is signalled, settlement is
 bounded, and a cleanup failure never replaces the primary outcome.
 
-## What it does not guarantee
+## Default host mode limitations
 
 - **No filesystem boundary.** A command can read or write any path the user can,
   including `~/.ssh` and `.git` metadata. The Workspace is a starting directory,
@@ -120,7 +156,10 @@ not individual commands; there is no command parser to defeat.
 
 `tests/infra/tools/test_bash.py` covers the process guarantees: group cleanup,
 bounded collection, output limits, decoding, exit codes, and the environment
-contract. `tests/runtime/test_network_permissions.py` covers the approval
+contract. `tests/infra/tools/test_bash_sandbox.py` additionally exercises real
+bubblewrap credential masks, capability and namespace escape attempts against
+disposable sentinels, linked-worktree validation, offline Python/uv installation
+and withheld historical Git objects. `tests/runtime/test_network_permissions.py` covers the approval
 contract end to end, including that a denied or unapproved shell never executes.
 
 ```sh

@@ -73,8 +73,10 @@ class DurableSession(Session):
         *,
         agent: Agent,
         observe_binding: Callable[[], SessionBinding] | None = None,
+        owns_store: bool = True,
     ) -> None:
         self._store = store
+        self._owns_store = owns_store
         self._observe_binding = observe_binding
         self._suspended = True
         self._recovery = False
@@ -98,8 +100,11 @@ class DurableSession(Session):
         agent: Agent,
         binding: SessionBinding,
         observe_binding: Callable[[], SessionBinding] | None = None,
+        owns_store: bool = True,
     ) -> "DurableSession":
-        session = cls(store, agent=agent, observe_binding=observe_binding)
+        session = cls(
+            store, agent=agent, observe_binding=observe_binding, owns_store=owns_store
+        )
         try:
             session._attach(binding)
             session._receipt = store.create(session._binding)
@@ -119,8 +124,11 @@ class DurableSession(Session):
         agent: Agent,
         binding: SessionBinding,
         observe_binding: Callable[[], SessionBinding] | None = None,
+        owns_store: bool = True,
     ) -> "DurableSession":
-        session = cls(store, agent=agent, observe_binding=observe_binding)
+        session = cls(
+            store, agent=agent, observe_binding=observe_binding, owns_store=owns_store
+        )
         try:
             session._attach(binding)
             if session_id != str(session.session_id):
@@ -871,7 +879,7 @@ class DurableSession(Session):
             self._cleanup_settled = True
             if self._recovery:
                 self._release_failed_turn()
-            if self.close_requested and self._task is None:
+            if self.close_requested and self._task is None and self._owns_store:
                 self._store.close()
         except Exception:
             self._recovery = True
@@ -901,4 +909,5 @@ class DurableSession(Session):
         if self.active_turn is None and self._task is None:
             if self._owned and self._cleanup_settled:
                 self._release_failed_turn()
-            self._store.close()
+            if self._owns_store:
+                self._store.close()

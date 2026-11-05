@@ -15,10 +15,10 @@ import hashlib
 import inspect
 import json
 import os
-import shutil
+import sys
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -372,18 +372,9 @@ def default_task_executor(
     chat_session_root = config.state_dir / "sessions-chat"
     ensure_outside_workspace(session_root, config.workspace)
     ensure_outside_workspace(chat_session_root, config.workspace)
-    # Preserve legacy chat history instead of silently starting empty. A chat
-    # store is seeded from the existing store once; later turns remain separate.
-    chat_store_file = chat_session_root / "sessions.sqlite3"
-    task_store_file = session_root / "sessions.sqlite3"
-    if not chat_store_file.exists() and task_store_file.exists():
-        chat_session_root.mkdir(parents=True, exist_ok=True)
-        try:
-            shutil.copy2(task_store_file, chat_store_file)
-        except OSError as exc:
-            raise ValueError("cannot migrate existing WeChat chat history") from exc
+    shared_store: SessionStore | None = None
     retained_sessions: list[DurableSession] = []
-    retained_stores: list[SessionStore] = []
+    history_notices: dict[str, str] = {}
 
     def close_sessions(sessions: list[DurableSession]) -> None:
         while sessions:
@@ -394,16 +385,21 @@ def default_task_executor(
         try:
             close_sessions(sessions)
         except BaseException:
-            # Keep ownership and its writer lock for an idle retry.
+            # Retain the exact failed close for an idle retry; borrowed Sessions
+            # cannot release the shared writer while another request owns work.
             retained_sessions.extend(sessions)
             sessions.clear()
             raise
 
     def cleanup_retained() -> None:
         close_sessions(retained_sessions)
-        while retained_stores:
-            retained_stores[-1].close()
-            retained_stores.pop()
+
+    def close_store() -> None:
+        nonlocal shared_store
+        cleanup_retained()
+        if shared_store is not None:
+            shared_store.close()
+            shared_store = None
 
     def sender_session_id(sender: str, *, purpose: str = "task") -> str:
         digest = hashlib.sha256(
@@ -421,11 +417,7 @@ def default_task_executor(
         *,
         purpose: str = "task",
     ) -> Callable[[Agent], DurableSession]:
-        session_id = (
-            legacy_session_id(sender)
-            if purpose == "chat"
-            else sender_session_id(sender, purpose=purpose)
-        )
+        session_id = sender_session_id(sender, purpose=purpose)
         purpose_steps = (
             config.max_steps if purpose == "task" else min(config.max_steps, 20)
         )
@@ -475,16 +467,38 @@ def default_task_executor(
             )
 
         def build(agent: Agent) -> DurableSession:
-            # A check/repair may start another Turn before the overall request
-            # returns. Release the settled Session before opening its successor.
+            nonlocal shared_store, session_id
             close_sessions(active_sessions)
-            store_root = session_root if purpose == "task" else chat_session_root
-            store = open_store(
-                store_root,
-                Workspace(config.workspace),
-                secret_env_keys=secret_keys(agent),
-                sensitive_values=tuple(known_secret_values),
-            )
+            chat_database = chat_session_root / "sessions.sqlite3"
+            if purpose == "chat" and (
+                chat_database.exists() or chat_database.is_symlink()
+            ):
+                # A prior release created another durable owner. Never overwrite
+                # it or silently choose one of two potentially diverged histories.
+                raise SessionStoreError("chat_store_migration_required")
+            if shared_store is None:
+                shared_store = open_store(
+                    session_root,
+                    Workspace(config.workspace),
+                    secret_env_keys=secret_keys(agent),
+                    sensitive_values=tuple(known_secret_values),
+                )
+            store = shared_store
+            store.sensitive_values = tuple(known_secret_values)
+            legacy_report = None
+            try:
+                legacy_report = store.inspect(legacy_session_id(sender))
+            except SessionStoreError as exc:
+                if exc.code not in {"session_missing", "session_not_found"}:
+                    raise
+            if purpose == "task":
+                try:
+                    store.inspect(session_id)
+                except SessionStoreError as exc:
+                    if exc.code not in {"session_missing", "session_not_found"}:
+                        raise
+                    if legacy_report is not None:
+                        session_id = legacy_report.revision.session_id
             session: DurableSession | None = None
             try:
                 observation = make_binding(agent)
@@ -498,6 +512,7 @@ def default_task_executor(
                         agent=agent,
                         binding=observation,
                         observe_binding=lambda: make_binding(agent),
+                        owns_store=False,
                     )
                 else:
                     session = DurableSession.reopen(
@@ -506,27 +521,9 @@ def default_task_executor(
                         agent=agent,
                         binding=observation,
                         observe_binding=lambda: make_binding(agent),
+                        owns_store=False,
                     )
                     report = session.inspect()
-                    if report.status == "recovery_required":
-                        unresolved = report.unresolved
-                        if unresolved is None:
-                            raise SessionStoreError("recovery_required")
-                        final_binding = make_binding(agent)
-                        session.reconcile(
-                            report,
-                            host_resolution=HostResolution(
-                                session_id=session_id,
-                                turn_id=unresolved.intent.turn_id,
-                                actor="wechat-host",
-                                resolved_at_utc=datetime.now(UTC)
-                                .isoformat()
-                                .replace("+00:00", "Z"),
-                                binding=final_binding,
-                                note="stale WeChat session recovered; turn abandoned without replay",
-                            ),
-                        )
-                        report = session.inspect()
                     if report.status != "clean":
                         raise SessionStoreError("recovery_required")
                     final_binding = make_binding(agent)
@@ -542,18 +539,25 @@ def default_task_executor(
                             binding=final_binding,
                         ),
                     )
+                if (
+                    purpose == "chat"
+                    and legacy_report is not None
+                    and session.receipt.revision.head_seq == 0
+                ):
+                    history_notices[sender] = (
+                        "当前为独立聊天; 原会话历史仍保留"
+                        + (", 原会话待恢复" if legacy_report.status != "clean" else "")
+                        + f"。来源 session={legacy_report.revision.session_id}, "
+                        + f"已提交 checkpoint={legacy_report.receipt.revision.head_seq}。"
+                    )
                 active_sessions.append(session)
                 return session
             except BaseException as primary:
                 try:
-                    if session is None:
-                        store.close()
-                    else:
+                    if session is not None:
                         session.close()
                 except BaseException as cleanup:
-                    if session is None:
-                        retained_stores.append(store)
-                    else:
+                    if session is not None:
                         retained_sessions.append(session)
                     primary.add_note(
                         f"Durable session cleanup failed: {type(cleanup).__name__}."
@@ -643,8 +647,11 @@ def default_task_executor(
         finally:
             project_lease.release()
 
+    durable_factory.release_sessions = release_sessions  # type: ignore[attr-defined]
+    durable_factory.history_notice = history_notices.pop  # type: ignore[attr-defined]
     execute.durable_factory = durable_factory  # type: ignore[attr-defined]
     execute.project_lease = project_lease  # type: ignore[attr-defined]
+    execute.close = close_store  # type: ignore[attr-defined]
     return execute
 
 
@@ -788,13 +795,28 @@ def default_conversation_executor(
                 extra_tools=(*memory_tools, *task_tools, *schedule_tools),
             )
         finally:
-            cleanup_error = close_conversation_sessions(active_sessions)
+            primary_error = sys.exception()
+            release = getattr(durable_factory, "release_sessions", None)
+            if callable(release):
+                try:
+                    release(active_sessions)
+                except BaseException as exc:
+                    cleanup_error = exc
+            else:
+                cleanup_error = close_conversation_sessions(active_sessions)
+            if cleanup_error is not None and primary_error is not None:
+                primary_error.add_note(
+                    f"Durable session cleanup failed: {type(cleanup_error).__name__}."
+                )
         if cleanup_error is not None:
             raise ConversationExecutionError(
                 "session_cleanup_failed",
                 type(cleanup_error).__name__,
             ) from cleanup_error
-        return conversation_text(result)
+        text = conversation_text(result)
+        notice = getattr(durable_factory, "history_notice", None)
+        history_notice = notice(sender, "") if callable(notice) else ""
+        return f"{history_notice}\n\n{text}" if history_notice else text
 
     return execute
 
@@ -1497,7 +1519,7 @@ class _Service:
         )
         try:
             saved, _created = await asyncio.shield(worker)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as primary:
             # The blocking flock/fsync owns a thread that cannot be cancelled.
             # Observe it to completion, then persist the saved fact so restart
             # can decide the receipt without replaying a send.
@@ -1505,7 +1527,10 @@ class _Service:
             try:
                 saved, _created = worker.result()
             except BaseException:
-                raise
+                primary.add_note(
+                    "Schedule storage did not confirm creation during cleanup."
+                )
+                raise primary from None
             self.state.mark(
                 inbound.key or "",
                 "schedule_created",
@@ -1527,6 +1552,7 @@ class _Service:
             f"\uff1b内容\uff1a{saved.prompt[:200]}\uff1b"
             f"类型\uff1a{'提醒' if saved.reminder else '执行'}\u3002"
             f"取消请使用 /schedule remove {saved.job_id}。",
+            retries=1,
         )
         self.state.mark(
             inbound.key or "",
@@ -1547,11 +1573,14 @@ class _Service:
             "schedule_receipt_unknown",
         } or record.get("schedule_receipt_state") in {"sending", "sent", "unknown"}:
             return True
-        parsed = parse_once_request(
-            inbound.text or "",
-            float(record.get("received_at", 0)),
-            message_id=inbound.key,
-        )
+        try:
+            parsed = parse_once_request(
+                inbound.text or "",
+                float(record.get("received_at", 0)),
+                message_id=inbound.key,
+            )
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            parsed = Clarification("invalid time")
         if isinstance(parsed, NotSchedule):
             return False
         if isinstance(parsed, Clarification):
@@ -1804,15 +1833,9 @@ class _Service:
         ensure_outside_workspace(self.config.state_dir, self.config.workspace)
         with contextlib.suppress(ILinkError):
             await self.client.notify_start()
-        try:
-            await self._recover()
-        except BaseException:
-            self._stopping = True
-            with contextlib.suppress(Exception):
-                await self._cancel_current()
-            raise
         consecutive_errors = 0
         try:
+            await self._recover()
             while not self._stopping:
                 if self.stop_event is not None and self.stop_event.is_set():
                     break
@@ -1895,13 +1918,40 @@ class _Service:
                     break
         finally:
             self._stopping = True
-            await self._cancel_current()
-            owned = (*tuple(self._intent_tasks), *tuple(self._chat_tasks))
-            if owned:
-                await settle_owned(*owned)
-            with contextlib.suppress(ILinkError, asyncio.CancelledError):
-                notify = asyncio.create_task(self.client.notify_stop())
-                await await_owned(notify)
+            primary_error = sys.exception()
+
+            async def cleanup_work() -> None:
+                first_error: BaseException | None = None
+                try:
+                    await self._cancel_current()
+                except BaseException as exc:
+                    first_error = exc
+                owned = (*tuple(self._intent_tasks), *tuple(self._chat_tasks))
+                if owned:
+                    await settle_owned(*owned)
+                try:
+                    await self.client.notify_stop()
+                except (ILinkError, asyncio.CancelledError):
+                    pass
+                except Exception as exc:
+                    first_error = first_error or exc
+                if first_error is not None:
+                    raise RuntimeError(
+                        f"WeChat work cleanup failed: {type(first_error).__name__}."
+                    ) from None
+
+            cleanup = asyncio.create_task(cleanup_work())
+            late_cancellation = await await_owned(cleanup)
+            cleanup_error = cleanup.exception() if not cleanup.cancelled() else None
+            if primary_error is not None:
+                if cleanup_error is not None:
+                    primary_error.add_note(str(cleanup_error))
+            elif late_cancellation is not None:
+                if cleanup_error is not None:
+                    late_cancellation.add_note(str(cleanup_error))
+                raise late_cancellation
+            elif cleanup_error is not None:
+                raise cleanup_error
         if self._queue_error is not None:
             raise self._queue_error
         return self.report
@@ -2020,18 +2070,10 @@ async def serve_wechat(
             )
         )
 
-        async def gated_schedule_executor(
-            prompt: str, cancel: asyncio.Event, task_id: str
-        ) -> HeadlessResult:
-            async with task_gate:
-                job_id = task_id.removeprefix("scheduled-")
-                if scheduler_runner is not None:
-                    scheduler_runner.store.mark_execution_started(job_id)
-                return await scheduled_executor(prompt, cancel, task_id)
-
         scheduler_runner = ScheduleRunner(
             store=ScheduleStore(config.schedule_store),
-            executor=gated_schedule_executor,
+            executor=scheduled_executor,
+            execution_gate=task_gate,
             deliver=deliver_scheduled,
             recipient=lambda: scheduler_owner or None,
             poll_interval=config.schedule_poll_interval,
@@ -2136,17 +2178,58 @@ async def serve_wechat(
             await control.start()
         return await service.run()
     finally:
-        await control.close()
-        if scheduler_task is not None:
-            if scheduler_stop is not None:
-                scheduler_stop.set()
-            scheduler_task.cancel()
-            await await_owned(scheduler_task)
-            if scheduler_runner is not None:
-                report.scheduled_jobs = scheduler_runner.report.jobs_run
-                report.scheduled_delivered = scheduler_runner.report.delivered
-        try:
-            close_task = asyncio.create_task(active_client.close())
-            await await_owned(close_task)
-        finally:
-            lock.release()
+        primary_error = sys.exception()
+
+        async def cleanup_service() -> None:
+            first_error: BaseException | None = None
+            try:
+                try:
+                    await control.close()
+                except BaseException as exc:
+                    first_error = exc
+                if scheduler_task is not None:
+                    if scheduler_stop is not None:
+                        scheduler_stop.set()
+                    scheduler_task.cancel()
+                    await await_owned(scheduler_task)
+                    if not scheduler_task.cancelled():
+                        first_error = first_error or scheduler_task.exception()
+                    if scheduler_runner is not None:
+                        report.scheduled_jobs = scheduler_runner.report.jobs_run
+                        report.scheduled_delivered = scheduler_runner.report.delivered
+                try:
+                    await active_client.close()
+                except BaseException as exc:
+                    first_error = first_error or exc
+                if task_executor is None:
+                    owners = [executor]
+                    if scheduler_runner is not None:
+                        owners.append(scheduled_executor)
+                    for owner in owners:
+                        close = getattr(owner, "close", None)
+                        if callable(close):
+                            try:
+                                close()
+                            except BaseException as exc:
+                                # Store close itself refuses an unsettled owner;
+                                # keep that writer rather than force-release it.
+                                first_error = first_error or exc
+            finally:
+                lock.release()
+            if first_error is not None:
+                raise RuntimeError(
+                    f"WeChat service cleanup failed: {type(first_error).__name__}."
+                ) from None
+
+        cleanup = asyncio.create_task(cleanup_service())
+        late_cancellation = await await_owned(cleanup)
+        cleanup_error = cleanup.exception() if not cleanup.cancelled() else None
+        if primary_error is not None:
+            if cleanup_error is not None:
+                primary_error.add_note(str(cleanup_error))
+        elif late_cancellation is not None:
+            if cleanup_error is not None:
+                late_cancellation.add_note(str(cleanup_error))
+            raise late_cancellation
+        elif cleanup_error is not None:
+            raise cleanup_error

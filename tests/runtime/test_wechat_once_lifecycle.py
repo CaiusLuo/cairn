@@ -240,16 +240,23 @@ def test_service_shutdown_waits_for_slow_schedule_store_without_blocking_status(
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("expired", [False, True])
+@pytest.mark.parametrize(
+    ("text", "age"),
+    [
+        ("明天25点提醒我喝水", 0),
+        ("明天一二十点提醒我喝水", 0),
+        ("十分钟后提醒我喝水", 3600),
+    ],
+)
 def test_invalid_or_expired_time_is_a_per_message_clarification(
-    harness: Harness, expired: bool
+    harness: Harness, text: str, age: int
 ) -> None:
     async def scenario() -> None:
         client = Client()
         service = harness.service(client=client)
         inbound = harness.inbound(
-            "十分钟后提醒我喝水" if expired else "明天25点提醒我喝水",
-            received_at=time.time() - 3600 if expired else None,
+            text,
+            received_at=time.time() - age,
         )
         await service._handle(inbound)
         assert await drain(service) == []
@@ -333,5 +340,69 @@ def test_reminder_payload_can_contain_a_negative_instruction(harness: Harness) -
         jobs = harness.store.load_jobs()
         assert len(jobs) == 1 and jobs[0].reminder
         assert jobs[0].prompt == "不要迟到"
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_creation_preserves_primary_when_storage_also_fails(
+    harness: Harness,
+) -> None:
+    entered, release = threading.Event(), threading.Event()
+
+    class FailedAfterStop(ScheduleStore):
+        def add_or_get_job(self, job: Any) -> Any:
+            entered.set()
+            if not release.wait(3):
+                raise TimeoutError("test did not release storage")
+            raise OSError("private-storage-detail")
+
+    async def scenario() -> None:
+        service = harness.service(store=FailedAfterStop(harness.store.root))
+        await service._handle(harness.inbound())
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            creating = next(iter(service._intent_tasks))
+            creating.cancel("original stop")
+            await asyncio.sleep(0)
+            creating.cancel("repeated stop")
+            await asyncio.sleep(0)
+            assert not creating.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError, match="original stop") as error:
+                await creating
+            assert error.value.args == ("original stop",)
+            assert "private-storage-detail" not in str(
+                getattr(error.value, "__notes__", ())
+            )
+        finally:
+            release.set()
+            await settle_owned(*tuple(service._intent_tasks))
+
+    asyncio.run(scenario())
+
+
+def test_unconfirmed_creation_receipt_is_not_retried(harness: Harness) -> None:
+    from cairn.infra.wechat.ilink import ILinkError
+
+    class UnconfirmedClient(Client):
+        async def send_text(self, **kwargs: object) -> dict[str, object]:
+            self.sent.append(str(kwargs.get("text", "")))
+            raise ILinkError("receipt response unavailable")
+
+    async def scenario() -> None:
+        client = UnconfirmedClient()
+        service = harness.service(client=client)
+        await service._handle(harness.inbound())
+        assert await drain(service) == []
+        assert len(client.sent) == 1
+        assert len(harness.store.load_jobs()) == 1
+        assert (harness.state.get_record("msg:1") or {}).get(
+            "schedule_receipt_state"
+        ) == "unknown"
+        restarted_client = Client()
+        restarted = harness.service(client=restarted_client)
+        await restarted._recover()
+        assert await drain(restarted) == []
+        assert restarted_client.sent == []
 
     asyncio.run(scenario())

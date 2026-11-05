@@ -13,7 +13,7 @@ from cairn.terminal.wechat.serve import (
     _Service,
 )
 
-NOW = datetime(2026, 11, 5, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+NOW = datetime.now(ZoneInfo("Asia/Shanghai"))
 
 
 class Client:

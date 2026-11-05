@@ -1555,16 +1555,13 @@ async def main(
                 error="project_busy: another Cairn worker owns the workspace write lease.",
             )
         try:
-            async with task_gate:
-                task_service = TaskBoardService(
-                    TaskBoardStore(task_board_root),
-                    project=str(workspace.root),
-                    session_id=f"schedule:{task_id}",
-                    source=TaskSource.SCHEDULE,
-                )
-                return await _execute_headless_locked(
-                    prompt, cancel, task_id, task_service
-                )
+            task_service = TaskBoardService(
+                TaskBoardStore(task_board_root),
+                project=str(workspace.root),
+                session_id=f"schedule:{task_id}",
+                source=TaskSource.SCHEDULE,
+            )
+            return await _execute_headless_locked(prompt, cancel, task_id, task_service)
         finally:
             cli_task_lease.release()
 
@@ -1670,6 +1667,7 @@ async def main(
         workspace=workspace.root,
         store=ScheduleStore(default_schedule_dir()),
         executor=_schedule_execute,
+        execution_gate=task_gate,
         deliver=wechat_controller.deliver,
         deliver_for_account=wechat_controller.deliver_for_account,
         recipient=wechat_controller.recipient_id,

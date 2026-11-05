@@ -38,6 +38,7 @@ class ScheduleController:
         clock: Callable[[], datetime] = current_time,
         account_id: Callable[[], str | None] | None = None,
         result_redactor: Callable[[str], str] | None = None,
+        execution_gate: asyncio.Lock | None = None,
     ) -> None:
         self.workspace = workspace
         self.workspace_key = str(workspace.resolve())
@@ -57,6 +58,7 @@ class ScheduleController:
             workspace=self.workspace_key,
             account_id=self.account_id,
             result_redactor=self.result_redactor,
+            execution_gate=execution_gate,
         )
         self.clock = clock
         self._stop: asyncio.Event | None = None

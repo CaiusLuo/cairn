@@ -277,7 +277,11 @@ class WechatState:
     def records_in_states(
         self, states: frozenset[str]
     ) -> list[tuple[str, dict[str, Any]]]:
-        messages = self.load()["messages"]
+        """Observe stable membership while the owner admits new messages.
+
+        Records remain owner-managed live values; this is not a worker write API.
+        """
+        messages = self.load()["messages"].copy()
         records = [
             (key, record)
             for key, record in messages.items()

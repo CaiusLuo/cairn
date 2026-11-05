@@ -304,6 +304,7 @@ class SessionStore(TaskLedgerMixin):
         self.path = self._paths.path
         self._fault = False
         self._fault_sessions: set[str] = set()
+        self._recovery_sessions: set[str] = set()
         self._mutation_session = "*"
         self._owned_turns: set[tuple[str, str]] = set()
         self._owned_tasks: set[tuple[str, str]] = set()
@@ -1092,7 +1093,7 @@ class SessionStore(TaskLedgerMixin):
             checkpoint=materialized,
             receipt=receipt,
             attempts=records,
-            local_fault=self._fault,
+            local_fault=self._fault or session_id in self._recovery_sessions,
         )
 
     def _settled_relationship(
@@ -1916,7 +1917,11 @@ class SessionStore(TaskLedgerMixin):
                 active=session.active_turn_id,
                 binding=session.binding,
             )
-        self._latch()
+        # A successfully persisted recovery requirement belongs to this Session.
+        # A pre-existing codec/transaction fault remains store-wide and cannot be
+        # cleared by recording an otherwise valid recovery marker.
+        self._recovery_sessions.add(expected.session_id)
+        self._inspected.pop(expected.session_id, None)
         return revision
 
     def release_turn(self, expected: Revision, turn_id: str) -> None:
@@ -1941,6 +1946,7 @@ class SessionStore(TaskLedgerMixin):
             if (
                 expected.session_id not in self._fault_sessions
                 and "*" not in self._fault_sessions
+                and expected.session_id not in self._recovery_sessions
             ):
                 raise SessionStoreError("turn_still_owned")
             # An uncertain COMMIT may have actually settled this exact Turn.
@@ -2014,6 +2020,7 @@ class SessionStore(TaskLedgerMixin):
             )
         self._inspected.pop(expected.session_id, None)
         self._fault_sessions.discard(expected.session_id)
+        self._recovery_sessions.discard(expected.session_id)
         self._fault = bool(self._fault_sessions)
         return revision
 

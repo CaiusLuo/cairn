@@ -8,7 +8,7 @@ import pytest
 
 from cairn.core.budget import RunBudget, RunBudgetExceeded
 from cairn.core.events import Event, SessionEvent
-from cairn.core.models import LLMResponse, ToolCall, ToolResult
+from cairn.core.models import LLMResponse, Message, ToolCall, ToolResult
 from cairn.core.permissions import (
     PermissionCapability,
     PermissionChoice,
@@ -585,3 +585,47 @@ def test_stale_report_cannot_reconcile_a_newer_committed_turn(tmp_path: Path) ->
         assert len(llm.calls) == 1 and session.receipt == current.receipt
     finally:
         session.close()
+
+
+def test_borrowed_session_close_during_turn_retains_host_store_after_settlement(
+    tmp_path: Path,
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class WaitingModel(SequenceLLM):
+        async def generate(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> LLMResponse:
+            started.set()
+            await release.wait()
+            return LLMResponse(content="settled")
+
+    api = store(tmp_path)
+    agent = make_agent(WaitingModel([]))
+    session = DurableSession.create(
+        api, agent=agent, binding=binding(tmp_path), owns_store=False
+    )
+
+    async def scenario() -> None:
+        pending = asyncio.create_task(
+            run_turn(agent, "first", budget=TEST_BUDGET, session=session)
+        )
+        await started.wait()
+        session.close()
+        with pytest.raises(SessionStoreError, match="turn_still_owned"):
+            api.close()
+        release.set()
+        assert await pending == "settled"
+        session.close()
+        # Both explicit close and the loop's requested-close settlement leave
+        # the borrowed writer alive. Only its host may release the stable lock.
+        assert api.inspect(SESSION).checkpoint.seq == 1
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        session.close()
+        api.close()

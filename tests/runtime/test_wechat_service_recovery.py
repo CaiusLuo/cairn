@@ -402,9 +402,11 @@ def test_default_wechat_executor_restores_durable_history_after_restart(
     async def flow() -> None:
         first = default_task_executor(config)
         await first("first prompt", asyncio.Event(), "one", sender="u1")  # type: ignore[call-arg]
+        first.close()  # type: ignore[attr-defined]
         # Simulate service restart: a fresh executor with the same host-private state.
         second = default_task_executor(config)
         await second("second prompt", asyncio.Event(), "two", sender="u1")  # type: ignore[call-arg]
+        second.close()  # type: ignore[attr-defined]
 
     asyncio.run(flow())
     assert len(llm.calls) == 2
