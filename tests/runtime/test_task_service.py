@@ -94,3 +94,28 @@ def test_bad_state_is_not_silently_replaced(tmp_path: Path) -> None:
         RuntimeCatalogue(
             tmp_path / "agent" / "state", forbidden_roots=(tmp_path / "agent",)
         )
+
+
+def test_slow_subscriber_is_bounded_and_cannot_block_execution(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async def execute(
+            task: RuntimeTask, emit: Callable[[str, dict[str, Any]], None]
+        ) -> str:
+            for _ in range(1000):
+                emit("model_text_delta", {"text": "transient"})
+            return "done"
+
+        service = TaskService(
+            RuntimeCatalogue(tmp_path / "state", forbidden_roots=()), execute
+        )
+        await service.start()
+        task = service.submit("stream", "cli")
+        async with service.subscribe(task.task_id) as queue:
+            await asyncio.wait_for(service.queue.join(), 2)
+            assert service.inspect(task.task_id).status == "completed"
+            assert queue.qsize() == 1 and queue.get_nowait()["type"] == "resync"
+            assert len(service.catalogue.data.events[task.task_id]) == 3
+        assert service.subscribers == {}
+        await service.close()
+
+    asyncio.run(scenario())

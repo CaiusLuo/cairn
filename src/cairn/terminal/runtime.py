@@ -12,7 +12,9 @@ import typer
 from cairn.infra.runtime_client import RuntimeClient
 from cairn.infra.runtime_client import read_runtime_token as read_token
 
-app = typer.Typer(help="Use one shared Cairn Agent runtime.")
+app = typer.Typer(
+    pretty_exceptions_show_locals=False, help="Use one shared Cairn Agent runtime."
+)
 
 
 @app.command(
@@ -105,3 +107,56 @@ def follow(
                 return
 
     asyncio.run(run())
+
+
+@app.command()
+def recovery(
+    task_id: str,
+    token_file: Annotated[Path, typer.Option()],
+    url: str = "http://127.0.0.1:8777",
+) -> None:
+    """Inspect surviving effects; save this JSON for explicit reconciliation."""
+    RuntimeClient._id(task_id)
+    output(
+        asyncio.run(client(url, token_file).request("GET", f"tasks/{task_id}/recovery"))
+    )
+
+
+@app.command()
+def reconcile(
+    task_id: str,
+    report_file: Annotated[Path, typer.Option()],
+    note: Annotated[str, typer.Option()],
+    token_file: Annotated[Path, typer.Option()],
+    effects_reviewed: bool = False,
+    url: str = "http://127.0.0.1:8777",
+) -> None:
+    """Acknowledge inspected effects without replaying; continue is a separate action."""
+    RuntimeClient._id(task_id)
+    if not effects_reviewed:
+        raise typer.BadParameter("Inspect effects and pass --effects-reviewed")
+    report = json.loads(report_file.read_text())
+    if report.get("task_id") != task_id:
+        raise typer.BadParameter("Recovery report belongs to another task")
+    payload = {key: report[key] for key in ("expected_sequence", "revision", "action")}
+    payload.update({"reviewed_effects": True, "note": note})
+    output(
+        asyncio.run(
+            client(url, token_file).request(
+                "POST", f"tasks/{task_id}/reconcile", payload
+            )
+        )
+    )
+
+
+@app.command()
+def history(
+    task_id: str,
+    token_file: Annotated[Path, typer.Option()],
+    url: str = "http://127.0.0.1:8777",
+) -> None:
+    """Read the shared committed conversation without executing anything."""
+    RuntimeClient._id(task_id)
+    output(
+        asyncio.run(client(url, token_file).request("GET", f"tasks/{task_id}/history"))
+    )

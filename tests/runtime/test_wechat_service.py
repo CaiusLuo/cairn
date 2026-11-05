@@ -395,7 +395,9 @@ def test_default_provider_approval_is_rejected_before_credentials_or_model(
         called.append("model")
         raise AssertionError("model runtime must not be built before approval")
 
-    monkeypatch.setattr("cairn.terminal.headless.resolve_provider_api_key", fail_key)
+    monkeypatch.setattr(
+        "cairn.infra.config.admission.resolve_provider_api_key", fail_key
+    )
     monkeypatch.setattr("cairn.terminal.headless.build_provider_runtime", fail_runtime)
 
     with pytest.raises(ProviderApprovalRequired):
@@ -454,7 +456,7 @@ def test_runtime_build_failure_after_approval_can_redact_resolved_key(
     )
     monkeypatch.setenv("FAKE_KEY", "fake-provider-key")
     monkeypatch.setattr(
-        "cairn.terminal.headless.resolve_provider_api_key",
+        "cairn.infra.config.admission.resolve_provider_api_key",
         lambda *_a, **_k: "fake-provider-key",
     )
 

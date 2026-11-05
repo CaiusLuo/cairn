@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+import cairn.infra.config.admission as admission
 from cairn.core.budget import RunBudget
 from cairn.core.context import ContextBudget
 from cairn.core.llm import LLMClient
@@ -317,7 +318,7 @@ def test_config_is_read_from_workspace_not_cwd(
         seen.append(path)
         raise ValueError("stop-after-path")
 
-    monkeypatch.setattr(headless, "load_project_providers", fake_load)
+    monkeypatch.setattr(admission, "load_project_providers", fake_load)
     result = CliRunner().invoke(
         task_app,
         ["--workspace", str(ws), "--prompt", "x", "--trust-workspace", "--json"],
@@ -339,7 +340,7 @@ def test_provider_approval_required_before_credential_resolution(
         resolved.append("called")
         raise AssertionError("credential must not be resolved before approval")
 
-    monkeypatch.setattr(headless, "resolve_provider_api_key", fail_resolve)
+    monkeypatch.setattr(admission, "resolve_provider_api_key", fail_resolve)
     result = CliRunner().invoke(
         task_app,
         ["--workspace", str(ws), "--prompt", "x", "--trust-workspace", "--json"],
@@ -459,11 +460,11 @@ def test_run_via_config_uses_build_provider_runtime(
             workspace=str(kwargs["workspace"]),
         )
 
-    monkeypatch.setattr(headless, "load_project_providers", fake_load)
-    monkeypatch.setattr(headless, "default_provider", fake_default)
-    monkeypatch.setattr(headless, "resolve_provider_api_key", lambda *a, **k: "key")
+    monkeypatch.setattr(admission, "load_project_providers", fake_load)
+    monkeypatch.setattr(admission, "default_provider", fake_default)
+    monkeypatch.setattr(admission, "resolve_provider_api_key", lambda *a, **k: "key")
     monkeypatch.setattr(
-        headless, "resolve_context_budget", lambda *a, **k: ContextBudget()
+        admission, "resolve_context_budget", lambda *a, **k: ContextBudget()
     )
     monkeypatch.setattr(headless, "build_provider_runtime", fake_build)
     monkeypatch.setattr(headless, "run_headless_task", fake_run)
@@ -496,7 +497,7 @@ def test_provider_approval_mismatch_rejected_before_credential(
         resolved.append("called")
         raise AssertionError("must not resolve before a matching approval")
 
-    monkeypatch.setattr(headless, "resolve_provider_api_key", fail_resolve)
+    monkeypatch.setattr(admission, "resolve_provider_api_key", fail_resolve)
     result = CliRunner().invoke(
         task_app,
         [
@@ -535,7 +536,7 @@ def test_provider_approval_match_allows_credential_resolution(
         calls.append(config.base_url)
         raise ValueError("stop-after-approval")
 
-    monkeypatch.setattr(headless, "resolve_provider_api_key", stop_resolve)
+    monkeypatch.setattr(admission, "resolve_provider_api_key", stop_resolve)
     result = CliRunner().invoke(
         task_app,
         [
@@ -645,7 +646,7 @@ def test_provider_approval_binds_ordered_model_ids(
         resolved.append("called")
         raise AssertionError("must not resolve on model-id mismatch")
 
-    monkeypatch.setattr(headless, "resolve_provider_api_key", fail_resolve)
+    monkeypatch.setattr(admission, "resolve_provider_api_key", fail_resolve)
     result = CliRunner().invoke(
         task_app,
         [
@@ -797,14 +798,14 @@ def test_cancelled_json_reuses_real_runner_task_id(
         ),
     )
     monkeypatch.setattr(
-        headless,
+        admission,
         "load_project_providers",
         lambda path: types.SimpleNamespace(layout=ConfigLayout.ENV, providers=()),
     )
-    monkeypatch.setattr(headless, "default_provider", lambda *a, **k: fake_provider)
-    monkeypatch.setattr(headless, "resolve_provider_api_key", lambda *a, **k: "k")
+    monkeypatch.setattr(admission, "default_provider", lambda *a, **k: fake_provider)
+    monkeypatch.setattr(admission, "resolve_provider_api_key", lambda *a, **k: "k")
     monkeypatch.setattr(
-        headless, "resolve_context_budget", lambda *a, **k: ContextBudget()
+        admission, "resolve_context_budget", lambda *a, **k: ContextBudget()
     )
     monkeypatch.setattr(
         headless,

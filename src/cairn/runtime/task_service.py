@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Coroutine
-from contextlib import suppress
+from collections.abc import AsyncIterator, Callable, Coroutine
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from typing import Any
 
@@ -27,6 +27,10 @@ class TaskPaused(Exception):
     """A settled turn stopped at a safe budget boundary."""
 
 
+class TaskNeedsRecovery(Exception):
+    """Observed effects require explicit host review before another turn."""
+
+
 class TaskService:
     def __init__(
         self,
@@ -42,6 +46,9 @@ class TaskService:
         self.projector: asyncio.Task[None] | None = None
         self.projection_error: str | None = None
         self.history_reader: Callable[[RuntimeTask], list[dict[str, Any]]] | None = None
+        self.recovery_reader: Callable[[RuntimeTask], dict[str, Any]] | None = None
+        self.reconciler: Callable[[RuntimeTask, dict[str, Any]], None] | None = None
+        self.subscribers: dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
         self.catalogue = catalogue
         self.executor = executor
         self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=queue_size)
@@ -92,7 +99,76 @@ class TaskService:
             self.projections[task.task_id] = updated
             self.projection_signal.set()
         self.changed.set()
+        self.publish(
+            task.task_id,
+            {
+                "type": "event",
+                "event": self.catalogue.data.events[task.task_id][-1].model_dump(
+                    mode="json"
+                ),
+            },
+        )
         return updated
+
+    def publish(self, task_id: str, message: dict[str, Any]) -> None:
+        """Bounded transient fanout; a slow reader reconnects using durable cursors."""
+        for queue in tuple(self.subscribers.get(task_id, ())):
+            if queue.full():
+                while not queue.empty():
+                    queue.get_nowait()
+                queue.put_nowait({"type": "resync"})
+                self.subscribers[task_id].discard(queue)
+            else:
+                queue.put_nowait(message)
+
+    @asynccontextmanager
+    async def subscribe(
+        self, task_id: str
+    ) -> AsyncIterator[asyncio.Queue[dict[str, Any]]]:
+        self.inspect(task_id)
+        if sum(len(queues) for queues in self.subscribers.values()) >= 32:
+            raise RuntimeError("Runtime subscriber capacity reached")
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=64)
+        self.subscribers.setdefault(task_id, set()).add(queue)
+        try:
+            yield queue
+        finally:
+            queues = self.subscribers.get(task_id)
+            if queues is not None:
+                queues.discard(queue)
+                if not queues:
+                    del self.subscribers[task_id]
+
+    def recovery(self, task_id: str) -> dict[str, Any]:
+        task = self.inspect(task_id)
+        if task.status != "recovery_required" or self.recovery_reader is None:
+            raise ValueError("Task does not require recovery")
+        return {
+            "task_id": task_id,
+            "expected_sequence": task.sequence,
+            **self.recovery_reader(task),
+        }
+
+    def reconcile(self, task_id: str, report: dict[str, Any]) -> RuntimeTask:
+        task = self.inspect(task_id)
+        if (
+            task.status != "recovery_required"
+            or task_id == self.active_id
+            or self.reconciler is None
+            or report.get("expected_sequence") != task.sequence
+        ):
+            raise ValueError("Fresh recovery review required")
+        self.reconciler(task, report)
+        return self.record(
+            task.model_copy(
+                update={
+                    "status": "paused",
+                    "diagnostic": None,
+                    "recovery_note": report["note"],
+                }
+            ),
+            "reconciled",
+        )
 
     def submit(
         self, prompt: str, source: RuntimeSource, request_id: str | None = None
@@ -178,7 +254,20 @@ class TaskService:
                 def emit(
                     kind: str, data: dict[str, Any], task_id: str = task_id
                 ) -> None:
-                    self.record(self.inspect(task_id), kind, data)
+                    if kind == "model_text_delta":
+                        self.publish(task_id, {"type": "preview", "text": data["text"]})
+                    else:
+                        current = self.inspect(task_id)
+                        if kind == "agent_step" and "budget" in data:
+                            current = current.model_copy(
+                                update={
+                                    "metrics": {
+                                        **current.metrics,
+                                        "live": data["budget"],
+                                    }
+                                }
+                            )
+                        self.record(current, kind, data)
 
                 self.active_id = task_id
                 self.active = asyncio.create_task(self.executor(task, emit))
@@ -197,6 +286,16 @@ class TaskService:
                     )
                     if self.stopping:
                         raise
+                except TaskNeedsRecovery:
+                    self.record(
+                        self.inspect(task_id).model_copy(
+                            update={
+                                "status": "recovery_required",
+                                "diagnostic": "effects_require_host_review",
+                            }
+                        ),
+                        "interrupted",
+                    )
                 except TaskPaused as exc:
                     self.record(
                         self.inspect(task_id).model_copy(
@@ -222,8 +321,10 @@ class TaskService:
                         "completed",
                     )
                 finally:
+                    self.publish(task_id, {"type": "settled"})
                     self.active = None
                     self.active_id = None
+                    self.changed.set()
             finally:
                 self.queue.task_done()
 
@@ -261,10 +362,19 @@ class TaskService:
 
     async def close(self) -> None:
         self.stopping = True
-        if self.worker is not None:
-            await settle_owned(self.worker)
-        if self.projector is not None:
-            self.projection_signal.set()
-            await await_owned(self.projector)
-            self.projector.result()
-        self.catalogue.close()
+        cancellation = None
+        try:
+            if self.worker is not None:
+                outcome = await settle_owned(self.worker)
+                cancellation = outcome.cancellation
+            if self.projector is not None:
+                self.projection_signal.set()
+                late = await await_owned(self.projector)
+                cancellation = cancellation or late
+                self.projector.result()
+        finally:
+            for task_id in tuple(self.subscribers):
+                self.publish(task_id, {"type": "shutdown"})
+            self.catalogue.close()
+        if cancellation is not None:
+            raise cancellation

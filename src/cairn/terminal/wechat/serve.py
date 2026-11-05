@@ -422,9 +422,7 @@ def default_task_executor(
         purpose: str = "task",
     ) -> Callable[[Agent], DurableSession]:
         session_id = sender_session_id(sender, purpose=purpose)
-        purpose_steps = (
-            config.max_steps if purpose == "task" else min(config.max_steps, 20)
-        )
+        purpose_steps = config.max_steps
 
         def provider_reference(agent: Agent) -> ProviderReference | None:
             manager = agent.model_executor.manager
@@ -787,7 +785,7 @@ def default_conversation_executor(
                 task_id=f"wechat-chat-{sender[-8:]}",
                 grant_shell=config.allow_shell,
                 approval=config.approval,
-                max_steps=min(config.max_steps, 20),
+                max_steps=config.max_steps,
                 trace_dir=config.trace_dir,
                 cancellation_event=None,
                 personal_context=personal_memory.render_context(),
@@ -1666,7 +1664,10 @@ class _Service:
                     f"{self.config.account.ilink_user_id}:{inbound.sender}:{inbound.key}".encode()
                 ).hexdigest()
                 text = await self._runtime_adapter.reply(
-                    inbound.text or "", message_id="wechat:" + identity
+                    self.redact_text(inbound.text or "")
+                    if self.redact_text is not None
+                    else inbound.text or "",
+                    message_id="wechat:" + identity,
                 )
                 self.state.mark(inbound.key, "command", command="runtime")
                 await self._safe_reply(

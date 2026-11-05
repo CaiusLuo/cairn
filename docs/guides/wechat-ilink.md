@@ -151,7 +151,7 @@ path: each sender has separate stable task and chat Session IDs in one
 service-owned Store writer. Each path reopens its own committed checkpoint
 (including tool calls/results) before `run_turn`; closing one borrowed Session
 cannot release another request's writer. Chat execution and its provider binding
-both use `min(config.max_steps, 20)`, while tasks retain the configured budget.
+both use the host-configured task budget; chat has no separate twenty-step clamp.
 An unreadable or unfinished Session fails closed and is never automatically
 abandoned. A known task recovery requirement does not block the independent chat
 Session; a genuine Store fault still blocks all durable admission.

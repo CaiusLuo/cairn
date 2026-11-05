@@ -13,7 +13,7 @@ from typing import Annotated
 import typer
 from dotenv import dotenv_values
 
-from cairn.core.budget import RunBudget, RunBudgetExceeded
+from cairn.core.budget import DEFAULT_MAX_STEPS, RunBudget, RunBudgetExceeded
 from cairn.core.context import ContextBudget
 from cairn.core.events import Event, EventHandler
 from cairn.core.model_manager import ModelConfig
@@ -155,7 +155,7 @@ app = typer.Typer(
     pretty_exceptions_show_locals=False,
 )
 
-DEFAULT_CLI_MAX_STEPS = 150
+DEFAULT_CLI_MAX_STEPS = DEFAULT_MAX_STEPS
 
 
 #: One owner for the per-turn step ceiling. ``CAIRN_MAX_STEPS`` overrides it so a
@@ -1458,7 +1458,7 @@ async def main(
             grant_workspace_trust=True,
             grant_shell=PermissionCapability.LOCAL_SHELL in permission_handler.grants,
             llm=active_runtime.llm,
-            budget=RunBudget(max_steps=20),
+            budget=DEFAULT_CLI_RUN_BUDGET,
             context_budget=ContextBudget(
                 max_tokens=min(active_runtime.context_builder.budget.max_tokens, 32768),
                 response_tokens=min(

@@ -1,7 +1,9 @@
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
 from cairn.infra.observability.models import Span
+from cairn.infra.redaction import redact_text as _redact_text
+from cairn.infra.redaction import redact_value as _redact_value
 
 
 class TraceSink(Protocol):
@@ -55,26 +57,6 @@ class FanoutTraceSink:
                     close(timeout_seconds)
                 except Exception:
                     continue
-
-
-def _redact_text(text: str, secret_values: "tuple[str, ...]") -> str:
-    clean = text
-    for value in secret_values:
-        if value:
-            clean = clean.replace(value, "[redacted]")
-    return clean
-
-
-def _redact_value(value: object, secret_values: "tuple[str, ...]") -> Any:
-    if isinstance(value, str):
-        return _redact_text(value, secret_values)
-    if isinstance(value, list):
-        return [_redact_value(item, secret_values) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_redact_value(item, secret_values) for item in value)
-    if isinstance(value, dict):
-        return {key: _redact_value(item, secret_values) for key, item in value.items()}
-    return value
 
 
 class RedactingTraceSink:

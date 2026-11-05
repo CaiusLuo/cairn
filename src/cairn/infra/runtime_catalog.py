@@ -9,6 +9,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from cairn.infra.atomic_json import atomic_write
+from cairn.infra.redaction import redact_text, redact_value
 from cairn.infra.workspace.lease import WorkspaceLease
 
 RuntimeSource = Literal["cli", "web", "wechat"]
@@ -35,7 +36,8 @@ class RuntimeTask(BaseModel):
     branch: str | None = None
     result: str | None = None
     diagnostic: str | None = None
-    sequence: int = 0
+    recovery_note: str | None = None
+    sequence: int = Field(default=0, ge=0, le=11000)
     attempts: int = 0
     metrics: dict[str, Any] = Field(default_factory=dict)
 
@@ -56,10 +58,19 @@ class CatalogueData(BaseModel):
 
 
 class RuntimeCatalogue:
-    def __init__(self, root: Path, *, forbidden_roots: tuple[Path, ...]) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        forbidden_roots: tuple[Path, ...],
+        sensitive_values: tuple[str, ...] = (),
+    ) -> None:
+        self.sensitive_values = tuple(s for s in sensitive_values if s)
         raw = root.absolute()
         if raw != raw.resolve() or any(
-            raw == p.resolve() or raw.is_relative_to(p.resolve())
+            raw == p.resolve()
+            or raw.is_relative_to(p.resolve())
+            or p.resolve().is_relative_to(raw)
             for p in forbidden_roots
         ):
             raise ValueError("Runtime state must be private and outside writable roots")
@@ -92,15 +103,43 @@ class RuntimeCatalogue:
     def record(
         self, task: RuntimeTask, kind: str, data: dict[str, Any] | None = None
     ) -> RuntimeTask:
+        if any(secret in task.prompt for secret in self.sensitive_values):
+            raise ValueError("Prompt contains a protected credential")
+        task = task.model_copy(
+            update={
+                key: redact_text(value, self.sensitive_values)
+                for key in ("result", "diagnostic", "recovery_note")
+                if isinstance(value := getattr(task, key), str)
+            }
+        )
+        task = task.model_copy(
+            update={"metrics": redact_value(task.metrics, self.sensitive_values)}
+        )
         previous = self.data.tasks.get(task.task_id)
         seq = 1 if previous is None else previous.sequence + 1
-        if seq > 10000 or (previous is None and len(self.data.tasks) >= 1000):
+        if (
+            seq > 10000
+            and kind
+            not in {
+                "interrupted",
+                "failed",
+                "paused",
+                "completed",
+                "reconciled",
+                "cancelled",
+            }
+        ) or (previous is None and len(self.data.tasks) >= 1000):
             raise RuntimeError("Runtime catalogue capacity reached")
         updated = task.model_copy(update={"sequence": seq})
         candidate = self.data.model_copy(deep=True)
         candidate.tasks[task.task_id] = updated
         candidate.events.setdefault(task.task_id, []).append(
-            RuntimeEvent(task_id=task.task_id, sequence=seq, kind=kind, data=data or {})
+            RuntimeEvent(
+                task_id=task.task_id,
+                sequence=seq,
+                kind=kind,
+                data=redact_value(data or {}, self.sensitive_values),
+            )
         )
         atomic_write(self.path, candidate.model_dump(mode="json"))
         self.data = candidate

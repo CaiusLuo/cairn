@@ -179,8 +179,14 @@ def create_app(
         return response
 
     async def health(_request: Request) -> JSONResponse:
+        ready = runtime is None or (
+            runtime.worker is not None
+            and not runtime.worker.done()
+            and not runtime.stopping
+        )
         return JSONResponse(
-            {"ok": True, "version": 1, "read_only": runtime is None},
+            {"ok": ready, "version": 1, "read_only": runtime is None},
+            status_code=200 if ready else 503,
             headers=_json_headers(),
         )
 
