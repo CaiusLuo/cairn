@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from cairn.terminal.wechat.control import WechatControlServer
+from cairn.terminal.wechat.session import WechatSessionController
 
 
 def test_control_socket_status_roundtrip(tmp_path: Path) -> None:
@@ -32,11 +33,6 @@ def test_control_socket_status_roundtrip(tmp_path: Path) -> None:
     assert payload["ok"] is True
     assert cast(dict[str, Any], payload["result"])["method"] == "status"
     assert not path.exists()
-
-
-from pathlib import Path
-
-from cairn.terminal.wechat.session import WechatSessionController
 
 
 def test_controller_reads_control_status(tmp_path: Path) -> None:
