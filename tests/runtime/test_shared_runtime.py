@@ -595,3 +595,86 @@ def test_approved_provider_runtime_is_reused_without_api_calls(tmp_path: Path) -
             assert (Path(final.worktree or "") / "runtime-result.txt").is_file()
 
     asyncio.run(scenario())
+
+
+def test_full_wechat_bridge_startup_does_not_initialize_legacy_agent(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from dataclasses import replace
+
+    import cairn.infra.runtime_client as client_module
+    import cairn.terminal.wechat.serve as bridge_module
+    from tests.support.fake_ilink import FakeILink
+    from tests.support.wechat_service import _client, _config, _msg
+
+    async def scenario() -> None:
+        source = repository(tmp_path / "source")
+        app = runtime_app(
+            source,
+            tmp_path / "runtime",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="test-token",
+        )
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "test-token",
+            transport=httpx.ASGITransport(app=app),
+        )
+        token = tmp_path / "runtime.token"
+        token.write_text("test-token")
+        token.chmod(0o600)
+
+        def forbidden(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError(
+                "Runtime bridge initialized a legacy execution dependency"
+            )
+
+        for name in (
+            "default_task_executor",
+            "default_conversation_executor",
+            "default_conversation_classifier",
+            "ScheduleStore",
+        ):
+            monkeypatch.setattr(bridge_module, name, forbidden)
+        monkeypatch.setattr(client_module, "RuntimeClient", lambda *args, **kwargs: api)
+        async with app.router.lifespan_context(app):
+            with FakeILink() as fake:
+                fake.updates.append(
+                    {"ret": 0, "msgs": [_msg("/task Create through the full bridge")]}
+                )
+                config = replace(
+                    _config(fake, source, tmp_path / "wechat", max_polls=None),
+                    runtime_url="http://127.0.0.1:8777",
+                    runtime_token_file=token,
+                    schedule_store=tmp_path / "legacy-schedule",
+                )
+                stop = asyncio.Event()
+                service = asyncio.create_task(
+                    bridge_module.serve_wechat(
+                        config=config,
+                        client=_client(fake),
+                        stop_event=stop,
+                        allow_insecure_local_http=True,
+                    )
+                )
+                try:
+                    async with asyncio.timeout(15):
+                        while not app.state.runtime.list_tasks():
+                            if service.done():
+                                service.result()
+                                raise AssertionError(
+                                    "Bridge stopped without submitting a task"
+                                )
+                            await asyncio.sleep(0.01)
+                    await asyncio.wait_for(app.state.runtime.queue.join(), 30)
+                    task = app.state.runtime.list_tasks()[0]
+                    assert task.source == "wechat" and task.status == "completed"
+                    assert (Path(task.worktree or "") / "runtime-result.txt").is_file()
+                finally:
+                    stop.set()
+                    await asyncio.wait_for(service, 5)
+                assert not (tmp_path / "legacy-schedule").exists()
+                assert not (tmp_path / "wechat" / "sessions").exists()
+
+    asyncio.run(scenario())

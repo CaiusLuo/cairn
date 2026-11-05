@@ -872,8 +872,11 @@ class _Service:
         self._conversation_executor = conversation_executor
         self._conversation_classifier = conversation_classifier
         self._progress_provider = progress_provider
-        self._schedule_store = schedule_store or (
-            ScheduleStore(config.schedule_store) if config.schedule_store else None
+        self._schedule_store = (
+            schedule_store
+            or (ScheduleStore(config.schedule_store) if config.schedule_store else None)
+            if self._runtime_adapter is None
+            else None
         )
         self._chat_tasks: set[asyncio.Task[None]] = set()
         self._intent_tasks: set[asyncio.Task[None]] = set()
@@ -2087,23 +2090,35 @@ async def serve_wechat(
         return cleaned
 
     project_lease = WorkspaceLease(config.state_dir / PROJECT_LEASE_FILENAME)
-    executor = (
-        task_executor
-        if task_executor is not None
-        else default_task_executor(
-            config,
-            project_lease=project_lease,
-            on_secrets_resolved=remember_known_secrets,
+    executor: TaskExecutor
+    if config.runtime_url:
+
+        async def reject_local_execution(
+            prompt: str, cancel: asyncio.Event, task_id: str
+        ) -> HeadlessResult:
+            raise RuntimeError("Runtime bridge cannot execute a local Agent")
+
+        executor = reject_local_execution
+        conversation_executor = None
+        conversation_classifier = None
+    else:
+        executor = (
+            task_executor
+            if task_executor is not None
+            else default_task_executor(
+                config,
+                project_lease=project_lease,
+                on_secrets_resolved=remember_known_secrets,
+            )
         )
-    )
-    if conversation_executor is None and task_executor is None:
-        conversation_executor = default_conversation_executor(
-            config,
-            getattr(executor, "durable_factory", None),
-            project_lease=project_lease,
-        )
-    if conversation_classifier is None and task_executor is None:
-        conversation_classifier = default_conversation_classifier(config)
+        if conversation_executor is None and task_executor is None:
+            conversation_executor = default_conversation_executor(
+                config,
+                getattr(executor, "durable_factory", None),
+                project_lease=project_lease,
+            )
+        if conversation_classifier is None and task_executor is None:
+            conversation_classifier = default_conversation_classifier(config)
     report = ServeReport()
     task_gate = asyncio.Lock()
 
@@ -2122,7 +2137,7 @@ async def serve_wechat(
     scheduler_task: asyncio.Task[object] | None = None
     scheduler_stop: asyncio.Event | None = None
     scheduler_runner: ScheduleRunner | None = None
-    if config.schedule_store is not None:
+    if config.schedule_store is not None and not config.runtime_url:
         ensure_schedule_outside_workspace(config.schedule_store, config.workspace)
 
         async def deliver_scheduled(sender: str, text: str) -> bool:
