@@ -40,7 +40,7 @@ _ABSOLUTE = re.compile(
 )
 _ISO = re.compile(r"(?P<date>\d{4}-\d{2}-\d{2})[ T](?P<hour>\d{1,2}):(?P<minute>\d{2})")
 _NEGATIVE_PREFIXES = ("不要", "别", "不用", "无需", "禁止", "不是说", "并非")
-_NEGATIVE_MARKERS = ("不要", "别", "不用", "无需", "禁止")
+_NEGATIVE_MARKERS = ()
 _ACTION_PREFIXES = (
     "提醒",
     "检查",
@@ -155,26 +155,36 @@ def parse_once_request(
     timezone: str = _TIMEZONE,
     *,
     message_id: str = "",
+    now: datetime | float | None = None,
 ) -> Result:
     """Parse one explicit one-shot request from a trusted inbound message."""
     raw = (text or "").strip()
     if not raw:
         return NotSchedule()
-    if any(raw.startswith(prefix) for prefix in _NEGATIVE_PREFIXES) or any(
-        marker in raw for marker in _NEGATIVE_MARKERS
-    ):
+    if any(raw.startswith(prefix) for prefix in _NEGATIVE_PREFIXES):
         return NotSchedule()
     if "“" in raw or "”" in raw or (raw.count('"') >= 2):
         return NotSchedule()
     zone = ZoneInfo(timezone or _TIMEZONE)
     received = _received(received_at, timezone)
-    parsed = _explicit_time(raw, received, zone)
+    occurrences = (
+        len(_ISO.findall(raw))
+        + len(_RELATIVE.findall(raw))
+        + len(_ABSOLUTE.findall(raw))
+    )
+    if occurrences > 1:
+        return Clarification("multiple times are ambiguous")
+    try:
+        parsed = _explicit_time(raw, received, zone)
+    except (ValueError, OverflowError):
+        return Clarification("invalid time")
     if parsed is None:
         if any(cue in raw for cue in ("提醒", "定时", "安排", "晚点", "稍后")):
             return Clarification("missing explicit time")
         return NotSchedule()
     at, span = parsed
-    if at <= received:
+    actual_now = _received(now, timezone) if now is not None else datetime.now(zone)
+    if at <= received or at <= actual_now:
         return Clarification("scheduled time is in the past")
     suffix = raw[span[1] :].strip(" \uff0c,。.!\uff01")
     reminder = False

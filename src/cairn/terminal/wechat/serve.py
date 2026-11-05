@@ -27,6 +27,7 @@ from typing import Any
 
 from dotenv import dotenv_values
 
+from cairn.core.schedule import ScheduleJob, ScheduleKind
 from cairn.core.task_board import TaskSource
 from cairn.infra.agent_memory.store import (
     AgentMemoryStore,
@@ -345,14 +346,6 @@ def default_task_executor(
     wechat_task_tools = board_tools(task_board)
     schedule_store = ScheduleStore(config.schedule_store or default_schedule_dir())
     schedule_tools = (
-        ScheduleCreateTool(
-            store=schedule_store,
-            workspace=str(config.workspace),
-            recipient=lambda: config.account.ilink_user_id or None,
-            account_id=lambda: config.account.ilink_bot_id,
-            redact=personal_memory.redact,
-            require_trusted_message=True,
-        ),
         ScheduleListTool(
             store=schedule_store,
             workspace=str(config.workspace),
@@ -744,14 +737,6 @@ def default_conversation_executor(
     )
     schedule_store = ScheduleStore(config.schedule_store or default_schedule_dir())
     schedule_tools = (
-        ScheduleCreateTool(
-            store=schedule_store,
-            workspace=str(config.workspace),
-            recipient=lambda: config.account.ilink_user_id or None,
-            account_id=lambda: config.account.ilink_bot_id,
-            redact=personal_memory.redact,
-            require_trusted_message=True,
-        ),
         ScheduleListTool(
             store=schedule_store,
             workspace=str(config.workspace),
@@ -828,6 +813,7 @@ class _Service:
         conversation_executor: ConversationExecutor | None = None,
         conversation_classifier: ConversationClassifier | None = None,
         progress_provider: Callable[[], str] | None = None,
+        schedule_store: ScheduleStore | None = None,
     ) -> None:
         self.config = config
         self.state = state
@@ -1482,9 +1468,27 @@ class _Service:
             next_run_at=parsed.at,
         )
         assert self._schedule_store is not None
-        saved, _created = await asyncio.to_thread(
-            self._schedule_store.add_or_get_job, job
+        worker = asyncio.create_task(
+            asyncio.to_thread(self._schedule_store.add_or_get_job, job)
         )
+        try:
+            saved, _created = await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # The blocking flock/fsync owns a thread that cannot be cancelled.
+            # Observe it to completion, then persist the saved fact so restart
+            # can decide the receipt without replaying a send.
+            await await_owned(worker)
+            try:
+                saved, _created = worker.result()
+            except BaseException:
+                raise
+            self.state.mark(
+                inbound.key or "",
+                "schedule_created",
+                schedule_job_id=saved.job_id,
+                schedule_receipt_state="pending",
+            )
+            raise
         self.state.mark(
             inbound.key or "",
             "schedule_created",
@@ -1539,6 +1543,39 @@ class _Service:
         self.state.mark(inbound.key, "schedule_pending")
         self._start_schedule_task(self._run_host_schedule(inbound, parsed), inbound)
         return True
+
+    async def _recover_schedule(
+        self, inbound: _Inbound, record: dict[str, object]
+    ) -> None:
+        state = record.get("state")
+        receipt = record.get("schedule_receipt_state")
+        if state == "schedule_receipt_unknown" or receipt == "unknown":
+            return
+        if state == "schedule_receipt_sending" or receipt == "sending":
+            self.state.mark(
+                inbound.key or "",
+                "schedule_receipt_unknown",
+                schedule_receipt_state="unknown",
+            )
+            return
+        if state == "schedule_created" and receipt == "sent":
+            return
+        received_at = record.get("received_at")
+        parsed = parse_once_request(
+            inbound.text or "",
+            float(received_at) if isinstance(received_at, (int, float)) else 0.0,
+            message_id=inbound.key or "",
+            now=datetime.now(UTC),
+        )
+        if isinstance(parsed, OnceRequest):
+            self.state.mark(inbound.key or "", "schedule_pending")
+            await self._run_host_schedule(inbound, parsed)
+        else:
+            self.state.mark(
+                inbound.key or "",
+                "schedule_clarification",
+                reason=getattr(parsed, "reason", "not_a_schedule"),
+            )
 
     async def _handle(self, inbound: _Inbound) -> None:
         if not inbound.sender or inbound.context_token == "":
@@ -1660,6 +1697,10 @@ class _Service:
                     "chat_sending",
                     "chat_interrupted",
                     "clarifying",
+                    "schedule_pending",
+                    "schedule_created",
+                    "schedule_receipt_sending",
+                    "schedule_receipt_unknown",
                 }
             )
         )
@@ -1672,6 +1713,14 @@ class _Service:
         ]
         for _key, record, recovered in recovered_items:
             state = record.get("state")
+            if state in {
+                "schedule_pending",
+                "schedule_created",
+                "schedule_receipt_sending",
+                "schedule_receipt_unknown",
+            }:
+                await self._recover_schedule(recovered, record)
+                continue
             if state == "queued":
                 continue
             if state == "clarifying":
