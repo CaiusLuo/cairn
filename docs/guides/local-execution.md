@@ -15,13 +15,22 @@ capability. The tool then requires bubblewrap and working user namespaces; a
 missing or invalid boundary never falls back to the host. This selection does
 not grant a permission by itself.
 
+`cairn.infra.sandbox` is the backend migration boundary: callers use only
+`available()`, `build_argv()`, `build_shell_argv()` and `IsolatedRunner`. A
+replacement backend must keep those contracts, keep host capability probing
+inside that module, and fail closed with `IsolationUnavailable`.
+
 The project is writable, system binaries and the selected host Python/uv
 toolchain are read-only, and unrelated projects and the host home are not
 mounted. Only the Python installation may appear beneath otherwise empty home
-parent directories. The sandbox has private process, mount and temporary-file
-namespaces; capabilities are dropped and nested user namespaces are disabled so
-root commands cannot unmount credential masks or remount protected files. The
-workspace must not overlap protected system roots.
+parent directories. The sandbox has private process, mount and temporary-file namespaces;
+capabilities are dropped. On bubblewrap releases that support
+`--disable-userns` and `--assert-userns-disabled`, nested user namespaces are
+disabled directly. Ubuntu 22.04's bubblewrap 0.6.1 lacks those options, so
+`infra.sandbox` probes `bwrap --help` and installs a host-owned seccomp filter
+denying `unshare`/`clone` user-namespace creation; a failed or empty capability
+probe blocks execution with a diagnostic `IsolationUnavailable`. The workspace
+must not overlap protected system roots.
 
 Credential paths use `infra.credential_paths`, including nested `.env.*`, private
 keys and credential directories. Files are replaced with readable, read-only

@@ -40,6 +40,7 @@ def test_slow_sandbox_inventory_keeps_loop_live_and_builds_argv_on_owner(
             *,
             empty_file_fd: Callable[[], int],
             private_paths: Sequence[Path] | None = None,
+            seccomp_fd: Callable[[], int] | None = None,
         ) -> list[str]:
             assert threading.get_ident() == owner
             assert private_paths == []

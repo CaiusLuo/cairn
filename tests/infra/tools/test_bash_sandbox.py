@@ -4,6 +4,7 @@ import asyncio
 import shlex
 import subprocess
 import sys
+import tempfile
 import zipfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -92,9 +93,14 @@ def test_shell_cannot_undo_masks_remount_or_create_user_namespace(
         *,
         empty_file_fd: Callable[[], int],
         private_paths: Sequence[Path] | None = None,
+        seccomp_fd: Callable[[], int] | None = None,
     ) -> list[str]:
         built = original(
-            workspace, command, empty_file_fd=empty_file_fd, private_paths=private_paths
+            workspace,
+            command,
+            empty_file_fd=empty_file_fd,
+            private_paths=private_paths,
+            seccomp_fd=seccomp_fd,
         )
         # The escape attempt can only touch this disposable mock system mount.
         built[1:1] = ["--ro-bind", str(system), str(system)]
@@ -295,6 +301,26 @@ def test_bwrap_userns_lock_detection_uses_help_output(
     assert sandbox._bwrap_supports_userns_lock("/usr/bin/bwrap") is False
 
 
+def test_bwrap_capability_probe_errors_are_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        raise OSError("probe blocked")
+
+    def empty(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(stdout="", stderr="")
+
+    monkeypatch.setattr(sandbox, "_userns_lock_cache", {})
+    monkeypatch.setattr(subprocess, "run", fail)
+    with pytest.raises(sandbox.IsolationUnavailable, match="cannot determine"):
+        sandbox._bwrap_supports_userns_lock("/usr/bin/bwrap")
+
+    monkeypatch.setattr(sandbox, "_userns_lock_cache", {})
+    monkeypatch.setattr(subprocess, "run", empty)
+    with pytest.raises(sandbox.IsolationUnavailable, match="empty bwrap --help output"):
+        sandbox._bwrap_supports_userns_lock("/usr/bin/bwrap")
+
+
 @pytest.mark.parametrize("supported", [False, True])
 def test_shell_argv_adapts_to_bwrap_userns_lock_support(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, supported: bool
@@ -303,12 +329,63 @@ def test_shell_argv_adapts_to_bwrap_userns_lock_support(
     root.mkdir()
     monkeypatch.setattr(sandbox, "_bwrap_path", lambda: "/usr/bin/bwrap")
     monkeypatch.setattr(sandbox, "_userns_lock_cache", {"/usr/bin/bwrap": supported})
-    argv = sandbox.build_shell_argv(
-        Workspace(root), "true", empty_file_fd=lambda: -1, private_paths=[]
-    )
+    with tempfile.TemporaryFile() as seccomp:
+        called = False
+
+        def seccomp_fd() -> int:
+            nonlocal called
+            called = True
+            return seccomp.fileno()
+
+        argv = sandbox.build_shell_argv(
+            Workspace(root),
+            "true",
+            empty_file_fd=lambda: -1,
+            private_paths=[],
+            seccomp_fd=seccomp_fd,
+        )
+    assert called is (not supported)
     assert argv[0] == "/usr/bin/bwrap"
     assert "--unshare-user" in argv
     assert "--cap-drop" in argv
     assert argv[argv.index("--cap-drop") + 1] == "ALL"
     assert ("--disable-userns" in argv) is supported
     assert ("--assert-userns-disabled" in argv) is supported
+    assert ("--seccomp" in argv) is (not supported)
+
+
+def test_old_bwrap_seccomp_fallback_blocks_nested_userns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if not sandbox.available():
+        pytest.skip("bubblewrap sandbox is unavailable")
+    root = tmp_path / "project"
+    root.mkdir()
+    monkeypatch.setattr(sandbox, "_userns_lock_cache", {sandbox._bwrap_path(): False})
+    tool = BashTool(Workspace(root), sandbox_shell=True)
+    result = asyncio.run(
+        tool.execute({"command": "unshare -Ur true 2>/dev/null; echo userns=$?"})
+    )
+    assert result.exit_code == 0, result.stderr
+    assert "userns=" in result.stdout
+    assert "userns=0" not in result.stdout
+
+
+def test_shell_surfaces_capability_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    monkeypatch.setattr(sandbox, "available", lambda: True)
+    monkeypatch.setattr(sandbox, "_bwrap_path", lambda: "/usr/bin/bwrap")
+
+    def fail(_bwrap: str) -> bool:
+        raise sandbox.IsolationUnavailable(
+            "cannot determine /usr/bin/bwrap user-namespace capabilities: blocked"
+        )
+
+    monkeypatch.setattr(sandbox, "_bwrap_supports_userns_lock", fail)
+    tool = BashTool(Workspace(root), sandbox_shell=True)
+    result = asyncio.run(tool.execute({"command": "true"}))
+    assert result.error_type == "sandbox_unavailable"
+    assert "cannot determine" in result.stderr

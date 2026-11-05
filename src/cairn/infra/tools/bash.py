@@ -258,6 +258,11 @@ class BashTool(WorkspaceOnlyTool):
                 inherited_fds.append(empty.fileno())
                 return empty.fileno()
 
+            def seccomp_fd() -> int:
+                seccomp = resources.enter_context(tempfile.TemporaryFile())
+                inherited_fds.append(seccomp.fileno())
+                return seccomp.fileno()
+
             if self.sandbox_shell:
                 from cairn.infra import sandbox
 
@@ -292,10 +297,15 @@ class BashTool(WorkspaceOnlyTool):
                         command,
                         empty_file_fd=empty_file_fd,
                         private_paths=private_paths,
+                        seccomp_fd=seccomp_fd,
                     )
-                except (sandbox.IsolationUnavailable, OSError, ValueError):
+                except (sandbox.IsolationUnavailable, OSError, ValueError) as exc:
+                    detail = str(exc)
                     return ToolResult(
-                        stderr="shell sandbox could not establish the project boundary",
+                        stderr=(
+                            "shell sandbox could not establish the project boundary"
+                            + (f": {detail}" if detail else "")
+                        ),
                         exit_code=-1,
                         error_type="sandbox_unavailable",
                     )

@@ -20,14 +20,21 @@ The module is honest about the boundary it offers: it needs ``bwrap`` and workin
 user namespaces. When they are unavailable, ``available()`` is ``False`` and
 callers must **block** any run that needs to execute generated code rather than
 fall back to the host. It never broadens host permissions.
+
+This module is also the backend migration boundary: callers use only
+``available()``, ``build_argv()``, ``build_shell_argv()`` and ``IsolatedRunner``.
+Replacing bubblewrap must preserve those contracts, keep host capability probes
+inside this module, and fail closed with ``IsolationUnavailable``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import os
 import shutil
+import struct
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -122,15 +129,93 @@ def _bwrap_supports_userns_lock(bwrap: str) -> bool:
             timeout=5,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
-        _userns_lock_cache[bwrap] = False
-        return False
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise IsolationUnavailable(
+            f"cannot determine {bwrap} user-namespace capabilities: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
     help_text = f"{result.stdout or ''}{result.stderr or ''}"
+    if not help_text.strip():
+        raise IsolationUnavailable(
+            f"cannot determine {bwrap} user-namespace capabilities: "
+            "empty bwrap --help output"
+        )
     supported = (
         "--disable-userns" in help_text and "--assert-userns-disabled" in help_text
     )
     _userns_lock_cache[bwrap] = supported
     return supported
+
+
+# Minimal cBPF/seccomp fallback for bwrap 0.6.x, which lacks --disable-userns.
+_BPF_LD_W_ABS = 0x20
+_BPF_JEQ = 0x15
+_BPF_JSET = 0x45
+_BPF_RET_K = 0x06
+_SECCOMP_RET_ALLOW = 0x7FFF0000
+_SECCOMP_RET_ERRNO = 0x00050000
+_CLONE_NEWUSER = 0x10000000
+_AUDIT_ARCH_X86_64 = 0xC000003E
+_AUDIT_ARCH_AARCH64 = 0xC00000B7
+_NR_UNSHARE = 272
+_NR_CLONE3 = 435
+
+
+def _userns_seccomp_program() -> bytes:
+    """Deny nested user namespace creation on old bubblewrap hosts."""
+    machine = os.uname().machine.lower()
+    if machine in {"x86_64", "amd64"}:
+        arch, clone_nr = _AUDIT_ARCH_X86_64, 56
+    elif machine in {"aarch64", "arm64"}:
+        arch, clone_nr = _AUDIT_ARCH_AARCH64, 220
+    else:
+        raise IsolationUnavailable(
+            f"seccomp userns fallback is unsupported on {machine}"
+        )
+    deny = _SECCOMP_RET_ERRNO | errno.EPERM
+    enosys = _SECCOMP_RET_ERRNO | errno.ENOSYS
+    allow = _SECCOMP_RET_ALLOW
+
+    # Instruction indices are fixed so every jump is forward and bounded.
+    nr_ld, clone_jmp, args_ld, clone3_jmp = 2, 4, 5, 7
+    clone3_ret, deny_ret, allow_ret, deny_all_ret = 8, 9, 10, 11
+    instructions: list[tuple[int, int, int, int]] = []
+
+    def stmt(code: int, k: int) -> None:
+        instructions.append((code, 0, 0, k))
+
+    def jump(code: int, k: int, true_index: int, false_index: int) -> None:
+        index = len(instructions)
+        instructions.append((code, true_index - index - 1, false_index - index - 1, k))
+
+    stmt(_BPF_LD_W_ABS, 4)  # seccomp_data.arch
+    jump(_BPF_JEQ, arch, nr_ld, deny_all_ret)
+    stmt(_BPF_LD_W_ABS, 0)  # seccomp_data.nr
+    jump(_BPF_JEQ, _NR_UNSHARE, deny_ret, clone_jmp)
+    jump(_BPF_JEQ, clone_nr, args_ld, clone3_jmp)
+    stmt(_BPF_LD_W_ABS, 16)  # seccomp_data.args[0].lo32
+    jump(_BPF_JSET, _CLONE_NEWUSER, deny_ret, allow_ret)
+    jump(_BPF_JEQ, _NR_CLONE3, clone3_ret, allow_ret)
+    stmt(_BPF_RET_K, enosys)  # clone3: force fallback to clone
+    stmt(_BPF_RET_K, deny)
+    stmt(_BPF_RET_K, allow)
+    stmt(_BPF_RET_K, enosys)  # unexpected arch fails closed
+    assert len(instructions) == 12
+    return b"".join(struct.pack("=HBBI", *ins) for ins in instructions)
+
+
+def write_userns_seccomp(fd: int) -> None:
+    """Write the old-bwrap nested-userns seccomp program to an inherited FD."""
+    if fd < 0:
+        raise IsolationUnavailable("invalid seccomp descriptor")
+    program = _userns_seccomp_program()
+    os.lseek(fd, 0, os.SEEK_SET)
+    written = os.write(fd, program)
+    if written != len(program):
+        raise IsolationUnavailable("short write while preparing seccomp filter")
+    os.ftruncate(fd, len(program))
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.set_inheritable(fd, True)
 
 
 def available() -> bool:
@@ -240,6 +325,7 @@ def build_shell_argv(
     *,
     empty_file_fd: Callable[[], int],
     private_paths: Sequence[Path] | None = None,
+    seccomp_fd: Callable[[], int] | None = None,
 ) -> list[str]:
     """Bubblewrap argv for a project shell command.
 
@@ -247,6 +333,8 @@ def build_shell_argv(
     is withheld; credentials use the same path policy as file tools. Capabilities
     are dropped so a root caller cannot undo those mounts. Network is shared for
     dependency installation; this is a filesystem boundary, not network policy.
+    Older bubblewrap hosts receive a host-owned seccomp FD instead of the newer
+    ``--disable-userns`` options.
     """
     if not isinstance(workspace, Workspace):
         raise TypeError("sandbox workspace must be a Workspace, not a bare path")
@@ -317,7 +405,16 @@ def build_shell_argv(
         else:
             argv += ["--ro-bind-data", str(empty_file_fd()), str(private)]
     userns_lock = _bwrap_supports_userns_lock(bwrap)
-    isolation: list[str] = [
+    isolation: list[str] = []
+    if not userns_lock:
+        if seccomp_fd is None:
+            raise IsolationUnavailable(
+                "old bubblewrap requires a host-owned seccomp descriptor"
+            )
+        descriptor = seccomp_fd()
+        write_userns_seccomp(descriptor)
+        isolation += ["--seccomp", str(descriptor)]
+    isolation += [
         "--unshare-all",
         "--share-net",
         "--unshare-user",
