@@ -1,5 +1,12 @@
 # Evaluation assets
 
+The opt-in [LangGraph spike](../docs/experiments/langgraph-spike.md) runs only
+offline model/tool doubles:
+
+```bash
+uv run --group langgraph-spike python -m evaluation.langgraph_spike
+```
+
 Run repository evaluations from the repository root after installing development
 dependencies with `uv sync --locked --all-groups`.
 

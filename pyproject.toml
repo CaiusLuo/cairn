@@ -43,6 +43,9 @@ dev = [
     "types-jsonschema>=4.26.0.20261006",
     "types-pyyaml>=6.0.12.20260906",
 ]
+langgraph-spike = [
+    "langgraph==1.2.20",
+]
 
 [tool.ruff]
 target-version = "py312"
