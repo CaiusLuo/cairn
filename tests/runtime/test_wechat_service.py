@@ -510,7 +510,7 @@ def test_ack_failure_does_not_lose_task_or_claim_ack(
 
     async def scenario() -> None:
         service = _Service(
-            config=type("C", (), {"redact_text": None})(),
+            config=type("C", (), {"redact_text": None, "schedule_store": None})(),
             state=state,
             client=FailingClient(),  # type: ignore[arg-type]
             executor=executor,
@@ -571,7 +571,7 @@ def test_ack_never_echoes_input_before_provider_secrets_are_resolved(
 
     async def scenario() -> None:
         service = _Service(
-            config=type("C", (), {"redact_text": None})(),
+            config=type("C", (), {"redact_text": None, "schedule_store": None})(),
             state=state,
             client=Client(),  # type: ignore[arg-type]
             executor=executor,
@@ -630,7 +630,7 @@ def test_lost_ack_response_is_not_retried(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         service = _Service(
-            config=type("C", (), {"redact_text": None})(),
+            config=type("C", (), {"redact_text": None, "schedule_store": None})(),
             state=state,
             client=LostAckClient(),  # type: ignore[arg-type]
             executor=executor,

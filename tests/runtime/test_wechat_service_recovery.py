@@ -276,7 +276,7 @@ def test_cancel_during_ack_marks_cancelled_not_started(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         service = _Service(
-            config=type("C", (), {"redact_text": None})(),
+            config=type("C", (), {"redact_text": None, "schedule_store": None})(),
             state=state,
             client=SlowAckClient(),  # type: ignore[arg-type]
             executor=executor,
@@ -324,7 +324,7 @@ def test_cancel_before_coroutine_starts_is_persisted_cancelled(tmp_path: Path) -
 
     async def scenario() -> None:
         service = _Service(
-            config=type("C", (), {"redact_text": None})(),
+            config=type("C", (), {"redact_text": None, "schedule_store": None})(),
             state=state,
             client=Client(),  # type: ignore[arg-type]
             executor=executor,
@@ -1180,7 +1180,7 @@ def test_poll_updates_cancels_owned_poll_and_stop_waiter(tmp_path: Path) -> None
         client = PollClient()
         stop = asyncio.Event()
         service = _Service(
-            config=type("C", (), {"poll_timeout_ms": None})(),
+            config=type("C", (), {"poll_timeout_ms": None, "schedule_store": None})(),
             state=WechatState(tmp_path / "state"),
             client=client,  # type: ignore[arg-type]
             executor=lambda *args: None,  # type: ignore[arg-type]
