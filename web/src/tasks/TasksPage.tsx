@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { RuntimePanel } from "./RuntimePanel";
 import {
   DndContext,
   DragOverlay,
@@ -222,6 +223,7 @@ function TaskDetail({
 }
 
 export function TasksPage() {
+  const [runtimeAvailable, setRuntimeAvailable] = useState(false);
   const live = useLiveSnapshot();
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [query, setQuery] = useState("");
@@ -308,7 +310,7 @@ export function TasksPage() {
   return (
     <div className="shell">
       <Sidebar active="tasks" sessionsCount={live.snapshot?.sessions.length ?? 0} tasksCount={tasks.length}>
-        <button className="sidebar__action" disabled title="Read-only W1">
+        <button className="sidebar__action" disabled={!runtimeAvailable} title="New development task" onClick={() => document.getElementById("runtime-prompt")?.focus()}>
           <span aria-hidden="true">+</span> New task
         </button>
         <div className="side-filters">
@@ -330,6 +332,7 @@ export function TasksPage() {
       </Sidebar>
 
       <main className="tasks-main">
+        <RuntimePanel onAvailable={setRuntimeAvailable} />
         <header className="tasks-head">
           <div className="tasks-head__title">
             <h1>Tasks</h1>
@@ -337,7 +340,7 @@ export function TasksPage() {
           </div>
           <div className="tasks-head__actions">
             <SyncBadge sync={live.sync} />
-            <span className="read-only-badge">Read-only</span>
+            <span className="read-only-badge">{runtimeAvailable ? "Shared runtime" : "Read-only"}</span>
           </div>
         </header>
 

@@ -130,6 +130,29 @@ class TaskBoardStore:
             },
         )
 
+    def project_execution(self, item: TaskBoardItem) -> TaskBoardItem:
+        """Update a host-owned presentation view; never dispatch execution."""
+        with self._locked():
+            items = list(self._load_unlocked())
+            for index, current in enumerate(items):
+                if current.task_id == item.task_id:
+                    if current.project != item.project:
+                        raise TaskBoardValidationError(
+                            "Execution projection project mismatch"
+                        )
+                    item = item.model_copy(
+                        update={
+                            "created_at": current.created_at,
+                            "revision": current.revision + 1,
+                        }
+                    )
+                    items[index] = item
+                    break
+            else:
+                items.append(item)
+            self._save_unlocked(tuple(items))
+            return item
+
     @staticmethod
     def _now() -> str:
         return datetime.now().astimezone().isoformat()

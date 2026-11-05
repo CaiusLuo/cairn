@@ -136,6 +136,7 @@ from cairn.terminal.output import (
     print_turn_separator,
     print_user_message,
 )
+from cairn.terminal.runtime import app as runtime_app
 from cairn.terminal.schedule.controller import ScheduleController
 from cairn.terminal.selection import parse_selection_tokens
 from cairn.terminal.submission import PendingLine
@@ -184,6 +185,8 @@ DEFAULT_CLI_RUN_BUDGET = resolve_cli_run_budget()
 session_app = typer.Typer(
     help="Create, inspect, reopen or reconcile local conversations."
 )
+
+app.add_typer(runtime_app, name="runtime")
 app.add_typer(session_app, name="session")
 app.add_typer(task_app, name="task")
 app.add_typer(wechat_app, name="wechat")

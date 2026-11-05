@@ -28,6 +28,7 @@ class RuntimeTask(BaseModel):
     task_id: str = Field(default_factory=lambda: "task-" + uuid4().hex)
     prompt: str = Field(min_length=1, max_length=32000)
     source: RuntimeSource
+    request_id: str | None = None
     status: RuntimeStatus = "queued"
     session_id: str | None = None
     worktree: str | None = None

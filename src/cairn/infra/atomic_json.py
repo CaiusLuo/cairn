@@ -21,6 +21,11 @@ def atomic_write(path: Path, payload: dict[str, Any]) -> None:
             os.fsync(handle.fileno())
         os.chmod(tmp, 0o600)
         os.replace(tmp, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     except BaseException:
         with suppress(OSError):
             os.unlink(tmp)

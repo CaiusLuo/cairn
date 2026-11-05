@@ -77,9 +77,12 @@ def cookie_token(scope: Scope) -> str | None:
 class AuthGuard:
     """Protect pages, API reads and WebSocket upgrades with one cookie session."""
 
-    def __init__(self, app: ASGIApp, sessions: AuthSessions) -> None:
+    def __init__(
+        self, app: ASGIApp, sessions: AuthSessions, bearer_token: str | None = None
+    ) -> None:
         self.app = app
         self.sessions = sessions
+        self.bearer_token = bearer_token
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
@@ -91,7 +94,18 @@ class AuthGuard:
         ):
             await self.app(scope, receive, send)
             return
-        if self.sessions.valid(cookie_token(scope)):
+        authorization = next(
+            (
+                value
+                for key, value in scope.get("headers", [])
+                if key.lower() == b"authorization"
+            ),
+            b"",
+        )
+        bearer_valid = self.bearer_token is not None and secrets.compare_digest(
+            authorization, ("Bearer " + self.bearer_token).encode("utf-8")
+        )
+        if bearer_valid or self.sessions.valid(cookie_token(scope)):
             await self.app(scope, receive, send)
             return
         if scope["type"] == "websocket":
