@@ -12,9 +12,6 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.mark.parametrize(
     "entrypoint",
     [
-        ("evaluation/runners/run_coding_smoke.py",),
-        ("evaluation/runners/run_repository_intelligence.py",),
-        ("-m", "evaluation.benchmarks.session_checkpoints"),
         ("scripts/github/run_issue_task.py",),
         ("scripts/pilot/preflight.py",),
     ],

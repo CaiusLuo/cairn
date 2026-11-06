@@ -65,7 +65,7 @@ class Agent:
         self.model_executor = (
             model_executor if model_executor is not None else ModelExecutor()
         )
-        # Trace-only provider identity. Provider-neutral agents (evals, core
+        # Trace-only provider identity. Provider-neutral agents (core
         # tests) leave it unset and record no provider attribute.
         self.provider_name = provider_name
         if (

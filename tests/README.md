@@ -5,7 +5,7 @@ Tests follow Cairn's package ownership:
 | Package | Coverage |
 | --- | --- |
 | `core/` | Shared models and contracts, permissions, context budgets, and immutable request data |
-| `runtime/` | Agent turns, fallback, evaluation, memory lifecycle, tasks, review, and workflows |
+| `runtime/` | Agent turns, fallback, memory lifecycle, tasks, review, and workflows |
 | `infra/` | Configuration, Git and GitHub adapters, LLM clients, tools, workspace, traces, memory storage, and repository graphs |
 | `terminal/` | CLI startup, provider and model selection, input handling, commands, and rendered output |
 | `docs/` | Documentation navigation: relative links, referenced source paths, and documented test commands |

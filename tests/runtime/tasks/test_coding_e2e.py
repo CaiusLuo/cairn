@@ -1,7 +1,7 @@
 """Offline Issue #44 acceptance through the real TaskRunner and native tools.
 
 Keep artifacts with pytest --basetemp=/tmp/cairn-issue44-e2e. The task and
-oracle come from the existing EvalSuite; only the provider is scripted.
+oracle are local fixtures; only the provider is scripted.
 """
 
 import asyncio
@@ -15,7 +15,6 @@ from time import perf_counter
 from typing import Any
 
 import pytest
-from evaluation.cases.coding_smoke import coding_smoke_suite
 
 from cairn.core.budget import RunBudget
 from cairn.core.events import Event
@@ -31,14 +30,31 @@ from cairn.infra.observability.sinks import JsonlTraceSink
 from cairn.infra.observability.storage import TraceStore
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.evals import FileContentEqualsCheck
 from cairn.runtime.tasks import CodingTaskRunner, TaskResult, TaskSpec, TaskStatus
+from cairn.runtime.verification import FileContentEqualsCheck
 from tests.support.git import git, initialize_repository
 from tests.support.runtime import SequenceLLM
 from tests.support.sandbox import require_local_shell, sandbox_python
 
 SECRET_NAME = "CAIRN_ISSUE44_TEST_SECRET"
 SECRET_VALUE = "fixture-secret-must-not-reach-child-or-artifacts"
+
+CASE_NAME = "single-file-bug-fix"
+CASE_PATH = "src/range_utils.py"
+CASE_PROMPT = (
+    "Inspect src/range_utils.py. Fix inclusive_count for start <= end: "
+    "[4, 4] contains one integer and [2, 5] contains four. Preserve its "
+    "public signature and docstring, and make the smallest coherent "
+    "change to the return expression."
+)
+RANGE_UTILS = (
+    "def inclusive_count(start: int, end: int) -> int:\n"
+    '    """Count integers in [start, end], where start <= end."""\n'
+    "    return end - start\n"
+)
+EXPECTED_RANGE_UTILS = RANGE_UTILS.replace(
+    "return end - start", "return end - start + 1"
+)
 
 
 def repository_state(root: Path) -> dict[str, Any]:
@@ -95,19 +111,12 @@ def test_offline_coding_task_e2e(
     monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-10-15T00:00:00Z")
     monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-10-15T00:00:00Z")
     monkeypatch.setenv(SECRET_NAME, SECRET_VALUE)
-    suite = coding_smoke_suite()
-    item = next(c for c in suite.cases if c.case.name == "single-file-bug-fix")
-    equality = next(c for c in item.checks if isinstance(c, FileContentEqualsCheck))
-    path, original, expected = (
-        equality.path,
-        item.case.files[equality.path],
-        equality.expected,
-    )
+    path, original, expected = CASE_PATH, RANGE_UTILS, EXPECTED_RANGE_UTILS
     source = tmp_path / "source"
     source.mkdir()
     initialize_repository(source)
     git(source, "config", "commit.gpgsign", "false")
-    for name, content in item.case.files.items():
+    for name, content in {path: original}.items():
         target = source / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content.encode("utf-8"))
@@ -253,7 +262,7 @@ def test_offline_coding_task_e2e(
                 secret_env_keys=handle.secret_env_keys,
             )
             spec = TaskSpec(
-                task_id=f"issue-44-{mode}", name=item.case.name, prompt=item.case.prompt
+                task_id=f"issue-44-{mode}", name=CASE_NAME, prompt=CASE_PROMPT
             )
             tasks_before = asyncio.all_tasks()
             started = perf_counter()
@@ -306,7 +315,9 @@ def test_offline_coding_task_e2e(
             if mode == "edit_failure":
                 assert observed["edit"]["type"] == "ValueError"
 
-            checks = [await check.evaluate(handle.workspace) for check in item.checks]
+            checks = [
+                await FileContentEqualsCheck(path, expected).evaluate(handle.workspace)
+            ]
             verified = all(check.passed and check.error is None for check in checks)
             assert verified is repaired
             actual = (work / path).read_bytes()
@@ -401,8 +412,8 @@ def test_offline_coding_task_e2e(
                 "harness_revision": git(
                     Path(__file__).resolve().parents[3], "rev-parse", "HEAD"
                 ),
-                "suite": suite.name,
-                "case": item.case.name,
+                "suite": "coding-smoke-local",
+                "case": CASE_NAME,
                 "task_id": spec.task_id,
                 "session_id": None,
                 "turn_id": None,

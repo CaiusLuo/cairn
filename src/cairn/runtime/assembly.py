@@ -46,7 +46,7 @@ def build_agent(
     and the repository-context provider both keep those names out of the child
     environments they create, so a new consumer cannot silently miss one.
     """
-    # Skills are opt-in: an evaluation or a narrow caller must not inherit an
+    # Skills are opt-in: a narrow caller must not inherit an
     # advertisement it did not ask for, because it spends context every step.
     registry = build_default_registry(
         workspace,
