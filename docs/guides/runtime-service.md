@@ -139,8 +139,8 @@ arguments cannot grant either permission.
 
 The current catalogue stores task/event facts in JSON with an exclusive process
 lease; durable checkpoints use SQLite. The single worker and full catalogue rewrites limit
-throughput. Parallel workers, a PostgreSQL backend, shared scheduling and
-a combined systemd deployment are not implemented.
+throughput. Parallel workers, a PostgreSQL backend and shared scheduling are
+not implemented.
 
 The [WeChat bridge](wechat-ilink.md) uses these same tasks. The standalone local
 CLI and standalone WeChat service still exist and use the same Agent turn; the
@@ -160,3 +160,45 @@ Endpoints under `/api/runtime/tasks` support list/submit, `ID`, `ID/messages`,
 token or the Web host's authenticated cookie/Origin checks. Follow-up input
 carries a stable request ID and expected task sequence to reject stale writes
 and deduplicate lost acknowledgements. Reads do not execute tools.
+
+## Debian systemd service
+
+`deploy/systemd/cairn.service.in` supervises the existing Server, with one
+Runtime state lease, SIGTERM cleanup and `Restart=on-failure`. Render it using
+an existing service user and absolute paths:
+
+```sh
+sed \
+  -e 's|__CAIRN_ROOT__|/workspace/cairn|g' \
+  -e 's|__CAIRN_USER__|cairn|g' \
+  -e 's|__CAIRN_HOME__|/home/cairn|g' \
+  -e 's|__CAIRN_XDG_STATE_HOME__|/home/cairn/.local/state|g' \
+  -e 's|__CAIRN_WORKSPACE__|/srv/project|g' \
+  -e 's|__CAIRN_STATE__|/var/lib/cairn/runtime|g' \
+  -e 's|__CAIRN_WORKTREES__|/var/lib/cairn/worktrees|g' \
+  -e 's|__CAIRN_PROVIDER_APPROVAL__|/etc/cairn/provider.json|g' \
+  -e 's|__CAIRN_PORT__|8777|g' \
+  deploy/systemd/cairn.service.in | sudo tee /etc/systemd/system/cairn.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now cairn
+sudo systemctl status cairn
+sudo journalctl -u cairn -f
+```
+
+Prepare private state parent directories writable by that service user. The
+provider approval file matches the workspace configuration; credentials stay in
+the workspace `.env` or a private `/etc/cairn/cairn.env`, not the unit or argv.
+For the custom state example, connect using `--runtime-token-file
+/var/lib/cairn/runtime/runtime.token` as an authorized user with access to that
+private file. The default client and Server paths otherwise follow XDG together.
+
+`systemctl stop cairn` requests owned cleanup; `systemctl restart cairn` preserves
+stored task facts and Worktrees. A crash during an unfinished effect still needs
+explicit recovery review, not an automatic replay. `WantedBy=multi-user.target`
+allows startup on boot when enabled. A foreground `uv run cairn` remains owned by
+that foreground session; it is not a daemon.
+
+The template is opt-in. Installing it does not migrate or stop existing
+WeChat/Web processes. The standalone [WeChat unit](persistent-wechat-service.md)
+now uses `cairn-cli wechat serve`; render that updated unit before upgrading an
+old deployment's command path. Do not run two receivers for one account/state.

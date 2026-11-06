@@ -93,8 +93,9 @@ Web; `/reply TASK_ID CONTENT` adds a follow-up.
   catalogue is file-backed JSON; durable conversations use SQLite. Parallel task
   workers and a PostgreSQL backend are not implemented.
 - Shared WeChat mode has no scheduler integration. The existing standalone WeChat
-  route has scheduling and an optional [systemd template](docs/guides/persistent-wechat-service.md);
-  a combined shared-Runtime systemd deployment is not supplied.
+  route has scheduling and an optional [WeChat unit](docs/guides/persistent-wechat-service.md).
+- The [Server systemd template](docs/guides/runtime-service.md#debian-systemd-service)
+  supports boot startup and crash restart; installation is opt-in.
 - Shared CLI displays tool progress and the settled answer; Web also displays
   provisional streamed answer text.
 

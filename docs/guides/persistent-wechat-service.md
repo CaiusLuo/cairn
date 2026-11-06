@@ -3,7 +3,8 @@
 The existing template supervises the standalone `cairn-cli wechat serve` process.
 It does not start a shared Runtime or configure the Runtime bridge. For shared
 mode, first prepare the Runtime and use the bridge command in the
-[WeChat guide](wechat-ilink.md); a combined systemd setup is not supplied.
+[WeChat guide](wechat-ilink.md). The [Server unit](runtime-service.md#debian-systemd-service)
+supervises the shared Runtime separately.
 
 ## Prepare and install
 
