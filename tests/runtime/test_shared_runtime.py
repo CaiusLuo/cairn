@@ -1256,3 +1256,52 @@ def test_chat_accepts_a_non_git_workspace_without_creating_worktree(
             assert not list(source.iterdir())
 
     asyncio.run(scenario())
+
+
+def test_workspace_identity_is_authenticated_and_checked_before_admission(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        source = repository(tmp_path / "项目 with spaces")
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="test-token",
+        )
+        transport = httpx.ASGITransport(app=app)
+        right = RuntimeClient(
+            "http://127.0.0.1:8777", "test-token", transport=transport, workspace=source
+        )
+        wrong = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "test-token",
+            transport=transport,
+            workspace=tmp_path,
+        )
+        unauthorized = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "wrong-token",
+            transport=transport,
+            workspace=source,
+        )
+        import pytest
+
+        async with app.router.lifespan_context(app):
+            await right.validate_workspace()
+            with pytest.raises(httpx.HTTPStatusError) as denied:
+                await unauthorized.validate_workspace()
+            assert denied.value.response.status_code == 401
+            with pytest.raises(ValueError, match="does not match"):
+                await wrong.validate_workspace()
+            # Per-request identity also blocks a client after the server changes roots.
+            with pytest.raises(httpx.HTTPStatusError) as mismatch:
+                await wrong.submit("Must not execute", "cli")
+            assert mismatch.value.response.status_code == 409
+            assert not app.state.runtime.list_tasks()
+            task = await right.submit("hello", "cli", mode="conversation")
+            await asyncio.wait_for(app.state.runtime.queue.join(), 30)
+            assert (await right.inspect(task["task_id"]))["status"] == "completed"
+
+    asyncio.run(scenario())

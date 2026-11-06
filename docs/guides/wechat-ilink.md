@@ -9,9 +9,9 @@ Start the [shared Runtime](runtime-service.md) first. Complete QR login in a
 foreground terminal, then start one receiver with the same state directory:
 
 ```sh
-uv run cairn wechat login --workspace /srv/project \
+uv run cairn-cli wechat login --workspace /srv/project \
   --state-dir "$HOME/.local/state/cairn/wechat"
-uv run cairn wechat serve --workspace /srv/project \
+uv run cairn-cli wechat serve --workspace /srv/project \
   --state-dir "$HOME/.local/state/cairn/wechat" \
   --trust-workspace --allow-sender YOUR_SENDER_ID \
   --runtime-url http://127.0.0.1:8777 \
@@ -46,12 +46,12 @@ receiver against a live owner's state or delete its lock file.
 
 ## Standalone mode
 
-Without `--runtime-url`, `cairn wechat serve` runs its existing local routing,
+Without `--runtime-url`, `cairn-cli wechat serve` runs its existing local routing,
 Agent execution and scheduler. It requires `--trust-workspace`, a trusted sender
 and the five provider approval facts matching [configuration](../configuration.md):
 
 ```sh
-uv run cairn wechat serve --workspace /srv/project \
+uv run cairn-cli wechat serve --workspace /srv/project \
   --trust-workspace --allow-sender YOUR_SENDER_ID \
   --approve-provider-name example \
   --approve-provider-endpoint https://api.example.com/v1 \
@@ -61,7 +61,7 @@ uv run cairn wechat serve --workspace /srv/project \
 ```
 
 Host flags explicitly enable shell, MCP or network capabilities when needed;
-`uv run cairn wechat serve --help` lists the supported options.
+`uv run cairn-cli wechat serve --help` lists the supported options.
 Standalone scheduling commands include:
 
 ```text
@@ -78,7 +78,7 @@ Standalone scheduling commands include:
 Specify an offset for an unambiguous once-only time. Do not recreate an
 interrupted job blindly: execution or delivery may already have happened.
 
-In the local interactive CLI, `/wx`, `/wx status`, `/wx allow SENDER`, `/wx stop`
+In `cairn-cli local`, `/wx`, `/wx status`, `/wx allow SENDER`, `/wx stop`
 and `/wx disconnect` manage the standalone detached owner. Closing SSH or the CLI
 detaches; `/wx stop` requests owned shutdown. This flow does not automatically
 attach to the shared Runtime. For systemd supervision and host logs, see

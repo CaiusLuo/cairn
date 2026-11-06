@@ -39,19 +39,17 @@ credentials and makes no paid API requests.
 Run from the checkout. Keep private state outside the source and Worktree roots:
 
 ```sh
-uv run cairn runtime serve \
+uv run cairn \
   --workspace "$PWD" \
   --state-dir "$HOME/.local/state/cairn/runtime" \
   --worktrees "$HOME/.local/state/cairn/worktrees" \
   --offline --port 8777
 ```
 
-In another terminal, connect the familiar interactive CLI:
+In another terminal in the same workspace, connect the interactive CLI:
 
 ```sh
-uv run cairn \
-  --runtime-url http://127.0.0.1:8777 \
-  --runtime-token-file "$HOME/.local/state/cairn/runtime/runtime.token"
+uv run cairn-cli
 ```
 
 Chat normally, or enter `/develop Create the acceptance artifact` to exercise
@@ -82,12 +80,14 @@ Web; `/reply TASK_ID CONTENT` adds a follow-up.
 
 ## Other entry points and current limits
 
-- `uv run cairn` still starts a local interactive Agent. It uses the same LangGraph
-  turn but does not automatically connect to the shared Runtime.
-- `uv run cairn runtime submit "GOAL" --token-file FILE` creates an explicit
+- `uv run cairn` starts the shared Server; `uv run cairn-cli` connects from the
+  current directory. Connection failure never starts a local Agent.
+- `uv run cairn-cli local` retains the explicit legacy local Agent for migration;
+  its tasks are not server-owned.
+- `uv run cairn-cli runtime submit "GOAL" --token-file FILE` creates an explicit
   development task; `inspect`, `follow`, `history` and `list` read service state.
-- `uv run cairn session new` and the `session inspect/reopen/reconcile` commands
-  manage local durable conversations. `uv run cairn task run --help` describes the
+- `uv run cairn-cli session new` and the `session inspect/reopen/reconcile` commands
+  manage local durable conversations. `uv run cairn-cli task run --help` describes the
   separate headless task entry.
 - Shared Runtime currently has one task worker and a bounded queue. Its task/event
   catalogue is file-backed JSON; durable conversations use SQLite. Parallel task

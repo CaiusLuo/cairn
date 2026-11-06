@@ -11,7 +11,7 @@ Install dependencies from the [README](../../README.md#install). For a real mode
 prepare [configuration and provider approval](../configuration.md), then run:
 
 ```sh
-uv run cairn runtime serve \
+uv run cairn \
   --workspace /srv/project \
   --state-dir "$HOME/.local/state/cairn/runtime" \
   --worktrees "$HOME/.local/state/cairn/worktrees" \
@@ -31,9 +31,9 @@ tunnel. Login uses username `cairn` and the Runtime token as password.
 ## Interactive CLI and batch commands
 
 ```sh
-uv run cairn --runtime-url http://127.0.0.1:8777 \
+uv run cairn-cli --runtime-url http://127.0.0.1:8777 \
   --runtime-token-file "$HOME/.local/state/cairn/runtime/runtime.token"
-uv run cairn --runtime-url http://127.0.0.1:8777 \
+uv run cairn-cli --runtime-url http://127.0.0.1:8777 \
   --runtime-token-file "$HOME/.local/state/cairn/runtime/runtime.token" \
   --task-id TASK_ID
 ```
@@ -50,19 +50,36 @@ uv run cairn --runtime-url http://127.0.0.1:8777 \
 Input typed during execution waits for the next settled turn. Ctrl+C on the
 running terminal requests cancellation; closing the client only detaches.
 Shared mode uses the native composer and transcript without creating a local
-Agent. `uv run cairn` without Runtime options remains a separate local session.
+Agent. `uv run cairn-cli local` is the explicit standalone migration mode.
+
+The default URL is `http://127.0.0.1:8777`. Server state defaults to
+`$XDG_STATE_HOME/cairn/runtime` (or `~/.local/state/cairn/runtime`), and Worktrees
+to the sibling `worktrees` directory. The client reads `runtime.token` from that
+same default state directory. For custom state/ports, use `--runtime-url` and
+`--runtime-token-file`, or `CAIRN_RUNTIME_URL` / `CAIRN_RUNTIME_TOKEN_FILE`.
+
+The client compares its canonical current directory with the authenticated
+`/api/runtime/workspace` identity before entering chat. This version supports one
+exact workspace root; a different directory is refused. Each task request also
+carries that workspace as a file URI in `X-Cairn-Workspace`, so a service restarted
+on another project cannot silently accept existing client input.
+
+Historical `cairn runtime/session/task/wechat` commands move to
+`cairn-cli runtime/session/task/wechat`; `cairn-runtime` remains a Server alias.
+Running the Server in an SSH foreground terminal does not detach it: use systemd
+for a persistent supervisor.
 
 Batch commands accept `--url` (default `http://127.0.0.1:8777`) and the required
 `--token-file FILE`:
 
 ```sh
-uv run cairn runtime submit "Create the acceptance artifact" --token-file FILE
-uv run cairn runtime list --token-file FILE
-uv run cairn runtime inspect TASK_ID --token-file FILE
-uv run cairn runtime follow TASK_ID --token-file FILE
-uv run cairn runtime history TASK_ID --token-file FILE
-uv run cairn runtime cancel TASK_ID --token-file FILE
-uv run cairn runtime continue TASK_ID --token-file FILE
+uv run cairn-cli runtime submit "Create the acceptance artifact" --token-file FILE
+uv run cairn-cli runtime list --token-file FILE
+uv run cairn-cli runtime inspect TASK_ID --token-file FILE
+uv run cairn-cli runtime follow TASK_ID --token-file FILE
+uv run cairn-cli runtime history TASK_ID --token-file FILE
+uv run cairn-cli runtime cancel TASK_ID --token-file FILE
+uv run cairn-cli runtime continue TASK_ID --token-file FILE
 ```
 
 `submit` creates a development task. With the offline model it writes

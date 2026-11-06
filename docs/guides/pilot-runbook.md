@@ -49,20 +49,20 @@ require recovery. First inspect task history, the worktree and any external
 operation; a tool may have executed before its result was committed.
 
 ```sh
-uv run cairn runtime inspect TASK_ID --token-file FILE
-uv run cairn runtime history TASK_ID --token-file FILE
-uv run cairn runtime recovery TASK_ID --token-file FILE > /private/recovery.json
+uv run cairn-cli runtime inspect TASK_ID --token-file FILE
+uv run cairn-cli runtime history TASK_ID --token-file FILE
+uv run cairn-cli runtime recovery TASK_ID --token-file FILE > /private/recovery.json
 ```
 
 Use an existing private directory for the report. After reviewing surviving
 effects, explicitly reconcile with the fresh report and a meaningful note:
 
 ```sh
-uv run cairn runtime reconcile TASK_ID \
+uv run cairn-cli runtime reconcile TASK_ID \
   --report-file /private/recovery.json --effects-reviewed \
   --note "Reviewed surviving changes; continue from committed facts" \
   --token-file FILE
-uv run cairn runtime continue TASK_ID --token-file FILE
+uv run cairn-cli runtime continue TASK_ID --token-file FILE
 ```
 
 Reconcile records `abandon_without_replay`; it runs no model/tool and does not
@@ -74,10 +74,10 @@ Local durable CLI sessions use their own commands and default private store
 `~/.local/state/cairn/sessions`:
 
 ```sh
-uv run cairn session list
-uv run cairn session inspect SESSION_ID
-uv run cairn session reconcile SESSION_ID
-uv run cairn session reopen SESSION_ID
+uv run cairn-cli session list
+uv run cairn-cli session inspect SESSION_ID
+uv run cairn-cli session reconcile SESSION_ID
+uv run cairn-cli session reopen SESSION_ID
 ```
 
 `--store DIRECTORY` selects a different store. Inspect is read-only; reopen and

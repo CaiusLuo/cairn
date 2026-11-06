@@ -14,7 +14,7 @@ WorkingDirectory=__CAIRN_ROOT__
 Environment=HOME=__CAIRN_HOME__
 Environment=XDG_STATE_HOME=__CAIRN_XDG_STATE_HOME__
 EnvironmentFile=-/etc/cairn/cairn-wechat.env
-ExecStart=__CAIRN_ROOT__/.venv/bin/cairn wechat serve \
+ExecStart=__CAIRN_ROOT__/.venv/bin/cairn-cli wechat serve \
   --workspace __CAIRN_ROOT__ \
   --allow-sender __WECHAT_SENDER__ \
   --trust-workspace \

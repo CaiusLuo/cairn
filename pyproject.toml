@@ -28,7 +28,8 @@ dependencies = [
 ]
 
 [project.scripts]
-cairn = "cairn.terminal.cli:app"
+cairn = "cairn.web.runtime_server:main"
+cairn-cli = "cairn.terminal.client:app"
 cairn-web = "cairn.web.cli:main"
 cairn-runtime = "cairn.web.runtime_server:main"
 

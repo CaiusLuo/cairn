@@ -1,10 +1,13 @@
 from pathlib import Path
 from typing import Any
 
+import httpx
 from typer.testing import CliRunner
 
-import cairn.terminal.cli as cli
+import cairn.terminal.cli as legacy
+import cairn.terminal.client as cli
 import cairn.terminal.runtime_chat as shared
+from cairn.infra.runtime_client import RuntimeClient
 
 
 def test_interactive_option_dispatches_without_building_a_local_agent(
@@ -21,7 +24,15 @@ def test_interactive_option_dispatches_without_building_a_local_agent(
     async def remote(api: Any, **kwargs: Any) -> None:
         seen.append((api.url, kwargs))
 
-    monkeypatch.setattr(cli, "main", local)
+    monkeypatch.setattr(legacy, "main", local)
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"workspace": str(Path.cwd())})
+    )
+    monkeypatch.setattr(
+        cli,
+        "RuntimeClient",
+        lambda *args, **kwargs: RuntimeClient(*args, transport=transport, **kwargs),
+    )
     monkeypatch.setattr(shared, "main", remote)
     result = CliRunner().invoke(
         cli.app,

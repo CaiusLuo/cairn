@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -9,9 +10,22 @@ from urllib.parse import urlsplit
 import httpx
 
 
+def default_runtime_state_dir() -> Path:
+    """The server and client share the existing XDG host-state convention."""
+    return (
+        Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state")))
+        / "cairn/runtime"
+    )
+
+
 class RuntimeClient:
     def __init__(
-        self, url: str, token: str, *, transport: httpx.AsyncBaseTransport | None = None
+        self,
+        url: str,
+        token: str,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+        workspace: Path | None = None,
     ) -> None:
         parsed = urlsplit(url)
         if (
@@ -29,13 +43,17 @@ class RuntimeClient:
         self.url = url.rstrip("/")
         self.token = token
         self.transport = transport
+        self.workspace = workspace.resolve() if workspace is not None else None
 
     async def request(
         self, method: str, path: str, payload: dict[str, Any] | None = None
     ) -> Any:
+        headers = {"Authorization": "Bearer " + self.token}
+        if self.workspace is not None:
+            headers["X-Cairn-Workspace"] = self.workspace.as_uri()
         async with httpx.AsyncClient(
             base_url=self.url,
-            headers={"Authorization": "Bearer " + self.token},
+            headers=headers,
             timeout=20,
             transport=self.transport,
             trust_env=False,
@@ -46,6 +64,19 @@ class RuntimeClient:
             )
             response.raise_for_status()
             return response.json()
+
+    async def validate_workspace(self) -> None:
+        identity = await self.request("GET", "workspace")
+        if not isinstance(identity, dict) or not isinstance(
+            identity.get("workspace"), str
+        ):
+            raise ValueError(
+                "Server did not provide a workspace identity; upgrade the server."
+            )
+        if self.workspace is None or str(self.workspace) != identity["workspace"]:
+            raise ValueError(
+                f"Current directory {self.workspace} does not match Server workspace {identity['workspace']}. Run cairn-cli in that directory or select --runtime-url for the correct server."
+            )
 
     async def submit(
         self,

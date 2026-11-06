@@ -324,7 +324,7 @@ def create_app(
     if runtime is not None:
         from cairn.web.runtime import task_routes
 
-        routes.extend(task_routes(runtime))
+        routes.extend(task_routes(runtime, config.workspace))
     web_root = config.web_root
     if web_root is not None and (web_root / "index.html").is_file():
         routes.append(

@@ -17,6 +17,7 @@ from cairn.core.budget import RunBudget
 from cairn.infra.config.admission import ProviderApproval, load_approved_provider
 from cairn.infra.config.runtime_budget import load_task_budget
 from cairn.infra.runtime_catalog import RuntimeCatalogue
+from cairn.infra.runtime_client import default_runtime_state_dir
 from cairn.infra.runtime_client import read_runtime_token as read_token
 from cairn.infra.task_board.store import TaskBoardStore
 from cairn.runtime.offline_model import OfflineDevelopmentModel
@@ -30,7 +31,7 @@ from cairn.web.config import WebConfig
 
 app = typer.Typer(
     pretty_exceptions_show_locals=False,
-    help="Host the experimental shared Cairn runtime.",
+    help="Run Cairn Server: shared Agent, task queue, HTTP API and Web.",
 )
 
 
@@ -119,9 +120,9 @@ def runtime_app(
 
 @app.command()
 def serve(
-    workspace: Annotated[Path, typer.Option()],
-    state_dir: Annotated[Path, typer.Option()],
-    worktrees: Annotated[Path, typer.Option()],
+    workspace: Annotated[Path, typer.Option()] = Path("."),
+    state_dir: Annotated[Path | None, typer.Option()] = None,
+    worktrees: Annotated[Path | None, typer.Option()] = None,
     offline: Annotated[bool, typer.Option("--offline")] = False,
     port: int = 8777,
     max_steps: int | None = None,
@@ -131,6 +132,9 @@ def serve(
     allow_network: bool = False,
     web_root: Path | None = None,
 ) -> None:
+    workspace = workspace.expanduser().resolve()
+    state_dir = (state_dir or default_runtime_state_dir()).expanduser().absolute()
+    worktrees = (worktrees or state_dir.parent / "worktrees").expanduser().resolve()
     if offline == (provider_approval is not None):
         raise typer.BadParameter("Choose --offline or --provider-approval FILE")
     for config_path in (budget_config, provider_approval):
@@ -207,7 +211,11 @@ def serve(
 
 
 def main() -> None:
-    app()
+    try:
+        app()
+    except (OSError, ValueError, RuntimeError) as error:
+        typer.echo(f"Server startup failed: {error}", err=True)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

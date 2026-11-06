@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import suppress
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -54,9 +55,19 @@ async def request_body(request: Request) -> Any:
     return json.loads(body)
 
 
-def task_routes(service: TaskService) -> list[BaseRoute]:
+def task_routes(service: TaskService, workspace: Path) -> list[BaseRoute]:
+    expected_workspace = str(workspace.resolve())
+
+    async def identity(_request: Request) -> JSONResponse:
+        return JSONResponse(
+            {"workspace": expected_workspace}, headers={"Cache-Control": "no-store"}
+        )
+
     async def handle(request: Request) -> JSONResponse:
         try:
+            requested = request.headers.get("X-Cairn-Workspace")
+            if requested is not None and requested != workspace.resolve().as_uri():
+                return JSONResponse({"error": "workspace_mismatch"}, 409)
             task_id = request.path_params.get("task_id")
             action = request.path_params.get("action")
             result: Any
@@ -133,6 +144,10 @@ def task_routes(service: TaskService) -> list[BaseRoute]:
         receiving: asyncio.Task[Any] | None = None
         pending: asyncio.Task[Any] | None = None
         try:
+            requested = websocket.headers.get("X-Cairn-Workspace")
+            if requested is not None and requested != workspace.resolve().as_uri():
+                await websocket.close(code=1008)
+                return
             cursor = int(websocket.query_params.get("after", "0"))
             service.events(task_id, cursor)
             async with service.subscribe(task_id) as queue:
@@ -187,6 +202,7 @@ def task_routes(service: TaskService) -> list[BaseRoute]:
                 await websocket.close()
 
     return [
+        Route("/api/runtime/workspace", identity, methods=["GET"]),
         WebSocketRoute("/api/runtime/tasks/{task_id}/stream", stream),
         Route("/api/runtime/tasks", handle, methods=["GET", "POST"]),
         Route("/api/runtime/tasks/{task_id}", handle, methods=["GET"]),

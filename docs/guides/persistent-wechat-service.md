@@ -1,6 +1,6 @@
 # Debian WeChat deployment
 
-The existing template supervises the standalone `cairn wechat serve` process.
+The existing template supervises the standalone `cairn-cli wechat serve` process.
 It does not start a shared Runtime or configure the Runtime bridge. For shared
 mode, first prepare the Runtime and use the bridge command in the
 [WeChat guide](wechat-ilink.md); a combined systemd setup is not supplied.
@@ -8,7 +8,7 @@ mode, first prepare the Runtime and use the bridge command in the
 ## Prepare and install
 
 Run as the intended service user: install the checkout's dependencies, configure
-the workspace provider, complete `cairn wechat login` and verify a foreground
+the workspace provider, complete `cairn-cli wechat login` and verify a foreground
 receiver with the same workspace, sender and private state. Use one receiver
 owner per account/state. Do not embed credential values in the unit or argv.
 
