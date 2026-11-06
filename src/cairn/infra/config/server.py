@@ -134,7 +134,6 @@ def load_server_config(
         if unknown:
             raise ValueError(f"Unknown {section} keys: {', '.join(sorted(unknown))}")
     values: dict[str, Any] = {
-        "data_root": default_data_root(),
         "workspace": None,
         "host": "127.0.0.1",
         "port": 8777,
@@ -174,6 +173,8 @@ def load_server_config(
     for key in server_fields & overrides.keys():
         value = overrides[key]
         values[key] = _path(value, None, key) if key in path_fields else value
+    if "data_root" not in values:
+        values["data_root"] = default_data_root()
     values.setdefault("worktrees_root", values["data_root"] / "worktrees")
     for key in bool_fields:
         if type(values[key]) is not bool:
@@ -213,7 +214,7 @@ def load_server_config(
         groups[section] = (
             Services(**group) if section == "services" else Logging(**group)
         )
-    if groups["logging"].level not in {
+    if not isinstance(groups["logging"].level, str) or groups["logging"].level not in {
         "critical",
         "error",
         "warning",

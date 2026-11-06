@@ -155,3 +155,16 @@ def test_imported_server_preserves_session_history_and_worktree_identity(
     finally:
         old.stop()
         new.stop()
+
+
+def test_component_root_symlink_is_rejected_without_touching_workspace(
+    tmp_path: Path,
+) -> None:
+    paths, old, backups = layout(tmp_path)
+    old.mkdir()
+    (old / "agent").symlink_to(paths.workspace, target_is_directory=True)
+    (paths.workspace / "MEMORY.md").write_text("workspace is not host state")
+    with pytest.raises(ValueError, match="symlink"):
+        import_state(paths, old, backups, components=("agent",))
+    assert sorted(p.name for p in paths.workspace.iterdir()) == ["MEMORY.md"]
+    assert not backups.exists()

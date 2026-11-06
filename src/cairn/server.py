@@ -272,6 +272,7 @@ def run_server(config: ServerConfig) -> None:
             ),
         )
         identity = {
+            "pid": os.getpid(),
             "data_root": str(paths.data_root),
             "workspace": str(paths.workspace),
             "worktrees_root": str(paths.worktrees),
@@ -348,7 +349,10 @@ def check_config(ctx: typer.Context) -> None:
 
 
 @app.command("check-running")
-def check_running(ctx: typer.Context) -> None:
+def check_running(
+    ctx: typer.Context,
+    pid: Annotated[int | None, typer.Option("--pid")] = None,
+) -> None:
     """Refuse restart when this config cannot identify the running Server."""
     from cairn.infra.runtime_client import RuntimeClient
 
@@ -367,6 +371,11 @@ def check_running(ctx: typer.Context) -> None:
         raise RuntimeError(
             "Cannot identify running Server with this configuration; inspect the old service and stop it explicitly before changing data_root/port"
         ) from None
+    if not isinstance(actual, dict) or (pid is not None and actual.get("pid") != pid):
+        raise RuntimeError(
+            "Running Server PID does not match the selected systemd unit; no service was stopped"
+        )
+    actual.pop("pid", None)
     if actual != expected:
         raise RuntimeError(
             "Running Server uses different paths; no service was stopped"

@@ -79,7 +79,8 @@ def _verify(root: Path, paths: ServerPaths) -> dict[str, str]:
             raise ValueError("Invalid imported Runtime catalogue") from None
         for task in data.tasks.values():
             if task.worktree and (
-                not Path(task.worktree).is_relative_to(paths.worktrees)
+                Path(task.worktree).resolve() != Path(task.worktree)
+                or not Path(task.worktree).is_relative_to(paths.worktrees)
                 or not Path(task.worktree).is_dir()
             ):
                 raise ValueError(
@@ -124,6 +125,8 @@ def import_state(
     if runtime_source is not None and "runtime" in components:
         sources["runtime"] = runtime_source.resolve()
     for source in sources.values():
+        if source.is_symlink():
+            raise ValueError("Legacy component root cannot be a symlink")
         if (
             overlaps(source, paths.data_root)
             or overlaps(source, backup_root)

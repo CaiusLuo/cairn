@@ -26,7 +26,8 @@ case "$action" in
             *) echo "Unit $service does not use --config $config. Inspect/install the unit; no service was stopped." >&2; exit 1 ;;
         esac
         if systemctl is-active --quiet "$service"; then
-            "$launcher" --config "$config" check-running
+            pid=$(systemctl show "$service" --property=MainPID --value)
+            "$launcher" --config "$config" check-running --pid "$pid"
         fi
         exec systemctl "$action" "$service"
         ;;

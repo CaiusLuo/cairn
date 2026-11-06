@@ -82,3 +82,11 @@ def test_host_state_cannot_overlap_writable_roots(
         (data / "runtime").symlink_to(source, target_is_directory=True)
     with pytest.raises(ValueError):
         ServerPaths(source, data, trees)
+
+
+def test_explicit_data_root_does_not_evaluate_unused_xdg_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", "invalid-relative-unused-default")
+    config = load_server_config(overrides={"data_root": tmp_path / "selected"})
+    assert config.data_root == tmp_path / "selected"

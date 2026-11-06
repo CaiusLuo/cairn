@@ -42,6 +42,27 @@ def test_custom_root_web_api_and_restart_share_persistent_state(tmp_path: Path) 
                 assert api.get(page).status_code == 200
             assert api.get("/api/health").status_code == 200
             assert api.get("/api/runtime/tasks").json() == []
+            assert server.process is not None
+            for candidate, succeeds in ((server.process.pid, True), (1, False)):
+                identity = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "cairn.server",
+                        "--config",
+                        str(server.config),
+                        "check-running",
+                        "--pid",
+                        str(candidate),
+                    ],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                assert (identity.returncode == 0) == succeeds, (
+                    identity.stdout + identity.stderr
+                )
             assert api.get("/api/runtime/bootstrap").json()["data_root"] == str(
                 server.data_root
             )
