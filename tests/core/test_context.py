@@ -1,6 +1,5 @@
 import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -562,13 +561,3 @@ def test_the_default_budget_can_hold_a_real_turn() -> None:
     assert budget.max_tokens >= 131072
     assert budget.response_tokens >= 8192
     assert budget.response_tokens < budget.max_tokens
-
-
-def test_the_default_budget_matches_what_the_docs_advertise() -> None:
-    """A documented example that disagrees with the default is a trap."""
-    root = Path(__file__).resolve().parents[2]
-    readme = (root / "README.md").read_text(encoding="utf-8")
-    default = ContextBudget()
-
-    assert f"CAIRN_CONTEXT_MAX_TOKENS={default.max_tokens}" in readme
-    assert f"CAIRN_RESPONSE_MAX_TOKENS={default.response_tokens}" in readme

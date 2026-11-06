@@ -17,9 +17,10 @@ CAIRN_CONTEXT_MAX_TOKENS=98304
 CAIRN_RESPONSE_MAX_TOKENS=8192
 ```
 
-The context limit includes the response reserve; choose limits your model can
-accept. Keep credential values in `.env` or the host environment, out of Git,
-prompts and approval files.
+The example selects a smaller window. Without these settings, the defaults are
+131072 total tokens and 8192 response tokens. The context limit includes the
+response reserve; choose limits your model can accept. Keep credential values in
+`.env` or the host environment, out of Git, prompts and approval files.
 
 ## TOML layouts
 
