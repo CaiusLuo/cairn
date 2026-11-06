@@ -24,7 +24,7 @@ def test_explicit_relative_reminder() -> None:
 
 def test_explicit_absolute_execution() -> None:
     result = parse_once_request(
-        "明天上午九点检查这个项目的CI\uff0c把结果发给我", NOW, message_id="m2"
+        "明天上午九点检查这个项目的CI\uff0c把结果发给我", NOW, message_id="m2", now=NOW
     )
     assert isinstance(result, OnceRequest)
     assert result.at.date().isoformat() == "2026-11-06"

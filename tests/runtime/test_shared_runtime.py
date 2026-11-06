@@ -972,8 +972,18 @@ def test_agent_requests_development_with_checked_history_and_same_task_id(
                 and before.stat().st_ino == inode
             )
 
-        reopened = runtime_app(source, tmp_path / "state", tmp_path / "worktrees", budget=RunBudget(5), token="test-token")
-        reopened_api = RuntimeClient("http://127.0.0.1:8777", "test-token", transport=httpx.ASGITransport(app=reopened))
+        reopened = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="test-token",
+        )
+        reopened_api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "test-token",
+            transport=httpx.ASGITransport(app=reopened),
+        )
         async with reopened.router.lifespan_context(reopened):
             cli = RemoteConversation(reopened_api)
             history = await cli.select(final["task_id"])
@@ -981,13 +991,25 @@ def test_agent_requests_development_with_checked_history_and_same_task_id(
             await cli.send("Continue after server restart")
             restored = await asyncio.wait_for(cli.wait(), 30)
             assert restored["status"] == "completed"
-            assert restored["session_id"] == final["session_id"] and before.stat().st_ino == inode
+            assert (
+                restored["session_id"] == final["session_id"]
+                and before.stat().st_ino == inode
+            )
             task = reopened.state.runtime.inspect(final["task_id"])
             bad_origin = task.history_origins[0].model_copy(update={"sha256": "0" * 64})
-            reopened.state.runtime.record(task.model_copy(update={"history_origins": (bad_origin,)}), "corrupt_history_fixture")
+            reopened.state.runtime.record(
+                task.model_copy(update={"history_origins": (bad_origin,)}),
+                "corrupt_history_fixture",
+            )
             # History provenance is checked before a subsequent model/tool turn.
             current = await reopened_api.inspect(final["task_id"])
-            await reopened_api.message(final["task_id"], "Cannot use altered history", source="cli", request_id="tampered-history", expected_sequence=current["sequence"])
+            await reopened_api.message(
+                final["task_id"],
+                "Cannot use altered history",
+                source="cli",
+                request_id="tampered-history",
+                expected_sequence=current["sequence"],
+            )
             await asyncio.wait_for(reopened.state.runtime.queue.join(), 30)
             rejected = await reopened_api.inspect(final["task_id"])
             assert rejected["status"] == "recovery_required"
