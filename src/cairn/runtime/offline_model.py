@@ -10,6 +10,14 @@ class OfflineDevelopmentModel:
     async def generate(
         self, messages: list[Message], tools: list[dict[str, Any]] | None = None
     ) -> LLMResponse:
+        if any(
+            schema.get("function", {}).get("name") == "begin_development"
+            for schema in tools or ()
+        ):
+            return LLMResponse(
+                content="离线共享对话已连接。显式开发验收可用 /develop 或 /task; 真实模型按需求选择开发工具。",
+                usage=LLMUsage(input_tokens=20, output_tokens=10),
+            )
         facts = [message for message in messages if message.role == "tool"]
         if facts:
             result = json.loads(facts[-1].content or "{}")

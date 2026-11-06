@@ -38,18 +38,18 @@ password is the private runtime.token file. Do not expose that token to an Agent
 The `--offline` acceptance model uses the real write_file tool to create
 runtime-result.txt in an isolated Git worktree; it makes no provider request.
 
-The Tasks page can submit work, display the same task_id/worktree, read sequenced
+The Tasks page can start conversations or explicit development tasks, send follow-up messages to the selected task, display the same task_id/worktree, read sequenced
 events and committed conversation, cancel, and continue a safely paused task.
 TaskBoard is updated asynchronously from execution facts. Moving a board card
-never starts or resumes execution. Each task keeps its worktree on completion or
-pause. Continue first checks the exact clean DurableSession report, refreshes a
+never starts or resumes execution. A development task keeps its worktree on completion or
+pause; ordinary conversations do not allocate one. Continue first checks the exact clean DurableSession report, refreshes a
 host-approved binding, then starts a new turn in the same checkpoint/worktree.
 Unfinished or uncertain effects require separate host recovery, never replay.
 
 The optional WeChat bridge uses the existing iLink receiver with separate private
 state: add `--runtime-url http://127.0.0.1:8777 --runtime-token-file TOKEN_PATH` to
 `cairn wechat serve`. `/status TASK_ID`, `/continue TASK_ID`, `/cancel TASK_ID` and
-`/task PROMPT` use the same HTTP API; other text is submitted to that same Agent.
+`/task PROMPT` use the same HTTP API; ordinary text opens or continues a conversation scoped to that bot and trusted sender. `/reply TASK_ID CONTENT` continues a chosen shared task.
 Sender/context/stable-ID admission precedes forwarding. The source message ID
 is an idempotency key; a lost acknowledgement cannot cause duplicate execution.
 The bridge does not invoke its local classifier/Agent or run the old scheduler.
@@ -151,3 +151,79 @@ LangGraph supplies orchestration, not authority, persistence or safe replay.
 The first service runs one task at a time with a bounded admission queue. Status
 and event subscribers remain independent of blocked model awaits; parallel task
 workers and scheduler migration are outside this experimental slice.
+
+## Connect the native interactive CLI
+
+The existing terminal can connect without constructing a local Agent, loading
+provider credentials, opening a SessionStore writer or starting local schedules:
+
+```sh
+cairn --runtime-url http://127.0.0.1:8777 --runtime-token-file /private/runtime/runtime.token
+cairn --runtime-url http://127.0.0.1:8777 --runtime-token-file /private/runtime/runtime.token --task-id TASK_ID
+```
+
+The multiline composer, transcript and tool activity display are reused. `/use ID`
+attaches to an existing task and shows committed replies; `/history`, `/status`,
+`/continue`, `/cancel`, `/new` and `/exit` operate on shared service facts. New
+messages after a completed turn use the original task ID and committed history.
+A development task also retains its Session and Worktree.
+The message API uses a fresh task sequence and a stable request ID: concurrent
+stale inputs are rejected, and an acknowledgement lost after admission is retried
+without executing another turn. Clients must refresh history before retrying a
+stale write. Model/permission configuration stays with the host service.
+
+Ctrl+C on the running terminal surface calls the server's cancel operation.
+Exiting/detaching only closes the client; it never takes ownership of the remote
+Agent. Input typed while a task runs waits for the next settled turn. Unfinished
+or unknown effects continue to require the same explicit recovery review.
+`cairn` without Runtime options retains its explicit local execution mode during
+this opt-in migration. The connection mode never falls back to local execution.
+
+
+## Conversation and development are one execution path
+
+Interactive CLI and Web default to conversation mode. Plain WeChat messages reuse
+one server conversation per bot/sender; `/task GOAL` explicitly creates a new
+development task. `cairn runtime submit` remains an explicit development command
+for batch callers. The HTTP submit body accepts `mode: conversation|development`;
+clients cannot use it to grant shell/network access. `/develop GOAL` in the
+interactive CLI is the equivalent explicit development shortcut.
+
+Ordinary conversations use the existing LangGraph turn, model executor, durable
+Session and budget. They advertise only read_file, glob, grep and the narrow
+begin_development control tool. They do not scan repository context or create a
+Git Worktree. The model can answer, inspect read-only files, or request development
+through that tool; there is no keyword or separate classification model.
+
+After all tools in the conversation group settle, the host emits a handoff receipt
+and commits that conversation turn. TaskService then advances the same task into
+its development phase, within the same queue job. WorktreeProvider creates the
+isolated worktree and the full development tool registry is bound with fresh host
+permissions. No source-workspace mutation tool is available before this boundary.
+The old binding is never silently moved: a new workspace gets a new Session UUID,
+and the original checkpoint receipt remains in history_origins. Committed earlier
+conversation is supplied as lower-trust historical context, with every receipt
+checked before reuse. The shared history API includes both phases. Subsequent
+turns keep the development Session and Worktree, including across service restart.
+Historical file observations must be revalidated in the new workspace before edits.
+
+The automatic handoff does not replenish time/token/cost/step budgets. Metrics
+retain the current explicit user request's budget window as well as cumulative
+usage. If the conversation consumed the window, the task pauses before creating
+the worktree; explicit continue grants another window. New user input can replace
+a pending development request before a worktree is allocated. Unknown effects
+still block new input and require explicit host reconciliation in either mode.
+
+The shared terminal keeps input typed during execution for the next settled turn;
+it does not claim to steer an already running model request. Tool progress is
+shown live from durable events, and the final reply is displayed after settlement.
+Web retains its provisional token stream. When a WeChat conversation is busy, a
+new natural-language input is explicitly reported as not executed and must be
+resent after completion; status/cancel remain available. No client starts a local
+Agent as a fallback.
+
+The offline model validates conversation transport and explicit development
+commands. It is scripted and does not classify natural-language development
+requests; adaptive tool choice is covered by offline model doubles and remains a
+real-provider acceptance item. RuntimeCatalogue's full-JSON event write amplification
+is unchanged by this slice and remains a separate persistence optimization.

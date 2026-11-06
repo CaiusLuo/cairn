@@ -59,6 +59,7 @@ class Agent:
         self.context_builder = (
             context_builder if context_builder is not None else ContextBuilder()
         )
+        self.after_tools: Callable[[], str | None] | None = None
         self.state = AgentState()
         self.last_budget_usage: BudgetUsage | None = None
         self.model_executor = (

@@ -170,6 +170,7 @@ class TranscriptView:
         # Set while a turn runs, so the two keys can mean guide/queue instead of
         # submit; and outside a turn so the hint does not claim otherwise.
         self._running = False
+        self.steering_enabled = True
         # The queued messages and which one the operator has selected.
         self._pending = SteerQueue()
         self._queue_view = QueueView()
@@ -373,7 +374,11 @@ class TranscriptView:
                     self._palette.close()
                 else:
                     self._complete_palette()
-                self._submit_typed(delivery="steer" if self._running else "now")
+                self._submit_typed(
+                    delivery="steer"
+                    if self._running and self.steering_enabled
+                    else "now"
+                )
                 return
             if self._palette.descend():
                 self.repaint()
@@ -396,7 +401,9 @@ class TranscriptView:
                     self._complete_palette()
             elif len(typed.split(maxsplit=1)) < 2:
                 self._complete_palette()
-            self._submit_typed(delivery="steer" if self._running else "now")
+            self._submit_typed(
+                delivery="steer" if self._running and self.steering_enabled else "now"
+            )
 
         @bindings.add("left", filter=Condition(lambda: self._palette_focused()))
         def palette_ascend(event: object) -> None:
@@ -505,7 +512,9 @@ class TranscriptView:
                         )
                     )
                     return
-            if self._queue_view.promote_selected(self._pending):
+            if self.steering_enabled and self._queue_view.promote_selected(
+                self._pending
+            ):
                 self.repaint()
 
         @bindings.add("c-c")
@@ -1047,7 +1056,9 @@ class TranscriptView:
         it explains keys that only differ from ordinary typing while a turn runs.
         """
         rows = self._queue_view.rows(self._pending)
-        hint = self._queue_view.hint(running=self._running)
+        hint = self._queue_view.hint(
+            running=self._running, steering=self.steering_enabled
+        )
         if not rows and not hint:
             return ANSI("")
         lines = []
@@ -1108,7 +1119,9 @@ class TranscriptView:
     def _queue_rows(self) -> int:
         """Rows the queued-message surface currently needs, including its hint."""
         rows = self._queue_view.rows(self._pending)
-        hint = self._queue_view.hint(running=self._running)
+        hint = self._queue_view.hint(
+            running=self._running, steering=self.steering_enabled
+        )
         return len(rows) + int(bool(hint))
 
     def record_history(self, text: str) -> None:
@@ -1196,7 +1209,9 @@ class TranscriptView:
         # Enter means: start work when idle, guide the running turn when busy. The
         # same key does the obvious thing in both states, which is why it needs no
         # modifier to remember.
-        self._submit_typed(delivery="steer" if self._running else "now")
+        self._submit_typed(
+            delivery="steer" if self._running and self.steering_enabled else "now"
+        )
         return True
 
     async def print_above(self, text: str) -> None:
@@ -1263,6 +1278,7 @@ class TranscriptView:
                 await self._app.run_async()  # type: ignore[union-attr]
             except EOFError:
                 self._dismiss_action()
+                self._lines.close()
                 raise
 
     async def aclose(self) -> None:

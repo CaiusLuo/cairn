@@ -68,7 +68,7 @@ class QueueView:
     def selected(self) -> int:
         return self._selected
 
-    def hint(self, *, running: bool) -> str:
+    def hint(self, *, running: bool, steering: bool = True) -> str:
         """The key hint shown under the composer.
 
         The hint names the current meaning of the two keys only while a turn is
@@ -76,6 +76,8 @@ class QueueView:
         """
         if not running:
             return ""
+        if not steering:
+            return "Enter = queue next message · Tab = queue · Ctrl+C = cancel task"
         return "Enter = guide the running turn · Tab = queue for after it"
 
     def discard_selected(self, queue: SteerQueue) -> bool:
