@@ -70,7 +70,7 @@ these five facts, matching the selected configuration exactly, with no API key:
 With `.env` only, the provider name is `default` and the group name is the
 exact `CAIRN_LLM_MODEL` value (for example `openai/your-model`).
 With single-provider TOML, use `default` and the first declared group name.
-Supply the file as `--provider-approval FILE` to `cairn runtime serve`.
+Supply the file as `--provider-approval FILE` to `cairn`.
 The host checks these facts before resolving the credential. `--offline` instead
 uses a scripted local model, with no provider approval or paid API calls.
 

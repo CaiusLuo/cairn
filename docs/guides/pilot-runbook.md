@@ -41,7 +41,7 @@ environments; keep other secrets outside Agent-readable roots too.
 ## Interrupted work
 
 A budget pause retains the task, committed history and development Worktree.
-`cairn runtime continue` starts a new budget window after the Runtime checks the
+`cairn-cli runtime continue` starts a new budget window after the Runtime checks the
 durable state. Continue does not silently replay an unfinished tool.
 
 After a crash, cancellation during an effect or storage uncertainty, a task may

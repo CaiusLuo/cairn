@@ -60,7 +60,10 @@ same default state directory. For custom state/ports, use `--runtime-url` and
 
 The client compares its canonical current directory with the authenticated
 `/api/runtime/workspace` identity before entering chat. This version supports one
-exact workspace root; a different directory is refused. Each task request also
+exact workspace root; a different directory is refused. From a different project,
+use an installed `cairn-cli` or `uv run --project /workspace/cairn cairn-cli` to use
+Cairn's Python environment while preserving the caller's working directory.
+Each task request also
 carries that workspace as a file URI in `X-Cairn-Workspace`, so a service restarted
 on another project cannot silently accept existing client input.
 
