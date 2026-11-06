@@ -1,53 +1,37 @@
-# Evaluation assets
+# Evaluation tools
 
-The [LangGraph compatibility probe](../docs/experiments/langgraph-spike.md) runs
-offline doubles through the same production turn owner, without a second loop:
+Run from the repository root after `uv sync --locked --all-groups`.
 
-```bash
+| Location | Contents |
+| --- | --- |
+| `cases/` | Coding fixtures, prompts and deterministic acceptance checks |
+| `runners/` | Explicit evaluation entry points |
+| `benchmarks/` | Offline performance probes |
+| `langgraph_spike.py` | Compatibility probe against the production Agent turn |
+
+Reusable datasets and orchestration also live in `src/cairn/runtime/evals/`.
+The Repository Intelligence dataset is built by
+`src/cairn/runtime/evals/intelligence/dataset.py`; it does not read old pilot
+reports from `docs/`. Fixture and oracle behavior is exercised by the tests.
+
+Offline entry points:
+
+```sh
 uv run python -m evaluation.langgraph_spike
+uv run python -m evaluation.benchmarks.session_checkpoints --help
 ```
 
-Run repository evaluations from the repository root after installing development
-dependencies with `uv sync --locked --all-groups`.
+The coding and intelligence runners can call paid providers. Inspect `--help`
+offline and obtain authorization before a live run:
 
-| Directory | Owner |
-| --- | --- |
-| `cases/` | Repository-specific fixtures and deterministic acceptance checks |
-| `runners/` | Explicit executable experiments using the reusable runtime APIs |
-| `benchmarks/` | Offline performance probes |
-
-Reusable evaluation orchestration, dataset contracts and reporting remain in
-`src/cairn/runtime/evals/`. Operational checks and publication scripts live in
-[scripts/](../scripts/README.md).
-
-The coding smoke and Repository Intelligence runners use real providers. Running
-them requires separate authorization; `--help` is offline:
-
-```bash
+```sh
 uv run python evaluation/runners/run_coding_smoke.py --help
 uv run python evaluation/runners/run_coding_behavior.py --help
 uv run python evaluation/runners/run_repository_intelligence.py --help
 uv run python evaluation/runners/run_compaction_live.py --help
-uv run python -m evaluation.benchmarks.session_checkpoints --help
 ```
 
-`cases/coding_smoke_behavior.py` is the versioned `graded-behavior-v2` behavioral
-acceptance set for the five coding-smoke prompts; its contract is
-[coding behavior v1](../docs/evals/coding-behavior-v1/README.md).
-
-`runners/run_compaction_live.py` is the opt-in full-context vs real-summary
-compaction comparison; its contract is
-[real-model compaction comparison](../docs/evals/compaction-live-comparison/README.md).
-It is `LIVE_NOT_RUN` unless `--live --model --max-total-tokens` are all given.
-
-The [offline coding E2E](../docs/guides/offline-coding-e2e.md) uses the same smoke
-cases with scripted responses. The
-[checkpoint benchmark guide](../docs/performance/session-checkpoints.md) describes
-the offline performance probe.
-
-[Repository Intelligence V1](../docs/evals/repository-intelligence-v1/README.md)
-and [V2](../docs/evals/repository-intelligence-v2/README.md) retain their original
-contracts and historical evidence. Historical commands in those records describe
-the checkout used at the time; the current Repository Intelligence entry point
-is `evaluation/runners/run_repository_intelligence.py`. Moving repository assets
-does not change fixtures, prompts, dataset digests or acceptance checks.
+`cases/coding_smoke_behavior.py` contains the `graded-behavior-v2` checks.
+`run_compaction_live.py` requires `--live`, a model and a total-token budget for
+live execution. Offline doubles prove mechanics, not real-model improvement.
+Operational checks and publication tooling are indexed in [scripts](../scripts/README.md).

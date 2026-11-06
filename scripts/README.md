@@ -1,20 +1,20 @@
 # Operational scripts
 
-These repository entry points operate Cairn; evaluation cases and experiments
-belong in [evaluation/](../evaluation/README.md).
+Run from the repository root after `uv sync --locked --all-groups`.
 
 - [pilot/preflight.py](pilot/preflight.py) checks local configuration, shell and
-  storage admission offline. Follow the [pilot runbook](../docs/guides/pilot-runbook.md).
-- [github/run_issue_task.py](github/run_issue_task.py) runs the explicitly approved
-  disposable-repository workflow. Follow the
-  [GitHub smoke preflight](../docs/guides/github-smoke-preflight.md) before access
-  or publication; help does not authorize either.
+  storage offline. See [operations](../docs/guides/pilot-runbook.md) for storage
+  admission and recovery.
+- [github/run_issue_task.py](github/run_issue_task.py) runs an explicitly approved
+  GitHub Issue workflow. It can execute a model, push a branch and open a Draft
+  PR; use only for a repository and publication scope the operator authorized.
+  Its CLI describes provider, workspace, verification and credential options.
 
-Run from the repository root after `uv sync --locked --all-groups`:
-
-```bash
+```sh
 uv run python scripts/pilot/preflight.py --help
 uv run python scripts/github/run_issue_task.py --help
 ```
 
-These scripts are repository tooling, separate from the installed `cairn` CLI.
+Help does not execute a workflow. Keep credentials in host configuration; do not
+include tokens in command text or reports. Evaluation tooling is in
+[evaluation](../evaluation/README.md).

@@ -1,148 +1,85 @@
 # Configuration
 
-Cairn resolves model configuration from one of three layouts. It detects the
-layout from the files you provide, and never guesses it from partial content.
+Model configuration is read from the target workspace, not the connecting CLI's
+working directory. The shared service resolves credentials; its clients need
+only the private Runtime token.
 
-## Layouts
+## Environment layout
 
-### `.env` only
-
-Used when `.cairn/models.toml` does not exist. The single provider is described
-by `CAIRN_*` values:
+When `.cairn/models.toml` is absent, shell variables and the workspace `.env`
+select the provider. Shell values take precedence:
 
 ```dotenv
 CAIRN_LLM_MODEL=openai/your-model
 CAIRN_LLM_API_KEY=your-api-key
 CAIRN_BASE_URL=https://api.example.com/v1
-CAIRN_CONTEXT_MAX_TOKENS=131072
+CAIRN_CONTEXT_MAX_TOKENS=98304
 CAIRN_RESPONSE_MAX_TOKENS=8192
 ```
 
-Both budget variables are optional and default to `131072` and `8192`, sized for
-a 128K model window. Lower them for a narrower model.
+The context limit includes the response reserve; choose limits your model can
+accept. Keep credential values in `.env` or the host environment, out of Git,
+prompts and approval files.
 
-Shell values take precedence over `.env`. The context budget includes the
-response reserve, which is also sent as the provider's output-token limit. Older
-turns may be omitted from requests while the full conversation stays in memory.
-The current turn and its tool results are never trimmed.
+## TOML layouts
 
-Local token estimates reserve an extra 10% of the input window by default. Set
-`context_reserve_percent` in `.cairn/models.toml` (integer `0..50`) to change it;
-the value is re-read before later requests without changing the approved
-provider/model. The local LiteLLM tokenizer is still labelled as an estimate;
-Cairn does not call an unverified provider count endpoint.
-
-### `.cairn/models.toml`, legacy layout
-
-A single provider with ordered model groups:
+A provider catalog in `.cairn/models.toml`:
 
 ```toml
-base_url = "https://example.com/v1"
-api_key_env = "BAILIAN_API_KEY"
 context_reserve_percent = 10
 
-[[models]]
-name = "flash"
-model_ids = ["openai/model-a", "openai/model-b"]
-
-[[models]]
-name = "plus"
-model_ids = ["openai/model-c"]
-```
-
-### `.cairn/models.toml`, catalog layout
-
-Several named providers:
-
-```toml
 [[providers]]
-name = "bailian"
-base_url = "https://example.com/v1"
-api_key_env = "BAILIAN_API_KEY"
+name = "example"
+base_url = "https://api.example.com/v1"
+api_key_env = "CAIRN_LLM_API_KEY"
 
 [[providers.models]]
-name = "flash"
-model_ids = ["openai/model-a"]
-
-[[providers]]
-name = "local"
-base_url = "http://localhost:8000/v1"
-api_key_env = "LOCAL_API_KEY"
-
-[[providers.models]]
-name = "default"
-model_ids = ["openai/local-model"]
+name = "primary"
+model_ids = ["openai/your-model"]
 ```
 
-## Validation rules
+The single-provider layout is also supported: put `base_url` and `api_key_env`
+at the top level and use `[[models]]` for groups. Its provider name is `default`.
+Do not mix the two layouts. Groups and ordered `model_ids` must be nonempty;
+provider/group names and IDs within a group must be unique. Invalid existing
+TOML stops startup instead of falling back to `.env`. Remote endpoints use HTTPS;
+loopback HTTP is accepted for local models.
 
-A file that declares `providers` uses the catalog layout; every other existing
-file must satisfy the legacy contract. Cairn rejects:
+The first provider, first group and first model ID are selected at startup.
+Local CLI `/model list`, `/model use NAME` and `/provider use NAME` manage
+selection. `/model add GROUP ID`, `/model remove GROUP ID` and
+`/model move GROUP ID POSITION` edit TOML while preserving comments and order;
+restart to use persisted edits. They do not update a running shared service.
 
-- mixed legacy and `[[providers]]` keys in one file;
-- duplicate provider names, duplicate group names, or duplicate IDs in a group;
-- empty provider, group or `model_ids` lists;
-- the removed `model_id` field (use `model_ids = [...]`);
-- `api_key_env` values that are not environment-variable names;
-- `context_reserve_percent` outside the integer range `0..50`;
-- `base_url` values with credentials, a query, a fragment, whitespace, or a
-  scheme other than HTTPS (loopback HTTP is permitted for local endpoints).
+## Shared Runtime provider approval
 
-A file that exists but is invalid stops startup rather than falling back to
-`.env`, and `.env` settings are never migrated into TOML.
+Create a private JSON file outside the workspace and Worktree roots. It contains
+these five facts, matching the selected configuration exactly, with no API key:
 
-## Credentials
+```json
+{
+  "name": "example",
+  "endpoint": "https://api.example.com/v1",
+  "group": "primary",
+  "key_env": "CAIRN_LLM_API_KEY",
+  "model_ids": ["openai/your-model"]
+}
+```
 
-- Credential *values* live in your shell or `.env`, never in TOML.
-- Parsing and editing never resolve credentials.
-- Only the selected provider's credential is resolved, and only after you approve
-  that provider for the session.
-- Every configured provider's credential variable is withheld from Bash child
-  environments, not just the active provider's.
+With `.env` only, the provider name is `default` and the group name is the
+exact `CAIRN_LLM_MODEL` value (for example `openai/your-model`).
+With single-provider TOML, use `default` and the first declared group name.
+Supply the file as `--provider-approval FILE` to `cairn runtime serve`.
+The host checks these facts before resolving the credential. `--offline` instead
+uses a scripted local model, with no provider approval or paid API calls.
 
-## Session selection and switching
+Runtime task budgets are separate from model context limits; see the
+[Runtime guide](guides/runtime-service.md#budgets).
 
-Startup uses the first configured provider, its first model group, and that
-group's first model ID. It does not ask for a provider authorization prompt or a
-model chooser.
+## Local extensions
 
-Each completion uses only the selected model ID. A request failure is shown with
-the actual provider error (credentials redacted); it does not automatically retry
-or fall back to another ID or group. The user may switch explicitly with
-`/model use` or `/provider use`.
-
-See the [CLI command table](../README.md#cli-commands) for `/model` and
-`/provider` usage.
-
-A successful provider switch builds the target runtime
-completely before committing, so denied approval, a missing credential, or a
-construction failure leaves the previous provider usable with its selection and
-permission grants. A switch resets session tool-permission grants and preserves
-conversation history, workspace, tools and traces. Commands run between turns
-only, so a provider never changes mid-turn.
-
-## Editing model IDs
-
-`/model add`, `/model remove` and `/model move` edit local TOML only:
-
-- `/model add flash openai/model-d` appends an ID.
-- `/model remove flash openai/model-d` removes one.
-- `/model move flash openai/model-b 1` moves an ID to a 1-based position.
-
-Edits preserve comments and remaining order, and apply only to the active
-provider's group in the catalog layout. Groups must already exist; duplicate
-IDs, removing a group's final ID, unknown groups or IDs, and out-of-range
-positions are rejected. Configuration is validated before it is used.
-Moving an ID to its current position does not rewrite the file. Unsupported
-formatting is reported without writing. Cairn does not migrate `.env` or
-hot-reload configuration.
-
-## Where this lives in the code
-
-| Responsibility | Module |
-| --- | --- |
-| Layout models and validation | `src/cairn/infra/config/schema.py` |
-| TOML parsing and layout detection | `src/cairn/infra/config/loader.py` |
-| Credential and budget resolution | `src/cairn/infra/config/secrets.py` |
-| Transactional model-file edits | `src/cairn/infra/config/editor.py` |
-| Stable import surface | `src/cairn/infra/config/__init__.py` |
+The standalone CLI can discover project skills in `.cairn/skills/` and MCP server
+configuration in `.cairn/mcp.toml`; `/skill` and `/mcp` expose their commands.
+Skills are loaded on demand. MCP execution still requires host tool/network
+permissions. The shared Runtime does not currently expose CLI skill/MCP selection.
+Inspect `src/cairn/infra/skills.py` and `src/cairn/infra/mcp/` for supported layouts.
