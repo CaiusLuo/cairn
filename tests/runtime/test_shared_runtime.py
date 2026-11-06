@@ -649,6 +649,13 @@ def test_full_wechat_bridge_startup_does_not_initialize_legacy_agent(
                     runtime_token_file=token,
                     schedule_store=tmp_path / "legacy-schedule",
                 )
+                from cairn.infra.wechat.state import WechatState
+
+                WechatState(tmp_path / "runtime" / "wechat").save_account(
+                    config.account
+                )
+                app.state.controls.wechat.restore_senders(("u1",))
+                app.state.controls._save(trusted_senders=("u1",))
                 stop = asyncio.Event()
                 service = asyncio.create_task(
                     bridge_module.serve_wechat(
@@ -808,7 +815,7 @@ def test_interactive_input_can_return_after_a_web_turn(
                 "CLI followup",
             ]
             assert task.attempts == 3
-            assert "Shared Runtime" in capsys.readouterr().out
+            assert "共享 Server" in capsys.readouterr().out
 
     asyncio.run(scenario())
 
@@ -830,7 +837,17 @@ def test_plain_chat_shares_history_without_git_worktree_or_repository_context(
             ) -> LLMResponse:
                 seen.append(messages)
                 names = {item["function"]["name"] for item in tools or ()}
-                assert names == {"read_file", "glob", "grep", "begin_development"}
+                assert {
+                    "read_file",
+                    "glob",
+                    "grep",
+                    "begin_development",
+                    "memory_search",
+                    "memory_remember",
+                    "schedule_create",
+                    "read_skill",
+                } <= names
+                assert "bash" not in names and "write_file" not in names
                 assert not any(
                     "Runtime repository context" in (m.content or "") for m in messages
                 )
@@ -879,7 +896,14 @@ def test_plain_chat_shares_history_without_git_worktree_or_repository_context(
             assert not (tmp_path / "worktrees").exists() or not list(
                 (tmp_path / "worktrees").iterdir()
             )
-            assert len([m for m in seen[-1] if m.role == "user"]) == 3
+            assert [
+                m.content
+                for m in seen[-1]
+                if m.role == "user"
+                and not (m.content or "").startswith(
+                    "The following personal_agent_memory"
+                )
+            ] == ["Hello", "A Web followup", "Back to CLI"]
             assert app.state.runtime.queue.empty()
             assert not (source / "runtime-result.txt").exists()
 

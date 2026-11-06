@@ -61,8 +61,6 @@ def format_schedule_result(result: TaskOutcome) -> str:
         lines.append(body[:3000] + ("..." if len(body) > 3000 else ""))
     if result.error_category:
         lines.append(f"错误类别: {result.error_category}")
-    if result.trace_id:
-        lines.append(f"trace: {result.trace_id}")
     return "\n".join(lines)[:4000]
 
 
@@ -331,9 +329,17 @@ class ScheduleRunner:
             # an interrupted occurrence unsafe to replay.
             async with self.execution_gate or contextlib.nullcontext():
                 self.store.mark_execution_started(job.job_id)
-                result = await self.executor(
-                    job.prompt, asyncio.Event(), f"scheduled-{job.job_id}"
-                )
+                if "run_key" in inspect.signature(self.executor).parameters:
+                    result = await self.executor(
+                        job.prompt,
+                        asyncio.Event(),
+                        f"scheduled-{job.job_id}",
+                        run_key=run_key,
+                    )  # type: ignore[call-arg]
+                else:
+                    result = await self.executor(
+                        job.prompt, asyncio.Event(), f"scheduled-{job.job_id}"
+                    )
             status = result.status.value
         except asyncio.CancelledError:
             if self.store.job_execution_started(job.job_id):

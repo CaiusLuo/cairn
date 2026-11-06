@@ -95,10 +95,14 @@ class ScheduleController:
             raise late
 
     async def command(self, args: str) -> Action:
+        return self.execute(args)
+
+    def execute(self, args: str) -> Action:
         parts = args.split()
         if not parts or parts[0] in {"help"}:
             return note(
-                "/schedule add once <ISO> <prompt> | add daily <HH:MM> <prompt> | "
+                "/schedule remind once <ISO> <text> (pure reminder) | "
+                "add once <ISO> <prompt> | add daily <HH:MM> <prompt> | "
                 "add interval <seconds> <prompt> | list | history [<id>] | "
                 "remove <id> | pause/resume <id>"
             )
@@ -109,8 +113,8 @@ class ScheduleController:
             return self._history(parts[1:])
         if verb in {"remove", "pause", "resume"}:
             return self._mutate(verb, parts[1:])
-        if verb == "add":
-            return self._add(parts[1:])
+        if verb in {"add", "remind"}:
+            return self._add(parts[1:], reminder=verb == "remind")
         return correction("未知 /schedule 子命令; 使用 /schedule help. ")
 
     def _owned(self, job: ScheduleJob) -> bool:
@@ -177,7 +181,7 @@ class ScheduleController:
                 f"{row.get('job_id')} {row.get('status')} "
                 f"at={row.get('finished_at') or row.get('started_at')} "
                 f"delivered={row.get('delivered', '-')} "
-                f"task={row.get('task_id') or '-'} trace={row.get('trace_id') or '-'}"
+                f"task={row.get('task_id') or '-'}"
                 + (f" error={row.get('error')}" if row.get("error") else "")
             )
             if row.get("result"):
@@ -210,7 +214,7 @@ class ScheduleController:
         label = {"remove": "删除", "pause": "暂停", "resume": "恢复"}[verb]
         return note(f"已{label}任务 {job_id}. ")
 
-    def _add(self, args: Sequence[str]) -> Action:
+    def _add(self, args: Sequence[str], *, reminder: bool = False) -> Action:
         if len(args) < 3:
             return correction(
                 "用法: /schedule add once|daily|interval <时间/秒> <prompt>"
@@ -250,6 +254,7 @@ class ScheduleController:
                 recipient=owner,
                 account_id=account,
                 kind=kind,
+                reminder=reminder,
                 at=at,
                 daily_time=daily_time,
                 interval_seconds=interval_seconds,

@@ -3,10 +3,25 @@
 Cairn uses iLink text messages from explicitly trusted senders. Login and receiver
 state are host-private; never put account tokens in Git, prompts or service argv.
 
-## Login and shared Runtime bridge
+## Server-owned login (recommended)
 
-Start the [shared Runtime](runtime-service.md) first. Complete QR login in a
-foreground terminal, then start one receiver with the same state directory:
+Start the [shared Runtime](runtime-service.md), then run `uv run cairn-cli` in
+its workspace and enter `/wx`. The CLI displays the QR and login status;
+`/wx verify CODE` supplies a requested code. Web `/settings.html` offers the same
+login, status, trust and stop controls. Closing a client does not stop the
+Server receiver. `/wx stop` retains login; `/wx disconnect` clears it.
+
+The bound owner can use `/schedule` and `/memory` commands, and ordinary Agent
+turns have the same scheduling and memory tools as CLI/Web. Rule approval still
+requires explicit review in CLI/Web. Completed task replies return through the
+original account; uncertain delivery is retained without automatic replay.
+
+## Separate shared Runtime bridge (migration)
+
+For a separately supervised receiver, start the shared Runtime first. Complete
+QR login in a foreground terminal, then start one receiver using the same saved
+account/state as the Server controls. Stop any Server-owned receiver first:
+
 
 ```sh
 uv run cairn-cli wechat login --workspace /srv/project \
@@ -39,7 +54,8 @@ conversation is busy or needs recovery, a new ordinary message is explicitly
 reported as not executed; resend it after settlement. Reconciliation stays with
 the authenticated host CLI/Web, after inspecting effects.
 
-Shared mode does not support scheduling. Pending standalone queue records are
+Shared schedule/memory commands are handled by the Server for the bound owner.
+Pending standalone queue records are
 refused rather than silently converted to shared tasks. Keep an existing
 standalone account/state owner separate while migrating; do not start a second
 receiver against a live owner's state or delete its lock file.

@@ -504,3 +504,10 @@ button[disabled] {
 
 .brand { gap: 8px; }
 .empty-sidebar { padding: 12px 8px; }
+
+/* Shared navigation remains available on narrow screens. */
+.mobile-nav { display: none; }
+@media(max-width:760px) {
+  .mobile-nav { display: flex; position: fixed; inset: 0 0 auto; height: 44px; z-index: 10; background: var(--bg-side); border-bottom: 1px solid var(--line); align-items: center; justify-content: space-around; }
+  .shell { padding-top: 44px; }
+}

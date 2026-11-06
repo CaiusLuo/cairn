@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { RuntimePanel } from "./RuntimePanel";
 import {
   DndContext,
   DragOverlay,
@@ -180,7 +179,7 @@ function TaskDetail({
     <aside className="task-detail" aria-label="Task detail">
       <header className="task-detail__head">
         <div>
-          <span className="task-detail__id">{task.task_id}</span>
+          <a className="task-detail__id" href={`/chat.html?task=${encodeURIComponent(task.task_id)}`}>{task.task_id} · 打开对话</a>
           <h2>{taskTitle(task)}</h2>
         </div>
         <button className="icon-btn" onClick={onClose} aria-label="Close task detail">×</button>
@@ -223,7 +222,6 @@ function TaskDetail({
 }
 
 export function TasksPage() {
-  const [runtimeAvailable, setRuntimeAvailable] = useState(false);
   const live = useLiveSnapshot();
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [query, setQuery] = useState("");
@@ -310,7 +308,7 @@ export function TasksPage() {
   return (
     <div className="shell">
       <Sidebar active="tasks" sessionsCount={live.snapshot?.sessions.length ?? 0} tasksCount={tasks.length}>
-        <button className="sidebar__action" disabled={!runtimeAvailable} title="New development task" onClick={() => document.getElementById("runtime-prompt")?.focus()}>
+        <button className="sidebar__action" title="New development task" onClick={() => location.assign("/chat.html")}>
           <span aria-hidden="true">+</span> New task
         </button>
         <div className="side-filters">
@@ -332,7 +330,7 @@ export function TasksPage() {
       </Sidebar>
 
       <main className="tasks-main">
-        <RuntimePanel onAvailable={setRuntimeAvailable} />
+        <a className="appnav__item" href="/chat.html">打开共享对话 →</a>
         <header className="tasks-head">
           <div className="tasks-head__title">
             <h1>Tasks</h1>
@@ -340,7 +338,7 @@ export function TasksPage() {
           </div>
           <div className="tasks-head__actions">
             <SyncBadge sync={live.sync} />
-            <span className="read-only-badge">{runtimeAvailable ? "Shared runtime" : "Read-only"}</span>
+            <span className="read-only-badge">Task board</span>
           </div>
         </header>
 

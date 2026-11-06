@@ -25,7 +25,7 @@ only `127.0.0.1`. State and policy files belong outside all Agent-writable roots
 see [operations](pilot-runbook.md). Use a separate port and state for experiments.
 
 Build Web assets with `pnpm --dir web install --frozen-lockfile` and
-`pnpm --dir web build`. Open `http://127.0.0.1:8777/tasks.html` through an SSH
+`pnpm --dir web build`. Open `http://127.0.0.1:8777/chat.html` through an SSH
 tunnel. Login uses username `cairn` and the Runtime token as password.
 
 ## Interactive CLI and batch commands
@@ -45,9 +45,16 @@ uv run cairn-cli --runtime-url http://127.0.0.1:8777 \
 | `/use TASK_ID` | Attach and display committed replies |
 | `/status`, `/history` | Read the selected task |
 | `/continue`, `/cancel` | Continue a safely paused task or request cancellation |
+| `/wx`, `/wx status`, `/wx verify CODE`, `/wx stop` | Manage Server-owned login and receiver |
+| `/schedule help`, `/schedule list`, `/schedule history` | Manage shared scheduled tasks |
+| `/memory note TEXT`, `/memory pending`, `/memory approve` | Record personal memory and approve the reviewed candidate |
+| `/model list`, `/model use ID` | Select only within the host-approved model group |
+| `/task add`, `/task todo`, `/task done`, `/task progress` | Update the existing shared TaskBoard without starting execution |
+| `/help` | Read the Server command catalogue used by terminal completion |
 | `/exit` | Detach the client |
 
-Input typed during execution waits for the next settled turn. Ctrl+C on the
+Ordinary input typed during execution waits for the next settled turn.
+Management commands and `/status` remain usable while the Agent is busy. Ctrl+C on the
 running terminal requests cancellation; closing the client only detaches.
 Shared mode uses the native composer and transcript without creating a local
 Agent. `uv run cairn-cli local` is the explicit standalone migration mode.
@@ -92,8 +99,8 @@ scripted answer; adaptive model tool choice is not demonstrated by that answer.
 ## Chat and development
 
 Web and interactive CLI default to conversation mode; plain WeChat messages reuse
-a conversation per bot/sender. Chat has `read_file`, `glob`, `grep` and the
-`begin_development` control tool, without an initial repository scan or Worktree.
+a conversation per bot/sender. Chat has read-only project tools, on-demand skills, personal memory, scheduling
+and `begin_development`, without an initial repository scan or Worktree.
 The model can answer directly or request development; no keyword classifier is
 used on this shared path.
 
@@ -142,20 +149,82 @@ arguments cannot grant either permission.
 
 The current catalogue stores task/event facts in JSON with an exclusive process
 lease; durable checkpoints use SQLite. The single worker and full catalogue rewrites limit
-throughput. Parallel workers, a PostgreSQL backend and shared scheduling are
-not implemented.
+throughput. Parallel workers and a PostgreSQL backend are not implemented.
 
 The [WeChat bridge](wechat-ilink.md) uses these same tasks. The standalone local
 CLI and standalone WeChat service still exist and use the same Agent turn; the
 latter retains its own routing/scheduler. Those are separate entry modes, not a
 second LangGraph model/tool implementation.
 
+## Shared controls
+
+The default Server home opens `/chat.html`. `/tasks.html` remains the TaskBoard,
+`/index.html` is committed Session history, and `/settings.html` manages WeChat,
+schedules and memory. All clients use the same authenticated Server API.
+
+The Server reuses the existing WeChat, schedule and memory state locations under
+`$XDG_STATE_HOME/cairn` (normally `~/.local/state/cairn`). The existing
+`CAIRN_AGENT_HOME` override still selects personal memory. These roots must live
+outside the project and Worktrees and are protected from Agent file/shell tools.
+An already-running standalone WeChat owner must stop through its own controller
+before the shared receiver can acquire that state; never remove its live lock.
+
+`/wx` reuses a saved account or starts QR login. `/wx login` requests a new login
+when stopped. `/wx stop` retains the account; `/wx disconnect` removes it and
+clears extra trusted senders. Desired receiver state is persisted for Server
+restart. QR and verification values are transient, never stored as credentials
+in the control journal. The Server sends accepted WeChat tasks' final results to
+the same account/sender; an uncertain push is not retried automatically.
+
+```text
+/schedule remind once 2027-01-01T09:00:00+08:00 Review Cairn
+/schedule add once 2027-01-01T09:00:00+08:00 Inspect project status
+/schedule list
+/schedule history
+/memory note Prefer short Chinese replies
+/memory propose Keep replies concise
+/memory pending
+/memory approve
+```
+
+`remind` sends the text without a model call. `add` submits an Agent task to the
+same Runtime and reports its task ID in run history. Existing daily/interval,
+pause/resume/remove operations remain available; daily time uses Asia/Shanghai.
+Reminders do not wait for the Agent worker. Never-started due jobs catch up once;
+started executions and uncertain deliveries are not silently replayed.
+
+Task journaling runs outside the reply path. Existing memory tools verify trusted
+user text and do not grant permissions. The bound WeChat owner can manage their
+notes/plans; additional trusted project senders do not receive personal-memory
+or schedule tools. Candidate rule approval stays in CLI/Web and requires the
+exact proposal just reviewed. Read `/memory pending` before `/memory approve`;
+Web shows the candidate and an explicit checkbox. A changed candidate requires
+another review. Nothing automatically approves new behavior or permissions.
+
+`/provider` and `/mcp` report host configuration; switching providers, changing
+credentials/model configuration or enabling MCP requires host approval/restart.
+Shared `/compact` explicitly reports unavailable; it never claims a manual
+compression happened. Automatic context compaction remains in the Agent turn.
+The explicit legacy `cairn-cli local` retains its original standalone commands.
+
+Management writes carry stable request IDs. A disconnected HTTP client does not
+cancel a Server-owned operation. Completed receipts deduplicate retries; after a
+crash, pending writes need inspection in Web or `/management acknowledge ID`
+(the latter records review without replay). This does not block ordinary chat
+or unrelated commands. Existing Session recovery remains a separate review.
+
 ## Implementation and HTTP API
 
 Current owners are `src/cairn/runtime/task_service.py`,
 `src/cairn/runtime/service_execution.py` and `src/cairn/runtime/loop.py`.
-The model/tools graph is built in `run_turn`; SessionStore/DurableSession handle
+Server composition and control ownership live in `src/cairn/server.py` and
+`src/cairn/server_controls.py`. The model/tools graph is built in `run_turn`; SessionStore/DurableSession handle
 effect receipts and recovery. LangGraph is not the permission authority.
+
+`GET /api/runtime/management?section=wechat|schedule|memory` exposes state;
+`GET /api/runtime/commands` exposes the actual command menu, and `POST` on that
+path invokes a control. Browser management writes require the exact same Origin;
+Bearer clients remain workspace-bound.
 
 Endpoints under `/api/runtime/tasks` support list/submit, `ID`, `ID/messages`,
 `ID/events?after=SEQ`, `ID/history`, `ID/stream?after=SEQ`, `ID/cancel`,

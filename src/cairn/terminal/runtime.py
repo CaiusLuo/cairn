@@ -27,7 +27,7 @@ def serve(ctx: typer.Context) -> None:
     import sys
 
     result = subprocess.run(
-        [sys.executable, "-m", "cairn.web.runtime_server", *ctx.args], check=False
+        [sys.executable, "-m", "cairn.server", *ctx.args], check=False
     )
     raise typer.Exit(result.returncode)
 

@@ -1581,10 +1581,12 @@ async def main(
     async def _launch_wechat_background(
         account: object, senders: frozenset[str]
     ) -> tuple[int, str]:
-        sibling = Path(sys.executable).with_name("cairn")
-        executable = str(sibling) if sibling.exists() else (shutil.which("cairn") or "")
+        sibling = Path(sys.executable).with_name("cairn-cli")
+        executable = (
+            str(sibling) if sibling.exists() else (shutil.which("cairn-cli") or "")
+        )
         if not executable:
-            raise RuntimeError("cairn executable not found for background owner")
+            raise RuntimeError("cairn-cli executable not found for background owner")
         provider = active_runtime.provider
         group = active_runtime.model_manager.current_model()
         state_dir = default_state_dir()

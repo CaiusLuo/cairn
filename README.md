@@ -7,7 +7,7 @@ Worktree. LangGraph orchestrates model calls and tools through the existing
 
 ```text
 Interactive CLI ─┐
-Web Tasks ───────┼── Shared Runtime ── LangGraph model ↔ tools ── answer
+Web Chat ────────┼── Shared Runtime ── LangGraph model ↔ tools ── answer
 WeChat bridge ──┘        │
                    tasks / history / recovery / worktrees
 ```
@@ -69,12 +69,17 @@ pnpm --dir web install --frozen-lockfile
 pnpm --dir web build
 ```
 
-Open `http://127.0.0.1:8777/tasks.html`; username is `cairn`, password is the
+Open `http://127.0.0.1:8777/chat.html`; username is `cairn`, password is the
 private `runtime.token` file. For a remote server, create an SSH tunnel first,
 for example `ssh -N -L 8777:127.0.0.1:8777 user@server`. Web can submit tasks,
 send follow-ups, show progress/history and perform explicit recovery.
 
-The [WeChat bridge](docs/guides/wechat-ilink.md) connects an authorized iLink
+In the shared CLI, `/wx` starts login; `/wx status` and `/wx verify CODE`
+show progress and finish verification. Web `/settings.html` offers the same
+WeChat controls plus scheduled tasks and personal memory. Closing either
+client leaves the receiver and scheduler running in the Server.
+
+The [WeChat integration](docs/guides/wechat-ilink.md) connects an authorized iLink
 account to that same Runtime. `/status TASK_ID` reads a task started from CLI or
 Web; `/reply TASK_ID CONTENT` adds a follow-up.
 
@@ -92,8 +97,11 @@ Web; `/reply TASK_ID CONTENT` adds a follow-up.
 - Shared Runtime currently has one task worker and a bounded queue. Its task/event
   catalogue is file-backed JSON; durable conversations use SQLite. Parallel task
   workers and a PostgreSQL backend are not implemented.
-- Shared WeChat mode has no scheduler integration. The existing standalone WeChat
-  route has scheduling and an optional [WeChat unit](docs/guides/persistent-wechat-service.md).
+- `/schedule` and `/memory` use Server-owned storage and tools from CLI, Web
+  and the bound WeChat owner. Rules need reviewed approval in CLI/Web.
+- `/model use ID` selects a model within the host-approved group. Provider
+  changes and enabling MCP still require host configuration and restart.
+  Manual shared `/compact` is not implemented; automatic budget compaction remains active.
 - The [Server systemd template](docs/guides/runtime-service.md#debian-systemd-service)
   supports boot startup and crash restart; installation is opt-in.
 - Shared CLI displays tool progress and the settled answer; Web also displays

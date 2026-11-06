@@ -17,8 +17,26 @@ class WechatRuntimeAdapter:
         *,
         message_id: str | None = None,
         conversation_key: str | None = None,
+        sender: str | None = None,
+        account: str | None = None,
     ) -> str:
         command, _, argument = text.strip().partition(" ")
+        if command in {"/schedule", "/memory", "/help"}:
+            from uuid import uuid4
+
+            result = await self.client.request(
+                "POST",
+                "commands",
+                {
+                    "command": command,
+                    "args": argument,
+                    "source": "wechat",
+                    "request_id": message_id or "wechat-control:" + uuid4().hex,
+                    "sender": sender,
+                    "account": account,
+                },
+            )
+            return str(result["message"])
         if command == "/reply":
             ident, _, prompt = argument.partition(" ")
             if not prompt.strip():
@@ -30,6 +48,8 @@ class WechatRuntimeAdapter:
                 source="wechat",
                 request_id=message_id or "reply-" + str(task["sequence"]),
                 expected_sequence=task["sequence"],
+                delivery_recipient=sender,
+                delivery_account=account,
             )
             return f"{task['task_id']}\n状态: {task['status']}"
         if command == "/history" and argument:
@@ -71,6 +91,8 @@ class WechatRuntimeAdapter:
                     request_id=message_id,
                     mode="development" if command == "/task" else "conversation",
                     conversation_key=conversation_key if command != "/task" else None,
+                    delivery_recipient=sender,
+                    delivery_account=account,
                 )
             except httpx.HTTPStatusError as error:
                 if error.response.status_code != 409 or conversation_key is None:

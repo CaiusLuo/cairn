@@ -65,6 +65,7 @@ class CodingTaskRunner:
         extra_tools: Sequence[Tool] = (),
         read_only: bool = False,
         conversation_only: bool = False,
+        message_id: str | None = None,
         tool_lease: WorkspaceLease | None = None,
         sandbox_shell: bool = False,
         system_prompt: str | None = None,
@@ -92,6 +93,7 @@ class CodingTaskRunner:
         self.extra_tools = extra_tools
         self.read_only = read_only
         self.conversation_only = conversation_only
+        self.message_id = message_id
         self.tool_lease = tool_lease
         self.sandbox_shell = sandbox_shell
         self.system_prompt = system_prompt or system_prompt_for(
@@ -406,7 +408,7 @@ class CodingTaskRunner:
                         spec.prompt,
                         cancellation_event,
                         durable_session,
-                        message_id=spec.task_id,
+                        message_id=self.message_id or spec.task_id,
                     )
                     if response is None:
                         status = TaskStatus.CANCELLED
@@ -435,7 +437,7 @@ class CodingTaskRunner:
                         cancellation_event,
                         durable_session,
                         selected_skills,
-                        message_id=spec.task_id,
+                        message_id=self.message_id or spec.task_id,
                     )
                     if response is None:
                         status = TaskStatus.CANCELLED
@@ -469,7 +471,7 @@ class CodingTaskRunner:
                             spec.prompt,
                             cancellation_event,
                             selected_skills=selected_skills,
-                            message_id=spec.task_id,
+                            message_id=self.message_id or spec.task_id,
                         )
                     else:
                         response = await self._turn(

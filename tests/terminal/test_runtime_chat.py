@@ -73,3 +73,17 @@ def test_terminal_eof_releases_a_waiting_reader(monkeypatch: Any) -> None:
             await view.aclose()
 
     asyncio.run(scenario())
+
+
+def test_old_server_has_an_actionable_upgrade_message_without_local_fallback() -> None:
+    import asyncio
+
+    import pytest
+
+    api = RuntimeClient(
+        "http://127.0.0.1:8777",
+        "private-test-token",
+        transport=httpx.MockTransport(lambda request: httpx.Response(404)),
+    )
+    with pytest.raises(ValueError, match="重启 cairn"):
+        asyncio.run(shared.main(api))

@@ -719,6 +719,12 @@ class PersonalMemoryService:
     def propose_agent_update(
         self, text: str, reason: str, now: datetime | None = None
     ) -> str:
+        with self.store.profile_lock():
+            return self._propose_agent_update(text, reason, now)
+
+    def _propose_agent_update(
+        self, text: str, reason: str, now: datetime | None
+    ) -> str:
         clean = self.redact(" ".join(text.split()).strip())
         if not clean:
             raise ValueError("AGENT.md proposal cannot be empty")
@@ -735,7 +741,25 @@ class PersonalMemoryService:
         )
         return clean[:4000]
 
-    def approve_agent_update(self, now: datetime | None = None) -> str:
+    def approve_agent_update(
+        self,
+        now: datetime | None = None,
+        *,
+        expected_proposal: dict[str, Any] | None = None,
+    ) -> str:
+        with self.store.profile_lock():
+            if (
+                expected_proposal is not None
+                and self.store.load_proposal() != expected_proposal
+            ):
+                raise ValueError("AGENT.md candidate changed; review it again")
+            return self._approve_agent_update(now)
+
+    def reject_agent_update(self) -> None:
+        with self.store.profile_lock():
+            self.store.clear_proposal()
+
+    def _approve_agent_update(self, now: datetime | None) -> str:
         if not self.enabled:
             raise ValueError("personal agent memory is disabled")
         proposal = self.store.load_proposal()
@@ -763,6 +787,10 @@ class PersonalMemoryService:
         return text
 
     def rollback_agent_update(self) -> bool:
+        with self.store.profile_lock():
+            return self._rollback_agent_update()
+
+    def _rollback_agent_update(self) -> bool:
         changed = self.store.rollback_agent_md()
         if changed:
             self.store.append_audit(

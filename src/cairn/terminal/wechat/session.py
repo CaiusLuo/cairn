@@ -20,7 +20,8 @@ from inspect import isawaitable
 from pathlib import Path
 from typing import Any
 
-from cairn.infra.wechat.ilink import ILinkClient
+from cairn.infra.runtime_client import RuntimeClient
+from cairn.infra.wechat.ilink import ILinkClient, QRCode
 from cairn.infra.wechat.state import (
     WechatAccount,
     WechatState,
@@ -62,7 +63,12 @@ class WechatSessionController:
         login_client: object | None = None,
         on_account_changed: Callable[[], None] | None = None,
         redact_text: Callable[[str], str] | None = None,
+        runtime_client: RuntimeClient | None = None,
+        qr_handler: Callable[[QRCode | None], None] | None = None,
+        discover_background: bool = True,
     ) -> None:
+        self.runtime_client = runtime_client
+        self.qr_handler = qr_handler
         self.workspace = workspace
         self.state_dir = state_dir
         self.task_executor = task_executor
@@ -85,7 +91,11 @@ class WechatSessionController:
         self.redact_text = redact_text
         self._state = WechatState(state_dir)
         try:
-            raw = json.loads(self._background_path.read_text(encoding="utf-8"))
+            raw = (
+                json.loads(self._background_path.read_text(encoding="utf-8"))
+                if discover_background
+                else {}
+            )
             if isinstance(raw, dict) and isinstance(raw.get("pid"), int):
                 self._background_pid = raw["pid"]
                 self._background_session_id = str(raw.get("session_id", ""))
@@ -119,6 +129,8 @@ class WechatSessionController:
         self._say(text)
 
     def _clear_qr(self) -> None:
+        if self.qr_handler is not None:
+            self.qr_handler(None)
         if self._qr_lines and self.clear is not None:
             result = self.clear(self._qr_lines)
             if isawaitable(result):
@@ -160,6 +172,15 @@ class WechatSessionController:
             return self._verify(parts[1])
         if verb == "allow" and len(parts) == 2:
             self._allowed_senders.add(parts[1])
+            if (
+                self.runtime_client is not None
+                and self._task is not None
+                and not self._task.done()
+            ):
+                account = self._state.load_account()
+                await self._stop_all()
+                if account is not None:
+                    await self._start(account)
             return note(f"已信任微信发送者: {parts[1]}")
         if verb not in {"", "login"}:
             return correction(f"未知 /wx 子命令: {verb}; 使用 /wx help 查看可用命令。")
@@ -179,7 +200,7 @@ class WechatSessionController:
         if account is None or verb == "login":
             self._begin_login()
             return note(
-                "微信登录已开始: 请扫描终端二维码; /wx status 查看, /wx stop 取消。"
+                "微信登录已开始: 请在 CLI 或 Web 查看二维码; /wx status 查看, /wx stop 取消。"
             )
         return await self._start(account)
 
@@ -226,6 +247,9 @@ class WechatSessionController:
         self._say("微信未登录, 正在获取二维码...")
 
         def on_qr(qr) -> None:  # type: ignore[no-untyped-def]
+            if self.qr_handler is not None:
+                self.qr_handler(qr)
+                return
             # A refreshed QR replaces the previous one instead of stacking images.
             self._clear_qr()
             self._say_qr("请使用微信扫描下面的二维码(完整静区已包含): ")
@@ -386,6 +410,8 @@ class WechatSessionController:
             allowed_senders=frozenset(senders),
             poll_interval=0.2,
             redact_text=self.redact_text,
+            runtime_url=self.runtime_client.url if self.runtime_client else None,
+            runtime_client=self.runtime_client,
         )
         task = asyncio.create_task(
             serve_wechat(
@@ -438,6 +464,19 @@ class WechatSessionController:
             return result if isinstance(result, dict) else None
         except (OSError, ValueError):
             return None
+
+    def restore_senders(self, senders: tuple[str, ...]) -> None:
+        self._allowed_senders.update(senders)
+
+    def management_status(self) -> dict[str, object]:
+        return {
+            "account_saved": bool(self.account_id()),
+            "running": self._task is not None and not self._task.done(),
+            "login_pending": self._login_task is not None
+            and not self._login_task.done(),
+            "verification_required": self._verify_requested,
+            "status": self._status().message,
+        }
 
     def _status(self) -> Action:
         lines: list[str] = []

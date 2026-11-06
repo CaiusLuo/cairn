@@ -139,7 +139,12 @@ class ServerProcess:
                 stdout=log,
                 stderr=log,
                 start_new_session=True,
-                env={**os.environ, "CAIRN_TEST_GATES": str(self.gates)},
+                env={
+                    **os.environ,
+                    "CAIRN_TEST_GATES": str(self.gates),
+                    "XDG_STATE_HOME": str(self.state / "host-state"),
+                    "CAIRN_AGENT_HOME": str(self.state / "agent"),
+                },
             )
 
         def ready() -> bool:

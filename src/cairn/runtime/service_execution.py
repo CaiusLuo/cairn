@@ -17,6 +17,7 @@ from uuid import uuid4
 from cairn.core.budget import RunBudget
 from cairn.core.events import Event
 from cairn.core.llm import LLMClient
+from cairn.core.model_manager import ModelManager
 from cairn.core.permissions import (
     PermissionCapability,
     PermissionChoice,
@@ -40,6 +41,7 @@ from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.development_request import DevelopmentRequest
 from cairn.runtime.durable_session import DurableSession
+from cairn.runtime.model_executor import ModelExecutor
 from cairn.runtime.provider_runtime import ProviderRuntime
 from cairn.runtime.task_service import (
     TaskAdvanced,
@@ -84,6 +86,9 @@ class ServiceExecution:
         self.budget = budget
         self.allow_shell = allow_shell
         self.service: TaskService | None = None
+        self.configure_agent: Callable[[Agent, RuntimeTask], None] | None = None
+        self.validate_task: Callable[[RuntimeTask], None] | None = None
+        self.protected_paths: tuple[Path, ...] = ()
 
     @property
     def store(self) -> SessionStore:
@@ -96,12 +101,49 @@ class ServiceExecution:
             )
         return self._store
 
+    def protect_secrets(self, values: tuple[str, ...]) -> None:
+        self.sensitive_values = tuple(dict.fromkeys((*self.sensitive_values, *values)))
+        if self._store is not None:
+            self._store.sensitive_values = self.sensitive_values
+
+    def profile_for(self, task: RuntimeTask) -> ProviderRuntime | None:
+        profile = self.provider_runtime
+        if profile is None or task.model_id is None:
+            return profile
+        group = profile.model_manager.current_model()
+        if task.model_id not in group.model_ids:
+            raise ValueError("Model not in the host-approved group")
+        selected = replace(
+            group,
+            model_ids=(
+                task.model_id,
+                *(ident for ident in group.model_ids if ident != task.model_id),
+            ),
+        )
+        manager = ModelManager(
+            replace(profile.provider.config, model_config=(selected,))
+        )
+        manager.select_model_id(task.model_id)
+        llm, context = profile.runtime_factory(task.model_id)
+        return replace(
+            profile,
+            model_manager=manager,
+            llm=llm,
+            context_builder=context,
+            model_executor=ModelExecutor(
+                manager, profile.runtime_factory, allow_fallback=profile.allow_fallback
+            ),
+        )
+
     async def __call__(
         self, task: RuntimeTask, emit: Callable[[str, dict[str, Any]], None]
     ) -> str:
         started = perf_counter()
         assert self.service is not None
+        if self.validate_task is not None:
+            self.validate_task(task)
         budget = self._remaining_budget(task)
+        profile = self.profile_for(task)
         new_session = False
         development = DevelopmentRequest()
         chatting = (
@@ -160,7 +202,8 @@ class ServiceExecution:
 
         def bind(agent: Agent) -> DurableSession:
             nonlocal message_start
-            profile = self.provider_runtime
+            if self.configure_agent is not None:
+                self.configure_agent(agent, task)
             reference = None
             if profile is not None:
                 group = profile.model_manager.current_model()
@@ -189,7 +232,21 @@ class ServiceExecution:
             if chatting:
                 for schema in agent.tools.schemas():
                     name = schema["function"]["name"]
-                    if name not in {"read_file", "glob", "grep", "begin_development"}:
+                    if name not in {
+                        "read_file",
+                        "glob",
+                        "grep",
+                        "begin_development",
+                        "memory_search",
+                        "memory_remember",
+                        "memory_forget",
+                        "memory_correct",
+                        "schedule_create",
+                        "schedule_list",
+                        "schedule_manage",
+                        "read_skill",
+                        "read_skill_resource",
+                    }:
                         agent.tools.unregister_tool(name)
                 agent.after_tools = development.after_tools
             elif not self.allow_shell:
@@ -324,17 +381,11 @@ class ServiceExecution:
 
         runner = CodingTaskRunner(
             workspace=workspace,
-            llm=self.llm_factory(),
-            context_builder=self.provider_runtime.context_builder
-            if self.provider_runtime is not None
-            else None,
-            model_executor=self.provider_runtime.model_executor
-            if self.provider_runtime is not None
-            else None,
+            llm=profile.llm if profile is not None else self.llm_factory(),
+            context_builder=profile.context_builder if profile is not None else None,
+            model_executor=profile.model_executor if profile is not None else None,
             secret_env_keys=self.secret_env_keys,
-            provider_name=self.provider_runtime.provider.name
-            if self.provider_runtime is not None
-            else None,
+            provider_name=profile.provider.name if profile is not None else None,
             budget=budget,
             extra_tools=(development,) if chatting else (),
             include_repository_context=not chatting,
@@ -343,6 +394,7 @@ class ServiceExecution:
             event_handler=observe,
             durable_session_factory=bind,
             conversation_only=True,
+            message_id=task.input_id or task.task_id,
             sandbox_shell=self.allow_shell,
             system_prompt=(
                 "You are Cairn, one assistant for conversation and project work. Reply directly to ordinary chat. Use tools only when needed; preserve verified facts and never repeat unknown effects. "
@@ -418,7 +470,7 @@ class ServiceExecution:
                 )
                 / "cairn"
             )
-            with protect_host_paths((self.state, private_root)):
+            with protect_host_paths((self.state, private_root, *self.protected_paths)):
                 result = await runner.run(
                     TaskSpec(
                         task_id=task.task_id,

@@ -23,7 +23,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dotenv import dotenv_values
 
@@ -141,6 +141,10 @@ def conversation_text(result: HeadlessResult) -> str:
     return text
 
 
+if TYPE_CHECKING:
+    from cairn.infra.runtime_client import RuntimeClient
+
+
 class ConversationDecision(StrEnum):
     CHAT = "CHAT"
     TASK = "TASK"
@@ -194,6 +198,7 @@ class ServeConfig:
     redact_text: Callable[[str], str] | None = None
     runtime_url: str | None = None
     runtime_token_file: Path | None = None
+    runtime_client: RuntimeClient | None = None
 
 
 @dataclass(slots=True)
@@ -848,14 +853,15 @@ class _Service:
             from cairn.infra.runtime_client import RuntimeClient, read_runtime_token
             from cairn.terminal.wechat.runtime import WechatRuntimeAdapter
 
-            token_path = config.runtime_token_file
-            if token_path is None or token_path.resolve().is_relative_to(
-                config.workspace.resolve()
-            ):
-                raise ValueError("Runtime token must be in trusted host storage")
-            self._runtime_adapter = WechatRuntimeAdapter(
-                RuntimeClient(runtime_url, read_runtime_token(token_path))
-            )
+            runtime_api = config.runtime_client
+            if runtime_api is None:
+                token_path = config.runtime_token_file
+                if token_path is None or token_path.resolve().is_relative_to(
+                    config.workspace.resolve()
+                ):
+                    raise ValueError("Runtime token must be in trusted host storage")
+                runtime_api = RuntimeClient(runtime_url, read_runtime_token(token_path))
+            self._runtime_adapter = WechatRuntimeAdapter(runtime_api)
         self.state = state
         self.client = client
         self.executor = executor
@@ -1671,6 +1677,8 @@ class _Service:
                     if self.redact_text is not None
                     else inbound.text or "",
                     message_id="wechat:" + identity,
+                    sender=inbound.sender,
+                    account=self.config.account.ilink_bot_id,
                     conversation_key="wechat:"
                     + hashlib.sha256(
                         f"{self.config.account.ilink_bot_id}:{self.config.account.ilink_user_id}:{inbound.sender}".encode()

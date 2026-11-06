@@ -12,7 +12,7 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8765",
+        target: "http://127.0.0.1:8777",
         changeOrigin: true,
         ws: true
       }
@@ -23,6 +23,8 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       input: {
+        chat: `${root}chat.html`,
+        settings: `${root}settings.html`,
         sessions: `${root}index.html`,
         tasks: `${root}tasks.html`,
         login: `${root}login.html`

@@ -24,6 +24,8 @@ class InputMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
     prompt: str = Field(min_length=1, max_length=32000)
     source: RuntimeSource
+    delivery_recipient: str | None = Field(default=None, min_length=1, max_length=256)
+    delivery_account: str | None = Field(default=None, min_length=1, max_length=256)
     request_id: str | None = Field(default=None, max_length=200)
 
 
@@ -79,6 +81,8 @@ def task_routes(service: TaskService, workspace: Path) -> list[BaseRoute]:
                     body.request_id,
                     mode=body.mode,
                     conversation_key=body.conversation_key,
+                    delivery_recipient=body.delivery_recipient,
+                    delivery_account=body.delivery_account,
                 ).model_dump(mode="json")
             elif request.method == "POST":
                 assert isinstance(task_id, str)
@@ -92,6 +96,8 @@ def task_routes(service: TaskService, workspace: Path) -> list[BaseRoute]:
                         message.source,
                         message.request_id,
                         message.expected_sequence,
+                        delivery_recipient=message.delivery_recipient,
+                        delivery_account=message.delivery_account,
                     ).model_dump(mode="json")
                 elif action == "cancel":
                     result = (await service.cancel(task_id)).model_dump(mode="json")
@@ -198,7 +204,7 @@ def task_routes(service: TaskService, workspace: Path) -> list[BaseRoute]:
             await settle_owned(
                 *(task for task in (receiving, pending) if task is not None)
             )
-            with suppress(RuntimeError):
+            with suppress(RuntimeError, WebSocketDisconnect):
                 await websocket.close()
 
     return [

@@ -47,6 +47,9 @@ class TaskService:
         queue_size: int = 64,
         board: TaskBoardService | None = None,
     ) -> None:
+        self.validate_submission: Callable[[RuntimeTask], None] | None = None
+        self.default_model_id: str | None = None
+        self.on_settled: Callable[[RuntimeTask], None] | None = None
         self.board = board
         self.projections: dict[str, RuntimeTask] = {}
         self.projection_signal = asyncio.Event()
@@ -185,6 +188,8 @@ class TaskService:
         *,
         mode: str = "development",
         conversation_key: str | None = None,
+        delivery_recipient: str | None = None,
+        delivery_account: str | None = None,
     ) -> RuntimeTask:
         if self.stopping or self.worker is None or self.worker.done():
             raise RuntimeError("Runtime is not accepting tasks")
@@ -196,6 +201,8 @@ class TaskService:
                         or previous.source != source
                         or previous.mode != mode
                         or previous.conversation_key != conversation_key
+                        or previous.delivery_recipient != delivery_recipient
+                        or previous.delivery_account != delivery_account
                     ):
                         raise ValueError(
                             "Source message was already bound to another request"
@@ -217,6 +224,8 @@ class TaskService:
                     source,
                     request_id or "message-" + uuid4().hex,
                     conversation.sequence,
+                    delivery_recipient=delivery_recipient,
+                    delivery_account=delivery_account,
                 )
         if self.queue.full():
             raise asyncio.QueueFull
@@ -225,10 +234,17 @@ class TaskService:
                 "prompt": prompt,
                 "source": source,
                 "request_id": request_id,
+                "input_id": request_id or "input:" + uuid4().hex,
                 "mode": mode,
                 "conversation_key": conversation_key,
+                "model_id": self.default_model_id,
+                "delivery_recipient": delivery_recipient,
+                "delivery_account": delivery_account,
             }
         )
+        validator = self.validate_submission
+        if validator is not None:
+            validator(task)
         task = self.record(task, "accepted", {"source": source})
         self.queue.put_nowait(task.task_id)
         return task
@@ -296,12 +312,18 @@ class TaskService:
         source: RuntimeSource,
         request_id: str,
         expected_sequence: int,
+        *,
+        delivery_recipient: str | None = None,
+        delivery_account: str | None = None,
     ) -> RuntimeTask:
         if self.stopping or self.worker is None or self.worker.done():
             raise RuntimeError("Runtime is not accepting messages")
         task = self.inspect(task_id)
         fingerprint = hashlib.sha256(
-            json.dumps([prompt, source], ensure_ascii=False).encode()
+            json.dumps(
+                [prompt, source, delivery_recipient, delivery_account],
+                ensure_ascii=False,
+            ).encode()
         ).hexdigest()
         if request_id in task.input_receipts:
             if task.input_receipts[request_id] != fingerprint:
@@ -321,6 +343,9 @@ class TaskService:
                 **task.model_dump(),
                 "status": "queued",
                 "input_prompt": prompt,
+                "input_id": request_id,
+                "delivery_recipient": delivery_recipient,
+                "delivery_account": delivery_account,
                 "resume_requested": False,
                 "development_prompt": task.development_prompt
                 if task.worktree
@@ -331,6 +356,9 @@ class TaskService:
                 "diagnostic": None,
             }
         )
+        validator = self.validate_submission
+        if validator is not None:
+            validator(candidate)
         updated = self.record(
             candidate, "message_accepted", {"source": source, "request_id": request_id}
         )
@@ -444,6 +472,8 @@ class TaskService:
         finally:
             if not advance:
                 self.publish(task_id, {"type": "settled"})
+                if self.on_settled is not None:
+                    self.on_settled(self.inspect(task_id))
             self.active = None
             self.active_id = None
             self.changed.set()

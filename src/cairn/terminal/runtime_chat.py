@@ -23,6 +23,7 @@ from cairn.terminal.output import (
     print_banner,
     print_user_message,
 )
+from cairn.terminal.server_commands import ServerCommands
 from cairn.terminal.submission import PendingLine
 
 
@@ -105,6 +106,14 @@ async def main(
     frame: TranscriptView | None = None,
 ) -> None:
     remote = RemoteConversation(api)
+    try:
+        catalog = await api.request("GET", "commands")
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code == 404:
+            raise ValueError(
+                "Server 仍在运行旧版本, 请先重启 cairn 再连接 cairn-cli。"
+            ) from None
+        raise
     reader = cli_input or CliInput()
     if (
         frame is None
@@ -120,19 +129,50 @@ async def main(
         on_status=frame.observe_status if frame else None,
     )
     pending: deque[str] = deque()
+    controls = ServerCommands(api)
+    if frame is not None:
+        frame.set_command_catalog(catalog)
+    control_names = {row["name"] for row in catalog} - {
+        "/new",
+        "/develop",
+        "/use",
+        "/status",
+        "/history",
+        "/continue",
+        "/cancel",
+        "/exit",
+    }
+    control_names |= {"/trace", "/management"}
+    wechat_watcher = asyncio.create_task(controls.watch_wechat())
     print_banner()
-    print(
-        "Shared Runtime · /new /develop GOAL /use ID /status /history /continue /cancel /exit"
-    )
+    print("Shared Runtime · 已连接共享 Server · /help 查看命令 · /exit 退出客户端")
 
     async def read() -> str:
         value = await frame.read() if frame else await reader.read()
         return value.text if isinstance(value, PendingLine) else value
 
     def show(task: dict[str, Any]) -> None:
-        print(
-            f"{task['task_id']} · {task['status']} · Worktree: {task.get('worktree') or 'none'}"
+        print(f"{task['task_id']} · {task['status']}")
+
+    async def manage(line: str, *, following: bool = False) -> bool:
+        command, _, argument = line.strip().partition(" ")
+        if command not in control_names:
+            return False
+        if following and command == "/task" and argument.split()[:1] == ["use"]:
+            print("当前正在跟随执行, 请先退出客户端, 再用 --task-id 连接另一个任务。")
+            return True
+        result = await controls.execute(
+            command, argument, remote.task["task_id"] if remote.task else None
         )
+        if (
+            command == "/task"
+            and result.get("task_id")
+            and argument.split()[:1] == ["use"]
+        ):
+            await remote.select(result["task_id"])
+        elif remote.task:
+            remote.task = await api.inspect(remote.task["task_id"])
+        return True
 
     async def follow() -> bool:
         display.reset()
@@ -166,6 +206,12 @@ async def main(
                     reading = None
                     if line.strip() in {"/exit", "/quit"}:
                         return False
+                    if await manage(line, following=True):
+                        continue
+                    if line.strip() == "/status":
+                        if remote.task:
+                            show(await api.inspect(remote.task["task_id"]))
+                        continue
                     if line.strip() == "/cancel":
                         stopped.set()
                     else:
@@ -244,7 +290,12 @@ async def main(
                         continue
                     ident = remote.task["task_id"]
                     if command == "/history":
-                        print(await api.request("GET", f"tasks/{ident}/history"))
+                        for item in await api.request("GET", f"tasks/{ident}/history"):
+                            if item.get("content") and item["role"] in {
+                                "user",
+                                "assistant",
+                            }:
+                                print(f"{item['role']}: {item['content']}")
                         continue
                     remote.task = (
                         await api.inspect(ident)
@@ -258,10 +309,10 @@ async def main(
                     ):
                         return
                     continue
+                if await manage(line):
+                    continue
                 if command.startswith("/"):
-                    print(
-                        "Shared commands: /new /develop GOAL /use ID /status /history /continue /cancel /exit. Model and permissions are configured by the server."
-                    )
+                    print("未知命令, 使用 /help 查看当前 Server 支持的操作。")
                     continue
                 print_user_message(line)
                 show(await remote.send(line))
@@ -272,6 +323,7 @@ async def main(
                     f"Shared Runtime request failed: {type(error).__name__}. Keep the task ID and inspect it before retrying."
                 )
     finally:
+        await settle_owned(wechat_watcher)
         if frame:
             closing = asyncio.create_task(frame.aclose())
             late = await await_owned(closing)

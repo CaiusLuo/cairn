@@ -149,6 +149,9 @@ class TranscriptView:
     status rows.
     """
 
+    def set_command_catalog(self, rows: list[dict[str, object]]) -> None:
+        self._palette.set_catalog(rows)
+
     def __init__(
         self,
         *,

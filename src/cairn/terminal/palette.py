@@ -49,6 +49,11 @@ class Palette:
     back where it was rather than at the top.
     """
 
+    _commands: tuple[tuple[str, str], ...] = field(default=COMMANDS, repr=False)
+    _children: dict[str, tuple[tuple[str, str], ...]] = field(
+        default_factory=lambda: dict(CHILDREN), repr=False
+    )
+
     _typed: str = field(default="", repr=False)
     _open: bool = field(default=False, repr=False)
     #: One entry per level: that level's rows and its selected index.
@@ -77,6 +82,19 @@ class Palette:
     def depth(self) -> int:
         """How many levels are open; one is the command list."""
         return len(self._stack)
+
+    def set_catalog(self, rows: Sequence[Mapping[str, object]]) -> None:
+        self.close()
+        self._commands = tuple(
+            (str(row["name"]), str(row["description"])) for row in rows
+        )
+        self._children = {}
+        for row in rows:
+            children = row.get("children")
+            if isinstance(children, list) and children:
+                self._children[str(row["name"])] = tuple(
+                    (str(child), "") for child in children if isinstance(child, str)
+                )
 
     def set_dynamic(
         self,
@@ -129,13 +147,13 @@ class Palette:
         self._command_text = command_text
         head, _, remainder = command_text.partition(" ")
         head = head.lower()
-        if head in CHILDREN and (
+        if head in self._children and (
             typed.endswith(" ") or (remainder and " " not in remainder)
         ):
             query = remainder.strip().lower()
             rows = tuple(
                 item
-                for item in CHILDREN[head]
+                for item in self._children[head]
                 if not query or query in item[0].lower() or query in item[1].lower()
             )
             self._typed = typed
@@ -184,7 +202,7 @@ class Palette:
         the moment it is chosen, and nothing is left to type. A command that opens a
         level is not, because the level is what chooses the rest of the line.
         """
-        return self.selected_name() not in DESCENDS
+        return self.selected_name() not in self._children
 
     def descend(self) -> bool:
         """Open the selected entry's next level.
@@ -194,10 +212,10 @@ class Palette:
         """
         command = self.selected_name()
         children = self._dynamic_children.get(command)
-        if children is None and command not in DESCENDS:
+        if children is None and command not in self._children:
             return False
         if children is None:
-            children = CHILDREN[command]
+            children = self._children[command]
         self._trail.append(command)
         self._stack.append((children, 0))
         return True
@@ -284,7 +302,7 @@ class Palette:
     def _matching_root(self) -> tuple[tuple[str, str], ...]:
         seen: set[str] = set()
         merged: list[tuple[str, str]] = []
-        for item in (*COMMANDS, *self._dynamic_root):
+        for item in (*self._commands, *self._dynamic_root):
             if item[0] in seen:
                 continue
             seen.add(item[0])

@@ -13,7 +13,7 @@ from cairn.infra.redaction import redact_text, redact_value
 from cairn.infra.sessions.models import CheckpointReceipt
 from cairn.infra.workspace.lease import WorkspaceLease
 
-RuntimeSource = Literal["cli", "web", "wechat"]
+RuntimeSource = Literal["cli", "web", "wechat", "schedule"]
 RuntimeStatus = Literal[
     "queued",
     "running",
@@ -30,6 +30,9 @@ class RuntimeTask(BaseModel):
     task_id: str = Field(default_factory=lambda: "task-" + uuid4().hex)
     prompt: str = Field(min_length=1, max_length=32000)
     source: RuntimeSource
+    model_id: str | None = None
+    delivery_recipient: str | None = Field(default=None, max_length=256)
+    delivery_account: str | None = Field(default=None, max_length=256)
     mode: Literal["conversation", "development"] = "development"
     conversation_key: str | None = Field(default=None, max_length=200)
     development_prompt: str | None = Field(default=None, min_length=1, max_length=32000)
@@ -37,6 +40,7 @@ class RuntimeTask(BaseModel):
     request_id: str | None = None
     status: RuntimeStatus = "queued"
     resume_requested: bool = False
+    input_id: str | None = Field(default=None, max_length=200)
     input_prompt: str | None = Field(default=None, min_length=1, max_length=32000)
     input_receipts: dict[str, str] = Field(default_factory=dict, max_length=1000)
     session_id: str | None = None

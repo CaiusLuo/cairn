@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from cairn.core.agent_memory import MemoryKind
 from cairn.runtime.agent_memory.service import PersonalMemoryService
@@ -22,6 +23,11 @@ class MemoryController:
         self.on_agent_changed = on_agent_changed
 
     async def command(self, args: str) -> Action:
+        return self.execute(args)
+
+    def execute(
+        self, args: str, *, expected_proposal: dict[str, Any] | None = None
+    ) -> Action:
         parts = args.split()
         verb = parts[0].lower() if parts else "show"
         if verb in {"show", "status"}:
@@ -85,7 +91,7 @@ class MemoryController:
             )
         if verb == "approve":
             try:
-                self.service.approve_agent_update()
+                self.service.approve_agent_update(expected_proposal=expected_proposal)
             except (OSError, ValueError) as exc:
                 return correction(f"应用提案失败: {exc}")
             if self.on_agent_changed is not None:
@@ -94,7 +100,7 @@ class MemoryController:
         if verb == "reject":
             if self.service.pending_proposal() is None:
                 return note("当前没有待处理的 AGENT.md 提案. ")
-            self.service.store.clear_proposal()
+            self.service.reject_agent_update()
             return note("已放弃待处理的 AGENT.md 提案. ")
         if verb == "rollback":
             try:
@@ -114,7 +120,10 @@ class MemoryController:
         )
 
     def _pending(self) -> Action:
-        pending = self.service.pending_proposal()
+        return self.format_pending(self.service.pending_proposal())
+
+    @staticmethod
+    def format_pending(pending: dict[str, Any] | None) -> Action:
         if not isinstance(pending, dict):
             return note("当前没有待处理的 AGENT.md 提案。")
         return note(

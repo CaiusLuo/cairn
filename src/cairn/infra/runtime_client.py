@@ -86,6 +86,8 @@ class RuntimeClient:
         *,
         mode: str = "development",
         conversation_key: str | None = None,
+        delivery_recipient: str | None = None,
+        delivery_account: str | None = None,
     ) -> dict[str, Any]:
         return dict(
             await self.request(
@@ -97,6 +99,8 @@ class RuntimeClient:
                     "request_id": request_id,
                     "mode": mode,
                     "conversation_key": conversation_key,
+                    "delivery_recipient": delivery_recipient,
+                    "delivery_account": delivery_account,
                 },
             )
         )
@@ -109,6 +113,8 @@ class RuntimeClient:
         source: str,
         request_id: str,
         expected_sequence: int,
+        delivery_recipient: str | None = None,
+        delivery_account: str | None = None,
     ) -> dict[str, Any]:
         self._id(task_id)
         return dict(
@@ -120,6 +126,8 @@ class RuntimeClient:
                     "source": source,
                     "request_id": request_id,
                     "expected_sequence": expected_sequence,
+                    "delivery_recipient": delivery_recipient,
+                    "delivery_account": delivery_account,
                 },
             )
         )
