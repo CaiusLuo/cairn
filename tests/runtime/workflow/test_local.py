@@ -14,9 +14,12 @@ from cairn.infra.git import WorktreeProvider, WorktreeState
 from cairn.infra.git.worktree import WorktreeError
 from cairn.infra.github.models import GitHubRepository, IssueReference, IssueTask
 from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.evals.checks import FileContentEqualsCheck, FileExistsCheck
-from cairn.runtime.evals.models import CheckResult
 from cairn.runtime.tasks import CodingTaskRunner, TaskResult, TaskSpec, TaskStatus
+from cairn.runtime.verification import (
+    CheckResult,
+    FileContentEqualsCheck,
+    FileExistsCheck,
+)
 from cairn.runtime.workflow import (
     GITHUB_SECRET_ENV_KEYS,
     FixedChecksVerifier,

@@ -14,7 +14,6 @@ from cairn.infra.observability.sinks import JsonlTraceSink
 from cairn.infra.observability.storage import TraceStore
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.evals import CheckResult, FileContentEqualsCheck
 from cairn.runtime.tasks import (
     CodingTaskRunner,
     TaskExecutionSummary,
@@ -24,6 +23,7 @@ from cairn.runtime.tasks import (
 )
 from cairn.runtime.tasks import metrics as metrics_module
 from cairn.runtime.tasks import runner as runner_module
+from cairn.runtime.verification import CheckResult, FileContentEqualsCheck
 from tests.support.durable_tasks import make_host
 from tests.support.runtime import FailingLLM, FailingSink, SequenceLLM
 

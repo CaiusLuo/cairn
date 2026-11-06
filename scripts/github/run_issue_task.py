@@ -30,9 +30,9 @@ from cairn.infra.github.transport import GitHubRESTPublisher
 from cairn.infra.observability.sinks import JsonlTraceSink
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.evals.checks import FileContentEqualsCheck
 from cairn.runtime.provider_runtime import build_provider_runtime
 from cairn.runtime.tasks import CodingTaskRunner
+from cairn.runtime.verification import FileContentEqualsCheck
 from cairn.runtime.workflow import FixedChecksVerifier, LocalWorkflow, WorkflowStatus
 from cairn.runtime.workflow.publisher import GitHubPublisher
 from cairn.terminal.output import confirm_provider_access, console_permission_prompt

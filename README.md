@@ -117,6 +117,6 @@ uv run mypy src tests
 ```
 
 Run the regression tests for the code you change; the full offline suite is
-`uv run pytest`. [Tests](tests/README.md), [evaluation tools](evaluation/README.md)
-and [operational scripts](scripts/README.md) have their own short indexes.
+`uv run pytest`. [Tests](tests/README.md) and
+[operational scripts](scripts/README.md) have their own short indexes.
 [Documentation](docs/README.md) covers configuration, running and recovery.

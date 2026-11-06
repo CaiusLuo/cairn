@@ -16,5 +16,4 @@ uv run python scripts/github/run_issue_task.py --help
 ```
 
 Help does not execute a workflow. Keep credentials in host configuration; do not
-include tokens in command text or reports. Evaluation tooling is in
-[evaluation](../evaluation/README.md).
+include tokens in command text or reports.

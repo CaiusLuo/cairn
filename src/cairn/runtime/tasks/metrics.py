@@ -19,7 +19,7 @@ from cairn.infra.observability.storage import TraceStore
 from cairn.infra.tools.credential_env import SECRET_ENV_KEYS
 
 if TYPE_CHECKING:
-    from cairn.runtime.evals.models import CheckResult
+    from cairn.runtime.verification import CheckResult
 
 MAX_SUMMARY_BYTES = 4096
 MAX_COUNT = 2**63 - 1

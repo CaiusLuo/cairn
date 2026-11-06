@@ -1,12 +1,46 @@
+"""Deterministic file/content checks used by host workflow verification."""
+
+from __future__ import annotations
+
 import asyncio
 import stat
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
+from typing import Protocol
+
+from pydantic import BaseModel, Field
 
 from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.evals.models import CheckResult
 
 CHECK_READ_CHUNK_SIZE = 16 * 1024
+
+
+class CheckFailureCategory(StrEnum):
+    RUN_TIMEOUT = "run_timeout"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    RUNTIME_ERROR = "runtime_error"
+    CHECK_FAILED = "check_failed"
+    CHECK_TIMEOUT = "check_timeout"
+    CHECK_ERROR = "check_error"
+
+
+class CheckResult(BaseModel):
+    name: str
+    passed: bool
+    message: str | None = None
+    error: str | None = None
+    # One-based position within the case, independent of duplicate check names.
+    check_index: int | None = Field(default=None, ge=1)
+    check_type: str | None = None
+    target_path: str | None = None
+    failure_category: CheckFailureCategory | None = None
+
+
+class Check(Protocol):
+    name: str
+
+    async def evaluate(self, workspace: Workspace) -> CheckResult: ...
 
 
 def _regular_file(workspace: Workspace, raw_path: str) -> tuple[Path, bool]:
@@ -29,21 +63,6 @@ async def _content_equals(path: Path, expected: str) -> bool:
             if not expected.startswith(chunk, offset):
                 return False
             offset += len(chunk)
-
-
-async def _contains(path: Path, substring: str) -> bool:
-    overlap = ""
-    overlap_size = max(0, len(substring) - 1)
-    with path.open(encoding="utf-8") as stream:
-        while True:
-            chunk = stream.read(CHECK_READ_CHUNK_SIZE)
-            await asyncio.sleep(0)
-            window = overlap + chunk
-            if substring in window:
-                return True
-            if not chunk:
-                return False
-            overlap = window[-overlap_size:] if overlap_size else ""
 
 
 @dataclass(slots=True)
@@ -69,40 +88,4 @@ class FileContentEqualsCheck:
         resolved, is_file = _regular_file(workspace, self.path)
         passed = is_file and await _content_equals(resolved, self.expected)
         message = None if passed else f"Expected {self.path} to equal {self.expected!r}"
-        return CheckResult(name=self.name, passed=passed, message=message)
-
-
-@dataclass(slots=True)
-class FileContainsCheck:
-    path: str
-    substring: str
-    name: str = "file_contains"
-
-    async def evaluate(self, workspace: Workspace) -> CheckResult:
-        if not isinstance(self.substring, str):
-            raise ValueError("substring must be a string")
-        resolved, is_file = _regular_file(workspace, self.path)
-        passed = is_file and await _contains(resolved, self.substring)
-        message = (
-            None if passed else f"Expected {self.path} to contain {self.substring!r}"
-        )
-        return CheckResult(name=self.name, passed=passed, message=message)
-
-
-@dataclass(slots=True)
-class FileNotContainsCheck:
-    path: str
-    substring: str
-    name: str = "file_not_contains"
-
-    async def evaluate(self, workspace: Workspace) -> CheckResult:
-        if not isinstance(self.substring, str):
-            raise ValueError("substring must be a string")
-        resolved, is_file = _regular_file(workspace, self.path)
-        passed = is_file and not await _contains(resolved, self.substring)
-        message = (
-            None
-            if passed
-            else f"Expected {self.path} not to contain {self.substring!r}"
-        )
         return CheckResult(name=self.name, passed=passed, message=message)

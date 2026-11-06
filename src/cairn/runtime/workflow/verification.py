@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.evals.models import CheckResult, EvalCheck
+from cairn.runtime.verification import Check, CheckResult
 from cairn.runtime.workflow.models import (
     GitSnapshot,
     VerificationCategory,
@@ -25,7 +25,7 @@ class FixedChecksVerifier:
     """Caller-selected checks, with no Issue-controlled commands or expectations."""
 
     def __init__(
-        self, checks: Sequence[EvalCheck], *, timeout_seconds: float = 30.0
+        self, checks: Sequence[Check], *, timeout_seconds: float = 30.0
     ) -> None:
         if not checks:
             raise ValueError("At least one fixed check is required")
@@ -41,7 +41,7 @@ class FixedChecksVerifier:
         for position, check in enumerate(self.checks, 1):
             # IDs do not include names, paths, expected values, or result text.
             kind = type(check).__name__
-            kind = kind if kind.isascii() and kind.isidentifier() else "EvalCheck"
+            kind = kind if kind.isascii() and kind.isidentifier() else "Check"
             check_id = f"{position}:{kind[:70]}"
             try:
                 async with asyncio.timeout(self.timeout_seconds):

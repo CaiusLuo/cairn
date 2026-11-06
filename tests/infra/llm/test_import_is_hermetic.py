@@ -1,7 +1,7 @@
 """Importing Cairn must not reach the network.
 
 LiteLLM downloads its model cost map at import time, which made `--help` on the
-evaluation runners, and the tests that start them, depend on network latency.
+entrypoints, and the tests that start them, depend on network latency.
 Both the Alibaba Java manual and Software Engineering at Google require unit
 tests to avoid external environments; a hermetic import is the way to get there.
 """

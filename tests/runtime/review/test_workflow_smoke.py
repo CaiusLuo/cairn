@@ -7,7 +7,6 @@ import pytest
 from cairn.core.budget import RunBudget
 from cairn.core.models import LLMResponse, Message
 from cairn.infra.git import WorktreeProvider, WorktreeState
-from cairn.runtime.evals.checks import FileExistsCheck
 from cairn.runtime.review import FreshReviewer
 from cairn.runtime.review import workflow as workflow_module
 from cairn.runtime.review.workflow import ReviewWorkflow
@@ -15,6 +14,7 @@ from cairn.runtime.review.workflow_models import (
     ReviewPersistenceError,
     ReviewWorkflowStatus,
 )
+from cairn.runtime.verification import FileExistsCheck
 from cairn.runtime.workflow.verification import FixedChecksVerifier
 from tests.runtime.review.test_reviewer import TASK, finding, proposal
 from tests.runtime.workflow.test_local import edit
