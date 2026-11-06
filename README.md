@@ -34,83 +34,44 @@ For real models, configure `.env` or `.cairn/models.toml` using
 [configuration](docs/configuration.md). The offline example below needs no model
 credentials and makes no paid API requests.
 
-## Start a shared Runtime
+## Start Cairn Server
 
-Run from the checkout. Keep private state outside the source and Worktree roots:
-
-```sh
-uv run cairn \
-  --workspace "$PWD" \
-  --state-dir "$HOME/.local/state/cairn/runtime" \
-  --worktrees "$HOME/.local/state/cairn/worktrees" \
-  --offline --port 8777
-```
-
-In another terminal in the same workspace, connect the interactive CLI:
+Build Web, copy [the host configuration](deploy/config.example.toml) to
+`/etc/cairn/config.toml`, and set its workspace, data paths and provider approval:
 
 ```sh
-uv run cairn-cli
+npm --prefix web ci
+npm --prefix web run build
+uv run cairn --config /etc/cairn/config.toml
 ```
 
-Chat normally, or enter `/develop Create the acceptance artifact` to exercise
-real file creation with the offline model. `/status` shows the task ID; `/use ID`
-attaches to an existing task. `/history`, `/continue`, `/cancel` and `/new` operate
-on the same server-owned work. Exiting the client leaves server work running.
-
-For a real model, replace `--offline` with `--provider-approval FILE` as described
-in the [Runtime guide](docs/guides/runtime-service.md).
-
-## Web and WeChat
-
-Build the Web assets before using the browser surface:
+For an unpaid offline smoke test, remove `provider_approval` and set
+`offline = true`. Production never silently falls back to an offline model.
+From the configured workspace, connect the independent client:
 
 ```sh
-pnpm --dir web install --frozen-lockfile
-pnpm --dir web build
+uv run cairn-cli --config /etc/cairn/config.toml
 ```
 
-Open `http://127.0.0.1:8777/chat.html`; username is `cairn`, password is the
-private `runtime.token` file. For a remote server, create an SSH tunnel first,
-for example `ssh -N -L 8777:127.0.0.1:8777 user@server`. Web can submit tasks,
-send follow-ups, show progress/history and perform explicit recovery.
+Open `http://127.0.0.1:8777/chat.html`; username is `cairn`, password is
+`data_root/runtime/runtime.token`. Web Chat, Tasks, History, WeChat management
+and Schedule share the same Server. Use an SSH tunnel for a remote server.
 
-In the shared CLI, `/wx` starts login; `/wx status` and `/wx verify CODE`
-show progress and finish verification. Web `/settings.html` offers the same
-WeChat controls plus scheduled tasks and personal memory. Closing either
-client leaves the receiver and scheduler running in the Server.
+Chat normally, or enter `/develop GOAL`. `/status`, `/history`, `/continue`,
+`/cancel`, `/new` and `/use ID` operate on server-owned work. `/wx` starts login;
+`/wx status` and `/wx verify CODE` manage it. Web Settings offers these same
+controls plus Schedule and Memory. Client exit leaves background services running.
 
-The [WeChat integration](docs/guides/wechat-ilink.md) connects an authorized iLink
-account to that same Runtime. `/status TASK_ID` reads a task started from CLI or
-Web; `/reply TASK_ID CONTENT` adds a follow-up.
+The [Server guide](docs/guides/runtime-service.md) covers configuration priority,
+persistent files, explicit backed-up data import, provider authorization and
+systemd installation. After installing the unit, `./start.sh` supports
+`start`, `stop`, `restart`, `status` and `logs`; supervision belongs to systemd.
+Standalone CLI/WeChat Runtime launchers have been retired.
 
-## Other entry points and current limits
-
-- `uv run cairn` starts the shared Server; `uv run cairn-cli` connects from the
-  current directory. Connection failure never starts a local Agent.
-- `uv run cairn-cli local` retains the explicit legacy local Agent for migration;
-  its tasks are not server-owned.
-- `uv run cairn-cli runtime submit "GOAL" --token-file FILE` creates an explicit
-  development task; `inspect`, `follow`, `history` and `list` read service state.
-- `uv run cairn-cli session new` and the `session inspect/reopen/reconcile` commands
-  manage local durable conversations. `uv run cairn-cli task run --help` describes the
-  separate headless task entry.
-- Shared Runtime currently has one task worker and a bounded queue. Its task/event
-  catalogue is file-backed JSON; durable conversations use SQLite. Parallel task
-  workers and a PostgreSQL backend are not implemented.
-- `/schedule` and `/memory` use Server-owned storage and tools from CLI, Web
-  and the bound WeChat owner. Rules need reviewed approval in CLI/Web.
-- `/model use ID` selects a model within the host-approved group. Provider
-  changes and enabling MCP still require host configuration and restart.
-  Manual shared `/compact` is not implemented; automatic budget compaction remains active.
-- The [Server systemd template](docs/guides/runtime-service.md#debian-systemd-service)
-  supports boot startup and crash restart; installation is opt-in.
-- Shared CLI displays tool progress and the settled answer; Web also displays
-  provisional streamed answer text.
-
-Tool permissions, credential filtering and uncertain-effect recovery remain
-active. The host selects privileges. Shared Runtime shell access is opt-in and
-uses the Linux project sandbox; the standalone local CLI can grant host shell
-access. See [operations](docs/guides/pilot-runbook.md) before recovering work.
+One task worker and a bounded queue remain; Runtime facts use JSON and durable
+Sessions use SQLite. Tool permissions, credential filtering, LangGraph execution
+and uncertain-effect recovery remain active. PostgreSQL, parallel workers and
+Conversation/Task/Run separation are outside this change.
 
 ## Development
 

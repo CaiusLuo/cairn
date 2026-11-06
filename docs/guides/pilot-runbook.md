@@ -89,7 +89,7 @@ work; reopen is separate.
 
 For shared work, use `runtime inspect/history/follow/recovery` and the server's
 logs. A stopped browser or CLI does not imply the Runtime stopped. For standalone
-WeChat, use `/wx status` or the [systemd journal](persistent-wechat-service.md).
+WeChat, use `/wx status` or the [systemd journal](runtime-service.md#debian-systemd-service).
 Preserve task IDs, committed receipts and Worktrees when reporting failures;
 redact tokens and credentials. Do not restart unrelated live services to test a
 new checkout.

@@ -11,10 +11,6 @@ DEFAULT_REFRESH_SECONDS = 2.0
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
-def default_sessions_dir() -> Path:
-    return Path.home() / ".local" / "state" / "cairn" / "sessions"
-
-
 @dataclass(frozen=True, slots=True)
 class WebConfig:
     """Host-selected roots and the loopback endpoint for one W1 process.

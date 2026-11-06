@@ -110,7 +110,26 @@ class ServerProcess:
         self.source, self.root = source, root
         self.port = free_port()
         self.url = f"http://127.0.0.1:{self.port}"
-        self.state = root / "state"
+        self.data_root = root / "state"
+        self.state = self.data_root / "runtime"
+        self.config = root / "server.toml"
+        import json
+
+        self.config.write_text(
+            "[server]\n"
+            + "workspace = "
+            + json.dumps(str(source))
+            + "\n"
+            + "data_root = "
+            + json.dumps(str(self.data_root))
+            + "\n"
+            + "worktrees_root = "
+            + json.dumps(str(root / "worktrees"))
+            + "\n"
+            + "offline = true\nport = "
+            + str(self.port)
+            + "\n"
+        )
         self.gates = root / "gates"
         self.gates.mkdir()
         self.log = root / "server.log"
@@ -125,15 +144,8 @@ class ServerProcess:
                     sys.executable,
                     "-m",
                     "tests.support.runtime_server",
-                    "--workspace",
-                    str(self.source),
-                    "--state-dir",
-                    str(self.state),
-                    "--worktrees",
-                    str(self.root / "worktrees"),
-                    "--offline",
-                    "--port",
-                    str(self.port),
+                    "--config",
+                    str(self.config),
                 ],
                 cwd=ROOT,
                 stdout=log,

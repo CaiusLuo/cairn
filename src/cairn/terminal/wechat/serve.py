@@ -2277,10 +2277,11 @@ async def serve_wechat(
         raise ValueError("WeChat state belongs to a different bot account")
     lock = WechatServeLock(config.state_dir)
     lock.acquire(
+        account_id=config.account.ilink_bot_id,
         description=(
             f"pid={os.getpid()} bot={config.account.ilink_bot_id} "
             f"workspace={config.workspace}"
-        )
+        ),
     )
     # Start background work only after every identity/directory/lock check
     # succeeded. A failed startup must leave no executor task behind.
@@ -2288,8 +2289,7 @@ async def serve_wechat(
         scheduler_stop = asyncio.Event()
         scheduler_task = asyncio.create_task(scheduler_runner.run(scheduler_stop))
     try:
-        with contextlib.suppress(OSError):
-            await control.start()
+        await control.start()
         return await service.run()
     finally:
         primary_error = sys.exception()

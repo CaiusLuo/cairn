@@ -81,11 +81,11 @@ def test_client_default_state_uses_xdg_and_needs_no_local_provider(
         ["session", "--help"],
         ["task", "run", "--help"],
         ["wechat", "serve", "--help"],
-        ["runtime", "list", "--help"],
+        ["runtime", "serve", "--help"],
         ["local", "--help"],
     ],
 )
-def test_historical_commands_have_explicit_migration_paths(args: list[str]) -> None:
+def test_retired_local_runtime_commands_are_not_exposed(args: list[str]) -> None:
     result = CliRunner().invoke(client.app, args)
-    assert result.exit_code == 0, result.output
-    assert "Usage:" in result.output
+    assert result.exit_code != 0, result.output
+    assert "No such command" in result.output

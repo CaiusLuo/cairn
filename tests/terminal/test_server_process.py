@@ -33,9 +33,9 @@ def test_client_exit_reconnect_web_and_crash_recovery(tmp_path: Path) -> None:
                 str(Path(sys.executable).parent / "cairn"),
                 "--workspace",
                 str(source),
-                "--state-dir",
-                str(server.state),
-                "--worktrees",
+                "--data-root",
+                str(server.data_root),
+                "--worktrees-root",
                 str(tmp_path / "worktrees"),
                 "--offline",
             ],
@@ -44,7 +44,7 @@ def test_client_exit_reconnect_web_and_crash_recovery(tmp_path: Path) -> None:
             timeout=15,
         )
         assert duplicate.returncode != 0
-        assert "Another runtime owns" in duplicate.stderr
+        assert "Another Cairn Server owns" in duplicate.stderr
         token_file = server.state / "runtime.token"
         token = token_file.read_text().strip()
         with httpx.Client(

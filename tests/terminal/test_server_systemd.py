@@ -13,13 +13,7 @@ def test_server_unit_verifies(tmp_path: Path) -> None:
     values = {
         "ROOT": str(Path.cwd()),
         "USER": "root",
-        "HOME": "/root",
-        "XDG_STATE_HOME": "/root/.local/state",
-        "WORKSPACE": str(tmp_path / "source"),
-        "STATE": str(tmp_path / "state"),
-        "WORKTREES": str(tmp_path / "worktrees"),
-        "PROVIDER_APPROVAL": str(tmp_path / "provider.json"),
-        "PORT": "18779",
+        "CONFIG": str(tmp_path / "server.toml"),
     }
     for key, value in values.items():
         text = text.replace(f"__CAIRN_{key}__", value)
@@ -57,6 +51,22 @@ def test_systemd_restarts_server_and_retains_paused_work() -> None:
             ["systemctl", *args], capture_output=True, text=True, check=True, timeout=20
         ).stdout.strip()
 
+    def wrapper(
+        action: str, config: Path, *, succeeds: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(
+            ["bash", "start.sh", action],
+            env={**os.environ, "CAIRN_CONFIG": str(config), "CAIRN_SERVICE": name},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if succeeds:
+            assert result.returncode == 0, result.stdout + result.stderr
+        else:
+            assert result.returncode != 0
+        return result
+
     name = "cairn-p0-test-" + uuid4().hex + ".service"
     unit = Path("/run/systemd/system") / name
     with tempfile.TemporaryDirectory(prefix="cairn-p0-", dir="/run") as directory:
@@ -66,20 +76,25 @@ def test_systemd_restarts_server_and_retains_paused_work() -> None:
         initialize_repository(source)
         port = free_port()
         text = Path("deploy/systemd/cairn.service.in").read_text()
-        # Only the provider is replaced by the unpaid model; lifecycle is the real unit.
-        text = text.replace(
-            "--provider-approval __CAIRN_PROVIDER_APPROVAL__", "--offline --max-steps 1"
+        import json
+
+        config = root / "server.toml"
+        config.write_text(
+            "[server]\nworkspace = "
+            + json.dumps(str(source))
+            + "\ndata_root = "
+            + json.dumps(str(root / "state"))
+            + "\nworktrees_root = "
+            + json.dumps(str(root / "worktrees"))
+            + "\noffline = true\nport = "
+            + str(port)
+            + "\n[budget]\nmax_steps = 1\n"
         )
         text = text.replace("EnvironmentFile=-/etc/cairn/cairn.env\n", "")
         values = {
             "ROOT": str(Path.cwd()),
             "USER": pwd.getpwuid(os.geteuid()).pw_name,
-            "HOME": str(root),
-            "XDG_STATE_HOME": str(root / "xdg"),
-            "WORKSPACE": str(source),
-            "STATE": str(root / "state"),
-            "WORKTREES": str(root / "worktrees"),
-            "PORT": str(port),
+            "CONFIG": str(config),
         }
         for key, value in values.items():
             text = text.replace(f"__CAIRN_{key}__", value)
@@ -99,9 +114,9 @@ def test_systemd_restarts_server_and_retains_paused_work() -> None:
 
         try:
             control("daemon-reload")
-            control("start", name)
+            wrapper("start", config)
             wait_for(ready)
-            token = (root / "state/runtime.token").read_text().strip()
+            token = (root / "state/runtime/runtime.token").read_text().strip()
             with httpx.Client(
                 base_url=url,
                 headers={"Authorization": "Bearer " + token},
@@ -127,6 +142,16 @@ def test_systemd_restarts_server_and_retains_paused_work() -> None:
                 artifact = Path(paused["worktree"]) / "runtime-result.txt"
                 inode = artifact.stat().st_ino
                 pid = control("show", name, "-p", "MainPID", "--value")
+                wrapper("start", config)
+                assert control("show", name, "-p", "MainPID", "--value") == pid
+                original = config.read_text()
+                config.write_text(
+                    original.replace(str(root / "state"), str(root / "changed-state"))
+                )
+                refused = wrapper("restart", config, succeeds=False)
+                assert "Cannot identify running Server" in refused.stderr
+                assert control("show", name, "-p", "MainPID", "--value") == pid
+                config.write_text(original)
                 control("kill", "--kill-whom=main", "--signal=KILL", name)
                 wait_for(
                     lambda: (
@@ -151,11 +176,11 @@ def test_systemd_restarts_server_and_retains_paused_work() -> None:
                     paused["worktree"],
                 )
                 assert artifact.stat().st_ino == inode
-                control("restart", name)
+                wrapper("restart", config)
                 wait_for(ready)
                 assert api.get(path).json()["status"] == "completed"
                 assert artifact.stat().st_ino == inode
-            control("stop", name)
+            wrapper("stop", config)
             assert control("show", name, "-p", "ActiveState", "--value") == "inactive"
         finally:
             subprocess.run(["systemctl", "stop", name], capture_output=True, timeout=30)

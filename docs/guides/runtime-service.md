@@ -1,276 +1,228 @@
-# Shared Runtime
+# Cairn Server
 
-One service owns task admission, a bounded queue, one task worker, cancellation
-and public event history. Clients submit or observe tasks; disconnecting a client
-does not stop the Agent. TaskBoard is a projection: moving a card does not start
-or resume execution.
+One `cairn` process owns Web/API, the LangGraph Runtime, the task queue, WeChat,
+Schedule and personal memory. `cairn-cli` is a separate HTTP client. Client exit
+or SSH detachment does not stop Server work. Production background ownership
+belongs to systemd; foreground debugging uses the same bootstrap.
 
-## Start
-
-Install dependencies from the [README](../../README.md#install). For a real model,
-prepare [configuration and provider approval](../configuration.md), then run:
+## Build and run
 
 ```sh
-uv run cairn \
-  --workspace /srv/project \
-  --state-dir "$HOME/.local/state/cairn/runtime" \
-  --worktrees "$HOME/.local/state/cairn/worktrees" \
-  --provider-approval "$HOME/.local/state/cairn/policy/provider.json" \
-  --port 8777
+uv sync --locked --all-groups
+npm --prefix web ci
+npm --prefix web run build
+uv run cairn --config /etc/cairn/config.toml
 ```
 
-Use `--offline` in place of `--provider-approval FILE` for scripted acceptance.
-The server creates a private `runtime.token` under its state directory and binds
-only `127.0.0.1`. State and policy files belong outside all Agent-writable roots;
-see [operations](pilot-runbook.md). Use a separate port and state for experiments.
-
-Build Web assets with `pnpm --dir web install --frozen-lockfile` and
-`pnpm --dir web build`. Open `http://127.0.0.1:8777/chat.html` through an SSH
-tunnel. Login uses username `cairn` and the Runtime token as password.
-
-## Interactive CLI and batch commands
+Copy [the example](../../deploy/config.example.toml) to a host-owned location
+outside both workspace and worktrees. Edit workspace and data paths for the
+installation. Real model startup requires the provider approval below. For an
+explicit unpaid smoke test, remove `provider_approval` and set `offline = true`.
+There is no automatic offline fallback.
 
 ```sh
-uv run cairn-cli --runtime-url http://127.0.0.1:8777 \
-  --runtime-token-file "$HOME/.local/state/cairn/runtime/runtime.token"
-uv run cairn-cli --runtime-url http://127.0.0.1:8777 \
-  --runtime-token-file "$HOME/.local/state/cairn/runtime/runtime.token" \
-  --task-id TASK_ID
+uv run cairn --config /etc/cairn/config.toml check-config
+# Run the client from the configured workspace:
+uv run cairn-cli --config /etc/cairn/config.toml
+uv run cairn-cli --config /etc/cairn/config.toml runtime list
 ```
 
-| In-session command | Action |
-| --- | --- |
-| `/new` | Next input starts a new conversation |
-| `/develop GOAL` | Create an explicit development task |
-| `/use TASK_ID` | Attach and display committed replies |
-| `/status`, `/history` | Read the selected task |
-| `/continue`, `/cancel` | Continue a safely paused task or request cancellation |
-| `/wx`, `/wx status`, `/wx verify CODE`, `/wx stop` | Manage Server-owned login and receiver |
-| `/schedule help`, `/schedule list`, `/schedule history` | Manage shared scheduled tasks |
-| `/memory note TEXT`, `/memory pending`, `/memory approve` | Record personal memory and approve the reviewed candidate |
-| `/model list`, `/model use ID` | Select only within the host-approved model group |
-| `/task add`, `/task todo`, `/task done`, `/task progress` | Update the existing shared TaskBoard without starting execution |
-| `/help` | Read the Server command catalogue used by terminal completion |
-| `/exit` | Detach the client |
+Open `http://127.0.0.1:8777/chat.html`. The username is `cairn`; the password is
+`data_root/runtime/runtime.token` (private mode 0600). Chat, Tasks, History and
+Settings use the same listener. Settings exposes WeChat, Schedule and Memory
+management. Use an SSH tunnel for remote browser access; the Server still
+rejects non-loopback binds and invalid browser Host/Origin values.
 
-Ordinary input typed during execution waits for the next settled turn.
-Management commands and `/status` remain usable while the Agent is busy. Ctrl+C on the
-running terminal requests cancellation; closing the client only detaches.
-Shared mode uses the native composer and transcript without creating a local
-Agent. `uv run cairn-cli local` is the explicit standalone migration mode.
+`cairn-web`, `cairn-runtime`, `cairn-cli runtime serve`, and the public local,
+standalone task/session/WeChat CLI launchers have been retired. They must not be
+used to supervise another Runtime or receiver. Internal execution, recovery and
+controller modules remain reusable and covered by regression tests.
 
-The default URL is `http://127.0.0.1:8777`. Server state defaults to
-`$XDG_STATE_HOME/cairn/runtime` (or `~/.local/state/cairn/runtime`), and Worktrees
-to the sibling `worktrees` directory. The client reads `runtime.token` from that
-same default state directory. For custom state/ports, use `--runtime-url` and
-`--runtime-token-file`, or `CAIRN_RUNTIME_URL` / `CAIRN_RUNTIME_TOKEN_FILE`.
+## Configuration and priority
 
-The client compares its canonical current directory with the authenticated
-`/api/runtime/workspace` identity before entering chat. This version supports one
-exact workspace root; a different directory is refused. From a different project,
-use an installed `cairn-cli` or `uv run --project /workspace/cairn cairn-cli` to use
-Cairn's Python environment while preserving the caller's working directory.
-Each task request also
-carries that workspace as a file URI in `X-Cairn-Workspace`, so a service restarted
-on another project cannot silently accept existing client input.
+Explicit CLI options override environment variables, which override TOML, which
+overrides built-in defaults. `--config` selects the file before `CAIRN_CONFIG`;
+otherwise `/etc/cairn/config.toml` is used when present. Explicitly selected
+missing files, unknown TOML keys, invalid types and malformed values fail.
 
-Historical `cairn runtime/session/task/wechat` commands move to
-`cairn-cli runtime/session/task/wechat`; `cairn-runtime` remains a Server alias.
-Running the Server in an SSH foreground terminal does not detach it: use systemd
-for a persistent supervisor.
-
-Batch commands accept `--url` (default `http://127.0.0.1:8777`) and the required
-`--token-file FILE`:
-
-```sh
-uv run cairn-cli runtime submit "Create the acceptance artifact" --token-file FILE
-uv run cairn-cli runtime list --token-file FILE
-uv run cairn-cli runtime inspect TASK_ID --token-file FILE
-uv run cairn-cli runtime follow TASK_ID --token-file FILE
-uv run cairn-cli runtime history TASK_ID --token-file FILE
-uv run cairn-cli runtime cancel TASK_ID --token-file FILE
-uv run cairn-cli runtime continue TASK_ID --token-file FILE
-```
-
-`submit` creates a development task. With the offline model it writes
-`runtime-result.txt` in a real isolated Worktree. Ordinary offline chat returns a
-scripted answer; adaptive model tool choice is not demonstrated by that answer.
-
-## Chat and development
-
-Web and interactive CLI default to conversation mode; plain WeChat messages reuse
-a conversation per bot/sender. Chat has read-only project tools, on-demand skills, personal memory, scheduling
-and `begin_development`, without an initial repository scan or Worktree.
-The model can answer directly or request development; no keyword classifier is
-used on this shared path.
-
-After the tool group settles, the Runtime commits the chat turn and creates the
-development Worktree with host-approved permissions. The task ID stays the same.
-The new workspace gets a new durable Session; prior checkpoint receipts establish
-history provenance. Later turns and restarts retain the development Session and
-Worktree. Earlier file observations need rechecking against the new workspace.
-The automatic transition uses the remaining budget, without replenishing it.
-
-Web supports same-task follow-ups, history, events, cancel, continue and recovery.
-The CLI shows tool progress and the settled answer; Web additionally streams
-provisional answer text. Committed history is the recovery source of truth.
-
-## Budgets
-
-All shared clients use the host policy. Defaults are 500 steps, 900 seconds and
-12 repeated unchanged tool batches. Pass `--budget-config FILE` for a private
-TOML file outside writable roots:
+TOML relative paths resolve against the configuration file's directory.
+Environment and CLI paths must be absolute. Workspace is required; it never
+silently defaults to the shell's current directory. Runtime token discovery in
+the CLI uses this same configuration. `--runtime-url` and `--runtime-token-file`
+remain explicit client overrides.
 
 ```toml
+[server]
+host = "127.0.0.1"
+port = 8777
+workspace = "/workspace/project"
+data_root = "/var/lib/cairn"
+worktrees_root = "/var/lib/cairn/worktrees"
+provider_approval = "/etc/cairn/provider-approval.json"
+# web_root = "/workspace/cairn/web/dist"
+offline = false
+allow_shell = false
+allow_network = false
+
 [budget]
-max_steps = 1000
-max_seconds = 900
-max_tokens = 200000
+max_steps = 500
+max_seconds = 900.0
 max_stagnant_steps = 12
+# max_tokens / max_cost and input/output_cost_per_million are optional.
+
+[services]
+wechat = true
+schedule = true
+memory = true
+
+[logging]
+level = "info"
+access_log = true
 ```
 
-Optional `max_cost`, `input_cost_per_million` and `output_cost_per_million` enable
-a host-rate cost estimate. Time/step/token/cost stops preserve results and pause
-work. One in-flight response can exceed a token threshold; unknown usage remains
-unknown. This is not a billing reservation. The durable per-turn effect limit
-also pauses before a further effect.
+Server options use `CAIRN_HOST`, `CAIRN_PORT`, `CAIRN_WORKSPACE`,
+`CAIRN_DATA_ROOT`, `CAIRN_WORKTREES_ROOT`, `CAIRN_WEB_ROOT`,
+`CAIRN_PROVIDER_APPROVAL`, `CAIRN_OFFLINE`, `CAIRN_ALLOW_SHELL`,
+`CAIRN_ALLOW_NETWORK`. Budget variables are `CAIRN_MAX_STEPS`,
+`CAIRN_MAX_SECONDS`, `CAIRN_MAX_TOKENS`, `CAIRN_MAX_COST`,
+`CAIRN_MAX_STAGNANT_STEPS`, `CAIRN_INPUT_COST_PER_MILLION`,
+`CAIRN_OUTPUT_COST_PER_MILLION`. Services use `CAIRN_SERVICES_WECHAT`,
+`CAIRN_SERVICES_SCHEDULE`, `CAIRN_SERVICES_MEMORY`; logging uses
+`CAIRN_LOGGING_LEVEL` and `CAIRN_LOGGING_ACCESS_LOG`.
 
-Explicit continue grants a new budget window while retaining cumulative usage.
-Unfinished or uncertain effects require [recovery review](pilot-runbook.md#interrupted-work)
-first. `recovery_required` is not permission to replay a tool.
+Without an explicit data root, the default is `$XDG_STATE_HOME/cairn`, or
+`~/.local/state/cairn`. Worktrees default to `data_root/worktrees`. Server-owned
+components receive explicit paths. The old independent `CAIRN_AGENT_HOME`,
+`CAIRN_SCHEDULE_DIR` and WeChat/Board directory discovery do not relocate Server
+state. Import existing custom roots before switching an installation.
 
-## Host permissions and current limits
+## Provider authorization and secrets
 
-File tools protect credentials and private Runtime state. `--allow-shell` enables
-the existing Linux project shell boundary, requiring bubblewrap and usable
-namespaces. Missing isolation fails closed. The sandbox shell has network access;
-`--allow-network` separately grants network-tool capability. Clients and model
-arguments cannot grant either permission.
+Existing `.cairn/models.toml` and provider/model-group configuration remain
+supported; see [configuration](../configuration.md). A host approval file binds
+exact public routing facts before credentials are resolved:
 
-The current catalogue stores task/event facts in JSON with an exclusive process
-lease; durable checkpoints use SQLite. The single worker and full catalogue rewrites limit
-throughput. Parallel workers and a PostgreSQL backend are not implemented.
-
-The [WeChat bridge](wechat-ilink.md) uses these same tasks. The standalone local
-CLI and standalone WeChat service still exist and use the same Agent turn; the
-latter retains its own routing/scheduler. Those are separate entry modes, not a
-second LangGraph model/tool implementation.
-
-## Shared controls
-
-The default Server home opens `/chat.html`. `/tasks.html` remains the TaskBoard,
-`/index.html` is committed Session history, and `/settings.html` manages WeChat,
-schedules and memory. All clients use the same authenticated Server API.
-
-The Server reuses the existing WeChat, schedule and memory state locations under
-`$XDG_STATE_HOME/cairn` (normally `~/.local/state/cairn`). The existing
-`CAIRN_AGENT_HOME` override still selects personal memory. These roots must live
-outside the project and Worktrees and are protected from Agent file/shell tools.
-An already-running standalone WeChat owner must stop through its own controller
-before the shared receiver can acquire that state; never remove its live lock.
-
-`/wx` reuses a saved account or starts QR login. `/wx login` requests a new login
-when stopped. `/wx stop` retains the account; `/wx disconnect` removes it and
-clears extra trusted senders. Desired receiver state is persisted for Server
-restart. QR and verification values are transient, never stored as credentials
-in the control journal. The Server sends accepted WeChat tasks' final results to
-the same account/sender; an uncertain push is not retried automatically.
-
-```text
-/schedule remind once 2027-01-01T09:00:00+08:00 Review Cairn
-/schedule add once 2027-01-01T09:00:00+08:00 Inspect project status
-/schedule list
-/schedule history
-/memory note Prefer short Chinese replies
-/memory propose Keep replies concise
-/memory pending
-/memory approve
+```json
+{
+  "name": "example",
+  "endpoint": "https://api.example.com/v1",
+  "group": "primary",
+  "key_env": "CAIRN_LLM_API_KEY",
+  "model_ids": ["openai/your-model"]
+}
 ```
 
-`remind` sends the text without a model call. `add` submits an Agent task to the
-same Runtime and reports its task ID in run history. Existing daily/interval,
-pause/resume/remove operations remain available; daily time uses Asia/Shanghai.
-Reminders do not wait for the Agent worker. Never-started due jobs catch up once;
-started executions and uncertain deliveries are not silently replayed.
+Keep this file and Server configuration outside writable roots. The actual key
+belongs in a protected environment or the existing private credential flow,
+never ordinary Server TOML, Git or process argv. The unit optionally reads
+`/etc/cairn/cairn.env` (0600). Missing/mismatched provider credentials reject
+startup. `/model use ID` still selects only an approved model; switching provider
+or changing capabilities requires host configuration and restart.
 
-Task journaling runs outside the reply path. Existing memory tools verify trusted
-user text and do not grant permissions. The bound WeChat owner can manage their
-notes/plans; additional trusted project senders do not receive personal-memory
-or schedule tools. Candidate rule approval stays in CLI/Web and requires the
-exact proposal just reviewed. Read `/memory pending` before `/memory approve`;
-Web shows the candidate and an explicit checkbox. A changed candidate requires
-another review. Nothing automatically approves new behavior or permissions.
+## Storage inventory and boundaries
 
-`/provider` and `/mcp` report host configuration; switching providers, changing
-credentials/model configuration or enabling MCP requires host approval/restart.
-Shared `/compact` explicitly reports unavailable; it never claims a manual
-compression happened. Automatic context compaction remains in the Agent turn.
-The explicit legacy `cairn-cli local` retains its original standalone commands.
+| Relative to data_root | Owner and retained purpose |
+| --- | --- |
+| `server.lock` | One Server/import operation per root; kernel flock, no PID supervision |
+| `runtime/runtime.token` | Private client/browser credential |
+| `runtime/runtime.json`, `runtime/owner.lock` | RuntimeCatalogue task/event facts and lifetime writer ownership |
+| `runtime/controls.json` | ServerControls preferences, selected model, reviewed management receipts and uncertain delivery facts |
+| `runtime/sessions/sessions.sqlite3`, `-wal`, `-shm` | SessionStore checkpoints, bindings, tool fences/side effects, task ledger and recovery facts |
+| `runtime/sessions/writer.lock`, `inspection.lock`, schema backup files | Existing SQLite writer/read/schema recovery protocol |
+| `runtime/leases/*.lock` | Per-task execution/worktree write leases |
+| `runtime/board/tasks.json`, `tasks.lock` | Shared TaskBoardStore facts and bounded update locking |
+| `wechat/account.json`, `state.json`, `serve.lock`, `control.sock` | WeChat credentials, message/cursor/dedup/recovery state and receiver ownership/control |
+| `schedule/jobs.json`, `runs.jsonl`, `schedule.lock`, `runner.lock` | Schedule definitions, run/receipt history and atomic claim/execution locks |
+| `agent/AGENT.md`, `MEMORY.md`, `PROFILE.md`, `memory/` | AgentMemoryStore personal rules, profile, daily journal and audit history |
+| `agent/pending_agent_update.json`, `PROFILE.lock`, `trusted_workspaces.json`, `trusted_workspaces.lock` | Reviewed memory updates, profile serialization and existing host trust records |
+| `state-import.json` | Verified import manifest and its backup location |
+| `worktrees/` (or configured external root) | Agent-writable retained Git worktrees; never treat this as host state |
 
-Management writes carry stable request IDs. A disconnected HTTP client does not
-cancel a Server-owned operation. Completed receipts deduplicate retries; after a
-crash, pending writes need inspection in Web or `/management acknowledge ID`
-(the latter records review without replay). This does not block ordinary chat
-or unrelated commands. Existing Session recovery remains a separate review.
+The singular `schedule/` preserves the deployed default. Config is host policy;
+state is persistent facts; workspace/worktrees are execution roots. Secrets are
+protected environment/files, including the private WeChat account record and
+Runtime token. Host state and policy paths cannot overlap either writable root.
 
-## Implementation and HTTP API
+Task diagnostics are retained in Runtime events and SessionStore. Existing
+standalone trace JSONL/index files and project-memory SQLite files are not a
+second production Server store; they are not deleted or implicitly converted.
+The import copies retained files in selected component trees without changing
+checkpoint schemas, tool fences, recovery decisions or worktree identities.
+Do not delete WAL, lock, receipt or checkpoint files to make a service start.
 
-Current owners are `src/cairn/runtime/task_service.py`,
-`src/cairn/runtime/service_execution.py` and `src/cairn/runtime/loop.py`.
-Server composition and control ownership live in `src/cairn/server.py` and
-`src/cairn/server_controls.py`. The model/tools graph is built in `run_turn`; SessionStore/DurableSession handle
-effect receipts and recovery. LangGraph is not the permission authority.
+## Existing data and explicit import
 
-`GET /api/runtime/management?section=wechat|schedule|memory` exposes state;
-`GET /api/runtime/commands` exposes the actual command menu, and `POST` on that
-path invokes a control. Browser management writes require the exact same Origin;
-Bearer clients remain workspace-bound.
+An installation already using the default root keeps its exact directories and
+needs no directory migration. For an old custom `--state-dir`, set data_root to
+its parent if the directory is named `runtime`. Otherwise import it explicitly.
+Never point the new Server at an old live writer. Stop and inspect that service
+using its own supervisor; this code does not kill it or remove ownership locks.
 
-Endpoints under `/api/runtime/tasks` support list/submit, `ID`, `ID/messages`,
-`ID/events?after=SEQ`, `ID/history`, `ID/stream?after=SEQ`, `ID/cancel`,
-`ID/continue`, `ID/recovery` and `ID/reconcile`. They require the private bearer
-token or the Web host's authenticated cookie/Origin checks. Follow-up input
-carries a stable request ID and expected task sequence to reject stale writes
-and deduplicate lost acknowledgements. Reads do not execute tools.
+```sh
+uv run cairn --config /etc/cairn/config.toml import-state \
+  --source-root /root/.local/state/cairn \
+  --backup-root /var/backups/cairn \
+  --runtime-source /old/custom-runtime
+```
+
+Omit `--runtime-source` for the usual `source_root/runtime`. To import only split
+management state, repeat `--component wechat --component schedule --component agent`.
+For independently overridden old directories, arrange a host-owned source tree
+with those component names after stopping its owner; symlinks are refused.
+
+Source, destination and backup must be disjoint and outside writable roots.
+Targets must be empty; there is no merge or overwrite. The importer acquires
+Server and legacy store locks, copies a private backup, validates JSON/JSONL and
+SQLite integrity, verifies SHA-256 copies, then publishes selected directories.
+Ordinary failures roll back published directories; originals and backup remain.
+After a machine crash during import, inspect the backup/manifest and partial
+target before retrying; do not merge it into a running Server.
+
+Keep `worktrees_root` pointing at existing retained worktrees. Moving their Git
+registration or rewriting stored binding identities is outside P0-A. Imported
+Runtime tasks whose worktrees do not match this location are rejected. A restart
+reads existing committed history and does not replay unknown tool effects.
 
 ## Debian systemd service
 
-`deploy/systemd/cairn.service.in` supervises the existing Server, with one
-Runtime state lease, SIGTERM cleanup and `Restart=on-failure`. Render it using
-an existing service user and absolute paths:
+After building, configuring and checking the foreground Server, install one unit:
 
 ```sh
 sed \
   -e 's|__CAIRN_ROOT__|/workspace/cairn|g' \
   -e 's|__CAIRN_USER__|cairn|g' \
-  -e 's|__CAIRN_HOME__|/home/cairn|g' \
-  -e 's|__CAIRN_XDG_STATE_HOME__|/home/cairn/.local/state|g' \
-  -e 's|__CAIRN_WORKSPACE__|/srv/project|g' \
-  -e 's|__CAIRN_STATE__|/var/lib/cairn/runtime|g' \
-  -e 's|__CAIRN_WORKTREES__|/var/lib/cairn/worktrees|g' \
-  -e 's|__CAIRN_PROVIDER_APPROVAL__|/etc/cairn/provider.json|g' \
-  -e 's|__CAIRN_PORT__|8777|g' \
-  deploy/systemd/cairn.service.in | sudo tee /etc/systemd/system/cairn.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now cairn
-sudo systemctl status cairn
-sudo journalctl -u cairn -f
+  -e 's|__CAIRN_CONFIG__|/etc/cairn/config.toml|g' \
+  deploy/systemd/cairn.service.in > /etc/systemd/system/cairn.service
+systemctl daemon-reload
+systemctl enable cairn.service
+./start.sh start
+./start.sh status
+./start.sh logs
+./start.sh restart
+./start.sh stop
 ```
 
-Prepare private state parent directories writable by that service user. The
-provider approval file matches the workspace configuration; credentials stay in
-the workspace `.env` or a private `/etc/cairn/cairn.env`, not the unit or argv.
-For the custom state example, connect using `--runtime-token-file
-/var/lib/cairn/runtime/runtime.token` as an authorized user with access to that
-private file. The default client and Server paths otherwise follow XDG together.
+Use the actual service user and grant it access to workspace, worktrees, state
+and private provider environment. `CAIRN_CONFIG` and `CAIRN_SERVICE` select a
+nondefault installed unit/config for the wrapper. Operations need systemd rights.
+The unit supervises one process, restarts failures, sends SIGTERM and records
+stdout/stderr in journald. It does not duplicate host policy in command flags.
 
-`systemctl stop cairn` requests owned cleanup; `systemctl restart cairn` preserves
-stored task facts and Worktrees. A crash during an unfinished effect still needs
-explicit recovery review, not an automatic replay. `WantedBy=multi-user.target`
-allows startup on boot when enabled. A foreground `uv run cairn` remains owned by
-that foreground session; it is not a daemon.
+Start/restart preflight validates configuration and installed unit identity. An
+active Server must authenticate and report matching root/workspace/worktree/URL
+before restart is allowed. A changed data directory/port or an old incompatible
+service requires explicit inspection and stop; the wrapper will not stop it as
+a side effect. `stop` is an explicit stop of the selected named unit.
 
-The template is opt-in. Installing it does not migrate or stop existing
-WeChat/Web processes. The standalone [WeChat unit](persistent-wechat-service.md)
-now uses `cairn-cli wechat serve`; render that updated unit before upgrading an
-old deployment's command path. Do not run two receivers for one account/state.
+## Web packaging and validation
+
+Vite still builds `web/dist`. The build also copies assets into
+`src/cairn/web/static/`, which the Python wheel includes. Installed packages find
+bundled assets; source checkouts can use their built `web/dist`. All five HTML
+entrypoints and the assets directory are required at Server startup. Missing
+resources fail with the exact build command instead of an API-only success.
+Build Web before `uv build`; no separate Web process is needed.
+
+Focused acceptance: `uv run pytest -q tests/server tests/terminal/test_server_process.py tests/terminal/test_server_systemd.py`.
+The process tests use unpaid offline models and isolated state; systemd tests
+create uniquely named temporary units and never restart an operator service.

@@ -1,0 +1,31 @@
+# Host configuration only. Keep this file outside workspace and worktrees.
+# Provider API keys belong in a protected EnvironmentFile or environment.
+[server]
+host = "127.0.0.1"
+port = 8777
+workspace = "/workspace/cairn"
+data_root = "/var/lib/cairn"
+worktrees_root = "/var/lib/cairn/worktrees"
+provider_approval = "/etc/cairn/provider-approval.json"
+offline = false
+allow_shell = false
+allow_network = false
+# Optional: web_root = "/workspace/cairn/web/dist"
+
+[budget]
+max_steps = 500
+max_seconds = 900.0
+max_stagnant_steps = 12
+# max_tokens = 1000000
+# max_cost = 1.0
+# input_cost_per_million = 1.0
+# output_cost_per_million = 2.0
+
+[services]
+wechat = true
+schedule = true
+memory = true
+
+[logging]
+level = "info"
+access_log = true

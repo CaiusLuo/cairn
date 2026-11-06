@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from cairn.infra.agent_memory.store import AgentMemoryStore
 from cairn.infra.atomic_json import atomic_write
+from cairn.infra.config.server import DEFAULT_SERVICES, Services
 from cairn.infra.redaction import redact_value
 from cairn.infra.runtime_catalog import RuntimeTask
 from cairn.infra.runtime_client import RuntimeClient
@@ -80,8 +81,10 @@ class ServerControls:
         wechat_state: Path,
         agent_home: Path,
         schedule_state: Path,
+        services: Services = DEFAULT_SERVICES,
     ) -> None:
         self.service, self.execution = service, execution
+        self.services = services
         self.workspace = workspace.resolve()
         for private in (wechat_state, agent_home, schedule_state):
             if private.is_symlink() or any(
@@ -104,6 +107,7 @@ class ServerControls:
         self.memory = PersonalMemoryService(
             AgentMemoryStore(agent_home),
             secret_values=(*execution.sensitive_values, token),
+            enabled=services.memory,
         )
         self.memory_controller = MemoryController(self.memory)
         self.execution.protected_paths = (
@@ -200,11 +204,20 @@ class ServerControls:
         atomic_write(self.path, self.state.model_dump(mode="json"))
 
     async def start(self) -> None:
-        self.memory_worker = asyncio.create_task(self._journal())
-        await self.schedules.start()
+        if self.services.memory:
+            self.memory_worker = asyncio.create_task(self._journal())
+        if self.services.schedule:
+            await asyncio.to_thread(self.schedules.store.load_jobs)
+            await self.schedules.start()
         self._refresh_secrets()
-        if self.state.wechat_enabled and self.wechat.account_id():
+        if self.services.wechat and self.state.wechat_enabled:
+            if not self.wechat.account_id():
+                raise RuntimeError(
+                    "WeChat is enabled but account credentials are missing"
+                )
             action = await self.wechat.command("")
+            if action.tone != "info":
+                raise RuntimeError("WeChat startup refused: " + action.message)
             self._notice(action.message)
 
     async def close(self) -> None:
@@ -450,6 +463,14 @@ class ServerControls:
     async def _execute(self, request: dict[str, Any]) -> dict[str, Any]:
         name, args = request["command"], request.get("args", "")
         source = request.get("source", "web")
+        service = {"/wx": "wechat", "/schedule": "schedule", "/memory": "memory"}.get(
+            name
+        )
+        if service and not getattr(self.services, service):
+            return {
+                "ok": False,
+                "message": service + " is disabled in Server configuration",
+            }
         if source == "wechat":
             if (
                 request.get("sender") != self.wechat.recipient_id()
@@ -722,7 +743,7 @@ class ServerControls:
             task.delivery_recipient is None
             or task.delivery_recipient == self.wechat.recipient_id()
         )
-        if personal:
+        if personal and self.services.memory:
             agent.personal_context = "\n\n".join(
                 filter(None, (agent.personal_context, self.memory.render_context()))
             )
@@ -733,6 +754,7 @@ class ServerControls:
                 MemoryCorrectTool(self.memory),
             ):
                 agent.tools.register_tool(tool)
+        if personal and self.services.schedule:
             for kind in (ScheduleCreateTool, ScheduleListTool, ScheduleManageTool):
                 agent.tools.register_tool(
                     kind(
@@ -779,13 +801,15 @@ class ServerControls:
     def observe_settled(self, task: RuntimeTask) -> None:
         if self.closed:
             return
-        if task.delivery_recipient:
+        if self.services.wechat and task.delivery_recipient:
             if len(self.delivery_tasks) >= 32:
                 self._notice("微信推送繁忙, 结果已保留在任务历史, 可用 /status 查询。")
             else:
                 delivery = asyncio.create_task(self._deliver(task))
                 self.delivery_tasks.add(delivery)
                 delivery.add_done_callback(self._delivery_finished)
+        if not self.services.memory:
+            return
         try:
             self.memory_queue.put_nowait(task)
         except asyncio.QueueFull:

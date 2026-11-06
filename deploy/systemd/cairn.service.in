@@ -1,5 +1,5 @@
 [Unit]
-Description=Cairn shared Agent Server
+Description=Cairn Server (Web, Runtime, WeChat and Schedule)
 Documentation=file://__CAIRN_ROOT__/docs/guides/runtime-service.md
 After=network-online.target
 Wants=network-online.target
@@ -7,19 +7,12 @@ StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
-Type=simple
+Type=exec
 User=__CAIRN_USER__
 Group=__CAIRN_USER__
 WorkingDirectory=__CAIRN_ROOT__
-Environment=HOME=__CAIRN_HOME__
-Environment=XDG_STATE_HOME=__CAIRN_XDG_STATE_HOME__
 EnvironmentFile=-/etc/cairn/cairn.env
-ExecStart=__CAIRN_ROOT__/.venv/bin/cairn \
-  --workspace __CAIRN_WORKSPACE__ \
-  --state-dir __CAIRN_STATE__ \
-  --worktrees __CAIRN_WORKTREES__ \
-  --provider-approval __CAIRN_PROVIDER_APPROVAL__ \
-  --port __CAIRN_PORT__
+ExecStart=__CAIRN_ROOT__/.venv/bin/cairn --config __CAIRN_CONFIG__
 UMask=0077
 KillSignal=SIGTERM
 KillMode=mixed

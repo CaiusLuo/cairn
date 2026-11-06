@@ -22,6 +22,9 @@ class Services:
     memory: bool = True
 
 
+DEFAULT_SERVICES = Services()
+
+
 @dataclass(frozen=True, slots=True)
 class Logging:
     level: str = "info"

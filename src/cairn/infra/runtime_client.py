@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -11,11 +10,9 @@ import httpx
 
 
 def default_runtime_state_dir() -> Path:
-    """The server and client share the existing XDG host-state convention."""
-    return (
-        Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state")))
-        / "cairn/runtime"
-    )
+    from cairn.infra.config.server import load_server_config
+
+    return load_server_config().data_root / "runtime"
 
 
 class RuntimeClient:

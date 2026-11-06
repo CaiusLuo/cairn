@@ -9,6 +9,7 @@ from typing import Annotated, Any
 
 import typer
 
+from cairn.infra.config.server import load_server_config
 from cairn.infra.runtime_client import RuntimeClient
 from cairn.infra.runtime_client import read_runtime_token as read_token
 
@@ -17,23 +18,20 @@ app = typer.Typer(
 )
 
 
-@app.command(
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
-    add_help_option=False,
-)
-def serve(ctx: typer.Context) -> None:
-    """Start the Starlette host, forwarding its native options and help."""
-    import subprocess
-    import sys
-
-    result = subprocess.run(
-        [sys.executable, "-m", "cairn.server", *ctx.args], check=False
-    )
-    raise typer.Exit(result.returncode)
-
-
-def client(url: str, token_file: Path) -> RuntimeClient:
-    return RuntimeClient(url, read_token(token_file))
+def client(
+    ctx: typer.Context, url: str | None, token_file: Path | None
+) -> RuntimeClient:
+    defaults = ctx.obj
+    if not isinstance(defaults, dict):
+        settings = load_server_config()
+        defaults = {
+            "url": settings.url,
+            "token_file": settings.data_root / "runtime/runtime.token",
+        }
+    path = token_file or defaults["token_file"]
+    if not path.is_absolute():
+        raise typer.BadParameter("Runtime token path must be absolute")
+    return RuntimeClient(url or defaults["url"], read_token(path))
 
 
 def output(value: Any) -> None:
@@ -42,60 +40,67 @@ def output(value: Any) -> None:
 
 @app.command()
 def submit(
+    ctx: typer.Context,
     prompt: str,
-    token_file: Annotated[Path, typer.Option()],
-    url: str = "http://127.0.0.1:8777",
+    token_file: Annotated[Path | None, typer.Option()] = None,
+    url: str | None = None,
     request_id: str | None = None,
 ) -> None:
-    output(asyncio.run(client(url, token_file).submit(prompt, "cli", request_id)))
+    output(asyncio.run(client(ctx, url, token_file).submit(prompt, "cli", request_id)))
 
 
 @app.command()
 def inspect(
+    ctx: typer.Context,
     task_id: str,
-    token_file: Annotated[Path, typer.Option()],
-    url: str = "http://127.0.0.1:8777",
+    token_file: Annotated[Path | None, typer.Option()] = None,
+    url: str | None = None,
 ) -> None:
-    output(asyncio.run(client(url, token_file).inspect(task_id)))
+    output(asyncio.run(client(ctx, url, token_file).inspect(task_id)))
 
 
 @app.command("list")
 def list_tasks(
-    token_file: Annotated[Path, typer.Option()], url: str = "http://127.0.0.1:8777"
+    ctx: typer.Context,
+    token_file: Annotated[Path | None, typer.Option()] = None,
+    url: str | None = None,
 ) -> None:
-    output(asyncio.run(client(url, token_file).request("GET", "tasks")))
+    output(asyncio.run(client(ctx, url, token_file).request("GET", "tasks")))
 
 
 @app.command("continue")
 def continue_task(
+    ctx: typer.Context,
     task_id: str,
-    token_file: Annotated[Path, typer.Option()],
-    url: str = "http://127.0.0.1:8777",
+    token_file: Annotated[Path | None, typer.Option()] = None,
+    url: str | None = None,
 ) -> None:
-    output(asyncio.run(client(url, token_file).control(task_id, "continue")))
+    output(asyncio.run(client(ctx, url, token_file).control(task_id, "continue")))
 
 
 @app.command()
 def cancel(
+    ctx: typer.Context,
     task_id: str,
-    token_file: Annotated[Path, typer.Option()],
-    url: str = "http://127.0.0.1:8777",
+    token_file: Annotated[Path | None, typer.Option()] = None,
+    url: str | None = None,
 ) -> None:
-    output(asyncio.run(client(url, token_file).control(task_id, "cancel")))
+    output(asyncio.run(client(ctx, url, token_file).control(task_id, "cancel")))
 
 
 @app.command()
 def follow(
+    ctx: typer.Context,
     task_id: str,
-    token_file: Annotated[Path, typer.Option()],
-    url: str = "http://127.0.0.1:8777",
+    token_file: Annotated[Path | None, typer.Option()] = None,
+    url: str | None = None,
     after: int = 0,
 ) -> None:
     RuntimeClient._id(task_id)
 
     async def run() -> None:
         cursor = after
-        api = client(url, token_file)
+        api = client(ctx, url, token_file)
         while True:
             response = await api.request(
                 "GET", f"tasks/{task_id}/events?after={cursor}&wait=1"
@@ -111,25 +116,29 @@ def follow(
 
 @app.command()
 def recovery(
+    ctx: typer.Context,
     task_id: str,
-    token_file: Annotated[Path, typer.Option()],
-    url: str = "http://127.0.0.1:8777",
+    token_file: Annotated[Path | None, typer.Option()] = None,
+    url: str | None = None,
 ) -> None:
     """Inspect surviving effects; save this JSON for explicit reconciliation."""
     RuntimeClient._id(task_id)
     output(
-        asyncio.run(client(url, token_file).request("GET", f"tasks/{task_id}/recovery"))
+        asyncio.run(
+            client(ctx, url, token_file).request("GET", f"tasks/{task_id}/recovery")
+        )
     )
 
 
 @app.command()
 def reconcile(
+    ctx: typer.Context,
     task_id: str,
     report_file: Annotated[Path, typer.Option()],
     note: Annotated[str, typer.Option()],
-    token_file: Annotated[Path, typer.Option()],
+    token_file: Annotated[Path | None, typer.Option()] = None,
     effects_reviewed: bool = False,
-    url: str = "http://127.0.0.1:8777",
+    url: str | None = None,
 ) -> None:
     """Acknowledge inspected effects without replaying; continue is a separate action."""
     RuntimeClient._id(task_id)
@@ -142,7 +151,7 @@ def reconcile(
     payload.update({"reviewed_effects": True, "note": note})
     output(
         asyncio.run(
-            client(url, token_file).request(
+            client(ctx, url, token_file).request(
                 "POST", f"tasks/{task_id}/reconcile", payload
             )
         )
@@ -151,12 +160,15 @@ def reconcile(
 
 @app.command()
 def history(
+    ctx: typer.Context,
     task_id: str,
-    token_file: Annotated[Path, typer.Option()],
-    url: str = "http://127.0.0.1:8777",
+    token_file: Annotated[Path | None, typer.Option()] = None,
+    url: str | None = None,
 ) -> None:
     """Read the shared committed conversation without executing anything."""
     RuntimeClient._id(task_id)
     output(
-        asyncio.run(client(url, token_file).request("GET", f"tasks/{task_id}/history"))
+        asyncio.run(
+            client(ctx, url, token_file).request("GET", f"tasks/{task_id}/history")
+        )
     )

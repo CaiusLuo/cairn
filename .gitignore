@@ -32,3 +32,6 @@ litellm_cache/
 .codegraph/
 # Ignore local web surface runtime files
 .run/
+
+# Generated Vite assets packaged after npm build
+src/cairn/web/static/

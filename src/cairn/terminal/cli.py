@@ -2007,4 +2007,4 @@ async def main(
 
 
 if __name__ == "__main__":
-    app()
+    raise SystemExit("Local Agent entry retired; use cairn Server or cairn-cli")

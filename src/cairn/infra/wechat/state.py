@@ -9,8 +9,11 @@ Workspace, a trace or a model request.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
+import socket
+import sys
 import tempfile
 import time
 from contextlib import suppress
@@ -314,8 +317,9 @@ class WechatServeLock:
         self.state_dir = state_dir
         self.path = state_dir / "serve.lock"
         self._fd: int | None = None
+        self._account_socket: socket.socket | None = None
 
-    def acquire(self, *, description: str) -> None:
+    def acquire(self, *, description: str, account_id: str | None = None) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         with suppress(OSError):
             self.state_dir.chmod(0o700)
@@ -327,12 +331,36 @@ class WechatServeLock:
             raise WechatLockError(
                 "another WeChat serve process already owns this account/workspace"
             ) from None
-        os.ftruncate(fd, 0)
-        os.write(fd, (description + "\n").encode("utf-8"))
-        os.fsync(fd)
-        self._fd = fd
+        try:
+            if account_id is not None:
+                if sys.platform != "linux":
+                    raise WechatLockError(
+                        "Host-wide WeChat account ownership requires Linux"
+                    )
+                owner = socket.socket(socket.AF_UNIX)
+                self._account_socket = owner
+                ident = hashlib.sha256(account_id.encode()).hexdigest()
+                try:
+                    owner.bind("\0cairn-wechat-" + ident)
+                except OSError:
+                    raise WechatLockError(
+                        "Another process already owns this WeChat account"
+                    ) from None
+            os.ftruncate(fd, 0)
+            os.write(fd, (description + "\n").encode("utf-8"))
+            os.fsync(fd)
+            self._fd = fd
+        except BaseException:
+            os.close(fd)
+            if self._account_socket is not None:
+                self._account_socket.close()
+                self._account_socket = None
+            raise
 
     def release(self) -> None:
+        if self._account_socket is not None:
+            self._account_socket.close()
+            self._account_socket = None
         if self._fd is None:
             return
         with suppress(OSError):

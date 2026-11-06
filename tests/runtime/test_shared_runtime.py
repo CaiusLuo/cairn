@@ -9,8 +9,8 @@ from cairn.core.budget import RunBudget
 from cairn.core.models import LLMResponse, Message
 from cairn.infra.runtime_client import RuntimeClient
 from cairn.runtime.offline_model import OfflineDevelopmentModel
+from cairn.server import runtime_app
 from cairn.terminal.wechat.runtime import WechatRuntimeAdapter
-from cairn.web.runtime_server import runtime_app
 
 
 def repository(root: Path) -> Path:

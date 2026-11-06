@@ -34,6 +34,7 @@ class PersonalMemoryService:
         *,
         clock: Callable[[], datetime] = current_time,
         secret_values: Sequence[str] = (),
+        enabled: bool | None = None,
     ) -> None:
         self.store = store
         self.clock = clock
@@ -43,6 +44,8 @@ class PersonalMemoryService:
             "0",
             "false",
         }
+        if enabled is not None:
+            self.enabled = enabled
         if self.enabled:
             self.store.ensure_initialized()
 

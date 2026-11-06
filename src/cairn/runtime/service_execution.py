@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import asdict, replace
@@ -464,13 +463,7 @@ class ServiceExecution:
             )
 
         try:
-            private_root = (
-                Path(
-                    os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))
-                )
-                / "cairn"
-            )
-            with protect_host_paths((self.state, private_root, *self.protected_paths)):
+            with protect_host_paths((self.state, *self.protected_paths)):
                 result = await runner.run(
                     TaskSpec(
                         task_id=task.task_id,
