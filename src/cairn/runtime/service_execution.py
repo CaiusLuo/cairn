@@ -364,8 +364,8 @@ class ServiceExecution:
                 result = await runner.run(
                     TaskSpec(
                         task_id=task.task_id,
-                        prompt=task.prompt
-                        if task.attempts == 1
+                        prompt=task.input_prompt or task.prompt
+                        if task.attempts == 1 or task.input_prompt is not None
                         else "Continue this same task from the committed conversation and existing worktree. Do not repeat completed tool effects. Original goal: "
                         + task.prompt
                         + (

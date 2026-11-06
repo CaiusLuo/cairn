@@ -26,6 +26,11 @@ class Submission(BaseModel):
     request_id: str | None = Field(default=None, max_length=200)
 
 
+class MessageSubmission(Submission):
+    request_id: str = Field(min_length=1, max_length=200)
+    expected_sequence: int = Field(ge=0)
+
+
 class RecoveryReview(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     expected_sequence: int = Field(ge=0)
@@ -57,7 +62,18 @@ def task_routes(service: TaskService) -> list[BaseRoute]:
                 ).model_dump(mode="json")
             elif request.method == "POST":
                 assert isinstance(task_id, str)
-                if action == "cancel":
+                if action == "messages":
+                    message = MessageSubmission.model_validate(
+                        await request_body(request)
+                    )
+                    result = service.message(
+                        task_id,
+                        message.prompt,
+                        message.source,
+                        message.request_id,
+                        message.expected_sequence,
+                    ).model_dump(mode="json")
+                elif action == "cancel":
                     result = (await service.cancel(task_id)).model_dump(mode="json")
                 elif action == "reconcile":
                     body_review = RecoveryReview.model_validate(

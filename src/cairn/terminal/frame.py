@@ -1263,6 +1263,7 @@ class TranscriptView:
                 await self._app.run_async()  # type: ignore[union-attr]
             except EOFError:
                 self._dismiss_action()
+                self._lines.close()
                 raise
 
     async def aclose(self) -> None:

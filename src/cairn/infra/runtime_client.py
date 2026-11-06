@@ -58,6 +58,29 @@ class RuntimeClient:
             )
         )
 
+    async def message(
+        self,
+        task_id: str,
+        prompt: str,
+        *,
+        source: str,
+        request_id: str,
+        expected_sequence: int,
+    ) -> dict[str, Any]:
+        self._id(task_id)
+        return dict(
+            await self.request(
+                "POST",
+                f"tasks/{task_id}/messages",
+                {
+                    "prompt": prompt,
+                    "source": source,
+                    "request_id": request_id,
+                    "expected_sequence": expected_sequence,
+                },
+            )
+        )
+
     async def inspect(self, task_id: str) -> dict[str, Any]:
         self._id(task_id)
         return dict(await self.request("GET", "tasks/" + task_id))

@@ -678,3 +678,136 @@ def test_full_wechat_bridge_startup_does_not_initialize_legacy_agent(
                 assert not (tmp_path / "wechat" / "sessions").exists()
 
     asyncio.run(scenario())
+
+
+def test_cli_web_cli_continue_the_same_task_and_committed_history(
+    tmp_path: Path,
+) -> None:
+    from cairn.terminal.runtime_chat import RemoteConversation
+
+    async def scenario() -> None:
+        app = runtime_app(
+            repository(tmp_path / "source"),
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="test-token",
+        )
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "test-token",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            cli = RemoteConversation(api)
+            accepted = await cli.send("Create artifact", request_id="cli-first")
+            first = await asyncio.wait_for(cli.wait(), 30)
+            assert first["status"] == "completed"
+            artifact = Path(first["worktree"]) / "runtime-result.txt"
+            inode = artifact.stat().st_ino
+            await api.message(
+                accepted["task_id"],
+                "Inspect from Web",
+                source="web",
+                request_id="web-followup",
+                expected_sequence=first["sequence"],
+            )
+            await asyncio.wait_for(app.state.runtime.queue.join(), 30)
+            resumed = RemoteConversation(api)
+            history = await resumed.select(accepted["task_id"])
+            assert [m["content"] for m in history if m["role"] == "user"] == [
+                "Create artifact",
+                "Inspect from Web",
+            ]
+            await resumed.send("Continue from CLI", request_id="cli-followup")
+            final = await asyncio.wait_for(resumed.wait(), 30)
+            assert (final["task_id"], final["session_id"], final["worktree"]) == (
+                first["task_id"],
+                first["session_id"],
+                first["worktree"],
+            )
+            history = await resumed.select(accepted["task_id"])
+            assert [m["content"] for m in history if m["role"] == "user"] == [
+                "Create artifact",
+                "Inspect from Web",
+                "Continue from CLI",
+            ]
+            assert artifact.stat().st_ino == inode
+            # A lost receipt cannot duplicate an accepted message, even with its old cursor.
+            replay = await api.message(
+                first["task_id"],
+                "Continue from CLI",
+                source="cli",
+                request_id="cli-followup",
+                expected_sequence=first["sequence"],
+            )
+            assert replay["status"] == "completed" and replay["attempts"] == 3
+            import pytest
+
+            with pytest.raises(httpx.HTTPStatusError):
+                await api.message(
+                    first["task_id"],
+                    "Stale writer",
+                    source="web",
+                    request_id="stale",
+                    expected_sequence=first["sequence"],
+                )
+            assert len(app.state.runtime.list_tasks()) == 1
+
+    asyncio.run(scenario())
+
+
+def test_interactive_input_can_return_after_a_web_turn(
+    tmp_path: Path, capsys: Any
+) -> None:
+    from cairn.terminal.input import CliInput
+    from cairn.terminal.runtime_chat import main as shared_main
+
+    async def scenario() -> None:
+        app = runtime_app(
+            repository(tmp_path / "source"),
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="test-token",
+        )
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "test-token",
+            transport=httpx.ASGITransport(app=app),
+        )
+
+        class Input(CliInput):
+            def __init__(self) -> None:
+                self.index = 0
+
+            async def read(self) -> str:
+                self.index += 1
+                if self.index == 1:
+                    return "Create artifact"
+                task = app.state.runtime.list_tasks()[0]
+                if self.index == 2:
+                    await api.message(
+                        task.task_id,
+                        "Web followup",
+                        source="web",
+                        request_id="web-input",
+                        expected_sequence=task.sequence,
+                    )
+                    await asyncio.wait_for(app.state.runtime.queue.join(), 30)
+                    return "/use " + str(task.task_id)
+                return "CLI followup" if self.index == 3 else "/exit"
+
+        async with app.router.lifespan_context(app):
+            await shared_main(api, cli_input=Input())
+            task = app.state.runtime.list_tasks()[0]
+            history = app.state.execution.history(task)
+            assert [m["content"] for m in history if m["role"] == "user"] == [
+                "Create artifact",
+                "Web followup",
+                "CLI followup",
+            ]
+            assert task.attempts == 3
+            assert "Shared Runtime" in capsys.readouterr().out
+
+    asyncio.run(scenario())

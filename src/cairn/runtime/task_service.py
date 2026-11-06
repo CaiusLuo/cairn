@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
@@ -233,9 +235,55 @@ class TaskService:
             )
         if self.queue.full():
             raise asyncio.QueueFull
-        task = self.record(task.model_copy(update={"status": "queued"}), "continued")
+        task = self.record(
+            task.model_copy(update={"status": "queued", "input_prompt": None}),
+            "continued",
+        )
         self.queue.put_nowait(task_id)
         return task
+
+    def message(
+        self,
+        task_id: str,
+        prompt: str,
+        source: RuntimeSource,
+        request_id: str,
+        expected_sequence: int,
+    ) -> RuntimeTask:
+        if self.stopping or self.worker is None or self.worker.done():
+            raise RuntimeError("Runtime is not accepting messages")
+        task = self.inspect(task_id)
+        fingerprint = hashlib.sha256(
+            json.dumps([prompt, source], ensure_ascii=False).encode()
+        ).hexdigest()
+        if request_id in task.input_receipts:
+            if task.input_receipts[request_id] != fingerprint:
+                raise ValueError("Message id already belongs to another input")
+            return task
+        if task.sequence != expected_sequence or task.status not in {
+            "completed",
+            "paused",
+        }:
+            raise ValueError(
+                "Refresh history before sending; running/recovery tasks cannot accept a new turn"
+            )
+        if self.queue.full():
+            raise asyncio.QueueFull
+        candidate = RuntimeTask.model_validate(
+            {
+                **task.model_dump(),
+                "status": "queued",
+                "input_prompt": prompt,
+                "input_receipts": {**task.input_receipts, request_id: fingerprint},
+                "result": None,
+                "diagnostic": None,
+            }
+        )
+        updated = self.record(
+            candidate, "message_accepted", {"source": source, "request_id": request_id}
+        )
+        self.queue.put_nowait(task_id)
+        return updated
 
     async def _work(self) -> None:
         while True:

@@ -151,3 +151,29 @@ LangGraph supplies orchestration, not authority, persistence or safe replay.
 The first service runs one task at a time with a bounded admission queue. Status
 and event subscribers remain independent of blocked model awaits; parallel task
 workers and scheduler migration are outside this experimental slice.
+
+## Connect the native interactive CLI
+
+The existing terminal can connect without constructing a local Agent, loading
+provider credentials, opening a SessionStore writer or starting local schedules:
+
+```sh
+cairn --runtime-url http://127.0.0.1:8777 --runtime-token-file /private/runtime/runtime.token
+cairn --runtime-url http://127.0.0.1:8777 --runtime-token-file /private/runtime/runtime.token --task-id TASK_ID
+```
+
+The multiline composer, transcript and tool activity display are reused. `/use ID`
+attaches to an existing task and shows committed replies; `/history`, `/status`,
+`/continue`, `/cancel`, `/new` and `/exit` operate on shared service facts. New
+messages after a completed turn use the original task ID, Session and Worktree.
+The message API uses a fresh task sequence and a stable request ID: concurrent
+stale inputs are rejected, and an acknowledgement lost after admission is retried
+without executing another turn. Clients must refresh history before retrying a
+stale write. Model/permission configuration stays with the host service.
+
+Ctrl+C on the running terminal surface calls the server's cancel operation.
+Exiting/detaching only closes the client; it never takes ownership of the remote
+Agent. Input typed while a task runs waits for the next settled turn. Unfinished
+or unknown effects continue to require the same explicit recovery review.
+`cairn` without Runtime options retains its explicit local execution mode during
+this opt-in migration. The connection mode never falls back to local execution.

@@ -298,8 +298,33 @@ async def _durable_turn(agent: Agent, user_input: str, session: DurableSession) 
 
 
 @app.callback()
-def root(ctx: typer.Context) -> None:
-    if ctx.invoked_subcommand is None:
+def root(
+    ctx: typer.Context,
+    runtime_url: Annotated[str | None, typer.Option("--runtime-url")] = None,
+    runtime_token_file: Annotated[
+        Path | None, typer.Option("--runtime-token-file")
+    ] = None,
+    task_id: Annotated[str | None, typer.Option("--task-id")] = None,
+) -> None:
+    if runtime_url is not None or runtime_token_file is not None or task_id is not None:
+        if (
+            ctx.invoked_subcommand is not None
+            or runtime_url is None
+            or runtime_token_file is None
+        ):
+            raise typer.BadParameter(
+                "Interactive Runtime requires --runtime-url and --runtime-token-file, without a subcommand"
+            )
+        from cairn.infra.runtime_client import RuntimeClient, read_runtime_token
+        from cairn.terminal.runtime_chat import main as shared_main
+
+        asyncio.run(
+            shared_main(
+                RuntimeClient(runtime_url, read_runtime_token(runtime_token_file)),
+                task_id=task_id,
+            )
+        )
+    elif ctx.invoked_subcommand is None:
         asyncio.run(main())
 
 

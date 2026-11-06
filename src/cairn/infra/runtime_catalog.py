@@ -31,6 +31,8 @@ class RuntimeTask(BaseModel):
     source: RuntimeSource
     request_id: str | None = None
     status: RuntimeStatus = "queued"
+    input_prompt: str | None = Field(default=None, min_length=1, max_length=32000)
+    input_receipts: dict[str, str] = Field(default_factory=dict, max_length=1000)
     session_id: str | None = None
     worktree: str | None = None
     branch: str | None = None
@@ -103,7 +105,11 @@ class RuntimeCatalogue:
     def record(
         self, task: RuntimeTask, kind: str, data: dict[str, Any] | None = None
     ) -> RuntimeTask:
-        if any(secret in task.prompt for secret in self.sensitive_values):
+        if any(
+            secret in value
+            for value in (task.prompt, task.input_prompt or "")
+            for secret in self.sensitive_values
+        ):
             raise ValueError("Prompt contains a protected credential")
         task = task.model_copy(
             update={
