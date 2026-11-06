@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from cairn.core.budget import BudgetUsage
 from cairn.core.compaction import ReusableCompaction
 from cairn.core.compaction.summarizer import Summarizer
 from cairn.core.context import ContextBuilder
@@ -59,6 +60,7 @@ class Agent:
             context_builder if context_builder is not None else ContextBuilder()
         )
         self.state = AgentState()
+        self.last_budget_usage: BudgetUsage | None = None
         self.model_executor = (
             model_executor if model_executor is not None else ModelExecutor()
         )

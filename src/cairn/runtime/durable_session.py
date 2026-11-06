@@ -1,7 +1,7 @@
 """Opt-in storage at the existing Session/Agent turn boundary; never a replay loop."""
 
 import hashlib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import NoReturn
 from uuid import UUID
 
-from cairn.core.budget import RunBudget
+from cairn.core.budget import BudgetReason, RunBudget, RunBudgetExceeded
 from cairn.core.events import Event
 from cairn.core.models import Message, ToolCall
 from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
@@ -22,6 +22,7 @@ from cairn.infra.sessions.codec import (
     snapshot_messages,
 )
 from cairn.infra.sessions.models import (
+    MAX_INVOCATIONS,
     MAX_MESSAGE_BYTES,
     MAX_MESSAGES,
     CheckpointPayload,
@@ -688,8 +689,30 @@ class DurableSession(Session):
             raise
         raise replacement from None
 
+    def _check_response_capacity(self, calls: Sequence[ToolCall]) -> None:
+        assert self._intent is not None
+        used = sum(
+            len(message.tool_calls)
+            for message in self.agent.state.messages[self._intent.message_start :]
+        )
+        if used + len(calls) > MAX_INVOCATIONS:
+            # An unexecuted call still belongs to a committed assistant/tool
+            # group. Check the whole group before accepting any of its calls.
+            raise RunBudgetExceeded(
+                reason=BudgetReason.CHECKPOINT_CAPACITY,
+                limit=MAX_INVOCATIONS,
+                used=used,
+            )
+
     def _before_execute(self, call: ToolCall, assistant_index: int) -> None:
         assert self._intent is not None
+        if self._ordinal >= MAX_INVOCATIONS:
+            # Stop before the next effect; capacity is not a storage fault.
+            raise RunBudgetExceeded(
+                reason=BudgetReason.CHECKPOINT_CAPACITY,
+                limit=MAX_INVOCATIONS,
+                used=self._ordinal,
+            )
         try:
             # Validate arguments and known secrets without persisting them.
             encode_record(

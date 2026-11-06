@@ -118,6 +118,10 @@ def wechat_serve(
     trace_dir: Annotated[Path | None, typer.Option("--trace-dir")] = None,
     poll_timeout_ms: Annotated[int | None, typer.Option("--poll-timeout-ms")] = None,
     poll_interval: Annotated[float, typer.Option("--poll-interval")] = 0.0,
+    runtime_url: Annotated[str | None, typer.Option("--runtime-url")] = None,
+    runtime_token_file: Annotated[
+        Path | None, typer.Option("--runtime-token-file")
+    ] = None,
 ) -> None:
     """Long-poll one WeChat account and run one coding task at a time."""
     if not allow_sender:
@@ -198,7 +202,9 @@ def wechat_serve(
         mcp_configs=mcp_configs,
         poll_timeout_ms=poll_timeout_ms,
         poll_interval=poll_interval,
-        schedule_store=default_schedule_dir(),
+        schedule_store=None if runtime_url else default_schedule_dir(),
+        runtime_url=runtime_url,
+        runtime_token_file=runtime_token_file,
     )
 
     async def _run_with_stop() -> ServeReport:

@@ -51,6 +51,9 @@ class TaskBoardService:
                 )
             raise
 
+    async def project_execution(self, item: TaskBoardItem) -> TaskBoardItem:
+        return cast(TaskBoardItem, await self._call(self.store.project_execution, item))
+
     async def acreate(self, title: str, description: str = "") -> TaskBoardItem:
         return cast(TaskBoardItem, await self._call(self.create, title, description))
 

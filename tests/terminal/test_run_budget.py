@@ -18,7 +18,7 @@ def test_absent_or_blank_env_uses_the_documented_default(
     budget = cli_module.resolve_cli_run_budget(environ)
 
     assert budget.max_steps == cli_module.DEFAULT_CLI_MAX_STEPS
-    assert budget.max_steps == 150
+    assert budget.max_steps == 500
 
 
 @pytest.mark.parametrize(("value", "expected"), [("300", 300), ("1", 1)])

@@ -18,18 +18,16 @@ from __future__ import annotations
 
 import asyncio
 import math
-import os
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
-from dotenv import dotenv_values
 from pydantic import BaseModel, Field
 
+from cairn.core.budget import DEFAULT_MAX_STEPS as DEFAULT_MAX_STEPS
 from cairn.core.budget import RunBudget
 from cairn.core.context import ContextBudget, ContextBuilder
 from cairn.core.events import Event
@@ -41,11 +39,17 @@ from cairn.core.permissions import (
     SessionPermissionHandler,
 )
 from cairn.core.tasks import TaskCheckStatus, TaskSpec, TaskStatus
-from cairn.infra.config import (
-    default_provider,
-    load_project_providers,
-    resolve_context_budget,
-    resolve_provider_api_key,
+from cairn.infra.config.admission import (
+    ProviderApproval as ProviderApproval,
+)
+from cairn.infra.config.admission import (
+    ProviderApprovalMismatch as ProviderApprovalMismatch,
+)
+from cairn.infra.config.admission import (
+    ProviderApprovalRequired as ProviderApprovalRequired,
+)
+from cairn.infra.config.admission import (
+    load_approved_provider,
 )
 from cairn.infra.mcp.config import McpServerConfig, load_mcp_servers
 from cairn.infra.observability.sinks import JsonlTraceSink, RedactingTraceSink
@@ -68,7 +72,6 @@ from cairn.runtime.tasks.check import (
 )
 from cairn.runtime.tasks.runner import CodingTaskRunner
 
-DEFAULT_MAX_STEPS = 150
 DEFAULT_CHECK_TIMEOUT_S = 300.0
 
 
@@ -114,30 +117,6 @@ class HeadlessResult(BaseModel):
     check_exit_code: int | None = None
     #: How many times the host check actually ran (0, 1 or 2).
     check_attempts: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class ProviderApproval:
-    """The exact provider facts an operator approves, bound before any credential.
-
-    Binding identity, endpoint, model group, credential *variable name* and the
-    full ordered model ids means a changed provider configuration cannot inherit a
-    stale approval; a mismatch is rejected before credential resolution or network.
-    """
-
-    name: str
-    endpoint: str
-    group: str
-    key_env: str
-    model_ids: tuple[str, ...]
-
-
-class ProviderApprovalRequired(ValueError):
-    """The operator did not state the full provider facts to approve."""
-
-
-class ProviderApprovalMismatch(ValueError):
-    """The approved provider facts do not match the configured provider."""
 
 
 def _redact(text: str | None, secret_values: Sequence[str]) -> str | None:
@@ -562,28 +541,6 @@ def _emit(result: HeadlessResult, *, as_json: bool, report: Path | None) -> None
         typer.echo(result.final_response)
 
 
-def _secret_values(
-    secret_env_keys: frozenset[str], env_file_values: dict[str, str | None]
-) -> tuple[str, ...]:
-    values: list[str] = []
-    for key in secret_env_keys:
-        value = os.environ.get(key) or env_file_values.get(key)
-        if value:
-            values.append(value)
-    return tuple(values)
-
-
-def _expected_approval(provider: object, group: object) -> ProviderApproval:
-    config = provider.config  # type: ignore[attr-defined]
-    return ProviderApproval(
-        name=provider.name,  # type: ignore[attr-defined]
-        endpoint=config.base_url,
-        group=group.name,  # type: ignore[attr-defined]
-        key_env=config.api_key_env,
-        model_ids=tuple(group.model_ids),  # type: ignore[attr-defined]
-    )
-
-
 async def _run_via_config_async(
     *,
     workspace: Path,
@@ -624,38 +581,17 @@ async def _run_via_config_async(
     ``build_provider_runtime`` so the real token counter and model fallback
     executor are used.
     """
-    env_file_values = dotenv_values(workspace / ".env")
-    project = load_project_providers(workspace / ".cairn" / "models.toml")
-    provider = default_provider(project, os.environ, env_file_values)
-    group = provider.config.model_config[0]
-    if approval is None:
-        raise ProviderApprovalRequired(
-            "Pass --approve-provider-name, --approve-provider-endpoint, "
-            "--approve-provider-group, --approve-provider-key-env and "
-            "--approve-provider-models to authorize this provider."
-        )
-    expected = _expected_approval(provider, group)
-    if approval != expected:
-        raise ProviderApprovalMismatch(
-            "approved provider does not match the configured provider "
-            f"(approved {approval}; configured {expected})"
-        )
-    api_key = resolve_provider_api_key(provider.config, os.environ, env_file_values)
-    secret_env_keys = frozenset(
-        named.config.api_key_env for named in project.providers or (provider,)
+    approved = load_approved_provider(
+        workspace, approval, on_secrets_resolved=on_secrets_resolved
     )
-    secret_values = _secret_values(secret_env_keys, env_file_values)
-    # The key has now been resolved after approval. Teach the caller's redactor
-    # before any runtime construction can raise with that key in its message.
-    if on_secrets_resolved is not None:
-        on_secrets_resolved(secret_values)
+    provider = approved.provider
+    group = approved.group
+    api_key = approved.api_key
+    secret_env_keys = approved.secret_env_keys
+    secret_values = approved.sensitive_values
+    context_budget = approved.context_budget
     if personal_context_provider is not None:
         personal_context = personal_context_provider()
-    context_budget = resolve_context_budget(
-        os.environ,
-        env_file_values,
-        reserve_percent=getattr(project, "context_reserve_percent", 10),
-    )
     runtime = build_provider_runtime(
         provider, api_key, context_budget, group=group.name
     )

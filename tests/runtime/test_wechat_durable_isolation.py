@@ -108,7 +108,7 @@ def configured(
     yield config, llm
 
 
-def test_chat_uses_same_twenty_step_binding_with_150_step_task_config(
+def test_chat_uses_same_host_configured_step_binding_as_task(
     configured: tuple[ServeConfig, SequenceLLM],
 ) -> None:
     config, llm = configured
@@ -135,7 +135,7 @@ def test_chat_uses_same_twenty_step_binding_with_150_step_task_config(
         assert task_report.binding.provider is not None
         assert task_report.binding.provider.max_steps == 150
         assert chat_report.binding.provider is not None
-        assert chat_report.binding.provider.max_steps == 20
+        assert chat_report.binding.provider.max_steps == 150
     finally:
         reader.close()
 

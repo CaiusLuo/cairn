@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "httpx2>=2.10,<3",
     "jsonschema>=4.20",
+    "langgraph==1.2.20",
     "litellm>=1.101.0",
     "mcp>=2.3.0,<3",
     "prompt-toolkit>=3.0.53",
@@ -29,6 +30,7 @@ dependencies = [
 [project.scripts]
 cairn = "cairn.terminal.cli:app"
 cairn-web = "cairn.web.cli:main"
+cairn-runtime = "cairn.web.runtime_server:main"
 
 [build-system]
 requires = ["uv_build>=0.11.3,<0.12.0"]

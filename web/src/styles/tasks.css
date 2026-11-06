@@ -485,3 +485,11 @@
 .tasks-toolbar { padding: 0 24px; }
 .board-scroll { padding: 0 24px 24px; }
 .column__head { gap: 8px; padding: 0 4px; }
+
+.runtime-panel { margin: 16px 24px; padding: 16px; border: 1px solid var(--border, #ddd); border-radius: 8px; }
+.runtime-panel label { display: block; margin: 8px 0; }
+.runtime-panel textarea, .runtime-panel select { display: block; width: 100%; padding: 8px; font: inherit; }
+.runtime-panel button { margin: 8px 8px 0 0; padding: 6px 12px; cursor: pointer; }
+.runtime-panel button:disabled { opacity: .5; cursor: default; }
+.runtime-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.runtime-panel ol { max-height: 220px; overflow: auto; font-size: 12px; }

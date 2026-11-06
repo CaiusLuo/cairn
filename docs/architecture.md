@@ -28,7 +28,10 @@ root/per-attempt spans, usage and the final trace event to
 are executed by `cairn.runtime.tool_execution`, which owns preflight, permission evaluation,
 execution authority, model-facing tool messages and per-tool spans. `run_turn`
 keeps sole ownership of conversation rollback and of which calls are still
-pending when a turn aborts.
+pending when a turn aborts. Inside that owner, LangGraph model/tool nodes and
+conditional edges schedule the next step. Graph execution has no independent
+checkpoint, retry or replay authority; durable fences/receipts remain at the
+existing run_turn boundary. The old hand-written step loop is removed.
 
 `ModelExecutor` selects the matching model, token counter and provider runtime for
 each candidate, builds that candidate's request, and returns `(request, response)`.

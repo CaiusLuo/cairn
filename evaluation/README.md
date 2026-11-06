@@ -1,5 +1,12 @@
 # Evaluation assets
 
+The [LangGraph compatibility probe](../docs/experiments/langgraph-spike.md) runs
+offline doubles through the same production turn owner, without a second loop:
+
+```bash
+uv run python -m evaluation.langgraph_spike
+```
+
 Run repository evaluations from the repository root after installing development
 dependencies with `uv sync --locked --all-groups`.
 

@@ -52,6 +52,8 @@ commands; neither directory changes the frozen experiment records below.
 
 | Document | Covers |
 | --- | --- |
+| [Shared Runtime experiment](guides/runtime-service.md) | Single-owner task admission, progress and entry adapters |
+| [LangGraph spike](experiments/langgraph-spike.md) | Offline graph orchestration, retained permissions and migration verdict |
 | [Repository Intelligence V2](evals/repository-intelligence-v2/README.md) | The current experiment contract |
 | [Coding behavior V1](evals/coding-behavior-v1/README.md) | The versioned `graded-behavior-v2` behavioral acceptance for the five coding-smoke prompts |
 | [Real-model compaction comparison](evals/compaction-live-comparison/README.md) | The opt-in full-context vs real-summary continuation comparison (LIVE_NOT_RUN this round) |

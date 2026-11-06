@@ -13,7 +13,7 @@ from typing import Annotated
 import typer
 from dotenv import dotenv_values
 
-from cairn.core.budget import RunBudget, RunBudgetExceeded
+from cairn.core.budget import DEFAULT_MAX_STEPS, RunBudget, RunBudgetExceeded
 from cairn.core.context import ContextBudget
 from cairn.core.events import Event, EventHandler
 from cairn.core.model_manager import ModelConfig
@@ -136,6 +136,7 @@ from cairn.terminal.output import (
     print_turn_separator,
     print_user_message,
 )
+from cairn.terminal.runtime import app as runtime_app
 from cairn.terminal.schedule.controller import ScheduleController
 from cairn.terminal.selection import parse_selection_tokens
 from cairn.terminal.submission import PendingLine
@@ -154,7 +155,7 @@ app = typer.Typer(
     pretty_exceptions_show_locals=False,
 )
 
-DEFAULT_CLI_MAX_STEPS = 150
+DEFAULT_CLI_MAX_STEPS = DEFAULT_MAX_STEPS
 
 
 #: One owner for the per-turn step ceiling. ``CAIRN_MAX_STEPS`` overrides it so a
@@ -184,6 +185,8 @@ DEFAULT_CLI_RUN_BUDGET = resolve_cli_run_budget()
 session_app = typer.Typer(
     help="Create, inspect, reopen or reconcile local conversations."
 )
+
+app.add_typer(runtime_app, name="runtime")
 app.add_typer(session_app, name="session")
 app.add_typer(task_app, name="task")
 app.add_typer(wechat_app, name="wechat")
@@ -1455,7 +1458,7 @@ async def main(
             grant_workspace_trust=True,
             grant_shell=PermissionCapability.LOCAL_SHELL in permission_handler.grants,
             llm=active_runtime.llm,
-            budget=RunBudget(max_steps=20),
+            budget=DEFAULT_CLI_RUN_BUDGET,
             context_budget=ContextBudget(
                 max_tokens=min(active_runtime.context_builder.budget.max_tokens, 32768),
                 response_tokens=min(

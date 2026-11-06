@@ -31,6 +31,7 @@ from cairn.infra.task_board.store import (
     TaskBoardValidationError,
 )
 from cairn.runtime.task_board.service import TaskBoardService
+from cairn.runtime.task_service import TaskService
 from cairn.web.auth import COOKIE_NAME, AuthGuard, AuthSessions
 from cairn.web.config import WebConfig
 from cairn.web.reader import SnapshotReader
@@ -124,7 +125,15 @@ def _error(status: int, code: str) -> JSONResponse:
     return JSONResponse({"error": code}, status_code=status, headers=_json_headers())
 
 
-def create_app(config: WebConfig, reader: SnapshotReader | None = None) -> Starlette:
+def create_app(
+    config: WebConfig,
+    reader: SnapshotReader | None = None,
+    *,
+    runtime: TaskService | None = None,
+    runtime_token: str | None = None,
+) -> Starlette:
+    if runtime is not None and (not config.auth_passphrase or not runtime_token):
+        raise ValueError("Runtime routes require authenticated host configuration")
     reader = reader or SnapshotReader(
         workspace=config.workspace,
         sessions_dir=config.sessions_dir,
@@ -170,8 +179,14 @@ def create_app(config: WebConfig, reader: SnapshotReader | None = None) -> Starl
         return response
 
     async def health(_request: Request) -> JSONResponse:
+        ready = runtime is None or (
+            runtime.worker is not None
+            and not runtime.worker.done()
+            and not runtime.stopping
+        )
         return JSONResponse(
-            {"ok": True, "version": 1, "read_only": True},
+            {"ok": ready, "version": 1, "read_only": runtime is None},
+            status_code=200 if ready else 503,
             headers=_json_headers(),
         )
 
@@ -306,6 +321,10 @@ def create_app(config: WebConfig, reader: SnapshotReader | None = None) -> Starl
         Route("/api/tasks/{task_id}", update_task, methods=["PATCH"]),
         WebSocketRoute("/api/ws", websocket_status),
     ]
+    if runtime is not None:
+        from cairn.web.runtime import task_routes
+
+        routes.extend(task_routes(runtime))
     web_root = config.web_root
     if web_root is not None and (web_root / "index.html").is_file():
         routes.append(
@@ -313,5 +332,7 @@ def create_app(config: WebConfig, reader: SnapshotReader | None = None) -> Starl
         )
     middleware = [Middleware(LoopbackGuard, config=config)]
     if config.auth_passphrase:
-        middleware.append(Middleware(AuthGuard, sessions=auth_sessions))
+        middleware.append(
+            Middleware(AuthGuard, sessions=auth_sessions, bearer_token=runtime_token)
+        )
     return Starlette(routes=routes, middleware=middleware)

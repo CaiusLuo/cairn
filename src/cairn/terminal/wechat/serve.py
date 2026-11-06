@@ -192,6 +192,8 @@ class ServeConfig:
     schedule_store: Path | None = None
     schedule_poll_interval: float = 1.0
     redact_text: Callable[[str], str] | None = None
+    runtime_url: str | None = None
+    runtime_token_file: Path | None = None
 
 
 @dataclass(slots=True)
@@ -420,9 +422,7 @@ def default_task_executor(
         purpose: str = "task",
     ) -> Callable[[Agent], DurableSession]:
         session_id = sender_session_id(sender, purpose=purpose)
-        purpose_steps = (
-            config.max_steps if purpose == "task" else min(config.max_steps, 20)
-        )
+        purpose_steps = config.max_steps
 
         def provider_reference(agent: Agent) -> ProviderReference | None:
             manager = agent.model_executor.manager
@@ -785,7 +785,7 @@ def default_conversation_executor(
                 task_id=f"wechat-chat-{sender[-8:]}",
                 grant_shell=config.allow_shell,
                 approval=config.approval,
-                max_steps=min(config.max_steps, 20),
+                max_steps=config.max_steps,
                 trace_dir=config.trace_dir,
                 cancellation_event=None,
                 personal_context=personal_memory.render_context(),
@@ -841,6 +841,21 @@ class _Service:
         schedule_store: ScheduleStore | None = None,
     ) -> None:
         self.config = config
+        self._runtime_adapter = None
+        self._runtime_forwarding: set[str] = set()
+        runtime_url = getattr(config, "runtime_url", None)
+        if runtime_url:
+            from cairn.infra.runtime_client import RuntimeClient, read_runtime_token
+            from cairn.terminal.wechat.runtime import WechatRuntimeAdapter
+
+            token_path = config.runtime_token_file
+            if token_path is None or token_path.resolve().is_relative_to(
+                config.workspace.resolve()
+            ):
+                raise ValueError("Runtime token must be in trusted host storage")
+            self._runtime_adapter = WechatRuntimeAdapter(
+                RuntimeClient(runtime_url, read_runtime_token(token_path))
+            )
         self.state = state
         self.client = client
         self.executor = executor
@@ -857,8 +872,11 @@ class _Service:
         self._conversation_executor = conversation_executor
         self._conversation_classifier = conversation_classifier
         self._progress_provider = progress_provider
-        self._schedule_store = schedule_store or (
-            ScheduleStore(config.schedule_store) if config.schedule_store else None
+        self._schedule_store = (
+            schedule_store
+            or (ScheduleStore(config.schedule_store) if config.schedule_store else None)
+            if self._runtime_adapter is None
+            else None
         )
         self._chat_tasks: set[asyncio.Task[None]] = set()
         self._intent_tasks: set[asyncio.Task[None]] = set()
@@ -1633,6 +1651,52 @@ class _Service:
                 reason=getattr(parsed, "reason", "not_a_schedule"),
             )
 
+    def _forward_runtime(self, inbound: _Inbound) -> None:
+        assert self._runtime_adapter is not None and inbound.key is not None
+        if inbound.key in self._runtime_forwarding:
+            return
+        if len(self._intent_tasks) >= MAX_INTENT_TASKS:
+            self.report.errors += 1
+            return
+        self._runtime_forwarding.add(inbound.key)
+
+        async def forward() -> None:
+            assert self._runtime_adapter is not None and inbound.key is not None
+            try:
+                identity = hashlib.sha256(
+                    f"{self.config.account.ilink_user_id}:{inbound.sender}:{inbound.key}".encode()
+                ).hexdigest()
+                text = await self._runtime_adapter.reply(
+                    self.redact_text(inbound.text or "")
+                    if self.redact_text is not None
+                    else inbound.text or "",
+                    message_id="wechat:" + identity,
+                )
+                self.state.mark(inbound.key, "command", command="runtime")
+                await self._safe_reply(
+                    inbound.sender, inbound.context_token, text, retries=1
+                )
+            except Exception:
+                self.report.errors += 1
+                await self._safe_reply(
+                    inbound.sender,
+                    inbound.context_token,
+                    "Runtime 暂时不可用, 原消息已保留, 不会改用其他 Agent 重跑。",
+                    retries=1,
+                )
+            finally:
+                self._runtime_forwarding.discard(inbound.key)
+
+        task = asyncio.create_task(forward())
+        self._intent_tasks.add(task)
+
+        def finished(done: asyncio.Task[None]) -> None:
+            self._intent_tasks.discard(done)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(finished)
+
     async def _handle(self, inbound: _Inbound) -> None:
         if not inbound.sender or inbound.context_token == "":
             if inbound.key is not None:
@@ -1663,6 +1727,12 @@ class _Service:
             await self._safe_reply(
                 inbound.sender, inbound.context_token, "仅支持文本消息, 未启动任务。"
             )
+            return
+        if self._runtime_adapter is not None:
+            if record is not None and record.get("state") == "command":
+                return
+            self.state.mark(inbound.key, "received", route="runtime")
+            self._forward_runtime(inbound)
             return
         command = inbound.text.strip().lower()
         if command == "/status":
@@ -1768,6 +1838,13 @@ class _Service:
             for key, record in pending
         ]
         for _key, record, recovered in recovered_items:
+            if self._runtime_adapter is not None:
+                if record.get("route") != "runtime":
+                    raise ValueError(
+                        "Runtime bridge requires an isolated WeChat state directory"
+                    )
+                await self._handle(recovered)
+                continue
             state = record.get("state")
             if state in {
                 "schedule_pending",
@@ -2013,23 +2090,35 @@ async def serve_wechat(
         return cleaned
 
     project_lease = WorkspaceLease(config.state_dir / PROJECT_LEASE_FILENAME)
-    executor = (
-        task_executor
-        if task_executor is not None
-        else default_task_executor(
-            config,
-            project_lease=project_lease,
-            on_secrets_resolved=remember_known_secrets,
+    executor: TaskExecutor
+    if config.runtime_url:
+
+        async def reject_local_execution(
+            prompt: str, cancel: asyncio.Event, task_id: str
+        ) -> HeadlessResult:
+            raise RuntimeError("Runtime bridge cannot execute a local Agent")
+
+        executor = reject_local_execution
+        conversation_executor = None
+        conversation_classifier = None
+    else:
+        executor = (
+            task_executor
+            if task_executor is not None
+            else default_task_executor(
+                config,
+                project_lease=project_lease,
+                on_secrets_resolved=remember_known_secrets,
+            )
         )
-    )
-    if conversation_executor is None and task_executor is None:
-        conversation_executor = default_conversation_executor(
-            config,
-            getattr(executor, "durable_factory", None),
-            project_lease=project_lease,
-        )
-    if conversation_classifier is None and task_executor is None:
-        conversation_classifier = default_conversation_classifier(config)
+        if conversation_executor is None and task_executor is None:
+            conversation_executor = default_conversation_executor(
+                config,
+                getattr(executor, "durable_factory", None),
+                project_lease=project_lease,
+            )
+        if conversation_classifier is None and task_executor is None:
+            conversation_classifier = default_conversation_classifier(config)
     report = ServeReport()
     task_gate = asyncio.Lock()
 
@@ -2048,7 +2137,7 @@ async def serve_wechat(
     scheduler_task: asyncio.Task[object] | None = None
     scheduler_stop: asyncio.Event | None = None
     scheduler_runner: ScheduleRunner | None = None
-    if config.schedule_store is not None:
+    if config.schedule_store is not None and not config.runtime_url:
         ensure_schedule_outside_workspace(config.schedule_store, config.workspace)
 
         async def deliver_scheduled(sender: str, text: str) -> bool:

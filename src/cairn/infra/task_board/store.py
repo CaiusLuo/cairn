@@ -9,7 +9,6 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import tempfile
 import time
 import uuid
 from collections.abc import Iterator
@@ -25,6 +24,7 @@ from cairn.core.task_board import (
     TaskSource,
     TaskTodo,
 )
+from cairn.infra.atomic_json import atomic_write as _atomic_write
 
 TASK_BOARD_DIR_ENV = "CAIRN_TASK_BOARD_DIR"
 STORE_VERSION = 1
@@ -65,25 +65,6 @@ def ensure_outside_workspace(state_root: Path, workspace: Path) -> None:
     root = workspace.resolve()
     if state == root or state.is_relative_to(root):
         raise ValueError("Task board directory must live outside the Workspace")
-
-
-def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with suppress(OSError):
-        path.parent.chmod(0o700)
-    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-    except BaseException:
-        with suppress(OSError):
-            os.unlink(tmp)
-        raise
 
 
 class TaskBoardStore:
@@ -148,6 +129,29 @@ class TaskBoardStore:
                 "tasks": [task.model_dump(mode="json") for task in tasks],
             },
         )
+
+    def project_execution(self, item: TaskBoardItem) -> TaskBoardItem:
+        """Update a host-owned presentation view; never dispatch execution."""
+        with self._locked():
+            items = list(self._load_unlocked())
+            for index, current in enumerate(items):
+                if current.task_id == item.task_id:
+                    if current.project != item.project:
+                        raise TaskBoardValidationError(
+                            "Execution projection project mismatch"
+                        )
+                    item = item.model_copy(
+                        update={
+                            "created_at": current.created_at,
+                            "revision": current.revision + 1,
+                        }
+                    )
+                    items[index] = item
+                    break
+            else:
+                items.append(item)
+            self._save_unlocked(tuple(items))
+            return item
 
     @staticmethod
     def _now() -> str:

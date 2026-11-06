@@ -10,6 +10,9 @@ Only credentials are listed. An ordinary hidden file such as ``.gitignore`` or
 separate concern owned by ``infra.workspace.paths``.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 #: Directory names whose contents are credentials, at any depth.
@@ -23,7 +26,31 @@ CREDENTIAL_FILENAMES = frozenset(
 )
 
 #: Suffixes that mark a file as key material.
-CREDENTIAL_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".env")
+CREDENTIAL_SUFFIXES = (
+    ".token",
+    ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+    ".jks",
+    ".keystore",
+    ".env",
+)
+
+
+_HOST_PRIVATE_ROOTS: ContextVar[tuple[Path, ...]] = ContextVar(
+    "cairn_host_private_roots", default=()
+)
+
+
+@contextmanager
+def protect_host_paths(roots: tuple[Path, ...]) -> Iterator[None]:
+    """Narrow file-tool visibility in this Agent task, never process-globally."""
+    token = _HOST_PRIVATE_ROOTS.set(tuple(root.resolve() for root in roots))
+    try:
+        yield
+    finally:
+        _HOST_PRIVATE_ROOTS.reset(token)
 
 
 def is_credential_path(path: Path) -> bool:
@@ -34,6 +61,8 @@ def is_credential_path(path: Path) -> bool:
     directory component are examined: a key inside ``~/.ssh`` is refused even
     when its own name looks ordinary.
     """
+    if any(path.is_relative_to(root) for root in _HOST_PRIVATE_ROOTS.get()):
+        return True
     if path.name.casefold() in CREDENTIAL_FILENAMES:
         return True
     if path.name.casefold() == ".env" or path.name.startswith(".env."):
