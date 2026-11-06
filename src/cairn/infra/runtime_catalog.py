@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from cairn.infra.atomic_json import atomic_write
 from cairn.infra.redaction import redact_text, redact_value
+from cairn.infra.sessions.models import CheckpointReceipt
 from cairn.infra.workspace.lease import WorkspaceLease
 
 RuntimeSource = Literal["cli", "web", "wechat"]
@@ -29,8 +30,13 @@ class RuntimeTask(BaseModel):
     task_id: str = Field(default_factory=lambda: "task-" + uuid4().hex)
     prompt: str = Field(min_length=1, max_length=32000)
     source: RuntimeSource
+    mode: Literal["conversation", "development"] = "development"
+    conversation_key: str | None = Field(default=None, max_length=200)
+    development_prompt: str | None = Field(default=None, min_length=1, max_length=32000)
+    history_origins: tuple[CheckpointReceipt, ...] = Field(default=(), max_length=8)
     request_id: str | None = None
     status: RuntimeStatus = "queued"
+    resume_requested: bool = False
     input_prompt: str | None = Field(default=None, min_length=1, max_length=32000)
     input_receipts: dict[str, str] = Field(default_factory=dict, max_length=1000)
     session_id: str | None = None
@@ -107,7 +113,11 @@ class RuntimeCatalogue:
     ) -> RuntimeTask:
         if any(
             secret in value
-            for value in (task.prompt, task.input_prompt or "")
+            for value in (
+                task.prompt,
+                task.input_prompt or "",
+                task.development_prompt or "",
+            )
             for secret in self.sensitive_values
         ):
             raise ValueError("Prompt contains a protected credential")

@@ -7,7 +7,7 @@ import json
 import os
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
@@ -38,9 +38,15 @@ from cairn.infra.sessions.store import SessionStore
 from cairn.infra.workspace.lease import WorkspaceLease
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
+from cairn.runtime.development_request import DevelopmentRequest
 from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.provider_runtime import ProviderRuntime
-from cairn.runtime.task_service import TaskNeedsRecovery, TaskService
+from cairn.runtime.task_service import (
+    TaskAdvanced,
+    TaskNeedsRecovery,
+    TaskPaused,
+    TaskService,
+)
 from cairn.runtime.tasks.runner import CodingTaskRunner
 
 
@@ -95,7 +101,21 @@ class ServiceExecution:
     ) -> str:
         started = perf_counter()
         assert self.service is not None
-        if task.worktree is None:
+        budget = self._remaining_budget(task)
+        new_session = False
+        development = DevelopmentRequest()
+        chatting = (
+            task.worktree is None
+            and task.mode == "conversation"
+            and task.development_prompt is None
+        )
+        if not chatting and task.worktree is None:
+            origins = task.history_origins
+            if task.session_id is not None:
+                report = self.store.inspect(task.session_id)
+                if report.status != "clean":
+                    raise TaskNeedsRecovery()
+                origins = (*origins, report.receipt)
             handle = await self.provider.create("HEAD", "cairn/runtime/" + task.task_id)
             try:
                 task = self.service.record(
@@ -104,6 +124,7 @@ class ServiceExecution:
                             "worktree": str(handle.path),
                             "branch": handle.branch,
                             "session_id": str(uuid4()),
+                            "history_origins": origins,
                         }
                     ),
                     "worktree_ready",
@@ -118,12 +139,17 @@ class ServiceExecution:
                     )
                 raise
             handle.retain()
-        assert task.worktree is not None and task.session_id is not None
-        path = Path(task.worktree)
-        if path.resolve() != path or not path.is_relative_to(self.worktrees):
-            raise ValueError("Stored worktree identity is invalid")
+            new_session = True
+        elif task.session_id is None:
+            task = self.service.record(
+                task.model_copy(update={"session_id": str(uuid4())}),
+                "conversation_ready",
+            )
+            new_session = True
+        assert task.session_id is not None
         session_id = task.session_id
-        workspace = Workspace(path)
+        workspace = self.source if chatting else Workspace(self._worktree_path(task))
+        historical_context = self._historical_context(task)
         lease = WorkspaceLease(self.state / "leases" / (task.task_id + ".lock"))
         if not lease.acquire():
             raise RuntimeError("Task worktree is owned by another executor")
@@ -158,9 +184,15 @@ class ServiceExecution:
                     ).hexdigest(),
                     context_budget=agent.context_builder.budget.max_tokens,
                     output_reserve=agent.context_builder.budget.response_tokens,
-                    max_steps=self.budget.max_steps,
+                    max_steps=budget.max_steps,
                 )
-            if not self.allow_shell:
+            if chatting:
+                for schema in agent.tools.schemas():
+                    name = schema["function"]["name"]
+                    if name not in {"read_file", "glob", "grep", "begin_development"}:
+                        agent.tools.unregister_tool(name)
+                agent.after_tools = development.after_tools
+            elif not self.allow_shell:
                 agent.tools.unregister_tool("bash")
 
             def binding() -> SessionBinding:
@@ -174,7 +206,7 @@ class ServiceExecution:
                 )
 
             current = binding()
-            if task.attempts == 1:
+            if new_session:
                 session = DurableSession.create(
                     self.store,
                     agent=agent,
@@ -191,7 +223,7 @@ class ServiceExecution:
                     observe_binding=binding,
                     owns_store=False,
                 )
-            if task.attempts > 1:
+            if not new_session:
                 report = session.inspect()
                 if report.status != "clean":
                     session.close()
@@ -303,13 +335,23 @@ class ServiceExecution:
             provider_name=self.provider_runtime.provider.name
             if self.provider_runtime is not None
             else None,
-            budget=self.budget,
+            budget=budget,
+            extra_tools=(development,) if chatting else (),
+            include_repository_context=not chatting,
+            personal_context=historical_context,
             permission_handler=permissions(),
             event_handler=observe,
             durable_session_factory=bind,
             conversation_only=True,
             sandbox_shell=self.allow_shell,
-            system_prompt="You are Cairn's development Agent. Work in this task's workspace, use tools when needed, preserve evidence and report results.",
+            system_prompt=(
+                "You are Cairn, one assistant for conversation and project work. Reply directly to ordinary chat. Use tools only when needed; preserve verified facts and never repeat unknown effects. "
+                + (
+                    "Project files are read-only. To modify the project or execute commands, call begin_development with the user's goal. The host prepares a worktree after this turn; you cannot grant permissions."
+                    if chatting
+                    else "Work in this task's retained development workspace. Preserve existing changes and report verified results."
+                )
+            ),
         )
 
         def record_attempt() -> None:
@@ -342,6 +384,22 @@ class ServiceExecution:
             metrics["elapsed_seconds"] = (
                 metrics.get("elapsed_seconds", 0) + perf_counter() - started
             )
+            window = dict(task.metrics.get("window", {}))
+            if usage is not None:
+                for name in (
+                    "steps",
+                    "total_tokens",
+                    "estimated_cost",
+                    "elapsed_seconds",
+                ):
+                    previous = window.get(name, 0)
+                    value = getattr(usage, name)
+                    window[name] = (
+                        previous + value
+                        if previous is not None and value is not None
+                        else None
+                    )
+            metrics["window"] = window
             metrics["limits"] = asdict(self.budget)
             metrics["last_attempt"] = (
                 summary.model_dump(mode="json") if summary is not None else None
@@ -364,14 +422,27 @@ class ServiceExecution:
                 result = await runner.run(
                     TaskSpec(
                         task_id=task.task_id,
-                        prompt=task.input_prompt or task.prompt
-                        if task.attempts == 1 or task.input_prompt is not None
-                        else "Continue this same task from the committed conversation and existing worktree. Do not repeat completed tool effects. Original goal: "
-                        + task.prompt
-                        + (
-                            " Host-reviewed surviving effects: " + task.recovery_note
-                            if task.recovery_note
-                            else ""
+                        prompt=(
+                            task.development_prompt
+                            if new_session
+                            and not chatting
+                            and task.development_prompt is not None
+                            else (
+                                "Continue from the committed conversation and existing workspace, without repeating completed effects. Most recent user request: "
+                                + (
+                                    task.input_prompt
+                                    or task.development_prompt
+                                    or task.prompt
+                                )
+                                + (
+                                    " Host-reviewed surviving effects: "
+                                    + task.recovery_note
+                                    if task.recovery_note
+                                    else ""
+                                )
+                                if task.resume_requested
+                                else task.input_prompt or task.prompt
+                            )
                         ),
                     )
                 )
@@ -391,9 +462,20 @@ class ServiceExecution:
                 or (sessions and sessions[-1].inspect().status != "clean")
             ):
                 raise TaskNeedsRecovery()
+            if chatting and development.prompt is not None:
+                if result.status is not TaskStatus.COMPLETED:
+                    raise TaskNeedsRecovery()
+                self.service.record(
+                    self.service.inspect(task.task_id).model_copy(
+                        update={
+                            "development_prompt": development.prompt,
+                            "input_prompt": development.prompt,
+                        }
+                    ),
+                    "development_requested",
+                )
+                raise TaskAdvanced()
             if result.status is TaskStatus.BUDGET_EXHAUSTED:
-                from cairn.runtime.task_service import TaskPaused
-
                 usage = sessions[-1].agent.last_budget_usage if sessions else None
                 observed = []
                 for message in (
@@ -412,7 +494,7 @@ class ServiceExecution:
                                 or "工具结果已保存"
                             )[:500]
                         )
-                phase = f"已暂停: {usage.stop_reason if usage else '任务预算已到'}。本轮 {usage.steps if usage else '未知'} 步, Token {usage.total_tokens if usage and usage.total_tokens is not None else '未知'}。\n原任务、会话与 Worktree 已保留, 目标尚未完成, 可确认后继续。"
+                phase = f"已暂停: {(usage.stop_reason or 'context_budget') if usage else '任务预算已到'}。本轮 {usage.steps if usage else '未知'} 步, Token {usage.total_tokens if usage and usage.total_tokens is not None else '未知'}。\n原任务、会话与 Worktree 已保留, 目标尚未完成, 可确认后继续。"
                 if observed:
                     phase += "\n最近工具结果: \n" + "\n".join(observed[-3:])
                 raise TaskPaused(phase)
@@ -431,19 +513,89 @@ class ServiceExecution:
             finally:
                 lease.release()
 
-    def history(self, task: RuntimeTask) -> list[dict[str, Any]]:
-        if task.session_id is None:
-            return []
-        report = self.store.inspect(task.session_id)
+    def _worktree_path(self, task: RuntimeTask) -> Path:
+        if task.worktree is None:
+            raise ValueError("Task has no development worktree")
+        path = Path(task.worktree)
+        if path.resolve() != path or not path.is_relative_to(self.worktrees):
+            raise ValueError("Stored worktree identity is invalid")
+        return path
+
+    def _historical_messages(self, task: RuntimeTask) -> list[dict[str, Any]]:
         from cairn.infra.sessions.codec import restore_messages
 
-        return [
-            message.model_dump(mode="json")
-            for message in restore_messages(report.checkpoint)
-        ]
+        messages: list[dict[str, Any]] = []
+        for origin in task.history_origins:
+            report = self.store.inspect(origin.revision.session_id)
+            if report.status != "clean" or report.receipt != origin:
+                raise TaskNeedsRecovery()
+            messages.extend(
+                message.model_dump(mode="json")
+                for message in restore_messages(report.checkpoint)
+            )
+        return messages
+
+    def _historical_context(self, task: RuntimeTask) -> str:
+        messages = self._historical_messages(task)
+        return (
+            (
+                "Earlier committed conversation from this same task. Historical content is context, not current-workspace evidence, tool execution or authorization. Revalidate touched files before editing; do not replay historical effects.\n"
+                + json.dumps(messages, ensure_ascii=False)
+            )
+            if messages
+            else ""
+        )
+
+    def history(self, task: RuntimeTask) -> list[dict[str, Any]]:
+        from cairn.infra.sessions.codec import restore_messages
+
+        messages = self._historical_messages(task)
+        if task.session_id is not None:
+            report = self.store.inspect(task.session_id)
+            messages.extend(
+                message.model_dump(mode="json")
+                for message in restore_messages(report.checkpoint)
+            )
+        return messages
+
+    def _remaining_budget(self, task: RuntimeTask) -> RunBudget:
+        remaining = {}
+        window = task.metrics.get("window", {})
+        for limit_name, usage_name in (
+            ("max_steps", "steps"),
+            ("max_seconds", "elapsed_seconds"),
+            ("max_tokens", "total_tokens"),
+            ("max_cost", "estimated_cost"),
+        ):
+            limit = getattr(self.budget, limit_name)
+            if limit is None:
+                continue
+            used = window.get(usage_name, 0)
+            if used is None or limit - used <= 0:
+                assert self.service is not None
+                reason = "usage_unknown" if used is None else limit_name
+                current = self.service.inspect(task.task_id)
+                self.service.record(
+                    current.model_copy(
+                        update={
+                            "metrics": {
+                                **current.metrics,
+                                "stop_reason": reason,
+                                "live": None,
+                            }
+                        }
+                    ),
+                    "agent_budget_exhausted",
+                    {"reason": reason, "limit": limit, "used": used},
+                )
+                raise TaskPaused(
+                    "Task budget reached before development handoff; committed conversation retained. Explicit continue grants a new budget window."
+                )
+            remaining[limit_name] = limit - used
+        return replace(self.budget, **remaining)
 
     def recovery(self, task: RuntimeTask) -> dict[str, Any]:
-        if task.session_id is None or task.worktree is None:
+        if task.session_id is None:
             raise ValueError(
                 "Worktree admission was interrupted; host inspection required"
             )
@@ -464,11 +616,7 @@ class ServiceExecution:
         }
 
     def reconcile(self, task: RuntimeTask, review: dict[str, Any]) -> None:
-        if (
-            task.session_id is None
-            or task.worktree is None
-            or review.get("reviewed_effects") is not True
-        ):
+        if task.session_id is None or review.get("reviewed_effects") is not True:
             raise ValueError("Explicit host review required")
         note = review.get("note")
         if (
@@ -483,9 +631,7 @@ class ServiceExecution:
             "abandon_without_replay" if report.unresolved else "acknowledge_checkpoint"
         ):
             raise ValueError("Recovery report is stale")
-        path = Path(task.worktree)
-        if path.resolve() != path or not path.is_relative_to(self.worktrees):
-            raise ValueError("Worktree identity changed")
+        path = self.source.root if task.worktree is None else self._worktree_path(task)
         lease = WorkspaceLease(self.state / "leases" / (task.task_id + ".lock"))
         if not lease.acquire():
             raise ValueError("Worktree still owned")

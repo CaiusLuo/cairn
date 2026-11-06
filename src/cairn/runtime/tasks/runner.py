@@ -69,6 +69,7 @@ class CodingTaskRunner:
         sandbox_shell: bool = False,
         system_prompt: str | None = None,
         personal_context: str = "",
+        include_repository_context: bool = True,
         provider_name: str | None = None,
         durable_session_factory: Callable[[Agent], DurableSession] | None = None,
     ) -> None:
@@ -96,6 +97,7 @@ class CodingTaskRunner:
         self.system_prompt = system_prompt or system_prompt_for(
             "chat" if conversation_only else "development"
         )
+        self.include_repository_context = include_repository_context
         self.personal_context = personal_context
         self.durable_session_factory = durable_session_factory
         self.provider_name = provider_name
@@ -381,6 +383,8 @@ class CodingTaskRunner:
                         system_prompt=self.system_prompt,
                         personal_context=self.personal_context,
                     )
+                    if not self.include_repository_context:
+                        agent.repo_context_provider = None
                     if self.provider_name is not None:
                         agent.provider_name = self.provider_name
                     durable_session = self.durable_session_factory(agent)
@@ -454,6 +458,8 @@ class CodingTaskRunner:
                         system_prompt=self.system_prompt,
                         personal_context=self.personal_context,
                     )
+                    if not self.include_repository_context:
+                        agent.repo_context_provider = None
                     if self.provider_name is not None:
                         agent.provider_name = self.provider_name
                     self._wrap_tool_lease(agent)
@@ -599,9 +605,14 @@ class CodingTaskRunner:
                 self.model_executor is not None
                 and agent.model_executor is not self.model_executor
             )
-            or provider is None
-            or provider.workspace.root != self.workspace.root
-            or provider.secret_env_keys != self.secret_env_keys
+            or (provider is None and self.include_repository_context)
+            or (
+                provider is not None
+                and (
+                    provider.workspace.root != self.workspace.root
+                    or provider.secret_env_keys != self.secret_env_keys
+                )
+            )
         ):
             raise SessionAdmissionError("Task runtime configuration mismatch.")
 

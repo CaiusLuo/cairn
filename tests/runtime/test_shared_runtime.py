@@ -699,7 +699,7 @@ def test_cli_web_cli_continue_the_same_task_and_committed_history(
             transport=httpx.ASGITransport(app=app),
         )
         async with app.router.lifespan_context(app):
-            cli = RemoteConversation(api)
+            cli = RemoteConversation(api, mode="development")
             accepted = await cli.send("Create artifact", request_id="cli-first")
             first = await asyncio.wait_for(cli.wait(), 30)
             assert first["status"] == "completed"
@@ -809,5 +809,428 @@ def test_interactive_input_can_return_after_a_web_turn(
             ]
             assert task.attempts == 3
             assert "Shared Runtime" in capsys.readouterr().out
+
+    asyncio.run(scenario())
+
+
+def test_plain_chat_shares_history_without_git_worktree_or_repository_context(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from cairn.core.models import LLMUsage
+    from cairn.infra.git.context import RepoContextProvider
+    from cairn.terminal.runtime_chat import RemoteConversation
+
+    async def scenario() -> None:
+        source = repository(tmp_path / "source")
+        seen: list[list[Message]] = []
+
+        class ChatModel:
+            async def generate(
+                self, messages: list[Message], tools: list[dict[str, Any]] | None = None
+            ) -> LLMResponse:
+                seen.append(messages)
+                names = {item["function"]["name"] for item in tools or ()}
+                assert names == {"read_file", "glob", "grep", "begin_development"}
+                assert not any(
+                    "Runtime repository context" in (m.content or "") for m in messages
+                )
+                return LLMResponse(
+                    content="Shared chat reply",
+                    usage=LLMUsage(input_tokens=20, output_tokens=10),
+                )
+
+        async def no_scan(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError(
+                "Ordinary conversation must not scan repository context"
+            )
+
+        monkeypatch.setattr(RepoContextProvider, "inspect", no_scan)
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="test-token",
+        )
+        app.state.execution.llm_factory = ChatModel
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "test-token",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            cli = RemoteConversation(api)
+            first = await cli.send("Hello")
+            first = await asyncio.wait_for(cli.wait(), 20)
+            await api.message(
+                first["task_id"],
+                "A Web followup",
+                source="web",
+                request_id="web-chat",
+                expected_sequence=first["sequence"],
+            )
+            await asyncio.wait_for(app.state.runtime.queue.join(), 20)
+            await cli.select(first["task_id"])
+            await cli.send("Back to CLI")
+            final = await asyncio.wait_for(cli.wait(), 20)
+            assert (
+                final["worktree"] is None and final["session_id"] == first["session_id"]
+            )
+            assert not (tmp_path / "worktrees").exists() or not list(
+                (tmp_path / "worktrees").iterdir()
+            )
+            assert len([m for m in seen[-1] if m.role == "user"]) == 3
+            assert app.state.runtime.queue.empty()
+            assert not (source / "runtime-result.txt").exists()
+
+    asyncio.run(scenario())
+
+
+def test_agent_requests_development_with_checked_history_and_same_task_id(
+    tmp_path: Path,
+) -> None:
+    from cairn.core.models import LLMUsage, ToolCall
+    from cairn.terminal.runtime_chat import RemoteConversation
+
+    async def scenario() -> None:
+        source = repository(tmp_path / "source")
+        development_context: list[Message] = []
+
+        class AdaptiveModel(OfflineDevelopmentModel):
+            async def generate(
+                self, messages: list[Message], tools: list[dict[str, Any]] | None = None
+            ) -> LLMResponse:
+                names = {t["function"]["name"] for t in tools or ()}
+                if "begin_development" in names:
+                    user = [m.content for m in messages if m.role == "user"][-1]
+                    if user == "Create the artifact now":
+                        return LLMResponse(
+                            tool_calls=[
+                                ToolCall(
+                                    id="begin",
+                                    name="begin_development",
+                                    arguments={"prompt": "Create the artifact now"},
+                                )
+                            ],
+                            usage=LLMUsage(input_tokens=20, output_tokens=10),
+                        )
+                    return LLMResponse(
+                        content="I remember conversation-marker-42",
+                        usage=LLMUsage(input_tokens=20, output_tokens=10),
+                    )
+                development_context.extend(messages)
+                return await super().generate(messages, tools)
+
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="test-token",
+        )
+        app.state.execution.llm_factory = AdaptiveModel
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "test-token",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            cli = RemoteConversation(api)
+            await cli.send("conversation-marker-42")
+            first = await asyncio.wait_for(cli.wait(), 30)
+            assert first["worktree"] is None
+            await cli.send("Create the artifact now")
+            final = await asyncio.wait_for(cli.wait(), 30)
+            assert final["status"] == "completed", final
+            assert final["task_id"] == first["task_id"]
+            assert (
+                final["session_id"] != first["session_id"]
+            )  # New workspace requires a fresh binding.
+            assert len(final["history_origins"]) == 1
+            assert (Path(final["worktree"]) / "runtime-result.txt").is_file()
+            assert not (source / "runtime-result.txt").exists()
+            assert any(
+                "conversation-marker-42" in (m.content or "")
+                for m in development_context
+            )
+            history = await cli.select(final["task_id"])
+            assert any(m["content"] == "conversation-marker-42" for m in history)
+            assert (
+                sum(
+                    m["role"] == "tool" and m["tool_call_id"] == "offline-write"
+                    for m in history
+                )
+                == 1
+            )
+            assert final["metrics"]["window"]["steps"] == 3
+            before = Path(final["worktree"]) / "runtime-result.txt"
+            inode = before.stat().st_ino
+            await cli.send("Report the result")
+            next_turn = await asyncio.wait_for(cli.wait(), 30)
+            assert (
+                next_turn["worktree"] == final["worktree"]
+                and before.stat().st_ino == inode
+            )
+
+        reopened = runtime_app(source, tmp_path / "state", tmp_path / "worktrees", budget=RunBudget(5), token="test-token")
+        reopened_api = RuntimeClient("http://127.0.0.1:8777", "test-token", transport=httpx.ASGITransport(app=reopened))
+        async with reopened.router.lifespan_context(reopened):
+            cli = RemoteConversation(reopened_api)
+            history = await cli.select(final["task_id"])
+            assert any(m["content"] == "conversation-marker-42" for m in history)
+            await cli.send("Continue after server restart")
+            restored = await asyncio.wait_for(cli.wait(), 30)
+            assert restored["status"] == "completed"
+            assert restored["session_id"] == final["session_id"] and before.stat().st_ino == inode
+            task = reopened.state.runtime.inspect(final["task_id"])
+            bad_origin = task.history_origins[0].model_copy(update={"sha256": "0" * 64})
+            reopened.state.runtime.record(task.model_copy(update={"history_origins": (bad_origin,)}), "corrupt_history_fixture")
+            # History provenance is checked before a subsequent model/tool turn.
+            current = await reopened_api.inspect(final["task_id"])
+            await reopened_api.message(final["task_id"], "Cannot use altered history", source="cli", request_id="tampered-history", expected_sequence=current["sequence"])
+            await asyncio.wait_for(reopened.state.runtime.queue.join(), 30)
+            rejected = await reopened_api.inspect(final["task_id"])
+            assert rejected["status"] == "recovery_required"
+            assert before.stat().st_ino == inode
+
+    asyncio.run(scenario())
+
+
+def test_chat_cannot_write_or_grant_shell_before_worktree_transition(
+    tmp_path: Path,
+) -> None:
+    from cairn.core.models import ToolCall
+
+    async def scenario() -> None:
+        source = repository(tmp_path / "source")
+
+        class NoAuthorityModel:
+            async def generate(
+                self, messages: list[Message], tools: list[dict[str, Any]] | None = None
+            ) -> LLMResponse:
+                if any(m.role == "tool" for m in messages):
+                    return LLMResponse(content="Refused")
+                return LLMResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="illegal-write",
+                            name="write_file",
+                            arguments={"path": "escape.txt", "content": "no"},
+                        ),
+                        ToolCall(
+                            id="illegal-grant",
+                            name="begin_development",
+                            arguments={"prompt": "write", "allow_shell": True},
+                        ),
+                    ]
+                )
+
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="test-token",
+            allow_shell=True,
+        )
+        app.state.execution.llm_factory = NoAuthorityModel
+        async with app.router.lifespan_context(app):
+            task = app.state.runtime.submit("Try to modify", "web", mode="conversation")
+            await asyncio.wait_for(app.state.runtime.queue.join(), 20)
+            task = app.state.runtime.inspect(task.task_id)
+            assert task.status == "completed" and task.worktree is None
+            assert not (source / "escape.txt").exists()
+            events = app.state.runtime.events(task.task_id)
+            assert sum(e.kind == "tool_error" for e in events) == 2
+
+    asyncio.run(scenario())
+
+
+def test_wechat_plain_messages_reuse_the_same_server_conversation(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        app = runtime_app(
+            repository(tmp_path / "source"),
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="test-token",
+        )
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "test-token",
+            transport=httpx.ASGITransport(app=app),
+        )
+        adapter = WechatRuntimeAdapter(api)
+        async with app.router.lifespan_context(app):
+            await adapter.reply(
+                "Hello", message_id="wx-chat-1", conversation_key="wechat:owner"
+            )
+            await asyncio.wait_for(app.state.runtime.queue.join(), 20)
+            first = app.state.runtime.list_tasks()[0]
+            await adapter.reply(
+                "Remember the previous reply?",
+                message_id="wx-chat-2",
+                conversation_key="wechat:owner",
+            )
+            await asyncio.wait_for(app.state.runtime.queue.join(), 20)
+            final = app.state.runtime.list_tasks()[0]
+            assert len(app.state.runtime.list_tasks()) == 1
+            assert final.session_id == first.session_id and final.worktree is None
+            assert final.attempts == 2
+            await adapter.reply(
+                "Remember the previous reply?",
+                message_id="wx-chat-2",
+                conversation_key="wechat:owner",
+            )
+            assert app.state.runtime.inspect(first.task_id).attempts == 2
+            await adapter.reply(
+                "Hello", message_id="wx-chat-other", conversation_key="wechat:another"
+            )
+            await asyncio.wait_for(app.state.runtime.queue.join(), 20)
+            assert len(app.state.runtime.list_tasks()) == 2
+
+    asyncio.run(scenario())
+
+
+def test_automatic_handoff_cannot_reset_the_host_budget(tmp_path: Path) -> None:
+    from cairn.core.models import LLMUsage, ToolCall
+
+    async def scenario() -> None:
+        calls = 0
+
+        class TransitionModel(OfflineDevelopmentModel):
+            async def generate(
+                self, messages: list[Message], tools: list[dict[str, Any]] | None = None
+            ) -> LLMResponse:
+                nonlocal calls
+                calls += 1
+                if any(
+                    t["function"]["name"] == "begin_development" for t in tools or ()
+                ):
+                    return LLMResponse(
+                        tool_calls=[
+                            ToolCall(
+                                id="begin",
+                                name="begin_development",
+                                arguments={"prompt": "Create artifact"},
+                            )
+                        ],
+                        usage=LLMUsage(input_tokens=20, output_tokens=10),
+                    )
+                return await super().generate(messages, tools)
+
+        app = runtime_app(
+            repository(tmp_path / "source"),
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(1),
+            token="test-token",
+        )
+        app.state.execution.llm_factory = TransitionModel
+        async with app.router.lifespan_context(app):
+            task = app.state.runtime.submit("Modify", "web", mode="conversation")
+            await asyncio.wait_for(app.state.runtime.queue.join(), 30)
+            paused = app.state.runtime.inspect(task.task_id)
+            assert paused.status == "paused" and paused.worktree is None and calls == 1
+            assert paused.development_prompt == "Create artifact"
+            app.state.runtime.continue_task(task.task_id)
+            await asyncio.wait_for(app.state.runtime.queue.join(), 30)
+            development = app.state.runtime.inspect(task.task_id)
+            assert development.status == "paused" and development.worktree is not None
+            artifact = Path(development.worktree) / "runtime-result.txt"
+            inode = artifact.stat().st_ino
+            app.state.runtime.continue_task(task.task_id)
+            await asyncio.wait_for(app.state.runtime.queue.join(), 30)
+            final = app.state.runtime.inspect(task.task_id)
+            assert (
+                final.status == "completed" and final.worktree == development.worktree
+            )
+            assert artifact.stat().st_ino == inode and calls == 3
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_chat_requires_review_and_can_continue_without_worktree(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        started = asyncio.Event()
+        calls = 0
+        seen = []
+
+        class ChatModel:
+            async def generate(
+                self, messages: list[Message], tools: list[dict[str, Any]] | None = None
+            ) -> LLMResponse:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    started.set()
+                    await asyncio.Event().wait()
+                seen.extend(messages)
+                return LLMResponse(content="Recovered chat")
+
+        app = runtime_app(
+            repository(tmp_path / "source"),
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="test-token",
+        )
+        app.state.execution.llm_factory = ChatModel
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "test-token",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            task = await api.submit(
+                "Remember recovery-anchor", "cli", mode="conversation"
+            )
+            await asyncio.wait_for(started.wait(), 15)
+            stopped = await api.control(task["task_id"], "cancel")
+            assert (
+                stopped["status"] == "recovery_required" and stopped["worktree"] is None
+            )
+            report = await api.request("GET", f"tasks/{task['task_id']}/recovery")
+            payload = {
+                key: report[key] for key in ("expected_sequence", "revision", "action")
+            }
+            payload.update(
+                reviewed_effects=True,
+                note="No project effects; resume the original question",
+            )
+            await api.request("POST", f"tasks/{task['task_id']}/reconcile", payload)
+            await api.control(task["task_id"], "continue")
+            await asyncio.wait_for(app.state.runtime.queue.join(), 30)
+            final = await api.inspect(task["task_id"])
+            assert final["status"] == "completed" and final["worktree"] is None
+            assert final["session_id"] == stopped["session_id"]
+            assert any("recovery-anchor" in (m.content or "") for m in seen)
+
+    asyncio.run(scenario())
+
+
+def test_chat_accepts_a_non_git_workspace_without_creating_worktree(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        source = tmp_path / "plain-directory"
+        source.mkdir()
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="test-token",
+        )
+        async with app.router.lifespan_context(app):
+            task = app.state.runtime.submit("Hello", "web", mode="conversation")
+            await asyncio.wait_for(app.state.runtime.queue.join(), 20)
+            final = app.state.runtime.inspect(task.task_id)
+            assert final.status == "completed" and final.worktree is None
+            assert not list(source.iterdir())
 
     asyncio.run(scenario())

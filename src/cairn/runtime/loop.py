@@ -332,6 +332,7 @@ async def run_turn(
                 return {"step": step + 1, "done": False, "answer": ""}
 
             async def tool_node(state: _GraphState) -> _GraphState:
+                nonlocal outcome
                 assert trace is not None
                 budget_policy.check()
                 accepted_calls = tuple(pending_tool_calls)
@@ -370,6 +371,22 @@ async def run_turn(
                         trusted_message_id=message_id,
                     )
 
+                # A host continuation may hand off only after the entire tool
+                # group has settled, through this same turn/receipt boundary.
+                if (
+                    agent.after_tools is not None
+                    and (answer := agent.after_tools()) is not None
+                ):
+                    agent.state.add_assistant_message(answer)
+                    outcome = TurnOutcome.COMPLETED
+                    agent.emit(
+                        Event(
+                            type="agent_finish",
+                            data={"content": answer, "step": state["step"]},
+                        )
+                    )
+                    return {**state, "done": True, "answer": answer}
+
                 budget_policy.observe_batch(
                     accepted_calls,
                     agent.state.messages[assistant_index + 1 :],
@@ -399,6 +416,8 @@ async def run_turn(
                 return "model" if state["step"] < budget.max_steps else "end"
 
             def after_tools(state: _GraphState) -> Literal["model", "end"]:
+                if state["done"]:
+                    return "end"
                 return "model" if state["step"] < budget.max_steps else "end"
 
             graph = StateGraph(_GraphState)

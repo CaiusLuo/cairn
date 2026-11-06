@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import httpx
+
 from cairn.infra.runtime_client import RuntimeClient
 
 
@@ -9,8 +11,27 @@ class WechatRuntimeAdapter:
     def __init__(self, client: RuntimeClient) -> None:
         self.client = client
 
-    async def reply(self, text: str, *, message_id: str | None = None) -> str:
+    async def reply(
+        self,
+        text: str,
+        *,
+        message_id: str | None = None,
+        conversation_key: str | None = None,
+    ) -> str:
         command, _, argument = text.strip().partition(" ")
+        if command == "/reply":
+            ident, _, prompt = argument.partition(" ")
+            if not prompt.strip():
+                return "用法: /reply TASK_ID 内容"
+            task = await self.client.inspect(ident)
+            task = await self.client.message(
+                ident,
+                prompt,
+                source="wechat",
+                request_id=message_id or "reply-" + str(task["sequence"]),
+                expected_sequence=task["sequence"],
+            )
+            return f"{task['task_id']}\n状态: {task['status']}"
         if command == "/history" and argument:
             RuntimeClient._id(argument.strip())
             messages = await self.client.request(
@@ -43,11 +64,30 @@ class WechatRuntimeAdapter:
                 or "暂无任务"
             )
         else:
-            task = await self.client.submit(
-                argument if command == "/task" else text,
-                "wechat",
-                request_id=message_id,
-            )
+            try:
+                task = await self.client.submit(
+                    argument if command == "/task" else text,
+                    "wechat",
+                    request_id=message_id,
+                    mode="development" if command == "/task" else "conversation",
+                    conversation_key=conversation_key if command != "/task" else None,
+                )
+            except httpx.HTTPStatusError as error:
+                if error.response.status_code != 409 or conversation_key is None:
+                    raise
+                tasks = await self.client.request("GET", "tasks")
+                busy_task = next(
+                    (
+                        item
+                        for item in reversed(tasks)
+                        if item.get("conversation_key") == conversation_key
+                    ),
+                    None,
+                )
+                if busy_task is None:
+                    raise
+                task = busy_task
+                return f"{task['task_id']} · {task['status']}\n这条新消息尚未执行; 请在任务结束后重发, 或用 /status TASK_ID 查询。"
         usage = task.get("metrics", {})
         live = usage.get("live") or {}
         steps = usage.get("steps", 0) + live.get("steps", 0)

@@ -1671,6 +1671,10 @@ class _Service:
                     if self.redact_text is not None
                     else inbound.text or "",
                     message_id="wechat:" + identity,
+                    conversation_key="wechat:"
+                    + hashlib.sha256(
+                        f"{self.config.account.ilink_bot_id}:{self.config.account.ilink_user_id}:{inbound.sender}".encode()
+                    ).hexdigest(),
                 )
                 self.state.mark(inbound.key, "command", command="runtime")
                 await self._safe_reply(

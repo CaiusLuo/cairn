@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from cairn.core.task_board import TaskBoardItem, TaskBoardStatus, TaskSource
 from cairn.infra.runtime_catalog import (
@@ -27,6 +28,10 @@ TaskExecutor = Callable[
 
 class TaskPaused(Exception):
     """A settled turn stopped at a safe budget boundary."""
+
+
+class TaskAdvanced(Exception):
+    """A committed conversation requested the next development phase."""
 
 
 class TaskNeedsRecovery(Exception):
@@ -173,21 +178,57 @@ class TaskService:
         )
 
     def submit(
-        self, prompt: str, source: RuntimeSource, request_id: str | None = None
+        self,
+        prompt: str,
+        source: RuntimeSource,
+        request_id: str | None = None,
+        *,
+        mode: str = "development",
+        conversation_key: str | None = None,
     ) -> RuntimeTask:
         if self.stopping or self.worker is None or self.worker.done():
             raise RuntimeError("Runtime is not accepting tasks")
         if request_id is not None:
             for previous in self.list_tasks():
                 if previous.request_id == request_id:
-                    if previous.prompt != prompt or previous.source != source:
+                    if (
+                        previous.prompt != prompt
+                        or previous.source != source
+                        or previous.mode != mode
+                        or previous.conversation_key != conversation_key
+                    ):
                         raise ValueError(
                             "Source message was already bound to another request"
                         )
                     return previous
+        if conversation_key is not None:
+            conversation = next(
+                (
+                    t
+                    for t in reversed(self.list_tasks())
+                    if t.conversation_key == conversation_key
+                ),
+                None,
+            )
+            if conversation is not None:
+                return self.message(
+                    conversation.task_id,
+                    prompt,
+                    source,
+                    request_id or "message-" + uuid4().hex,
+                    conversation.sequence,
+                )
         if self.queue.full():
             raise asyncio.QueueFull
-        task = RuntimeTask(prompt=prompt, source=source, request_id=request_id)
+        task = RuntimeTask.model_validate(
+            {
+                "prompt": prompt,
+                "source": source,
+                "request_id": request_id,
+                "mode": mode,
+                "conversation_key": conversation_key,
+            }
+        )
         task = self.record(task, "accepted", {"source": source})
         self.queue.put_nowait(task.task_id)
         return task
@@ -236,7 +277,13 @@ class TaskService:
         if self.queue.full():
             raise asyncio.QueueFull
         task = self.record(
-            task.model_copy(update={"status": "queued", "input_prompt": None}),
+            task.model_copy(
+                update={
+                    "status": "queued",
+                    "resume_requested": True,
+                    "metrics": {**task.metrics, "window": {}},
+                }
+            ),
             "continued",
         )
         self.queue.put_nowait(task_id)
@@ -274,6 +321,11 @@ class TaskService:
                 **task.model_dump(),
                 "status": "queued",
                 "input_prompt": prompt,
+                "resume_requested": False,
+                "development_prompt": task.development_prompt
+                if task.worktree
+                else None,
+                "metrics": {**task.metrics, "window": {}},
                 "input_receipts": {**task.input_receipts, request_id: fingerprint},
                 "result": None,
                 "diagnostic": None,
@@ -289,92 +341,114 @@ class TaskService:
         while True:
             task_id = await self.queue.get()
             try:
-                task = self.inspect(task_id)
-                if task.status != "queued":
-                    continue
-                task = self.record(
-                    task.model_copy(
-                        update={"status": "running", "attempts": task.attempts + 1}
-                    ),
-                    "running",
-                )
-
-                def emit(
-                    kind: str, data: dict[str, Any], task_id: str = task_id
-                ) -> None:
-                    if kind == "model_text_delta":
-                        self.publish(task_id, {"type": "preview", "text": data["text"]})
-                    else:
-                        current = self.inspect(task_id)
-                        if kind == "agent_step" and "budget" in data:
-                            current = current.model_copy(
-                                update={
-                                    "metrics": {
-                                        **current.metrics,
-                                        "live": data["budget"],
-                                    }
-                                }
-                            )
-                        self.record(current, kind, data)
-
-                self.active_id = task_id
-                self.active = asyncio.create_task(self.executor(task, emit))
-                try:
-                    result = await asyncio.shield(self.active)
-                except asyncio.CancelledError:
-                    await settle_owned(self.active)
-                    self.record(
-                        self.inspect(task_id).model_copy(
-                            update={
-                                "status": "recovery_required",
-                                "diagnostic": "execution_cancelled",
-                            }
-                        ),
-                        "interrupted",
-                    )
-                    if self.stopping:
-                        raise
-                except TaskNeedsRecovery:
-                    self.record(
-                        self.inspect(task_id).model_copy(
-                            update={
-                                "status": "recovery_required",
-                                "diagnostic": "effects_require_host_review",
-                            }
-                        ),
-                        "interrupted",
-                    )
-                except TaskPaused as exc:
-                    self.record(
-                        self.inspect(task_id).model_copy(
-                            update={"status": "paused", "result": str(exc)}
-                        ),
-                        "paused",
-                    )
-                except Exception as exc:
-                    self.record(
-                        self.inspect(task_id).model_copy(
-                            update={
-                                "status": "failed",
-                                "diagnostic": type(exc).__name__,
-                            }
-                        ),
-                        "failed",
-                    )
-                else:
-                    self.record(
-                        self.inspect(task_id).model_copy(
-                            update={"status": "completed", "result": result}
-                        ),
-                        "completed",
-                    )
-                finally:
-                    self.publish(task_id, {"type": "settled"})
-                    self.active = None
-                    self.active_id = None
-                    self.changed.set()
+                await self._run_task(task_id)
             finally:
                 self.queue.task_done()
+
+    async def _run_task(self, task_id: str, *, advanced: bool = False) -> None:
+        task = self.inspect(task_id)
+        if task.status != "queued":
+            return
+        task = self.record(
+            task.model_copy(
+                update={"status": "running", "attempts": task.attempts + 1}
+            ),
+            "running",
+        )
+
+        def emit(kind: str, data: dict[str, Any], task_id: str = task_id) -> None:
+            if kind == "model_text_delta":
+                self.publish(task_id, {"type": "preview", "text": data["text"]})
+            else:
+                current = self.inspect(task_id)
+                if kind == "agent_step" and "budget" in data:
+                    current = current.model_copy(
+                        update={
+                            "metrics": {
+                                **current.metrics,
+                                "live": data["budget"],
+                            }
+                        }
+                    )
+                self.record(current, kind, data)
+
+        advance = False
+        self.active_id = task_id
+        self.active = asyncio.create_task(self.executor(task, emit))
+        try:
+            result = await asyncio.shield(self.active)
+        except asyncio.CancelledError:
+            await settle_owned(self.active)
+            self.record(
+                self.inspect(task_id).model_copy(
+                    update={
+                        "status": "recovery_required",
+                        "diagnostic": "execution_cancelled",
+                    }
+                ),
+                "interrupted",
+            )
+            if self.stopping:
+                raise
+        except TaskAdvanced:
+            if advanced:
+                self.record(
+                    self.inspect(task_id).model_copy(
+                        update={
+                            "status": "recovery_required",
+                            "diagnostic": "repeated_handoff",
+                        }
+                    ),
+                    "interrupted",
+                )
+            else:
+                self.record(
+                    self.inspect(task_id).model_copy(update={"status": "queued"}),
+                    "development_queued",
+                )
+                advance = True
+        except TaskNeedsRecovery:
+            self.record(
+                self.inspect(task_id).model_copy(
+                    update={
+                        "status": "recovery_required",
+                        "diagnostic": "effects_require_host_review",
+                    }
+                ),
+                "interrupted",
+            )
+        except TaskPaused as exc:
+            self.record(
+                self.inspect(task_id).model_copy(
+                    update={"status": "paused", "result": str(exc)}
+                ),
+                "paused",
+            )
+        except Exception as exc:
+            self.record(
+                self.inspect(task_id).model_copy(
+                    update={
+                        "status": "failed",
+                        "diagnostic": type(exc).__name__,
+                    }
+                ),
+                "failed",
+            )
+        else:
+            self.record(
+                self.inspect(task_id).model_copy(
+                    update={"status": "completed", "result": result}
+                ),
+                "completed",
+            )
+        finally:
+            if not advance:
+                self.publish(task_id, {"type": "settled"})
+            self.active = None
+            self.active_id = None
+            self.changed.set()
+        if advance and not self.stopping:
+            await self._run_task(task_id, advanced=True)
 
     async def _project(self) -> None:
         assert self.board is not None
@@ -395,7 +469,7 @@ class TaskService:
                     status=TaskBoardStatus(statuses.get(task.status, task.status)),
                     progress=(
                         "执行状态: " + task.status,
-                        "Worktree: " + (task.worktree or "准备中"),
+                        "Worktree: " + (task.worktree or "未创建"),
                     ),
                     created_at=now,
                     updated_at=now,

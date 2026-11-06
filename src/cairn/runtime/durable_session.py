@@ -195,6 +195,7 @@ class DurableSession(Session):
             agent.memory_reader,
             agent.provider_name,
             agent.system_prompt,
+            agent.after_tools,
             agent.context_builder.budget,
             manager.config if manager is not None else None,
             manager.current_model() if manager is not None else None,

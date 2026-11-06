@@ -16,17 +16,22 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from cairn.infra.runtime_catalog import RuntimeSource
 from cairn.infra.sessions.models import Revision
 from cairn.runtime.lifecycle import settle_owned
-from cairn.runtime.task_service import TaskService
+from cairn.runtime.task_service import TaskNeedsRecovery, TaskService
 
 
-class Submission(BaseModel):
+class InputMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
     prompt: str = Field(min_length=1, max_length=32000)
     source: RuntimeSource
     request_id: str | None = Field(default=None, max_length=200)
 
 
-class MessageSubmission(Submission):
+class Submission(InputMessage):
+    mode: Literal["conversation", "development"] = "conversation"
+    conversation_key: str | None = Field(default=None, max_length=200)
+
+
+class MessageSubmission(InputMessage):
     request_id: str = Field(min_length=1, max_length=200)
     expected_sequence: int = Field(ge=0)
 
@@ -58,7 +63,11 @@ def task_routes(service: TaskService) -> list[BaseRoute]:
             if request.method == "POST" and task_id is None:
                 body = Submission.model_validate(await request_body(request))
                 result = service.submit(
-                    body.prompt, body.source, body.request_id
+                    body.prompt,
+                    body.source,
+                    body.request_id,
+                    mode=body.mode,
+                    conversation_key=body.conversation_key,
                 ).model_dump(mode="json")
             elif request.method == "POST":
                 assert isinstance(task_id, str)
@@ -112,7 +121,7 @@ def task_routes(service: TaskService) -> list[BaseRoute]:
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
         except KeyError:
             return JSONResponse({"error": "task_not_found"}, 404)
-        except (ValueError, ValidationError):
+        except (ValueError, ValidationError, TaskNeedsRecovery):
             return JSONResponse({"error": "invalid_request_or_unsafe_continue"}, 409)
         except asyncio.QueueFull:
             return JSONResponse({"error": "runtime_queue_full"}, 429)

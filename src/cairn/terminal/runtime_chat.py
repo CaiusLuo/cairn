@@ -29,7 +29,8 @@ from cairn.terminal.submission import PendingLine
 class RemoteConversation:
     """A client cursor, not a second execution lifecycle."""
 
-    def __init__(self, api: RuntimeClient) -> None:
+    def __init__(self, api: RuntimeClient, *, mode: str = "conversation") -> None:
+        self.mode = mode
         self.api = api
         self.task: dict[str, Any] | None = None
         self.pending: tuple[str | None, str, str, int] | None = None
@@ -55,7 +56,9 @@ class RemoteConversation:
             self.pending = (ident, prompt, request_id, sequence)
         try:
             if self.task is None:
-                self.task = await self.api.submit(prompt, "cli", request_id)
+                self.task = await self.api.submit(
+                    prompt, "cli", request_id, mode=self.mode
+                )
             else:
                 self.task = await self.api.message(
                     self.task["task_id"],
@@ -110,13 +113,17 @@ async def main(
         and sys.stdout.isatty()
     ):
         frame = TranscriptView()
+    if frame is not None:
+        frame.steering_enabled = False
     display = StreamingDisplay(
         live_factory=frame_live_region(frame) if frame else None,
         on_status=frame.observe_status if frame else None,
     )
     pending: deque[str] = deque()
     print_banner()
-    print("Shared Runtime · /new /use ID /status /history /continue /cancel /exit")
+    print(
+        "Shared Runtime · /new /develop GOAL /use ID /status /history /continue /cancel /exit"
+    )
 
     async def read() -> str:
         value = await frame.read() if frame else await reader.read()
@@ -209,8 +216,19 @@ async def main(
                 if command in {"/exit", "/quit"}:
                     return
                 if command == "/new":
-                    remote.task = None
+                    remote = RemoteConversation(api)
                     print("Next input starts a new shared conversation.")
+                    continue
+                if command == "/develop":
+                    if not argument.strip():
+                        print(
+                            "Use /develop GOAL to start an explicit development task."
+                        )
+                        continue
+                    remote = RemoteConversation(api, mode="development")
+                    show(await remote.send(argument))
+                    if not await follow():
+                        return
                     continue
                 if command == "/use":
                     history = await remote.select(argument)
@@ -242,7 +260,7 @@ async def main(
                     continue
                 if command.startswith("/"):
                     print(
-                        "Shared commands: /new /use ID /status /history /continue /cancel /exit. Model and permissions are configured by the server."
+                        "Shared commands: /new /develop GOAL /use ID /status /history /continue /cancel /exit. Model and permissions are configured by the server."
                     )
                     continue
                 print_user_message(line)

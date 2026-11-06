@@ -48,13 +48,25 @@ class RuntimeClient:
             return response.json()
 
     async def submit(
-        self, prompt: str, source: str, request_id: str | None = None
+        self,
+        prompt: str,
+        source: str,
+        request_id: str | None = None,
+        *,
+        mode: str = "development",
+        conversation_key: str | None = None,
     ) -> dict[str, Any]:
         return dict(
             await self.request(
                 "POST",
                 "tasks",
-                {"prompt": prompt, "source": source, "request_id": request_id},
+                {
+                    "prompt": prompt,
+                    "source": source,
+                    "request_id": request_id,
+                    "mode": mode,
+                    "conversation_key": conversation_key,
+                },
             )
         )
 
