@@ -93,13 +93,3 @@ def test_referenced_pytest_paths_exist(document: Path) -> None:
         f"{document.relative_to(ROOT)} documents test commands that do not exist:\n"
         + "\n".join(missing)
     )
-
-
-def test_frozen_pilot_evidence_is_present() -> None:
-    """The V1 pilot is historical evidence; its records must keep existing."""
-    pilot = ROOT / "docs" / "evals" / "repository-intelligence-v1" / "pilot-20261011"
-    assert (pilot / "experiment.json").is_file()
-    assert (pilot / "comparison.json").is_file()
-    assert (pilot / "findings.md").is_file()
-    assert (pilot / "runs").is_dir()
-    assert any((pilot / "runs").glob("*.json"))

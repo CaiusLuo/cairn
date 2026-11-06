@@ -1,36 +1,20 @@
-# Persistent WeChat service (Debian systemd)
+# Debian WeChat deployment
 
-In the interactive `/wx` flow, starting WeChat also starts this service as a
-detached host process with its own process group and a host-private
-`background-owner.json` containing the pid and a stable session label. Closing
-the CLI/SSH UI detaches only; it does not stop the background owner. A later
-`/wx` status/resume discovers the same pid/session, and only `/wx stop` sends
-SIGTERM and waits for the owner's cleanup. The detached process reuses the same
-WeChat account, state directory, queues and scheduler store. If the process died,
-the next start treats prior `started` work under the existing interrupted
-recovery policy; it never claims the old process stayed alive.
+The existing template supervises the standalone `cairn wechat serve` process.
+It does not start a shared Runtime or configure the Runtime bridge. For shared
+mode, first prepare the Runtime and use the bridge command in the
+[WeChat guide](wechat-ilink.md); a combined systemd setup is not supplied.
 
-This service hosts the existing `cairn wechat serve` entry point so it is not
-owned by an SSH PTY. The default `/wx` flow already uses the same detached
-background-owner model; this systemd unit is the optional production way to
-supervise that owner across reboots and crashes.
+## Prepare and install
 
-## Prerequisites
+Run as the intended service user: install the checkout's dependencies, configure
+the workspace provider, complete `cairn wechat login` and verify a foreground
+receiver with the same workspace, sender and private state. Use one receiver
+owner per account/state. Do not embed credential values in the unit or argv.
 
-1. Complete the first `cairn wechat login` in a foreground terminal. The account
-   token remains in the host-private state directory (`0600`), never in the unit
-   file, argv or repository.
-2. Prepare provider configuration and credentials in the same host/XDG state and
-   workspace `.env`/`.cairn/models.toml` locations used by the foreground command.
-   Do not put API keys in the unit or in `ExecStart`.
-3. Verify one foreground `cairn wechat serve ...` invocation before enabling the
-   service. Use the same workspace, sender, provider approval and state directory.
+Render `deploy/systemd/cairn-wechat.service.in`, replacing all placeholders:
 
-## Install
-
-Render the template and install it:
-
-```bash
+```sh
 cd /workspace/cairn
 sed \
   -e 's|__CAIRN_ROOT__|/workspace/cairn|g' \
@@ -49,73 +33,31 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now cairn-wechat.service
 ```
 
-The unit runs the service as an explicit user with explicit `HOME` and
-`XDG_STATE_HOME`; use the same account/state directory that contains the
-already-bound WeChat account and queues. Do not point it at a new empty state
-directory.
+Choose an existing service user with checkout access. The template sets explicit
+`HOME` and `XDG_STATE_HOME`; they must locate the account/state used at login.
+Optional `/etc/cairn/cairn-wechat.env` is host-private configuration, not a
+repository file. Protect it and the account files from other users.
 
-## Runtime control and health
+## Operate
 
-`/wx` launches the detached owner through a bounded supervisor. The supervisor
-restarts an unexpectedly exited child with exponential backoff and forwards
-SIGTERM to the child before exiting. `background-owner.json` records the
-supervisor pid and session label; `background.log` receives child/supervisor
-output. A failed start is reported with the log tail instead of being treated as
-running.
-
-While the owner is alive it opens a 0600 `control.sock` under the host-private
-state directory. `/wx status` queries `status` and can report the real pid,
-session label, poll count and queue depth rather than only a stale pid file.
-`tasks` and `chat` snapshots are also available over the same Unix socket.
-
-## Operations
-
-```bash
+```sh
 sudo systemctl status cairn-wechat.service
+sudo journalctl -u cairn-wechat.service -n 50 --no-pager
 sudo journalctl -u cairn-wechat.service -f
 sudo systemctl stop cairn-wechat.service
 sudo systemctl restart cairn-wechat.service
 ```
 
-`Restart=on-failure` provides bounded restart with `RestartSec=5` and
-`StartLimitIntervalSec/Burst`; `systemctl stop` sends SIGTERM, the service stops
-admitting work, settles its owned worker/chat/classifier/scheduler cleanup and
-releases the host state lock. It is not restarted after a normal stop.
+The unit uses SIGTERM, owned cleanup and `Restart=on-failure` with bounded restart
+frequency. Closing an SSH session does not stop a systemd service. Verify status
+and a real reply after detaching; an installed unit alone does not establish
+service health.
 
-`cairn wechat serve` keeps the existing single-instance state-directory lock.
-If the service is already running, foreground `/wx` is not a second consumer;
-stop the service first. Do not delete the lock file to bypass a live owner.
+The local CLI's `/wx` flow instead starts a detached supervisor. `/wx status`
+queries its private control socket; `background-owner.json` identifies the owner
+and `background.log` holds its output. `/wx stop` stops that owner. Do not launch
+the systemd receiver concurrently with it using the same state directory.
 
-SIGTERM/SIGINT are mapped to the existing `serve_wechat` stop-event and owned
-cleanup. Queued messages survive restart; a task already `started` is marked
-interrupted according to existing recovery policy and is not replayed. Do not
-automatically recreate missed scheduled tasks.
-
-## SSH acceptance
-
-After enabling, disconnect the test SSH/PTY session and verify WeChat still
-answers:
-
-```bash
-# from another terminal, while the first SSH session is closed
-sudo systemctl status cairn-wechat.service
-sudo journalctl -u cairn-wechat.service -n 50 --no-pager
-# send a normal progress/chat message from the trusted WeChat sender
-```
-
-The service must still be active and reply. This does not test the foreground
-`uv run cairn` + `/wx` mode; that mode remains foreground-only.
-
-## Acceptance matrix
-
-Use an isolated state directory and fake iLink/model for the mechanical checks;
-use the real account only for the final user acceptance.
-
-| Scenario | Expected evidence |
-| --- | --- |
-| Normal chat | Non-empty model reply, or a structured `empty_response`/runtime error; never the old canned sentence |
-| Long task + chat write | Chat receives `project_busy`; no partial file write; task keeps running |
-| SSH/PTY disconnect | Owner remains active; control `status` returns same pid/session |
-| Child crash | Supervisor restarts the child with bounded backoff; journal/log records the exit |
-| Explicit `/wx stop` | SIGTERM forwarded, child cleanup, lease/lock released, no residual child |
-| Multi-turn chat | Same sender Session/context continues; no duplicate consumer or task |
+If a process dies, inspect the queue and surviving effects before recovering
+started work. Neither a restart nor a deleted lock proves that work is safe to
+repeat. See [operations and recovery](pilot-runbook.md).
