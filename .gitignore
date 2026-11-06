@@ -30,3 +30,5 @@ litellm_cache/
 
 # Ignore codegraph files
 .codegraph/
+# Ignore local web surface runtime files
+.run/
