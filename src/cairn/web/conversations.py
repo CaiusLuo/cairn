@@ -252,6 +252,11 @@ def conversation_routes(
                     )
                     cursor = event.sequence
                 await websocket.send_json({"type": "ready", "cursor": cursor})
+                snapshot = service.preview_snapshot(run_id)
+                if snapshot:
+                    await websocket.send_json(
+                        {"type": "preview_snapshot", "text": snapshot}
+                    )
                 while True:
                     pending = asyncio.create_task(queue.get())
                     done, _ = await asyncio.wait(

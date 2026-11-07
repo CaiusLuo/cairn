@@ -142,6 +142,7 @@ class ConversationService:
         self.cancel_requested: set[str] = set()
         self.stopping = False
         self.subscribers: dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
+        self.active_ledgers: dict[str, RunLedger] = {}
         self.changed = asyncio.Event()
 
     async def start(self) -> None:
@@ -365,6 +366,10 @@ class ConversationService:
             metadata=metadata,
         )
 
+    def preview_snapshot(self, run_id: str) -> str:
+        ledger = self.active_ledgers.get(run_id)
+        return ledger.preview if ledger is not None else ""
+
     def publish(self, run_id: str, message: dict[str, Any]) -> None:
         for queue in tuple(self.subscribers.get(run_id, ())):
             if queue.full():
@@ -508,6 +513,7 @@ class ConversationService:
             session_id=run.session_id or (prior.session_id if prior else None),
             on_event=lambda _kind: self.changed.set(),
         )
+        self.active_ledgers[run_id] = ledger
 
         def emit(kind: str, data: dict[str, Any]) -> None:
             current = ledger.inspect(run_id)
@@ -590,6 +596,7 @@ class ConversationService:
                 ended_at=_now(),
             )
         finally:
+            self.active_ledgers.pop(run_id, None)
             self.cancel_requested.discard(run_id)
             self.active_run_id = None
             self.changed.set()

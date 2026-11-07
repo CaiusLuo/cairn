@@ -122,6 +122,7 @@ export function ConversationPanel() {
       if (!live) return;
       const data = JSON.parse(message.data);
       if (data.type === "preview") setPreview(old => (old + data.text).slice(-64000));
+      else if (data.type === "preview_snapshot") setPreview(data.text.slice(-64000));
       else if (data.type === "event" && ["running", "failed", "paused", "completed", "recovery_required"].includes(data.kind)) setPreview("");
     };
     socket.onerror = () => socket.close();
