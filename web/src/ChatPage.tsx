@@ -1,3 +1,13 @@
 import { Sidebar } from "./components/Sidebar";
-import { RuntimePanel } from "./tasks/RuntimePanel";
-export function ChatPage() { return <div className="app-shell"><Sidebar active="chat" /><main className="chat-main"><RuntimePanel /></main></div>; }
+import { ConversationPanel } from "./ConversationPanel";
+
+export function ChatPage() {
+  return (
+    <div className="app-shell">
+      <Sidebar active="chat" />
+      <main className="chat-main">
+        <ConversationPanel />
+      </main>
+    </div>
+  );
+}

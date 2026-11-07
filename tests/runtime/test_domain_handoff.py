@@ -59,12 +59,12 @@ def test_real_chat_to_development_creates_one_board_card_and_migrates(
             tmp_path / "state",
             tmp_path / "worktrees",
             budget=RunBudget(5),
-            token="test-runtime-token",
+            token="zzzz",
         )
         app.state.execution.llm_factory = AdaptiveModel
         api = RuntimeClient(
             "http://127.0.0.1:8777",
-            "test-runtime-token",
+            "zzzz",
             transport=httpx.ASGITransport(app=app),
         )
         final: dict[str, Any] | None = None

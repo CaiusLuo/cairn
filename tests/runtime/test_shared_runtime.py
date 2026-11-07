@@ -792,29 +792,35 @@ def test_interactive_input_can_return_after_a_web_turn(
                 self.index += 1
                 if self.index == 1:
                     return "Create artifact"
-                task = app.state.runtime.list_tasks()[0]
+                conversation = app.state.conversations.list_conversations()[0]
                 if self.index == 2:
-                    await api.message(
-                        task.task_id,
+                    await api.send_conversation(
+                        conversation.conversation_id,
                         "Web followup",
                         source="web",
                         request_id="web-input",
-                        expected_sequence=task.sequence,
                     )
-                    await asyncio.wait_for(app.state.runtime.queue.join(), 30)
-                    return "/use " + str(task.task_id)
+                    await asyncio.wait_for(app.state.conversations.queue.join(), 30)
+                    return "/use " + str(conversation.conversation_id)
                 return "CLI followup" if self.index == 3 else "/exit"
 
         async with app.router.lifespan_context(app):
             await shared_main(api, cli_input=Input())
-            task = app.state.runtime.list_tasks()[0]
-            history = app.state.execution.history(task)
+            conversation = app.state.conversations.list_conversations()[0]
+            history = await api.conversation_history(conversation.conversation_id)
             assert [m["content"] for m in history if m["role"] == "user"] == [
                 "Create artifact",
                 "Web followup",
                 "CLI followup",
             ]
-            assert task.attempts == 3
+            assert (
+                len(
+                    app.state.conversations.runs_for_conversation(
+                        conversation.conversation_id
+                    )
+                )
+                == 3
+            )
             assert "共享 Server" in capsys.readouterr().out
 
     asyncio.run(scenario())

@@ -27,6 +27,113 @@ from cairn.terminal.server_commands import ServerCommands
 from cairn.terminal.submission import PendingLine
 
 
+class RemoteChat:
+    """Conversation/Run client for ordinary chat; no task_id identity."""
+
+    def __init__(self, api: RuntimeClient) -> None:
+        self.api = api
+        self.conversation: dict[str, Any] | None = None
+        self.task: dict[str, Any] | None = None
+        self.pending: tuple[str | None, str, str, int] | None = None
+
+    def _set_run(self, run: dict[str, Any]) -> dict[str, Any]:
+        self.task = {
+            **run,
+            "task_id": run["run_id"],
+            "display_id": run["conversation_id"],
+            "sequence": run.get("cursor", 0),
+        }
+        return self.task
+
+    async def select(self, ident: str) -> list[dict[str, Any]]:
+        if ident.startswith("conv-"):
+            detail = await self.api.get_conversation(ident)
+            self.conversation = detail["conversation"]
+            runs = detail.get("runs", [])
+            if runs:
+                self._set_run(dict(runs[-1], cursor=0))
+            return await self.api.conversation_history(ident)
+        if ident.startswith("run-"):
+            run = await self.api.get_run(ident)
+            self.conversation = (
+                await self.api.get_conversation(run["conversation_id"])
+            )["conversation"]
+            self.task = self._set_run({**run, "cursor": 0})
+            return await self.api.conversation_history(run["conversation_id"])
+        raise ValueError("Use a Conversation or Run ID")
+
+    async def send(
+        self, prompt: str, *, request_id: str | None = None
+    ) -> dict[str, Any]:
+        if self.pending is not None:
+            if self.pending[:2] != (
+                self.conversation["conversation_id"] if self.conversation else None,
+                prompt,
+            ):
+                raise ValueError(
+                    "Retry the unacknowledged input before sending another message"
+                )
+            request_id = self.pending[2]
+        else:
+            request_id = request_id or "cli:" + uuid4().hex
+            self.pending = (
+                self.conversation["conversation_id"] if self.conversation else None,
+                prompt,
+                request_id,
+                0,
+            )
+        try:
+            if self.conversation is None:
+                created = await self.api.create_conversation(prompt, source="cli")
+                self.conversation = created
+            run = await self.api.send_conversation(
+                self.conversation["conversation_id"],
+                prompt,
+                source="cli",
+                request_id=request_id,
+            )
+        except httpx.HTTPStatusError:
+            self.pending = None
+            raise
+        self.pending = None
+        return self._set_run(run)
+
+    async def wait(
+        self, observe: Callable[[Event], object] | None = None
+    ) -> dict[str, Any]:
+        assert self.task is not None
+        run_id = self.task["run_id"]
+        cursor = int(self.task.get("cursor", 0))
+        while True:
+            page = await self.api.run_events(run_id, after=cursor, wait=True)
+            for item in page["events"]:
+                if observe is not None and item["kind"] in get_args(EventType):
+                    observe(Event(type=item["kind"], data=item["data"]))
+            cursor = int(page["cursor"])
+            run = await self.api.get_run(run_id)
+            self.task = self._set_run({**run, "cursor": cursor})
+            if run["status"] not in {"queued", "running"}:
+                return self.task
+
+    async def refresh(self) -> dict[str, Any]:
+        assert self.task is not None
+        run = await self.api.get_run(self.task["run_id"])
+        self.task = self._set_run({**run, "cursor": self.task.get("cursor", 0)})
+        return self.task
+
+    async def history(self) -> list[dict[str, Any]]:
+        if self.conversation is None:
+            return []
+        return await self.api.conversation_history(self.conversation["conversation_id"])
+
+    async def control(self, action: str) -> dict[str, Any]:
+        if action != "cancel":
+            raise ValueError("Conversation runs only support cancel")
+        assert self.task is not None
+        run = await self.api.cancel_run(self.task["run_id"])
+        return self._set_run({**run, "cursor": self.task.get("cursor", 0)})
+
+
 class RemoteConversation:
     """A client cursor, not a second execution lifecycle."""
 
@@ -40,6 +147,22 @@ class RemoteConversation:
         self.task = await self.api.inspect(task_id)
         self.pending = None
         return list(await self.api.request("GET", f"tasks/{task_id}/history"))
+
+    async def refresh(self) -> dict[str, Any]:
+        assert self.task is not None
+        self.task = await self.api.inspect(self.task["task_id"])
+        return self.task
+
+    async def history(self) -> list[dict[str, Any]]:
+        assert self.task is not None
+        return list(
+            await self.api.request("GET", f"tasks/{self.task['task_id']}/history")
+        )
+
+    async def control(self, action: str) -> dict[str, Any]:
+        assert self.task is not None
+        self.task = await self.api.control(self.task["task_id"], action)
+        return self.task
 
     async def send(
         self, prompt: str, *, request_id: str | None = None
@@ -105,7 +228,7 @@ async def main(
     cli_input: CliInput | None = None,
     frame: TranscriptView | None = None,
 ) -> None:
-    remote = RemoteConversation(api)
+    remote: RemoteChat | RemoteConversation = RemoteChat(api)
     try:
         catalog = await api.request("GET", "commands")
     except httpx.HTTPStatusError as error:
@@ -152,7 +275,7 @@ async def main(
         return value.text if isinstance(value, PendingLine) else value
 
     def show(task: dict[str, Any]) -> None:
-        print(f"{task['task_id']} · {task['status']}")
+        print(f"{task.get('display_id', task['task_id'])} · {task['status']}")
 
     async def manage(line: str, *, following: bool = False) -> bool:
         command, _, argument = line.strip().partition(" ")
@@ -171,7 +294,7 @@ async def main(
         ):
             await remote.select(result["task_id"])
         elif remote.task:
-            remote.task = await api.inspect(remote.task["task_id"])
+            remote.task = await remote.refresh()
         return True
 
     async def follow() -> bool:
@@ -195,7 +318,7 @@ async def main(
                 )
                 if cancelling in done:
                     assert remote.task is not None
-                    await api.control(remote.task["task_id"], "cancel")
+                    await remote.control("cancel")
                     stopped.clear()
                     cancelling = asyncio.create_task(stopped.wait())
                 if reading is not None and reading in done:
@@ -210,7 +333,7 @@ async def main(
                         continue
                     if line.strip() == "/status":
                         if remote.task:
-                            show(await api.inspect(remote.task["task_id"]))
+                            show(await remote.refresh())
                         continue
                     if line.strip() == "/cancel":
                         stopped.set()
@@ -262,7 +385,7 @@ async def main(
                 if command in {"/exit", "/quit"}:
                     return
                 if command == "/new":
-                    remote = RemoteConversation(api)
+                    remote = RemoteChat(api)
                     print("Next input starts a new shared conversation.")
                     continue
                 if command == "/develop":
@@ -288,9 +411,8 @@ async def main(
                     if remote.task is None:
                         print("Select a task with /use ID first.")
                         continue
-                    ident = remote.task["task_id"]
                     if command == "/history":
-                        for item in await api.request("GET", f"tasks/{ident}/history"):
+                        for item in await remote.history():
                             if item.get("content") and item["role"] in {
                                 "user",
                                 "assistant",
@@ -298,9 +420,9 @@ async def main(
                                 print(f"{item['role']}: {item['content']}")
                         continue
                     remote.task = (
-                        await api.inspect(ident)
+                        await remote.refresh()
                         if command == "/status"
-                        else await api.control(ident, command[1:])
+                        else await remote.control(command[1:])
                     )
                     show(remote.task)
                     if (
