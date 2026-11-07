@@ -362,3 +362,25 @@ def test_explicit_missing_taskboard_source_is_rejected(tmp_path: Path) -> None:
         domain_migration.plan_migration(
             runtime, workspace, taskboard_path=tmp_path / "missing-tasks.json"
         )
+
+
+def test_failed_and_cancelled_board_items_are_not_closed(tmp_path: Path) -> None:
+    runtime, workspace, board_path = _legacy_files(tmp_path)
+    raw = json.loads(board_path.read_text())
+    raw["tasks"][0]["status"] = "failed"
+    board_path.write_text(json.dumps(raw))
+    plan = domain_migration.plan_migration(
+        runtime, workspace, taskboard_path=board_path
+    )
+    failed = next(task for task in plan.tasks if task.title == "Manual board card")
+    assert failed.status is TaskStatus.WAITING
+    assert failed.metadata["legacy_taskboard"]["status"] == "failed"
+
+    raw["tasks"][0]["status"] = "cancelled"
+    board_path.write_text(json.dumps(raw))
+    plan = domain_migration.plan_migration(
+        runtime, workspace, taskboard_path=board_path
+    )
+    cancelled = next(task for task in plan.tasks if task.title == "Manual board card")
+    assert cancelled.status is TaskStatus.WAITING
+    assert cancelled.metadata["legacy_taskboard"]["status"] == "cancelled"

@@ -196,8 +196,8 @@ _BOARD_TASK_STATUS = {
     TaskBoardStatus.RUNNING: TaskStatus.IN_PROGRESS,
     TaskBoardStatus.WAITING: TaskStatus.WAITING,
     TaskBoardStatus.COMPLETED: TaskStatus.DONE,
-    TaskBoardStatus.FAILED: TaskStatus.CLOSED,
-    TaskBoardStatus.CANCELLED: TaskStatus.CLOSED,
+    TaskBoardStatus.FAILED: TaskStatus.WAITING,
+    TaskBoardStatus.CANCELLED: TaskStatus.WAITING,
 }
 
 

@@ -128,7 +128,8 @@ or changing capabilities requires host configuration and restart.
 | --- | --- |
 | `server.lock` | One Server/import operation per root; kernel flock, no PID supervision |
 | `runtime/runtime.token` | Private client/browser credential |
-| `runtime/runtime.json`, `runtime/owner.lock` | RuntimeCatalogue task/event facts and lifetime writer ownership |
+| `runtime/runtime.json`, `runtime/owner.lock` | Legacy RuntimeCatalogue task/event facts and lifetime writer ownership; development compatibility path |
+| `runtime/domain.sqlite3` | DomainStore Conversation/Task/Run facts, Run request idempotency and ordered Run events for online chat |
 | `runtime/controls.json` | ServerControls preferences, selected model, reviewed management receipts and uncertain delivery facts |
 | `runtime/sessions/sessions.sqlite3`, `-wal`, `-shm` | SessionStore checkpoints, bindings, tool fences/side effects, task ledger and recovery facts |
 | `runtime/sessions/writer.lock`, `inspection.lock`, schema backup files | Existing SQLite writer/read/schema recovery protocol |
@@ -146,7 +147,7 @@ state is persistent facts; workspace/worktrees are execution roots. Secrets are
 protected environment/files, including the private WeChat account record and
 Runtime token. Host state and policy paths cannot overlap either writable root.
 
-Task diagnostics are retained in Runtime events and SessionStore. Existing
+Task diagnostics are retained in Runtime events and SessionStore. Ordinary chat Run facts are owned by DomainStore; RuntimeCatalogue stays a development/migration boundary. Existing
 standalone trace JSONL/index files and project-memory SQLite files are not a
 second production Server store; they are not deleted or implicitly converted.
 The import copies retained files in selected component trees without changing

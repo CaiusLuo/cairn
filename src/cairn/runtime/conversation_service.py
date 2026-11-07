@@ -371,6 +371,9 @@ class ConversationService:
 
     async def close(self) -> None:
         self.stopping = True
+        if self.active_task is not None and not self.active_task.done():
+            self.active_task.cancel()
+            await settle_owned(self.active_task)
         if self.worker is not None:
             outcome = await settle_owned(self.worker)
             if outcome.cancellation is not None:

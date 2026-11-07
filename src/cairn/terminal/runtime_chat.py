@@ -228,7 +228,11 @@ async def main(
     cli_input: CliInput | None = None,
     frame: TranscriptView | None = None,
 ) -> None:
-    remote: RemoteChat | RemoteConversation = RemoteChat(api)
+    remote: RemoteChat | RemoteConversation = (
+        RemoteChat(api)
+        if task_id is None or task_id.startswith(("conv-", "run-"))
+        else RemoteConversation(api)
+    )
     try:
         catalog = await api.request("GET", "commands")
     except httpx.HTTPStatusError as error:
