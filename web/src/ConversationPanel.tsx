@@ -35,7 +35,21 @@ export function ConversationPanel() {
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const pending = useRef<{ prompt: string; requestId: string } | null>(null);
+  const pending = useRef<{ prompt: string; requestId: string; conversationRequestId: string } | null>(null);
+
+  useEffect(() => {
+    const saved = sessionStorage.getItem("cairn.pending");
+    if (!saved) return;
+    try {
+      const value = JSON.parse(saved);
+      if (value.prompt && value.requestId && value.conversationRequestId) {
+        pending.current = value;
+        setPrompt(value.prompt);
+      }
+    } catch {
+      sessionStorage.removeItem("cairn.pending");
+    }
+  }, []);
 
   const selected = conversations.find(item => item.conversation_id === active);
 
@@ -124,11 +138,17 @@ export function ConversationPanel() {
     setBusy(true);
     setError("");
     const requestId = pending.current?.requestId ?? `web:${crypto.randomUUID()}`;
-    pending.current = { prompt: text, requestId };
+    const conversationRequestId = pending.current?.conversationRequestId ?? `web-conv:${crypto.randomUUID()}`;
+    pending.current = { prompt: text, requestId, conversationRequestId };
+    sessionStorage.setItem("cairn.pending", JSON.stringify(pending.current));
     try {
       let conversationId = active;
       if (!conversationId) {
-        const created: Conversation = await runtimeApi("conversations", { prompt: text, source: "web" });
+        const created: Conversation = await runtimeApi("conversations", {
+          prompt: text,
+          source: "web",
+          request_id: conversationRequestId,
+        });
         conversationId = created.conversation_id;
         setActive(conversationId);
       }
@@ -140,6 +160,7 @@ export function ConversationPanel() {
       setRun(next);
       setPrompt("");
       pending.current = null;
+      sessionStorage.removeItem("cairn.pending");
     } catch (reason) {
       setError(String(reason));
     } finally {
