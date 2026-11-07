@@ -66,7 +66,13 @@ and Schedule share the same Server. Use an SSH tunnel for a remote server.
 
 Chat normally, or enter `/develop GOAL`. `/status`, `/history`, `/cancel`,
 `/new` and `/use CONVERSATION_ID` operate on the same server-owned Conversation;
-`/continue` and development task controls remain on the explicit development path. `/wx` starts login;
+`/continue` and development task controls remain on the explicit development path.
+Conversation creation and messages accept a stable `request_id`; retries return
+the original Conversation/Run and never fork a duplicate. Run cancellation is a
+`POST /api/runtime/runs/{run_id}/cancel`; recovery review uses
+`GET /api/runtime/runs/{run_id}/recovery` and
+`POST /api/runtime/runs/{run_id}/reconcile`.
+`/wx` starts login;
 `/wx status` and `/wx verify CODE` manage it. Web Settings offers these same
 controls plus Schedule and Memory. Client exit leaves background services running.
 

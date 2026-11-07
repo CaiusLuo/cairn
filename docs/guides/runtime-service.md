@@ -129,7 +129,7 @@ or changing capabilities requires host configuration and restart.
 | `server.lock` | One Server/import operation per root; kernel flock, no PID supervision |
 | `runtime/runtime.token` | Private client/browser credential |
 | `runtime/runtime.json`, `runtime/owner.lock` | Legacy RuntimeCatalogue task/event facts and lifetime writer ownership; development compatibility path |
-| `runtime/domain.sqlite3` | DomainStore Conversation/Task/Run facts, Run request idempotency and ordered Run events for online chat |
+| `runtime/domain.sqlite3` | DomainStore Conversation/Task/Run facts, conversation/run request idempotency and ordered Run events for online chat |
 | `runtime/controls.json` | ServerControls preferences, selected model, reviewed management receipts and uncertain delivery facts |
 | `runtime/sessions/sessions.sqlite3`, `-wal`, `-shm` | SessionStore checkpoints, bindings, tool fences/side effects, task ledger and recovery facts |
 | `runtime/sessions/writer.lock`, `inspection.lock`, schema backup files | Existing SQLite writer/read/schema recovery protocol |
