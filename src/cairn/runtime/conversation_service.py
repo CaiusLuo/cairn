@@ -94,6 +94,7 @@ class ConversationService:
         self.workspace = workspace.resolve()
         self.workspace_id = workspace_id_for(self.workspace)
         self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=queue_size)
+        self.queued_ids: set[str] = set()
         self.worker: asyncio.Task[None] | None = None
         self.active_run_id: str | None = None
         self.active_task: asyncio.Task[None] | None = None
@@ -114,7 +115,8 @@ class ConversationService:
                     status=RunStatus.RECOVERY_REQUIRED,
                     error="process_interrupted",
                 )
-            elif run.status is RunStatus.QUEUED:
+            elif run.status is RunStatus.QUEUED and run.run_id not in self.queued_ids:
+                self.queued_ids.add(run.run_id)
                 self.queue.put_nowait(run.run_id)
         self.worker = asyncio.create_task(self._work())
 
@@ -175,7 +177,8 @@ class ConversationService:
             source=source,
             request_id=request_id,
         )
-        if existing is None:
+        if existing is None and run.run_id not in self.queued_ids:
+            self.queued_ids.add(run.run_id)
             self.queue.put_nowait(run.run_id)
         return run
 
@@ -261,6 +264,7 @@ class ConversationService:
     async def _work(self) -> None:
         while True:
             run_id = await self.queue.get()
+            self.queued_ids.discard(run_id)
             task = asyncio.create_task(self._run(run_id))
             self.active_task = task
             try:
