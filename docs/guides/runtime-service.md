@@ -203,14 +203,20 @@ their own path, so the shell working directory does not change configuration.
 First-time host setup needs root; normal operations need systemd rights.
 `CAIRN_CONFIG` (absolute path) and `CAIRN_SERVICE` select another host config and
 Cairn unit; supply the same service name to `end.sh` when using a custom unit.
+`start.sh` rejects every other exported `CAIRN_*` variable before preparing
+files or calling systemd. Put Server settings in the host TOML and secrets in
+the private `.env` or service EnvironmentFile. Foreground `uv run cairn` keeps
+its existing CLI/environment/TOML priority.
 
 On first use, `start.sh`:
 
 - Creates `/etc/cairn/config.toml` only when absent. The workspace is this
-  checkout by default. It records the current user's existing XDG data root and
-  its worktrees directory as absolute paths when the example leaves them unset.
-  Existing state is not moved or deleted; custom legacy roots still need explicit
-  configuration or import.
+  checkout by default. The example explicitly sets `/var/lib/cairn` and its
+  worktrees directory. If the selected service account already has state in
+  `~/.local/state/cairn`, first-use setup records that account's existing absolute
+  path instead. Conflicting nonempty roots require explicit selection. Existing
+  host configs must specify both data and worktrees paths; the caller's HOME/XDG
+  never supplies systemd defaults. State is not moved or deleted.
 - Creates a missing private provider approval from your selected provider and
   first model group, using the existing `.env`/`.cairn/models.toml` loader. This
   records public routing metadata and the key variable name, never the key.
@@ -219,8 +225,10 @@ On first use, `start.sh`:
 - Runs `check-config`, then installs and enables a missing
   `/etc/systemd/system/cairn.service` from the repository template. A newly
   installed unit runs as the invoking effective user (root under `sudo`). For a
-  dedicated service account, install the template with that account and grant it
-  access to workspace, worktrees, state and private credentials before starting.
+  dedicated service account, prepare its explicit host files and owned data
+  directories first, then install the template and grant it access. Automatic
+  creation refuses to substitute root-owned defaults for an existing dedicated
+  account unit. Configuration preflight runs as that unit account.
 - Starts through systemd and waits for an authenticated readiness check matching
   its MainPID and configured paths. It prints the actual PID once ready, or an
   error and the journald inspection command. Missing dependencies, Web assets,
@@ -239,7 +247,9 @@ The unit supervises one process, restarts failures, sends SIGTERM and records
 stdout/stderr in journald. It does not duplicate host policy in command flags.
 There are no `nohup` processes or script-managed PID files. `end.sh` queries the
 named unit even if configuration is broken, reports its MainPID before stopping,
-waits for systemd's normal shutdown, and confirms PID=0. A missing or already
+shows progress while awaiting systemd's normal shutdown, and confirms PID=0.
+The wrapper stops waiting after 130 seconds and reports the last state; it never
+adds a force-kill. Systemd queries have a 10-second local timeout. A missing or already
 stopped service is reported without sending a signal to an unrelated process.
 `./start.sh stop` delegates to `end.sh`.
 

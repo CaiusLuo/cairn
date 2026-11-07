@@ -56,7 +56,15 @@ def test_systemd_restarts_server_and_retains_paused_work() -> None:
     ) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
             ["bash", "start.sh", action],
-            env={**os.environ, "CAIRN_CONFIG": str(config), "CAIRN_SERVICE": name},
+            env={
+                **{
+                    key: value
+                    for key, value in os.environ.items()
+                    if not key.startswith("CAIRN_")
+                },
+                "CAIRN_CONFIG": str(config),
+                "CAIRN_SERVICE": name,
+            },
             capture_output=True,
             text=True,
             timeout=30,

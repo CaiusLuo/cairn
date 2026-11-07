@@ -111,16 +111,30 @@ def load_server_config(
     )
     chosen = _policy_path(chosen, None, "config")
     assert chosen is not None
-    data: dict[str, Any] = {}
     if explicit or chosen.exists():
         if chosen.stat().st_size > 65536:
             raise ValueError("Server configuration exceeds 64 KiB")
-        try:
-            data = tomllib.loads(chosen.read_text())
-        except tomllib.TOMLDecodeError:
-            raise ValueError("Invalid Server TOML configuration") from None
+        text = chosen.read_text()
     else:
         chosen = None
+        text = ""
+    return parse_server_config(text, path=chosen, overrides=overrides)
+
+
+def parse_server_config(
+    text: str,
+    *,
+    path: Path | None = None,
+    overrides: dict[str, Any] | None = None,
+) -> ServerConfig:
+    """Validate a prospective host config before publishing it to disk."""
+    chosen = _policy_path(path, None, "config") if path is not None else None
+    if len(text.encode()) > 65536:
+        raise ValueError("Server configuration exceeds 64 KiB")
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        raise ValueError("Invalid Server TOML configuration") from None
     sections = {"server", "budget", "services", "logging"}
     if set(data) - sections or any(not isinstance(v, dict) for v in data.values()):
         raise ValueError("Expected only [server], [budget], [services], [logging]")

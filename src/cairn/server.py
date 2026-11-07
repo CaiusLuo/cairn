@@ -352,8 +352,9 @@ def check_config(ctx: typer.Context) -> None:
 def check_running(
     ctx: typer.Context,
     pid: Annotated[int | None, typer.Option("--pid")] = None,
+    wait: Annotated[float, typer.Option("--wait", min=0, max=120)] = 0.0,
 ) -> None:
-    """Refuse restart when this config cannot identify the running Server."""
+    """Authenticate the supervised Server, optionally waiting for HTTP startup."""
     from cairn.infra.runtime_client import RuntimeClient
 
     settings: ServerConfig = ctx.obj
@@ -364,13 +365,24 @@ def check_running(
         "worktrees_root": str(paths.worktrees),
         "url": settings.url,
     }
-    try:
-        api = RuntimeClient(settings.url, read_token(paths.token))
-        actual = asyncio.run(api.request("GET", "bootstrap"))
-    except Exception:
-        raise RuntimeError(
-            "Cannot identify running Server with this configuration; inspect the old service and stop it explicitly before changing data_root/port"
-        ) from None
+
+    async def identity() -> Any:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait
+        while True:
+            try:
+                api = RuntimeClient(settings.url, read_token(paths.token))
+                request = api.request("GET", "bootstrap")
+                timeout = min(2.0, max(0.01, deadline - loop.time())) if wait else 20.0
+                return await asyncio.wait_for(request, timeout=timeout)
+            except Exception:
+                if loop.time() >= deadline:
+                    raise RuntimeError(
+                        "Cannot identify running Server with this configuration; inspect the old service and stop it explicitly before changing data_root/port"
+                    ) from None
+                await asyncio.sleep(min(0.5, max(0, deadline - loop.time())))
+
+    actual = asyncio.run(identity())
     if not isinstance(actual, dict) or (pid is not None and actual.get("pid") != pid):
         raise RuntimeError(
             "Running Server PID does not match the selected systemd unit; no service was stopped"
