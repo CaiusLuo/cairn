@@ -195,7 +195,8 @@ def render_unit(root: Path, config: Path, user: str) -> str:
 
     unit = (root / "deploy/systemd/cairn.service.in").read_text()
     unit = unit.replace(
-        "WorkingDirectory=__CAIRN_ROOT__", "WorkingDirectory=" + quote(root)
+        "WorkingDirectory=__CAIRN_ROOT__",
+        "WorkingDirectory=" + str(root).replace("%", "%%"),
     )
     unit = unit.replace(
         "ExecStart=__CAIRN_ROOT__/.venv/bin/cairn --config __CAIRN_CONFIG__",

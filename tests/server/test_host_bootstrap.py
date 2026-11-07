@@ -169,6 +169,7 @@ def test_unit_install_is_exclusive_and_rendered_for_selected_user(
     unit = tmp_path / "units/cairn-isolated.service"
     original = unit.read_bytes()
     assert f"User={user}" in original.decode()
+    assert f"WorkingDirectory={root}" in original.decode()
     assert f'--config "{config}"' in original.decode()
     with pytest.raises(FileExistsError):
         bootstrap.install_unit(root, config, "cairn-isolated.service", user)
