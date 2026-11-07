@@ -12,8 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.mark.parametrize(
     "entrypoint",
     [
-        ("scripts/github/run_issue_task.py",),
-        ("scripts/pilot/preflight.py",),
+        ("scripts/ci/check_server_wheel.py",),
     ],
 )
 def test_repository_entrypoint_help_is_available(entrypoint: tuple[str, ...]) -> None:

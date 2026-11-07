@@ -8,17 +8,12 @@ SQLite version that matters is the library linked to this Python interpreter:
 ```sh
 uv run python -c "import sqlite3; print(sqlite3.sqlite_version)"
 git --version
-uv run python scripts/pilot/preflight.py --profile durable
 ```
 
 The current SQLite admission policy accepts 3.51.3+, the patched 3.50.7+ branch
 and the patched 3.44.6+ branch. Check `src/cairn/infra/sqlite_policy.py` when
 upgrading: a system `sqlite3` CLI does not change Python's linked library. An
 unverified-development override is not proof of supported storage.
-
-Preflight checks local configuration, shell and storage without a model request.
-It does not establish provider, WeChat or publication health. Run it from the
-target workspace; read BLOCKED diagnostics before changing host configuration.
 
 Keep Runtime state, policy/approval files, WeChat account state and durable
 Session stores outside source and Worktree writable roots. Preserve private
