@@ -129,6 +129,52 @@ class RuntimeClient:
             )
         )
 
+    async def create_conversation(
+        self, prompt: str, *, source: str = "cli"
+    ) -> dict[str, Any]:
+        return dict(
+            await self.request(
+                "POST",
+                "conversations",
+                {"prompt": prompt, "source": source},
+            )
+        )
+
+    async def send_conversation(
+        self,
+        conversation_id: str,
+        prompt: str,
+        *,
+        source: str = "cli",
+        request_id: str,
+    ) -> dict[str, Any]:
+        return dict(
+            await self.request(
+                "POST",
+                f"conversations/{conversation_id}/messages",
+                {"prompt": prompt, "source": source, "request_id": request_id},
+            )
+        )
+
+    async def get_conversation(self, conversation_id: str) -> dict[str, Any]:
+        return dict(await self.request("GET", f"conversations/{conversation_id}"))
+
+    async def conversation_history(self, conversation_id: str) -> list[dict[str, Any]]:
+        result = await self.request("GET", f"conversations/{conversation_id}/history")
+        return list(result) if isinstance(result, list) else []
+
+    async def get_run(self, run_id: str) -> dict[str, Any]:
+        return dict(await self.request("GET", f"runs/{run_id}"))
+
+    async def cancel_run(self, run_id: str) -> dict[str, Any]:
+        return dict(await self.request("POST", f"runs/{run_id}/cancel", {}))
+
+    async def run_events(
+        self, run_id: str, *, after: int = 0, wait: bool = False
+    ) -> dict[str, Any]:
+        suffix = "?after=" + str(after) + ("&wait=1" if wait else "")
+        return dict(await self.request("GET", f"runs/{run_id}/events{suffix}"))
+
     async def inspect(self, task_id: str) -> dict[str, Any]:
         self._id(task_id)
         return dict(await self.request("GET", "tasks/" + task_id))

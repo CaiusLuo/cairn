@@ -26,10 +26,12 @@ from cairn.infra.config.server import (
     Services,
     load_server_config,
 )
+from cairn.infra.domain_store import DomainStore
 from cairn.infra.runtime_catalog import RuntimeCatalogue
 from cairn.infra.runtime_client import read_runtime_token as read_token
 from cairn.infra.task_board.store import TaskBoardStore
 from cairn.infra.workspace.lease import WorkspaceLease
+from cairn.runtime.conversation_service import ConversationService
 from cairn.runtime.lifecycle import await_owned
 from cairn.runtime.offline_model import OfflineDevelopmentModel
 from cairn.runtime.provider_runtime import ProviderRuntime, build_provider_runtime
@@ -97,6 +99,8 @@ def runtime_app(
         execution,
         board=TaskBoardService(TaskBoardStore(state / "board"), project=str(workspace)),
     )
+    domain_store = DomainStore(state / "domain.sqlite3")
+    conversations = ConversationService(domain_store, execution, workspace=workspace)
     execution.service = service
     service.history_reader = execution.history
     service.recovery_reader = execution.recovery
@@ -113,6 +117,7 @@ def runtime_app(
                 web_root=web_root if web_root is not None else default_web_root(),
             ),
             runtime=service,
+            conversations=conversations,
             runtime_token=token,
         )
     except BaseException:
@@ -147,6 +152,7 @@ def runtime_app(
         try:
             _ = execution.store
             await service.start()
+            await conversations.start()
             await controls.start()
             yield
         finally:
@@ -157,9 +163,12 @@ def runtime_app(
                     await controls.close()
                 finally:
                     try:
-                        await service.close()
+                        await conversations.close()
                     finally:
-                        execution.close()
+                        try:
+                            await service.close()
+                        finally:
+                            execution.close()
 
             owned = asyncio.create_task(cleanup())
             late = await await_owned(owned)
@@ -169,6 +178,7 @@ def runtime_app(
 
     web.router.lifespan_context = lifespan
     web.state.runtime = service
+    web.state.conversations = conversations
     web.state.execution = execution
     return web
 

@@ -18,6 +18,7 @@ from cairn.core.domain import (
     Conversation,
     ConversationSource,
     Run,
+    RunEvent,
     RunStatus,
     Task,
     TaskStatus,
@@ -121,6 +122,21 @@ class DomainStore:
             CREATE INDEX IF NOT EXISTS runs_conversation_idx
                 ON runs(conversation_id);
             CREATE INDEX IF NOT EXISTS runs_task_idx ON runs(task_id);
+            CREATE TABLE IF NOT EXISTS run_events (
+                run_id TEXT NOT NULL REFERENCES runs(run_id),
+                sequence INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                data_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (run_id, sequence)
+            );
+            CREATE TABLE IF NOT EXISTS run_requests (
+                conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
+                request_id TEXT NOT NULL,
+                run_id TEXT NOT NULL REFERENCES runs(run_id),
+                fingerprint TEXT NOT NULL,
+                PRIMARY KEY (conversation_id, request_id)
+            );
             CREATE TABLE IF NOT EXISTS domain_meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -361,6 +377,11 @@ class DomainStore:
         task_id: str | None = None,
         run_id: str | None = None,
         error: str | None = None,
+        prompt: str = "",
+        request_id: str | None = None,
+        source: ConversationSource | None = None,
+        mode: str = "conversation",
+        result: str | None = None,
         budget: dict[str, Any] | None = None,
         trace_ref: str | None = None,
         session_id: str | None = None,
@@ -381,6 +402,11 @@ class DomainStore:
             task_id=task_id,
             workspace_id=conversation.workspace_id,
             status=status,
+            prompt=prompt,
+            request_id=request_id,
+            source=source,
+            mode=cast(Any, mode),
+            result=result,
             error=error,
             budget=budget or {},
             trace_ref=trace_ref,
@@ -388,7 +414,14 @@ class DomainStore:
             checkpoint_receipt=checkpoint_receipt,
             created_at=created_at or utc_now(),
             updated_at=created_at or utc_now(),
-            metadata=metadata or {},
+            metadata={
+                **(metadata or {}),
+                "prompt": prompt,
+                "request_id": request_id,
+                "source": None if source is None else source.value,
+                "mode": mode,
+                "result": result,
+            },
         )
         with self._connect() as connection:
             connection.execute(
@@ -427,6 +460,125 @@ class DomainStore:
             ).fetchone()
         return None if row is None else self._run(row)
 
+    def list_runs(self, *, workspace_id: str | None = None) -> tuple[Run, ...]:
+        with self._connect() as connection:
+            if workspace_id is None:
+                rows = connection.execute(
+                    "SELECT * FROM runs ORDER BY created_at, run_id"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM runs WHERE workspace_id = ? ORDER BY created_at, run_id",
+                    (workspace_id,),
+                ).fetchall()
+        return tuple(self._run(row) for row in rows)
+
+    def get_run_by_request(self, conversation_id: str, request_id: str) -> Run | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT runs.* FROM run_requests JOIN runs USING(run_id) "
+                "WHERE run_requests.conversation_id = ? AND run_requests.request_id = ?",
+                (conversation_id, request_id),
+            ).fetchone()
+        return None if row is None else self._run(row)
+
+    def accept_run(
+        self,
+        *,
+        conversation_id: str,
+        prompt: str,
+        source: ConversationSource,
+        request_id: str,
+        mode: str = "conversation",
+        task_id: str | None = None,
+    ) -> Run:
+        """Atomically accept one request and create its Run, or return the original."""
+        import hashlib
+        import json as _json_module
+
+        fingerprint = hashlib.sha256(
+            _json_module.dumps(
+                [prompt, source.value, mode, task_id], ensure_ascii=False
+            ).encode()
+        ).hexdigest()
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT runs.*, run_requests.fingerprint FROM run_requests "
+                "JOIN runs USING(run_id) WHERE run_requests.conversation_id = ? "
+                "AND run_requests.request_id = ?",
+                (conversation_id, request_id),
+            ).fetchone()
+            if existing is not None:
+                if existing["fingerprint"] != fingerprint:
+                    raise ValueError("Request ID belongs to a different input")
+                return self._run(existing)
+            active = connection.execute(
+                "SELECT 1 FROM runs WHERE conversation_id = ? "
+                "AND status IN ('queued', 'running') LIMIT 1",
+                (conversation_id,),
+            ).fetchone()
+            if active is not None:
+                raise ValueError("Conversation already has an active Run")
+            conversation = connection.execute(
+                "SELECT workspace_id FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if conversation is None:
+                raise ValueError("Run requires an existing Conversation")
+            if task_id is not None:
+                task = connection.execute(
+                    "SELECT conversation_id FROM tasks WHERE task_id = ?", (task_id,)
+                ).fetchone()
+                if task is None or task["conversation_id"] != conversation_id:
+                    raise ValueError("Run task must belong to its Conversation")
+            run = Run(
+                conversation_id=conversation_id,
+                task_id=task_id,
+                workspace_id=cast(str, conversation["workspace_id"]),
+                status=RunStatus.QUEUED,
+                prompt=prompt,
+                request_id=request_id,
+                source=source,
+                mode=cast(Any, mode),
+                metadata={
+                    "prompt": prompt,
+                    "request_id": request_id,
+                    "source": source.value,
+                    "mode": mode,
+                },
+            )
+            connection.execute(
+                """
+                INSERT INTO runs
+                    (run_id, conversation_id, task_id, workspace_id, status, error,
+                     budget_json, trace_ref, session_id, checkpoint_receipt_json,
+                     created_at, updated_at, ended_at, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run.run_id,
+                    run.conversation_id,
+                    run.task_id,
+                    run.workspace_id,
+                    run.status.value,
+                    run.error,
+                    _json(run.budget),
+                    run.trace_ref,
+                    run.session_id,
+                    None,
+                    run.created_at,
+                    run.updated_at,
+                    run.ended_at,
+                    _json(run.metadata),
+                ),
+            )
+            connection.execute(
+                "INSERT INTO run_requests(conversation_id, request_id, run_id, fingerprint) "
+                "VALUES (?, ?, ?, ?)",
+                (conversation_id, request_id, run.run_id, fingerprint),
+            )
+        return run
+
     def list_runs_for_conversation(self, conversation_id: str) -> tuple[Run, ...]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -449,6 +601,7 @@ class DomainStore:
         *,
         status: RunStatus | None = None,
         error: str | None = None,
+        result: str | None = None,
         budget: dict[str, Any] | None = None,
         trace_ref: str | None = None,
         session_id: str | None = None,
@@ -459,11 +612,21 @@ class DomainStore:
         current = self.get_run(run_id)
         if current is None:
             raise ValueError("Run not found")
+        next_metadata = dict(current.metadata if metadata is None else metadata)
+        next_metadata.update(
+            {
+                "prompt": current.prompt,
+                "request_id": current.request_id,
+                "source": None if current.source is None else current.source.value,
+                "mode": current.mode,
+            }
+        )
         updated = Run.model_validate(
             {
                 **current.model_dump(),
                 "status": current.status if status is None else status,
                 "error": current.error if error is None else error,
+                "result": current.result if result is None else result,
                 "budget": current.budget if budget is None else budget,
                 "trace_ref": current.trace_ref if trace_ref is None else trace_ref,
                 "session_id": current.session_id if session_id is None else session_id,
@@ -471,10 +634,12 @@ class DomainStore:
                 if checkpoint_receipt is None
                 else checkpoint_receipt,
                 "ended_at": current.ended_at if ended_at is None else ended_at,
-                "metadata": current.metadata if metadata is None else metadata,
+                "metadata": next_metadata,
                 "updated_at": utc_now(),
             }
         )
+        next_metadata["result"] = updated.result
+        updated = updated.model_copy(update={"metadata": next_metadata})
         with self._connect() as connection:
             connection.execute(
                 """
@@ -498,6 +663,69 @@ class DomainStore:
                 ),
             )
         return updated
+
+    def append_run_event(
+        self, run_id: str, kind: str, data: dict[str, Any] | None = None
+    ) -> RunEvent:
+        with self._connect() as connection:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM runs WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                is None
+            ):
+                raise ValueError("Run not found")
+            row = connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) FROM run_events WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            sequence = int(row[0]) + 1
+            event = RunEvent(
+                run_id=run_id,
+                sequence=sequence,
+                kind=kind,
+                data=data or {},
+                created_at=utc_now(),
+            )
+            connection.execute(
+                "INSERT INTO run_events(run_id, sequence, kind, data_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (run_id, sequence, kind, _json(event.data), event.created_at),
+            )
+        return event
+
+    def list_run_events(
+        self, run_id: str, after: int = 0, limit: int = 200
+    ) -> tuple[RunEvent, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM run_events WHERE run_id = ? AND sequence > ? "
+                "ORDER BY sequence LIMIT ?",
+                (run_id, after, limit),
+            ).fetchall()
+        return tuple(
+            RunEvent(
+                run_id=cast(str, row["run_id"]),
+                sequence=int(row["sequence"]),
+                kind=cast(str, row["kind"]),
+                data=cast(dict[str, Any], _loads(row["data_json"], {})),
+                created_at=cast(str, row["created_at"]),
+            )
+            for row in rows
+        )
+
+    def update_run_status(
+        self,
+        run_id: str,
+        status: RunStatus,
+        *,
+        error: str | None = None,
+        result: str | None = None,
+        ended_at: str | None = None,
+    ) -> Run:
+        return self.update_run(
+            run_id, status=status, error=error, result=result, ended_at=ended_at
+        )
 
     # -- Legacy adapter/migration helpers ---------------------------------
 
@@ -583,12 +811,22 @@ class DomainStore:
 
     @staticmethod
     def _run(row: sqlite3.Row) -> Run:
+        metadata = cast(dict[str, Any], _loads(row["metadata_json"], {}))
+        raw_source = metadata.get("source")
+        source = (
+            None if raw_source is None else ConversationSource(cast(str, raw_source))
+        )
         return Run(
             run_id=cast(str, row["run_id"]),
             conversation_id=cast(str, row["conversation_id"]),
             task_id=row["task_id"],
             workspace_id=cast(str, row["workspace_id"]),
             status=RunStatus(cast(str, row["status"])),
+            prompt=cast(str, metadata.get("prompt", "")),
+            request_id=cast(str | None, metadata.get("request_id")),
+            source=source,
+            mode=cast(Any, metadata.get("mode", "conversation")),
+            result=cast(str | None, metadata.get("result")),
             error=row["error"],
             budget=cast(dict[str, Any], _loads(row["budget_json"], {})),
             trace_ref=row["trace_ref"],

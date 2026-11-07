@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from typing import Any
 from urllib.parse import urlsplit
 
 from starlette.applications import Starlette
@@ -130,6 +131,7 @@ def create_app(
     reader: SnapshotReader | None = None,
     *,
     runtime: TaskService | None = None,
+    conversations: Any | None = None,
     runtime_token: str | None = None,
 ) -> Starlette:
     if runtime is not None and (not config.auth_passphrase or not runtime_token):
@@ -179,11 +181,17 @@ def create_app(
         return response
 
     async def health(_request: Request) -> JSONResponse:
-        ready = runtime is None or (
+        runtime_ready = runtime is None or (
             runtime.worker is not None
             and not runtime.worker.done()
             and not runtime.stopping
         )
+        conversations_ready = conversations is None or (
+            conversations.worker is not None
+            and not conversations.worker.done()
+            and not conversations.stopping
+        )
+        ready = runtime_ready and conversations_ready
         return JSONResponse(
             {"ok": ready, "version": 1, "read_only": runtime is None},
             status_code=200 if ready else 503,
@@ -325,6 +333,10 @@ def create_app(
         from cairn.web.runtime import task_routes
 
         routes.extend(task_routes(runtime, config.workspace))
+    if conversations is not None:
+        from cairn.web.conversations import conversation_routes
+
+        routes.extend(conversation_routes(conversations, config.workspace))
     web_root = config.web_root
     if web_root is not None and (web_root / "index.html").is_file():
         routes.append(

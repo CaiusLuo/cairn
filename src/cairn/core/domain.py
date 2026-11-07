@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -130,6 +130,11 @@ class Run(BaseModel):
     task_id: str | None = Field(default=None, max_length=100)
     workspace_id: str = Field(min_length=1, max_length=100)
     status: RunStatus = RunStatus.QUEUED
+    prompt: str = Field(default="", max_length=32000)
+    request_id: str | None = Field(default=None, max_length=200)
+    source: ConversationSource | None = None
+    mode: Literal["conversation", "development"] = "conversation"
+    result: str | None = Field(default=None, max_length=32000)
     error: str | None = Field(default=None, max_length=2000)
     budget: dict[str, Any] = Field(default_factory=dict)
     trace_ref: str | None = Field(default=None, max_length=2000)
@@ -143,10 +148,23 @@ class Run(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class RunEvent(BaseModel):
+    """A bounded, ordered execution fact for one Run."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+
+    run_id: str = Field(min_length=1, max_length=100)
+    sequence: int = Field(ge=1)
+    kind: str = Field(min_length=1, max_length=100)
+    data: dict[str, Any] = Field(default_factory=dict)
+    created_at: str = Field(default_factory=utc_now)
+
+
 __all__ = [
     "Conversation",
     "ConversationSource",
     "Run",
+    "RunEvent",
     "RunStatus",
     "Task",
     "TaskStatus",

@@ -135,13 +135,18 @@ class ServiceExecution:
         )
 
     async def __call__(
-        self, task: RuntimeTask, emit: Callable[[str, dict[str, Any]], None]
+        self,
+        task: RuntimeTask,
+        emit: Callable[[str, dict[str, Any]], None],
+        *,
+        service: Any | None = None,
     ) -> str:
         started = perf_counter()
-        assert self.service is not None
+        ledger = service if service is not None else self.service
+        assert ledger is not None
         if self.validate_task is not None:
             self.validate_task(task)
-        budget = self._remaining_budget(task)
+        budget = self._remaining_budget(task, ledger)
         profile = self.profile_for(task)
         new_session = False
         development = DevelopmentRequest()
@@ -159,7 +164,7 @@ class ServiceExecution:
                 origins = (*origins, report.receipt)
             handle = await self.provider.create("HEAD", "cairn/runtime/" + task.task_id)
             try:
-                task = self.service.record(
+                task = ledger.record(
                     task.model_copy(
                         update={
                             "worktree": str(handle.path),
@@ -182,7 +187,7 @@ class ServiceExecution:
             handle.retain()
             new_session = True
         elif task.session_id is None:
-            task = self.service.record(
+            task = ledger.record(
                 task.model_copy(update={"session_id": str(uuid4())}),
                 "conversation_ready",
             )
@@ -406,7 +411,7 @@ class ServiceExecution:
         )
 
         def record_attempt() -> None:
-            assert self.service is not None
+            assert ledger is not None
             summary = runner.last_summary
             usage = sessions[-1].agent.last_budget_usage if sessions else None
             metrics = dict(task.metrics)
@@ -455,10 +460,8 @@ class ServiceExecution:
             metrics["last_attempt"] = (
                 summary.model_dump(mode="json") if summary is not None else None
             )
-            self.service.record(
-                self.service.inspect(task.task_id).model_copy(
-                    update={"metrics": metrics}
-                ),
+            ledger.record(
+                ledger.inspect(task.task_id).model_copy(update={"metrics": metrics}),
                 "attempt_settled",
             )
 
@@ -510,8 +513,8 @@ class ServiceExecution:
             if chatting and development.prompt is not None:
                 if result.status is not TaskStatus.COMPLETED:
                     raise TaskNeedsRecovery()
-                self.service.record(
-                    self.service.inspect(task.task_id).model_copy(
+                ledger.record(
+                    ledger.inspect(task.task_id).model_copy(
                         update={
                             "development_prompt": development.prompt,
                             "input_prompt": development.prompt,
@@ -603,7 +606,10 @@ class ServiceExecution:
             )
         return messages
 
-    def _remaining_budget(self, task: RuntimeTask) -> RunBudget:
+    def _remaining_budget(
+        self, task: RuntimeTask, ledger: Any | None = None
+    ) -> RunBudget:
+        ledger = ledger if ledger is not None else self.service
         remaining = {}
         window = task.metrics.get("window", {})
         for limit_name, usage_name in (
@@ -617,10 +623,10 @@ class ServiceExecution:
                 continue
             used = window.get(usage_name, 0)
             if used is None or limit - used <= 0:
-                assert self.service is not None
+                assert ledger is not None
                 reason = "usage_unknown" if used is None else limit_name
-                current = self.service.inspect(task.task_id)
-                self.service.record(
+                current = ledger.inspect(task.task_id)
+                ledger.record(
                     current.model_copy(
                         update={
                             "metrics": {

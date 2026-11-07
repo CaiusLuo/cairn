@@ -160,3 +160,35 @@ def test_domain_store_rejects_symlink_before_resolving(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="symlink"):
         DomainStore(link)
     assert link.is_symlink()
+
+
+def test_accept_run_is_atomic_and_idempotent(tmp_path: Path) -> None:
+    domain, workspace = store(tmp_path)
+    conversation = domain.create_conversation(
+        workspace=workspace,
+        source=ConversationSource.CLI,
+        initial_prompt="hello",
+    )
+    first = domain.accept_run(
+        conversation_id=conversation.conversation_id,
+        prompt="hello",
+        source=ConversationSource.CLI,
+        request_id="request-1",
+    )
+    again = domain.accept_run(
+        conversation_id=conversation.conversation_id,
+        prompt="hello",
+        source=ConversationSource.CLI,
+        request_id="request-1",
+    )
+    assert again.run_id == first.run_id
+    with pytest.raises(ValueError, match="different input"):
+        domain.accept_run(
+            conversation_id=conversation.conversation_id,
+            prompt="changed",
+            source=ConversationSource.CLI,
+            request_id="request-1",
+        )
+    event = domain.append_run_event(first.run_id, "conversation_ready", {})
+    assert event.sequence == 1
+    assert domain.list_run_events(first.run_id)[0].kind == "conversation_ready"
