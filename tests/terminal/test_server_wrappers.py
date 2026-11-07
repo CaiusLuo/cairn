@@ -37,7 +37,7 @@ esac
 """)
     systemctl.chmod(0o755)
     result = subprocess.run(
-        ["bash", str(Path("end.sh").resolve())],
+        ["bash", str(Path("scripts/end.sh").resolve())],
         cwd=tmp_path,
         env={
             **os.environ,
@@ -73,7 +73,7 @@ def test_end_reports_unresponsive_systemd_without_an_unbounded_wait(
     timeout.write_text("#!/bin/sh\nexit 124\n")
     timeout.chmod(0o755)
     result = subprocess.run(
-        ["bash", str(Path("end.sh").resolve())],
+        ["bash", str(Path("scripts/end.sh").resolve())],
         env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"]},
         capture_output=True,
         text=True,
@@ -102,7 +102,7 @@ def test_start_rejects_shell_overrides_before_any_host_preparation(
     tmp_path: Path, variable: str
 ) -> None:
     script = tmp_path / "start.sh"
-    shutil.copyfile("start.sh", script)
+    shutil.copyfile("scripts/start.sh", script)
     systemctl = tmp_path / "systemctl"
     systemctl.write_text(
         '#!/bin/sh\ntouch "$WRAPPER_FIXTURE/systemctl-called"\nexit 1\n'
@@ -140,8 +140,9 @@ def test_start_first_use_prepares_and_starts_selected_unit_with_fake_systemctl(
     commands = tmp_path / "bin"
     executables = root / ".venv/bin"
     executables.mkdir(parents=True)
+    (root / "scripts").mkdir()
     commands.mkdir()
-    shutil.copyfile("start.sh", root / "start.sh")
+    shutil.copyfile("scripts/start.sh", root / "scripts/start.sh")
     config = tmp_path / "host with spaces/config.toml"
     stubs = {
         executables / "python": """#!/bin/bash
@@ -196,7 +197,7 @@ esac
         path.write_text(text)
         path.chmod(0o755)
     result = subprocess.run(
-        ["bash", str(root / "start.sh")],
+        ["bash", str(root / "scripts/start.sh")],
         cwd=tmp_path,
         env={
             **wrapper_environment(),

@@ -114,7 +114,7 @@ def prepare(root: Path, config: Path, user: str) -> None:
 def require_file_owner(account: pwd.struct_passwd) -> None:
     if os.geteuid() != 0:
         raise PermissionError(
-            "First-time host preparation needs root; use sudo ./start.sh"
+            "First-time host preparation needs root; use sudo ./scripts/start.sh"
         )
     if account.pw_uid != os.geteuid():
         raise ValueError(
@@ -212,7 +212,7 @@ def render_unit(root: Path, config: Path, user: str) -> str:
 def install_unit(root: Path, config: Path, service: str, user: str) -> None:
     if os.geteuid() != 0:
         raise PermissionError(
-            "Installing a system service needs root; use sudo ./start.sh"
+            "Installing a system service needs root; use sudo ./scripts/start.sh"
         )
     if (
         not service.startswith("cairn")

@@ -32,7 +32,7 @@ installation, operator-service restart or operator-data deletion was performed.
 | Host-wide WeChat identity lock plus existing serve lock | `src/cairn/infra/wechat/state.py`, `src/cairn/terminal/wechat/serve.py` |
 | Protected paths during existing execution | `src/cairn/runtime/service_execution.py` |
 | Packaged/source Vite resolution | `src/cairn/web/assets.py`, `web/package-assets.mjs` |
-| Debian supervision and five lifecycle actions | `deploy/systemd/cairn.service.in`, `start.sh` |
+| Debian supervision and five lifecycle actions | `deploy/systemd/cairn.service.in`, `scripts/start.sh` |
 | Configuration example and operations/storage inventory | `deploy/config.example.toml`, `docs/guides/runtime-service.md` |
 | Installed-wheel HTTP acceptance | `scripts/ci/check_server_wheel.py` |
 

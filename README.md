@@ -42,13 +42,13 @@ service on Debian:
 ```sh
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web build
-sudo ./start.sh
+sudo ./scripts/start.sh
 ```
 
 On first use, the script creates missing `/etc/cairn/config.toml`, provider
 approval and systemd unit files. It reuses your `.env` and `.cairn/models.toml`,
 checks configuration and Web assets, and reports the running PID. Existing host
-files are preserved. `sudo ./end.sh` reports the PID and stops the service.
+files are preserved. `sudo ./scripts/end.sh` reports the PID and stops the service.
 Foreground debugging remains `uv run cairn --config /etc/cairn/config.toml`.
 
 For an unpaid offline smoke test, remove `provider_approval` and set
@@ -70,7 +70,7 @@ controls plus Schedule and Memory. Client exit leaves background services runnin
 
 The [Server guide](docs/guides/runtime-service.md) covers configuration priority,
 persistent files, explicit backed-up data import, provider authorization and
-systemd operation. `./start.sh` supports `start`, `stop`, `restart`, `status` and
+systemd operation. `./scripts/start.sh` supports `start`, `stop`, `restart`, `status` and
 `logs`; supervision belongs to systemd. Host setup and service operations need
 root or equivalent systemd rights.
 Standalone CLI/WeChat Runtime launchers have been retired.

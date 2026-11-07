@@ -6,7 +6,7 @@ query_timeout=10
 stop_timeout=130
 progress_interval=5
 if (( $# != 0 )) || [[ ! "$service" =~ ^cairn[A-Za-z0-9_.@-]*\.service$ ]]; then
-    echo "Usage: ./end.sh; CAIRN_SERVICE must name a Cairn .service unit" >&2
+    echo "Usage: ./scripts/end.sh; CAIRN_SERVICE must name a Cairn .service unit" >&2
     exit 2
 fi
 for command in systemctl timeout; do

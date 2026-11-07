@@ -1,7 +1,8 @@
 #!/bin/bash
 # Prepare missing host files, then let systemd supervise the Server.
 set -euo pipefail
-root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+root=$(cd -- "$script_dir/.." && pwd)
 action=${1:-start}
 service=${CAIRN_SERVICE:-cairn.service}
 config=${CAIRN_CONFIG:-/etc/cairn/config.toml}
@@ -10,7 +11,7 @@ query_timeout=10
 operation_timeout=130
 readiness_timeout=30
 if (( $# > 1 )) || [[ ! "$service" =~ ^cairn[A-Za-z0-9_.@-]*\.service$ ]]; then
-    echo "Usage: ./start.sh [start|stop|restart|status|logs]; CAIRN_SERVICE must name a Cairn .service unit" >&2
+    echo "Usage: ./scripts/start.sh [start|stop|restart|status|logs]; CAIRN_SERVICE must name a Cairn .service unit" >&2
     exit 2
 fi
 # systemd does not inherit this shell's configuration overrides.
@@ -29,11 +30,11 @@ for command in systemctl timeout; do
 done
 ctl() { timeout --foreground "${query_timeout}s" systemctl "$@"; }
 case "$action" in
-    stop) exec "$root/end.sh" ;;
+    stop) exec "$script_dir/end.sh" ;;
     status) ctl status --no-pager "$service"; exit ;;
     logs) exec journalctl --unit="$service" --follow ;;
     start|restart) ;;
-    *) echo "Usage: ./start.sh [start|stop|restart|status|logs]" >&2; exit 2 ;;
+    *) echo "Usage: ./scripts/start.sh [start|stop|restart|status|logs]" >&2; exit 2 ;;
 esac
 [[ "$config" = /* ]] || { echo "CAIRN_CONFIG must be absolute" >&2; exit 2; }
 [[ -x "$launcher" ]] || { echo "Run uv sync --locked --all-groups in $root first" >&2; exit 1; }
@@ -83,7 +84,7 @@ if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && \
     state=$(ctl show "$service" --property=ActiveState --value)
     if [[ "$current_pid" == "$pid" && "$state" == "active" ]]; then
         echo "Cairn is running in the background: service=$service PID=$pid"
-        echo "Logs: ./start.sh logs | Stop: ./end.sh"
+        echo "Logs: ./scripts/start.sh logs | Stop: ./scripts/end.sh"
         exit 0
     fi
 fi

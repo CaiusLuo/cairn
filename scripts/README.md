@@ -2,6 +2,8 @@
 
 Run from the repository root after `uv sync --locked --all-groups`.
 
+- [start.sh](start.sh) prepares missing host files and starts the systemd service.
+- [end.sh](end.sh) reports and stops the selected systemd service.
 - [pilot/preflight.py](pilot/preflight.py) checks local configuration, shell and
   storage offline. See [operations](../docs/guides/pilot-runbook.md) for storage
   admission and recovery.

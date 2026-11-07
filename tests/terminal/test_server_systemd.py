@@ -55,7 +55,7 @@ def test_systemd_restarts_server_and_retains_paused_work() -> None:
         action: str, config: Path, *, succeeds: bool = True
     ) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
-            ["bash", "start.sh", action],
+            ["bash", "scripts/start.sh", action],
             env={
                 **{
                     key: value

@@ -11,7 +11,7 @@ belongs to systemd; foreground debugging uses the same bootstrap.
 uv sync --locked --all-groups
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web build
-sudo ./start.sh
+sudo ./scripts/start.sh
 ```
 
 Configure your existing `.env` and `.cairn/models.toml` first. The script creates
@@ -191,24 +191,24 @@ reads existing committed history and does not replay unknown tool effects.
 After installing dependencies, building Web and preparing your model configuration:
 
 ```sh
-sudo ./start.sh             # prepare missing host files, validate, start, print PID
-sudo ./end.sh               # report the unit/PID and stop through systemd
-sudo ./start.sh status
-sudo ./start.sh logs
-sudo ./start.sh restart
+sudo ./scripts/start.sh             # prepare missing host files, validate, start, print PID
+sudo ./scripts/end.sh               # report the unit/PID and stop through systemd
+sudo ./scripts/start.sh status
+sudo ./scripts/start.sh logs
+sudo ./scripts/start.sh restart
 ```
 
 Run directly without `sudo` when already root. Scripts locate the checkout from
 their own path, so the shell working directory does not change configuration.
 First-time host setup needs root; normal operations need systemd rights.
 `CAIRN_CONFIG` (absolute path) and `CAIRN_SERVICE` select another host config and
-Cairn unit; supply the same service name to `end.sh` when using a custom unit.
-`start.sh` rejects every other exported `CAIRN_*` variable before preparing
+Cairn unit; supply the same service name to `scripts/end.sh` when using a custom unit.
+`scripts/start.sh` rejects every other exported `CAIRN_*` variable before preparing
 files or calling systemd. Put Server settings in the host TOML and secrets in
 the private `.env` or service EnvironmentFile. Foreground `uv run cairn` keeps
 its existing CLI/environment/TOML priority.
 
-On first use, `start.sh`:
+On first use, `scripts/start.sh`:
 
 - Creates `/etc/cairn/config.toml` only when absent. The workspace is this
   checkout by default. The example explicitly sets `/var/lib/cairn` and its
@@ -245,13 +245,13 @@ systemd.
 
 The unit supervises one process, restarts failures, sends SIGTERM and records
 stdout/stderr in journald. It does not duplicate host policy in command flags.
-There are no `nohup` processes or script-managed PID files. `end.sh` queries the
+There are no `nohup` processes or script-managed PID files. `scripts/end.sh` queries the
 named unit even if configuration is broken, reports its MainPID before stopping,
 shows progress while awaiting systemd's normal shutdown, and confirms PID=0.
 The wrapper stops waiting after 130 seconds and reports the last state; it never
 adds a force-kill. Systemd queries have a 10-second local timeout. A missing or already
 stopped service is reported without sending a signal to an unrelated process.
-`./start.sh stop` delegates to `end.sh`.
+`./scripts/start.sh stop` delegates to `scripts/end.sh`.
 
 ## Web packaging and validation
 
