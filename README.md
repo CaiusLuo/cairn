@@ -36,14 +36,20 @@ credentials and makes no paid API requests.
 
 ## Start Cairn Server
 
-Build Web, copy [the host configuration](deploy/config.example.toml) to
-`/etc/cairn/config.toml`, and set its workspace, data paths and provider approval:
+After preparing your model configuration, build Web and start the background
+service on Debian:
 
 ```sh
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web build
-uv run cairn --config /etc/cairn/config.toml
+sudo ./start.sh
 ```
+
+On first use, the script creates missing `/etc/cairn/config.toml`, provider
+approval and systemd unit files. It reuses your `.env` and `.cairn/models.toml`,
+checks configuration and Web assets, and reports the running PID. Existing host
+files are preserved. `sudo ./end.sh` reports the PID and stops the service.
+Foreground debugging remains `uv run cairn --config /etc/cairn/config.toml`.
 
 For an unpaid offline smoke test, remove `provider_approval` and set
 `offline = true`. Production never silently falls back to an offline model.
@@ -64,8 +70,9 @@ controls plus Schedule and Memory. Client exit leaves background services runnin
 
 The [Server guide](docs/guides/runtime-service.md) covers configuration priority,
 persistent files, explicit backed-up data import, provider authorization and
-systemd installation. After installing the unit, `./start.sh` supports
-`start`, `stop`, `restart`, `status` and `logs`; supervision belongs to systemd.
+systemd operation. `./start.sh` supports `start`, `stop`, `restart`, `status` and
+`logs`; supervision belongs to systemd. Host setup and service operations need
+root or equivalent systemd rights.
 Standalone CLI/WeChat Runtime launchers have been retired.
 
 One task worker and a bounded queue remain; Runtime facts use JSON and durable

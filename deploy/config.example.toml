@@ -4,8 +4,10 @@
 host = "127.0.0.1"
 port = 8777
 workspace = "/workspace/cairn"
-data_root = "/var/lib/cairn"
-worktrees_root = "/var/lib/cairn/worktrees"
+# start.sh records the existing XDG defaults as absolute paths on first use.
+# Set these explicitly for a fresh /var/lib deployment; existing data is never moved.
+# data_root = "/var/lib/cairn"
+# worktrees_root = "/var/lib/cairn/worktrees"
 provider_approval = "/etc/cairn/provider-approval.json"
 offline = false
 allow_shell = false

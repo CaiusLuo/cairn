@@ -11,14 +11,17 @@ belongs to systemd; foreground debugging uses the same bootstrap.
 uv sync --locked --all-groups
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web build
-uv run cairn --config /etc/cairn/config.toml
+sudo ./start.sh
 ```
 
-Copy [the example](../../deploy/config.example.toml) to a host-owned location
-outside both workspace and worktrees. Edit workspace and data paths for the
-installation. Real model startup requires the provider approval below. For an
-explicit unpaid smoke test, remove `provider_approval` and set `offline = true`.
-There is no automatic offline fallback.
+Configure your existing `.env` and `.cairn/models.toml` first. The script creates
+missing host files from [the example](../../deploy/config.example.toml), checks
+configuration and Web assets, installs a missing systemd unit, and starts the
+background Server. See the systemd section below for first-use behavior.
+Foreground debugging remains `uv run cairn --config /etc/cairn/config.toml`.
+For an explicit unpaid smoke test, prepare the host config with no
+`provider_approval` and `offline = true` before starting. There is no automatic
+offline fallback.
 
 ```sh
 uv run cairn --config /etc/cairn/config.toml check-config
@@ -185,34 +188,60 @@ reads existing committed history and does not replay unknown tool effects.
 
 ## Debian systemd service
 
-After building, configuring and checking the foreground Server, install one unit:
+After installing dependencies, building Web and preparing your model configuration:
 
 ```sh
-sed \
-  -e 's|__CAIRN_ROOT__|/workspace/cairn|g' \
-  -e 's|__CAIRN_USER__|cairn|g' \
-  -e 's|__CAIRN_CONFIG__|/etc/cairn/config.toml|g' \
-  deploy/systemd/cairn.service.in > /etc/systemd/system/cairn.service
-systemctl daemon-reload
-systemctl enable cairn.service
-./start.sh start
-./start.sh status
-./start.sh logs
-./start.sh restart
-./start.sh stop
+sudo ./start.sh             # prepare missing host files, validate, start, print PID
+sudo ./end.sh               # report the unit/PID and stop through systemd
+sudo ./start.sh status
+sudo ./start.sh logs
+sudo ./start.sh restart
 ```
 
-Use the actual service user and grant it access to workspace, worktrees, state
-and private provider environment. `CAIRN_CONFIG` and `CAIRN_SERVICE` select a
-nondefault installed unit/config for the wrapper. Operations need systemd rights.
+Run directly without `sudo` when already root. Scripts locate the checkout from
+their own path, so the shell working directory does not change configuration.
+First-time host setup needs root; normal operations need systemd rights.
+`CAIRN_CONFIG` (absolute path) and `CAIRN_SERVICE` select another host config and
+Cairn unit; supply the same service name to `end.sh` when using a custom unit.
+
+On first use, `start.sh`:
+
+- Creates `/etc/cairn/config.toml` only when absent. The workspace is this
+  checkout by default. It records the current user's existing XDG data root and
+  its worktrees directory as absolute paths when the example leaves them unset.
+  Existing state is not moved or deleted; custom legacy roots still need explicit
+  configuration or import.
+- Creates a missing private provider approval from your selected provider and
+  first model group, using the existing `.env`/`.cairn/models.toml` loader. This
+  records public routing metadata and the key variable name, never the key.
+  Existing approval is never rewritten; changed routing still requires deliberate
+  host approval. The script does not edit `.env` or `models.toml`.
+- Runs `check-config`, then installs and enables a missing
+  `/etc/systemd/system/cairn.service` from the repository template. A newly
+  installed unit runs as the invoking effective user (root under `sudo`). For a
+  dedicated service account, install the template with that account and grant it
+  access to workspace, worktrees, state and private credentials before starting.
+- Starts through systemd and waits for an authenticated readiness check matching
+  its MainPID and configured paths. It prints the actual PID once ready, or an
+  error and the journald inspection command. Missing dependencies, Web assets,
+  credentials or invalid configuration fail explicitly.
+
+Existing host files and units are never overwritten. The installed unit must
+reference this checkout's executable and the selected config. An active Server
+must authenticate and report matching MainPID, data root, workspace, worktrees
+and URL before start/restart. An old or mismatched service requires explicit
+inspection and stop; the script does not stop it as a preparation side effect.
+Use persistent host configuration or the unit's protected environment file for
+background overrides; an SSH shell's exported variables are not inherited by
+systemd.
+
 The unit supervises one process, restarts failures, sends SIGTERM and records
 stdout/stderr in journald. It does not duplicate host policy in command flags.
-
-Start/restart preflight validates configuration and installed unit identity. An
-active Server must authenticate and report matching systemd MainPID and root/workspace/worktree/URL
-before restart is allowed. A changed data directory/port or an old incompatible
-service requires explicit inspection and stop; the wrapper will not stop it as
-a side effect. `stop` is an explicit stop of the selected named unit.
+There are no `nohup` processes or script-managed PID files. `end.sh` queries the
+named unit even if configuration is broken, reports its MainPID before stopping,
+waits for systemd's normal shutdown, and confirms PID=0. A missing or already
+stopped service is reported without sending a signal to an unrelated process.
+`./start.sh stop` delegates to `end.sh`.
 
 ## Web packaging and validation
 
