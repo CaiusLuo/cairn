@@ -90,3 +90,20 @@ def test_explicit_data_root_does_not_evaluate_unused_xdg_default(
     monkeypatch.setenv("XDG_STATE_HOME", "invalid-relative-unused-default")
     config = load_server_config(overrides={"data_root": tmp_path / "selected"})
     assert config.data_root == tmp_path / "selected"
+
+
+def test_host_policy_symlink_is_rejected_even_when_target_is_outside(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    target = tmp_path / "provider.json"
+    target.write_text("{}")
+    link = source / "provider-link.json"
+    link.symlink_to(target)
+    config = load_server_config(
+        overrides={"workspace": source, "provider_approval": link}
+    )
+    assert config.provider_approval is not None
+    with pytest.raises(ValueError, match="Host configuration"):
+        config.paths.protect_policy(config.provider_approval)

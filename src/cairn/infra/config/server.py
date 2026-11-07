@@ -83,6 +83,20 @@ def _path(value: Any, base: Path | None, name: str) -> Path | None:
     return path.resolve()
 
 
+def _policy_path(value: Any, base: Path | None, name: str) -> Path | None:
+    """Keep host policy paths unresolved so a symlink cannot hide its location."""
+    if value is None:
+        return None
+    if not isinstance(value, (str, Path)) or not str(value).strip():
+        raise ValueError(f"{name} must be a nonempty path")
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        if base is None:
+            raise ValueError(f"{name} in CLI/environment must be absolute")
+        path = base / path
+    return path.absolute()
+
+
 def load_server_config(
     path: Path | None = None, *, overrides: dict[str, Any] | None = None
 ) -> ServerConfig:
@@ -95,7 +109,7 @@ def load_server_config(
     chosen: Path | None = path or Path(
         os.environ.get("CAIRN_CONFIG", str(DEFAULT_CONFIG))
     )
-    chosen = _path(chosen, None, "config")
+    chosen = _policy_path(chosen, None, "config")
     assert chosen is not None
     data: dict[str, Any] = {}
     if explicit or chosen.exists():
@@ -148,9 +162,12 @@ def load_server_config(
         "web_root",
         "provider_approval",
     }
+    config_base = chosen.resolve().parent if chosen else None
     for key, value in data.get("server", {}).items():
         values[key] = (
-            _path(value, chosen.parent if chosen else None, key)
+            _policy_path(value, config_base, key)
+            if key == "provider_approval"
+            else _path(value, config_base, key)
             if key in path_fields
             else value
         )
@@ -172,7 +189,13 @@ def load_server_config(
         raise ValueError("Unknown Server CLI override")
     for key in server_fields & overrides.keys():
         value = overrides[key]
-        values[key] = _path(value, None, key) if key in path_fields else value
+        values[key] = (
+            _policy_path(value, None, key)
+            if key == "provider_approval"
+            else _path(value, None, key)
+            if key in path_fields
+            else value
+        )
     if "data_root" not in values:
         values["data_root"] = default_data_root()
     values.setdefault("worktrees_root", values["data_root"] / "worktrees")

@@ -33,6 +33,11 @@ def wait_for(predicate: Callable[[], Any], timeout: float = 30) -> Any:
     raise AssertionError("Timed out waiting for Server acceptance condition")
 
 
+def _reset_hangup() -> None:
+    """Do not inherit an ignored SIGHUP from a test runner such as nohup."""
+    signal.signal(signal.SIGHUP, signal.SIG_DFL)
+
+
 class NativeClient:
     def __init__(
         self, cwd: Path, url: str, token: Path, task_id: str | None = None
@@ -61,6 +66,7 @@ class NativeClient:
                 stdout=slave,
                 stderr=slave,
                 start_new_session=True,
+                preexec_fn=_reset_hangup,
                 env={**os.environ, "TERM": "xterm-256color"},
             )
         except BaseException:

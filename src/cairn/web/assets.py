@@ -17,7 +17,7 @@ def require_web_assets(root: Path) -> Path:
         or not (root / "assets").is_dir()
     ):
         raise ValueError(
-            f"Web assets missing at {root}; run npm --prefix web ci && "
-            "npm --prefix web run build before starting Cairn or building its wheel"
+            f"Web assets missing at {root}; run pnpm --dir web install --frozen-lockfile && "
+            "pnpm --dir web build before starting Cairn or building its wheel"
         )
     return root

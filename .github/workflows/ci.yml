@@ -27,6 +27,17 @@ jobs:
       - name: Install Linux sandbox
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
 
+      - name: Install Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+
+      - name: Build packaged Web assets
+        run: |
+          npm install --global pnpm@11.4.0
+          pnpm --dir web install --frozen-lockfile
+          pnpm --dir web build
+
       - name: Lint
         run: uv run ruff check .
 
@@ -38,3 +49,8 @@ jobs:
 
       - name: Test with coverage
         run: uv run pytest --cov=cairn --cov-report=term-missing
+
+      - name: Verify installed Server wheel
+        run: |
+          uv build --wheel
+          uv run python scripts/ci/check_server_wheel.py dist/cairn-*.whl

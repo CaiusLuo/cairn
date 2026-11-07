@@ -40,8 +40,8 @@ Build Web, copy [the host configuration](deploy/config.example.toml) to
 `/etc/cairn/config.toml`, and set its workspace, data paths and provider approval:
 
 ```sh
-npm --prefix web ci
-npm --prefix web run build
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web build
 uv run cairn --config /etc/cairn/config.toml
 ```
 

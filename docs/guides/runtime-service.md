@@ -9,8 +9,8 @@ belongs to systemd; foreground debugging uses the same bootstrap.
 
 ```sh
 uv sync --locked --all-groups
-npm --prefix web ci
-npm --prefix web run build
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web build
 uv run cairn --config /etc/cairn/config.toml
 ```
 
@@ -209,7 +209,7 @@ The unit supervises one process, restarts failures, sends SIGTERM and records
 stdout/stderr in journald. It does not duplicate host policy in command flags.
 
 Start/restart preflight validates configuration and installed unit identity. An
-active Server must authenticate and report matching root/workspace/worktree/URL
+active Server must authenticate and report matching systemd MainPID and root/workspace/worktree/URL
 before restart is allowed. A changed data directory/port or an old incompatible
 service requires explicit inspection and stop; the wrapper will not stop it as
 a side effect. `stop` is an explicit stop of the selected named unit.

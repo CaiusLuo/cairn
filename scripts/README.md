@@ -10,6 +10,10 @@ Run from the repository root after `uv sync --locked --all-groups`.
   PR; use only for a repository and publication scope the operator authorized.
   Its CLI describes provider, workspace, verification and credential options.
 
+- [ci/check_server_wheel.py](ci/check_server_wheel.py) installs a built wheel in
+  a temporary environment and checks bundled Web/API startup outside the checkout.
+  It uses an offline model and removes its isolated state after a clean stop.
+
 ```sh
 uv run python scripts/pilot/preflight.py --help
 uv run python scripts/github/run_issue_task.py --help

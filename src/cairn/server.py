@@ -341,7 +341,7 @@ def serve(
 
 @app.command("check-config")
 def check_config(ctx: typer.Context) -> None:
-    """Validate bootstrap paths and assets without creating state or loading keys."""
+    """Validate bootstrap paths, provider configuration and assets without creating state."""
     settings: ServerConfig = ctx.obj
     validate_config(settings)
     _load_provider(settings)
