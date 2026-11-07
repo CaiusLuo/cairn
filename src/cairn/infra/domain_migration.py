@@ -9,6 +9,7 @@ usable backup.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -80,6 +81,7 @@ class MigrationPlan:
     runs: tuple[Run, ...]
     issues: tuple[MigrationIssue, ...]
     source_sha256: str
+    runtime_bytes: bytes = field(default=b"", repr=False)
     board_tasks: tuple[Task, ...] = ()
     taskboard_sha256: str | None = None
     taskboard_bytes: bytes | None = field(default=None, repr=False)
@@ -117,22 +119,74 @@ def _run_id(legacy_task_id: str) -> str:
     return _derived("run-", legacy_task_id)
 
 
+def _lock_held(path: Path) -> bool:
+    if not path.exists():
+        return False
+    with path.open("rb") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    return False
+
+
+def _assert_runtime_offline(runtime_root: Path) -> None:
+    locks = (
+        runtime_root / "owner.lock",
+        runtime_root / "server.lock",
+        runtime_root.parent / "server.lock",
+        runtime_root / "sessions/writer.lock",
+    )
+    for path in locks:
+        if _lock_held(path):
+            raise RuntimeError(
+                f"Legacy Runtime is online or has an active writer lock: {path}; stop it before migration"
+            )
+
+
+def discover_taskboard(runtime_root: Path) -> Path | None:
+    """Find the configured legacy TaskBoard without guessing between candidates."""
+    candidates = (
+        runtime_root / "board" / "tasks.json",
+        runtime_root.parent / "tasks" / "tasks.json",
+        runtime_root.parent / "board" / "tasks.json",
+    )
+    existing = [path for path in candidates if path.is_file()]
+    if len(existing) > 1:
+        raise ValueError(
+            "Multiple TaskBoard sources found; pass an explicit --taskboard path"
+        )
+    return existing[0] if existing else None
+
+
 def _conversation_source(source: str) -> ConversationSource:
     return ConversationSource(source)
+
+
+def _development_evidence(legacy: RuntimeTask) -> bool:
+    """Recognize the real chat->development handoff without guessing."""
+    if legacy.mode == "development":
+        return True
+    if legacy.development_prompt is not None:
+        return True
+    # Worktree admission is paired with a fresh session in the real handoff.
+    return legacy.worktree is not None and legacy.session_id is not None
 
 
 def _task_status(legacy: RuntimeTask) -> TaskStatus:
     # This is the new Task's *initial* state.  A legacy RuntimeTask completed
     # status is a Run fact and must never be translated into Task.DONE/CLOSED.
-    if legacy.status == "running":
-        return TaskStatus.IN_PROGRESS
-    if legacy.status in {"paused", "recovery_required"}:
+    if legacy.status in {"running", "paused", "recovery_required"}:
         return TaskStatus.WAITING
     return TaskStatus.TODO
 
 
 def _run_status(legacy: RuntimeTask, issue: MigrationIssue | None = None) -> RunStatus:
     del issue
+    if legacy.status in {"running", "recovery_required"}:
+        return RunStatus.RECOVERY_REQUIRED
     return _RUN_STATUS.get(legacy.status, RunStatus.FAILED)
 
 
@@ -177,6 +231,8 @@ def _legacy_metadata(task: RuntimeTask, events: list[RuntimeEvent]) -> dict[str,
         "legacy_attempts": task.attempts,
         "legacy_status": task.status,
         "legacy_sequence": task.sequence,
+        "legacy_development_prompt": task.development_prompt,
+        "legacy_worktree": task.worktree,
     }
 
 
@@ -204,7 +260,8 @@ def _build_plan(
     runtime_file = runtime_root / "runtime.json"
     if runtime_file.is_symlink() or not runtime_file.is_file():
         raise ValueError("RuntimeCatalogue v1 runtime.json is missing or a symlink")
-    data = CatalogueData.model_validate_json(runtime_file.read_bytes())
+    runtime_bytes = runtime_file.read_bytes()
+    data = CatalogueData.model_validate_json(runtime_bytes)
     workspace_id = workspace_id_for(workspace)
     conversations: dict[str, Conversation] = {}
     tasks: list[Task] = []
@@ -230,23 +287,27 @@ def _build_plan(
                 )
             )
             continue
-        if task.mode == "conversation" and (
-            task.worktree is not None or task.development_prompt is not None
-        ):
-            issues.append(
-                MigrationIssue(
-                    legacy_task_id=task.task_id,
-                    kind="ambiguous_conversation_development",
-                    detail="Conversation-mode record has development fields; source preserved",
-                )
-            )
-            continue
+        development = _development_evidence(task)
         if task.mode not in {"conversation", "development"}:
             issues.append(
                 MigrationIssue(
                     legacy_task_id=task.task_id,
                     kind="unknown_mode",
                     detail=str(task.mode),
+                )
+            )
+            continue
+        if (
+            task.mode == "conversation"
+            and task.worktree is not None
+            and task.session_id is None
+            and task.development_prompt is None
+        ):
+            issues.append(
+                MigrationIssue(
+                    legacy_task_id=task.task_id,
+                    kind="ambiguous_conversation_development",
+                    detail="Worktree evidence has no session or development prompt; source preserved",
                 )
             )
             continue
@@ -280,7 +341,6 @@ def _build_plan(
                     },
                 }
             )
-        development = task.mode == "development"
         run = Run(
             run_id=_run_id(task.task_id),
             conversation_id=conversation_id,
@@ -345,7 +405,53 @@ def _build_plan(
             )
         else:
             board_conversations: dict[str, str] = {}
+            runtime_tasks = {task.task_id: task for task in tasks}
             for item in board_items:
+                runtime_task = runtime_tasks.get(item.task_id)
+                if runtime_task is not None:
+                    # Same identity: merge board-owned user metadata into the
+                    # runtime Task; never create a second Task or a board-only
+                    # Conversation for it.
+                    index = next(
+                        (
+                            idx
+                            for idx, task in enumerate(tasks)
+                            if task.task_id == item.task_id
+                        ),
+                        None,
+                    )
+                    if index is None:
+                        issues.append(
+                            MigrationIssue(
+                                legacy_task_id=item.task_id,
+                                kind="taskboard_identity_without_task",
+                                detail="TaskBoard card matches a conversation-only RuntimeTask; source preserved",
+                            )
+                        )
+                        continue
+                    domain_task = tasks[index]
+                    tasks[index] = domain_task.model_copy(
+                        update={
+                            "title": item.title or domain_task.title,
+                            "issue_url": item.issue_url
+                            if item.issue_url is not None
+                            else domain_task.issue_url,
+                            "metadata": {
+                                **domain_task.metadata,
+                                "legacy_taskboard": item.model_dump(mode="json"),
+                            },
+                        }
+                    )
+                    continue
+                if item.task_id in {task.task_id for task in tasks}:
+                    issues.append(
+                        MigrationIssue(
+                            legacy_task_id=item.task_id,
+                            kind="taskboard_identity_collision",
+                            detail="TaskBoard item collides with another migrated Task; board file preserved",
+                        )
+                    )
+                    continue
                 key = item.project or "legacy-taskboard"
                 if key not in board_conversations:
                     conversation_id = _conversation_id(workspace_id, "board:" + key)
@@ -363,15 +469,6 @@ def _build_plan(
                                 "imported_from": "tasks.json",
                             },
                         )
-                if item.task_id in {task.task_id for task in tasks}:
-                    issues.append(
-                        MigrationIssue(
-                            legacy_task_id=item.task_id,
-                            kind="taskboard_identity_collision",
-                            detail="TaskBoard item collides with a RuntimeTask id; board file preserved",
-                        )
-                    )
-                    continue
                 board_tasks.append(
                     _board_task(
                         item,
@@ -388,7 +485,8 @@ def _build_plan(
         runs=tuple(runs),
         board_tasks=tuple(board_tasks),
         issues=tuple(issues),
-        source_sha256=_sha(runtime_file),
+        source_sha256=hashlib.sha256(runtime_bytes).hexdigest(),
+        runtime_bytes=runtime_bytes,
         taskboard_sha256=taskboard_sha,
         taskboard_bytes=taskboard_bytes,
     )
@@ -401,12 +499,19 @@ def plan_migration(
     taskboard_path: Path | None = None,
 ) -> MigrationPlan:
     """Read and classify legacy data without writing anything."""
+    resolved_runtime = runtime_root.expanduser().resolve()
+    resolved_workspace = workspace.expanduser().resolve()
+    _assert_runtime_offline(resolved_runtime)
+    if taskboard_path is None:
+        selected_taskboard = discover_taskboard(resolved_runtime)
+    else:
+        selected_taskboard = taskboard_path.expanduser().resolve()
+        if not selected_taskboard.exists():
+            raise ValueError("Explicit TaskBoard source does not exist")
     return _build_plan(
-        runtime_root=runtime_root.expanduser().resolve(),
-        workspace=workspace.expanduser().resolve(),
-        taskboard_path=None
-        if taskboard_path is None
-        else taskboard_path.expanduser().resolve(),
+        runtime_root=resolved_runtime,
+        workspace=resolved_workspace,
+        taskboard_path=selected_taskboard,
     )
 
 
@@ -479,8 +584,22 @@ def _populate(store: DomainStore, plan: MigrationPlan) -> None:
             metadata=run.metadata,
         )
     store.mark_migration(
-        source_sha256=plan.source_sha256, source=str(plan.runtime_root)
+        source_sha256=plan.source_sha256,
+        taskboard_sha256=plan.taskboard_sha256,
+        source=str(plan.runtime_root),
     )
+
+
+def _verify_snapshot(plan: MigrationPlan) -> None:
+    runtime_file = plan.runtime_root / "runtime.json"
+    if runtime_file.read_bytes() != plan.runtime_bytes:
+        raise RuntimeError("RuntimeCatalogue changed during migration")
+    if (
+        plan.taskboard_path is not None
+        and plan.taskboard_bytes is not None
+        and plan.taskboard_path.read_bytes() != plan.taskboard_bytes
+    ):
+        raise RuntimeError("TaskBoard changed during migration")
 
 
 def apply_migration(
@@ -492,9 +611,11 @@ def apply_migration(
     """Publish a verified domain store; source and existing targets never mutate."""
     target = target.expanduser().resolve()
     backup_root = backup_root.expanduser().resolve()
+    _assert_runtime_offline(plan.runtime_root)
+    _verify_snapshot(plan)
     if target.exists():
         existing = DomainStore(target)
-        if existing.has_migration(plan.source_sha256):
+        if existing.has_migration(plan.source_sha256, plan.taskboard_sha256):
             return plan.report(dry_run=False, target=target).model_copy(
                 update={"already_migrated": True}
             )
@@ -506,6 +627,7 @@ def apply_migration(
     try:
         store = DomainStore(temporary)
         _populate(store, plan)
+        _verify_snapshot(plan)
         counts = store.counts()
         if counts != {
             "conversations": len(plan.conversations),

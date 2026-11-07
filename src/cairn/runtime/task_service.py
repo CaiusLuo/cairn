@@ -104,6 +104,7 @@ class TaskService:
         if self.board is not None and (
             previous is None
             or previous.status != updated.status
+            or previous.mode != updated.mode
             or kind == "worktree_ready"
         ):
             self.projections[task.task_id] = updated
@@ -431,7 +432,9 @@ class TaskService:
                 )
             else:
                 self.record(
-                    self.inspect(task_id).model_copy(update={"status": "queued"}),
+                    self.inspect(task_id).model_copy(
+                        update={"status": "queued", "mode": "development"}
+                    ),
                     "development_queued",
                 )
                 advance = True
@@ -488,9 +491,14 @@ class TaskService:
             self.projection_signal.clear()
             while self.projections:
                 _, task = self.projections.popitem()
-                # Conversation-only runs are not Tasks and must not appear as
-                # executable TaskBoard cards.
-                if task.mode != "development":
+                # A real handoff can leave the compatibility mode as
+                # conversation while carrying an explicit development prompt
+                # or worktree. Those are development task evidence.
+                if not (
+                    task.mode == "development"
+                    or task.development_prompt is not None
+                    or task.worktree is not None
+                ):
                     continue
                 now = datetime.now(UTC).isoformat()
                 item = TaskBoardItem(

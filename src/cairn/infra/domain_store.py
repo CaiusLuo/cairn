@@ -43,7 +43,10 @@ class DomainStore:
     """The only mutating owner of the Conversation/Task/Run tables."""
 
     def __init__(self, path: Path) -> None:
-        self.path = path.expanduser().resolve()
+        raw = path.expanduser()
+        if raw.is_symlink():
+            raise ValueError("Domain store cannot be a symlink")
+        self.path = raw.resolve()
         if self.path.is_symlink():
             raise ValueError("Domain store cannot be a symlink")
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -498,18 +501,35 @@ class DomainStore:
 
     # -- Legacy adapter/migration helpers ---------------------------------
 
-    def has_migration(self, source_sha256: str) -> bool:
+    def has_migration(
+        self, source_sha256: str, taskboard_sha256: str | None = None
+    ) -> bool:
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT value FROM domain_meta WHERE key = 'source_sha256'"
-            ).fetchone()
-        return row is not None and row[0] == source_sha256
+            rows = dict(
+                connection.execute(
+                    "SELECT key, value FROM domain_meta "
+                    "WHERE key IN ('source_sha256', 'taskboard_sha256')"
+                ).fetchall()
+            )
+        return rows.get("source_sha256") == source_sha256 and rows.get(
+            "taskboard_sha256", ""
+        ) == (taskboard_sha256 or "")
 
-    def mark_migration(self, *, source_sha256: str, source: str) -> None:
+    def mark_migration(
+        self,
+        *,
+        source_sha256: str,
+        taskboard_sha256: str | None = None,
+        source: str,
+    ) -> None:
         with self._connect() as connection:
             connection.execute(
                 "INSERT OR REPLACE INTO domain_meta(key, value) VALUES(?, ?)",
                 ("source_sha256", source_sha256),
+            )
+            connection.execute(
+                "INSERT OR REPLACE INTO domain_meta(key, value) VALUES(?, ?)",
+                ("taskboard_sha256", taskboard_sha256 or ""),
             )
             connection.execute(
                 "INSERT OR REPLACE INTO domain_meta(key, value) VALUES(?, ?)",

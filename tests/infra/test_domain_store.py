@@ -150,3 +150,13 @@ def test_run_terminal_states_are_independent_of_task_status(
     domain.update_run(run.run_id, status=status)
     current = domain.get_task(task.task_id)
     assert current is not None and current.status is TaskStatus.TODO
+
+
+def test_domain_store_rejects_symlink_before_resolving(tmp_path: Path) -> None:
+    target = tmp_path / "real.sqlite3"
+    target.write_text("not actually sqlite")
+    link = tmp_path / "domain-link.sqlite3"
+    link.symlink_to(target)
+    with pytest.raises(ValueError, match="symlink"):
+        DomainStore(link)
+    assert link.is_symlink()

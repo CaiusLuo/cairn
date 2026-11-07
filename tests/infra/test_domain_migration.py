@@ -9,7 +9,8 @@ from uuid import uuid4
 
 import pytest
 
-from cairn.core.domain import ConversationSource, TaskStatus
+from cairn.core.domain import ConversationSource, RunStatus, TaskStatus
+from cairn.core.task_board import TaskBoardItem, TaskBoardStatus, TaskSource, TaskTodo
 from cairn.infra import domain_migration
 from cairn.infra.domain_store import DomainStore
 from cairn.infra.runtime_catalog import RuntimeEvent, RuntimeTask
@@ -228,3 +229,136 @@ def test_migration_failure_keeps_source_and_backup(
     assert (backup / "manifest.json").is_file()
     assert (backup / "runtime.json").is_file()
     monkeypatch.setattr(domain_migration, "_populate", real_populate)
+
+
+def test_matching_runtime_and_board_identity_merges_user_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime, workspace, board_path = _legacy_files(tmp_path)
+    user_board = TaskBoardItem(
+        task_id="task-dev",
+        project="",
+        title="User edited title",
+        description="User edited description",
+        source=TaskSource.WEB,
+        status=TaskBoardStatus.TODO,
+        todos=(
+            TaskTodo(
+                todo_id="todo-user",
+                text="keep this todo",
+            ),
+        ),
+        issue_url="https://example.invalid/issue/7",
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-02T00:00:00+00:00",
+    )
+    board_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "tasks": [user_board.model_dump(mode="json")],
+            }
+        )
+    )
+    plan = domain_migration.plan_migration(
+        runtime, workspace, taskboard_path=board_path
+    )
+    task = next(task for task in plan.tasks if task.task_id == "task-dev")
+    assert task.title == "User edited title"
+    assert task.issue_url == "https://example.invalid/issue/7"
+    assert task.metadata["legacy_taskboard"]["title"] == "User edited title"
+    assert task.metadata["legacy_taskboard"]["todos"][0]["text"] == "keep this todo"
+    assert not any(
+        issue.kind == "taskboard_identity_without_task" for issue in plan.issues
+    )
+
+
+def test_running_legacy_task_requires_recovery_not_auto_execution(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    running = RuntimeTask(
+        task_id="task-running",
+        prompt="run",
+        source="cli",
+        mode="development",
+        status="running",
+    )
+    (runtime / "runtime.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "tasks": {running.task_id: running.model_dump(mode="json")},
+                "events": {running.task_id: []},
+            }
+        )
+    )
+    plan = domain_migration.plan_migration(runtime, workspace)
+    run = plan.runs[0]
+    assert run.status is RunStatus.RECOVERY_REQUIRED
+    assert plan.tasks[0].status is TaskStatus.WAITING
+
+
+def test_offline_owner_lock_blocks_plan_and_source_snapshot_blocks_apply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, workspace, board_path = _legacy_files(tmp_path)
+    from cairn.infra.workspace.lease import WorkspaceLease
+
+    lease = WorkspaceLease(runtime / "owner.lock")
+    assert lease.acquire()
+    try:
+        with pytest.raises(RuntimeError, match=r"online|active writer"):
+            domain_migration.plan_migration(runtime, workspace)
+    finally:
+        lease.release()
+
+    plan = domain_migration.plan_migration(
+        runtime, workspace, taskboard_path=board_path
+    )
+    target = tmp_path / "domain.sqlite3"
+    before = (runtime / "runtime.json").read_bytes()
+    (runtime / "runtime.json").write_bytes(before + b"\n")
+    with pytest.raises(RuntimeError, match="changed during migration"):
+        domain_migration.apply_migration(
+            plan, target=target, backup_root=tmp_path / "backups"
+        )
+    assert not target.exists()
+
+
+def test_default_taskboard_discovery_imports_board_without_explicit_path(
+    tmp_path: Path,
+) -> None:
+    runtime, workspace, board_path = _legacy_files(tmp_path)
+    plan = domain_migration.plan_migration(runtime, workspace)
+    assert plan.taskboard_path == board_path
+    assert any(task.title == "Manual board card" for task in plan.tasks)
+
+
+def test_repeated_migration_detects_taskboard_change(
+    tmp_path: Path,
+) -> None:
+    runtime, workspace, board_path = _legacy_files(tmp_path)
+    plan = domain_migration.plan_migration(
+        runtime, workspace, taskboard_path=board_path
+    )
+    target = tmp_path / "domain.sqlite3"
+    domain_migration.apply_migration(
+        plan, target=target, backup_root=tmp_path / "backups"
+    )
+    board_path.write_text(board_path.read_text() + "\n")
+    with pytest.raises(RuntimeError, match="changed during migration"):
+        domain_migration.apply_migration(
+            plan, target=target, backup_root=tmp_path / "backups"
+        )
+
+
+def test_explicit_missing_taskboard_source_is_rejected(tmp_path: Path) -> None:
+    runtime, workspace, _ = _legacy_files(tmp_path)
+    with pytest.raises(ValueError, match="does not exist"):
+        domain_migration.plan_migration(
+            runtime, workspace, taskboard_path=tmp_path / "missing-tasks.json"
+        )
