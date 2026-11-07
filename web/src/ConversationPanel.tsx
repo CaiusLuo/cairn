@@ -31,6 +31,7 @@ export function ConversationPanel() {
   const [active, setActive] = useState(new URLSearchParams(location.search).get("conversation") || "");
   const [messages, setMessages] = useState<Message[]>([]);
   const [run, setRun] = useState<Run | null>(null);
+  const [preview, setPreview] = useState("");
   const [prompt, setPrompt] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -93,6 +94,25 @@ export function ConversationPanel() {
     }, 500);
     return () => clearInterval(timer);
   }, [run]);
+
+  useEffect(() => {
+    if (!run || !["queued", "running"].includes(run.status)) {
+      setPreview("");
+      return;
+    }
+    let live = true;
+    const socket = new WebSocket(
+      `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/runtime/runs/${run.run_id}/stream?after=0`,
+    );
+    socket.onmessage = message => {
+      if (!live) return;
+      const data = JSON.parse(message.data);
+      if (data.type === "preview") setPreview(old => (old + data.text).slice(-64000));
+      else if (data.type === "event" && ["running", "failed", "paused", "completed", "recovery_required"].includes(data.kind)) setPreview("");
+    };
+    socket.onerror = () => socket.close();
+    return () => { live = false; socket.close(); };
+  }, [run?.run_id, run?.status]);
 
   async function send() {
     const text = prompt.trim();
@@ -158,7 +178,7 @@ export function ConversationPanel() {
               </div>
             ) : null
           ))}
-          {run?.result ? <div className="message message--assistant"><small>assistant</small><p>{run.result}</p></div> : null}
+          {preview ? <div className="message message--assistant"><small>assistant</small><p>{preview}</p></div> : null}
           {run?.error ? <div className="control-error">{run.error}</div> : null}
         </div>
         {error ? <div className="control-error">{error}</div> : null}
