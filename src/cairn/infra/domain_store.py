@@ -7,6 +7,7 @@ avoiding another full-document JSON rewrite for every state transition.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Iterator
@@ -130,6 +131,13 @@ class DomainStore:
                 created_at TEXT NOT NULL,
                 PRIMARY KEY (run_id, sequence)
             );
+            CREATE TABLE IF NOT EXISTS conversation_requests (
+                workspace_id TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
+                fingerprint TEXT NOT NULL,
+                PRIMARY KEY (workspace_id, request_id)
+            );
             CREATE TABLE IF NOT EXISTS run_requests (
                 conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
                 request_id TEXT NOT NULL,
@@ -153,20 +161,38 @@ class DomainStore:
         source: ConversationSource,
         initial_prompt: str,
         conversation_id: str | None = None,
+        request_id: str | None = None,
         created_at: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Conversation:
         workspace_id = workspace_id_for(workspace)
-        conversation = Conversation(
-            conversation_id=conversation_id or new_conversation_id(),
-            workspace_id=workspace_id,
-            source=source,
-            initial_prompt=initial_prompt,
-            created_at=created_at or utc_now(),
-            updated_at=created_at or utc_now(),
-            metadata=metadata or {},
-        )
+        fingerprint = hashlib.sha256(
+            json.dumps([initial_prompt, source.value], ensure_ascii=False).encode()
+        ).hexdigest()
         with self._connect() as connection:
+            if request_id is not None:
+                existing = connection.execute(
+                    "SELECT conversation_requests.fingerprint, conversations.* "
+                    "FROM conversation_requests JOIN conversations USING(conversation_id) "
+                    "WHERE conversation_requests.workspace_id = ? "
+                    "AND conversation_requests.request_id = ?",
+                    (workspace_id, request_id),
+                ).fetchone()
+                if existing is not None:
+                    if existing["fingerprint"] != fingerprint:
+                        raise ValueError(
+                            "Conversation request ID belongs to different input"
+                        )
+                    return self._conversation(existing)
+            conversation = Conversation(
+                conversation_id=conversation_id or new_conversation_id(),
+                workspace_id=workspace_id,
+                source=source,
+                initial_prompt=initial_prompt,
+                created_at=created_at or utc_now(),
+                updated_at=created_at or utc_now(),
+                metadata=metadata or {},
+            )
             connection.execute(
                 """
                 INSERT INTO conversations
@@ -184,6 +210,18 @@ class DomainStore:
                     _json(conversation.metadata),
                 ),
             )
+            if request_id is not None:
+                connection.execute(
+                    "INSERT INTO conversation_requests"
+                    "(workspace_id, request_id, conversation_id, fingerprint) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        workspace_id,
+                        request_id,
+                        conversation.conversation_id,
+                        fingerprint,
+                    ),
+                )
         return conversation
 
     def get_conversation(self, conversation_id: str) -> Conversation | None:
@@ -602,6 +640,7 @@ class DomainStore:
         status: RunStatus | None = None,
         error: str | None = None,
         result: str | None = None,
+        task_id: str | None = None,
         budget: dict[str, Any] | None = None,
         trace_ref: str | None = None,
         session_id: str | None = None,
@@ -627,6 +666,7 @@ class DomainStore:
                 "status": current.status if status is None else status,
                 "error": current.error if error is None else error,
                 "result": current.result if result is None else result,
+                "task_id": current.task_id if task_id is None else task_id,
                 "budget": current.budget if budget is None else budget,
                 "trace_ref": current.trace_ref if trace_ref is None else trace_ref,
                 "session_id": current.session_id if session_id is None else session_id,
@@ -643,13 +683,14 @@ class DomainStore:
         with self._connect() as connection:
             connection.execute(
                 """
-                UPDATE runs SET status=?, error=?, budget_json=?, trace_ref=?,
+                UPDATE runs SET status=?, error=?, task_id=?, budget_json=?, trace_ref=?,
                     session_id=?, checkpoint_receipt_json=?, updated_at=?, ended_at=?,
                     metadata_json=? WHERE run_id=?
                 """,
                 (
                     updated.status.value,
                     updated.error,
+                    updated.task_id,
                     _json(updated.budget),
                     updated.trace_ref,
                     updated.session_id,

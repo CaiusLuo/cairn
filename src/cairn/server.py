@@ -100,7 +100,9 @@ def runtime_app(
         board=TaskBoardService(TaskBoardStore(state / "board"), project=str(workspace)),
     )
     domain_store = DomainStore(state / "domain.sqlite3")
-    conversations = ConversationService(domain_store, execution, workspace=workspace)
+    conversations = ConversationService(
+        domain_store, execution, workspace=workspace, legacy_service=service
+    )
     execution.service = service
     service.history_reader = execution.history
     service.recovery_reader = execution.recovery

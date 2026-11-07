@@ -69,6 +69,8 @@ def test_conversation_runs_are_independent_and_do_not_create_tasks(
                     await asyncio.sleep(0.02)
                 assert current["status"] == "completed", current
                 assert current["result"] == f"reply:turn {index}"
+                assert current["budget"].get("limits")
+                assert current["checkpoint_receipt"] is not None
             assert len(set(run_ids)) == 3
             detail = await api.get_conversation(conversation["conversation_id"])
             assert len(detail["runs"]) == 3

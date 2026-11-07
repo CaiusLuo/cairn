@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.requests import Request
@@ -18,7 +18,11 @@ from starlette.routing import BaseRoute, Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from cairn.core.domain import ConversationSource
-from cairn.runtime.conversation_service import ConversationBusy, ConversationService
+from cairn.runtime.conversation_service import (
+    ConversationBusy,
+    ConversationRecoveryRequired,
+    ConversationService,
+)
 from cairn.runtime.lifecycle import settle_owned
 from cairn.web.runtime import request_body
 
@@ -27,6 +31,15 @@ class ConversationCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     prompt: str = Field(min_length=1, max_length=32000)
     source: ConversationSource = ConversationSource.CLI
+    request_id: str | None = Field(default=None, max_length=200)
+
+
+class RecoveryReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: dict[str, Any]
+    action: Literal["abandon_without_replay", "acknowledge_checkpoint"]
+    reviewed_effects: Literal[True]
+    note: str = Field(min_length=1, max_length=1024)
 
 
 class ConversationMessage(BaseModel):
@@ -55,9 +68,16 @@ def conversation_routes(
             "status": run.status.value,
             "cursor": events[-1].sequence if events else 0,
             "trace_id": run.trace_ref,
+            "budget": run.budget,
+            "checkpoint_receipt": run.checkpoint_receipt,
             "result": run.result,
             "error": run.error,
             "session_id": run.session_id,
+            "next_action": (
+                "development_handoff_pending"
+                if run.error == "development_handoff_pending"
+                else None
+            ),
         }
 
     async def handle(request: Request) -> JSONResponse:
@@ -67,12 +87,14 @@ def conversation_routes(
             conversation_id = request.path_params.get("conversation_id")
             run_id = request.path_params.get("run_id")
             action = request.path_params.get("action")
-            if request.method == "POST" and conversation_id is None:
+            if request.method == "POST" and conversation_id is None and run_id is None:
                 create_body = ConversationCreate.model_validate(
                     await request_body(request)
                 )
                 created = service.create_conversation(
-                    create_body.prompt, create_body.source
+                    create_body.prompt,
+                    create_body.source,
+                    create_body.request_id,
                 )
                 return JSONResponse(
                     created.model_dump(mode="json"),
@@ -95,12 +117,40 @@ def conversation_routes(
             if run_id is not None:
                 assert isinstance(run_id, str)
                 if action == "cancel":
+                    if request.method != "POST":
+                        return JSONResponse(
+                            {"error": "method_not_allowed"}, status_code=405
+                        )
                     cancelled = await service.cancel(run_id)
                     return JSONResponse(
                         run_payload(cancelled.run_id),
                         headers={"Cache-Control": "no-store"},
                     )
+                if action == "reconcile":
+                    if request.method != "POST":
+                        return JSONResponse(
+                            {"error": "method_not_allowed"}, status_code=405
+                        )
+                    review = RecoveryReview.model_validate(await request_body(request))
+                    reconciled = service.reconcile(run_id, review.model_dump())
+                    return JSONResponse(
+                        run_payload(reconciled.run_id),
+                        headers={"Cache-Control": "no-store"},
+                    )
+                if action == "recovery":
+                    if request.method != "GET":
+                        return JSONResponse(
+                            {"error": "method_not_allowed"}, status_code=405
+                        )
+                    return JSONResponse(
+                        service.recovery(run_id),
+                        headers={"Cache-Control": "no-store"},
+                    )
                 if action == "events":
+                    if request.method != "GET":
+                        return JSONResponse(
+                            {"error": "method_not_allowed"}, status_code=405
+                        )
                     after = int(request.query_params.get("after", "0"))
                     events = (
                         await service.follow(run_id, after)
@@ -116,6 +166,10 @@ def conversation_routes(
                             "cursor": events[-1].sequence if events else after,
                         },
                         headers={"Cache-Control": "no-store"},
+                    )
+                if request.method != "GET":
+                    return JSONResponse(
+                        {"error": "method_not_allowed"}, status_code=405
                     )
                 return JSONResponse(
                     run_payload(run_id), headers={"Cache-Control": "no-store"}
@@ -162,6 +216,8 @@ def conversation_routes(
             return JSONResponse({"error": "conversation_or_run_not_found"}, 404)
         except ConversationBusy:
             return JSONResponse({"error": "conversation_busy"}, 409)
+        except ConversationRecoveryRequired:
+            return JSONResponse({"error": "conversation_recovery_required"}, 409)
         except (ValueError, ValidationError):
             return JSONResponse({"error": "invalid_request"}, 409)
         except asyncio.QueueFull:
@@ -236,7 +292,7 @@ def conversation_routes(
             methods=["GET", "POST"],
         ),
         Route("/api/runtime/runs/{run_id}", handle, methods=["GET"]),
-        Route("/api/runtime/runs/{run_id}/{action}", handle, methods=["GET"]),
+        Route("/api/runtime/runs/{run_id}/{action}", handle, methods=["GET", "POST"]),
         WebSocketRoute("/api/runtime/runs/{run_id}/stream", stream),
     ]
 

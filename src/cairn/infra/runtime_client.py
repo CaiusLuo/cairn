@@ -130,15 +130,16 @@ class RuntimeClient:
         )
 
     async def create_conversation(
-        self, prompt: str, *, source: str = "cli"
+        self,
+        prompt: str,
+        *,
+        source: str = "cli",
+        request_id: str | None = None,
     ) -> dict[str, Any]:
-        return dict(
-            await self.request(
-                "POST",
-                "conversations",
-                {"prompt": prompt, "source": source},
-            )
-        )
+        body: dict[str, Any] = {"prompt": prompt, "source": source}
+        if request_id is not None:
+            body["request_id"] = request_id
+        return dict(await self.request("POST", "conversations", body))
 
     async def send_conversation(
         self,
@@ -168,6 +169,14 @@ class RuntimeClient:
 
     async def cancel_run(self, run_id: str) -> dict[str, Any]:
         return dict(await self.request("POST", f"runs/{run_id}/cancel", {}))
+
+    async def get_run_recovery(self, run_id: str) -> dict[str, Any]:
+        return dict(await self.request("GET", f"runs/{run_id}/recovery"))
+
+    async def reconcile_run(
+        self, run_id: str, review: dict[str, Any]
+    ) -> dict[str, Any]:
+        return dict(await self.request("POST", f"runs/{run_id}/reconcile", review))
 
     async def run_events(
         self, run_id: str, *, after: int = 0, wait: bool = False

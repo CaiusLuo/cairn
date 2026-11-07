@@ -35,6 +35,7 @@ class RemoteChat:
         self.conversation: dict[str, Any] | None = None
         self.task: dict[str, Any] | None = None
         self.pending: tuple[str | None, str, str, int] | None = None
+        self.conversation_request_id: str | None = None
 
     def _set_run(self, run: dict[str, Any]) -> dict[str, Any]:
         self.task = {
@@ -76,6 +77,9 @@ class RemoteChat:
             request_id = self.pending[2]
         else:
             request_id = request_id or "cli:" + uuid4().hex
+            self.conversation_request_id = (
+                self.conversation_request_id or "cli-conv:" + uuid4().hex
+            )
             self.pending = (
                 self.conversation["conversation_id"] if self.conversation else None,
                 prompt,
@@ -84,7 +88,11 @@ class RemoteChat:
             )
         try:
             if self.conversation is None:
-                created = await self.api.create_conversation(prompt, source="cli")
+                created = await self.api.create_conversation(
+                    prompt,
+                    source="cli",
+                    request_id=self.conversation_request_id,
+                )
                 self.conversation = created
             run = await self.api.send_conversation(
                 self.conversation["conversation_id"],
@@ -96,6 +104,7 @@ class RemoteChat:
             self.pending = None
             raise
         self.pending = None
+        self.conversation_request_id = None
         return self._set_run(run)
 
     async def wait(
