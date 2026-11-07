@@ -68,6 +68,11 @@ class ServerPaths:
         return self.data_root / "agent"
 
     @property
+    def domain(self) -> Path:
+        """Authoritative Conversation/Task/Run store for P0-B2/B3."""
+        return self.runtime / "domain.sqlite3"
+
+    @property
     def token(self) -> Path:
         return self.runtime / "runtime.token"
 

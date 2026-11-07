@@ -140,10 +140,21 @@ class TaskBoardStore:
                         raise TaskBoardValidationError(
                             "Execution projection project mismatch"
                         )
+                    # Projection owns execution state only.  The board remains
+                    # the authority for user-authored metadata.
                     item = item.model_copy(
                         update={
                             "created_at": current.created_at,
                             "revision": current.revision + 1,
+                            "title": current.title,
+                            "description": current.description,
+                            "todos": current.todos,
+                            "issue_url": current.issue_url,
+                            "pr_url": current.pr_url,
+                            "source": current.source,
+                            "progress": tuple(
+                                dict.fromkeys((*current.progress, *item.progress))
+                            ),
                         }
                     )
                     items[index] = item

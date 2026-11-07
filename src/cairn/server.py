@@ -417,6 +417,40 @@ def import_existing_state(
     typer.echo(f"State imported and verified. Original data retained. Backup: {backup}")
 
 
+@app.command("migrate-domain")
+def migrate_domain_command(
+    ctx: typer.Context,
+    source: Annotated[
+        Path, typer.Option(help="Legacy runtime directory containing runtime.json")
+    ],
+    target: Annotated[Path | None, typer.Option()] = None,
+    backup_root: Annotated[Path | None, typer.Option()] = None,
+    taskboard: Annotated[Path | None, typer.Option()] = None,
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply", help="Publish the verified migration; default is dry-run"
+        ),
+    ] = False,
+) -> None:
+    """Dry-run or apply offline migration into the Conversation/Task/Run store."""
+    from cairn.infra.domain_migration import migrate_domain
+
+    settings: ServerConfig = ctx.obj
+    paths = settings.paths
+    report = migrate_domain(
+        source.expanduser().resolve(),
+        paths.workspace,
+        target=(target or paths.runtime / "domain.sqlite3").expanduser().resolve(),
+        backup_root=(backup_root or paths.data_root / "migration-backups")
+        .expanduser()
+        .resolve(),
+        taskboard_path=None if taskboard is None else taskboard.expanduser().resolve(),
+        dry_run=not apply,
+    )
+    typer.echo(report.model_dump_json(indent=2))
+
+
 def main() -> None:
     try:
         app()

@@ -77,8 +77,10 @@ Standalone CLI/WeChat Runtime launchers have been retired.
 
 One task worker and a bounded queue remain; Runtime facts use JSON and durable
 Sessions use SQLite. Tool permissions, credential filtering, LangGraph execution
-and uncertain-effect recovery remain active. PostgreSQL, parallel workers and
-Conversation/Task/Run separation are outside this change.
+and uncertain-effect recovery remain active. The Conversation/Task/Run domain
+store and offline migration foundation are in place; the execution loop still
+uses the compatibility RuntimeTask representation until B2/B3 integration.
+PostgreSQL and parallel workers remain outside this change.
 
 ## Development
 

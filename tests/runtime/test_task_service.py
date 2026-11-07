@@ -6,6 +6,8 @@ from typing import Any
 import pytest
 
 from cairn.infra.runtime_catalog import RuntimeCatalogue, RuntimeTask
+from cairn.infra.task_board.store import TaskBoardStore
+from cairn.runtime.task_board.service import TaskBoardService
 from cairn.runtime.task_service import TaskService
 
 
@@ -116,6 +118,41 @@ def test_slow_subscriber_is_bounded_and_cannot_block_execution(tmp_path: Path) -
             assert queue.qsize() == 1 and queue.get_nowait()["type"] == "resync"
             assert len(service.catalogue.data.events[task.task_id]) == 3
         assert service.subscribers == {}
+        await service.close()
+
+    asyncio.run(scenario())
+
+
+def test_conversation_runs_are_not_projected_as_task_board_cards(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        board = TaskBoardService(TaskBoardStore(tmp_path / "board"))
+
+        async def execute(
+            task: RuntimeTask, emit: Callable[[str, dict[str, Any]], None]
+        ) -> str:
+            del task, emit
+            return "done"
+
+        service = TaskService(
+            RuntimeCatalogue(tmp_path / "state", forbidden_roots=()),
+            execute,
+            board=board,
+        )
+        await service.start()
+        chat = service.submit("hello", "cli", mode="conversation")
+        await asyncio.wait_for(service.queue.join(), 2)
+        assert chat.mode == "conversation"
+        assert board.store.load() == ()
+
+        dev = service.submit("build", "cli", mode="development")
+        await asyncio.wait_for(service.queue.join(), 2)
+        for _ in range(20):
+            if board.store.load():
+                break
+            await asyncio.sleep(0.01)
+        assert [item.task_id for item in board.store.load()] == [dev.task_id]
         await service.close()
 
     asyncio.run(scenario())

@@ -488,6 +488,10 @@ class TaskService:
             self.projection_signal.clear()
             while self.projections:
                 _, task = self.projections.popitem()
+                # Conversation-only runs are not Tasks and must not appear as
+                # executable TaskBoard cards.
+                if task.mode != "development":
+                    continue
                 now = datetime.now(UTC).isoformat()
                 item = TaskBoardItem(
                     task_id=task.task_id,
