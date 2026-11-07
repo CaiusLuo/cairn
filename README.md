@@ -1,8 +1,8 @@
 # Cairn
 
 Cairn is a personal Agent for Debian servers. A shared Runtime runs the Agent;
-CLI, Web and WeChat clients can use the same task ID, progress, history and Git
-Worktree. LangGraph orchestrates model calls and tools through the existing
+CLI, Web and WeChat clients can use the same Conversation/Run identity, progress,
+history and (for explicit development) Git Worktree. LangGraph orchestrates model calls and tools through the existing
 `run_turn` implementation.
 
 ```text
@@ -12,11 +12,12 @@ WeChat bridge ──┘        │
                    tasks / history / recovery / worktrees
 ```
 
-Ordinary chat uses read-only tools without allocating a Worktree. When the model
-requests development, the Runtime creates one and keeps the same task ID and
-prior history. Explicit development commands skip that transition. The service
-persists task state, enforces host permissions and budgets, and retains work for
-safe continuation.
+Ordinary chat creates durable Conversation and Run facts in the DomainStore,
+uses read-only tools without allocating a Task or Worktree, and never appears in
+TaskBoard. Explicit development remains on the compatibility task path during
+B2; it creates a Worktree and TaskBoard card under the existing safety rules, and
+the complete Task lifecycle move is B3. The service persists state, enforces host
+permissions and budgets, and retains work for safe continuation.
 
 ## Install
 
@@ -63,8 +64,9 @@ Open `http://127.0.0.1:8777/chat.html`; username is `cairn`, password is
 `data_root/runtime/runtime.token`. Web Chat, Tasks, History, WeChat management
 and Schedule share the same Server. Use an SSH tunnel for a remote server.
 
-Chat normally, or enter `/develop GOAL`. `/status`, `/history`, `/continue`,
-`/cancel`, `/new` and `/use ID` operate on server-owned work. `/wx` starts login;
+Chat normally, or enter `/develop GOAL`. `/status`, `/history`, `/cancel`,
+`/new` and `/use CONVERSATION_ID` operate on the same server-owned Conversation;
+`/continue` and development task controls remain on the explicit development path. `/wx` starts login;
 `/wx status` and `/wx verify CODE` manage it. Web Settings offers these same
 controls plus Schedule and Memory. Client exit leaves background services running.
 
@@ -75,12 +77,13 @@ systemd operation. `./scripts/start.sh` supports `start`, `stop`, `restart`, `st
 root or equivalent systemd rights.
 Standalone CLI/WeChat Runtime launchers have been retired.
 
-One task worker and a bounded queue remain; Runtime facts use JSON and durable
-Sessions use SQLite. Tool permissions, credential filtering, LangGraph execution
-and uncertain-effect recovery remain active. The Conversation/Task/Run domain
-store and offline migration foundation are in place; the execution loop still
-uses the compatibility RuntimeTask representation until B2/B3 integration.
-PostgreSQL and parallel workers remain outside this change.
+One task worker and a bounded queue remain. Ordinary chat facts use SQLite
+DomainStore; development execution still uses the RuntimeCatalogue compatibility
+representation until B3. Durable Sessions use SQLite. Tool permissions,
+credential filtering, LangGraph execution and uncertain-effect recovery remain
+active. Offline migration is available through the `migrate-domain` command with
+backup and source snapshot checks. PostgreSQL and parallel workers remain outside
+this change.
 
 ## Development
 

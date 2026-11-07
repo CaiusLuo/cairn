@@ -51,3 +51,36 @@ def test_startup_marks_running_recovery_and_schedules_queued(
         assert store.get_run(queued.run_id).status is RunStatus.COMPLETED  # type: ignore[union-attr]
 
     asyncio.run(scenario())
+
+
+def test_cancel_queued_run_before_worker_starts(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        store = DomainStore(tmp_path / "domain.sqlite3")
+        conversation = store.create_conversation(
+            workspace=workspace,
+            source=ConversationSource.CLI,
+            initial_prompt="cancel",
+        )
+        run = store.create_run(
+            conversation_id=conversation.conversation_id,
+            status=RunStatus.QUEUED,
+            prompt="cancel me",
+        )
+
+        class FakeExecution:
+            async def __call__(
+                self, task: Any, emit: Any, *, service: Any | None = None
+            ) -> str:
+                del task, emit, service
+                return "ok"
+
+        service = ConversationService(store, FakeExecution(), workspace=workspace)  # type: ignore[arg-type]
+        cancelled = await service.cancel(run.run_id)
+        assert cancelled.status is RunStatus.CANCELLED
+        await service.start()
+        await service.close()
+        assert store.get_run(run.run_id).status is RunStatus.CANCELLED  # type: ignore[union-attr]
+
+    asyncio.run(scenario())

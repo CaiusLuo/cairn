@@ -128,15 +128,15 @@ export function ConversationPanel() {
   }
 
   return (
-    <div className="runtime-layout">
-      <aside className="runtime-list">
+    <div className="chat-layout">
+      <aside className="conversations">
         <button className="secondary" onClick={() => { setActive(""); setMessages([]); setRun(null); }}>
           新对话
         </button>
         {conversations.map(item => (
           <button
             key={item.conversation_id}
-            className={`runtime-list__item${item.conversation_id === active ? " is-active" : ""}`}
+            className={`conversation${item.conversation_id === active ? " selected" : ""}`}
             onClick={() => setActive(item.conversation_id)}
           >
             <span>{item.initial_prompt || short(item.conversation_id)}</span>
@@ -144,25 +144,25 @@ export function ConversationPanel() {
           </button>
         ))}
       </aside>
-      <section className="runtime-chat">
-        <header className="runtime-chat__header">
+      <section className="chat-thread">
+        <header className="chat-header">
           <strong>{selected ? short(selected.conversation_id) : "新对话"}</strong>
           {run ? <span>{taskStatus(run.status)}</span> : null}
         </header>
-        <div className="runtime-messages">
+        <div className="messages">
           {messages.map((message, index) => (
             message.content ? (
-              <div key={index} className={`runtime-message runtime-message--${message.role}`}>
+              <div key={index} className={`message message--${message.role}`}>
                 <small>{message.role}</small>
                 <p>{message.content}</p>
               </div>
             ) : null
           ))}
-          {run?.result ? <div className="runtime-message runtime-message--assistant"><small>assistant</small><p>{run.result}</p></div> : null}
-          {run?.error ? <div className="runtime-error">{run.error}</div> : null}
+          {run?.result ? <div className="message message--assistant"><small>assistant</small><p>{run.result}</p></div> : null}
+          {run?.error ? <div className="control-error">{run.error}</div> : null}
         </div>
-        {error ? <div className="runtime-error">{error}</div> : null}
-        <form className="runtime-compose" onSubmit={event => { event.preventDefault(); void send(); }}>
+        {error ? <div className="control-error">{error}</div> : null}
+        <form className="chat-composer" onSubmit={event => { event.preventDefault(); void send(); }}>
           <textarea
             value={prompt}
             onChange={event => setPrompt(event.target.value)}
