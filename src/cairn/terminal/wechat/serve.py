@@ -1679,6 +1679,7 @@ class _Service:
         async def forward() -> None:
             assert self._runtime_adapter is not None and inbound.key is not None
             intent_key: str | None = None
+            send_attempted = False
             try:
                 identity = hashlib.sha256(
                     f"{self.config.account.ilink_user_id}:{inbound.sender}:{inbound.key}".encode()
@@ -1689,10 +1690,20 @@ class _Service:
                     else inbound.text or ""
                 )
                 command = raw_text.strip().partition(" ")[0]
+                message_id = "wechat-runtime:" + identity
+                request_id = None
                 if self._uses_conversation_runtime and not command.startswith("/"):
+                    from cairn.terminal.wechat.runtime import wechat_request_id
+
+                    request_id = wechat_request_id(
+                        self.config.account.ilink_bot_id,
+                        inbound.sender,
+                        message_id,
+                    )
                     intent_key = self.state.begin_delivery_intent(
                         message_key=inbound.key,
-                        message_id="wechat-runtime:" + identity,
+                        message_id=message_id,
+                        request_id=request_id,
                         account_id=self.config.account.ilink_bot_id,
                         sender_id=inbound.sender,
                         context_token=inbound.context_token,
@@ -1712,7 +1723,7 @@ class _Service:
                     delivery_owned = True
                 text = await adapter.reply(
                     raw_text,
-                    message_id="wechat-runtime:" + identity,
+                    message_id=message_id,
                     sender=inbound.sender,
                     account=self.config.account.ilink_bot_id,
                     conversation_key="wechat:"
@@ -1721,6 +1732,7 @@ class _Service:
                     ).hexdigest(),
                     deliver=not delivery_owned,
                     delivery_key=intent_key,
+                    request_id=request_id,
                 )
                 if command == "/task" and delivery_owned:
                     await self._safe_reply(
@@ -1729,36 +1741,44 @@ class _Service:
                         "开发任务已开始, 完成后会通知结果。",
                         retries=1,
                     )
+                if text:
+                    can_send = True
+                    if intent_key is not None:
+                        intent = self.state.get_delivery_intent(intent_key)
+                        if (
+                            intent is not None
+                            and intent.get("admission_status") == "accepted"
+                        ):
+                            can_send = self.state.begin_delivery_attempt(intent_key)
+                    if can_send:
+                        send_attempted = True
+                        sent = await self._safe_reply(
+                            inbound.sender, inbound.context_token, text, retries=1
+                        )
+                        if intent_key is not None:
+                            with contextlib.suppress(Exception):
+                                if sent:
+                                    self.state.mark_delivery_sent(intent_key)
+                                else:
+                                    self.state.mark_delivery_unconfirmed(intent_key)
                 self.state.mark(
                     inbound.key,
                     "command",
                     command="runtime",
                     delivery_state="deferred" if delivery_owned else "handled",
                 )
-                if text:
-                    if intent_key is not None:
-                        self.state.update_delivery_intent(intent_key, status="started")
-                    sent = await self._safe_reply(
-                        inbound.sender, inbound.context_token, text, retries=1
-                    )
-                    if intent_key is not None:
-                        self.state.update_delivery_intent(
-                            intent_key,
-                            status="sent" if sent else "unconfirmed",
-                        )
             except Exception:
-                if intent_key is not None:
-                    with contextlib.suppress(ValueError):
-                        self.state.update_delivery_intent(
-                            intent_key, status="unconfirmed"
-                        )
                 self.report.errors += 1
-                await self._safe_reply(
-                    inbound.sender,
-                    inbound.context_token,
-                    "Runtime 暂时不可用, 原消息已保留, 不会改用其他 Agent 重跑。",
-                    retries=1,
-                )
+                if intent_key is not None and not send_attempted:
+                    with contextlib.suppress(Exception):
+                        self.state.mark_delivery_unconfirmed(intent_key)
+                if not send_attempted:
+                    await self._safe_reply(
+                        inbound.sender,
+                        inbound.context_token,
+                        "Runtime 暂时不可用, 原消息已保留, 不会改用其他 Agent 重跑。",
+                        retries=1,
+                    )
             finally:
                 self._runtime_forwarding.discard(inbound.key)
 

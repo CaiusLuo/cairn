@@ -14,6 +14,15 @@ from cairn.infra.runtime_client import RuntimeClient
 from cairn.infra.wechat.state import WechatState
 
 
+def wechat_request_id(account_id: str, sender_id: str, message_id: str) -> str:
+    return (
+        "wechat:"
+        + hashlib.sha256(
+            (account_id + "\0" + sender_id + "\0" + message_id).encode()
+        ).hexdigest()
+    )
+
+
 class WechatConversationAdapter:
     """Run ordinary WeChat chat through the Conversation/Run API.
 
@@ -32,6 +41,16 @@ class WechatConversationAdapter:
         self.legacy = legacy or WechatRuntimeAdapter(client)
         self.delivery_state = delivery_state
 
+    def _set_admission(
+        self, delivery_key: str | None, status: str, error: str | None = None
+    ) -> None:
+        if self.delivery_state is not None and delivery_key is not None:
+            self.delivery_state.set_admission_status(delivery_key, status, error=error)
+
+    def _bind(self, delivery_key: str | None, **fields: str) -> None:
+        if self.delivery_state is not None and delivery_key is not None:
+            self.delivery_state.bind_delivery_intent(delivery_key, **fields)
+
     async def reply(
         self,
         text: str,
@@ -42,6 +61,7 @@ class WechatConversationAdapter:
         account: str | None = None,
         deliver: bool = True,
         delivery_key: str | None = None,
+        request_id: str | None = None,
     ) -> str:
         del conversation_key
         content = text.strip()
@@ -58,45 +78,30 @@ class WechatConversationAdapter:
             return "无法确认微信身份, 消息未执行。"
         if not message_id:
             return "消息缺少稳定标识, 未执行。"
-        request_id = (
-            "wechat:"
-            + hashlib.sha256(
-                (account + "\0" + sender + "\0" + message_id).encode()
-            ).hexdigest()
-        )
+        request_id = request_id or wechat_request_id(account, sender, message_id)
+        conversation: dict[str, Any] | None = None
         try:
             conversation = await self.client.ensure_wechat_conversation(
                 account, sender, content
             )
-            if self.delivery_state is not None and delivery_key is not None:
-                with suppress(ValueError):
-                    self.delivery_state.update_delivery_intent(
-                        delivery_key,
-                        conversation_id=conversation["conversation_id"],
-                    )
+            self._bind(delivery_key, conversation_id=conversation["conversation_id"])
             run = await self.client.send_conversation(
                 conversation["conversation_id"],
                 content,
                 source="wechat",
                 request_id=request_id,
             )
-            if self.delivery_state is not None and delivery_key is not None:
-                with suppress(ValueError):
-                    self.delivery_state.update_delivery_intent(
-                        delivery_key,
-                        conversation_id=conversation["conversation_id"],
-                        run_id=run["run_id"],
-                    )
+            self._bind(
+                delivery_key,
+                conversation_id=conversation["conversation_id"],
+                run_id=run["run_id"],
+            )
         except httpx.HTTPStatusError as error:
-            if self.delivery_state is not None and delivery_key is not None:
-                with suppress(ValueError):
-                    self.delivery_state.update_delivery_intent(
-                        delivery_key, status="unconfirmed"
-                    )
             if error.response.status_code == 409:
                 code = ""
                 with suppress(ValueError):
                     code = str(error.response.json().get("error", ""))
+                self._set_admission(delivery_key, "rejected", code or "conflict")
                 if code == "conversation_busy":
                     return "上一条消息仍在处理中, 请稍后重发。"
                 if code == "conversation_recovery_required":
@@ -104,7 +109,28 @@ class WechatConversationAdapter:
                 if code == "invalid_request":
                     return "消息与已有请求不一致, 未执行。"
                 return "消息未被接受, 请发送 /status 查询。"
-            raise
+            self._set_admission(delivery_key, "admission_unknown", type(error).__name__)
+            return "消息接收状态未知, 请稍后核对, 不会自动重试。"
+        except (httpx.TimeoutException, httpx.TransportError) as error:
+            if conversation is not None:
+                try:
+                    found = await self.client.find_run_by_request(
+                        conversation["conversation_id"], request_id
+                    )
+                except httpx.HTTPError:
+                    found = None
+                if found is not None:
+                    self._set_admission(delivery_key, "accepted", type(error).__name__)
+                    self._bind(
+                        delivery_key,
+                        conversation_id=conversation["conversation_id"],
+                        run_id=found["run_id"],
+                    )
+                    if deliver:
+                        return self._final_text(await self._wait_run(found["run_id"]))
+                    return ""
+            self._set_admission(delivery_key, "admission_unknown", type(error).__name__)
+            return "消息接收状态未知, 请稍后核对, 不会自动重试。"
         if not deliver:
             return ""
         final = await self._wait_run(run["run_id"])
@@ -214,8 +240,9 @@ class WechatRuntimeAdapter:
         account: str | None = None,
         deliver: bool = True,
         delivery_key: str | None = None,
+        request_id: str | None = None,
     ) -> str:
-        del delivery_key
+        del delivery_key, request_id
         command, _, argument = text.strip().partition(" ")
         if command in {"/schedule", "/memory", "/help"}:
             result = await self.client.request(

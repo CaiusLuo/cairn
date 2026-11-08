@@ -99,6 +99,7 @@ def conversation_routes(
                 return JSONResponse({"error": "workspace_mismatch"}, 409)
             conversation_id = request.path_params.get("conversation_id")
             run_id = request.path_params.get("run_id")
+            request_id_value = request.path_params.get("request_id")
             action = request.path_params.get("action")
             if (
                 request.method == "POST"
@@ -119,6 +120,13 @@ def conversation_routes(
                 return JSONResponse(
                     {"conversation_id": created_wechat.conversation_id},
                     headers={"Cache-Control": "no-store"},
+                )
+            if request_id_value is not None and conversation_id is not None:
+                run = service.run_by_request(conversation_id, request_id_value)
+                if run is None:
+                    return JSONResponse({"error": "run_not_found"}, 404)
+                return JSONResponse(
+                    run_payload(run.run_id), headers={"Cache-Control": "no-store"}
                 )
             if request.method == "POST" and conversation_id is None and run_id is None:
                 create_body = ConversationCreate.model_validate(
@@ -346,6 +354,11 @@ def conversation_routes(
         Route("/api/runtime/conversations", handle, methods=["GET", "POST"]),
         Route(
             "/api/runtime/conversations/{conversation_id}",
+            handle,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/runtime/conversations/{conversation_id}/runs/by-request/{request_id}",
             handle,
             methods=["GET"],
         ),

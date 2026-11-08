@@ -330,7 +330,8 @@ def test_wechat_login_and_runtime_final_reply_survive_client_detach(
             assert "离线共享对话已连接" in json.dumps(fake.sent, ensure_ascii=False)
             intents = WechatState(tmp_path / "state" / "wechat").list_delivery_intents()
             assert len(intents) == 1
-            assert intents[0]["status"] == "sent"
+            assert intents[0]["admission_status"] == "accepted"
+            assert intents[0]["delivery_status"] == "sent"
             assert intents[0]["conversation_id"] == conversations[0].conversation_id
             assert intents[0]["run_id"] == runs[0].run_id
             await command(api, "/wx", "stop")

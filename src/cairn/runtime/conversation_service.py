@@ -213,6 +213,11 @@ class ConversationService:
             return ()
         return self.store.list_runs_for_conversation(conversation_id)
 
+    def run_by_request(self, conversation_id: str, request_id: str) -> Run | None:
+        if self.get_conversation(conversation_id) is None:
+            return None
+        return self.store.get_run_by_request(conversation_id, request_id)
+
     def submit(
         self,
         conversation_id: str,

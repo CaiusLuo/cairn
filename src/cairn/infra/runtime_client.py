@@ -178,6 +178,16 @@ class RuntimeClient:
     async def get_conversation(self, conversation_id: str) -> dict[str, Any]:
         return dict(await self.request("GET", f"conversations/{conversation_id}"))
 
+    async def find_run_by_request(
+        self, conversation_id: str, request_id: str
+    ) -> dict[str, Any]:
+        return dict(
+            await self.request(
+                "GET",
+                f"conversations/{conversation_id}/runs/by-request/{request_id}",
+            )
+        )
+
     async def conversation_history(self, conversation_id: str) -> list[dict[str, Any]]:
         result = await self.request("GET", f"conversations/{conversation_id}/history")
         return list(result) if isinstance(result, list) else []

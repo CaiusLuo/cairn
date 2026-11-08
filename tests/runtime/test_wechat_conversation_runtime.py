@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 
 from cairn.infra.runtime_client import RuntimeClient
-from cairn.terminal.wechat.runtime import WechatConversationAdapter
+from cairn.terminal.wechat.runtime import WechatConversationAdapter, wechat_request_id
 from tests.support.git import initialize_repository
 from tests.support.server_process import ServerProcess
 
@@ -55,6 +55,13 @@ def test_wechat_conversation_three_runs_isolation_and_restart(tmp_path: Path) ->
             assert conversations[0]["source"] == "wechat"
             detail = http.get(f"/api/runtime/conversations/{conversation_id}").json()
             assert len(detail["runs"]) == 3
+            found = asyncio.run(
+                api.find_run_by_request(
+                    conversation_id,
+                    wechat_request_id("bot-1", "owner", "wechat-msg-1"),
+                )
+            )
+            assert found["run_id"] == detail["runs"][0]["run_id"]
             assert http.get("/api/runtime/tasks").json() == []
             history = http.get(
                 f"/api/runtime/conversations/{conversation_id}/history"
