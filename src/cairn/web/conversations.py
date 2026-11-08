@@ -105,7 +105,9 @@ def conversation_routes(
                 and request.url.path == "/api/runtime/wechat/conversations"
             ):
                 if not host_bearer_ok(request):
-                    return JSONResponse({"error": "host_auth_required"}, status_code=403)
+                    return JSONResponse(
+                        {"error": "host_auth_required"}, status_code=403
+                    )
                 wechat_body = WechatConversationCreate.model_validate(
                     await request_body(request)
                 )
