@@ -850,9 +850,17 @@ class ServerControls:
         self._save(deliveries=rows)
         try:
             self.validate_task(task)
+            if task.mode == "conversation":
+                body = task.result or task.diagnostic or "本轮没有生成可显示回复。"
+            elif task.status == "completed":
+                body = "开发任务已完成\n" + (task.result or "")
+            elif task.status in {"paused", "recovery_required", "failed"}:
+                body = f"开发任务状态: {task.status}\n{task.result or task.diagnostic or ''}"
+            else:
+                body = f"开发任务状态: {task.status}"
             sent = await self.wechat.deliver_for_account(
                 task.delivery_recipient or "",
-                f"{task.task_id}\n状态: {task.status}\n{task.result or task.diagnostic or ''}",
+                body,
                 task.delivery_account or "",
             )
             self._save(

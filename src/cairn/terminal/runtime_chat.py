@@ -121,7 +121,8 @@ class RemoteChat:
             cursor = int(page["cursor"])
             run = await self.api.get_run(run_id)
             self.task = self._set_run({**run, "cursor": cursor})
-            if run["status"] not in {"queued", "running"}:
+            final_cursor = int(run.get("cursor", cursor))
+            if run["status"] not in {"queued", "running"} and cursor >= final_cursor:
                 return self.task
 
     async def refresh(self) -> dict[str, Any]:

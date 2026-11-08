@@ -323,6 +323,8 @@ def test_wechat_login_and_runtime_final_reply_survive_client_detach(
             assert task.delivery_recipient == "owner" and task.worktree is None
             await controls.memory_queue.join()
             assert any(value == "sent" for value in controls.state.deliveries.values())
+            assert len(fake.sent) == 1
+            assert "离线共享对话已连接" in json.dumps(fake.sent, ensure_ascii=False)
             await command(api, "/wx", "stop")
             assert not (await api.request("GET", "management?section=wechat"))[
                 "wechat"
@@ -741,5 +743,37 @@ def test_cli_approval_uses_the_displayed_candidate_and_checks_again_inside_write
             assert (
                 controls.memory.pending_proposal()["text"] == "unreviewed replacement"
             )
+
+    asyncio.run(scenario())
+
+
+def test_wechat_delivery_failure_is_recorded_without_reexecution(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        app, api = control_runtime(tmp_path)
+        save_account(tmp_path)
+        async with app.router.lifespan_context(app):
+            controls = app.state.controls
+
+            async def fail_delivery(*_args: Any, **_kwargs: Any) -> bool:
+                return False
+
+            controls.wechat.deliver_for_account = fail_delivery
+            task = await api.submit(
+                "hello",
+                "wechat",
+                mode="conversation",
+                delivery_recipient="owner",
+                delivery_account="bot-1",
+            )
+            await asyncio.wait_for(app.state.runtime.queue.join(), 10)
+            for _ in range(100):
+                if not controls.delivery_tasks:
+                    break
+                await asyncio.sleep(0.01)
+            record = controls.state.deliveries.get(task["task_id"] + ":1")
+            assert record == "unconfirmed"
+            assert len(app.state.runtime.list_tasks()) == 1
 
     asyncio.run(scenario())

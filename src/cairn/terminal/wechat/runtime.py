@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 from uuid import uuid4
@@ -24,11 +23,15 @@ class WechatRuntimeAdapter:
         self.client = client
 
     async def _wait(self, task_id: str) -> dict[str, object]:
+        cursor = 0
         while True:
+            page = await self.client.request(
+                "GET", f"tasks/{task_id}/events?after={cursor}&wait=1"
+            )
+            cursor = int(page.get("cursor", cursor))
             task = await self.client.inspect(task_id)
             if task.get("status") not in {"queued", "running"}:
                 return task
-            await asyncio.sleep(0.2)
 
     @staticmethod
     def _result(task: dict[str, object]) -> str:
@@ -93,6 +96,7 @@ class WechatRuntimeAdapter:
         conversation_key: str | None = None,
         sender: str | None = None,
         account: str | None = None,
+        deliver: bool = True,
     ) -> str:
         command, _, argument = text.strip().partition(" ")
         if command in {"/schedule", "/memory", "/help"}:
@@ -181,6 +185,10 @@ class WechatRuntimeAdapter:
             if busy_task is None:
                 raise
             return "上一条消息仍在处理中, 请稍后重发。"
+        if not deliver:
+            # ServerControls is the single delivery owner for adapter-forwarded
+            # tasks and will send the final result from TaskService.on_settled.
+            return ""
         task = await self._wait(str(task["task_id"]))
         if development:
             return self._development_reply(task)
