@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from contextlib import suppress
 from typing import Any
@@ -53,7 +54,12 @@ class WechatConversationAdapter:
             return "无法确认微信身份, 消息未执行。"
         if message_id is None:
             return "消息缺少稳定标识, 未执行。"
-        request_id = "wechat:" + account + ":" + sender + ":" + message_id
+        request_id = (
+            "wechat:"
+            + hashlib.sha256(
+                (account + "\0" + sender + "\0" + message_id).encode()
+            ).hexdigest()
+        )
         try:
             conversation = await self.client.ensure_wechat_conversation(
                 account, sender, content
