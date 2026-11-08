@@ -1769,7 +1769,7 @@ class _Service:
                 )
             except Exception:
                 self.report.errors += 1
-                if intent_key is not None and not send_attempted:
+                if intent_key is not None and send_attempted:
                     with contextlib.suppress(Exception):
                         self.state.mark_delivery_unconfirmed(intent_key)
                 if not send_attempted:

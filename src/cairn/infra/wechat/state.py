@@ -8,6 +8,7 @@ Workspace, a trace or a model request.
 
 from __future__ import annotations
 
+import copy
 import fcntl
 import hashlib
 import json
@@ -24,6 +25,8 @@ from typing import Any
 
 STATE_DIR_ENV = "CAIRN_WECHAT_STATE_DIR"
 STATE_VERSION = 1
+
+_STATE_LOCKS: dict[str, threading.RLock] = {}
 
 ADMISSION_STATUSES = frozenset(
     {"awaiting_admission", "accepted", "rejected", "admission_unknown"}
@@ -91,8 +94,10 @@ class WechatState:
         self.root = root
         self.account_path = root / "account.json"
         self.state_path = root / "state.json"
+        self.legacy_backup_path = root / "state.pre-b2b2.bak"
         self._state: dict[str, Any] | None = None
-        self._delivery_lock = threading.RLock()
+        lock_key = str(self.state_path.resolve())
+        self._delivery_lock = _STATE_LOCKS.setdefault(lock_key, threading.RLock())
 
     # -- account ---------------------------------------------------------
     def load_account(self) -> WechatAccount | None:
@@ -145,28 +150,41 @@ class WechatState:
             if record.get("intent_key") != key:
                 raise ValueError("WeChat delivery intent key is damaged")
             required = ("message_key", "request_id", "account_digest", "sender_digest")
+            manual = bool(record.get("needs_manual_review", False))
         else:
-            # Convert the short-lived B2-B1 shape explicitly.  This is not a
-            # silent fallback for malformed data.
+            # Upgrade the 9c15fb48 shape.  That shape never stored message_key
+            # or request_id, so those values cannot be invented.  Keep the
+            # original record as evidence and quarantine unknown cases.
             legacy = record.get("status")
             if legacy not in DELIVERY_STATUSES:
                 raise ValueError("WeChat delivery intent has an unknown legacy state")
+            original = copy.deepcopy(record)
+            sent = legacy == "sent"
             record = {
                 **record,
                 "intent_key": key,
-                "message_key": record.get("message_key", ""),
-                "request_id": record.get("request_id", ""),
-                "admission_status": (
-                    "awaiting_admission" if legacy == "pending" else "accepted"
+                "message_key": "",
+                "request_id": "",
+                "admission_status": "accepted"
+                if sent or record.get("run_id")
+                else "admission_unknown",
+                "delivery_status": "sent" if sent else "unconfirmed",
+                "legacy_status": legacy,
+                "legacy_format": True,
+                "legacy_evidence": original,
+                "needs_manual_review": not sent,
+                "manual_review_reason": (
+                    None if sent else "legacy intent lacks message_key/request_id"
                 ),
-                "delivery_status": legacy,
             }
             required = ("message_key", "request_id", "account_digest", "sender_digest")
-        if any(
-            not isinstance(record.get(field), str) or not record[field]
-            for field in required
-        ):
-            raise ValueError("WeChat delivery intent is damaged")
+            manual = not sent
+        legacy_format = bool(record.get("legacy_format", False))
+        for field in required:
+            if (manual or legacy_format) and field in {"message_key", "request_id"}:
+                continue
+            if not isinstance(record.get(field), str) or not record[field]:
+                raise ValueError("WeChat delivery intent is damaged")
         for field in ("message_digest", "content_digest"):
             if not isinstance(record.get(field), str) or not record[field]:
                 raise ValueError("WeChat delivery intent is damaged")
@@ -178,7 +196,16 @@ class WechatState:
             updated, (int, float)
         ):
             raise ValueError("WeChat delivery intent is damaged")
+        record.setdefault("needs_manual_review", manual)
+        record.setdefault("legacy_format", False)
+        record.setdefault("legacy_status", None)
+        record.setdefault("legacy_evidence", None)
         return record
+
+    def _backup_legacy_state(self, raw: dict[str, Any]) -> None:
+        if self.legacy_backup_path.exists():
+            return
+        _atomic_write(self.legacy_backup_path, raw)
 
     def load(self) -> dict[str, Any]:
         if self._state is not None:
@@ -211,6 +238,13 @@ class WechatState:
             raise ValueError("WeChat runtime state is damaged")
         if not isinstance(delivery_intents, dict):
             raise ValueError("WeChat delivery state is damaged")
+        if any(
+            isinstance(record, dict)
+            and "delivery_status" not in record
+            and "status" in record
+            for record in delivery_intents.values()
+        ):
+            self._backup_legacy_state(raw)
         delivery_intents = {
             key: self._normalise_delivery_intent(key, record)
             for key, record in delivery_intents.items()
@@ -268,6 +302,19 @@ class WechatState:
         record = self.load()["messages"].get(key)
         return record if isinstance(record, dict) else None
 
+    def _delivery_snapshot(self) -> dict[str, Any]:
+        # Re-read the file so two WechatState instances in this process cannot
+        # commit stale delivery facts over each other.
+        self._state = None
+        return copy.deepcopy(self.load())
+
+    def _delivery_commit(self, before: dict[str, Any]) -> None:
+        try:
+            self.flush()
+        except BaseException:
+            self._state = copy.deepcopy(before)
+            raise
+
     def begin_delivery_intent(
         self,
         *,
@@ -290,47 +337,56 @@ class WechatState:
         content_digest = hashlib.sha256(content.encode()).hexdigest()
         key = hashlib.sha256(message_key.encode()).hexdigest()
         with self._delivery_lock:
-            intents = self.load().setdefault("delivery_intents", {})
-            for other_key, current in intents.items():
-                if not isinstance(current, dict):
-                    raise ValueError("WeChat delivery intent is damaged")
-                same_message = current.get("message_digest") == message_digest
-                same_request = current.get("request_id") == request_id
-                if not same_message and not same_request:
-                    continue
-                if (
-                    not same_message
-                    or current.get("account_digest") != account_digest
-                    or current.get("sender_digest") != sender_digest
-                    or current.get("content_digest") != content_digest
-                    or current.get("request_id") != request_id
-                ):
-                    raise ValueError(
-                        "WeChat message identity was reused with different content"
-                    )
-                return str(other_key)
-            if key in intents:
-                raise ValueError("WeChat delivery intent key is damaged")
-            intents[key] = {
-                "intent_key": key,
-                "message_key": message_key,
-                "message_digest": message_digest,
-                "request_id": request_id,
-                "account_digest": account_digest,
-                "sender_digest": sender_digest,
-                "content_digest": content_digest,
-                "context_token": context_token,
-                "conversation_id": None,
-                "run_id": None,
-                "admission_status": "awaiting_admission",
-                "delivery_status": "pending",
-                "admission_error": None,
-                "delivery_error": None,
-                "created_at": time.time(),
-                "updated_at": time.time(),
-            }
-            self.flush()
-            return key
+            before = self._delivery_snapshot()
+            try:
+                intents = self.load().setdefault("delivery_intents", {})
+                for other_key, current in intents.items():
+                    if not isinstance(current, dict):
+                        raise ValueError("WeChat delivery intent is damaged")
+                    same_message = current.get("message_digest") == message_digest
+                    same_request = current.get("request_id") == request_id
+                    if not same_message and not same_request:
+                        continue
+                    if (
+                        not same_message
+                        or current.get("account_digest") != account_digest
+                        or current.get("sender_digest") != sender_digest
+                        or current.get("content_digest") != content_digest
+                        or current.get("request_id") != request_id
+                    ):
+                        raise ValueError(
+                            "WeChat message identity was reused with different content"
+                        )
+                    return str(other_key)
+                if key in intents:
+                    raise ValueError("WeChat delivery intent key is damaged")
+                intents[key] = {
+                    "intent_key": key,
+                    "message_key": message_key,
+                    "message_digest": message_digest,
+                    "request_id": request_id,
+                    "account_digest": account_digest,
+                    "sender_digest": sender_digest,
+                    "content_digest": content_digest,
+                    "context_token": context_token,
+                    "conversation_id": None,
+                    "run_id": None,
+                    "admission_status": "awaiting_admission",
+                    "delivery_status": "pending",
+                    "admission_error": None,
+                    "delivery_error": None,
+                    "needs_manual_review": False,
+                    "legacy_format": False,
+                    "legacy_status": None,
+                    "legacy_evidence": None,
+                    "created_at": time.time(),
+                    "updated_at": time.time(),
+                }
+                self._delivery_commit(before)
+                return key
+            except BaseException:
+                self._state = copy.deepcopy(before)
+                raise
 
     def bind_delivery_intent(
         self,
@@ -340,25 +396,32 @@ class WechatState:
         run_id: str | None = None,
     ) -> dict[str, Any]:
         with self._delivery_lock:
-            intents = self.load().get("delivery_intents", {})
-            current = intents.get(key)
-            if not isinstance(current, dict):
-                raise ValueError("WeChat delivery intent not found")
-            for field, value in (
-                ("conversation_id", conversation_id),
-                ("run_id", run_id),
-            ):
-                if value is None:
-                    continue
-                old = current.get(field)
-                if old is not None and old != value:
-                    raise ValueError(f"WeChat delivery intent {field} is immutable")
-                current[field] = value
-            if run_id is not None:
-                current["admission_status"] = "accepted"
-            current["updated_at"] = time.time()
-            self.flush()
-            return dict(current)
+            before = self._delivery_snapshot()
+            try:
+                intents = self.load().get("delivery_intents", {})
+                current = intents.get(key)
+                if not isinstance(current, dict):
+                    raise ValueError("WeChat delivery intent not found")
+                if current.get("needs_manual_review"):
+                    raise ValueError("WeChat delivery intent needs manual review")
+                for field, value in (
+                    ("conversation_id", conversation_id),
+                    ("run_id", run_id),
+                ):
+                    if value is None:
+                        continue
+                    old = current.get(field)
+                    if old is not None and old != value:
+                        raise ValueError(f"WeChat delivery intent {field} is immutable")
+                    current[field] = value
+                if run_id is not None:
+                    current["admission_status"] = "accepted"
+                current["updated_at"] = time.time()
+                self._delivery_commit(before)
+                return dict(current)
+            except BaseException:
+                self._state = copy.deepcopy(before)
+                raise
 
     def set_admission_status(
         self, key: str, status: str, *, error: str | None = None
@@ -366,80 +429,115 @@ class WechatState:
         if status not in ADMISSION_STATUSES:
             raise ValueError("Unknown WeChat admission status")
         with self._delivery_lock:
-            intents = self.load().get("delivery_intents", {})
-            current = intents.get(key)
-            if not isinstance(current, dict):
-                raise ValueError("WeChat delivery intent not found")
-            current_status = current.get("admission_status")
-            allowed = {
-                "awaiting_admission": {"accepted", "rejected", "admission_unknown"},
-                "admission_unknown": {"accepted", "rejected"},
-                "accepted": {"accepted"},
-                "rejected": {"rejected"},
-            }
-            if current_status not in allowed or status not in allowed[current_status]:
-                raise ValueError(
-                    f"Cannot move WeChat admission from {current_status} to {status}"
-                )
-            current["admission_status"] = status
-            current["admission_error"] = error
-            current["updated_at"] = time.time()
-            self.flush()
-            return dict(current)
+            before = self._delivery_snapshot()
+            try:
+                intents = self.load().get("delivery_intents", {})
+                current = intents.get(key)
+                if not isinstance(current, dict):
+                    raise ValueError("WeChat delivery intent not found")
+                current_status = current.get("admission_status")
+                allowed = {
+                    "awaiting_admission": {"accepted", "rejected", "admission_unknown"},
+                    "admission_unknown": {"accepted", "rejected"},
+                    "accepted": {"accepted"},
+                    "rejected": {"rejected"},
+                }
+                if (
+                    current_status not in allowed
+                    or status not in allowed[current_status]
+                ):
+                    raise ValueError(
+                        f"Cannot move WeChat admission from {current_status} to {status}"
+                    )
+                current["admission_status"] = status
+                current["admission_error"] = error
+                current["updated_at"] = time.time()
+                self._delivery_commit(before)
+                return dict(current)
+            except BaseException:
+                self._state = copy.deepcopy(before)
+                raise
 
     def begin_delivery_attempt(self, key: str) -> bool:
         with self._delivery_lock:
-            intents = self.load().get("delivery_intents", {})
-            current = intents.get(key)
-            if not isinstance(current, dict):
-                raise ValueError("WeChat delivery intent not found")
-            if current.get("admission_status") != "accepted":
-                return False
-            if current.get("delivery_status") != "pending":
-                return False
-            current["delivery_status"] = "started"
-            current["updated_at"] = time.time()
-            self.flush()
-            return True
+            before = self._delivery_snapshot()
+            try:
+                intents = self.load().get("delivery_intents", {})
+                current = intents.get(key)
+                if not isinstance(current, dict):
+                    raise ValueError("WeChat delivery intent not found")
+                if current.get("needs_manual_review"):
+                    return False
+                if current.get("admission_status") != "accepted":
+                    return False
+                if current.get("delivery_status") != "pending":
+                    return False
+                current["delivery_status"] = "started"
+                current["updated_at"] = time.time()
+                self._delivery_commit(before)
+                return True
+            except BaseException:
+                self._state = copy.deepcopy(before)
+                raise
 
     def mark_delivery_sent(self, key: str) -> dict[str, Any]:
         with self._delivery_lock:
-            intents = self.load().get("delivery_intents", {})
-            current = intents.get(key)
-            if not isinstance(current, dict):
-                raise ValueError("WeChat delivery intent not found")
-            if current.get("delivery_status") == "sent":
+            before = self._delivery_snapshot()
+            try:
+                intents = self.load().get("delivery_intents", {})
+                current = intents.get(key)
+                if not isinstance(current, dict):
+                    raise ValueError("WeChat delivery intent not found")
+                if current.get("needs_manual_review"):
+                    raise ValueError("WeChat delivery intent needs manual review")
+                if current.get("delivery_status") == "sent":
+                    return dict(current)
+                if current.get("delivery_status") != "started":
+                    raise ValueError("WeChat delivery must be started before sent")
+                current["delivery_status"] = "sent"
+                current["delivery_error"] = None
+                current["updated_at"] = time.time()
+                self._delivery_commit(before)
                 return dict(current)
-            if current.get("delivery_status") != "started":
-                raise ValueError("WeChat delivery must be started before sent")
-            current["delivery_status"] = "sent"
-            current["delivery_error"] = None
-            current["updated_at"] = time.time()
-            self.flush()
-            return dict(current)
+            except BaseException:
+                self._state = copy.deepcopy(before)
+                raise
 
     def mark_delivery_unconfirmed(self, key: str) -> dict[str, Any]:
         with self._delivery_lock:
-            intents = self.load().get("delivery_intents", {})
-            current = intents.get(key)
-            if not isinstance(current, dict):
-                raise ValueError("WeChat delivery intent not found")
-            if current.get("delivery_status") == "sent":
-                raise ValueError("A sent delivery cannot become unconfirmed")
-            current["delivery_status"] = "unconfirmed"
-            current["updated_at"] = time.time()
-            self.flush()
-            return dict(current)
+            before = self._delivery_snapshot()
+            try:
+                intents = self.load().get("delivery_intents", {})
+                current = intents.get(key)
+                if not isinstance(current, dict):
+                    raise ValueError("WeChat delivery intent not found")
+                if current.get("needs_manual_review"):
+                    raise ValueError("WeChat delivery intent needs manual review")
+                if current.get("delivery_status") == "sent":
+                    raise ValueError("A sent delivery cannot become unconfirmed")
+                current["delivery_status"] = "unconfirmed"
+                current["updated_at"] = time.time()
+                self._delivery_commit(before)
+                return dict(current)
+            except BaseException:
+                self._state = copy.deepcopy(before)
+                raise
 
     def get_delivery_intent(self, key: str) -> dict[str, Any] | None:
-        intent = self.load().get("delivery_intents", {}).get(key)
-        return dict(intent) if isinstance(intent, dict) else None
+        with self._delivery_lock:
+            self._state = None
+            intent = self.load().get("delivery_intents", {}).get(key)
+            return dict(intent) if isinstance(intent, dict) else None
 
     def list_delivery_intents(
         self, *, statuses: frozenset[str] | None = None
     ) -> list[dict[str, Any]]:
-        intents = self.load().get("delivery_intents", {})
-        rows = [dict(intent) for intent in intents.values() if isinstance(intent, dict)]
+        with self._delivery_lock:
+            self._state = None
+            intents = self.load().get("delivery_intents", {})
+            rows = [
+                dict(intent) for intent in intents.values() if isinstance(intent, dict)
+            ]
         if statuses is not None:
             rows = [row for row in rows if row.get("delivery_status") in statuses]
         return sorted(rows, key=lambda row: float(row.get("created_at", 0)))
