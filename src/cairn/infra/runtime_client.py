@@ -141,6 +141,24 @@ class RuntimeClient:
             body["request_id"] = request_id
         return dict(await self.request("POST", "conversations", body))
 
+    async def ensure_wechat_conversation(
+        self,
+        account_id: str,
+        sender_id: str,
+        prompt: str,
+    ) -> dict[str, Any]:
+        return dict(
+            await self.request(
+                "POST",
+                "wechat/conversations",
+                {
+                    "account_id": account_id,
+                    "sender_id": sender_id,
+                    "prompt": prompt,
+                },
+            )
+        )
+
     async def send_conversation(
         self,
         conversation_id: str,

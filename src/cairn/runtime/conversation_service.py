@@ -177,6 +177,22 @@ class ConversationService:
             request_id=request_id,
         )
 
+    def ensure_wechat_conversation(
+        self,
+        account_id: str,
+        sender_id: str,
+        initial_prompt: str,
+    ) -> Conversation:
+        conversation = self.store.get_or_create_wechat_conversation(
+            workspace=self.workspace,
+            account_id=account_id,
+            sender_id=sender_id,
+            initial_prompt=initial_prompt,
+        )
+        if conversation.workspace_id != self.workspace_id:
+            raise ValueError("WeChat conversation belongs to another workspace")
+        return conversation
+
     def get_conversation(self, conversation_id: str) -> Conversation | None:
         conversation = self.store.get_conversation(conversation_id)
         if conversation is not None and conversation.workspace_id != self.workspace_id:

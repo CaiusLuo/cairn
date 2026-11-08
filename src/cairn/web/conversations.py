@@ -49,6 +49,13 @@ class ConversationMessage(BaseModel):
     request_id: str = Field(min_length=1, max_length=200)
 
 
+class WechatConversationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    account_id: str = Field(min_length=1, max_length=256)
+    sender_id: str = Field(min_length=1, max_length=256)
+    prompt: str = Field(min_length=1, max_length=32000)
+
+
 def conversation_routes(
     service: ConversationService, workspace: Path
 ) -> list[BaseRoute]:
@@ -86,6 +93,22 @@ def conversation_routes(
             conversation_id = request.path_params.get("conversation_id")
             run_id = request.path_params.get("run_id")
             action = request.path_params.get("action")
+            if (
+                request.method == "POST"
+                and request.url.path == "/api/runtime/wechat/conversations"
+            ):
+                wechat_body = WechatConversationCreate.model_validate(
+                    await request_body(request)
+                )
+                created_wechat = service.ensure_wechat_conversation(
+                    wechat_body.account_id,
+                    wechat_body.sender_id,
+                    wechat_body.prompt,
+                )
+                return JSONResponse(
+                    {"conversation_id": created_wechat.conversation_id},
+                    headers={"Cache-Control": "no-store"},
+                )
             if request.method == "POST" and conversation_id is None and run_id is None:
                 create_body = ConversationCreate.model_validate(
                     await request_body(request)
@@ -304,6 +327,11 @@ def conversation_routes(
                 await websocket.close()
 
     return [
+        Route(
+            "/api/runtime/wechat/conversations",
+            handle,
+            methods=["POST"],
+        ),
         Route("/api/runtime/conversations", handle, methods=["GET", "POST"]),
         Route(
             "/api/runtime/conversations/{conversation_id}",

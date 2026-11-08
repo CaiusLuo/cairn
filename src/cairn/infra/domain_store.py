@@ -88,6 +88,15 @@ class DomainStore:
                 updated_at TEXT NOT NULL,
                 metadata_json TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS wechat_bindings (
+                workspace_id TEXT NOT NULL,
+                account_digest TEXT NOT NULL,
+                sender_digest TEXT NOT NULL,
+                conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (workspace_id, account_digest, sender_digest)
+            );
             CREATE TABLE IF NOT EXISTS tasks (
                 task_id TEXT PRIMARY KEY,
                 conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
@@ -231,6 +240,91 @@ class DomainStore:
                 (conversation_id,),
             ).fetchone()
         return None if row is None else self._conversation(row)
+
+    def get_or_create_wechat_conversation(
+        self,
+        *,
+        workspace: Path | str,
+        account_id: str,
+        sender_id: str,
+        initial_prompt: str,
+    ) -> Conversation:
+        """Bind a WeChat identity to one Conversation atomically."""
+        if not account_id or not sender_id:
+            raise ValueError("WeChat binding requires account and sender identity")
+        if not initial_prompt.strip():
+            raise ValueError("WeChat binding requires an initial prompt")
+        workspace_id = workspace_id_for(workspace)
+        account_digest = hashlib.sha256(
+            ("wechat-account:" + account_id).encode()
+        ).hexdigest()
+        sender_digest = hashlib.sha256(
+            ("wechat-sender:" + sender_id).encode()
+        ).hexdigest()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT conversations.* FROM wechat_bindings "
+                "JOIN conversations USING(conversation_id) "
+                "WHERE wechat_bindings.workspace_id = ? "
+                "AND wechat_bindings.account_digest = ? "
+                "AND wechat_bindings.sender_digest = ?",
+                (workspace_id, account_digest, sender_digest),
+            ).fetchone()
+            if row is not None:
+                return self._conversation(row)
+            conversation = Conversation(
+                conversation_id=new_conversation_id(),
+                workspace_id=workspace_id,
+                source=ConversationSource.WECHAT,
+                initial_prompt=initial_prompt,
+                metadata={"wechat_binding": True},
+            )
+            connection.execute(
+                "INSERT INTO conversations "
+                "(conversation_id, workspace_id, source, initial_prompt, "
+                "created_at, updated_at, metadata_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    conversation.conversation_id,
+                    conversation.workspace_id,
+                    conversation.source.value,
+                    conversation.initial_prompt,
+                    conversation.created_at,
+                    conversation.updated_at,
+                    _json(conversation.metadata),
+                ),
+            )
+            inserted = connection.execute(
+                "INSERT OR IGNORE INTO wechat_bindings "
+                "(workspace_id, account_digest, sender_digest, conversation_id, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    workspace_id,
+                    account_digest,
+                    sender_digest,
+                    conversation.conversation_id,
+                    conversation.created_at,
+                    conversation.updated_at,
+                ),
+            )
+            if inserted.rowcount == 0:
+                connection.execute(
+                    "DELETE FROM conversations WHERE conversation_id = ?",
+                    (conversation.conversation_id,),
+                )
+                row = connection.execute(
+                    "SELECT conversations.* FROM wechat_bindings "
+                    "JOIN conversations USING(conversation_id) "
+                    "WHERE wechat_bindings.workspace_id = ? "
+                    "AND wechat_bindings.account_digest = ? "
+                    "AND wechat_bindings.sender_digest = ?",
+                    (workspace_id, account_digest, sender_digest),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("WeChat binding race lost its winner")
+                return self._conversation(row)
+        return conversation
 
     def list_conversations(
         self, *, workspace_id: str | None = None

@@ -11,6 +11,92 @@ import httpx
 from cairn.infra.runtime_client import RuntimeClient
 
 
+class WechatConversationAdapter:
+    """Run ordinary WeChat chat through the Conversation/Run API.
+
+    This is the B1 integration path.  The existing WechatRuntimeAdapter remains
+    the default production bridge until UX-B2 supplies final Run delivery.
+    """
+
+    def __init__(
+        self,
+        client: RuntimeClient,
+        *,
+        legacy: WechatRuntimeAdapter | None = None,
+    ) -> None:
+        self.client = client
+        self.legacy = legacy or WechatRuntimeAdapter(client)
+
+    async def reply(
+        self,
+        text: str,
+        *,
+        message_id: str | None = None,
+        conversation_key: str | None = None,
+        sender: str | None = None,
+        account: str | None = None,
+    ) -> str:
+        del conversation_key
+        content = text.strip()
+        if not content:
+            return "消息内容为空。"
+        if content.startswith("/"):
+            return await self.legacy.reply(
+                text,
+                message_id=message_id,
+                sender=sender,
+                account=account,
+            )
+        if not sender or not account:
+            return "无法确认微信身份, 消息未执行。"
+        request_id = message_id or "wechat:" + uuid4().hex
+        try:
+            conversation = await self.client.ensure_wechat_conversation(
+                account, sender, content
+            )
+            run = await self.client.send_conversation(
+                conversation["conversation_id"],
+                content,
+                source="wechat",
+                request_id=request_id,
+            )
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 409:
+                return "上一条消息仍在处理中, 请稍后重发。"
+            raise
+        final = await self._wait_run(run["run_id"])
+        return self._final_text(final)
+
+    async def _wait_run(self, run_id: str) -> dict[str, Any]:
+        cursor = 0
+        while True:
+            page = await self.client.run_events(run_id, after=cursor, wait=True)
+            cursor = int(page.get("cursor", cursor))
+            run = await self.client.get_run(run_id)
+            final_cursor = int(run.get("cursor", cursor))
+            if (
+                run.get("status") not in {"queued", "running"}
+                and cursor >= final_cursor
+            ):
+                return run
+
+    @staticmethod
+    def _final_text(run: dict[str, Any]) -> str:
+        result = run.get("result")
+        if isinstance(result, str) and result.strip():
+            return result.strip()
+        status = str(run.get("status", "unknown"))
+        if status == "completed":
+            return "本轮没有生成可显示回复。"
+        if status == "paused":
+            return "任务已暂停。"
+        if status == "recovery_required":
+            return "本轮执行需要恢复核对, 请发送 /status 查询。"
+        if status == "failed":
+            return "本轮执行失败, 请发送 /status 查询。"
+        return f"任务状态: {status}"
+
+
 class WechatRuntimeAdapter:
     """Short user-facing replies over the shared Runtime API.
 
