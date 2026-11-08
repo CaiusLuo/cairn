@@ -91,8 +91,26 @@ class WechatDeliveryCoordinator:
 
         def finished(_done: asyncio.Task[None]) -> None:
             self._tasks.pop(key, None)
+            self._schedule_more()
 
         task.add_done_callback(finished)
+
+    def _schedule_more(self) -> None:
+        if self._stopped or len(self._tasks) >= self.max_parallel:
+            return
+        for intent in self.state.list_delivery_intents(statuses=frozenset({"pending"})):
+            if len(self._tasks) >= self.max_parallel:
+                return
+            key = intent["intent_key"]
+            if key in self._tasks or intent.get("needs_manual_review"):
+                continue
+            run_id = intent.get("run_id")
+            if run_id is None:
+                continue
+            run = self.conversations.get_run(run_id)
+            if run is None or run.status.value not in TERMINAL_RUN_STATUSES:
+                continue
+            self._schedule(key)
 
     async def _consider(self, key: str) -> None:
         intent = self.state.get_delivery_intent(key)
