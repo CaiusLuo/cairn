@@ -283,10 +283,8 @@ class WechatState:
         return str(self.load().get("cursor", ""))
 
     def set_cursor(self, cursor: str) -> None:
-        with self._delivery_lock:
-            self._state = None
-            self.load()["cursor"] = cursor
-            self.flush()
+        self.load()["cursor"] = cursor
+        self.flush()
 
     def latest_context(self, sender: str) -> str | None:
         """Latest reply context for a sender, for owner-directed delivery."""
@@ -303,10 +301,8 @@ class WechatState:
         return latest[1] if latest is not None else None
 
     def get_record(self, key: str) -> dict[str, Any] | None:
-        with self._delivery_lock:
-            self._state = None
-            record = self.load()["messages"].get(key)
-            return dict(record) if isinstance(record, dict) else None
+        record = self.load()["messages"].get(key)
+        return record if isinstance(record, dict) else None
 
     def add_delivery_listener(self, listener: Callable[[str], None]) -> None:
         self._delivery_listeners.append(listener)
