@@ -134,11 +134,12 @@ def test_pending_delivery_survives_server_restart(tmp_path: Path) -> None:
         server.start()
         try:
             async with asyncio.timeout(30):
-                while not fake.sent:
+                while True:
+                    completed = state.get_delivery_intent(key)
+                    if completed is not None and completed["delivery_status"] == "sent":
+                        break
                     await asyncio.sleep(0.02)
             assert len(fake.sent) == 1
-            completed = state.get_delivery_intent(key)
-            assert completed is not None
             assert completed["delivery_status"] == "sent"
         finally:
             server.stop()
