@@ -110,5 +110,15 @@ def test_real_server_restart_keeps_conversation_and_completed_runs(
             assert detail["conversation"]["conversation_id"] == conversation_id
             assert len(detail["runs"]) == 1
             assert detail["runs"][0]["status"] == "completed"
+            record = api.get(f"/api/runtime/runs/{run['run_id']}").json()
+            events = api.get(f"/api/runtime/runs/{run['run_id']}/events").json()
+            assert events["cursor"] == record["cursor"]
+            assert events["events"]
+            assert all(
+                previous["sequence"] < later["sequence"]
+                for previous, later in zip(
+                    events["events"], events["events"][1:], strict=False
+                )
+            )
     finally:
         server.stop()
