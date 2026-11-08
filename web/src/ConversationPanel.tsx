@@ -110,23 +110,58 @@ export function ConversationPanel() {
   }, [run]);
 
   useEffect(() => {
+    setPreview("");
+  }, [run?.run_id]);
+
+  useEffect(() => {
     if (!run || !["queued", "running"].includes(run.status)) {
       setPreview("");
       return;
     }
     let live = true;
-    const socket = new WebSocket(
-      `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/runtime/runs/${run.run_id}/stream?after=0`,
-    );
-    socket.onmessage = message => {
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let socket: WebSocket | undefined;
+    const cursor = { current: 0 };
+    const connect = () => {
       if (!live) return;
-      const data = JSON.parse(message.data);
-      if (data.type === "preview") setPreview(old => (old + data.text).slice(-64000));
-      else if (data.type === "preview_snapshot") setPreview(data.text.slice(-64000));
-      else if (data.type === "event" && ["running", "failed", "paused", "completed", "recovery_required"].includes(data.kind)) setPreview("");
+      socket = new WebSocket(
+        `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/runtime/runs/${run.run_id}/stream?after=${cursor.current}`,
+      );
+      socket.onmessage = message => {
+        if (!live) return;
+        const data = JSON.parse(message.data);
+        if (data.type === "ready") {
+          cursor.current = Math.max(cursor.current, Number(data.cursor) || 0);
+        } else if (data.type === "event") {
+          const event = data.event;
+          if (!event || Number(event.sequence) <= cursor.current) return;
+          cursor.current = Number(event.sequence);
+          if (event.kind === "model_text_delta" && event.data?.text) {
+            setPreview(old => (old + String(event.data.text)).slice(-64000));
+          } else if (["running", "failed", "paused", "completed", "recovery_required", "cancelled"].includes(event.kind)) {
+            setPreview("");
+          }
+        } else if (data.type === "preview") {
+          setPreview(old => (old + data.text).slice(-64000));
+        } else if (data.type === "preview_snapshot") {
+          setPreview(String(data.text).slice(-64000));
+        } else if (data.type === "settled") {
+          cursor.current = Math.max(cursor.current, Number(data.cursor) || 0);
+          live = false;
+          socket?.close();
+        }
+      };
+      socket.onerror = () => socket?.close();
+      socket.onclose = () => {
+        if (live) reconnectTimer = setTimeout(connect, 500);
+      };
     };
-    socket.onerror = () => socket.close();
-    return () => { live = false; socket.close(); };
+    connect();
+    return () => {
+      live = false;
+      if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
+      socket?.close();
+    };
   }, [run?.run_id, run?.status]);
 
   async function send() {
