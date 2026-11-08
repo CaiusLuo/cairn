@@ -617,8 +617,11 @@ class WechatSessionController:
             or account.ilink_bot_id != account_id
             or not sender
             or not text
-            or sender != account.ilink_user_id
         ):
+            return False
+        # Receiver admission and delivery must use the same trusted-sender
+        # set.  The account owner is always allowed; /wx allow extends it.
+        if sender != account.ilink_user_id and sender not in self._allowed_senders:
             return False
         context = context_token or self._latest_context(sender)
         if not context:

@@ -393,6 +393,7 @@ class WechatState:
                     "legacy_format": False,
                     "legacy_status": None,
                     "legacy_evidence": None,
+                    "manual_review_reason": None,
                     "created_at": time.time(),
                     "updated_at": time.time(),
                 }
@@ -492,6 +493,25 @@ class WechatState:
                 current["updated_at"] = time.time()
                 self._delivery_commit(before)
                 return True
+            except BaseException:
+                self._state = copy.deepcopy(before)
+                raise
+
+    def mark_delivery_manual_review(self, key: str, reason: str) -> dict[str, Any]:
+        with self._delivery_lock:
+            before = self._delivery_snapshot()
+            try:
+                intents = self.load().get("delivery_intents", {})
+                current = intents.get(key)
+                if not isinstance(current, dict):
+                    raise ValueError("WeChat delivery intent not found")
+                if current.get("delivery_status") == "sent":
+                    return dict(current)
+                current["needs_manual_review"] = True
+                current["manual_review_reason"] = reason
+                current["updated_at"] = time.time()
+                self._delivery_commit(before)
+                return dict(current)
             except BaseException:
                 self._state = copy.deepcopy(before)
                 raise

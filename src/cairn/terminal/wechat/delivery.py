@@ -78,6 +78,15 @@ class WechatDeliveryCoordinator:
             elif intent.get("delivery_status") == "pending":
                 self._schedule(intent["intent_key"])
 
+    def rescan(self) -> None:
+        """Re-check pending intents after account or sender readiness changes."""
+        if self._stopped:
+            return
+        for intent in self.state.list_delivery_intents(statuses=frozenset({"pending"})):
+            if intent.get("needs_manual_review"):
+                continue
+            self._schedule(intent["intent_key"])
+
     def _schedule_for_conversation(self, conversation_id: str) -> None:
         for intent in self.state.list_delivery_intents(statuses=frozenset({"pending"})):
             if intent.get("conversation_id") == conversation_id:
@@ -118,9 +127,30 @@ class WechatDeliveryCoordinator:
             return
         if intent.get("needs_manual_review"):
             return
-        run_id = intent.get("run_id")
+
         conversation_id = intent.get("conversation_id")
         request_id = intent.get("request_id")
+        message_key = str(intent.get("message_key", ""))
+        message = self.state.get_record(message_key) if message_key else None
+        account_id = self.wechat.account_id() or ""
+        sender = str(message.get("sender", "")) if message else ""
+
+        if conversation_id is None:
+            if not message or not account_id or not sender:
+                # Account/sender readiness is not a delivery attempt.  Keep
+                # the intent pending and let the account listener rescan it.
+                return
+            conversation = self.conversations.get_wechat_conversation(
+                account_id, sender
+            )
+            if conversation is None:
+                return
+            self.state.bind_delivery_intent(
+                key, conversation_id=conversation.conversation_id
+            )
+            conversation_id = conversation.conversation_id
+
+        run_id = intent.get("run_id")
         if run_id is None and conversation_id and request_id:
             run = self.conversations.run_by_request(conversation_id, request_id)
             if run is not None:
@@ -133,28 +163,30 @@ class WechatDeliveryCoordinator:
         run = self.conversations.get_run(run_id)
         if run is None or run.status.value not in TERMINAL_RUN_STATUSES:
             return
+
+        if message is None:
+            self.state.mark_delivery_manual_review(
+                key, "message record missing before delivery"
+            )
+            return
+        context = str(intent.get("context_token") or message.get("context_token") or "")
+        if not sender or not context or not account_id:
+            # An account or context that is temporarily unavailable is not a
+            # send attempt; preserve pending until readiness is restored.
+            return
+        account_digest = hashlib.sha256(account_id.encode()).hexdigest()
+        sender_digest = hashlib.sha256(sender.encode()).hexdigest()
+        if account_digest != intent.get(
+            "account_digest"
+        ) or sender_digest != intent.get("sender_digest"):
+            self.state.mark_delivery_manual_review(
+                key, "delivery identity does not match intent"
+            )
+            return
+
         if not self.state.begin_delivery_attempt(key):
             return
         try:
-            message = self.state.get_record(str(intent.get("message_key", "")))
-            if message is None:
-                self.state.mark_delivery_unconfirmed(key)
-                return
-            sender = str(message.get("sender", ""))
-            context = str(
-                intent.get("context_token") or message.get("context_token") or ""
-            )
-            account_id = self.wechat.account_id() or ""
-            if not sender or not context or not account_id:
-                self.state.mark_delivery_unconfirmed(key)
-                return
-            account_digest = hashlib.sha256(account_id.encode()).hexdigest()
-            sender_digest = hashlib.sha256(sender.encode()).hexdigest()
-            if account_digest != intent.get(
-                "account_digest"
-            ) or sender_digest != intent.get("sender_digest"):
-                self.state.mark_delivery_unconfirmed(key)
-                return
             delivered = await self.wechat.deliver_for_account(
                 sender,
                 _delivery_body(run),

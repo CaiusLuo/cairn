@@ -26,6 +26,9 @@ class FakeConversations:
     def get_run(self, run_id: str) -> Any:
         return self.run if run_id == self.run.run_id else None
 
+    def get_wechat_conversation(self, _account_id: str, _sender_id: str) -> Any:
+        return SimpleNamespace(conversation_id=self.run.conversation_id)
+
     def run_by_request(self, conversation_id: str, request_id: str) -> Any:
         if (
             conversation_id == self.run.conversation_id
@@ -36,11 +39,12 @@ class FakeConversations:
 
 
 class FakeWechat:
-    def __init__(self) -> None:
+    def __init__(self, account_id: str | None = "bot-1") -> None:
         self.sent: list[tuple[str, str, str]] = []
+        self.account = account_id
 
-    def account_id(self) -> str:
-        return "bot-1"
+    def account_id(self) -> str | None:
+        return self.account
 
     async def deliver_for_account(
         self,
@@ -124,12 +128,13 @@ def test_late_binding_after_run_completion_still_delivers(tmp_path: Path) -> Non
         await coordinator.start()
         try:
             # The Run settled before conversation_id/run_id were persisted.
+            # The binding lookup recovers the conversation and request Run.
             conversations.listeners[0](run)
-            await asyncio.sleep(0.02)
-            assert wechat.sent == []
-            state.bind_delivery_intent(key, conversation_id="conv-1", run_id="run-1")
             await asyncio.sleep(0.05)
             assert len(wechat.sent) == 1
+            row = state.get_delivery_intent(key)
+            assert row is not None
+            assert row["delivery_status"] == "sent"
         finally:
             await coordinator.close()
 
@@ -205,6 +210,56 @@ def test_unconfirmed_is_never_retried(tmp_path: Path) -> None:
         try:
             await asyncio.sleep(0.05)
             assert wechat.sent == []
+        finally:
+            await coordinator.close()
+
+    asyncio.run(scenario())
+
+
+def test_missing_account_keeps_intent_pending_until_rescan(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        state = WechatState(tmp_path / "wechat")
+        key = _state_intent(state)
+        state.bind_delivery_intent(key, conversation_id="conv-1", run_id="run-1")
+        conversations: Any = FakeConversations(_run())
+        wechat: Any = FakeWechat(account_id=None)
+        coordinator = WechatDeliveryCoordinator(
+            conversations=conversations, wechat=wechat, state=state
+        )
+        await coordinator.start()
+        try:
+            await asyncio.sleep(0.05)
+            row = state.get_delivery_intent(key)
+            assert row is not None
+            assert row["delivery_status"] == "pending"
+            assert wechat.sent == []
+            wechat.account = "bot-1"
+            coordinator.rescan()
+            await asyncio.sleep(0.05)
+            assert len(wechat.sent) == 1
+        finally:
+            await coordinator.close()
+
+    asyncio.run(scenario())
+
+
+def test_missing_conversation_id_is_recovered_from_binding(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        state = WechatState(tmp_path / "wechat")
+        key = _state_intent(state)
+        conversations: Any = FakeConversations(_run())
+        wechat: Any = FakeWechat()
+        coordinator = WechatDeliveryCoordinator(
+            conversations=conversations, wechat=wechat, state=state
+        )
+        await coordinator.start()
+        try:
+            await asyncio.sleep(0.05)
+            row = state.get_delivery_intent(key)
+            assert row is not None
+            assert row["conversation_id"] == "conv-1"
+            assert row["run_id"] == "run-1"
+            assert len(wechat.sent) == 1
         finally:
             await coordinator.close()
 

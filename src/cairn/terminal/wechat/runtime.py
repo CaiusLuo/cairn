@@ -71,6 +71,8 @@ class WechatConversationAdapter:
             command, _, argument = content.partition(" ")
             if command == "/status":
                 return await self._status_reply(account, sender, argument)
+            if command == "/task" and argument.startswith("task-"):
+                return await self._task_query_reply(account, sender, argument)
             return await self.legacy.reply(
                 text,
                 message_id=message_id,
@@ -145,29 +147,40 @@ class WechatConversationAdapter:
         if not account or not sender:
             return "无法确认微信身份, 未执行。"
         argument = argument.strip()
-        if argument.startswith("task-"):
-            return await self.legacy.reply(
-                "/status " + argument,
-                sender=sender,
-                account=account,
-            )
         try:
+            binding = await self.client.get_wechat_conversation(account, sender)
+            conversation_id = str(binding["conversation_id"])
+            if argument.startswith("task-"):
+                return await self._task_query_reply(account, sender, argument)
             if argument:
                 run = await self.client.get_run(argument)
+                if str(run.get("conversation_id", "")) != conversation_id:
+                    return "未找到对应的 Run。"
             else:
-                conversation = await self.client.get_wechat_conversation(
-                    account, sender
-                )
-                detail = await self.client.get_conversation(
-                    conversation["conversation_id"]
-                )
+                detail = await self.client.get_conversation(conversation_id)
                 runs = detail.get("runs") or []
                 if not runs:
                     return "当前没有对话记录。"
                 run = runs[-1]
-        except httpx.HTTPStatusError:
+        except (httpx.HTTPStatusError, KeyError, ValueError):
             return "未找到对应的 Run 或对话。"
         return self._run_status_text(run)
+
+    async def _task_query_reply(
+        self, account: str | None, sender: str | None, task_id: str
+    ) -> str:
+        if not account or not sender:
+            return "未找到对应的任务。"
+        try:
+            task = await self.client.inspect(task_id)
+        except (httpx.HTTPStatusError, ValueError):
+            return "未找到对应的任务。"
+        if (
+            task.get("delivery_recipient") != sender
+            or task.get("delivery_account") != account
+        ):
+            return "未找到对应的任务。"
+        return self.legacy._technical_reply(task)
 
     @staticmethod
     def _run_status_text(run: dict[str, Any]) -> str:

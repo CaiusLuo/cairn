@@ -155,6 +155,7 @@ def runtime_app(
         state=controls.wechat.state,
     )
     web.state.delivery = delivery
+    controls.delivery = delivery
 
     @asynccontextmanager
     async def lifespan(_app: Any) -> AsyncIterator[None]:

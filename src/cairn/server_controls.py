@@ -124,6 +124,7 @@ class ServerControls:
         self.memory_queue: asyncio.Queue[RuntimeTask] = asyncio.Queue(maxsize=64)
         self.memory_worker: asyncio.Task[None] | None = None
         self.delivery_tasks: set[asyncio.Task[None]] = set()
+        self.delivery: Any | None = None
         self.closed = False
         api = RuntimeClient(
             f"http://127.0.0.1:{port}",
@@ -176,6 +177,8 @@ class ServerControls:
         self._refresh_secrets()
         self.qr_image = None
         self.qr_content = None
+        if self.delivery is not None:
+            self.delivery.rescan()
 
     def _qr(self, qr: Any) -> None:
         if qr is None:
