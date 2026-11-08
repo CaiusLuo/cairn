@@ -144,6 +144,10 @@ def test_wechat_duplicate_message_id_creates_one_run(tmp_path: Path) -> None:
         token = (server.state / "runtime.token").read_text().strip()
         api = RuntimeClient(server.url, token)
         adapter = WechatConversationAdapter(api)
+        missing_id = asyncio.run(
+            adapter.reply("missing id", sender="owner", account="bot-1")
+        )
+        assert "缺少稳定标识" in missing_id
         first = asyncio.run(_reply(adapter, "once", message_id="same-wechat-id"))
         second = asyncio.run(_reply(adapter, "once", message_id="same-wechat-id"))
         changed = asyncio.run(_reply(adapter, "changed", message_id="same-wechat-id"))
