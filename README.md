@@ -87,9 +87,12 @@ One task worker and a bounded queue remain. Ordinary chat facts use SQLite
 DomainStore; development execution still uses the RuntimeCatalogue compatibility
 representation until B3. Durable Sessions use SQLite. Tool permissions,
 credential filtering, LangGraph execution and uncertain-effect recovery remain
-active. Offline migration is available through the `migrate-domain` command with
-backup and source snapshot checks. PostgreSQL and parallel workers remain outside
-this change.
+active. Run events are delta-batched and replayed from an `after` cursor. Web
+Chat and CLI consume pages until the true final sequence; WebSocket clients
+reconnect with the same cursor and receive a bounded preview snapshot for
+in-flight text. Offline migration is available through the `migrate-domain`
+command with backup and source snapshot checks. PostgreSQL and parallel workers
+remain outside this change.
 
 ## Development
 
