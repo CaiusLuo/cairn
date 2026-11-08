@@ -319,10 +319,13 @@ def test_wechat_login_and_runtime_final_reply_survive_client_detach(
                     for row in fake.sent
                 ):
                     await asyncio.sleep(0.02)
-            task = app.state.runtime.list_tasks()[0]
-            assert task.delivery_recipient == "owner" and task.worktree is None
-            await controls.memory_queue.join()
-            assert any(value == "sent" for value in controls.state.deliveries.values())
+            conversations = app.state.conversations.list_conversations()
+            assert len(conversations) == 1
+            runs = app.state.conversations.runs_for_conversation(
+                conversations[0].conversation_id
+            )
+            assert len(runs) == 1 and runs[0].status.value == "completed"
+            assert app.state.runtime.list_tasks() == []
             assert len(fake.sent) == 1
             assert "离线共享对话已连接" in json.dumps(fake.sent, ensure_ascii=False)
             await command(api, "/wx", "stop")

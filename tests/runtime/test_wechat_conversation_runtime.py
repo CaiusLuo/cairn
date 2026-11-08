@@ -148,7 +148,7 @@ def test_wechat_duplicate_message_id_creates_one_run(tmp_path: Path) -> None:
         second = asyncio.run(_reply(adapter, "once", message_id="same-wechat-id"))
         changed = asyncio.run(_reply(adapter, "changed", message_id="same-wechat-id"))
         assert first == second
-        assert "处理" in changed
+        assert "不一致" in changed or "未执行" in changed
         with httpx.Client(
             base_url=server.url,
             headers={"Authorization": "Bearer " + token},

@@ -846,12 +846,17 @@ class _Service:
         schedule_store: ScheduleStore | None = None,
     ) -> None:
         self.config = config
-        self._runtime_adapter = None
+        self._runtime_adapter: Any | None = None
+        self._legacy_runtime_adapter: Any | None = None
+        self._uses_conversation_runtime = False
         self._runtime_forwarding: set[str] = set()
         runtime_url = getattr(config, "runtime_url", None)
         if runtime_url:
             from cairn.infra.runtime_client import RuntimeClient, read_runtime_token
-            from cairn.terminal.wechat.runtime import WechatRuntimeAdapter
+            from cairn.terminal.wechat.runtime import (
+                WechatConversationAdapter,
+                WechatRuntimeAdapter,
+            )
 
             runtime_api = config.runtime_client
             if runtime_api is None:
@@ -861,7 +866,12 @@ class _Service:
                 ):
                     raise ValueError("Runtime token must be in trusted host storage")
                 runtime_api = RuntimeClient(runtime_url, read_runtime_token(token_path))
-            self._runtime_adapter = WechatRuntimeAdapter(runtime_api)
+            legacy_adapter = WechatRuntimeAdapter(runtime_api)
+            self._legacy_runtime_adapter = legacy_adapter
+            self._runtime_adapter = WechatConversationAdapter(
+                runtime_api, legacy=legacy_adapter
+            )
+            self._uses_conversation_runtime = True
         self.state = state
         self.client = client
         self.executor = executor
@@ -1678,19 +1688,19 @@ class _Service:
                     else inbound.text or ""
                 )
                 command = raw_text.strip().partition(" ")[0]
-                # ServerControls/TaskService owns the final delivery for
-                # adapter-forwarded ordinary chat and /task development.  The
-                # receiver only acknowledges a development start and then frees
-                # itself; it never blocks on the model or sends the final text.
-                delivery_owned = command == "/task" or not command.startswith("/")
-                if command == "/task":
-                    await self._safe_reply(
-                        inbound.sender,
-                        inbound.context_token,
-                        "开发任务已开始, 完成后会通知结果。",
-                        retries=1,
-                    )
-                text = await self._runtime_adapter.reply(
+                # The Conversation adapter is the production owner of ordinary
+                # chat.  /task and explicit commands remain on the legacy adapter
+                # until UX-B2's final Run delivery is complete.
+                adapter: Any = self._runtime_adapter
+                delivery_owned = False
+                if command == "/task" and self._legacy_runtime_adapter is not None:
+                    adapter = self._legacy_runtime_adapter
+                    delivery_owned = True
+                elif not self._uses_conversation_runtime and not command.startswith(
+                    "/"
+                ):
+                    delivery_owned = True
+                text = await adapter.reply(
                     raw_text,
                     message_id="wechat-runtime:" + identity,
                     sender=inbound.sender,
@@ -1701,6 +1711,13 @@ class _Service:
                     ).hexdigest(),
                     deliver=not delivery_owned,
                 )
+                if command == "/task" and delivery_owned:
+                    await self._safe_reply(
+                        inbound.sender,
+                        inbound.context_token,
+                        "开发任务已开始, 完成后会通知结果。",
+                        retries=1,
+                    )
                 self.state.mark(
                     inbound.key,
                     "command",

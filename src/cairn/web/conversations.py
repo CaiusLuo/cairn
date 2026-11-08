@@ -7,6 +7,7 @@ The existing task routes remain available for development compatibility.
 from __future__ import annotations
 
 import asyncio
+import secrets
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Literal
@@ -57,11 +58,17 @@ class WechatConversationCreate(BaseModel):
 
 
 def conversation_routes(
-    service: ConversationService, workspace: Path
+    service: ConversationService, workspace: Path, runtime_token: str | None = None
 ) -> list[BaseRoute]:
     def workspace_ok(request: Any) -> bool:
         requested = request.headers.get("X-Cairn-Workspace")
         return requested is None or requested == workspace.resolve().as_uri()
+
+    def host_bearer_ok(request: Any) -> bool:
+        if runtime_token is None:
+            return False
+        value = request.headers.get("Authorization", "")
+        return secrets.compare_digest(value, "Bearer " + runtime_token)
 
     def run_payload(run_id: str) -> dict[str, Any]:
         run = service.get_run(run_id)
@@ -97,6 +104,8 @@ def conversation_routes(
                 request.method == "POST"
                 and request.url.path == "/api/runtime/wechat/conversations"
             ):
+                if not host_bearer_ok(request):
+                    return JSONResponse({"error": "host_auth_required"}, status_code=403)
                 wechat_body = WechatConversationCreate.model_validate(
                     await request_body(request)
                 )

@@ -10,7 +10,7 @@ import httpx
 from cairn.core.budget import RunBudget
 from cairn.infra.runtime_client import RuntimeClient
 from cairn.server import runtime_app
-from cairn.terminal.wechat.runtime import WechatRuntimeAdapter
+from cairn.terminal.wechat.runtime import WechatConversationAdapter
 from tests.support.git import initialize_repository
 
 
@@ -31,18 +31,21 @@ def test_wechat_normal_chat_returns_only_final_content(tmp_path: Path) -> None:
             "zzzz",
             transport=httpx.ASGITransport(app=app),
         )
-        adapter = WechatRuntimeAdapter(api)
+        adapter = WechatConversationAdapter(api)
         async with app.router.lifespan_context(app):
             answer = await adapter.reply(
-                "Hello", message_id="wechat-ux-1", conversation_key="wechat:owner"
+                "Hello",
+                message_id="wechat-ux-1",
+                sender="owner",
+                account="bot-1",
+                conversation_key="wechat:owner",
             )
             assert answer
             assert "task-" not in answer
             assert "Worktree" not in answer
             assert "步骤:" not in answer
             assert "Token:" not in answer
-            assert len(app.state.runtime.list_tasks()) == 1
-            task = app.state.runtime.list_tasks()[0]
-            assert task.worktree is None
+            assert app.state.runtime.list_tasks() == []
+            assert len(app.state.conversations.list_conversations()) == 1
 
     asyncio.run(scenario())

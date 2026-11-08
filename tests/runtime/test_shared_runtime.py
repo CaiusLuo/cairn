@@ -10,7 +10,10 @@ from cairn.core.models import LLMResponse, Message
 from cairn.infra.runtime_client import RuntimeClient
 from cairn.runtime.offline_model import OfflineDevelopmentModel
 from cairn.server import runtime_app
-from cairn.terminal.wechat.runtime import WechatRuntimeAdapter
+from cairn.terminal.wechat.runtime import (
+    WechatConversationAdapter,
+    WechatRuntimeAdapter,
+)
 
 
 def repository(root: Path) -> Path:
@@ -1114,34 +1117,53 @@ def test_wechat_plain_messages_reuse_the_same_server_conversation(
             "test-token",
             transport=httpx.ASGITransport(app=app),
         )
-        adapter = WechatRuntimeAdapter(api)
+        adapter = WechatConversationAdapter(api)
         async with app.router.lifespan_context(app):
             await adapter.reply(
-                "Hello", message_id="wx-chat-1", conversation_key="wechat:owner"
+                "Hello",
+                message_id="wx-chat-1",
+                sender="owner",
+                account="bot-1",
             )
-            await asyncio.wait_for(app.state.runtime.queue.join(), 20)
-            first = app.state.runtime.list_tasks()[0]
+            conversations = app.state.conversations.list_conversations()
+            assert len(conversations) == 1
+            first_runs = app.state.conversations.runs_for_conversation(
+                conversations[0].conversation_id
+            )
+            assert len(first_runs) == 1
             await adapter.reply(
                 "Remember the previous reply?",
                 message_id="wx-chat-2",
-                conversation_key="wechat:owner",
+                sender="owner",
+                account="bot-1",
             )
-            await asyncio.wait_for(app.state.runtime.queue.join(), 20)
-            final = app.state.runtime.list_tasks()[0]
-            assert len(app.state.runtime.list_tasks()) == 1
-            assert final.session_id == first.session_id and final.worktree is None
-            assert final.attempts == 2
+            second_runs = app.state.conversations.runs_for_conversation(
+                conversations[0].conversation_id
+            )
+            assert len(second_runs) == 2
+            assert second_runs[-1].status.value == "completed"
             await adapter.reply(
                 "Remember the previous reply?",
                 message_id="wx-chat-2",
-                conversation_key="wechat:owner",
+                sender="owner",
+                account="bot-1",
             )
-            assert app.state.runtime.inspect(first.task_id).attempts == 2
+            assert (
+                len(
+                    app.state.conversations.runs_for_conversation(
+                        conversations[0].conversation_id
+                    )
+                )
+                == 2
+            )
             await adapter.reply(
-                "Hello", message_id="wx-chat-other", conversation_key="wechat:another"
+                "Hello",
+                message_id="wx-chat-other",
+                sender="other",
+                account="bot-1",
             )
-            await asyncio.wait_for(app.state.runtime.queue.join(), 20)
-            assert len(app.state.runtime.list_tasks()) == 2
+            assert len(app.state.conversations.list_conversations()) == 2
+            assert app.state.runtime.list_tasks() == []
 
     asyncio.run(scenario())
 

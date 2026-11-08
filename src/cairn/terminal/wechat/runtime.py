@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import suppress
 from typing import Any
 from uuid import uuid4
 
@@ -35,6 +36,7 @@ class WechatConversationAdapter:
         conversation_key: str | None = None,
         sender: str | None = None,
         account: str | None = None,
+        deliver: bool = True,
     ) -> str:
         del conversation_key
         content = text.strip()
@@ -49,7 +51,9 @@ class WechatConversationAdapter:
             )
         if not sender or not account:
             return "无法确认微信身份, 消息未执行。"
-        request_id = message_id or "wechat:" + uuid4().hex
+        if message_id is None:
+            return "消息缺少稳定标识, 未执行。"
+        request_id = "wechat:" + account + ":" + sender + ":" + message_id
         try:
             conversation = await self.client.ensure_wechat_conversation(
                 account, sender, content
@@ -62,8 +66,19 @@ class WechatConversationAdapter:
             )
         except httpx.HTTPStatusError as error:
             if error.response.status_code == 409:
-                return "上一条消息仍在处理中, 请稍后重发。"
+                code = ""
+                with suppress(ValueError):
+                    code = str(error.response.json().get("error", ""))
+                if code == "conversation_busy":
+                    return "上一条消息仍在处理中, 请稍后重发。"
+                if code == "conversation_recovery_required":
+                    return "上一条消息需要恢复核对, 请发送 /status 查询。"
+                if code == "invalid_request":
+                    return "消息与已有请求不一致, 未执行。"
+                return "消息未被接受, 请发送 /status 查询。"
             raise
+        if not deliver:
+            return ""
         final = await self._wait_run(run["run_id"])
         return self._final_text(final)
 
@@ -123,19 +138,6 @@ class WechatRuntimeAdapter:
     def _result(task: dict[str, object]) -> str:
         value = task.get("result") or task.get("diagnostic") or ""
         return str(value).strip()
-
-    @classmethod
-    def _chat_reply(cls, task: dict[str, object]) -> str:
-        status = str(task.get("status", "unknown"))
-        if status == "completed":
-            return cls._result(task) or "本轮没有生成可显示回复。"
-        if status == "paused":
-            return cls._result(task) or "任务已暂停。"
-        if status == "recovery_required":
-            return "本轮执行需要恢复核对, 请发送 /status 查询。"
-        if status == "failed":
-            return "本轮执行失败, 请发送 /status 查询。"
-        return cls._result(task) or "本轮没有生成可显示回复。"
 
     @classmethod
     def _development_reply(cls, task: dict[str, object]) -> str:
@@ -246,6 +248,8 @@ class WechatRuntimeAdapter:
                 or "暂无任务"
             )
         development = command == "/task"
+        if not development:
+            raise ValueError("普通微信聊天必须使用 WechatConversationAdapter")
         try:
             task = await self.client.submit(
                 argument if development else text,
@@ -278,4 +282,4 @@ class WechatRuntimeAdapter:
         task = await self._wait(str(task["task_id"]))
         if development:
             return self._development_reply(task)
-        return self._chat_reply(task)
+        raise ValueError("普通微信聊天必须使用 WechatConversationAdapter")
