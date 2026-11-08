@@ -109,3 +109,15 @@ def test_damaged_delivery_record_is_not_ignored(tmp_path: Path) -> None:
     state.state_path.write_text(json.dumps(raw))
     with pytest.raises(ValueError, match="delivery"):
         WechatState(tmp_path / "wechat").load()
+
+
+def test_reused_request_id_for_a_different_message_is_rejected(tmp_path: Path) -> None:
+    state = WechatState(tmp_path / "wechat")
+    _begin(state)
+    with pytest.raises(ValueError, match=r"different content|identity"):
+        _begin(
+            state,
+            message_key="msg:other",
+            message_id="message-2",
+            request_id="request-1",
+        )

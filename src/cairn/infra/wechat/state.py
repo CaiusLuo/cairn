@@ -294,10 +294,13 @@ class WechatState:
             for other_key, current in intents.items():
                 if not isinstance(current, dict):
                     raise ValueError("WeChat delivery intent is damaged")
-                if current.get("message_digest") != message_digest:
+                same_message = current.get("message_digest") == message_digest
+                same_request = current.get("request_id") == request_id
+                if not same_message and not same_request:
                     continue
                 if (
-                    current.get("account_digest") != account_digest
+                    not same_message
+                    or current.get("account_digest") != account_digest
                     or current.get("sender_digest") != sender_digest
                     or current.get("content_digest") != content_digest
                     or current.get("request_id") != request_id
