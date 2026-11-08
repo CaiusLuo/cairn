@@ -60,13 +60,12 @@ def conversation_routes(
         run = service.get_run(run_id)
         if run is None:
             raise KeyError(run_id)
-        events = service.events(run_id, 0)
         return {
             "conversation_id": run.conversation_id,
             "run_id": run.run_id,
             "task_id": run.task_id,
             "status": run.status.value,
-            "cursor": events[-1].sequence if events else 0,
+            "cursor": service.cursor(run_id),
             "trace_id": run.trace_ref,
             "budget": run.budget,
             "checkpoint_receipt": run.checkpoint_receipt,
@@ -246,17 +245,31 @@ def conversation_routes(
                             return
 
                 receiving = asyncio.create_task(disconnect())
-                for event in service.events(run_id, cursor):
-                    await websocket.send_json(
-                        {"type": "event", "event": event.model_dump(mode="json")}
-                    )
-                    cursor = event.sequence
-                await websocket.send_json({"type": "ready", "cursor": cursor})
+                await websocket.send_json(
+                    {
+                        "type": "ready",
+                        "cursor": cursor,
+                        "last_sequence": service.cursor(run_id),
+                    }
+                )
+                # Replay every durable page, not just the first 200 events.
+                while batch := service.events(run_id, cursor):
+                    for event in batch:
+                        await websocket.send_json(
+                            {"type": "event", "event": event.model_dump(mode="json")}
+                        )
+                        cursor = event.sequence
                 snapshot = service.preview_snapshot(run_id)
                 if snapshot:
                     await websocket.send_json(
                         {"type": "preview_snapshot", "text": snapshot}
                     )
+                run = service.get_run(run_id)
+                if run is not None and run.status.value not in {"queued", "running"}:
+                    await websocket.send_json(
+                        {"type": "settled", "cursor": service.cursor(run_id)}
+                    )
+                    return
                 while True:
                     pending = asyncio.create_task(queue.get())
                     done, _ = await asyncio.wait(
@@ -266,6 +279,12 @@ def conversation_routes(
                         receiving.result()
                         return
                     message = pending.result()
+                    if message["type"] == "resync":
+                        # The consumer fell behind the bounded in-memory queue.
+                        # Reconnect from the durable cursor instead of silently
+                        # dropping events.
+                        await websocket.close(code=1013)
+                        return
                     if message["type"] == "settled":
                         run = service.get_run(run_id)
                         if run is not None and run.status.value not in {

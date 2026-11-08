@@ -735,6 +735,14 @@ class DomainStore:
             )
         return event
 
+    def run_event_cursor(self, run_id: str) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) FROM run_events WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        return int(row[0])
+
     def list_run_events(
         self, run_id: str, after: int = 0, limit: int = 200
     ) -> tuple[RunEvent, ...]:

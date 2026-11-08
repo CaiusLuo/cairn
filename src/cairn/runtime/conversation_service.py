@@ -52,7 +52,7 @@ class RunLedger:
         *,
         history_origins: tuple[CheckpointReceipt, ...] = (),
         session_id: str | None = None,
-        on_event: Callable[[str], None] | None = None,
+        on_event: Callable[[str, bool], None] | None = None,
     ) -> None:
         self.store = store
         self.run_id = run.run_id
@@ -67,20 +67,21 @@ class RunLedger:
             history_origins=history_origins,
         )
         self.preview = ""
+        self.visible_text = ""
         self.trace_ref: str | None = None
         self.open_tools = 0
         self._on_event = on_event
 
-    def _wake(self, kind: str) -> None:
+    def _wake(self, kind: str, *, persisted: bool) -> None:
         if self._on_event is not None:
-            self._on_event(kind)
+            self._on_event(kind, persisted)
 
     def flush_preview(self) -> None:
         if not self.preview:
             return
         text, self.preview = self.preview, ""
         self.store.append_run_event(self.run_id, "model_text_delta", {"text": text})
-        self._wake("model_text_delta")
+        self._wake("model_text_delta", persisted=True)
 
     def inspect(self, task_id: str) -> RuntimeTask:
         if task_id != self.run_id:
@@ -96,12 +97,13 @@ class RunLedger:
             text = data.get("text") if data is not None else None
             if isinstance(text, str) and text:
                 self.preview = (self.preview + text)[-self.PREVIEW_LIMIT :]
+                self.visible_text = (self.visible_text + text)[-self.PREVIEW_LIMIT :]
                 while len(self.preview) >= self.STREAM_FLUSH_CHARS:
                     self.flush_preview()
-            self._wake(kind)
+            self._wake(kind, persisted=False)
             return updated
         if kind == "model_reasoning_delta":
-            self._wake(kind)
+            self._wake(kind, persisted=False)
             return updated
         self.flush_preview()
         if kind == "tool_call":
@@ -113,7 +115,7 @@ class RunLedger:
             if isinstance(trace_id, str) and trace_id:
                 self.trace_ref = trace_id
         self.store.append_run_event(self.run_id, kind, data or {})
-        self._wake(kind)
+        self._wake(kind, persisted=True)
         return updated
 
 
@@ -234,6 +236,11 @@ class ConversationService:
             raise ValueError("Run not found")
         return self.store.list_run_events(run_id, after)
 
+    def cursor(self, run_id: str) -> int:
+        if self.get_run(run_id) is None:
+            raise ValueError("Run not found")
+        return self.store.run_event_cursor(run_id)
+
     async def follow(self, run_id: str, after: int = 0) -> tuple[RunEvent, ...]:
         # Clear before the read: an event written between the read and the wait
         # must not be lost.
@@ -340,9 +347,7 @@ class ConversationService:
         return {
             "run_id": run.run_id,
             "session_id": run.session_id,
-            "expected_cursor": self.events(run_id, 0)[-1].sequence
-            if self.events(run_id, 0)
-            else 0,
+            "expected_cursor": self.cursor(run_id),
             **review,
         }
 
@@ -368,7 +373,7 @@ class ConversationService:
 
     def preview_snapshot(self, run_id: str) -> str:
         ledger = self.active_ledgers.get(run_id)
-        return ledger.preview if ledger is not None else ""
+        return ledger.visible_text if ledger is not None else ""
 
     def publish(self, run_id: str, message: dict[str, Any]) -> None:
         for queue in tuple(self.subscribers.get(run_id, ())):
@@ -511,7 +516,7 @@ class ConversationService:
             run,
             history_origins=origins,
             session_id=run.session_id or (prior.session_id if prior else None),
-            on_event=lambda _kind: self.changed.set(),
+            on_event=lambda _kind, persisted: self.changed.set() if persisted else None,
         )
         self.active_ledgers[run_id] = ledger
 

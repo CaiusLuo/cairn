@@ -36,6 +36,7 @@ def test_stream_deltas_are_batched_into_bounded_events(tmp_path: Path) -> None:
     assert persisted <= 2
     assert sum(len(event.data.get("text", "")) for event in events) == 10_000
     assert len(events) <= 2
+    assert ledger.visible_text == "x" * 10_000
 
 
 def test_follow_wakes_on_intermediate_event(tmp_path: Path) -> None:
@@ -87,3 +88,56 @@ def test_follow_wakes_on_intermediate_event(tmp_path: Path) -> None:
             assert events["cursor"] >= 1
 
     asyncio.run(scenario())
+
+
+def test_event_pages_and_cursor_cover_all_events(tmp_path: Path) -> None:
+    store = DomainStore(tmp_path / "domain.sqlite3")
+    conversation = store.create_conversation(
+        workspace=tmp_path,
+        source=ConversationSource.CLI,
+        initial_prompt="pages",
+    )
+    run = store.accept_run(
+        conversation_id=conversation.conversation_id,
+        prompt="pages",
+        source=ConversationSource.CLI,
+        request_id="pages-request",
+    )
+    for index in range(550):
+        store.append_run_event(run.run_id, "agent_step", {"index": index})
+    cursor = store.run_event_cursor(run.run_id)
+    assert cursor == 550
+    consumed: list[int] = []
+    after = 0
+    while True:
+        page = store.list_run_events(run.run_id, after=after)
+        if not page:
+            break
+        consumed.extend(event.sequence for event in page)
+        after = page[-1].sequence
+    assert consumed == list(range(1, 551))
+    assert store.run_event_cursor(run.run_id) == consumed[-1]
+
+
+def test_only_persisted_events_wake_follow(tmp_path: Path) -> None:
+    store = DomainStore(tmp_path / "domain.sqlite3")
+    conversation = store.create_conversation(
+        workspace=tmp_path,
+        source=ConversationSource.CLI,
+        initial_prompt="wake",
+    )
+    run = store.accept_run(
+        conversation_id=conversation.conversation_id,
+        prompt="wake",
+        source=ConversationSource.CLI,
+        request_id="wake-request",
+    )
+    wakes: list[bool] = []
+    ledger = RunLedger(
+        store, run, on_event=lambda _kind, persisted: wakes.append(persisted)
+    )
+    for _ in range(1000):
+        ledger.record(ledger.task, "model_text_delta", {"text": "a"})
+    assert wakes and all(flag is False for flag in wakes)
+    ledger.record(ledger.task, "agent_step", {})
+    assert wakes[-1] is True
