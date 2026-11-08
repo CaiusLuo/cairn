@@ -113,6 +113,10 @@ class WechatSessionController:
         self._pending_tasks: set[asyncio.Future[Any]] = set()
         self._closing = False
 
+    @property
+    def state(self) -> WechatState:
+        return self._state
+
     def _schedule(self, awaitable: Awaitable[Any]) -> None:
         task = asyncio.ensure_future(awaitable)
         self._pending_tasks.add(task)
@@ -596,7 +600,12 @@ class WechatSessionController:
         return latest[1] if latest is not None else None
 
     async def deliver_for_account(
-        self, sender: str, text: str, account_id: str
+        self,
+        sender: str,
+        text: str,
+        account_id: str,
+        *,
+        context_token: str | None = None,
     ) -> bool:
         """Send only through the exact account that claimed the task."""
         try:
@@ -611,7 +620,7 @@ class WechatSessionController:
             or sender != account.ilink_user_id
         ):
             return False
-        context = self._latest_context(sender)
+        context = context_token or self._latest_context(sender)
         if not context:
             return False
         client = ILinkClient(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -140,6 +140,19 @@ class RuntimeClient:
         if request_id is not None:
             body["request_id"] = request_id
         return dict(await self.request("POST", "conversations", body))
+
+    async def get_wechat_conversation(
+        self, account_id: str, sender_id: str
+    ) -> dict[str, Any]:
+        return dict(
+            await self.request(
+                "GET",
+                "wechat/conversations?account_id="
+                + quote(account_id)
+                + "&sender_id="
+                + quote(sender_id),
+            )
+        )
 
     async def ensure_wechat_conversation(
         self,

@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,6 +97,7 @@ class WechatState:
         self.state_path = root / "state.json"
         self.legacy_backup_path = root / "state.pre-b2b2.bak"
         self._state: dict[str, Any] | None = None
+        self._delivery_listeners: list[Callable[[str], None]] = []
         lock_key = str(self.state_path.resolve())
         self._delivery_lock = _STATE_LOCKS.setdefault(lock_key, threading.RLock())
 
@@ -281,8 +283,10 @@ class WechatState:
         return str(self.load().get("cursor", ""))
 
     def set_cursor(self, cursor: str) -> None:
-        self.load()["cursor"] = cursor
-        self.flush()
+        with self._delivery_lock:
+            self._state = None
+            self.load()["cursor"] = cursor
+            self.flush()
 
     def latest_context(self, sender: str) -> str | None:
         """Latest reply context for a sender, for owner-directed delivery."""
@@ -299,8 +303,22 @@ class WechatState:
         return latest[1] if latest is not None else None
 
     def get_record(self, key: str) -> dict[str, Any] | None:
-        record = self.load()["messages"].get(key)
-        return record if isinstance(record, dict) else None
+        with self._delivery_lock:
+            self._state = None
+            record = self.load()["messages"].get(key)
+            return dict(record) if isinstance(record, dict) else None
+
+    def add_delivery_listener(self, listener: Callable[[str], None]) -> None:
+        self._delivery_listeners.append(listener)
+
+    def remove_delivery_listener(self, listener: Callable[[str], None]) -> None:
+        with suppress(ValueError):
+            self._delivery_listeners.remove(listener)
+
+    def _notify_delivery(self, key: str) -> None:
+        for listener in tuple(self._delivery_listeners):
+            with suppress(Exception):
+                listener(key)
 
     def _delivery_snapshot(self) -> dict[str, Any]:
         # Re-read the file so two WechatState instances in this process cannot
@@ -383,6 +401,7 @@ class WechatState:
                     "updated_at": time.time(),
                 }
                 self._delivery_commit(before)
+                self._notify_delivery(key)
                 return key
             except BaseException:
                 self._state = copy.deepcopy(before)
@@ -418,6 +437,7 @@ class WechatState:
                     current["admission_status"] = "accepted"
                 current["updated_at"] = time.time()
                 self._delivery_commit(before)
+                self._notify_delivery(key)
                 return dict(current)
             except BaseException:
                 self._state = copy.deepcopy(before)

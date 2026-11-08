@@ -39,6 +39,7 @@ from cairn.runtime.service_execution import ServiceExecution
 from cairn.runtime.task_board.service import TaskBoardService
 from cairn.runtime.task_service import TaskService
 from cairn.server_controls import ServerControls
+from cairn.terminal.wechat.delivery import WechatDeliveryCoordinator
 from cairn.web.app import create_app
 from cairn.web.assets import default_web_root, require_web_assets
 from cairn.web.config import WebConfig
@@ -148,6 +149,12 @@ def runtime_app(
     execution.protected_paths += protected_paths
     web.router.routes[0:0] = management_routes(controls, token)
     web.state.controls = controls
+    delivery = WechatDeliveryCoordinator(
+        conversations=conversations,
+        wechat=controls.wechat,
+        state=controls.wechat.state,
+    )
+    web.state.delivery = delivery
 
     @asynccontextmanager
     async def lifespan(_app: Any) -> AsyncIterator[None]:
@@ -156,21 +163,25 @@ def runtime_app(
             await service.start()
             await conversations.start()
             await controls.start()
+            await delivery.start()
             yield
         finally:
             primary = sys.exception()
 
             async def cleanup() -> None:
                 try:
-                    await controls.close()
+                    await delivery.close()
                 finally:
                     try:
-                        await conversations.close()
+                        await controls.close()
                     finally:
                         try:
-                            await service.close()
+                            await conversations.close()
                         finally:
-                            execution.close()
+                            try:
+                                await service.close()
+                            finally:
+                                execution.close()
 
             owned = asyncio.create_task(cleanup())
             late = await await_owned(owned)

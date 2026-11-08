@@ -1713,14 +1713,20 @@ class _Service:
                 # chat.  /task and explicit commands remain on the legacy adapter
                 # until UX-B2's final Run delivery is complete.
                 adapter: Any = self._runtime_adapter
+                argument = raw_text.strip().partition(" ")[2]
+                task_query = command == "/task" and argument.startswith("task-")
                 delivery_owned = False
                 if command == "/task" and self._legacy_runtime_adapter is not None:
                     adapter = self._legacy_runtime_adapter
-                    delivery_owned = True
+                    delivery_owned = not task_query
                 elif not self._uses_conversation_runtime and not command.startswith(
                     "/"
                 ):
                     delivery_owned = True
+                # Ordinary conversation Runs are delivered by the Server
+                # coordinator after the Run settles.  Explicit commands and
+                # legacy /task keep their existing synchronous replies.
+                deliver_now = not delivery_owned and not self._uses_conversation_runtime
                 text = await adapter.reply(
                     raw_text,
                     message_id=message_id,
@@ -1730,7 +1736,7 @@ class _Service:
                     + hashlib.sha256(
                         f"{self.config.account.ilink_bot_id}:{self.config.account.ilink_user_id}:{inbound.sender}".encode()
                     ).hexdigest(),
-                    deliver=not delivery_owned,
+                    deliver=deliver_now,
                     delivery_key=intent_key,
                     request_id=request_id,
                 )

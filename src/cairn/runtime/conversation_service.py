@@ -146,6 +146,14 @@ class ConversationService:
         self.subscribers: dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
         self.active_ledgers: dict[str, RunLedger] = {}
         self.changed = asyncio.Event()
+        self.settled_listeners: list[Callable[[Run], None]] = []
+
+    def add_run_settled_listener(self, listener: Callable[[Run], None]) -> None:
+        self.settled_listeners.append(listener)
+
+    def remove_run_settled_listener(self, listener: Callable[[Run], None]) -> None:
+        with suppress(ValueError):
+            self.settled_listeners.remove(listener)
 
     async def start(self) -> None:
         if self.worker is not None:
@@ -191,6 +199,18 @@ class ConversationService:
         )
         if conversation.workspace_id != self.workspace_id:
             raise ValueError("WeChat conversation belongs to another workspace")
+        return conversation
+
+    def get_wechat_conversation(
+        self, account_id: str, sender_id: str
+    ) -> Conversation | None:
+        conversation = self.store.get_wechat_conversation(
+            workspace=self.workspace,
+            account_id=account_id,
+            sender_id=sender_id,
+        )
+        if conversation is not None and conversation.workspace_id != self.workspace_id:
+            return None
         return conversation
 
     def get_conversation(self, conversation_id: str) -> Conversation | None:
@@ -627,6 +647,11 @@ class ConversationService:
             self.active_run_id = None
             self.changed.set()
             self.publish(run_id, {"type": "settled"})
+            settled = self.get_run(run_id)
+            if settled is not None:
+                for listener in tuple(self.settled_listeners):
+                    with suppress(Exception):
+                        listener(settled)
 
     async def close(self) -> None:
         self.stopping = True

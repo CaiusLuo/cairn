@@ -15,7 +15,10 @@ from cairn.runtime.scheduling.runner import current_time
 from cairn.terminal.input import CliInput
 from cairn.terminal.runtime_chat import main as shared_main
 from cairn.terminal.server_commands import ServerCommands
-from cairn.terminal.wechat.runtime import WechatRuntimeAdapter
+from cairn.terminal.wechat.runtime import (
+    WechatConversationAdapter,
+    WechatRuntimeAdapter,
+)
 from tests.support.control_runtime import control_runtime
 from tests.support.fake_ilink import FakeILink
 from tests.support.wechat_service import _msg
@@ -328,6 +331,12 @@ def test_wechat_login_and_runtime_final_reply_survive_client_detach(
             assert app.state.runtime.list_tasks() == []
             assert len(fake.sent) == 1
             assert "离线共享对话已连接" in json.dumps(fake.sent, ensure_ascii=False)
+            binding = await api.get_wechat_conversation("bot-1", "owner")
+            assert binding["conversation_id"] == conversations[0].conversation_id
+            status_text = await WechatConversationAdapter(api).reply(
+                "/status", sender="owner", account="bot-1", message_id="status-message"
+            )
+            assert "completed" in status_text
             intents = WechatState(tmp_path / "state" / "wechat").list_delivery_intents()
             assert len(intents) == 1
             assert intents[0]["admission_status"] == "accepted"

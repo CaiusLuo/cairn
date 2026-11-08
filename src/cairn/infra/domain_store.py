@@ -241,6 +241,29 @@ class DomainStore:
             ).fetchone()
         return None if row is None else self._conversation(row)
 
+    def get_wechat_conversation(
+        self, *, workspace: Path | str, account_id: str, sender_id: str
+    ) -> Conversation | None:
+        if not account_id or not sender_id:
+            return None
+        workspace_id = workspace_id_for(workspace)
+        account_digest = hashlib.sha256(
+            ("wechat-account:" + account_id).encode()
+        ).hexdigest()
+        sender_digest = hashlib.sha256(
+            ("wechat-sender:" + sender_id).encode()
+        ).hexdigest()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT conversations.* FROM wechat_bindings "
+                "JOIN conversations USING(conversation_id) "
+                "WHERE wechat_bindings.workspace_id = ? "
+                "AND wechat_bindings.account_digest = ? "
+                "AND wechat_bindings.sender_digest = ?",
+                (workspace_id, account_digest, sender_digest),
+            ).fetchone()
+        return self._conversation(row) if row is not None else None
+
     def get_or_create_wechat_conversation(
         self,
         *,

@@ -102,6 +102,25 @@ def conversation_routes(
             request_id_value = request.path_params.get("request_id")
             action = request.path_params.get("action")
             if (
+                request.method == "GET"
+                and request.url.path == "/api/runtime/wechat/conversations"
+            ):
+                if not host_bearer_ok(request):
+                    return JSONResponse(
+                        {"error": "host_auth_required"}, status_code=403
+                    )
+                account_id = request.query_params.get("account_id", "")
+                sender_id = request.query_params.get("sender_id", "")
+                if not account_id or not sender_id:
+                    return JSONResponse({"error": "invalid_request"}, 400)
+                conversation = service.get_wechat_conversation(account_id, sender_id)
+                if conversation is None:
+                    return JSONResponse({"error": "conversation_not_found"}, 404)
+                return JSONResponse(
+                    {"conversation_id": conversation.conversation_id},
+                    headers={"Cache-Control": "no-store"},
+                )
+            if (
                 request.method == "POST"
                 and request.url.path == "/api/runtime/wechat/conversations"
             ):
@@ -349,7 +368,7 @@ def conversation_routes(
         Route(
             "/api/runtime/wechat/conversations",
             handle,
-            methods=["POST"],
+            methods=["GET", "POST"],
         ),
         Route("/api/runtime/conversations", handle, methods=["GET", "POST"]),
         Route(

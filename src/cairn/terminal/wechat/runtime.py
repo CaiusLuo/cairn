@@ -68,6 +68,9 @@ class WechatConversationAdapter:
         if not content:
             return "消息内容为空。"
         if content.startswith("/"):
+            command, _, argument = content.partition(" ")
+            if command == "/status":
+                return await self._status_reply(account, sender, argument)
             return await self.legacy.reply(
                 text,
                 message_id=message_id,
@@ -135,6 +138,55 @@ class WechatConversationAdapter:
             return ""
         final = await self._wait_run(run["run_id"])
         return self._final_text(final)
+
+    async def _status_reply(
+        self, account: str | None, sender: str | None, argument: str
+    ) -> str:
+        if not account or not sender:
+            return "无法确认微信身份, 未执行。"
+        argument = argument.strip()
+        if argument.startswith("task-"):
+            return await self.legacy.reply(
+                "/status " + argument,
+                sender=sender,
+                account=account,
+            )
+        try:
+            if argument:
+                run = await self.client.get_run(argument)
+            else:
+                conversation = await self.client.get_wechat_conversation(
+                    account, sender
+                )
+                detail = await self.client.get_conversation(
+                    conversation["conversation_id"]
+                )
+                runs = detail.get("runs") or []
+                if not runs:
+                    return "当前没有对话记录。"
+                run = runs[-1]
+        except httpx.HTTPStatusError:
+            return "未找到对应的 Run 或对话。"
+        return self._run_status_text(run)
+
+    @staticmethod
+    def _run_status_text(run: dict[str, Any]) -> str:
+        status = str(run.get("status", "unknown"))
+        result = run.get("result")
+        body = result.strip() if isinstance(result, str) and result.strip() else ""
+        if status == "completed":
+            detail = body or "本轮没有生成可显示回复。"
+        elif status == "paused":
+            detail = "任务已暂停。"
+        elif status == "cancelled":
+            detail = "任务已取消。"
+        elif status == "recovery_required":
+            detail = "本轮执行需要恢复核对, 请发送 /status 查询。"
+        elif status == "failed":
+            detail = "本轮执行失败, 请发送 /status 查询。"
+        else:
+            detail = body or f"任务状态: {status}"
+        return f"Run {run.get('run_id', '')}\n状态: {status}\n{detail}"
 
     async def _wait_run(self, run_id: str) -> dict[str, Any]:
         cursor = 0
