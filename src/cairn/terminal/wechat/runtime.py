@@ -11,13 +11,14 @@ from uuid import uuid4
 import httpx
 
 from cairn.infra.runtime_client import RuntimeClient
+from cairn.infra.wechat.state import WechatState
 
 
 class WechatConversationAdapter:
     """Run ordinary WeChat chat through the Conversation/Run API.
 
-    This is the B1 integration path.  The existing WechatRuntimeAdapter remains
-    the default production bridge until UX-B2 supplies final Run delivery.
+    The existing WechatRuntimeAdapter handles explicit commands and development
+    tasks.  This adapter owns only ordinary chat.
     """
 
     def __init__(
@@ -25,9 +26,11 @@ class WechatConversationAdapter:
         client: RuntimeClient,
         *,
         legacy: WechatRuntimeAdapter | None = None,
+        delivery_state: WechatState | None = None,
     ) -> None:
         self.client = client
         self.legacy = legacy or WechatRuntimeAdapter(client)
+        self.delivery_state = delivery_state
 
     async def reply(
         self,
@@ -38,6 +41,7 @@ class WechatConversationAdapter:
         sender: str | None = None,
         account: str | None = None,
         deliver: bool = True,
+        delivery_key: str | None = None,
     ) -> str:
         del conversation_key
         content = text.strip()
@@ -52,7 +56,7 @@ class WechatConversationAdapter:
             )
         if not sender or not account:
             return "无法确认微信身份, 消息未执行。"
-        if message_id is None:
+        if not message_id:
             return "消息缺少稳定标识, 未执行。"
         request_id = (
             "wechat:"
@@ -64,13 +68,31 @@ class WechatConversationAdapter:
             conversation = await self.client.ensure_wechat_conversation(
                 account, sender, content
             )
+            if self.delivery_state is not None and delivery_key is not None:
+                with suppress(ValueError):
+                    self.delivery_state.update_delivery_intent(
+                        delivery_key,
+                        conversation_id=conversation["conversation_id"],
+                    )
             run = await self.client.send_conversation(
                 conversation["conversation_id"],
                 content,
                 source="wechat",
                 request_id=request_id,
             )
+            if self.delivery_state is not None and delivery_key is not None:
+                with suppress(ValueError):
+                    self.delivery_state.update_delivery_intent(
+                        delivery_key,
+                        conversation_id=conversation["conversation_id"],
+                        run_id=run["run_id"],
+                    )
         except httpx.HTTPStatusError as error:
+            if self.delivery_state is not None and delivery_key is not None:
+                with suppress(ValueError):
+                    self.delivery_state.update_delivery_intent(
+                        delivery_key, status="unconfirmed"
+                    )
             if error.response.status_code == 409:
                 code = ""
                 with suppress(ValueError):
@@ -191,7 +213,9 @@ class WechatRuntimeAdapter:
         sender: str | None = None,
         account: str | None = None,
         deliver: bool = True,
+        delivery_key: str | None = None,
     ) -> str:
+        del delivery_key
         command, _, argument = text.strip().partition(" ")
         if command in {"/schedule", "/memory", "/help"}:
             result = await self.client.request(

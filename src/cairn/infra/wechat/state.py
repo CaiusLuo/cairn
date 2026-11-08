@@ -139,6 +139,7 @@ class WechatState:
                 "cursor": "",
                 "next_sequence": 1,
                 "messages": {},
+                "delivery_intents": {},
             }
             return self._state
         except (OSError, json.JSONDecodeError):
@@ -149,10 +150,13 @@ class WechatState:
             raise ValueError("WeChat runtime state has an unsupported version")
         cursor = raw.get("cursor")
         messages = raw.get("messages")
+        delivery_intents = raw.get("delivery_intents", {})
         if not isinstance(cursor, str) or not isinstance(messages, dict):
             # A damaged state file must fail closed: silently starting from an
             # empty dedupe map could re-execute an already-started task.
             raise ValueError("WeChat runtime state is damaged")
+        if not isinstance(delivery_intents, dict):
+            raise ValueError("WeChat delivery state is damaged")
         sequences: set[int] = set()
         for _key, record in messages.items():
             if not isinstance(record, dict):
@@ -173,6 +177,7 @@ class WechatState:
             "cursor": cursor,
             "next_sequence": next_sequence,
             "messages": messages,
+            "delivery_intents": delivery_intents,
         }
         return self._state
 
@@ -204,6 +209,70 @@ class WechatState:
     def get_record(self, key: str) -> dict[str, Any] | None:
         record = self.load()["messages"].get(key)
         return record if isinstance(record, dict) else None
+
+    def begin_delivery_intent(
+        self,
+        *,
+        message_key: str,
+        message_id: str,
+        account_id: str,
+        sender_id: str,
+        context_token: str,
+        content: str,
+    ) -> str:
+        """Record an accepted message before it is sent to the Runtime."""
+        if not message_id or not account_id or not sender_id:
+            raise ValueError(
+                "Delivery requires stable message, account and sender identity"
+            )
+        message_digest = hashlib.sha256(message_id.encode()).hexdigest()
+        account_digest = hashlib.sha256(account_id.encode()).hexdigest()
+        sender_digest = hashlib.sha256(sender_id.encode()).hexdigest()
+        content_digest = hashlib.sha256(content.encode()).hexdigest()
+        key = hashlib.sha256(message_key.encode()).hexdigest()
+        intents = self.load().setdefault("delivery_intents", {})
+        current = intents.get(key)
+        if isinstance(current, dict):
+            if current.get("content_digest") != content_digest:
+                raise ValueError("WeChat message ID belongs to different content")
+            return key
+        intents[key] = {
+            "message_digest": message_digest,
+            "account_digest": account_digest,
+            "sender_digest": sender_digest,
+            "content_digest": content_digest,
+            "context_token": context_token,
+            "conversation_id": None,
+            "run_id": None,
+            "status": "pending",
+            "created_at": time.time(),
+            "updated_at": time.time(),
+        }
+        self.flush()
+        return key
+
+    def update_delivery_intent(self, key: str, **fields: Any) -> dict[str, Any]:
+        intents = self.load().get("delivery_intents", {})
+        current = intents.get(key)
+        if not isinstance(current, dict):
+            raise ValueError("WeChat delivery intent not found")
+        current.update(fields)
+        current["updated_at"] = time.time()
+        self.flush()
+        return dict(current)
+
+    def get_delivery_intent(self, key: str) -> dict[str, Any] | None:
+        intent = self.load().get("delivery_intents", {}).get(key)
+        return dict(intent) if isinstance(intent, dict) else None
+
+    def list_delivery_intents(
+        self, *, statuses: frozenset[str] | None = None
+    ) -> list[dict[str, Any]]:
+        intents = self.load().get("delivery_intents", {})
+        rows = [dict(intent) for intent in intents.values() if isinstance(intent, dict)]
+        if statuses is not None:
+            rows = [row for row in rows if row.get("status") in statuses]
+        return sorted(rows, key=lambda row: float(row.get("created_at", 0)))
 
     def record_received(
         self,

@@ -869,7 +869,7 @@ class _Service:
             legacy_adapter = WechatRuntimeAdapter(runtime_api)
             self._legacy_runtime_adapter = legacy_adapter
             self._runtime_adapter = WechatConversationAdapter(
-                runtime_api, legacy=legacy_adapter
+                runtime_api, legacy=legacy_adapter, delivery_state=state
             )
             self._uses_conversation_runtime = True
         self.state = state
@@ -1678,6 +1678,7 @@ class _Service:
 
         async def forward() -> None:
             assert self._runtime_adapter is not None and inbound.key is not None
+            intent_key: str | None = None
             try:
                 identity = hashlib.sha256(
                     f"{self.config.account.ilink_user_id}:{inbound.sender}:{inbound.key}".encode()
@@ -1688,6 +1689,15 @@ class _Service:
                     else inbound.text or ""
                 )
                 command = raw_text.strip().partition(" ")[0]
+                if self._uses_conversation_runtime and not command.startswith("/"):
+                    intent_key = self.state.begin_delivery_intent(
+                        message_key=inbound.key,
+                        message_id="wechat-runtime:" + identity,
+                        account_id=self.config.account.ilink_bot_id,
+                        sender_id=inbound.sender,
+                        context_token=inbound.context_token,
+                        content=raw_text,
+                    )
                 # The Conversation adapter is the production owner of ordinary
                 # chat.  /task and explicit commands remain on the legacy adapter
                 # until UX-B2's final Run delivery is complete.
@@ -1710,6 +1720,7 @@ class _Service:
                         f"{self.config.account.ilink_bot_id}:{self.config.account.ilink_user_id}:{inbound.sender}".encode()
                     ).hexdigest(),
                     deliver=not delivery_owned,
+                    delivery_key=intent_key,
                 )
                 if command == "/task" and delivery_owned:
                     await self._safe_reply(
@@ -1725,10 +1736,22 @@ class _Service:
                     delivery_state="deferred" if delivery_owned else "handled",
                 )
                 if text:
-                    await self._safe_reply(
+                    if intent_key is not None:
+                        self.state.update_delivery_intent(intent_key, status="started")
+                    sent = await self._safe_reply(
                         inbound.sender, inbound.context_token, text, retries=1
                     )
+                    if intent_key is not None:
+                        self.state.update_delivery_intent(
+                            intent_key,
+                            status="sent" if sent else "unconfirmed",
+                        )
             except Exception:
+                if intent_key is not None:
+                    with contextlib.suppress(ValueError):
+                        self.state.update_delivery_intent(
+                            intent_key, status="unconfirmed"
+                        )
                 self.report.errors += 1
                 await self._safe_reply(
                     inbound.sender,
