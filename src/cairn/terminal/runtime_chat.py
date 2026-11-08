@@ -386,7 +386,7 @@ async def main(
                 if message["role"] == "assistant" and message.get("content"):
                     print_assistant_response(message["content"])
             assert remote.task is not None
-            show(remote.task)
+            show(remote.task, explicit=True)
             if remote.task["status"] in {"queued", "running"} and not await follow():
                 return
         while True:
