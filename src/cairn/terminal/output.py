@@ -1464,19 +1464,28 @@ class StreamingDisplay:
         self._live = None
 
     def _render_answer(self) -> None:
-        """Finish the answer: settle the last block and close the live region."""
-        text = "".join(self._answer).strip()
+        """Finish the answer: settle only the not-yet-printed tail.
+
+        ``_render_answer_progress`` prints each completed Markdown block as soon
+        as it settles.  Printing the whole answer here again duplicated every
+        already-settled block.  If nothing was printed yet, this method still
+        prints the complete answer once.
+        """
+        raw = "".join(self._answer)
+        text = raw.strip()
         if not text:
             return
-        _, pending = _split_blocks("".join(self._answer))
+        settled, pending = _split_blocks(raw)
+        del settled
         if pending.strip():
             self._close_live()
             console.print(_block(Markdown(pending), first=not self._settled_blocks))
             self._settled_blocks += 1
             return
         self._close_live()
-        console.print(_block(Markdown(text), first=not self._settled_blocks))
-        self._settled_blocks += 1
+        if self._settled_chars == 0:
+            console.print(_block(Markdown(text), first=not self._settled_blocks))
+            self._settled_blocks += 1
 
     def close_incomplete(
         self, *, abandoned: bool = False, silent: bool = False

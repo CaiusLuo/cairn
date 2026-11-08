@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { runtimeApi, taskStatus } from "./runtime-api";
 
 type Conversation = {
@@ -21,6 +23,23 @@ type Run = {
 };
 
 type Message = { role: string; content?: string | null };
+
+function MarkdownBody({ content }: { content: string }) {
+  return (
+    <div className="markdown-body">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: props => (
+            <a {...props} target="_blank" rel="noopener noreferrer" />
+          ),
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
 
 function short(value: string): string {
   return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-5)}` : value;
@@ -231,11 +250,11 @@ export function ConversationPanel() {
             message.content ? (
               <div key={index} className={`message message--${message.role}`}>
                 <small>{message.role}</small>
-                <p>{message.content}</p>
+                <MarkdownBody content={message.content} />
               </div>
             ) : null
           ))}
-          {preview ? <div className="message message--assistant"><small>assistant</small><p>{preview}</p></div> : null}
+          {preview ? <div className="message message--assistant"><small>assistant</small><MarkdownBody content={preview} /></div> : null}
           {run?.error ? <div className="control-error">{run.error}</div> : null}
         </div>
         {error ? <div className="control-error">{error}</div> : null}

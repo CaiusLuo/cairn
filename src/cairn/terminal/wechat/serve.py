@@ -1672,18 +1672,22 @@ class _Service:
                 identity = hashlib.sha256(
                     f"{self.config.account.ilink_user_id}:{inbound.sender}:{inbound.key}".encode()
                 ).hexdigest()
-                text = await self._runtime_adapter.reply(
-                    self.redact_text(inbound.text or "")
-                    if self.redact_text is not None
-                    else inbound.text or "",
-                    message_id="wechat:" + identity,
-                    sender=inbound.sender,
-                    account=self.config.account.ilink_bot_id,
-                    conversation_key="wechat:"
-                    + hashlib.sha256(
-                        f"{self.config.account.ilink_bot_id}:{self.config.account.ilink_user_id}:{inbound.sender}".encode()
-                    ).hexdigest(),
-                )
+                await self._send_typing(inbound, 1)
+                try:
+                    text = await self._runtime_adapter.reply(
+                        self.redact_text(inbound.text or "")
+                        if self.redact_text is not None
+                        else inbound.text or "",
+                        message_id="wechat:" + identity,
+                        sender=inbound.sender,
+                        account=self.config.account.ilink_bot_id,
+                        conversation_key="wechat:"
+                        + hashlib.sha256(
+                            f"{self.config.account.ilink_bot_id}:{self.config.account.ilink_user_id}:{inbound.sender}".encode()
+                        ).hexdigest(),
+                    )
+                finally:
+                    await self._send_typing(inbound, 2)
                 self.state.mark(inbound.key, "command", command="runtime")
                 await self._safe_reply(
                     inbound.sender, inbound.context_token, text, retries=1

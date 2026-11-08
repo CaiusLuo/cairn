@@ -2,14 +2,88 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+from typing import Any
+from uuid import uuid4
+
 import httpx
 
 from cairn.infra.runtime_client import RuntimeClient
 
 
 class WechatRuntimeAdapter:
+    """Short user-facing replies over the shared Runtime API.
+
+    Ordinary chat waits for the Run/task to settle and returns only its final
+    content.  Technical IDs, worktrees and usage are reserved for explicit
+    commands such as ``/status`` and ``/recovery``.
+    """
+
     def __init__(self, client: RuntimeClient) -> None:
         self.client = client
+
+    async def _wait(self, task_id: str) -> dict[str, object]:
+        while True:
+            task = await self.client.inspect(task_id)
+            if task.get("status") not in {"queued", "running"}:
+                return task
+            await asyncio.sleep(0.2)
+
+    @staticmethod
+    def _result(task: dict[str, object]) -> str:
+        value = task.get("result") or task.get("diagnostic") or ""
+        return str(value).strip()
+
+    @classmethod
+    def _chat_reply(cls, task: dict[str, object]) -> str:
+        status = str(task.get("status", "unknown"))
+        if status == "completed":
+            return cls._result(task) or "本轮没有生成可显示回复。"
+        if status == "paused":
+            return cls._result(task) or "任务已暂停。"
+        if status == "recovery_required":
+            return "本轮执行需要恢复核对, 请发送 /status 查询。"
+        if status == "failed":
+            return "本轮执行失败, 请发送 /status 查询。"
+        return cls._result(task) or "本轮没有生成可显示回复。"
+
+    @classmethod
+    def _development_reply(cls, task: dict[str, object]) -> str:
+        status = str(task.get("status", "unknown"))
+        ident = str(task.get("task_id", ""))
+        if status == "completed":
+            body = cls._result(task)
+            detail = f"开发任务已完成\n{body}" if body else "开发任务已完成。"
+        elif status == "paused":
+            detail = cls._result(task) or "开发任务已暂停。"
+        elif status == "recovery_required":
+            detail = "开发任务需要恢复核对, 请发送 /status 查询。"
+        elif status == "failed":
+            detail = "开发任务执行失败, 请发送 /status 查询。"
+        else:
+            detail = cls._result(task) or f"开发任务状态: {status}"
+        return f"{ident}\n状态: {status}\n{detail}" if ident else detail
+
+    @staticmethod
+    def _technical_reply(task: dict[str, object]) -> str:
+        raw_usage = task.get("metrics")
+        usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
+        raw_live = usage.get("live")
+        live: dict[str, Any] = raw_live if isinstance(raw_live, dict) else {}
+        steps = int(usage.get("steps", 0) or 0) + int(live.get("steps", 0) or 0)
+        tokens = usage.get("total_tokens")
+        progress = (
+            f"步骤: {steps} · Token: {tokens if tokens is not None else '未知'} · "
+            f"耗时: {usage.get('elapsed_seconds', '待统计')}s"
+        )
+        return (
+            progress
+            + "\n"
+            + f"{task['task_id']}\n状态: {task['status']}\n"
+            + f"Worktree: {task.get('worktree') or '准备中'}\n"
+            + str(task.get("result") or task.get("diagnostic") or "")
+        )
 
     async def reply(
         self,
@@ -22,8 +96,6 @@ class WechatRuntimeAdapter:
     ) -> str:
         command, _, argument = text.strip().partition(" ")
         if command in {"/schedule", "/memory", "/help"}:
-            from uuid import uuid4
-
             result = await self.client.request(
                 "POST",
                 "commands",
@@ -66,8 +138,6 @@ class WechatRuntimeAdapter:
                 )
             )
         if command == "/recovery" and argument:
-            import json
-
             RuntimeClient._id(argument.strip())
             return json.dumps(
                 await self.client.request("GET", f"tasks/{argument.strip()}/recovery"),
@@ -75,48 +145,43 @@ class WechatRuntimeAdapter:
             )
         if command in {"/status", "/task"} and argument.startswith("task-"):
             task = await self.client.inspect(argument.strip())
-        elif command in {"/cancel", "/continue"} and argument:
+            return self._technical_reply(task)
+        if command in {"/cancel", "/continue"} and argument:
             task = await self.client.control(argument.strip(), command[1:])
-        elif command == "/status":
+            return self._technical_reply(task)
+        if command == "/status":
             tasks = await self.client.request("GET", "tasks")
             return (
                 "\n".join(f"{t['task_id']} {t['status']}" for t in tasks[-10:])
                 or "暂无任务"
             )
-        else:
-            try:
-                task = await self.client.submit(
-                    argument if command == "/task" else text,
-                    "wechat",
-                    request_id=message_id,
-                    mode="development" if command == "/task" else "conversation",
-                    conversation_key=conversation_key if command != "/task" else None,
-                    delivery_recipient=sender,
-                    delivery_account=account,
-                )
-            except httpx.HTTPStatusError as error:
-                if error.response.status_code != 409 or conversation_key is None:
-                    raise
-                tasks = await self.client.request("GET", "tasks")
-                busy_task = next(
-                    (
-                        item
-                        for item in reversed(tasks)
-                        if item.get("conversation_key") == conversation_key
-                    ),
-                    None,
-                )
-                if busy_task is None:
-                    raise
-                task = busy_task
-                return f"{task['task_id']} · {task['status']}\n这条新消息尚未执行; 请在任务结束后重发, 或用 /status TASK_ID 查询。"
-        usage = task.get("metrics", {})
-        live = usage.get("live") or {}
-        steps = usage.get("steps", 0) + live.get("steps", 0)
-        tokens = usage.get("total_tokens")
-        progress = f"步骤: {steps} · Token: {tokens if tokens is not None else '未知'} · 耗时: {usage.get('elapsed_seconds', '待统计')}s"
-        return (
-            progress
-            + "\n"
-            + f"{task['task_id']}\n状态: {task['status']}\nWorktree: {task.get('worktree') or '准备中'}\n{task.get('result') or task.get('diagnostic') or ''}"
-        )
+        development = command == "/task"
+        try:
+            task = await self.client.submit(
+                argument if development else text,
+                "wechat",
+                request_id=message_id,
+                mode="development" if development else "conversation",
+                conversation_key=None if development else conversation_key,
+                delivery_recipient=sender,
+                delivery_account=account,
+            )
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 409 or conversation_key is None:
+                raise
+            tasks = await self.client.request("GET", "tasks")
+            busy_task = next(
+                (
+                    item
+                    for item in reversed(tasks)
+                    if item.get("conversation_key") == conversation_key
+                ),
+                None,
+            )
+            if busy_task is None:
+                raise
+            return "上一条消息仍在处理中, 请稍后重发。"
+        task = await self._wait(str(task["task_id"]))
+        if development:
+            return self._development_reply(task)
+        return self._chat_reply(task)

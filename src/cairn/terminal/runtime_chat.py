@@ -287,8 +287,13 @@ async def main(
         value = await frame.read() if frame else await reader.read()
         return value.text if isinstance(value, PendingLine) else value
 
-    def show(task: dict[str, Any]) -> None:
-        print(f"{task.get('display_id', task['task_id'])} · {task['status']}")
+    def show(task: dict[str, Any], *, explicit: bool = False) -> None:
+        status = str(task.get("status", "unknown"))
+        if explicit:
+            print(f"{task.get('display_id', task['task_id'])} · {status}")
+        elif status not in {"queued", "running", "completed"}:
+            detail = task.get("error") or task.get("diagnostic") or ""
+            print(f"{status}: {detail}" if detail else status)
 
     async def manage(line: str, *, following: bool = False) -> bool:
         command, _, argument = line.strip().partition(" ")
@@ -346,7 +351,7 @@ async def main(
                         continue
                     if line.strip() == "/status":
                         if remote.task:
-                            show(await remote.refresh())
+                            show(await remote.refresh(), explicit=True)
                         continue
                     if line.strip() == "/cancel":
                         stopped.set()
@@ -356,7 +361,7 @@ async def main(
             task = waiting.result()
             show(task)
             display.close_incomplete(silent=True)
-            if task.get("result"):
+            if task.get("result") and not display.final_text_visible:
                 print_assistant_response(task["result"])
             if task.get("diagnostic"):
                 print(task["diagnostic"])
@@ -415,7 +420,7 @@ async def main(
                 if command == "/use":
                     history = await remote.select(argument)
                     assert remote.task is not None
-                    show(remote.task)
+                    show(remote.task, explicit=True)
                     for message in history:
                         if message["role"] == "assistant" and message.get("content"):
                             print_assistant_response(message["content"])
@@ -437,7 +442,7 @@ async def main(
                         if command == "/status"
                         else await remote.control(command[1:])
                     )
-                    show(remote.task)
+                    show(remote.task, explicit=command == "/status")
                     if (
                         remote.task["status"] in {"queued", "running"}
                         and not await follow()
