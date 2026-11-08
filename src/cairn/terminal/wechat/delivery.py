@@ -105,7 +105,11 @@ class WechatDeliveryCoordinator:
         task.add_done_callback(finished)
 
     def _schedule_more(self) -> None:
-        if self._stopped or len(self._tasks) >= self.max_parallel:
+        if (
+            self._stopped
+            or len(self._tasks) >= self.max_parallel
+            or self.wechat.account_id() is None
+        ):
             return
         for intent in self.state.list_delivery_intents(statuses=frozenset({"pending"})):
             if len(self._tasks) >= self.max_parallel:

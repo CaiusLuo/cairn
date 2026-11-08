@@ -162,6 +162,8 @@ class ServerProcess:
                     "CAIRN_TEST_GATES": str(self.gates),
                     "XDG_STATE_HOME": str(self.state / "host-state"),
                     "CAIRN_AGENT_HOME": str(self.state / "agent"),
+                    # The FakeILink acceptance server is loopback HTTP.
+                    "CAIRN_TEST_ALLOW_INSECURE_LOCAL_WECHAT": "1",
                 },
             )
 

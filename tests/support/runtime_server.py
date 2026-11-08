@@ -26,5 +26,16 @@ class GatedModel(OfflineDevelopmentModel):
 
 
 if __name__ == "__main__":
+    if os.environ.get("CAIRN_TEST_ALLOW_INSECURE_LOCAL_WECHAT") == "1":
+        from cairn.terminal.wechat.session import WechatSessionController
+
+        original_init = WechatSessionController.__init__
+
+        def insecure_init(self: Any, *args: Any, **kwargs: Any) -> None:
+            kwargs["allow_insecure_local_http"] = True
+            original_init(self, *args, **kwargs)
+
+        WechatSessionController.__init__ = insecure_init  # type: ignore[method-assign]
+
     with patch.object(runtime_server, "OfflineDevelopmentModel", GatedModel):
         runtime_server.main()

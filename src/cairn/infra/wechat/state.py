@@ -19,7 +19,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -283,8 +283,10 @@ class WechatState:
         return str(self.load().get("cursor", ""))
 
     def set_cursor(self, cursor: str) -> None:
-        self.load()["cursor"] = cursor
-        self.flush()
+        with self._delivery_lock, self._state_file_lock():
+            self._merge_delivery_from_disk()
+            self.load()["cursor"] = cursor
+            self.flush()
 
     def latest_context(self, sender: str) -> str | None:
         """Latest reply context for a sender, for owner-directed delivery."""
@@ -303,6 +305,26 @@ class WechatState:
     def get_record(self, key: str) -> dict[str, Any] | None:
         record = self.load()["messages"].get(key)
         return record if isinstance(record, dict) else None
+
+    @contextmanager
+    def _state_file_lock(self) -> Any:
+        lock_path = self.root / "state.lock"
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+    def _merge_delivery_from_disk(self) -> None:
+        try:
+            raw = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return
+        if isinstance(raw, dict) and isinstance(raw.get("delivery_intents"), dict):
+            self.load()["delivery_intents"] = raw["delivery_intents"]
 
     def add_delivery_listener(self, listener: Callable[[str], None]) -> None:
         self._delivery_listeners.append(listener)
@@ -350,7 +372,7 @@ class WechatState:
         sender_digest = hashlib.sha256(sender_id.encode()).hexdigest()
         content_digest = hashlib.sha256(content.encode()).hexdigest()
         key = hashlib.sha256(message_key.encode()).hexdigest()
-        with self._delivery_lock:
+        with self._delivery_lock, self._state_file_lock():
             before = self._delivery_snapshot()
             try:
                 intents = self.load().setdefault("delivery_intents", {})
@@ -411,7 +433,7 @@ class WechatState:
         conversation_id: str | None = None,
         run_id: str | None = None,
     ) -> dict[str, Any]:
-        with self._delivery_lock:
+        with self._delivery_lock, self._state_file_lock():
             before = self._delivery_snapshot()
             try:
                 intents = self.load().get("delivery_intents", {})
@@ -445,7 +467,7 @@ class WechatState:
     ) -> dict[str, Any]:
         if status not in ADMISSION_STATUSES:
             raise ValueError("Unknown WeChat admission status")
-        with self._delivery_lock:
+        with self._delivery_lock, self._state_file_lock():
             before = self._delivery_snapshot()
             try:
                 intents = self.load().get("delivery_intents", {})
@@ -476,7 +498,7 @@ class WechatState:
                 raise
 
     def begin_delivery_attempt(self, key: str) -> bool:
-        with self._delivery_lock:
+        with self._delivery_lock, self._state_file_lock():
             before = self._delivery_snapshot()
             try:
                 intents = self.load().get("delivery_intents", {})
@@ -498,7 +520,7 @@ class WechatState:
                 raise
 
     def mark_delivery_manual_review(self, key: str, reason: str) -> dict[str, Any]:
-        with self._delivery_lock:
+        with self._delivery_lock, self._state_file_lock():
             before = self._delivery_snapshot()
             try:
                 intents = self.load().get("delivery_intents", {})
@@ -517,7 +539,7 @@ class WechatState:
                 raise
 
     def mark_delivery_sent(self, key: str) -> dict[str, Any]:
-        with self._delivery_lock:
+        with self._delivery_lock, self._state_file_lock():
             before = self._delivery_snapshot()
             try:
                 intents = self.load().get("delivery_intents", {})
@@ -540,7 +562,7 @@ class WechatState:
                 raise
 
     def mark_delivery_unconfirmed(self, key: str) -> dict[str, Any]:
-        with self._delivery_lock:
+        with self._delivery_lock, self._state_file_lock():
             before = self._delivery_snapshot()
             try:
                 intents = self.load().get("delivery_intents", {})
@@ -560,7 +582,7 @@ class WechatState:
                 raise
 
     def get_delivery_intent(self, key: str) -> dict[str, Any] | None:
-        with self._delivery_lock:
+        with self._delivery_lock, self._state_file_lock():
             self._state = None
             intent = self.load().get("delivery_intents", {}).get(key)
             return dict(intent) if isinstance(intent, dict) else None
@@ -568,7 +590,7 @@ class WechatState:
     def list_delivery_intents(
         self, *, statuses: frozenset[str] | None = None
     ) -> list[dict[str, Any]]:
-        with self._delivery_lock:
+        with self._delivery_lock, self._state_file_lock():
             self._state = None
             intents = self.load().get("delivery_intents", {})
             rows = [
@@ -589,36 +611,40 @@ class WechatState:
         is_text: bool = True,
     ) -> bool:
         """Persist a new received fact; False when the key already exists."""
-        state = self.load()
-        messages = state["messages"]
-        if key in messages:
-            return False
-        sequence = state["next_sequence"]
-        state["next_sequence"] = sequence + 1
-        messages[key] = {
-            "state": "received",
-            "sequence": sequence,
-            "sender": sender,
-            "context_token": context_token,
-            "text": text,
-            "stable": stable,
-            "is_text": is_text,
-            "updated": time.time(),
-            "received_at": time.time(),
-        }
-        self.flush()
-        return True
+        with self._delivery_lock, self._state_file_lock():
+            self._merge_delivery_from_disk()
+            state = self.load()
+            messages = state["messages"]
+            if key in messages:
+                return False
+            sequence = state["next_sequence"]
+            state["next_sequence"] = sequence + 1
+            messages[key] = {
+                "state": "received",
+                "sequence": sequence,
+                "sender": sender,
+                "context_token": context_token,
+                "text": text,
+                "stable": stable,
+                "is_text": is_text,
+                "updated": time.time(),
+                "received_at": time.time(),
+            }
+            self.flush()
+            return True
 
     def mark(self, key: str, state: str, **fields: Any) -> None:
-        messages = self.load()["messages"]
-        record = messages.get(key, {})
-        if not isinstance(record, dict):
-            record = {}
-        record["state"] = state
-        record["updated"] = time.time()
-        record.update(fields)
-        messages[key] = record
-        self.flush()
+        with self._delivery_lock, self._state_file_lock():
+            self._merge_delivery_from_disk()
+            messages = self.load()["messages"]
+            record = messages.get(key, {})
+            if not isinstance(record, dict):
+                record = {}
+            record["state"] = state
+            record["updated"] = time.time()
+            record.update(fields)
+            messages[key] = record
+            self.flush()
 
     def resolve_clarification(
         self,

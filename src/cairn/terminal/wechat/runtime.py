@@ -147,11 +147,11 @@ class WechatConversationAdapter:
         if not account or not sender:
             return "无法确认微信身份, 未执行。"
         argument = argument.strip()
+        if argument.startswith("task-"):
+            return await self._task_query_reply(account, sender, argument)
         try:
             binding = await self.client.get_wechat_conversation(account, sender)
             conversation_id = str(binding["conversation_id"])
-            if argument.startswith("task-"):
-                return await self._task_query_reply(account, sender, argument)
             if argument:
                 run = await self.client.get_run(argument)
                 if str(run.get("conversation_id", "")) != conversation_id:
