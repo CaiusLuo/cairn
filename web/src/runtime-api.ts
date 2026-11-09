@@ -3,7 +3,7 @@ export class RuntimeError extends Error {
 }
 export async function runtimeApi<T = any>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`/api/runtime/${path}`, { signal, credentials: "same-origin", cache: "no-store", ...(body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }) });
-  if (response.status === 401) { location.assign(`/login?next=${encodeURIComponent(location.pathname + location.search)}`); throw new RuntimeError(401, "请先登录"); }
+  if (response.status === 401) { location.assign(`/login.html?next=${encodeURIComponent(location.pathname + location.search)}`); throw new RuntimeError(401, "请先登录"); }
   const value = await response.json().catch(() => ({}));
   if (response.status === 404 && /^(commands|management)/.test(path)) throw new RuntimeError(404, "当前 Server 仍在运行旧版本, 请重启 cairn 后重试");
   if (!response.ok) throw new RuntimeError(response.status, value.message || value.error || `请求失败 (${response.status})`);

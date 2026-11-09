@@ -9,8 +9,13 @@ from typing import Any
 import httpx
 
 from cairn.agent.budget import RunBudget
+from cairn.agent.context.window import ContextBuilder
+from cairn.agent.models.catalog import NamedProvider
+from cairn.agent.models.executor import ModelExecutor
 from cairn.agent.models.messages import LLMResponse, LLMUsage, Message
 from cairn.agent.models.offline import OfflineDevelopmentModel
+from cairn.agent.models.runtime import ProviderRuntime
+from cairn.agent.models.selection import ModelConfig, ModelManager, ProviderConfig
 from cairn.conversation.models import ConversationSource, RunStatus
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
@@ -164,5 +169,90 @@ def test_recovery_required_blocks_new_ordinary_run(tmp_path: Path) -> None:
                 )
             else:
                 raise AssertionError("recovery must block a new ordinary Run")
+
+    asyncio.run(scenario())
+
+
+def test_workbench_admits_and_persists_only_approved_run_model(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app = _app(tmp_path)
+        primary, alternate = "fixture/primary", "fixture/alternate"
+        config = ProviderConfig(
+            "https://fixture.invalid",
+            "TEST_KEY",
+            (ModelConfig("chat", (primary, alternate)),),
+        )
+        model_manager = ModelManager(config)
+        used: list[str] = []
+
+        def model_for(model_id: str) -> tuple[ChatModel, ContextBuilder]:
+            used.append(model_id)
+            return ChatModel(), ContextBuilder()
+
+        app.state.execution.provider_runtime = ProviderRuntime(
+            provider=NamedProvider("fixture", config),
+            model_manager=model_manager,
+            model_executor=ModelExecutor(model_manager, model_for),
+            llm=ChatModel(),
+            context_builder=ContextBuilder(),
+            runtime_factory=model_for,
+        )
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://127.0.0.1:8777",
+            ) as client,
+        ):
+            auth = {"Authorization": "Bearer zzzz"}
+            prefix = "/api/runtime/"
+            created = await client.post(
+                prefix + "conversations",
+                headers=auth,
+                json={"prompt": "choose model", "source": "web"},
+            )
+            conversation_id = created.raise_for_status().json()["conversation_id"]
+            path = prefix + f"conversations/{conversation_id}/messages"
+            payload = {
+                "prompt": "choose model",
+                "source": "web",
+                "request_id": "selected-model",
+            }
+            unknown = await client.post(
+                path, headers=auth, json={**payload, "model_id": "outside/group"}
+            )
+            assert unknown.status_code == 409
+            requested = {**payload, "model_id": alternate}
+            admitted = await client.post(path, headers=auth, json=requested)
+            run_id = admitted.raise_for_status().json()["run_id"]
+            await asyncio.wait_for(app.state.conversations.queue.join(), timeout=5)
+
+            result = (
+                (await client.get(prefix + f"runs/{run_id}", headers=auth))
+                .raise_for_status()
+                .json()
+            )
+            assert result["status"] == "completed"
+            assert result["model_id"] == alternate
+            assert used and set(used) == {alternate}
+            assert model_manager.current_model_id() == primary
+            repeat = await client.post(path, headers=auth, json=requested)
+            assert repeat.raise_for_status().json()["run_id"] == run_id
+            changed = await client.post(
+                path, headers=auth, json={**payload, "model_id": primary}
+            )
+            assert changed.status_code == 409
+
+            rows = (
+                (await client.get(prefix + "runs", headers=auth))
+                .raise_for_status()
+                .json()
+            )
+            assert [row["run_id"] for row in rows] == [run_id]
+            assert (await client.get(prefix + "runs")).status_code == 401
+            wrong_workspace = await client.get(
+                prefix + "runs", headers={**auth, "X-Cairn-Workspace": "file:///wrong"}
+            )
+            assert wrong_workspace.status_code == 409
 
     asyncio.run(scenario())

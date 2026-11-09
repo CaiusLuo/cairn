@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Sidebar } from "./components/Sidebar";
+import { PageHeader } from "./workbench/execution";
 import { runtimeApi as api } from "./runtime-api";
 
 type Section = "wechat" | "schedule" | "memory";
@@ -8,7 +8,10 @@ type Job = { job_id: string; prompt: string; kind: string; next_run_at: string |
 type Memory = { enabled: boolean; agent_md: string; memory_md: string; daily_days: number; pending: { text: string; reason: string } | null; proposal_digest: string | null };
 type Snapshot = { workspace: string; notices: string[]; pending_operations: { id: string; command: string }[]; wechat?: Wx; schedule?: { jobs: Job[]; runs: Record<string, unknown>[]; owner_available: boolean }; memory?: Memory };
 export function SettingsPage() {
-  const [section, setSection] = useState<Section>("wechat");
+  const [section, setSection] = useState<Section>(() => {
+    const requested = new URLSearchParams(location.search).get("section");
+    return requested === "memory" || requested === "schedule" ? requested : "wechat";
+  });
   const [data, setData] = useState<Snapshot | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [feedback, setFeedback] = useState("");
   const [code, setCode] = useState(""), [sender, setSender] = useState("");
@@ -45,8 +48,8 @@ export function SettingsPage() {
     if (await command("/schedule", `${reminder ? "remind" : "add"} ${kind} ${time} ${goal}`)) setGoal("");
   }
   const wx = data?.wechat, schedules = data?.schedule, memory = data?.memory;
-  return <div className="app-shell"><Sidebar active="settings" /><main className="settings-main">
-    <header className="settings-head"><div><h1>管理</h1><p className="muted">连接、定时任务与个人记忆由 Server 持有。</p></div><button disabled={busy} onClick={() => void refresh()}>刷新</button></header>
+  return <div className="wb-page settings-main">
+    <PageHeader icon="settings" title="设置" description="管理微信连接、定时任务与个人记忆" actions={<button disabled={busy} onClick={() => void refresh()}>刷新</button>}/>
     <nav className="settings-tabs" aria-label="管理分类">{([ ["wechat", "微信"], ["schedule", "定时任务"], ["memory", "记忆"] ] as const).map(([key, label]) => <button key={key} aria-current={section === key ? "page" : undefined} disabled={busy} onClick={() => setSection(key)}>{label}</button>)}</nav>
     {error && <p role="alert" className="control-error">{error}。操作结果不明时先刷新核对, 重试会沿用原请求编号。</p>}
     {feedback && <pre className="control-feedback" role="status">{feedback}</pre>}
@@ -70,5 +73,5 @@ export function SettingsPage() {
       <button disabled={busy} onClick={() => void command("/memory", "rollback")}>回滚最近一次规则变更</button>
     </section>}
     {!!data?.pending_operations.length && <section className="settings-section"><h2>需要人工核对的管理操作</h2><p>先查看实际结果, 确认后只解除等待, 不会重放。</p><label><input type="checkbox" checked={ack} onChange={event => setAck(event.target.checked)}/>已核对对应操作结果</label>{data.pending_operations.map(operation => <div className="control-row" key={operation.id}><code>{operation.command} · {operation.id}</code><button disabled={busy || !ack} onClick={() => void command("/management", `acknowledge ${operation.id}`, true)}>记录核对结果</button></div>)}</section>}
-  </main></div>;
+  </div>;
 }

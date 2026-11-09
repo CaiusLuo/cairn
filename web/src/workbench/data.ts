@@ -6,6 +6,7 @@ export type Run = {
   conversation_id: string;
   task_id: string | null;
   status: string;
+  mode?: string;
   result: string | null;
   error: string | null;
   prompt?: string;
@@ -58,3 +59,44 @@ export function useResource<T>(path: string | null, interval = 0) {
 
   return { ...(entry.path === path ? entry.value : {}), refresh };
 }
+
+export type WorkbenchConfig = {
+  workspace: string;
+  provider: string | null;
+  models: string[];
+  conversation_model: string | null;
+  development_model: string | null;
+  development_shell: boolean;
+  development_network: boolean;
+};
+
+export type Task = {
+  task_id: string;
+  prompt: string;
+  source: string;
+  mode: string;
+  status: string;
+  worktree: string | null;
+  branch: string | null;
+  session_id: string | null;
+  conversation_key: string | null;
+  attempts: number;
+  sequence: number;
+  result: string | null;
+  diagnostic: string | null;
+  metrics: Record<string, unknown>;
+};
+
+export type Message = {
+  role: string;
+  content?: string | null;
+  tool_call_id?: string | null;
+  tool_calls?: { id: string; name: string }[] | null;
+};
+
+export type ExecutionEvent = {
+  sequence: number;
+  kind: string;
+  created_at?: string;
+  data: Record<string, unknown>;
+};

@@ -12,7 +12,9 @@ import secrets
 import threading
 import time
 from http.cookies import SimpleCookie
+from urllib.parse import urlencode
 
+from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 COOKIE_NAME = "cairn_web_session"
@@ -74,6 +76,15 @@ def cookie_token(scope: Scope) -> str | None:
     return None
 
 
+def operator_request(request: Request, runtime_token: str | None) -> bool:
+    """Accept a host bearer or an authenticated browser on this exact origin."""
+    bearer = request.headers.get("Authorization", "")
+    return (
+        runtime_token is not None
+        and hmac.compare_digest(bearer, "Bearer " + runtime_token)
+    ) or request.headers.get("Origin") == str(request.base_url).rstrip("/")
+
+
 class AuthGuard:
     """Protect pages, API reads and WebSocket upgrades with one cookie session."""
 
@@ -126,8 +137,10 @@ class AuthGuard:
             await send({"type": "http.response.body", "body": body})
             return
         location = "/login.html"
-        if path not in ("", "/"):
-            location += f"?next={path}"
+        query = scope.get("query_string", b"").decode("ascii", errors="replace")
+        if path not in ("", "/") or query:
+            target = path + ("?" + query if query else "")
+            location += "?" + urlencode({"next": target})
         body = b""
         await send(
             {

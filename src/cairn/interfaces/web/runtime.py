@@ -17,6 +17,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from cairn.agent.session.models import Revision
 from cairn.development.catalogue import RuntimeSource
 from cairn.development.service import TaskNeedsRecovery, TaskService
+from cairn.interfaces.web.auth import operator_request
 from cairn.shared.lifecycle import settle_owned
 
 
@@ -57,7 +58,9 @@ async def request_body(request: Request) -> Any:
     return json.loads(body)
 
 
-def task_routes(service: TaskService, workspace: Path) -> list[BaseRoute]:
+def task_routes(
+    service: TaskService, workspace: Path, runtime_token: str | None
+) -> list[BaseRoute]:
     expected_workspace = str(workspace.resolve())
 
     async def identity(_request: Request) -> JSONResponse:
@@ -102,6 +105,8 @@ def task_routes(service: TaskService, workspace: Path) -> list[BaseRoute]:
                 elif action == "cancel":
                     result = (await service.cancel(task_id)).model_dump(mode="json")
                 elif action == "reconcile":
+                    if not operator_request(request, runtime_token):
+                        return JSONResponse({"error": "invalid_origin"}, 403)
                     body_review = RecoveryReview.model_validate(
                         await request_body(request)
                     )

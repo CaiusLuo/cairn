@@ -332,7 +332,7 @@ def create_app(
     if runtime is not None:
         from cairn.interfaces.web.runtime import task_routes
 
-        routes.extend(task_routes(runtime, config.workspace))
+        routes.extend(task_routes(runtime, config.workspace, runtime_token))
     if conversations is not None:
         from cairn.interfaces.web.conversations import conversation_routes
 

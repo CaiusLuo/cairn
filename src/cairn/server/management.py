@@ -326,6 +326,21 @@ class ServerControls:
         ]
 
     async def snapshot(self, section: str = "summary") -> dict[str, Any]:
+        if section == "workbench":
+            provider = self.execution.provider_runtime
+            models = (
+                provider.model_manager.current_model().model_ids if provider else ()
+            )
+            return {
+                "workspace": str(self.workspace),
+                "provider": provider.provider.name if provider else None,
+                "models": list(models),
+                "conversation_model": models[0] if models else None,
+                "development_model": self.service.default_model_id
+                or (models[0] if models else None),
+                "development_shell": self.execution.allow_shell,
+                "development_network": self.execution.allow_network,
+            }
         if section not in {"summary", "wechat", "schedule", "memory"}:
             raise ValueError("Unknown management section")
         result = await asyncio.to_thread(self._snapshot, section)

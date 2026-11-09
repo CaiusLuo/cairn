@@ -48,6 +48,19 @@ export function Shell({ view, active, conversations, workspace, status, navigate
 }) {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("cairn-sidebar") === "closed");
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [narrow, setNarrow] = useState(() => matchMedia("(max-width: 800px)").matches);
+  useEffect(() => {
+    const media = matchMedia("(max-width: 800px)");
+    const update = () => { setNarrow(media.matches); setMobileOpen(false); };
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const close = (event: KeyboardEvent) => { if (event.key === "Escape") setMobileOpen(false); };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [mobileOpen]);
   const [searching, setSearching] = useState(false);
   const [filter, setFilter] = useState("");
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
@@ -65,15 +78,15 @@ export function Shell({ view, active, conversations, workspace, status, navigate
     <nav className="wb-rail" aria-label="主导航">
       <div className="rail-group">{navigation.map(item => <div key={item.view}>{link(href(item.view), item.label, item.icon, view === item.view)}</div>)}</div>
       <div className="rail-group">
-        <button className="rail-link" aria-label="切换会话侧栏" aria-controls="workbench-sidebar" aria-expanded={mobileOpen || !collapsed} title="切换会话侧栏" onClick={() => { if (matchMedia("(max-width: 800px)").matches) setMobileOpen(value => !value); else { setCollapsed(!collapsed); localStorage.setItem("cairn-sidebar", collapsed ? "open" : "closed"); } }}><Icon name="panel-left" /></button>
+        <button className="rail-link" aria-label="切换会话侧栏" aria-controls="workbench-sidebar" aria-expanded={narrow ? mobileOpen : !collapsed} title="切换会话侧栏" onClick={() => { if (narrow) setMobileOpen(value => !value); else { setCollapsed(!collapsed); localStorage.setItem("cairn-sidebar", collapsed ? "open" : "closed"); } }}><Icon name="panel-left" /></button>
         {link(href("settings"), "设置", "settings", view === "settings")}
         <button className="rail-link" aria-label="切换主题" title="切换主题" onClick={() => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark")}><Icon name={theme === "system" ? "monitor" : theme === "dark" ? "moon" : "sun"} /></button>
       </div>
     </nav>
     {mobileOpen && <button className="wb-scrim" aria-label="关闭会话侧栏" onClick={() => setMobileOpen(false)} />}
-    <aside id="workbench-sidebar" className="wb-side">
+    <aside id="workbench-sidebar" className="wb-side" inert={narrow ? !mobileOpen : collapsed}>
       <div className="wb-side-card">
-        <div className="wb-brand"><CairnMark size={24}/><strong>Cairn</strong><button className="icon-button" aria-label="关闭会话侧栏" title="关闭会话侧栏" onClick={() => { setMobileOpen(false); if (!matchMedia("(max-width: 800px)").matches) { setCollapsed(true); localStorage.setItem("cairn-sidebar", "closed"); } }}><Icon name="panel-left" size={15}/></button></div>
+        <div className="wb-brand"><CairnMark size={24}/><strong>Cairn</strong><button className="icon-button" aria-label="关闭会话侧栏" title="关闭会话侧栏" onClick={() => { setMobileOpen(false); if (!narrow) { setCollapsed(true); localStorage.setItem("cairn-sidebar", "closed"); } }}><Icon name="panel-left" size={15}/></button></div>
         <div className="workspace-switch">
           <button className="workspace-trigger" aria-expanded={workspaceOpen} onClick={() => setWorkspaceOpen(value => !value)}><Icon name="folder" size={15}/><span>{workspace?.split(/[\\/]/).filter(Boolean).at(-1) ?? "工作区"}</span><Icon name="chevron-down" size={13}/></button>
           {workspaceOpen && <div className="workspace-popover"><strong>当前工作区</strong><code>{workspace ?? "等待 Server 连接"}</code><small>由宿主配置</small></div>}
@@ -95,6 +108,6 @@ export function Shell({ view, active, conversations, workspace, status, navigate
         <div className="wb-connection" role="status"><span data-connection={status}/>{connection}</div>
       </div>
     </aside>
-    <main className="wb-main" aria-label={current?.label ?? "设置"}>{children}</main>
+    <main className="wb-main" inert={narrow && mobileOpen} aria-label={current?.label ?? "设置"}>{children}</main>
   </div>;
 }

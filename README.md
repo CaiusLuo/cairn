@@ -61,8 +61,8 @@ uv run cairn-cli --config /etc/cairn/config.toml
 ```
 
 Open `http://127.0.0.1:8777/chat.html`; username is `cairn`, password is
-`data_root/runtime/runtime.token`. Web Chat, Tasks, History, WeChat management
-and Schedule share the same Server. Use an SSH tunnel for a remote server.
+`data_root/runtime/runtime.token`. The Web Workbench shares this Server for conversations, development tasks, run
+history and execution recovery. Settings manages WeChat, schedules and memory. Use an SSH tunnel for a remote server.
 
 Chat normally, or enter `/develop GOAL`. `/status`, `/history`, `/cancel`,
 `/new` and `/use CONVERSATION_ID` operate on the same server-owned Conversation;

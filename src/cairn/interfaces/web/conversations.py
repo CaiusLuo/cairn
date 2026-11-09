@@ -24,6 +24,7 @@ from cairn.conversation.service import (
     ConversationRecoveryRequired,
     ConversationService,
 )
+from cairn.interfaces.web.auth import operator_request
 from cairn.interfaces.web.runtime import request_body
 from cairn.shared.lifecycle import settle_owned
 
@@ -48,6 +49,7 @@ class ConversationMessage(BaseModel):
     prompt: str = Field(min_length=1, max_length=32000)
     source: ConversationSource = ConversationSource.CLI
     request_id: str = Field(min_length=1, max_length=200)
+    model_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class WechatConversationCreate(BaseModel):
@@ -79,6 +81,12 @@ def conversation_routes(
             "run_id": run.run_id,
             "task_id": run.task_id,
             "status": run.status.value,
+            "model_id": run.metadata.get("model_id"),
+            "mode": run.mode,
+            "source": run.source,
+            "prompt": run.prompt,
+            "created_at": run.created_at,
+            "ended_at": run.ended_at,
             "cursor": service.cursor(run_id),
             "trace_id": run.trace_ref,
             "budget": run.budget,
@@ -101,6 +109,16 @@ def conversation_routes(
             run_id = request.path_params.get("run_id")
             request_id_value = request.path_params.get("request_id")
             action = request.path_params.get("action")
+            if request.url.path == "/api/runtime/runs":
+                return JSONResponse(
+                    [
+                        run.model_dump(
+                            mode="json", exclude={"metadata", "checkpoint_receipt"}
+                        )
+                        for run in service.recent_runs()
+                    ],
+                    headers={"Cache-Control": "no-store"},
+                )
             if (
                 request.method == "GET"
                 and request.url.path == "/api/runtime/wechat/conversations"
@@ -170,6 +188,7 @@ def conversation_routes(
                     message_body.prompt,
                     message_body.source,
                     message_body.request_id,
+                    model_id=message_body.model_id,
                 )
                 return JSONResponse(
                     run_payload(run.run_id), headers={"Cache-Control": "no-store"}
@@ -191,6 +210,8 @@ def conversation_routes(
                         return JSONResponse(
                             {"error": "method_not_allowed"}, status_code=405
                         )
+                    if not operator_request(request, runtime_token):
+                        return JSONResponse({"error": "invalid_origin"}, 403)
                     review = RecoveryReview.model_validate(await request_body(request))
                     reconciled = service.reconcile(run_id, review.model_dump())
                     return JSONResponse(
@@ -313,13 +334,22 @@ def conversation_routes(
                         "last_sequence": service.cursor(run_id),
                     }
                 )
-                # Replay every durable page, not just the first 200 events.
-                while batch := service.events(run_id, cursor):
-                    for event in batch:
-                        await websocket.send_json(
-                            {"type": "event", "event": event.model_dump(mode="json")}
-                        )
-                        cursor = event.sequence
+
+                async def send_events(*, replay: bool = False) -> None:
+                    nonlocal cursor
+                    while batch := service.events(run_id, cursor):
+                        for event in batch:
+                            # Live model text is already sent through preview.
+                            if replay or event.kind != "model_text_delta":
+                                await websocket.send_json(
+                                    {
+                                        "type": "event",
+                                        "event": event.model_dump(mode="json"),
+                                    }
+                                )
+                            cursor = event.sequence
+
+                await send_events(replay=True)
                 snapshot = service.preview_snapshot(run_id)
                 if snapshot:
                     await websocket.send_json(
@@ -346,6 +376,10 @@ def conversation_routes(
                         # dropping events.
                         await websocket.close(code=1013)
                         return
+                    if message["type"] in {"event", "settled"}:
+                        await send_events()
+                    if message["type"] == "event":
+                        continue
                     if message["type"] == "settled":
                         run = service.get_run(run_id)
                         if run is not None and run.status.value not in {
@@ -386,6 +420,7 @@ def conversation_routes(
             handle,
             methods=["GET", "POST"],
         ),
+        Route("/api/runtime/runs", handle, methods=["GET"]),
         Route("/api/runtime/runs/{run_id}", handle, methods=["GET"]),
         Route("/api/runtime/runs/{run_id}/{action}", handle, methods=["GET", "POST"]),
         WebSocketRoute("/api/runtime/runs/{run_id}/stream", stream),

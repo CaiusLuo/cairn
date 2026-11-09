@@ -8,9 +8,10 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
-from starlette.responses import JSONResponse, RedirectResponse
+from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from cairn.interfaces.web.auth import operator_request
 from cairn.interfaces.web.runtime import request_body
 
 
@@ -53,9 +54,7 @@ def management_routes(controls: Controls, token: str) -> list[Route]:
             else:
                 bearer = request.headers.get("Authorization", "")
                 host_token = hmac.compare_digest(bearer, "Bearer " + token)
-                if not host_token and request.headers.get("Origin") != str(
-                    request.base_url
-                ).rstrip("/"):
+                if not operator_request(request, token):
                     # Host management needs an exact browser Origin, not merely a
                     # loopback tab on another port with the same cookie.
                     return JSONResponse(
@@ -85,11 +84,7 @@ def management_routes(controls: Controls, token: str) -> list[Route]:
                 headers=headers,
             )
 
-    async def home(_request: Request) -> RedirectResponse:
-        return RedirectResponse("/chat.html", status_code=307)
-
     return [
-        Route("/", home, methods=["GET"]),
         Route("/api/runtime/management", handle, methods=["GET"]),
         Route("/api/runtime/commands", handle, methods=["GET", "POST"]),
     ]

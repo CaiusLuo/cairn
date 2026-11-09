@@ -68,6 +68,7 @@ class RunLedger:
             mode="conversation",
             conversation_key=run.conversation_id,
             input_prompt=run.prompt or None,
+            model_id=run.metadata.get("model_id"),
             session_id=session_id,
             history_origins=history_origins,
         )
@@ -243,12 +244,17 @@ class ConversationService:
             return None
         return self.store.get_run_by_request(conversation_id, request_id)
 
+    def recent_runs(self) -> tuple[Run, ...]:
+        return self.store.recent_runs(self.workspace_id)
+
     def submit(
         self,
         conversation_id: str,
         prompt: str,
         source: ConversationSource,
         request_id: str,
+        *,
+        model_id: str | None = None,
     ) -> Run:
         if self.stopping or self.worker is None or self.worker.done():
             raise RuntimeError("Conversation runtime is not accepting runs")
@@ -257,6 +263,13 @@ class ConversationService:
             raise ValueError("Conversation not found")
         existing = self.store.get_run_by_request(conversation_id, request_id)
         if existing is None:
+            if model_id is not None:
+                profile = self.execution.provider_runtime
+                if (
+                    profile is None
+                    or model_id not in profile.model_manager.current_model().model_ids
+                ):
+                    raise ValueError("Model is outside the approved group")
             runs = self.store.list_runs_for_conversation(conversation_id)
             if any(run.status is RunStatus.RECOVERY_REQUIRED for run in runs):
                 raise ConversationRecoveryRequired(
@@ -271,6 +284,7 @@ class ConversationService:
             prompt=prompt,
             source=source,
             request_id=request_id,
+            model_id=model_id,
         )
         if existing is None and run.run_id not in self.queued_ids:
             self.queued_ids.add(run.run_id)

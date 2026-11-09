@@ -1,4 +1,15 @@
 .login-shell {
+  --font-mono: var(--hui-mono);
+  --font-brand: var(--hui-sans);
+  --radius-dialog: 16px;
+  --radius-control: 8px;
+  --text: #ededf0;
+  --text-dim: #a1a1aa;
+  --accent: #a08aff;
+  --accent-ink: #141417;
+  --accent-soft: #242033;
+  --coral: #f0899a;
+  color: var(--text);
   position: relative;
   min-height: 100vh;
   width: 100%;
@@ -82,3 +93,6 @@
 .login-form label { gap: 8px; }
 .login-form input { height: 36px; padding: 0 8px; }
 .login-submit { height: 36px; margin-top: 8px; }
+
+.login-submit { border: 0; }
+.login-brand { display: flex; align-items: center; gap: 8px; }

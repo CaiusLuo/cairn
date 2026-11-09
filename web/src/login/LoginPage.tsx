@@ -1,4 +1,5 @@
 import { useState } from "react";
+import "../styles/login.css";
 import { AsciiOcean } from "../vendor/ascii-sharks/react";
 
 export function LoginPage() {
@@ -24,7 +25,8 @@ export function LoginPage() {
         return;
       }
       const next = new URLSearchParams(location.search).get("next");
-      location.assign(next && next.startsWith("/") && !next.startsWith("//") ? next : "/");
+      const destination = new URL(next ?? "/", location.origin);
+      location.assign(destination.origin === location.origin ? destination.href : "/");
     } catch {
       setError("The server is unreachable.");
     } finally {

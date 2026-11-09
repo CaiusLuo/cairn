@@ -699,6 +699,15 @@ class DomainStore:
                 ).fetchall()
         return tuple(self._run(row) for row in rows)
 
+    def recent_runs(self, workspace_id: str) -> tuple[Run, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM runs WHERE workspace_id = ? "
+                "ORDER BY created_at DESC, run_id DESC LIMIT 100",
+                (workspace_id,),
+            ).fetchall()
+        return tuple(self._run(row) for row in rows)
+
     def get_run_by_request(self, conversation_id: str, request_id: str) -> Run | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -717,15 +726,17 @@ class DomainStore:
         request_id: str,
         mode: str = "conversation",
         task_id: str | None = None,
+        model_id: str | None = None,
     ) -> Run:
         """Atomically accept one request and create its Run, or return the original."""
         import hashlib
         import json as _json_module
 
+        request_facts = [prompt, source.value, mode, task_id]
+        if model_id is not None:
+            request_facts.append(model_id)
         fingerprint = hashlib.sha256(
-            _json_module.dumps(
-                [prompt, source.value, mode, task_id], ensure_ascii=False
-            ).encode()
+            _json_module.dumps(request_facts, ensure_ascii=False).encode()
         ).hexdigest()
         with self._connect() as connection:
             existing = connection.execute(
@@ -771,6 +782,7 @@ class DomainStore:
                     "request_id": request_id,
                     "source": source.value,
                     "mode": mode,
+                    **({"model_id": model_id} if model_id is not None else {}),
                 },
             )
             connection.execute(
