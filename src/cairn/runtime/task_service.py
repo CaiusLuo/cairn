@@ -11,7 +11,9 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from cairn.core.domain import TaskStatus
 from cairn.core.task_board import TaskBoardItem, TaskBoardStatus, TaskSource
+from cairn.infra.domain_store import DomainStore
 from cairn.infra.runtime_catalog import (
     RuntimeCatalogue,
     RuntimeEvent,
@@ -61,6 +63,8 @@ class TaskService:
         self.subscribers: dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
         self.catalogue = catalogue
         self.executor = executor
+        self.domain_store: DomainStore | None = None
+        self.domain_projection_error: str | None = None
         self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=queue_size)
         self.worker: asyncio.Task[None] | None = None
         self.active: asyncio.Task[str] | None = None
@@ -85,8 +89,16 @@ class TaskService:
             elif task.status == "queued":
                 self.queue.put_nowait(task.task_id)
         self.worker = asyncio.create_task(self._work())
-        if self.board is not None:
-            self.projections.update({task.task_id: task for task in self.list_tasks()})
+        if self.board is not None or self.domain_store is not None:
+            self.projections.update(
+                {
+                    task.task_id: task
+                    for task in self.list_tasks()
+                    if task.mode == "development"
+                    or task.development_prompt is not None
+                    or task.worktree is not None
+                }
+            )
             self.projection_signal.set()
             self.projector = asyncio.create_task(self._project())
 
@@ -115,10 +127,12 @@ class TaskService:
     ) -> RuntimeTask:
         previous = self.catalogue.data.tasks.get(task.task_id)
         updated = self.catalogue.record(task, kind, data)
-        if self.board is not None and (
+        if (self.board is not None or self.domain_store is not None) and (
             previous is None
             or previous.status != updated.status
             or previous.mode != updated.mode
+            or previous.worktree != updated.worktree
+            or previous.branch != updated.branch
             or kind == "worktree_ready"
         ):
             self.projections[task.task_id] = updated
@@ -503,22 +517,76 @@ class TaskService:
         if advance and not self.stopping:
             await self._run_task(task_id, advanced=True)
 
+    @staticmethod
+    def _execution_status(task: RuntimeTask) -> str:
+        return task.status
+
+    def _domain_status(self, task: RuntimeTask, current: Any) -> TaskStatus | None:
+        if current.status in {TaskStatus.DONE, TaskStatus.CLOSED}:
+            return None
+        if task.status in {"queued", "running"}:
+            return TaskStatus.IN_PROGRESS
+        if task.status in {"paused", "recovery_required", "failed"}:
+            return TaskStatus.WAITING
+        return None
+
+    def _project_domain(self, task: RuntimeTask) -> None:
+        if self.domain_store is None:
+            return
+        current = self.domain_store.get_task(task.task_id)
+        if current is None:
+            # Legacy-only tasks keep their existing execution and board path.
+            return
+        metadata = dict(current.metadata)
+        prior_sequence = metadata.get("execution_sequence", -1)
+        if not isinstance(prior_sequence, int):
+            prior_sequence = -1
+        if task.sequence < prior_sequence:
+            return
+        metadata.update(
+            {
+                "execution_status": task.status,
+                "execution_task_id": task.task_id,
+                "execution_sequence": task.sequence,
+                "execution_diagnostic": task.diagnostic,
+                "execution_result": task.result,
+                "execution_session_id": task.session_id,
+                "execution_worktree": task.worktree,
+                "execution_branch": task.branch,
+            }
+        )
+        status = self._domain_status(task, current)
+        self.domain_store.update_task(
+            task.task_id,
+            status=status,
+            worktree=task.worktree,
+            branch=task.branch,
+            metadata=metadata,
+        )
+
     async def _project(self) -> None:
-        assert self.board is not None
+        if self.board is None and self.domain_store is None:
+            return
         statuses = {"paused": "waiting", "recovery_required": "waiting"}
         while True:
             await self.projection_signal.wait()
             self.projection_signal.clear()
             while self.projections:
                 _, task = self.projections.popitem()
-                # A real handoff can leave the compatibility mode as
-                # conversation while carrying an explicit development prompt
-                # or worktree. Those are development task evidence.
                 if not (
                     task.mode == "development"
                     or task.development_prompt is not None
                     or task.worktree is not None
                 ):
+                    continue
+                # RuntimeCatalogue is already committed by record(); projection
+                # is a derived view and must never fail the execution fact.
+                try:
+                    await asyncio.to_thread(self._project_domain, task)
+                    self.domain_projection_error = None
+                except Exception as exc:
+                    self.domain_projection_error = type(exc).__name__
+                if self.board is None:
                     continue
                 now = datetime.now(UTC).isoformat()
                 item = TaskBoardItem(
