@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.wechat.state import STATE_VERSION, WechatState
+from cairn.integrations.wechat.state import STATE_VERSION, WechatState
 
 
 def test_queued_message_order_survives_state_reload(tmp_path: Path) -> None:

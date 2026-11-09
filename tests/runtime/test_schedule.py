@@ -9,13 +9,13 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from cairn.core.schedule import (
+from cairn.scheduling.models import (
     ScheduleJob,
     ScheduleKind,
     initial_next_run,
 )
-from cairn.infra.schedule.store import ScheduleStore
-from cairn.runtime.scheduling.runner import ScheduleRunner
+from cairn.scheduling.runner import ScheduleRunner
+from cairn.scheduling.store import ScheduleStore
 from cairn.terminal.headless import HeadlessResult, HeadlessStatus
 
 NOW = datetime(2026, 11, 1, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -451,7 +451,7 @@ def test_delivery_cancellation_reports_unconfirmed_and_keeps_task_fact(
 def test_controller_close_cancels_waiting_for_execution_lock(tmp_path: Path) -> None:
     import time
 
-    from cairn.terminal.schedule.controller import ScheduleController
+    from cairn.scheduling.commands import ScheduleController
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -495,7 +495,7 @@ def test_controller_close_retains_started_job_without_replay(
 ) -> None:
     import time
 
-    from cairn.terminal.schedule.controller import ScheduleController
+    from cairn.scheduling.commands import ScheduleController
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -563,7 +563,7 @@ def test_controller_close_propagates_late_cancellation_after_cleanup(
 ) -> None:
     import time
 
-    from cairn.terminal.schedule.controller import ScheduleController
+    from cairn.scheduling.commands import ScheduleController
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -860,7 +860,7 @@ def test_runner_delivers_reminder_without_invoking_model(tmp_path: Path) -> None
 
 def test_schedule_create_uses_trusted_message_and_is_idempotent(tmp_path: Path) -> None:
     from cairn.infra.tools.base import ToolExecutionContext
-    from cairn.runtime.scheduling.tools import ScheduleCreateTool
+    from cairn.scheduling.tools import ScheduleCreateTool
 
     store = ScheduleStore(tmp_path / "schedule")
     tool = ScheduleCreateTool(

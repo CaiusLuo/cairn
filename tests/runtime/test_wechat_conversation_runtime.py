@@ -8,7 +8,10 @@ from pathlib import Path
 import httpx
 
 from cairn.infra.runtime_client import RuntimeClient
-from cairn.terminal.wechat.runtime import WechatConversationAdapter, wechat_request_id
+from cairn.integrations.wechat.runtime import (
+    WechatConversationAdapter,
+    wechat_request_id,
+)
 from tests.support.git import initialize_repository
 from tests.support.server_process import ServerProcess
 
@@ -26,7 +29,6 @@ async def _reply(
         message_id=message_id,
         sender=sender,
         account=account,
-        conversation_key="wechat:" + account + ":" + sender,
     )
 
 

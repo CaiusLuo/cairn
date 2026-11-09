@@ -11,20 +11,20 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request
 import pytest
 from pydantic import ValidationError
 
-from cairn.infra.github import http as http_module
-from cairn.infra.github.http import (
+from cairn.integrations.github import http as http_module
+from cairn.integrations.github.http import (
     GitHubHTTPError,
     GitHubREST,
     GitHubRESTIssueReader,
 )
-from cairn.infra.github.models import (
+from cairn.integrations.github.models import (
     GitHubRepository,
     IssuePayload,
     IssueReference,
     IssueTask,
     validate_branch_name,
 )
-from cairn.infra.github.source import GitHubSourceError, GitHubTaskSource
+from cairn.integrations.github.source import GitHubSourceError, GitHubTaskSource
 
 REPOSITORY = GitHubRepository(owner="CaiusLuo", name="cairn")
 REFERENCE = IssueReference(repository=REPOSITORY, number=20)

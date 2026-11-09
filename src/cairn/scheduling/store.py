@@ -17,7 +17,7 @@ from datetime import UTC
 from pathlib import Path
 from typing import Any
 
-from cairn.core.schedule import ScheduleJob, next_run_after
+from cairn.scheduling.models import ScheduleJob, next_run_after
 
 SCHEDULE_DIR_ENV = "CAIRN_SCHEDULE_DIR"
 STORE_VERSION = 1

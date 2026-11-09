@@ -209,8 +209,8 @@ def test_effect_owner_guard_resolves_package_relative_imports() -> None:
     module, package = _module_context(path)
     assert module == package == "cairn.infra.git"
     targets = _targets(ast.parse("from ..github import transport"), package)
-    assert "cairn.infra.github" in targets
-    assert "cairn.infra.github.transport" in targets
+    assert "cairn.integrations.github" in targets
+    assert "cairn.integrations.github.transport" in targets
     assert _module_context(PACKAGE_ROOT / "infra" / "git" / "context.py") == (
         "cairn.infra.git.context",
         "cairn.infra.git",

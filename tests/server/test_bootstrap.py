@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from cairn.infra.wechat.state import WechatServeLock
+from cairn.integrations.wechat.state import WechatServeLock
 from tests.support.git import initialize_repository
 from tests.support.server_process import ROOT, ServerProcess
 
@@ -168,7 +168,7 @@ def test_same_wechat_account_is_exclusive_across_processes_and_data_roots(
     try:
         code = (
             "from pathlib import Path; "
-            "from cairn.infra.wechat.state import WechatServeLock; "
+            "from cairn.integrations.wechat.state import WechatServeLock; "
             "lock=WechatServeLock(Path(" + repr(str(tmp_path / "second")) + ")); "
             "lock.acquire(description='second', account_id='fake-p0a-account')"
         )

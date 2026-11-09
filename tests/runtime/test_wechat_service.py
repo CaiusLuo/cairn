@@ -9,12 +9,14 @@ import pytest
 
 from cairn.core.budget import RunBudget
 from cairn.core.models import LLMResponse, ToolCall
-from cairn.infra.wechat.ilink import (
+from cairn.integrations.wechat.ilink import (
     ILinkError,
     redirect_base_url,
     validate_base_url,
 )
-from cairn.infra.wechat.state import (
+from cairn.integrations.wechat.login import QRLoginError, run_login
+from cairn.integrations.wechat.serve import ServeConfig, serve_wechat
+from cairn.integrations.wechat.state import (
     WechatAccount,
     WechatState,
 )
@@ -27,8 +29,6 @@ from cairn.terminal.headless import (
     _run_via_config_async,
     run_headless_task,
 )
-from cairn.terminal.wechat.login import QRLoginError, run_login
-from cairn.terminal.wechat.serve import ServeConfig, serve_wechat
 from tests.support.fake_ilink import FakeILink
 from tests.support.runtime import SequenceLLM
 from tests.support.wechat_service import (
@@ -483,7 +483,7 @@ def test_runtime_build_failure_after_approval_can_redact_resolved_key(
 def test_ack_failure_does_not_lose_task_or_claim_ack(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from cairn.terminal.wechat.serve import ServeReport, _Inbound, _Service
+    from cairn.integrations.wechat.serve import ServeReport, _Inbound, _Service
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -543,7 +543,7 @@ def test_ack_failure_does_not_lose_task_or_claim_ack(
 def test_ack_never_echoes_input_before_provider_secrets_are_resolved(
     tmp_path: Path,
 ) -> None:
-    from cairn.terminal.wechat.serve import ServeReport, _Inbound, _Service
+    from cairn.integrations.wechat.serve import ServeReport, _Inbound, _Service
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -600,7 +600,7 @@ def test_ack_never_echoes_input_before_provider_secrets_are_resolved(
 
 
 def test_lost_ack_response_is_not_retried(tmp_path: Path) -> None:
-    from cairn.terminal.wechat.serve import ServeReport, _Inbound, _Service
+    from cairn.integrations.wechat.serve import ServeReport, _Inbound, _Service
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -664,12 +664,12 @@ def test_lost_ack_response_is_not_retried(tmp_path: Path) -> None:
 def test_default_wechat_executor_exposes_shared_task_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, purpose: str
 ) -> None:
-    from cairn.infra.wechat.state import WechatAccount
-    from cairn.terminal.wechat.serve import (
+    from cairn.integrations.wechat.serve import (
         ServeConfig,
         default_conversation_executor,
         default_task_executor,
     )
+    from cairn.integrations.wechat.state import WechatAccount
 
     captured: list[object] = []
 
@@ -682,7 +682,9 @@ def test_default_wechat_executor_exposes_shared_task_tools(
             final_response="ok",
         )
 
-    monkeypatch.setattr("cairn.terminal.wechat.serve._run_via_config_async", fake_run)
+    monkeypatch.setattr(
+        "cairn.integrations.wechat.serve._run_via_config_async", fake_run
+    )
     safe_root = tmp_path.parent / (tmp_path.name + "-tasks-safe")
     monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(safe_root))
     config = ServeConfig(
@@ -726,8 +728,8 @@ def test_default_wechat_executor_exposes_shared_task_tools(
 def test_default_wechat_executor_rejects_task_board_inside_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from cairn.infra.wechat.state import WechatAccount
-    from cairn.terminal.wechat.serve import ServeConfig, default_task_executor
+    from cairn.integrations.wechat.serve import ServeConfig, default_task_executor
+    from cairn.integrations.wechat.state import WechatAccount
 
     config = ServeConfig(
         workspace=tmp_path,
@@ -765,7 +767,7 @@ def test_wechat_session_refuses_agent_writable_storage(
 ) -> None:
     from tempfile import TemporaryDirectory
 
-    from cairn.terminal.wechat.serve import default_task_executor
+    from cairn.integrations.wechat.serve import default_task_executor
     from tests.support.git import initialize_repository
 
     with TemporaryDirectory(
@@ -811,7 +813,7 @@ def test_wechat_session_refuses_agent_writable_storage(
             )
 
         monkeypatch.setattr(
-            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+            "cairn.integrations.wechat.serve._run_via_config_async", fake_run
         )
 
         async def flow() -> HeadlessResult:
@@ -832,7 +834,7 @@ def test_wechat_workspace_observation_uses_current_secret_names(
     from cairn.infra.sessions.host import observe_workspace
     from cairn.infra.sessions.models import WorkspaceBinding
     from cairn.infra.workspace.workspace import Workspace
-    from cairn.terminal.wechat.serve import default_task_executor
+    from cairn.integrations.wechat.serve import default_task_executor
     from tests.support.git import initialize_repository
 
     with TemporaryDirectory(
@@ -855,7 +857,7 @@ def test_wechat_workspace_observation_uses_current_secret_names(
             return observe_workspace(target, secret_env_keys)
 
         monkeypatch.setattr(
-            "cairn.terminal.wechat.serve.observe_workspace", record_observation
+            "cairn.integrations.wechat.serve.observe_workspace", record_observation
         )
         config = ServeConfig(
             workspace=workspace,
@@ -884,7 +886,7 @@ def test_wechat_workspace_observation_uses_current_secret_names(
             )
 
         monkeypatch.setattr(
-            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+            "cairn.integrations.wechat.serve._run_via_config_async", fake_run
         )
 
         async def flow() -> HeadlessResult:
@@ -907,7 +909,7 @@ def test_wechat_durable_session_respects_explicit_capabilities(
     from cairn.core.models import ToolResult
     from cairn.core.permissions import CapabilityRequest, PermissionCapability
     from cairn.infra.tools.base import ToolExecutionContext
-    from cairn.terminal.wechat.serve import default_task_executor
+    from cairn.integrations.wechat.serve import default_task_executor
     from tests.support.git import initialize_repository
 
     with TemporaryDirectory(
@@ -996,7 +998,7 @@ def test_wechat_durable_session_respects_explicit_capabilities(
             )
 
         monkeypatch.setattr(
-            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+            "cairn.integrations.wechat.serve._run_via_config_async", fake_run
         )
 
         async def flow() -> HeadlessResult:
@@ -1021,7 +1023,7 @@ def test_wechat_durable_failed_check_can_repair_and_recheck(
     from tempfile import TemporaryDirectory
 
     from cairn.core.tasks import TaskCheckStatus
-    from cairn.terminal.wechat.serve import default_task_executor
+    from cairn.integrations.wechat.serve import default_task_executor
     from tests.support.git import initialize_repository
 
     with TemporaryDirectory(
@@ -1078,7 +1080,7 @@ def test_wechat_durable_failed_check_can_repair_and_recheck(
             )
 
         monkeypatch.setattr(
-            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+            "cairn.integrations.wechat.serve._run_via_config_async", fake_run
         )
 
         async def flow() -> tuple[HeadlessResult, HeadlessResult]:
@@ -1117,8 +1119,8 @@ def test_wechat_session_close_failure_retains_owner_and_primary(
 ) -> None:
     from tempfile import TemporaryDirectory
 
+    from cairn.integrations.wechat.serve import default_task_executor
     from cairn.runtime.durable_session import DurableSession
-    from cairn.terminal.wechat.serve import default_task_executor
     from tests.support.git import initialize_repository
 
     with TemporaryDirectory(prefix="cairn-wechat-close-", dir=Path.home()) as root_text:
@@ -1174,7 +1176,7 @@ def test_wechat_session_close_failure_retains_owner_and_primary(
             return result
 
         monkeypatch.setattr(
-            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+            "cairn.integrations.wechat.serve._run_via_config_async", fake_run
         )
 
         async def flow() -> HeadlessResult:
@@ -1205,8 +1207,8 @@ def test_wechat_reopen_failure_releases_attached_session_owner(
 ) -> None:
     from tempfile import TemporaryDirectory
 
+    from cairn.integrations.wechat.serve import default_task_executor
     from cairn.runtime.durable_session import DurableSession
-    from cairn.terminal.wechat.serve import default_task_executor
     from tests.support.git import initialize_repository
 
     with TemporaryDirectory(
@@ -1260,7 +1262,7 @@ def test_wechat_reopen_failure_releases_attached_session_owner(
             )
 
         monkeypatch.setattr(
-            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+            "cairn.integrations.wechat.serve._run_via_config_async", fake_run
         )
 
         async def flow() -> tuple[HeadlessResult, HeadlessResult, HeadlessResult]:
@@ -1295,7 +1297,7 @@ def test_wechat_attachment_failure_keeps_writer_for_host_close_retry(
     from cairn.infra.sessions.models import WorkspaceBinding
     from cairn.infra.sessions.store import SessionStore
     from cairn.infra.workspace.workspace import Workspace
-    from cairn.terminal.wechat.serve import default_task_executor
+    from cairn.integrations.wechat.serve import default_task_executor
     from tests.support.git import initialize_repository
 
     with TemporaryDirectory(
@@ -1341,7 +1343,7 @@ def test_wechat_attachment_failure_keeps_writer_for_host_close_retry(
             original_close(store)
 
         monkeypatch.setattr(
-            "cairn.terminal.wechat.serve.observe_workspace", fail_observation_once
+            "cairn.integrations.wechat.serve.observe_workspace", fail_observation_once
         )
         monkeypatch.setattr(SessionStore, "close", fail_close_once)
 
@@ -1358,7 +1360,7 @@ def test_wechat_attachment_failure_keeps_writer_for_host_close_retry(
             )
 
         monkeypatch.setattr(
-            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+            "cairn.integrations.wechat.serve._run_via_config_async", fake_run
         )
 
         async def flow() -> tuple[HeadlessResult, HeadlessResult]:
@@ -1446,7 +1448,7 @@ def test_wechat_tasks_link_to_their_persistent_sender_session(
             )
 
         monkeypatch.setattr(
-            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+            "cairn.integrations.wechat.serve._run_via_config_async", fake_run
         )
         with FakeILink() as fake:
             config = ServeConfig(

@@ -14,8 +14,8 @@ from cairn.core.permissions import (
     PermissionRequest,
     PermissionResult,
 )
-from cairn.infra.github.models import IssueTask
-from cairn.infra.github.transport import (
+from cairn.integrations.github.models import IssueTask
+from cairn.integrations.github.transport import (
     MAX_NEW_OBJECTS,
     MAX_TOTAL_OBJECT_BYTES,
     DraftPR,

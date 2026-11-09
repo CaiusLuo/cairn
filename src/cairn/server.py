@@ -31,6 +31,7 @@ from cairn.infra.runtime_catalog import RuntimeCatalogue
 from cairn.infra.runtime_client import read_runtime_token as read_token
 from cairn.infra.task_board.store import TaskBoardStore
 from cairn.infra.workspace.lease import WorkspaceLease
+from cairn.integrations.wechat.delivery import WechatDeliveryCoordinator
 from cairn.runtime.conversation_service import ConversationService
 from cairn.runtime.lifecycle import await_owned
 from cairn.runtime.offline_model import OfflineDevelopmentModel
@@ -39,7 +40,6 @@ from cairn.runtime.service_execution import ServiceExecution
 from cairn.runtime.task_board.service import TaskBoardService
 from cairn.runtime.task_service import TaskService
 from cairn.server_controls import ServerControls
-from cairn.terminal.wechat.delivery import WechatDeliveryCoordinator
 from cairn.web.app import create_app
 from cairn.web.assets import default_web_root, require_web_assets
 from cairn.web.config import WebConfig

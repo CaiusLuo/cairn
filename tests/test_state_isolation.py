@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.schedule.store import default_schedule_dir
-from cairn.infra.wechat.state import default_state_dir
+from cairn.integrations.wechat.state import default_state_dir
 from cairn.memory.store import default_agent_home
+from cairn.scheduling.store import default_schedule_dir
 
 
 def test_host_private_state_is_isolated_per_test() -> None:

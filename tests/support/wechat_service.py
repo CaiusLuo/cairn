@@ -4,10 +4,10 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from cairn.infra.wechat.ilink import ILinkClient
-from cairn.infra.wechat.state import WechatAccount
+from cairn.integrations.wechat.ilink import ILinkClient
+from cairn.integrations.wechat.serve import ConversationDecision, ServeConfig
+from cairn.integrations.wechat.state import WechatAccount
 from cairn.terminal.headless import HeadlessResult, HeadlessStatus
-from cairn.terminal.wechat.serve import ConversationDecision, ServeConfig
 from tests.support.fake_ilink import FakeILink
 
 TOKEN = "secret-bot-token-do-not-leak"

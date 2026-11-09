@@ -8,8 +8,8 @@ from types import SimpleNamespace
 from typing import Any
 
 from cairn.core.domain import RunStatus
-from cairn.infra.wechat.state import WechatState
-from cairn.terminal.wechat.delivery import WechatDeliveryCoordinator
+from cairn.integrations.wechat.delivery import WechatDeliveryCoordinator
+from cairn.integrations.wechat.state import WechatState
 
 
 class FakeConversations:
@@ -166,7 +166,7 @@ def test_started_intent_is_unconfirmed_after_restart(tmp_path: Path) -> None:
 
 
 def test_failed_run_body_is_concise(tmp_path: Path) -> None:
-    from cairn.terminal.wechat.delivery import _delivery_body
+    from cairn.integrations.wechat.delivery import _delivery_body
 
     run = _run(status=RunStatus.RECOVERY_REQUIRED)
     body = _delivery_body(run)

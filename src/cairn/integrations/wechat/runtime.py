@@ -11,7 +11,7 @@ from uuid import uuid4
 import httpx
 
 from cairn.infra.runtime_client import RuntimeClient
-from cairn.infra.wechat.state import WechatState
+from cairn.integrations.wechat.state import WechatState
 
 
 def wechat_request_id(account_id: str, sender_id: str, message_id: str) -> str:
@@ -56,14 +56,12 @@ class WechatConversationAdapter:
         text: str,
         *,
         message_id: str | None = None,
-        conversation_key: str | None = None,
         sender: str | None = None,
         account: str | None = None,
         deliver: bool = True,
         delivery_key: str | None = None,
         request_id: str | None = None,
     ) -> str:
-        del conversation_key
         content = text.strip()
         if not content:
             return "消息内容为空。"
@@ -322,14 +320,13 @@ class WechatRuntimeAdapter:
         text: str,
         *,
         message_id: str | None = None,
-        conversation_key: str | None = None,
         sender: str | None = None,
         account: str | None = None,
         deliver: bool = True,
         delivery_key: str | None = None,
         request_id: str | None = None,
     ) -> str:
-        del conversation_key, delivery_key, request_id
+        del delivery_key, request_id
         command, _, argument = text.strip().partition(" ")
         if command in {"/schedule", "/memory", "/help"}:
             result = await self.client.request(

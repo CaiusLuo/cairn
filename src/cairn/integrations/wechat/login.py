@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from inspect import isawaitable
 from pathlib import Path
 
-from cairn.infra.wechat.ilink import (
+from cairn.integrations.wechat.ilink import (
     DEFAULT_BASE_URL,
     ILinkClient,
     ILinkError,
@@ -15,7 +15,7 @@ from cairn.infra.wechat.ilink import (
     redirect_base_url,
     validate_base_url,
 )
-from cairn.infra.wechat.state import (
+from cairn.integrations.wechat.state import (
     WechatAccount,
     WechatState,
     ensure_outside_workspace,

@@ -9,12 +9,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from cairn.core.schedule import ScheduleJob, ScheduleKind
-from cairn.infra.schedule.store import ScheduleStore
-from cairn.infra.wechat.ilink import ILinkClient
-from cairn.infra.wechat.state import WechatAccount, WechatServeLock, WechatState
+from cairn.integrations.wechat.ilink import ILinkClient
+from cairn.integrations.wechat.serve import ServeConfig, serve_wechat
+from cairn.integrations.wechat.state import WechatAccount, WechatServeLock, WechatState
+from cairn.scheduling.models import ScheduleJob, ScheduleKind
+from cairn.scheduling.store import ScheduleStore
 from cairn.terminal.headless import HeadlessResult, HeadlessStatus
-from cairn.terminal.wechat.serve import ServeConfig, serve_wechat
 from tests.support.fake_ilink import FakeILink
 
 NOW = datetime.now(ZoneInfo("Asia/Shanghai"))
@@ -220,7 +220,7 @@ def test_scheduler_does_not_start_when_serve_lock_is_held(tmp_path: Path) -> Non
 
 
 def test_known_credential_values_ignore_ordinary_env_settings(tmp_path: Path) -> None:
-    from cairn.terminal.wechat.serve import _known_credential_values
+    from cairn.integrations.wechat.serve import _known_credential_values
 
     workspace = tmp_path / "ws"
     (workspace / ".cairn").mkdir(parents=True)
@@ -243,8 +243,8 @@ def test_wechat_serve_command_passes_default_schedule_store(
 ) -> None:
     from typer.testing import CliRunner
 
-    import cairn.terminal.wechat.app as app_module
-    from cairn.infra.wechat.state import WechatAccount, WechatState
+    import cairn.integrations.wechat.app as app_module
+    from cairn.integrations.wechat.state import WechatAccount, WechatState
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -262,7 +262,7 @@ def test_wechat_serve_command_passes_default_schedule_store(
 
     async def fake_serve(**kwargs: object) -> object:
         fake_serve.captured = kwargs  # type: ignore[attr-defined]
-        from cairn.terminal.wechat.serve import ServeReport
+        from cairn.integrations.wechat.serve import ServeReport
 
         return ServeReport()
 
@@ -288,9 +288,9 @@ def test_wechat_serve_command_passes_default_schedule_store(
 def test_default_executor_does_not_read_credentials_before_approval(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import cairn.terminal.wechat.serve as serve_module
-    from cairn.infra.wechat.state import WechatAccount, WechatState
-    from cairn.terminal.wechat.serve import ServeConfig, default_task_executor
+    import cairn.integrations.wechat.serve as serve_module
+    from cairn.integrations.wechat.serve import ServeConfig, default_task_executor
+    from cairn.integrations.wechat.state import WechatAccount, WechatState
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -330,7 +330,7 @@ def test_default_executor_does_not_read_credentials_before_approval(
 def test_serve_default_executor_redacts_provider_secret_in_send_and_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import cairn.terminal.wechat.serve as serve_module
+    import cairn.integrations.wechat.serve as serve_module
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -389,7 +389,7 @@ def test_serve_default_executor_redacts_provider_secret_in_send_and_history(
 def test_serve_default_executor_redacts_provider_secret_in_error_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import cairn.terminal.wechat.serve as serve_module
+    import cairn.integrations.wechat.serve as serve_module
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -489,7 +489,7 @@ def test_default_serve_distinguishes_scheduled_and_wechat_task_sources(
         )
 
     monkeypatch.setattr(
-        "cairn.terminal.wechat.serve._run_via_config_async", fake_headless
+        "cairn.integrations.wechat.serve._run_via_config_async", fake_headless
     )
     with FakeILink() as fake:
         fake.updates = [

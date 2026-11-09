@@ -11,8 +11,8 @@ import uvicorn
 from starlette.types import Receive, Scope, Send
 
 from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
-from cairn.infra.mcp.config import McpServerConfig
-from cairn.runtime.mcp.activation import open_mcp_servers
+from cairn.integrations.mcp.activation import open_mcp_servers
+from cairn.integrations.mcp.config import McpServerConfig
 from tests.support.mcp_server import make_server
 
 

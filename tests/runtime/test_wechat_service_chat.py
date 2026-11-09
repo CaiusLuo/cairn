@@ -10,16 +10,7 @@ import pytest
 from cairn.core.models import ToolResult
 from cairn.infra.tools.base import ToolExecutionContext
 from cairn.infra.tools.lease import LeaseTool
-from cairn.infra.wechat.state import (
-    WechatAccount,
-    WechatState,
-)
-from cairn.runtime.durable_session import DurableSession
-from cairn.terminal.headless import (
-    HeadlessResult,
-    HeadlessStatus,
-)
-from cairn.terminal.wechat.serve import (
+from cairn.integrations.wechat.serve import (
     ConversationDecision,
     ConversationExecutionError,
     ServeConfig,
@@ -28,6 +19,15 @@ from cairn.terminal.wechat.serve import (
     default_conversation_executor,
     default_task_executor,
     serve_wechat,
+)
+from cairn.integrations.wechat.state import (
+    WechatAccount,
+    WechatState,
+)
+from cairn.runtime.durable_session import DurableSession
+from cairn.terminal.headless import (
+    HeadlessResult,
+    HeadlessStatus,
 )
 from tests.support.fake_ilink import FakeILink
 from tests.support.wechat_service import (
@@ -276,7 +276,7 @@ def test_restart_pending_chat_answers_and_sending_unknown_does_not_replay(
 
 
 def test_parse_conversation_decision_is_strict() -> None:
-    from cairn.terminal.wechat.serve import (
+    from cairn.integrations.wechat.serve import (
         ConversationDecision,
         parse_conversation_decision,
     )
@@ -498,7 +498,7 @@ def test_close_conversation_sessions_closes_all_and_reports_error() -> None:
 def test_default_conversation_executor_closes_durable_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from cairn.terminal.wechat import serve as serve_module
+    from cairn.integrations.wechat import serve as serve_module
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -591,7 +591,9 @@ def test_task_holds_lease_while_running(
             final_response="done",
         )
 
-    monkeypatch.setattr("cairn.terminal.wechat.serve._run_via_config_async", fake_run)
+    monkeypatch.setattr(
+        "cairn.integrations.wechat.serve._run_via_config_async", fake_run
+    )
 
     async def scenario() -> None:
         executor = default_task_executor(config)
@@ -618,7 +620,7 @@ def test_task_holds_lease_while_running(
 def test_default_conversation_executor_reports_empty_response(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from cairn.terminal.wechat import serve as serve_module
+    from cairn.integrations.wechat import serve as serve_module
 
     workspace = tmp_path / "ws"
     workspace.mkdir()

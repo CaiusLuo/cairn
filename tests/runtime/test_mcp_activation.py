@@ -11,16 +11,16 @@ from cairn.core.budget import RunBudget
 from cairn.core.events import Event
 from cairn.core.models import LLMResponse, ToolCall
 from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
-from cairn.infra.mcp.client import McpToolSpec
-from cairn.infra.mcp.config import McpServerConfig
 from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.assembly import build_agent
-from cairn.runtime.loop import run_turn
-from cairn.runtime.mcp.activation import (
+from cairn.integrations.mcp.activation import (
     McpActivationError,
     McpToolAdapter,
     open_mcp_servers,
 )
+from cairn.integrations.mcp.client import McpToolSpec
+from cairn.integrations.mcp.config import McpServerConfig
+from cairn.runtime.assembly import build_agent
+from cairn.runtime.loop import run_turn
 from cairn.terminal.headless import HeadlessStatus, run_headless_task
 from tests.support.runtime import SequenceLLM
 

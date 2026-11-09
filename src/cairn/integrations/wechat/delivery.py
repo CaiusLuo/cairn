@@ -7,9 +7,9 @@ import contextlib
 import hashlib
 
 from cairn.core.domain import Run
-from cairn.infra.wechat.state import WechatState
+from cairn.integrations.wechat.session import WechatSessionController
+from cairn.integrations.wechat.state import WechatState
 from cairn.runtime.conversation_service import ConversationService
-from cairn.terminal.wechat.session import WechatSessionController
 
 TERMINAL_RUN_STATUSES = frozenset(
     {"completed", "failed", "paused", "cancelled", "recovery_required"}

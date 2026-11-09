@@ -9,16 +9,16 @@ from typing import Any
 import httpx
 import pytest
 
-from cairn.infra.wechat.ilink import ILinkClient
-from cairn.infra.wechat.state import WechatAccount, WechatState
-from cairn.runtime.scheduling.runner import current_time
-from cairn.terminal.input import CliInput
-from cairn.terminal.runtime_chat import main as shared_main
-from cairn.terminal.server_commands import ServerCommands
-from cairn.terminal.wechat.runtime import (
+from cairn.integrations.wechat.ilink import ILinkClient
+from cairn.integrations.wechat.runtime import (
     WechatConversationAdapter,
     WechatRuntimeAdapter,
 )
+from cairn.integrations.wechat.state import WechatAccount, WechatState
+from cairn.scheduling.runner import current_time
+from cairn.terminal.input import CliInput
+from cairn.terminal.runtime_chat import main as shared_main
+from cairn.terminal.server_commands import ServerCommands
 from tests.support.control_runtime import control_runtime
 from tests.support.fake_ilink import FakeILink
 from tests.support.wechat_service import _msg

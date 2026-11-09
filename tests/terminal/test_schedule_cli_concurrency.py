@@ -12,9 +12,9 @@ from typer.testing import CliRunner
 
 import cairn.infra.llm.litellm_client as llm_module
 import cairn.terminal.cli as cli_module
-from cairn.core.schedule import ScheduleJob, ScheduleKind
-from cairn.infra.schedule.store import ScheduleStore
-from cairn.infra.wechat.state import WechatAccount, WechatState
+from cairn.integrations.wechat.state import WechatAccount, WechatState
+from cairn.scheduling.models import ScheduleJob, ScheduleKind
+from cairn.scheduling.store import ScheduleStore
 from tests.support.cli_harness import completion_response, configure_cli
 
 NOW = datetime.now(ZoneInfo("Asia/Shanghai"))
@@ -95,9 +95,9 @@ def test_cli_schedule_and_wechat_keep_distinct_task_sources(
 
     from cairn.core.task_board import TaskSource
     from cairn.infra.task_board.store import TaskBoardStore
+    from cairn.integrations.wechat.session import WechatSessionController
+    from cairn.scheduling.commands import ScheduleController
     from cairn.terminal.headless import HeadlessResult, HeadlessStatus
-    from cairn.terminal.schedule.controller import ScheduleController
-    from cairn.terminal.wechat.session import WechatSessionController
 
     board_dir = tmp_path.parent / (tmp_path.name + "-board")
     state_dir = tmp_path.parent / (tmp_path.name + "-wechat-origin")

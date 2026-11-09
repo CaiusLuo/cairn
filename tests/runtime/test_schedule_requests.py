@@ -1,7 +1,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from cairn.runtime.scheduling.requests import (
+from cairn.scheduling.requests import (
     Clarification,
     NotSchedule,
     OnceRequest,

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from cairn.infra.runtime_client import RuntimeClient
-from cairn.infra.wechat.state import WechatState
+from cairn.integrations.wechat.state import WechatState
 from cairn.server_controls import ControlState
 from tests.support.fake_ilink import FakeILink
 from tests.support.git import initialize_repository

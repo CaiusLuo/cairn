@@ -7,7 +7,12 @@ import pytest
 
 from cairn.core.budget import RunBudget
 from cairn.core.models import LLMResponse, ToolCall
-from cairn.infra.wechat.state import (
+from cairn.integrations.wechat.serve import (
+    ConversationDecision,
+    ServeConfig,
+    serve_wechat,
+)
+from cairn.integrations.wechat.state import (
     WechatAccount,
     WechatLockError,
     WechatServeLock,
@@ -19,7 +24,6 @@ from cairn.terminal.headless import (
     ProviderApproval,
     run_headless_task,
 )
-from cairn.terminal.wechat.serve import ConversationDecision, ServeConfig, serve_wechat
 from tests.support.fake_ilink import FakeILink
 from tests.support.runtime import SequenceLLM
 from tests.support.wechat_service import (
@@ -245,7 +249,7 @@ def test_recovery_marks_interrupted_but_does_not_message_revoked_sender(
 
 
 def test_cancel_during_ack_marks_cancelled_not_started(tmp_path: Path) -> None:
-    from cairn.terminal.wechat.serve import ServeReport, _Inbound, _Service
+    from cairn.integrations.wechat.serve import ServeReport, _Inbound, _Service
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -303,7 +307,7 @@ def test_cancel_during_ack_marks_cancelled_not_started(tmp_path: Path) -> None:
 
 
 def test_cancel_before_coroutine_starts_is_persisted_cancelled(tmp_path: Path) -> None:
-    from cairn.terminal.wechat.serve import ServeReport, _Inbound, _Service
+    from cairn.integrations.wechat.serve import ServeReport, _Inbound, _Service
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -356,9 +360,9 @@ def test_default_wechat_executor_restores_durable_history_after_restart(
     from cairn.core.budget import RunBudget
     from cairn.core.context import ContextBudget
     from cairn.core.models import LLMResponse
-    from cairn.infra.wechat.state import WechatAccount
+    from cairn.integrations.wechat.serve import ServeConfig, default_task_executor
+    from cairn.integrations.wechat.state import WechatAccount
     from cairn.terminal.headless import run_headless_task
-    from cairn.terminal.wechat.serve import ServeConfig, default_task_executor
     from tests.support.git import initialize_repository
     from tests.support.runtime import SequenceLLM
 
@@ -386,7 +390,9 @@ def test_default_wechat_executor_restores_durable_history_after_restart(
             provider_name=None,
         )
 
-    monkeypatch.setattr("cairn.terminal.wechat.serve._run_via_config_async", fake_run)
+    monkeypatch.setattr(
+        "cairn.integrations.wechat.serve._run_via_config_async", fake_run
+    )
     config = ServeConfig(
         workspace=workspace,
         state_dir=safe_state,
@@ -553,8 +559,8 @@ def test_wechat_repeated_cancellation_settles_before_close_retry(
     from typing import Any
 
     from cairn.core.models import Message
+    from cairn.integrations.wechat.serve import default_task_executor
     from cairn.runtime.durable_session import DurableSession
-    from cairn.terminal.wechat.serve import default_task_executor
     from tests.support.git import initialize_repository
 
     with TemporaryDirectory(
@@ -623,7 +629,7 @@ def test_wechat_repeated_cancellation_settles_before_close_retry(
             )
 
         monkeypatch.setattr(
-            "cairn.terminal.wechat.serve._run_via_config_async", fake_run
+            "cairn.integrations.wechat.serve._run_via_config_async", fake_run
         )
 
         async def flow() -> HeadlessResult:
@@ -961,7 +967,7 @@ def test_recovery_does_not_resend_an_uncertain_queue_receipt(tmp_path: Path) -> 
 def test_damaged_queued_record_fails_before_start_and_releases_lock(
     tmp_path: Path,
 ) -> None:
-    from cairn.infra.wechat.state import WechatServeLock
+    from cairn.integrations.wechat.state import WechatServeLock
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -990,7 +996,7 @@ def test_damaged_queued_record_fails_before_start_and_releases_lock(
 def test_recovery_cancellation_waits_for_started_task_cleanup(
     tmp_path: Path,
 ) -> None:
-    from cairn.infra.wechat.state import WechatServeLock
+    from cairn.integrations.wechat.state import WechatServeLock
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -1159,7 +1165,7 @@ def test_recovery_validates_whole_set_before_start_or_receipt(tmp_path: Path) ->
 
 
 def test_poll_updates_cancels_owned_poll_and_stop_waiter(tmp_path: Path) -> None:
-    from cairn.terminal.wechat.serve import ServeReport, _Service
+    from cairn.integrations.wechat.serve import ServeReport, _Service
 
     class PollClient:
         def __init__(self) -> None:

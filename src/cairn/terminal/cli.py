@@ -33,12 +33,10 @@ from cairn.infra.config import (
     resolve_context_budget,
     resolve_provider_api_key,
 )
-from cairn.infra.mcp.config import McpServerConfig, load_mcp_servers
 from cairn.infra.observability.otlp import OtlpSpanExporter, build_exporter
 from cairn.infra.observability.sinks import FanoutTraceSink, JsonlTraceSink
 from cairn.infra.observability.storage import TraceStore
 from cairn.infra.observability.tracer import Tracer
-from cairn.infra.schedule.store import ScheduleStore, default_schedule_dir
 from cairn.infra.sessions.models import SessionStoreError
 from cairn.infra.skills import SkillLibrary, layered_skills, resolve_skills
 from cairn.infra.task_board.store import (
@@ -47,9 +45,19 @@ from cairn.infra.task_board.store import (
     ensure_outside_workspace,
 )
 from cairn.infra.tools.filesystem_access import normalize_access_root
-from cairn.infra.wechat.state import default_state_dir
 from cairn.infra.workspace.lease import WorkspaceLease
 from cairn.infra.workspace.workspace import Workspace
+from cairn.integrations.mcp.activation import open_mcp_servers
+from cairn.integrations.mcp.config import McpServerConfig, load_mcp_servers
+from cairn.integrations.wechat.app import wechat_app
+from cairn.integrations.wechat.serve import (
+    PROJECT_LEASE_FILENAME,
+    ConversationDecision,
+    conversation_text,
+    parse_conversation_decision,
+)
+from cairn.integrations.wechat.session import WechatSessionController
+from cairn.integrations.wechat.state import default_state_dir
 from cairn.memory.commands import MemoryController
 from cairn.memory.service import PersonalMemoryService
 from cairn.memory.store import (
@@ -70,17 +78,11 @@ from cairn.runtime.assembly import build_agent
 from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.lifecycle import await_owned, settle_owned
 from cairn.runtime.loop import run_turn
-from cairn.runtime.mcp.activation import open_mcp_servers
 from cairn.runtime.prompts import system_prompt_for
 from cairn.runtime.provider_runtime import (
     ProviderRuntime,
     ProviderSession,
     build_provider_runtime,
-)
-from cairn.runtime.scheduling.tools import (
-    ScheduleCreateTool,
-    ScheduleListTool,
-    ScheduleManageTool,
 )
 from cairn.runtime.session import SessionState
 from cairn.runtime.task_board.service import TaskBoardService
@@ -95,6 +97,13 @@ from cairn.runtime.task_board.tools import (
 from cairn.runtime.turn.compaction import CompactionOutcome
 from cairn.runtime.turn.hook import run_compaction
 from cairn.runtime.turn.steering import PendingMessage, SteerQueue
+from cairn.scheduling.commands import ScheduleController
+from cairn.scheduling.store import ScheduleStore, default_schedule_dir
+from cairn.scheduling.tools import (
+    ScheduleCreateTool,
+    ScheduleListTool,
+    ScheduleManageTool,
+)
 from cairn.shared.action import (
     Action,
     ActionRow,
@@ -137,18 +146,9 @@ from cairn.terminal.output import (
     print_user_message,
 )
 from cairn.terminal.runtime import app as runtime_app
-from cairn.terminal.schedule.controller import ScheduleController
 from cairn.terminal.selection import parse_selection_tokens
 from cairn.terminal.submission import PendingLine
 from cairn.terminal.task_board.controller import TaskBoardController
-from cairn.terminal.wechat.app import wechat_app
-from cairn.terminal.wechat.serve import (
-    PROJECT_LEASE_FILENAME,
-    ConversationDecision,
-    conversation_text,
-    parse_conversation_decision,
-)
-from cairn.terminal.wechat.session import WechatSessionController
 
 app = typer.Typer(
     invoke_without_command=True,
@@ -1625,7 +1625,7 @@ async def main(
         command = [
             sys.executable,
             "-c",
-            "from cairn.terminal.wechat.supervisor import main; main()",
+            "from cairn.integrations.wechat.supervisor import main; main()",
             *serve_command,
         ]
         log = log_path.open("ab")

@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from cairn.infra.wechat.state import WechatState
+from cairn.integrations.wechat.state import WechatState
 
 
 def test_background_queue_observation_survives_new_message(tmp_path: Path) -> None:

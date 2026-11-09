@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from cairn.infra.wechat.state import WechatState
+from cairn.integrations.wechat.state import WechatState
 
 
 def _begin(
@@ -188,7 +188,7 @@ def test_legacy_state_migrates_sent_and_quarantines_unknown(tmp_path: Path) -> N
 def test_write_failure_does_not_leave_fake_committed_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import cairn.infra.wechat.state as state_module
+    import cairn.integrations.wechat.state as state_module
 
     state = WechatState(tmp_path / "wechat")
     state.begin_delivery_intent(

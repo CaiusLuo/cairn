@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from cairn.infra.schedule.store import ScheduleStore
-from cairn.runtime.scheduling.tools import (
+from cairn.scheduling.store import ScheduleStore
+from cairn.scheduling.tools import (
     ScheduleCreateTool,
     ScheduleListTool,
     ScheduleManageTool,

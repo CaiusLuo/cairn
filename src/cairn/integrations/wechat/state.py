@@ -13,8 +13,8 @@ import fcntl
 import hashlib
 import json
 import os
+import platform
 import socket
-import sys
 import tempfile
 import threading
 import time
@@ -736,7 +736,7 @@ class WechatServeLock:
             ) from None
         try:
             if account_id is not None:
-                if not sys.platform.startswith("linux"):
+                if platform.system() != "Linux":
                     raise WechatLockError(
                         "Host-wide WeChat account ownership requires Linux"
                     )

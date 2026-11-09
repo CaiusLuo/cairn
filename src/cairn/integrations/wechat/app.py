@@ -9,23 +9,23 @@ from typing import Annotated
 
 import typer
 
-from cairn.infra.mcp.config import McpServerConfig, load_mcp_servers
-from cairn.infra.schedule.store import default_schedule_dir
 from cairn.infra.skills import layered_skills, resolve_skills
-from cairn.infra.wechat.ilink import ILinkError
-from cairn.infra.wechat.state import (
+from cairn.integrations.mcp.config import McpServerConfig, load_mcp_servers
+from cairn.integrations.wechat.ilink import ILinkError
+from cairn.integrations.wechat.login import QRLoginError, run_login
+from cairn.integrations.wechat.serve import ServeConfig, ServeReport, serve_wechat
+from cairn.integrations.wechat.state import (
     WechatLockError,
     WechatState,
     default_state_dir,
     ensure_outside_workspace,
 )
+from cairn.scheduling.store import default_schedule_dir
 from cairn.terminal.headless import (
     DEFAULT_CHECK_TIMEOUT_S,
     DEFAULT_MAX_STEPS,
     _build_approval,
 )
-from cairn.terminal.wechat.login import QRLoginError, run_login
-from cairn.terminal.wechat.serve import ServeConfig, ServeReport, serve_wechat
 
 wechat_app = typer.Typer(help="Login to WeChat iLink and serve text coding tasks.")
 

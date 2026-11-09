@@ -10,9 +10,9 @@ _NETWORK_MODULES = (
     "http.client",
     "urllib.request",
     "urllib.error",
-    "cairn.infra.github.http",
-    "cairn.infra.github.source",
-    "cairn.infra.github.transport",
+    "cairn.integrations.github.http",
+    "cairn.integrations.github.source",
+    "cairn.integrations.github.transport",
 )
 
 _SCRIPT = (
@@ -26,7 +26,9 @@ _SCRIPT = (
 )
 
 
-@pytest.mark.parametrize("module", ["cairn.infra.github", "cairn.infra.github.models"])
+@pytest.mark.parametrize(
+    "module", ["cairn.integrations.github", "cairn.integrations.github.models"]
+)
 def test_importing_models_does_not_load_the_network_boundary(module: str) -> None:
     result = subprocess.run(
         [sys.executable, "-c", _SCRIPT, module],

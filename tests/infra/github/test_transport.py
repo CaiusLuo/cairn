@@ -11,9 +11,9 @@ from urllib.parse import unquote
 import pytest
 from pydantic import ValidationError
 
-from cairn.infra.github.http import GitHubHTTPError
-from cairn.infra.github.models import GitHubRepository
-from cairn.infra.github.transport import (
+from cairn.integrations.github.http import GitHubHTTPError
+from cairn.integrations.github.models import GitHubRepository
+from cairn.integrations.github.transport import (
     MAX_OBJECT_BYTES,
     DraftPRPayload,
     GitHubPublishError,

@@ -27,14 +27,8 @@ from typing import TYPE_CHECKING, Any
 
 from dotenv import dotenv_values
 
-from cairn.core.schedule import ScheduleJob, ScheduleKind
 from cairn.core.task_board import TaskSource
 from cairn.infra.config import default_provider, load_project_providers
-from cairn.infra.mcp.config import McpServerConfig
-from cairn.infra.schedule.store import ScheduleStore, default_schedule_dir
-from cairn.infra.schedule.store import (
-    ensure_outside_workspace as ensure_schedule_outside_workspace,
-)
 from cairn.infra.sessions.host import observe_workspace
 from cairn.infra.sessions.models import (
     HostResolution,
@@ -45,19 +39,25 @@ from cairn.infra.sessions.models import (
 from cairn.infra.sessions.store import SessionStore
 from cairn.infra.task_board.store import TaskBoardStore, default_task_board_dir
 from cairn.infra.tools.base import Tool
-from cairn.infra.wechat.ilink import (
+from cairn.infra.workspace.lease import WorkspaceLease
+from cairn.infra.workspace.workspace import Workspace
+from cairn.integrations.mcp.config import McpServerConfig
+from cairn.integrations.wechat.control import WechatControlServer
+from cairn.integrations.wechat.ilink import (
     ILinkClient,
     ILinkError,
     validate_base_url,
 )
-from cairn.infra.wechat.state import (
+from cairn.integrations.wechat.runtime import (
+    WechatConversationAdapter,
+    wechat_request_id,
+)
+from cairn.integrations.wechat.state import (
     WechatAccount,
     WechatServeLock,
     WechatState,
     ensure_outside_workspace,
 )
-from cairn.infra.workspace.lease import WorkspaceLease
-from cairn.infra.workspace.workspace import Workspace
 from cairn.memory.service import PersonalMemoryService
 from cairn.memory.store import (
     PersonalMemoryStore,
@@ -76,17 +76,6 @@ from cairn.runtime.agent import Agent
 from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.lifecycle import await_owned, settle_owned
 from cairn.runtime.prompts import system_prompt_for
-from cairn.runtime.scheduling.requests import (
-    Clarification,
-    NotSchedule,
-    OnceRequest,
-    parse_once_request,
-)
-from cairn.runtime.scheduling.runner import ScheduleRunner
-from cairn.runtime.scheduling.tools import (
-    ScheduleListTool,
-    ScheduleManageTool,
-)
 from cairn.runtime.task_board.service import TaskBoardService
 from cairn.runtime.task_board.tools import (
     TaskCreateTool,
@@ -95,6 +84,22 @@ from cairn.runtime.task_board.tools import (
     TaskTodoTool,
     TaskUpdateTool,
     TaskUseTool,
+)
+from cairn.scheduling.models import ScheduleJob, ScheduleKind
+from cairn.scheduling.requests import (
+    Clarification,
+    NotSchedule,
+    OnceRequest,
+    parse_once_request,
+)
+from cairn.scheduling.runner import ScheduleRunner
+from cairn.scheduling.store import ScheduleStore, default_schedule_dir
+from cairn.scheduling.store import (
+    ensure_outside_workspace as ensure_schedule_outside_workspace,
+)
+from cairn.scheduling.tools import (
+    ScheduleListTool,
+    ScheduleManageTool,
 )
 from cairn.terminal.durable import open_store
 from cairn.terminal.headless import (
@@ -105,7 +110,6 @@ from cairn.terminal.headless import (
     ProviderApproval,
     _run_via_config_async,
 )
-from cairn.terminal.wechat.control import WechatControlServer
 
 TaskExecutor = Callable[[str, asyncio.Event, str], Awaitable[HeadlessResult]]
 ConversationExecutor = Callable[[str, str, str], Awaitable[str]]
@@ -846,17 +850,11 @@ class _Service:
         schedule_store: ScheduleStore | None = None,
     ) -> None:
         self.config = config
-        self._runtime_adapter: Any | None = None
-        self._legacy_runtime_adapter: Any | None = None
-        self._uses_conversation_runtime = False
+        self._runtime_adapter: WechatConversationAdapter | None = None
         self._runtime_forwarding: set[str] = set()
         runtime_url = getattr(config, "runtime_url", None)
         if runtime_url:
             from cairn.infra.runtime_client import RuntimeClient, read_runtime_token
-            from cairn.terminal.wechat.runtime import (
-                WechatConversationAdapter,
-                WechatRuntimeAdapter,
-            )
 
             runtime_api = config.runtime_client
             if runtime_api is None:
@@ -866,12 +864,9 @@ class _Service:
                 ):
                     raise ValueError("Runtime token must be in trusted host storage")
                 runtime_api = RuntimeClient(runtime_url, read_runtime_token(token_path))
-            legacy_adapter = WechatRuntimeAdapter(runtime_api)
-            self._legacy_runtime_adapter = legacy_adapter
             self._runtime_adapter = WechatConversationAdapter(
-                runtime_api, legacy=legacy_adapter, delivery_state=state
+                runtime_api, delivery_state=state
             )
-            self._uses_conversation_runtime = True
         self.state = state
         self.client = client
         self.executor = executor
@@ -1689,12 +1684,10 @@ class _Service:
                     if self.redact_text is not None
                     else inbound.text or ""
                 )
-                command = raw_text.strip().partition(" ")[0]
+                command, _, argument = raw_text.strip().partition(" ")
                 message_id = "wechat-runtime:" + identity
                 request_id = None
-                if self._uses_conversation_runtime and not command.startswith("/"):
-                    from cairn.terminal.wechat.runtime import wechat_request_id
-
+                if not command.startswith("/"):
                     request_id = wechat_request_id(
                         self.config.account.ilink_bot_id,
                         inbound.sender,
@@ -1709,38 +1702,21 @@ class _Service:
                         context_token=inbound.context_token,
                         content=raw_text,
                     )
-                # The Conversation adapter is the production owner of ordinary
-                # chat.  /task and explicit commands remain on the legacy adapter
-                # until UX-B2's final Run delivery is complete.
-                adapter: Any = self._runtime_adapter
-                argument = raw_text.strip().partition(" ")[2].strip()
-                task_query = command == "/task" and argument.startswith("task-")
-                delivery_owned = False
-                if command == "/task" and self._legacy_runtime_adapter is not None:
-                    adapter = self._legacy_runtime_adapter
-                    delivery_owned = not task_query
-                elif not self._uses_conversation_runtime and not command.startswith(
-                    "/"
-                ):
-                    delivery_owned = True
-                # Ordinary conversation Runs are delivered by the Server
-                # coordinator after the Run settles.  Explicit commands and
-                # legacy /task keep their existing synchronous replies.
-                deliver_now = not delivery_owned and not self._uses_conversation_runtime
-                text = await adapter.reply(
+                # The Server delivers settled Runs and newly submitted tasks.
+                # Replies to explicit queries can be sent from the receiver.
+                deferred_task = command == "/task" and not argument.strip().startswith(
+                    "task-"
+                )
+                text = await self._runtime_adapter.reply(
                     raw_text,
                     message_id=message_id,
                     sender=inbound.sender,
                     account=self.config.account.ilink_bot_id,
-                    conversation_key="wechat:"
-                    + hashlib.sha256(
-                        f"{self.config.account.ilink_bot_id}:{self.config.account.ilink_user_id}:{inbound.sender}".encode()
-                    ).hexdigest(),
-                    deliver=deliver_now,
+                    deliver=False,
                     delivery_key=intent_key,
                     request_id=request_id,
                 )
-                if command == "/task" and delivery_owned:
+                if deferred_task:
                     await self._safe_reply(
                         inbound.sender,
                         inbound.context_token,
@@ -1771,7 +1747,7 @@ class _Service:
                     inbound.key,
                     "command",
                     command="runtime",
-                    delivery_state="deferred" if delivery_owned else "handled",
+                    delivery_state="deferred" if deferred_task else "handled",
                 )
             except Exception:
                 self.report.errors += 1

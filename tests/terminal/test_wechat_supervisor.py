@@ -11,7 +11,7 @@ def test_supervisor_restarts_failed_child_then_stops(tmp_path: Path) -> None:
             [
                 sys.executable,
                 "-c",
-                "from cairn.terminal.wechat.supervisor import main; main()",
+                "from cairn.integrations.wechat.supervisor import main; main()",
                 sys.executable,
                 "-c",
                 "import sys; sys.exit(3)",

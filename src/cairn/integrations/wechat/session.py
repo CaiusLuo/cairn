@@ -21,23 +21,23 @@ from pathlib import Path
 from typing import Any
 
 from cairn.infra.runtime_client import RuntimeClient
-from cairn.infra.wechat.ilink import ILinkClient, QRCode
-from cairn.infra.wechat.state import (
-    WechatAccount,
-    WechatState,
-    ensure_outside_workspace,
-)
-from cairn.runtime.lifecycle import await_owned
-from cairn.shared.action import Action, correction, note
-from cairn.terminal.wechat.login import run_login
-from cairn.terminal.wechat.qr import render_ascii_qr
-from cairn.terminal.wechat.serve import (
+from cairn.integrations.wechat.ilink import ILinkClient, QRCode
+from cairn.integrations.wechat.login import run_login
+from cairn.integrations.wechat.qr import render_ascii_qr
+from cairn.integrations.wechat.serve import (
     ConversationClassifier,
     ConversationExecutor,
     ServeConfig,
     TaskExecutor,
     serve_wechat,
 )
+from cairn.integrations.wechat.state import (
+    WechatAccount,
+    WechatState,
+    ensure_outside_workspace,
+)
+from cairn.runtime.lifecycle import await_owned
+from cairn.shared.action import Action, correction, note
 
 
 class WechatSessionController:

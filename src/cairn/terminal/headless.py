@@ -51,7 +51,6 @@ from cairn.infra.config.admission import (
 from cairn.infra.config.admission import (
     load_approved_provider,
 )
-from cairn.infra.mcp.config import McpServerConfig, load_mcp_servers
 from cairn.infra.observability.sinks import JsonlTraceSink, RedactingTraceSink
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.skills import SkillLibrary, layered_skills, resolve_skills
@@ -59,10 +58,11 @@ from cairn.infra.tools.base import Tool
 from cairn.infra.tools.filesystem_access import normalize_access_root
 from cairn.infra.workspace.lease import WorkspaceLease
 from cairn.infra.workspace.workspace import Workspace
+from cairn.integrations.mcp.activation import McpActivationError, open_mcp_servers
+from cairn.integrations.mcp.config import McpServerConfig, load_mcp_servers
 from cairn.runtime.agent import Agent
 from cairn.runtime.artifacts import atomic_write_text
 from cairn.runtime.durable_session import DurableSession
-from cairn.runtime.mcp.activation import McpActivationError, open_mcp_servers
 from cairn.runtime.model_executor import ModelExecutor
 from cairn.runtime.provider_runtime import build_provider_runtime
 from cairn.runtime.tasks.check import (

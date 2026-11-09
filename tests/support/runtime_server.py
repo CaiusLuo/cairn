@@ -27,7 +27,7 @@ class GatedModel(OfflineDevelopmentModel):
 
 if __name__ == "__main__":
     if os.environ.get("CAIRN_TEST_ALLOW_INSECURE_LOCAL_WECHAT") == "1":
-        from cairn.terminal.wechat.session import WechatSessionController
+        from cairn.integrations.wechat.session import WechatSessionController
 
         original_init = WechatSessionController.__init__
 

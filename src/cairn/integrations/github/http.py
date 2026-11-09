@@ -14,8 +14,12 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 from pydantic import ValidationError
 
-from cairn.infra.github.models import GitHubRepository, IssuePayload, IssueReference
-from cairn.infra.github.source import GitHubSourceError
+from cairn.integrations.github.models import (
+    GitHubRepository,
+    IssuePayload,
+    IssueReference,
+)
+from cairn.integrations.github.source import GitHubSourceError
 
 HTTP_TIMEOUT = 10.0
 HTTP_OUTPUT_LIMIT = 1024 * 1024

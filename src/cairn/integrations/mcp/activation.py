@@ -31,9 +31,9 @@ from cairn.core.permissions import (
     PermissionHandler,
     PermissionRequest,
 )
-from cairn.infra.mcp.client import McpClient, McpToolSpec, open_mcp_client
-from cairn.infra.mcp.config import McpServerConfig
 from cairn.infra.tools.base import InvalidArguments
+from cairn.integrations.mcp.client import McpClient, McpToolSpec, open_mcp_client
+from cairn.integrations.mcp.config import McpServerConfig
 from cairn.runtime.lifecycle import await_owned, settle_owned
 
 

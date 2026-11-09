@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from cairn.terminal.wechat.session import WechatSessionController
+from cairn.integrations.wechat.session import WechatSessionController
 
 
 def test_wx_help_lists_disconnect_and_does_not_start(tmp_path: Path) -> None:
@@ -24,7 +24,7 @@ def test_wx_help_lists_disconnect_and_does_not_start(tmp_path: Path) -> None:
 
 
 def test_wx_disconnect_clears_account_and_allows_fresh_login(tmp_path: Path) -> None:
-    from cairn.infra.wechat.state import WechatAccount, WechatState
+    from cairn.integrations.wechat.state import WechatAccount, WechatState
 
     workspace = tmp_path / "ws"
     workspace.mkdir()

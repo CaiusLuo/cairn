@@ -7,7 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from cairn.infra.runtime_client import RuntimeClient
-from cairn.terminal.wechat.qr import render_ascii_qr
+from cairn.integrations.wechat.qr import render_ascii_qr
 
 
 class ServerCommands:

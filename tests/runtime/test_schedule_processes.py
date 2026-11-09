@@ -9,9 +9,9 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from cairn.core.schedule import ScheduleJob, ScheduleKind
-from cairn.infra.schedule.store import ScheduleStore
-from cairn.runtime.scheduling.runner import ScheduleRunner
+from cairn.scheduling.models import ScheduleJob, ScheduleKind
+from cairn.scheduling.runner import ScheduleRunner
+from cairn.scheduling.store import ScheduleStore
 from cairn.terminal.headless import HeadlessResult, HeadlessStatus
 
 NOW = datetime(2026, 11, 1, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))

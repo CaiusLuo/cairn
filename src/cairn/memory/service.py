@@ -15,7 +15,7 @@ from cairn.memory.models import (
     PersonalMemoryContext,
 )
 from cairn.memory.store import DEFAULT_AGENT_MD, DEFAULT_MEMORY_MD, PersonalMemoryStore
-from cairn.runtime.scheduling.runner import TaskOutcome, current_time
+from cairn.scheduling.runner import TaskOutcome, current_time
 
 
 class PersonalMemoryService:

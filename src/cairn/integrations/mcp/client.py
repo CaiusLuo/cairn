@@ -15,7 +15,7 @@ from mcp import Client
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 
-from cairn.infra.mcp.config import McpServerConfig
+from cairn.integrations.mcp.config import McpServerConfig
 
 MAX_DISCOVERY_PAGES = 100
 

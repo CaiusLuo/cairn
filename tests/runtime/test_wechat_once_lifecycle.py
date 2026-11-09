@@ -12,12 +12,7 @@ from typing import Any
 
 import pytest
 
-from cairn.core.schedule import ScheduleJob
-from cairn.infra.schedule.store import ScheduleStore
-from cairn.infra.wechat.state import WechatAccount, WechatState
-from cairn.runtime.lifecycle import settle_owned
-from cairn.terminal.headless import HeadlessResult
-from cairn.terminal.wechat.serve import (
+from cairn.integrations.wechat.serve import (
     MAX_INTENT_TASKS,
     ConversationDecision,
     ServeConfig,
@@ -25,6 +20,11 @@ from cairn.terminal.wechat.serve import (
     _Inbound,
     _Service,
 )
+from cairn.integrations.wechat.state import WechatAccount, WechatState
+from cairn.runtime.lifecycle import settle_owned
+from cairn.scheduling.models import ScheduleJob
+from cairn.scheduling.store import ScheduleStore
+from cairn.terminal.headless import HeadlessResult
 from tests.support.wechat_service import _msg
 
 
@@ -382,7 +382,7 @@ def test_cancelled_creation_preserves_primary_when_storage_also_fails(
 
 
 def test_unconfirmed_creation_receipt_is_not_retried(harness: Harness) -> None:
-    from cairn.infra.wechat.ilink import ILinkError
+    from cairn.integrations.wechat.ilink import ILinkError
 
     class UnconfirmedClient(Client):
         async def send_text(self, **kwargs: object) -> dict[str, object]:

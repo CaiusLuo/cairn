@@ -8,12 +8,12 @@ import httpx
 from cairn.core.budget import RunBudget
 from cairn.core.models import LLMResponse, Message
 from cairn.infra.runtime_client import RuntimeClient
-from cairn.runtime.offline_model import OfflineDevelopmentModel
-from cairn.server import runtime_app
-from cairn.terminal.wechat.runtime import (
+from cairn.integrations.wechat.runtime import (
     WechatConversationAdapter,
     WechatRuntimeAdapter,
 )
+from cairn.runtime.offline_model import OfflineDevelopmentModel
+from cairn.server import runtime_app
 
 
 def repository(root: Path) -> Path:
@@ -208,8 +208,8 @@ def test_runtime_http_requires_authentication_and_rejects_authority_arguments(
 def test_wechat_service_forwards_after_sender_admission(tmp_path: Path) -> None:
     from dataclasses import replace
 
-    from cairn.infra.wechat.state import WechatState
-    from cairn.terminal.wechat.serve import ServeReport, _Inbound, _Service
+    from cairn.integrations.wechat.serve import ServeReport, _Inbound, _Service
+    from cairn.integrations.wechat.state import WechatState
     from tests.support.fake_ilink import FakeILink
     from tests.support.wechat_service import _client, _config
 
@@ -227,9 +227,6 @@ def test_wechat_service_forwards_after_sender_admission(tmp_path: Path) -> None:
             "test-token",
             transport=httpx.ASGITransport(app=app),
         )
-        token = tmp_path / "runtime.token"
-        token.write_text("test-token")
-        token.chmod(0o600)
 
         async def no_legacy_execution(*args: Any, **kwargs: Any) -> Any:
             raise AssertionError("Wechat must not start its own Agent")
@@ -241,7 +238,7 @@ def test_wechat_service_forwards_after_sender_admission(tmp_path: Path) -> None:
                 config = replace(
                     _config(fake, source, tmp_path / "wechat"),
                     runtime_url="http://127.0.0.1:8777",
-                    runtime_token_file=token,
+                    runtime_client=api,
                 )
                 state = WechatState(config.state_dir)
                 bridge = _Service(
@@ -252,7 +249,6 @@ def test_wechat_service_forwards_after_sender_admission(tmp_path: Path) -> None:
                     report=ServeReport(),
                     stop_event=None,
                 )
-                bridge._runtime_adapter = WechatRuntimeAdapter(api)
                 inbound = _Inbound(
                     key="msg:status",
                     sender="u1",
@@ -611,7 +607,7 @@ def test_full_wechat_bridge_startup_does_not_initialize_legacy_agent(
     from dataclasses import replace
 
     import cairn.infra.runtime_client as client_module
-    import cairn.terminal.wechat.serve as bridge_module
+    import cairn.integrations.wechat.serve as bridge_module
     from tests.support.fake_ilink import FakeILink
     from tests.support.wechat_service import _client, _config, _msg
 
@@ -654,10 +650,10 @@ def test_full_wechat_bridge_startup_does_not_initialize_legacy_agent(
                 config = replace(
                     _config(fake, source, tmp_path / "wechat", max_polls=None),
                     runtime_url="http://127.0.0.1:8777",
-                    runtime_token_file=token,
+                    runtime_client=api,
                     schedule_store=tmp_path / "legacy-schedule",
                 )
-                from cairn.infra.wechat.state import WechatState
+                from cairn.integrations.wechat.state import WechatState
 
                 WechatState(tmp_path / "runtime" / "wechat").save_account(
                     config.account

@@ -8,11 +8,11 @@ from typing import Any
 import httpx
 import pytest
 
-from cairn.infra.wechat.state import WechatState
-from cairn.terminal.wechat.runtime import (
+from cairn.integrations.wechat.runtime import (
     WechatConversationAdapter,
     wechat_request_id,
 )
+from cairn.integrations.wechat.state import WechatState
 
 
 class BusyClient:

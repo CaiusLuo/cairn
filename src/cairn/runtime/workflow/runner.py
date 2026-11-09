@@ -10,8 +10,8 @@ from uuid import uuid4
 from cairn.core.tasks import TaskResult, TaskStatus
 from cairn.infra.config import load_project_providers
 from cairn.infra.git.worktree import WorktreeError, WorktreeHandle, WorktreeProvider
-from cairn.infra.github.models import IssueTask
 from cairn.infra.workspace.workspace import Workspace
+from cairn.integrations.github.models import IssueTask
 from cairn.runtime.lifecycle import settle_owned
 from cairn.runtime.report_writer import ReportWriter
 from cairn.runtime.tasks import CodingTaskRunner

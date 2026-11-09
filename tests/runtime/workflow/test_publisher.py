@@ -19,7 +19,7 @@ from cairn.core.permissions import (
 )
 from cairn.infra.git import WorktreeProvider, WorktreeState
 from cairn.infra.git.context import RepoContextProvider
-from cairn.infra.github.transport import (
+from cairn.integrations.github.transport import (
     DraftPR,
     DraftPRPayload,
     GitHubRESTPublisher,

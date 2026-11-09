@@ -10,8 +10,8 @@ from urllib.parse import quote, unquote, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from cairn.infra.github.http import GitHubHTTPClient, GitHubHTTPError
-from cairn.infra.github.models import GitHubRepository, validate_branch_name
+from cairn.integrations.github.http import GitHubHTTPClient, GitHubHTTPError
+from cairn.integrations.github.models import GitHubRepository, validate_branch_name
 
 MAX_OBJECT_BYTES = 64 * 1024
 MAX_NEW_OBJECTS = 1024

@@ -1,4 +1,4 @@
-"""Terminal-facing lifecycle and commands for scheduled tasks."""
+"""Operator commands and lifecycle for scheduled tasks."""
 
 from __future__ import annotations
 
@@ -8,18 +8,16 @@ from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 
-from cairn.core.schedule import (
+from cairn.runtime.lifecycle import await_owned
+from cairn.scheduling.models import (
     ScheduleJob,
     ScheduleKind,
     initial_next_run,
 )
-from cairn.infra.schedule.store import ScheduleStore, ensure_outside_workspace
-from cairn.runtime.lifecycle import await_owned
-from cairn.runtime.scheduling.runner import ScheduleRunner, current_time
+from cairn.scheduling.runner import ScheduleRunner, TaskExecutor, current_time
+from cairn.scheduling.store import ScheduleStore, ensure_outside_workspace
 from cairn.shared.action import Action, correction, note
-from cairn.terminal.headless import HeadlessResult
 
-TaskExecutor = Callable[[str, asyncio.Event, str], Awaitable[HeadlessResult]]
 Deliver = Callable[[str, str], Awaitable[bool]]
 Recipient = Callable[[], str | None]
 

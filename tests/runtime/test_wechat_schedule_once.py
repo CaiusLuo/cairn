@@ -3,15 +3,15 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from cairn.infra.schedule.store import ScheduleStore
-from cairn.infra.wechat.state import WechatAccount, WechatState
-from cairn.terminal.headless import HeadlessResult
-from cairn.terminal.wechat.serve import (
+from cairn.integrations.wechat.serve import (
     ConversationDecision,
     ServeConfig,
     _Inbound,
     _Service,
 )
+from cairn.integrations.wechat.state import WechatAccount, WechatState
+from cairn.scheduling.store import ScheduleStore
+from cairn.terminal.headless import HeadlessResult
 
 NOW = datetime.now(ZoneInfo("Asia/Shanghai"))
 
@@ -65,7 +65,7 @@ async def _scenario(tmp_path: Path) -> None:
         client=client,  # type: ignore[arg-type]
         executor=execute,
         report=__import__(
-            "cairn.terminal.wechat.serve", fromlist=["ServeReport"]
+            "cairn.integrations.wechat.serve", fromlist=["ServeReport"]
         ).ServeReport(),
         stop_event=None,
         conversation_classifier=classify,

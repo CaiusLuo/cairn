@@ -15,17 +15,17 @@ from cairn.core.models import LLMResponse, Message
 from cairn.core.provider_catalog import NamedProvider
 from cairn.infra.sessions.host import observe_workspace
 from cairn.infra.sessions.models import SessionBinding, ToolFence, TurnIntent
-from cairn.infra.wechat.state import WechatAccount
 from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.model_executor import ModelExecutor
-from cairn.runtime.provider_runtime import ProviderRuntime
-from cairn.terminal.durable import open_store
-from cairn.terminal.headless import HeadlessStatus, ProviderApproval
-from cairn.terminal.wechat.serve import (
+from cairn.integrations.wechat.serve import (
     ServeConfig,
     default_conversation_executor,
     default_task_executor,
 )
+from cairn.integrations.wechat.state import WechatAccount
+from cairn.runtime.model_executor import ModelExecutor
+from cairn.runtime.provider_runtime import ProviderRuntime
+from cairn.terminal.durable import open_store
+from cairn.terminal.headless import HeadlessStatus, ProviderApproval
 from tests.support.git import initialize_repository
 from tests.support.runtime import SequenceLLM
 from tests.support.sessions import intent, settled
@@ -242,7 +242,7 @@ def test_existing_separate_chat_store_requires_explicit_migration(
     chat = default_conversation_executor(config, task.durable_factory)  # type: ignore[attr-defined]
 
     async def scenario() -> None:
-        from cairn.terminal.wechat.serve import ConversationExecutionError
+        from cairn.integrations.wechat.serve import ConversationExecutionError
 
         try:
             with pytest.raises(
@@ -308,7 +308,7 @@ def test_service_settles_failed_cleanup_before_closing_shared_writer(
 ) -> None:
     from dataclasses import replace
 
-    from cairn.terminal.wechat.serve import ConversationDecision, serve_wechat
+    from cairn.integrations.wechat.serve import ConversationDecision, serve_wechat
     from tests.support.wechat_service import _msg
 
     config, llm = configured
@@ -367,7 +367,7 @@ def test_service_settles_failed_cleanup_before_closing_shared_writer(
     async def classifier(text: str) -> ConversationDecision:
         return ConversationDecision.TASK
 
-    monkeypatch.setattr("cairn.terminal.wechat.serve.WechatControlServer", Control)
+    monkeypatch.setattr("cairn.integrations.wechat.serve.WechatControlServer", Control)
     client = Client()
 
     async def scenario() -> None:
@@ -424,8 +424,8 @@ def test_chat_primary_failure_keeps_cleanup_note_and_retained_writer(
     monkeypatch: pytest.MonkeyPatch,
     cancelled: bool,
 ) -> None:
+    from cairn.integrations.wechat import serve as serve_module
     from cairn.runtime.durable_session import DurableSession
-    from cairn.terminal.wechat import serve as serve_module
 
     config, llm = configured
     llm.responses = [LLMResponse(content="settled chat")]
@@ -487,8 +487,8 @@ def test_late_cancel_during_worker_cleanup_is_not_reported_as_success(
 ) -> None:
     from dataclasses import replace
 
+    from cairn.integrations.wechat.serve import ConversationDecision, serve_wechat
     from cairn.terminal.headless import HeadlessResult
-    from cairn.terminal.wechat.serve import ConversationDecision, serve_wechat
     from tests.support.wechat_service import _msg
 
     config, _llm = configured
@@ -577,7 +577,7 @@ def test_late_cancel_during_worker_cleanup_is_not_reported_as_success(
 def test_recovery_failure_settles_already_owned_chat_and_intent_work(
     configured: tuple[ServeConfig, SequenceLLM], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from cairn.terminal.wechat import serve as serve_module
+    from cairn.integrations.wechat import serve as serve_module
 
     config, _llm = configured
     started = [asyncio.Event(), asyncio.Event()]

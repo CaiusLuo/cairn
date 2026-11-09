@@ -3,8 +3,8 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
-from cairn.terminal.wechat.control import WechatControlServer
-from cairn.terminal.wechat.session import WechatSessionController
+from cairn.integrations.wechat.control import WechatControlServer
+from cairn.integrations.wechat.session import WechatSessionController
 
 
 def test_control_socket_status_roundtrip(tmp_path: Path) -> None:

@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.wechat.state import WechatAccount
+from cairn.integrations.wechat.qr import render_ascii_qr
+from cairn.integrations.wechat.session import WechatSessionController
+from cairn.integrations.wechat.state import WechatAccount
 from cairn.terminal.headless import HeadlessResult, HeadlessStatus
-from cairn.terminal.wechat.qr import render_ascii_qr
-from cairn.terminal.wechat.session import WechatSessionController
 from tests.support.fake_ilink import FakeILink
 from tests.support.runtime import (
     SequenceLLM,  # noqa: F401  (typing/import compatibility)
@@ -45,7 +45,7 @@ def test_wx_logs_in_starts_and_stops_in_session(tmp_path: Path) -> None:
             "baseurl": fake.url,
             "ilink_user_id": "owner",
         }
-        from cairn.infra.wechat.ilink import ILinkClient
+        from cairn.integrations.wechat.ilink import ILinkClient
 
         login_client = ILinkClient(
             base_url=fake.url, bot_token=None, allow_insecure_local=True
@@ -98,7 +98,7 @@ def test_wx_login_waiting_can_be_stopped(tmp_path: Path) -> None:
 
     with FakeILink() as fake:
         fake.qr_statuses = [{"status": "wait"} for _ in range(20)]
-        from cairn.infra.wechat.ilink import ILinkClient
+        from cairn.integrations.wechat.ilink import ILinkClient
 
         login_client = ILinkClient(
             base_url=fake.url, bot_token=None, allow_insecure_local=True
@@ -127,15 +127,15 @@ def test_wx_login_waiting_can_be_stopped(tmp_path: Path) -> None:
 
 
 def test_qr_refuses_to_clip_on_narrow_terminal() -> None:
-    from cairn.terminal.wechat.qr import render_ascii_qr
+    from cairn.integrations.wechat.qr import render_ascii_qr
 
     with pytest.raises(ValueError):
         render_ascii_qr("https://example.test/login", max_width=10)
 
 
 def test_wx_stop_cancels_running_service(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    import cairn.terminal.wechat.session as session_module
-    from cairn.infra.wechat.state import WechatAccount
+    import cairn.integrations.wechat.session as session_module
+    from cairn.integrations.wechat.state import WechatAccount
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -146,7 +146,7 @@ def test_wx_stop_cancels_running_service(tmp_path: Path, monkeypatch) -> None:  
         base_url="https://example.test",
         ilink_user_id="owner",
     )
-    from cairn.infra.wechat.state import WechatState
+    from cairn.integrations.wechat.state import WechatState
 
     WechatState(state_dir).save_account(account)
 
@@ -183,7 +183,7 @@ def test_wx_stop_cancels_running_service(tmp_path: Path, monkeypatch) -> None:  
 
 
 def test_deliver_uses_latest_saved_context_for_proactive_push(tmp_path: Path) -> None:
-    from cairn.infra.wechat.state import WechatAccount, WechatState
+    from cairn.integrations.wechat.state import WechatAccount, WechatState
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -229,7 +229,7 @@ def test_deliver_uses_latest_saved_context_for_proactive_push(tmp_path: Path) ->
 
 
 def test_wx_allow_controls_scheduler_recipient_and_delivery(tmp_path: Path) -> None:
-    from cairn.infra.wechat.state import WechatAccount, WechatState
+    from cairn.integrations.wechat.state import WechatAccount, WechatState
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -270,9 +270,9 @@ def test_wx_allow_controls_scheduler_recipient_and_delivery(tmp_path: Path) -> N
 def test_wx_allow_adds_sender_without_revoking_login_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import cairn.terminal.wechat.session as session_module
-    from cairn.infra.wechat.state import WechatAccount, WechatState
-    from cairn.terminal.wechat.serve import ServeConfig
+    import cairn.integrations.wechat.session as session_module
+    from cairn.integrations.wechat.serve import ServeConfig
+    from cairn.integrations.wechat.state import WechatAccount, WechatState
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -344,7 +344,7 @@ def test_wx_login_clears_qr_and_emits_green_success(tmp_path: Path) -> None:
             "baseurl": fake.url,
             "ilink_user_id": "owner",
         }
-        from cairn.infra.wechat.ilink import ILinkClient
+        from cairn.integrations.wechat.ilink import ILinkClient
 
         login_client = ILinkClient(
             base_url=fake.url, bot_token=None, allow_insecure_local=True
@@ -379,8 +379,8 @@ def test_background_owner_detaches_on_close_and_stops_explicitly(
 ) -> None:
     import subprocess
 
-    from cairn.infra.wechat.state import WechatAccount, WechatState
-    from cairn.terminal.wechat.session import WechatSessionController
+    from cairn.integrations.wechat.session import WechatSessionController
+    from cairn.integrations.wechat.state import WechatAccount, WechatState
 
     workspace = tmp_path / "ws"
     workspace.mkdir()

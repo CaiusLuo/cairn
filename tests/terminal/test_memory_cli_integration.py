@@ -61,7 +61,7 @@ def test_first_cli_request_redacts_saved_wechat_token(
     import os
 
     import cairn.terminal.cli as cli_module
-    from cairn.infra.wechat.state import WechatAccount, WechatState
+    from cairn.integrations.wechat.state import WechatAccount, WechatState
 
     state_dir = tmp_path.parent / (tmp_path.name + "-wechat-state")
     WechatState(state_dir).save_account(

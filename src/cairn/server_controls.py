@@ -23,9 +23,9 @@ from cairn.infra.config.server import DEFAULT_SERVICES, Services
 from cairn.infra.redaction import redact_value
 from cairn.infra.runtime_catalog import RuntimeTask
 from cairn.infra.runtime_client import RuntimeClient
-from cairn.infra.schedule.store import ScheduleStore
 from cairn.infra.skills import layered_skills
 from cairn.infra.tools.skill import ReadSkillResourceTool, ReadSkillTool
+from cairn.integrations.wechat.session import WechatSessionController
 from cairn.memory.commands import MemoryController
 from cairn.memory.service import PersonalMemoryService
 from cairn.memory.store import PersonalMemoryStore
@@ -37,18 +37,18 @@ from cairn.memory.tools import (
 )
 from cairn.runtime.agent import Agent
 from cairn.runtime.lifecycle import await_owned, settle_owned
-from cairn.runtime.scheduling.tools import (
+from cairn.runtime.service_execution import ServiceExecution
+from cairn.runtime.task_board.service import TaskBoardService
+from cairn.runtime.task_service import TaskService
+from cairn.scheduling.commands import ScheduleController
+from cairn.scheduling.store import ScheduleStore
+from cairn.scheduling.tools import (
     ScheduleCreateTool,
     ScheduleListTool,
     ScheduleManageTool,
 )
-from cairn.runtime.service_execution import ServiceExecution
-from cairn.runtime.task_board.service import TaskBoardService
-from cairn.runtime.task_service import TaskService
 from cairn.terminal.headless import HeadlessResult, HeadlessStatus
-from cairn.terminal.schedule.controller import ScheduleController
 from cairn.terminal.task_board.controller import TaskBoardController
-from cairn.terminal.wechat.session import WechatSessionController
 
 
 class ControlState(BaseModel):
@@ -713,7 +713,7 @@ class ServerControls:
                 "message": skill.body if skill else "找不到该技能。",
             }
         elif name == "/mcp":
-            from cairn.infra.mcp.config import load_mcp_servers
+            from cairn.integrations.mcp.config import load_mcp_servers
 
             servers = load_mcp_servers(self.workspace)
             return {

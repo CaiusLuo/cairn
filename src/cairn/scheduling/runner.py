@@ -16,9 +16,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
-from cairn.core.schedule import ScheduleJob
-from cairn.infra.schedule.store import ScheduleStore
 from cairn.runtime.lifecycle import settle_owned
+from cairn.scheduling.models import ScheduleJob
+from cairn.scheduling.store import ScheduleStore
 
 
 class TaskOutcome(Protocol):

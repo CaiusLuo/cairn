@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from mcp.types import ListToolsResult, Tool
 
-from cairn.infra.mcp.client import McpClient
+from cairn.integrations.mcp.client import McpClient
 
 
 def test_tool_discovery_follows_pages_and_rejects_cursor_loops() -> None:

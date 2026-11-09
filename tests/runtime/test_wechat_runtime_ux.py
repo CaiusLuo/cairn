@@ -9,8 +9,8 @@ import httpx
 
 from cairn.core.budget import RunBudget
 from cairn.infra.runtime_client import RuntimeClient
+from cairn.integrations.wechat.runtime import WechatConversationAdapter
 from cairn.server import runtime_app
-from cairn.terminal.wechat.runtime import WechatConversationAdapter
 from tests.support.git import initialize_repository
 
 
@@ -38,7 +38,6 @@ def test_wechat_normal_chat_returns_only_final_content(tmp_path: Path) -> None:
                 message_id="wechat-ux-1",
                 sender="owner",
                 account="bot-1",
-                conversation_key="wechat:owner",
             )
             assert answer
             assert "task-" not in answer

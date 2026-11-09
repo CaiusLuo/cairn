@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.mcp.config import load_mcp_servers
+from cairn.integrations.mcp.config import load_mcp_servers
 
 
 def _write(ws: Path, text: str) -> None:

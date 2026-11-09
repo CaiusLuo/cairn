@@ -5,16 +5,16 @@ import sys
 import time
 from pathlib import Path
 
-from cairn.infra.wechat.state import WechatAccount, WechatState
-from cairn.terminal.wechat.session import WechatSessionController
+from cairn.integrations.wechat.session import WechatSessionController
+from cairn.integrations.wechat.state import WechatAccount, WechatState
 from tests.support.fake_ilink import FakeILink
 
 CHILD = r"""
 import asyncio, os
 from pathlib import Path
-from cairn.infra.wechat.state import WechatAccount, WechatState
+from cairn.integrations.wechat.state import WechatAccount, WechatState
 from cairn.terminal.headless import HeadlessResult, HeadlessStatus
-from cairn.terminal.wechat.serve import ConversationDecision, ServeConfig, serve_wechat
+from cairn.integrations.wechat.serve import ConversationDecision, ServeConfig, serve_wechat
 
 async def classifier(text):
     return ConversationDecision.CHAT if "你好" in text else ConversationDecision.TASK

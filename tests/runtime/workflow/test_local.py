@@ -12,8 +12,8 @@ from cairn.core.budget import RunBudget
 from cairn.core.models import LLMResponse, Message, ToolCall
 from cairn.infra.git import WorktreeProvider, WorktreeState
 from cairn.infra.git.worktree import WorktreeError
-from cairn.infra.github.models import GitHubRepository, IssueReference, IssueTask
 from cairn.infra.workspace.workspace import Workspace
+from cairn.integrations.github.models import GitHubRepository, IssueReference, IssueTask
 from cairn.runtime.tasks import CodingTaskRunner, TaskResult, TaskSpec, TaskStatus
 from cairn.runtime.verification import (
     CheckResult,
