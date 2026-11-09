@@ -11,7 +11,7 @@ from functools import partial
 from cairn.core.model_manager import ModelConfig
 from cairn.infra.config import add_model_id, move_model_id, remove_model_id
 from cairn.runtime.provider_runtime import UnknownModelError
-from cairn.terminal.action import Action, ActionRow, note, refusal
+from cairn.shared.action import Action, ActionRow, note, refusal
 from cairn.terminal.commands.context import CommandContext
 
 MODEL_USAGE = (

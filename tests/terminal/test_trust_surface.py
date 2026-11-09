@@ -16,7 +16,7 @@ import pytest
 
 from cairn.core.model_manager import ModelConfig, ProviderConfig
 from cairn.core.provider_catalog import NamedProvider
-from cairn.terminal.action import Action
+from cairn.shared.action import Action
 from cairn.terminal.cli import (
     TRUST_ROW,
     _ask_in_surface,

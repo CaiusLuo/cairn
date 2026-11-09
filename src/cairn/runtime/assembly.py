@@ -1,5 +1,4 @@
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
 
 from cairn.core.compaction.summarizer import Summarizer
 from cairn.core.context import ContextBuilder
@@ -16,9 +15,6 @@ from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import DEFAULT_SYSTEM_PROMPT, Agent
 from cairn.runtime.model_executor import ModelExecutor
 
-if TYPE_CHECKING:
-    from cairn.runtime.memory.retrieval import MemoryReader
-
 
 def build_agent(
     *,
@@ -30,7 +26,6 @@ def build_agent(
     context_builder: ContextBuilder | None = None,
     secret_env_keys: frozenset[str] = frozenset(),
     model_executor: ModelExecutor | None = None,
-    memory_reader: "MemoryReader | None" = None,
     skills: SkillLibrary | None = None,
     system_prompt: str | None = None,
     personal_context: str = "",
@@ -70,7 +65,6 @@ def build_agent(
         ),
         context_builder=context_builder,
         model_executor=model_executor,
-        memory_reader=memory_reader,
         skill_library=skills,
         summarizer=summarizer
         if summarizer is not None

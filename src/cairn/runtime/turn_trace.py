@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING, Any, Literal
 from cairn.core.budget import RunBudget
 from cairn.core.context import ContextBudget, ContextRequest
 from cairn.core.events import Event
-from cairn.core.memory.context import MemoryContext
 from cairn.core.model_manager import ModelConfig
 from cairn.core.models import LLMResponse, LLMUsage
 from cairn.infra.observability.models import Span, SpanStatus
@@ -36,7 +35,6 @@ class AttemptContext:
     step: int
     tool_schema_count: int
     system_message_count: int
-    memory: MemoryContext | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,19 +175,6 @@ class TurnTrace:
             # why the primary was abandoned.
             attributes["fallback_reason"] = "candidate_unavailable"
             attributes["fallback_attempt"] = attempt_number - 1
-        memory_context = context.memory
-        if memory_context is not None:
-            attributes.update(
-                memory_selected_ids=list(request.memory_selected_ids),
-                memory_included_ids=list(request.memory_included_ids),
-                memory_dropped_ids=list(request.memory_dropped_ids),
-                memory_tokens=request.memory_tokens,
-                memory_count_is_estimate=request.tokens_after.is_estimate,
-                memory_checked_count=memory_context.checked_count,
-                memory_freshness_counts=dict(memory_context.freshness_counts),
-                memory_dropped_for_size=memory_context.dropped_for_size,
-                memory_read_error=memory_context.read_error,
-            )
         self._llm_span = self._agent.tracer.start_child_span(
             self._turn_span, "llm.generate", attributes=attributes
         )

@@ -28,7 +28,7 @@ from cairn.infra.wechat.state import (
     ensure_outside_workspace,
 )
 from cairn.runtime.lifecycle import await_owned
-from cairn.terminal.action import Action, correction, note
+from cairn.shared.action import Action, correction, note
 from cairn.terminal.wechat.login import run_login
 from cairn.terminal.wechat.qr import render_ascii_qr
 from cairn.terminal.wechat.serve import (

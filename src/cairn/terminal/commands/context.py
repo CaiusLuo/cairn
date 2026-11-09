@@ -6,7 +6,7 @@ from cairn.core.model_manager import ModelConfig, ModelManager
 from cairn.core.provider_catalog import ProviderCatalog
 from cairn.infra.observability.storage import TraceStore
 from cairn.runtime.model_executor import ModelExecutor
-from cairn.terminal.action import Action
+from cairn.shared.action import Action
 
 if TYPE_CHECKING:
     from cairn.runtime.turn.compaction import CompactionOutcome

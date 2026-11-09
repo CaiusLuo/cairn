@@ -5,10 +5,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from cairn.core.agent_memory import MemorySource
 from cairn.core.models import ToolResult
 from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
-from cairn.runtime.agent_memory.service import PersonalMemoryService
+from cairn.memory.models import MemorySource
+from cairn.memory.service import PersonalMemoryService
 
 
 def _text(value: object, name: str) -> str:

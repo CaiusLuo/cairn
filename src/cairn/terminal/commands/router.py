@@ -2,7 +2,7 @@
 
 The router's job is to decide that, and to say what the operator should see about
 the decision. It owns neither the transcript nor the bottom surface: a command that
-has something to say returns an :class:`~cairn.terminal.action.Action`, and the
+has something to say returns an :class:`~cairn.shared.action.Action`, and the
 caller decides where to show it. In a terminal that is the row above the composer;
 in a pipeline it is plain text.
 """
@@ -10,7 +10,7 @@ in a pipeline it is plain text.
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from cairn.terminal.action import Action, correction
+from cairn.shared.action import Action, correction
 from cairn.terminal.commands.compact import handle_compact
 from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.help import handle_help

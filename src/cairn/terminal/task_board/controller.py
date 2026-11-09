@@ -5,7 +5,7 @@ from __future__ import annotations
 from cairn.core.task_board import TaskBoardItem, TaskBoardStatus
 from cairn.infra.task_board.store import TaskBoardBusy, TaskBoardValidationError
 from cairn.runtime.task_board.service import TaskBoardService
-from cairn.terminal.action import Action, correction, note
+from cairn.shared.action import Action, correction, note
 
 
 def _item_line(task: TaskBoardItem) -> str:

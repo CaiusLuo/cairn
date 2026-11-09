@@ -8,29 +8,20 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Any
 
-from cairn.core.agent_memory import (
+from cairn.core.models import Message
+from cairn.memory.models import (
     MemoryKind,
     MemorySource,
     PersonalMemoryContext,
 )
-from cairn.core.models import Message
-from cairn.infra.agent_memory.store import AgentMemoryStore
+from cairn.memory.store import DEFAULT_AGENT_MD, DEFAULT_MEMORY_MD, PersonalMemoryStore
 from cairn.runtime.scheduling.runner import TaskOutcome, current_time
-
-DEFAULT_MEMORY_AGENT_MD = """# Personal AGENT
-
-This file belongs to this personal Agent, not the project repository.
-Project AGENTS.md, system rules and permissions take precedence.
-
-## Preferences
-## Learned
-"""
 
 
 class PersonalMemoryService:
     def __init__(
         self,
-        store: AgentMemoryStore,
+        store: PersonalMemoryStore,
         *,
         clock: Callable[[], datetime] = current_time,
         secret_values: Sequence[str] = (),
@@ -89,7 +80,7 @@ class PersonalMemoryService:
                 values.append(stripped.removeprefix("- ").strip())
             if len(values) >= 12:
                 break
-        if not values and agent_md.strip() != DEFAULT_MEMORY_AGENT_MD.strip():
+        if not values and agent_md.strip() != DEFAULT_AGENT_MD.strip():
             values = [
                 line.strip()
                 for line in lines
@@ -108,8 +99,8 @@ class PersonalMemoryService:
         """Empty until the personal store has content beyond its templates."""
         context = self.bootstrap(now)
         if (
-            context.agent_md.strip() == DEFAULT_MEMORY_AGENT_MD.strip()
-            and context.memory_md.strip() == "# Long-term Memory"
+            context.agent_md.strip() == DEFAULT_AGENT_MD.strip()
+            and context.memory_md.strip() == DEFAULT_MEMORY_MD.strip()
             and not any(body.strip() for _, body in context.daily)
         ):
             return ""
@@ -409,7 +400,7 @@ class PersonalMemoryService:
         )
         memory = self.redact(snapshot[1]).strip()
         agent = self.redact(snapshot[2]).strip()
-        has_agent_facts = agent != DEFAULT_MEMORY_AGENT_MD.strip() and any(
+        has_agent_facts = agent != DEFAULT_AGENT_MD.strip() and any(
             line.strip().startswith("- ") for line in agent.splitlines()
         )
         has_memory_facts = memory != "# Long-term Memory" and any(

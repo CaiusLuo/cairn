@@ -6,16 +6,16 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from cairn.core.agent_memory import MemoryKind
-from cairn.infra.agent_memory.store import AgentMemoryStore
-from cairn.runtime.agent_memory.service import PersonalMemoryService
+from cairn.memory.models import MemoryKind
+from cairn.memory.service import PersonalMemoryService
+from cairn.memory.store import PersonalMemoryStore
 from cairn.terminal.headless import HeadlessResult, HeadlessStatus
 
 NOW = datetime(2026, 11, 1, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
-def _service(tmp_path: Path) -> tuple[PersonalMemoryService, AgentMemoryStore]:
-    store = AgentMemoryStore(tmp_path / "agent")
+def _service(tmp_path: Path) -> tuple[PersonalMemoryService, PersonalMemoryStore]:
+    store = PersonalMemoryStore(tmp_path / "agent")
     return PersonalMemoryService(store, clock=lambda: NOW), store
 
 
@@ -107,7 +107,7 @@ def test_personal_memory_survives_a_new_service_instance(tmp_path: Path) -> None
 def test_render_keeps_valid_json_and_recent_daily_under_chinese_growth() -> None:
     import json
 
-    from cairn.core.agent_memory import PersonalMemoryContext
+    from cairn.memory.models import PersonalMemoryContext
 
     context = PersonalMemoryContext(
         agent_md="中" * 4400,
@@ -122,7 +122,7 @@ def test_render_keeps_valid_json_and_recent_daily_under_chinese_growth() -> None
 
 
 def test_known_secrets_are_redacted_before_write_and_render(tmp_path: Path) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     service = PersonalMemoryService(
         store, clock=lambda: NOW, secret_values=("fake-provider-secret",)
     )

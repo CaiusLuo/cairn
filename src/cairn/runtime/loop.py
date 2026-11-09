@@ -83,7 +83,6 @@ from cairn.core.budget import (
 )
 from cairn.core.context import ContextBudgetExceeded
 from cairn.core.events import Event
-from cairn.core.memory.context import MemoryContext
 from cairn.core.models import Message, ToolCall, ToolFailure
 from cairn.runtime.agent import Agent
 from cairn.runtime.durable_session import DurableSession
@@ -236,21 +235,12 @@ async def run_turn(
 
                 system_messages = await build_system_messages(agent, session=session)
                 tool_schemas = agent.tools.schemas()
-                memory_context = None
-                if agent.memory_reader is not None:
-                    try:
-                        memory_context = await agent.memory_reader.retrieve(user_input)
-                    except Exception:
-                        # No arbitrary memory/IO diagnostics reach the trace. External
-                        # cancellation propagates through the existing turn recovery.
-                        memory_context = MemoryContext(read_error=True)
 
                 trace.begin_step(
                     AttemptContext(
                         step=step + 1,
                         tool_schema_count=len(tool_schemas),
                         system_message_count=len(system_messages),
-                        memory=memory_context,
                     )
                 )
 
@@ -281,7 +271,6 @@ async def run_turn(
                         history=agent.state.messages,
                         current_turn_start=turn_start,
                         tools=tool_schemas,
-                        project_memory=memory_context,
                         compaction=reusable_record(agent, agent.state.messages),
                         on_request=on_request,
                         on_fallback=on_fallback,

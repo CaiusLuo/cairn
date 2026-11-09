@@ -7,16 +7,16 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from cairn.infra.agent_memory.store import AgentMemoryStore
-from cairn.runtime.agent_memory.service import PersonalMemoryService
-from cairn.terminal.memory.controller import MemoryController
+from cairn.memory.commands import MemoryController
+from cairn.memory.service import PersonalMemoryService
+from cairn.memory.store import PersonalMemoryStore
 
 NOW = datetime(2026, 11, 1, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
 def _controller(tmp_path: Path) -> MemoryController:
     service = PersonalMemoryService(
-        AgentMemoryStore(tmp_path / "agent"), clock=lambda: NOW
+        PersonalMemoryStore(tmp_path / "agent"), clock=lambda: NOW
     )
     return MemoryController(service)
 
@@ -58,7 +58,7 @@ def test_memory_controller_notifies_agent_after_approve_and_rollback(
     tmp_path: Path,
 ) -> None:
     service = PersonalMemoryService(
-        AgentMemoryStore(tmp_path / "agent"), clock=lambda: NOW
+        PersonalMemoryStore(tmp_path / "agent"), clock=lambda: NOW
     )
     changed: list[str] = []
     controller = MemoryController(

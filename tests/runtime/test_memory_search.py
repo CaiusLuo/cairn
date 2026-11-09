@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cairn.infra.agent_memory.store import AgentMemoryStore
-from cairn.runtime.agent_memory.service import PersonalMemoryService
+from cairn.memory.service import PersonalMemoryService
+from cairn.memory.store import PersonalMemoryStore
 
 
 def _service(tmp_path: Path) -> PersonalMemoryService:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     store.ensure_initialized()
     store.append_memory_md(
         "\n- 姓名: 张三\n- favorite editor: Vim\n- project: cairn memory\n"
@@ -54,7 +54,7 @@ def test_identity_query_falls_back_to_labeled_candidates_not_single_char_noise(
 
 
 def test_search_redacts_known_secrets(tmp_path: Path) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     store.ensure_initialized()
     store.append_memory_md("\n- secret: fake-provider-key\n")
     service = PersonalMemoryService(store, secret_values=("fake-provider-key",))
@@ -64,7 +64,7 @@ def test_search_redacts_known_secrets(tmp_path: Path) -> None:
 
 
 def test_correct_fact_replaces_daily_candidate_before_distill(tmp_path: Path) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     service = PersonalMemoryService(store)
     service.remember_fact("prefers tea")
     assert service.correct_fact("prefers tea", "prefers coffee") is True

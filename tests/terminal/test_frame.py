@@ -25,7 +25,7 @@ from rich.text import Text
 
 import cairn.terminal.output as output_module
 from cairn.core.events import Event
-from cairn.terminal.action import Action, ActionRow, correction, note
+from cairn.shared.action import Action, ActionRow, correction, note
 from cairn.terminal.frame import (
     ACTIVITY_ROWS,
     COMPOSER_MAX_LINES,
@@ -1202,7 +1202,7 @@ def _fix_width(view: TranscriptView, width: int) -> None:
 
 
 def test_a_long_endpoint_is_wrapped_not_clipped() -> None:
-    from cairn.terminal.action import consent
+    from cairn.shared.action import consent
 
     url = "https://llm.example.test/a-very-long-compatible-mode-path/v1"
     with (
@@ -1227,7 +1227,7 @@ def test_a_long_endpoint_is_wrapped_not_clipped() -> None:
 
 @pytest.mark.parametrize("width", [60, 80, 120])
 def test_long_decision_facts_page_without_hiding_the_cancel_row(width: int) -> None:
-    from cairn.terminal.action import consent
+    from cairn.shared.action import consent
 
     fact = "https://llm.example.test/" + "private-endpoint-path/" * 100
     with (
@@ -1256,7 +1256,7 @@ def test_long_decision_facts_page_without_hiding_the_cancel_row(width: int) -> N
 
 @pytest.mark.parametrize("width", [60, 80, 120])
 def test_fact_paging_exposes_every_line_and_keeps_choices_visible(width: int) -> None:
-    from cairn.terminal.action import consent
+    from cairn.shared.action import consent
 
     facts = [f"endpoint-fact-{index:03d}" for index in range(35)]
     with (
@@ -1302,7 +1302,7 @@ def _pieces_of(text: str, width: int) -> list[str]:
 def test_no_action_line_exceeds_the_width_in_cells() -> None:
     from prompt_toolkit.utils import get_cwidth
 
-    from cairn.terminal.action import consent
+    from cairn.shared.action import consent
 
     with (
         create_pipe_input() as pipe,
@@ -1756,7 +1756,7 @@ def test_real_keys_running_queue_wins_over_history() -> None:
 
 
 def test_real_keys_plain_notice_then_history_and_chooser_owns_arrows() -> None:
-    from cairn.terminal.action import ActionRow
+    from cairn.shared.action import ActionRow
 
     async def scenario() -> None:
         with (

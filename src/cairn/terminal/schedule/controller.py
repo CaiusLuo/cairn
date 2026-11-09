@@ -16,7 +16,7 @@ from cairn.core.schedule import (
 from cairn.infra.schedule.store import ScheduleStore, ensure_outside_workspace
 from cairn.runtime.lifecycle import await_owned
 from cairn.runtime.scheduling.runner import ScheduleRunner, current_time
-from cairn.terminal.action import Action, correction, note
+from cairn.shared.action import Action, correction, note
 from cairn.terminal.headless import HeadlessResult
 
 TaskExecutor = Callable[[str, asyncio.Event, str], Awaitable[HeadlessResult]]

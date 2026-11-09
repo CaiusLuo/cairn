@@ -3,14 +3,14 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from cairn.infra.agent_memory.store import AgentMemoryStore
 from cairn.infra.tools.base import ToolExecutionContext
-from cairn.runtime.agent_memory.service import PersonalMemoryService
-from cairn.runtime.agent_memory.tools import MemoryRememberTool
+from cairn.memory.service import PersonalMemoryService
+from cairn.memory.store import PersonalMemoryStore
+from cairn.memory.tools import MemoryRememberTool
 
 
 def test_explicit_requires_trusted_user_text(tmp_path: Path) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     service = PersonalMemoryService(store)
     tool = MemoryRememberTool(service)
     result = asyncio.run(
@@ -26,7 +26,7 @@ def test_explicit_requires_trusted_user_text(tmp_path: Path) -> None:
 
 
 def test_model_cannot_forge_explicit_without_user_text(tmp_path: Path) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     service = PersonalMemoryService(store)
     tool = MemoryRememberTool(service)
     result = asyncio.run(
@@ -45,7 +45,7 @@ def test_model_cannot_forge_explicit_without_user_text(tmp_path: Path) -> None:
 
 def test_non_boolean_explicit_and_extra_arguments_are_rejected(tmp_path: Path) -> None:
     tool = MemoryRememberTool(
-        PersonalMemoryService(AgentMemoryStore(tmp_path / "agent"))
+        PersonalMemoryService(PersonalMemoryStore(tmp_path / "agent"))
     )
     for args in (
         {"text": "x", "explicit": "false"},
@@ -64,7 +64,7 @@ def test_non_boolean_explicit_and_extra_arguments_are_rejected(tmp_path: Path) -
 
 
 def test_exact_fact_without_memory_request_stays_inferred(tmp_path: Path) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     service = PersonalMemoryService(store)
     tool = MemoryRememberTool(service)
     result = asyncio.run(
@@ -78,7 +78,7 @@ def test_exact_fact_without_memory_request_stays_inferred(tmp_path: Path) -> Non
 
 
 def test_negative_memory_request_does_not_authorize_explicit(tmp_path: Path) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     tool = MemoryRememberTool(PersonalMemoryService(store))
     asyncio.run(
         tool.execute(
@@ -90,7 +90,7 @@ def test_negative_memory_request_does_not_authorize_explicit(tmp_path: Path) -> 
 
 
 def test_common_positive_memory_request_authorizes_exact_fact(tmp_path: Path) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     tool = MemoryRememberTool(PersonalMemoryService(store))
     asyncio.run(
         tool.execute(
@@ -102,7 +102,7 @@ def test_common_positive_memory_request_authorizes_exact_fact(tmp_path: Path) ->
 
 
 def test_negative_request_writes_nothing_at_all(tmp_path: Path) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     store.ensure_initialized()
     before_memory = store.read_memory_md()
     before_daily = store.list_daily_days()
@@ -120,7 +120,7 @@ def test_negative_request_writes_nothing_at_all(tmp_path: Path) -> None:
 
 
 def test_dont_forget_is_not_a_negative_request(tmp_path: Path) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     tool = MemoryRememberTool(PersonalMemoryService(store))
     asyncio.run(
         tool.execute(

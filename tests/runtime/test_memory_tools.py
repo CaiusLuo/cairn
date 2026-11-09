@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from cairn.infra.agent_memory.store import AgentMemoryStore
 from cairn.infra.tools.base import ToolExecutionContext
-from cairn.runtime.agent_memory.service import PersonalMemoryService
-from cairn.runtime.agent_memory.tools import (
+from cairn.memory.service import PersonalMemoryService
+from cairn.memory.store import PersonalMemoryStore
+from cairn.memory.tools import (
     MemoryCorrectTool,
     MemoryForgetTool,
     MemoryRememberTool,
@@ -15,7 +15,7 @@ from cairn.runtime.agent_memory.tools import (
 
 
 def test_memory_tools_remember_search_correct_forget(tmp_path: Path) -> None:
-    service = PersonalMemoryService(AgentMemoryStore(tmp_path / "agent"))
+    service = PersonalMemoryService(PersonalMemoryStore(tmp_path / "agent"))
     remember = MemoryRememberTool(service)
     search = MemorySearchTool(service)
     correct = MemoryCorrectTool(service)

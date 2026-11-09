@@ -19,8 +19,8 @@ from cairn.core.events import Event
 from cairn.core.model_manager import ModelConfig
 from cairn.core.permissions import PermissionChoice, PermissionRequest
 from cairn.core.provider_catalog import NamedProvider
-from cairn.infra.agent_memory.store import ensure_outside_workspace
 from cairn.infra.trust.store import TrustedWorkspaceStore, TrustStoreError
+from cairn.memory.store import ensure_outside_workspace
 from cairn.terminal.activity import Activity, ActivityKind
 from cairn.terminal.interrupt import Interruption
 from cairn.terminal.live import LiveRegion

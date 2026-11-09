@@ -84,10 +84,6 @@ ALLOWED_ATTRIBUTES: frozenset[str] = frozenset(
         "cancelled",
         "error_type",
         "failure_kind",
-        # memory (ids/counts only)
-        "memory_tokens",
-        "memory_checked_count",
-        "memory_read_error",
     }
 )
 

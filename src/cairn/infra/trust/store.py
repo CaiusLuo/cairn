@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from cairn.infra.agent_memory.store import default_agent_home
+from cairn.memory.store import default_agent_home
 
 TRUST_VERSION = 1
 TRUST_FILENAME = "trusted_workspaces.json"

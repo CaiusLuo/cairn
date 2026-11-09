@@ -1,13 +1,10 @@
 import hashlib
 import os
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from cairn.core.memory.models import MemoryError
 from cairn.infra.descriptors import open_root
-from cairn.infra.memory.filesystem import FileObserver
 from cairn.infra.repo_graph.builder import DEFAULT_EXCLUSIONS, RepoGraphBuilder
 from cairn.infra.repo_graph.models import (
     BuildLimits,
@@ -130,28 +127,7 @@ def test_inside_and_outside_symlinks_are_never_followed(tmp_path: Path) -> None:
     assert graph.report.complete
 
 
-def observe_with_memory(root: Path) -> tuple[str, str | None]:
-    fingerprint = FileObserver(root).capture(("nested/secret.py",))[0]
-    return fingerprint.kind.value, fingerprint.sha256
-
-
-def observe_with_repo_graph(root: Path) -> tuple[str, str | None]:
-    graph = RepoGraphBuilder(Workspace(root)).build()
-    record = next(file for file in graph.files if file.path == "nested")
-    assert graph.report.bytes_read == 0
-    assert "nested/secret.py" not in {file.path for file in graph.files}
-    return record.status.value, record.source_sha256
-
-
-@pytest.mark.parametrize(
-    "observe",
-    [observe_with_memory, observe_with_repo_graph],
-    ids=["FileObserver.capture", "RepoGraphBuilder.build"],
-)
-def test_symlinked_ancestor_fails_closed_for_both_consumers(
-    tmp_path: Path, observe: Callable[[Path], tuple[str, str | None]]
-) -> None:
-    """Both consumers share one root walk, so neither follows the symlink."""
+def test_symlinked_ancestor_is_not_read(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
     outside = tmp_path / "outside"
@@ -159,52 +135,16 @@ def test_symlinked_ancestor_fails_closed_for_both_consumers(
     (outside / "secret.py").write_bytes(b"secret = 1")
     (root / "nested").symlink_to(outside, target_is_directory=True)
 
-    kind, sha256 = observe(root)
+    graph = RepoGraphBuilder(Workspace(root)).build()
 
-    assert kind == "symlink"
-    assert sha256 is None
-
-
-def observe_replaced_root_with_memory(
-    root: Path,
-) -> Callable[[], tuple[str, str | None]]:
-    observer = FileObserver(root)
-
-    def observe() -> tuple[str, str | None]:
-        try:
-            observer.capture(("inside.py",))
-        except MemoryError:
-            return "rejected", None
-        raise AssertionError("FileObserver followed a replaced ancestor symlink")
-
-    return observe
+    record = next(file for file in graph.files if file.path == "nested")
+    assert record.status == FileStatus.SYMLINK
+    assert record.source_sha256 is None
+    assert graph.report.bytes_read == 0
+    assert "nested/secret.py" not in {file.path for file in graph.files}
 
 
-def observe_replaced_root_with_repo_graph(
-    root: Path,
-) -> Callable[[], tuple[str, str | None]]:
-    builder = RepoGraphBuilder(Workspace(root))
-
-    def observe() -> tuple[str, str | None]:
-        graph = builder.build()
-        assert not graph.report.complete
-        assert graph.report.bytes_read == 0
-        assert "inside.py" not in {file.path for file in graph.files}
-        return "rejected", None
-
-    return observe
-
-
-@pytest.mark.parametrize(
-    "consumer",
-    [observe_replaced_root_with_memory, observe_replaced_root_with_repo_graph],
-    ids=["FileObserver.capture", "RepoGraphBuilder.build"],
-)
-def test_replaced_ancestor_symlink_fails_closed_for_both_consumers(
-    tmp_path: Path,
-    consumer: Callable[[Path], Callable[[], tuple[str, str | None]]],
-) -> None:
-    """The unified root walk rejects a replaced ancestor instead of following it."""
+def test_replaced_ancestor_symlink_is_rejected(tmp_path: Path) -> None:
     parent = tmp_path / "parent"
     root = parent / "repo"
     root.mkdir(parents=True)
@@ -212,12 +152,15 @@ def test_replaced_ancestor_symlink_fails_closed_for_both_consumers(
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "secret.py").write_bytes(b"secret = 1")
-    observe = consumer(root)
+    builder = RepoGraphBuilder(Workspace(root))
 
     parent.rename(tmp_path / "old_parent")
     parent.symlink_to(outside, target_is_directory=True)
+    graph = builder.build()
 
-    assert observe() == ("rejected", None)
+    assert not graph.report.complete
+    assert graph.report.bytes_read == 0
+    assert "inside.py" not in {file.path for file in graph.files}
 
 
 def test_special_entries_are_skipped_without_opening(tmp_path: Path) -> None:

@@ -1,10 +1,7 @@
 """Descriptor-relative filesystem primitives shared across infra observers.
 
-Repository inventory and project memory both treat the workspace as a trust
-boundary: they open the root one component at a time with ``O_NOFOLLOW`` and
-re-check stat identity through open descriptors, so a replaced ancestor symlink
-can never redirect a read outside the workspace. Keeping that walk here means
-the security semantics have one implementation used by both consumers.
+Open the root one component at a time with ``O_NOFOLLOW`` and re-check
+stat identity through open descriptors to reject replaced ancestor symlinks.
 """
 
 import os

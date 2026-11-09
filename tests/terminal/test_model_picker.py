@@ -12,7 +12,7 @@ import cairn.terminal.cli as cli_module
 from cairn.core.model_manager import ModelConfig, ModelManager, ProviderConfig
 from cairn.core.permissions import PermissionCapability
 from cairn.infra.observability.storage import TraceStore
-from cairn.terminal.action import Action
+from cairn.shared.action import Action
 from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.router import CommandRouter
 from cairn.terminal.input import CliInput

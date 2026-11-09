@@ -7,7 +7,6 @@ from collections.abc import Sequence
 
 from pydantic import ValidationError
 
-from cairn.core.memory.models import MemoryError, check_sensitive
 from cairn.core.models import Message, ToolCall
 from cairn.infra.sessions.models import (
     MAX_CHECKPOINT_BYTES,
@@ -21,6 +20,13 @@ from cairn.infra.sessions.models import (
     StoredMessage,
     StoredToolCall,
     StrictDTO,
+)
+
+_CREDENTIAL_TEXT = re.compile(
+    r"(?i)(-----BEGIN [A-Z ]*PRIVATE KEY|\b(?:sk-[\w-]{12,}|gh[pousr]_[\w]{12,}|"
+    r"github_pat_[\w]{12,}|AKIA[0-9A-Z]{16})|"
+    r"(?:api[_-]?key|access[_-]?token|password|secret|authorization)\s*[=:]\s*\S+|"
+    r"https?://[^\s/]+:[^\s/]+@|[?&](?:token|key|signature|sig)=[^\s&]+)"
 )
 
 # Also recognize JSON key/value credentials, including nested argument JSON.
@@ -67,11 +73,18 @@ def parse(raw: bytes, limit: int) -> object:
         raise SessionStoreError("invalid_record") from None
 
 
+def _check_sensitive_text(text: str, sensitive_values: tuple[str, ...]) -> None:
+    if (
+        _CREDENTIAL_TEXT.search(text)
+        or _CREDENTIAL_FIELD.search(text)
+        or any(secret and secret in text for secret in sensitive_values)
+    ):
+        raise SessionStoreError("sensitive_record")
+
+
 def _sensitive(value: object, sensitive_values: tuple[str, ...]) -> None:
     if isinstance(value, str):
-        check_sensitive(value, sensitive_values)
-        if _CREDENTIAL_FIELD.search(value):
-            raise SessionStoreError("sensitive_record")
+        _check_sensitive_text(value, sensitive_values)
     elif isinstance(value, dict):
         for key, item in value.items():
             if (
@@ -133,14 +146,9 @@ def validate_record(
         if len(raw) > limit:
             raise SessionStoreError("record_limit")
         _sensitive(value.model_dump(mode="json"), sensitive_values)
-        text = raw.decode("utf-8")
-        check_sensitive(text, sensitive_values)
-        if _CREDENTIAL_FIELD.search(text):
-            raise SessionStoreError("sensitive_record")
+        _check_sensitive_text(raw.decode("utf-8"), sensitive_values)
     except SessionStoreError:
         raise
-    except MemoryError:
-        raise SessionStoreError("sensitive_record") from None
     except (ValueError, TypeError, RecursionError, OverflowError):
         raise SessionStoreError("invalid_record") from None
 
@@ -181,9 +189,7 @@ def decode_record[T: StrictDTO](
         ):
             raise SessionStoreError("format_unsupported")
         _sensitive(data, sensitive_values)
-        check_sensitive(raw.decode("utf-8"), sensitive_values)
-        if _CREDENTIAL_FIELD.search(raw.decode("utf-8")):
-            raise SessionStoreError("sensitive_record")
+        _check_sensitive_text(raw.decode("utf-8"), sensitive_values)
         # JSON strict mode accepts JSON arrays for immutable tuples, but no coercion
         # of strings to integers/bools or unknown fields. Revalidates model_copy.
         checked = kind.model_validate_json(raw, strict=True)
@@ -192,8 +198,6 @@ def decode_record[T: StrictDTO](
         return checked
     except SessionStoreError:
         raise
-    except MemoryError:
-        raise SessionStoreError("sensitive_record") from None
     except (ValidationError, ValueError, TypeError, RecursionError, OverflowError):
         raise SessionStoreError("invalid_record") from None
 

@@ -1,8 +1,6 @@
 """Host-private Markdown storage for one personal Agent.
 
-The repository's Project Memory is evidence-backed and human-approved; this
-store is deliberately separate: AGENT.md, MEMORY.md and daily notes belong to
-the personal Agent and live outside every Agent-writable Workspace.
+AGENT.md, MEMORY.md and daily notes live outside Agent-writable workspaces.
 """
 
 from __future__ import annotations
@@ -80,7 +78,7 @@ def _append(path: Path, text: str) -> None:
         path.chmod(0o600)
 
 
-class AgentMemoryStore:
+class PersonalMemoryStore:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.agent_md_path = root / "AGENT.md"

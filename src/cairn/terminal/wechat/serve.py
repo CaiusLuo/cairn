@@ -29,13 +29,6 @@ from dotenv import dotenv_values
 
 from cairn.core.schedule import ScheduleJob, ScheduleKind
 from cairn.core.task_board import TaskSource
-from cairn.infra.agent_memory.store import (
-    AgentMemoryStore,
-    default_agent_home,
-)
-from cairn.infra.agent_memory.store import (
-    ensure_outside_workspace as ensure_agent_home_outside_workspace,
-)
 from cairn.infra.config import default_provider, load_project_providers
 from cairn.infra.mcp.config import McpServerConfig
 from cairn.infra.schedule.store import ScheduleStore, default_schedule_dir
@@ -65,14 +58,21 @@ from cairn.infra.wechat.state import (
 )
 from cairn.infra.workspace.lease import WorkspaceLease
 from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.agent import Agent
-from cairn.runtime.agent_memory.service import PersonalMemoryService
-from cairn.runtime.agent_memory.tools import (
+from cairn.memory.service import PersonalMemoryService
+from cairn.memory.store import (
+    PersonalMemoryStore,
+    default_agent_home,
+)
+from cairn.memory.store import (
+    ensure_outside_workspace as ensure_agent_home_outside_workspace,
+)
+from cairn.memory.tools import (
     MemoryCorrectTool,
     MemoryForgetTool,
     MemoryRememberTool,
     MemorySearchTool,
 )
+from cairn.runtime.agent import Agent
 from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.lifecycle import await_owned, settle_owned
 from cairn.runtime.prompts import system_prompt_for
@@ -324,7 +324,7 @@ def default_task_executor(
         raise ValueError("unsupported task source for WeChat executor")
     agent_home = default_agent_home()
     ensure_agent_home_outside_workspace(agent_home, config.workspace)
-    personal_memory = PersonalMemoryService(AgentMemoryStore(agent_home))
+    personal_memory = PersonalMemoryService(PersonalMemoryStore(agent_home))
     known_secret_values: list[str] = [config.account.bot_token]
     personal_memory.add_secret_values(tuple(known_secret_values))
     memory_tools = (
@@ -729,7 +729,7 @@ def default_conversation_executor(
     """Full-capability background conversation; same provider/tool policy as tasks."""
     agent_home = default_agent_home()
     ensure_agent_home_outside_workspace(agent_home, config.workspace)
-    personal_memory = PersonalMemoryService(AgentMemoryStore(agent_home))
+    personal_memory = PersonalMemoryService(PersonalMemoryStore(agent_home))
     memory_tools: tuple[Tool, ...] = (
         MemorySearchTool(personal_memory),
         MemoryRememberTool(personal_memory),

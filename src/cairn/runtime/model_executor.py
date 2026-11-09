@@ -8,7 +8,6 @@ from cairn.core.compaction import CompactionRecord
 from cairn.core.context import ContextBudget, ContextBuilder, ContextRequest
 from cairn.core.events import Event
 from cairn.core.llm import LLMClient, StreamingLLMClient, StreamProtocolError
-from cairn.core.memory.context import MemoryContext
 from cairn.core.model_manager import ModelConfig, ModelManager
 from cairn.core.models import LLMResponse, Message
 from cairn.infra.llm.errors import _short_diagnostic, is_fallback_error
@@ -190,7 +189,6 @@ class ModelExecutor:
         history: list[Message],
         current_turn_start: int,
         tools: list[dict[str, Any]],
-        project_memory: MemoryContext | None = None,
         compaction: "CompactionRecord | None" = None,
         on_request: Callable[
             [ContextRequest, ContextBudget, ModelConfig | None, str | None, int], None
@@ -233,7 +231,6 @@ class ModelExecutor:
                         history=history,
                         current_turn_start=current_turn_start,
                         tools=tools,
-                        project_memory=project_memory,
                         compaction=compaction,
                     )
                 )

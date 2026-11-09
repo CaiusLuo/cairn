@@ -18,7 +18,6 @@ import httpx
 import qrcode  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
-from cairn.infra.agent_memory.store import AgentMemoryStore
 from cairn.infra.atomic_json import atomic_write
 from cairn.infra.config.server import DEFAULT_SERVICES, Services
 from cairn.infra.redaction import redact_value
@@ -27,14 +26,16 @@ from cairn.infra.runtime_client import RuntimeClient
 from cairn.infra.schedule.store import ScheduleStore
 from cairn.infra.skills import layered_skills
 from cairn.infra.tools.skill import ReadSkillResourceTool, ReadSkillTool
-from cairn.runtime.agent import Agent
-from cairn.runtime.agent_memory.service import PersonalMemoryService
-from cairn.runtime.agent_memory.tools import (
+from cairn.memory.commands import MemoryController
+from cairn.memory.service import PersonalMemoryService
+from cairn.memory.store import PersonalMemoryStore
+from cairn.memory.tools import (
     MemoryCorrectTool,
     MemoryForgetTool,
     MemoryRememberTool,
     MemorySearchTool,
 )
+from cairn.runtime.agent import Agent
 from cairn.runtime.lifecycle import await_owned, settle_owned
 from cairn.runtime.scheduling.tools import (
     ScheduleCreateTool,
@@ -45,7 +46,6 @@ from cairn.runtime.service_execution import ServiceExecution
 from cairn.runtime.task_board.service import TaskBoardService
 from cairn.runtime.task_service import TaskService
 from cairn.terminal.headless import HeadlessResult, HeadlessStatus
-from cairn.terminal.memory.controller import MemoryController
 from cairn.terminal.schedule.controller import ScheduleController
 from cairn.terminal.task_board.controller import TaskBoardController
 from cairn.terminal.wechat.session import WechatSessionController
@@ -105,7 +105,7 @@ class ServerControls:
             else ControlState()
         )
         self.memory = PersonalMemoryService(
-            AgentMemoryStore(agent_home),
+            PersonalMemoryStore(agent_home),
             secret_values=(*execution.sensitive_values, token),
             enabled=services.memory,
         )

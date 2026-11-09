@@ -9,7 +9,7 @@ from functools import partial
 
 from cairn.core.model_manager import ModelConfig
 from cairn.core.provider_catalog import NamedProvider
-from cairn.terminal.action import Action, ActionRow, note, refusal
+from cairn.shared.action import Action, ActionRow, note, refusal
 from cairn.terminal.commands.context import CommandContext
 
 PROVIDER_USAGE = (

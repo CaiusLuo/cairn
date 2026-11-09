@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from cairn.terminal.action import Action, correction
+from cairn.shared.action import Action, correction
 from cairn.terminal.commands.context import CommandContext
 
 

@@ -25,13 +25,6 @@ from cairn.core.permissions import (
 )
 from cairn.core.provider_catalog import NamedProvider, ProviderCatalog
 from cairn.core.task_board import TaskSource
-from cairn.infra.agent_memory.store import (
-    AgentMemoryStore,
-    default_agent_home,
-)
-from cairn.infra.agent_memory.store import (
-    ensure_outside_workspace as ensure_agent_home_outside_workspace,
-)
 from cairn.infra.config import (
     CAIRN_MAX_STEPS_ENV_NAME,
     ProjectProviders,
@@ -57,14 +50,22 @@ from cairn.infra.tools.filesystem_access import normalize_access_root
 from cairn.infra.wechat.state import default_state_dir
 from cairn.infra.workspace.lease import WorkspaceLease
 from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.agent import Agent
-from cairn.runtime.agent_memory.service import PersonalMemoryService
-from cairn.runtime.agent_memory.tools import (
+from cairn.memory.commands import MemoryController
+from cairn.memory.service import PersonalMemoryService
+from cairn.memory.store import (
+    PersonalMemoryStore,
+    default_agent_home,
+)
+from cairn.memory.store import (
+    ensure_outside_workspace as ensure_agent_home_outside_workspace,
+)
+from cairn.memory.tools import (
     MemoryCorrectTool,
     MemoryForgetTool,
     MemoryRememberTool,
     MemorySearchTool,
 )
+from cairn.runtime.agent import Agent
 from cairn.runtime.assembly import build_agent
 from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.lifecycle import await_owned, settle_owned
@@ -94,7 +95,7 @@ from cairn.runtime.task_board.tools import (
 from cairn.runtime.turn.compaction import CompactionOutcome
 from cairn.runtime.turn.hook import run_compaction
 from cairn.runtime.turn.steering import PendingMessage, SteerQueue
-from cairn.terminal.action import (
+from cairn.shared.action import (
     Action,
     ActionRow,
     Tone,
@@ -123,7 +124,6 @@ from cairn.terminal.headless import (
     task_app,
 )
 from cairn.terminal.input import CliInput
-from cairn.terminal.memory.controller import MemoryController
 from cairn.terminal.output import (
     StreamingDisplay,
     confirm_provider_access,
@@ -1348,7 +1348,7 @@ async def main(
     skill_catalog = layered_skills(workspace.root)
     agent_home = default_agent_home()
     ensure_agent_home_outside_workspace(agent_home, workspace.root)
-    personal_memory = PersonalMemoryService(AgentMemoryStore(agent_home))
+    personal_memory = PersonalMemoryService(PersonalMemoryStore(agent_home))
     provider_secret_values = tuple(
         value
         for key in secret_env_keys

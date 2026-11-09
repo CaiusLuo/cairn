@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from cairn.core.agent_memory import MemoryKind
-from cairn.runtime.agent_memory.service import PersonalMemoryService
-from cairn.terminal.action import Action, correction, note
+from cairn.memory.models import MemoryKind
+from cairn.memory.service import PersonalMemoryService
+from cairn.shared.action import Action, correction, note
 
 
 class MemoryController:

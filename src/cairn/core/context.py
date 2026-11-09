@@ -12,12 +12,6 @@ from cairn.core.compaction.budget_values import (
     TokenCount,
 )
 from cairn.core.compaction.replacement import folded_placeholder
-from cairn.core.memory.context import (
-    MEMORY_DATA_POLICY,
-    MemoryContext,
-    MemoryContextItem,
-    render_memory,
-)
 from cairn.core.models import Message, ToolCall
 
 __all__ = [
@@ -106,10 +100,6 @@ class ContextRequest:
     tokens_after: TokenCount
     omitted_turns: int
     omitted_messages: int
-    memory_selected_ids: tuple[str, ...] = ()
-    memory_included_ids: tuple[str, ...] = ()
-    memory_dropped_ids: tuple[str, ...] = ()
-    memory_tokens: int = 0
     #: Whether a compaction record replaced part of the history in this view.
     compacted: bool = False
     #: Messages removed from this view by the substitution, not by turn trimming.
@@ -329,7 +319,6 @@ class ContextBuilder:
         history: list[Message],
         current_turn_start: int,
         tools: list[dict[str, Any]],
-        project_memory: MemoryContext | None = None,
         compaction: CompactionRecord | None = None,
     ) -> ContextRequest:
         """Build the request view, substituting a settled range when compacted.
@@ -353,7 +342,7 @@ class ContextBuilder:
             tools=tools,
         )
         if compaction is None:
-            return self._with_memory(baseline, project_memory, system_messages, tools)
+            return baseline
         # Measured against the conversation as recorded, so the saving is the
         # whole benefit of the substitution rather than the part turn trimming
         # happened to leave behind.
@@ -374,7 +363,7 @@ class ContextBuilder:
                 history[original_start:], baseline.messages[view_start:], strict=True
             )
         )
-        baseline = replace(
+        return replace(
             baseline,
             compacted=bool(compaction.retained_from and not baseline.omitted_messages),
             compacted_messages=compaction.retained_from
@@ -384,47 +373,6 @@ class ContextBuilder:
             compaction_tokens_saved=max(
                 0, uncompacted.tokens - baseline.tokens_after.tokens
             ),
-        )
-        return self._with_memory(baseline, project_memory, system_messages, tools)
-
-    def _with_memory(
-        self,
-        baseline: ContextRequest,
-        project_memory: MemoryContext | None,
-        system_messages: list[Message],
-        tools: list[dict[str, Any]],
-    ) -> ContextRequest:
-        if project_memory is None or not project_memory.items:
-            return baseline
-        # Preserve the measured baseline history suffix. Optional evidence can
-        # never cause another round of history trimming or split a tool group.
-        prefix = len(system_messages) + bool(baseline.omitted_turns)
-        included: tuple[MemoryContextItem, ...] = ()
-        dropped: list[str] = []
-        messages = baseline.messages
-        count = baseline.tokens_after
-        for item in project_memory.items:
-            proposed = (*included, item)
-            view = [
-                *baseline.messages[:prefix],
-                Message(role="system", content=MEMORY_DATA_POLICY),
-                Message(role="user", content=render_memory(proposed)),
-                *baseline.messages[prefix:],
-            ]
-            measured = self._count(view, tools)
-            cost = max(0, measured.tokens - baseline.tokens_after.tokens)
-            if cost <= project_memory.max_tokens and self._fits(measured):
-                included, messages, count = proposed, view, measured
-            else:
-                dropped.append(item.id)
-        return replace(
-            baseline,
-            messages=messages,
-            tokens_after=count,
-            memory_selected_ids=tuple(item.id for item in project_memory.items),
-            memory_included_ids=tuple(item.id for item in included),
-            memory_dropped_ids=tuple(dropped),
-            memory_tokens=max(0, count.tokens - baseline.tokens_after.tokens),
         )
 
     def _build_folded(

@@ -184,14 +184,10 @@ def test_import_targets_include_package_siblings() -> None:
 
 
 def test_independent_effect_owners_do_not_import_each_other() -> None:
-    # Local Git and remote GitHub have different safety boundaries. Likewise,
-    # approval storage and session receipts must not borrow another store's
-    # lifecycle. Shared SQLite version policy belongs in infra.sqlite_policy.
+    # Local Git and remote GitHub have different safety boundaries.
     independent = (
         ("git", "github"),
         ("github", "git"),
-        ("memory", "sessions"),
-        ("sessions", "memory"),
     )
     violations: list[str] = []
     for owner, forbidden in independent:

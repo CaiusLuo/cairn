@@ -192,7 +192,6 @@ class DurableSession(Session):
             agent.model_executor,
             agent.permission_handler,
             agent.repo_context_provider,
-            agent.memory_reader,
             agent.provider_name,
             agent.system_prompt,
             agent.after_tools,
@@ -203,11 +202,11 @@ class DurableSession(Session):
 
     def _check_runtime(self) -> None:
         current = self._live_runtime()
-        # Collaborator equality does not grant object ownership. The first six
+        # Collaborator equality does not grant object ownership. The first five
         # entries are exact objects; the rest are frozen configuration facts.
         if (
-            any(a is not b for a, b in zip(self._runtime[:6], current[:6], strict=True))
-            or self._runtime[6:] != current[6:]
+            any(a is not b for a, b in zip(self._runtime[:5], current[:5], strict=True))
+            or self._runtime[5:] != current[5:]
         ):
             raise SessionAdmissionError("Runtime binding requires reconciliation.")
 
@@ -240,12 +239,6 @@ class DurableSession(Session):
             if (
                 agent.repo_context_provider is not None
                 and str(agent.repo_context_provider.workspace.root)
-                != workspace.root.path
-            ):
-                raise SessionAdmissionError("Agent Workspace mismatch.")
-            if (
-                agent.memory_reader is not None
-                and str(agent.memory_reader.resolver.workspace.root)
                 != workspace.root.path
             ):
                 raise SessionAdmissionError("Agent Workspace mismatch.")

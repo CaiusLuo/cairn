@@ -49,7 +49,7 @@ from prompt_toolkit.widgets import HorizontalLine
 from rich.console import Console
 
 from cairn.runtime.turn.steering import PendingMessage, SteerQueue
-from cairn.terminal.action import Action, Tone
+from cairn.shared.action import Action, Tone
 from cairn.terminal.live import LiveRegion
 from cairn.terminal.pacing import StreamPacer
 from cairn.terminal.palette import Palette

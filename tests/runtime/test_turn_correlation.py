@@ -99,7 +99,7 @@ def test_fallback_attempt_records_a_fixed_reason() -> None:
     trace = TurnTrace(agent, RunBudget(max_steps=3))
     trace.start()
     trace.begin_step(
-        AttemptContext(step=1, tool_schema_count=0, system_message_count=1, memory=None)
+        AttemptContext(step=1, tool_schema_count=0, system_message_count=1)
     )
     trace.on_request(
         _request(builder),
@@ -125,7 +125,7 @@ def test_first_attempt_has_no_fallback_reason() -> None:
     trace = TurnTrace(agent, RunBudget(max_steps=3))
     trace.start()
     trace.begin_step(
-        AttemptContext(step=1, tool_schema_count=0, system_message_count=0, memory=None)
+        AttemptContext(step=1, tool_schema_count=0, system_message_count=0)
     )
     trace.on_response(LLMResponse(content="ok"))
     trace.close(None)

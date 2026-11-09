@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cairn.infra.agent_memory.store import AgentMemoryStore
-from cairn.runtime.agent_memory.service import PersonalMemoryService
+from cairn.memory.service import PersonalMemoryService
+from cairn.memory.store import PersonalMemoryStore
 
 
 def test_weak_match_keeps_identity_candidate(tmp_path: Path) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     store.ensure_initialized()
     store.append_memory_md("\n- 姓名: 张三\n- 我是软件工程师\n")
     service = PersonalMemoryService(store)

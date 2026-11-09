@@ -5,10 +5,10 @@ import json
 import threading
 from pathlib import Path
 
-from cairn.core.agent_memory import PersonalMemoryContext
 from cairn.core.models import LLMResponse
-from cairn.infra.agent_memory.store import AgentMemoryStore
-from cairn.runtime.agent_memory.service import PersonalMemoryService
+from cairn.memory.models import PersonalMemoryContext
+from cairn.memory.service import PersonalMemoryService
+from cairn.memory.store import PersonalMemoryStore
 
 
 class FakeLLM:
@@ -52,7 +52,7 @@ def test_daily_shrinking_drops_complete_entries_not_half_an_entry() -> None:
 def test_existing_long_term_memory_supplies_profile_when_agent_md_is_template(
     tmp_path: Path,
 ) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     store.ensure_initialized()
     store.append_memory_md("\n- 姓名: 李四\n- 喜欢中文\n")
     service = PersonalMemoryService(store)
@@ -140,7 +140,7 @@ def test_long_term_section_facts_are_selected_individually() -> None:
 
 
 def test_profile_extraction_redacts_and_preserves_source(tmp_path: Path) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     store.ensure_initialized()
     store.append_memory_md(
         "\n- [legacy] Name: Alex\n- [legacy] secret: fake-provider-key\n"
@@ -159,7 +159,7 @@ def test_profile_extraction_redacts_and_preserves_source(tmp_path: Path) -> None
 
 
 def test_default_templates_do_not_trigger_an_extra_request(tmp_path: Path) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     store.ensure_initialized()
     llm = FakeLLM()
     assert asyncio.run(PersonalMemoryService(store).ensure_profile(llm)) is None
@@ -167,7 +167,7 @@ def test_default_templates_do_not_trigger_an_extra_request(tmp_path: Path) -> No
 
 
 def test_fabricated_profile_fact_is_rejected(tmp_path: Path) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     store.ensure_initialized()
     store.append_memory_md("\n- [legacy] Name: Alex\n")
     error = asyncio.run(
@@ -180,7 +180,7 @@ def test_fabricated_profile_fact_is_rejected(tmp_path: Path) -> None:
 
 
 def test_agent_source_is_not_misreported_as_memory(tmp_path: Path) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     store.ensure_initialized()
     store.write_agent_md("# Personal\n\n## Preferences\n- prefers tabs\n")
     assert (
@@ -201,7 +201,7 @@ def test_profile_extraction_failure_is_redacted_and_does_not_block(
         async def generate(self, messages, tools=None):  # type: ignore[no-untyped-def]
             raise RuntimeError("provider fake-provider-key failed")
 
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     store.ensure_initialized()
     store.append_memory_md("\n- [legacy] fact\n")
     service = PersonalMemoryService(store, secret_values=("fake-provider-key",))
@@ -212,7 +212,7 @@ def test_profile_extraction_failure_is_redacted_and_does_not_block(
 
 
 def test_profile_correction_and_deletion_cover_profile(tmp_path: Path) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     store.ensure_initialized()
     store.write_profile(
         "# Personal profile\n- [file: MEMORY.md] Name: Alex\n- [file: MEMORY.md] likes tea\n"
@@ -225,7 +225,7 @@ def test_profile_correction_and_deletion_cover_profile(tmp_path: Path) -> None:
 
 
 def test_migrated_profile_is_corrected_and_forgotten_end_to_end(tmp_path: Path) -> None:
-    store = AgentMemoryStore(tmp_path / "agent")
+    store = PersonalMemoryStore(tmp_path / "agent")
     store.ensure_initialized()
     store.append_memory_md("\n- [legacy] Name: Alex\n")
     service = PersonalMemoryService(store)
@@ -254,7 +254,7 @@ def test_forget_during_profile_extraction_cannot_resurrect_old_fact(
             return LLMResponse(content="[MEMORY.md] Name: Alex")
 
     async def scenario() -> str:
-        store = AgentMemoryStore(tmp_path / "agent")
+        store = PersonalMemoryStore(tmp_path / "agent")
         store.ensure_initialized()
         store.append_memory_md("\n- [legacy] Name: Alex\n")
         service = PersonalMemoryService(store)
