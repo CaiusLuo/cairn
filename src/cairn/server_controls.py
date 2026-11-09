@@ -388,8 +388,20 @@ class ServerControls:
     async def command(self, request: dict[str, Any]) -> dict[str, Any]:
         if self.closed:
             raise RuntimeError("Server is stopping")
-        if request.get("source") == "wechat" and request.get("task_id") is not None:
-            return await self._wechat_task_command(request)
+        is_wechat_task = (
+            request.get("source") == "wechat" and request.get("task_id") is not None
+        )
+        if is_wechat_task:
+            # Authorization is checked before a receipt can be used.  A sender
+            # whose access was revoked cannot replay an old successful request.
+            try:
+                self._require_wechat_task(
+                    str(request["task_id"]),
+                    request.get("sender"),
+                    request.get("account"),
+                )
+            except KeyError:
+                return {"ok": False, "message": "未找到对应的任务。"}
         name, args = request["command"], request.get("args", "")
         key = request["request_id"]
         fingerprint = digest({k: v for k, v in request.items() if k != "request_id"})
@@ -424,6 +436,9 @@ class ServerControls:
                 )
             )
             or (name == "/task" and args.split()[:1] in [[], ["list"], ["show"]])
+            or (
+                is_wechat_task and name in {"/status", "/task", "/history", "/recovery"}
+            )
         )
         if readonly:
             return await self._execute(request)
@@ -466,6 +481,8 @@ class ServerControls:
             return result
 
     async def _execute(self, request: dict[str, Any]) -> dict[str, Any]:
+        if request.get("source") == "wechat" and request.get("task_id") is not None:
+            return await self._wechat_task_command(request)
         name, args = request["command"], request.get("args", "")
         source = request.get("source", "web")
         service = {"/wx": "wechat", "/schedule": "schedule", "/memory": "memory"}.get(

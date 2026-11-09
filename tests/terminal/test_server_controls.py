@@ -801,3 +801,78 @@ def test_wechat_delivery_failure_is_recorded_without_reexecution(
             assert len(app.state.runtime.list_tasks()) == 1
 
     asyncio.run(scenario())
+
+
+def test_wechat_task_commands_use_receipts_and_revalidate_authorization(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        app, _api = control_runtime(tmp_path)
+        save_account(tmp_path)
+        async with app.router.lifespan_context(app):
+            controls = app.state.controls
+            controls.state = controls.state.model_copy(
+                update={"trusted_senders": ("u2",)}
+            )
+            task = app.state.runtime.submit(
+                "projection test",
+                "wechat",
+                request_id="wx-task-submit",
+                mode="development",
+                delivery_recipient="u2",
+                delivery_account="bot-1",
+            )
+            calls: list[dict[str, Any]] = []
+
+            async def fake(request: dict[str, Any]) -> dict[str, Any]:
+                calls.append(dict(request))
+                current = app.state.runtime.inspect(request["task_id"])
+                return {"ok": True, "task": current.model_dump(mode="json")}
+
+            controls._wechat_task_command = fake
+            request = {
+                "command": "/reply",
+                "args": "one input",
+                "task_id": task.task_id,
+                "request_id": "wx-command-1",
+                "source": "wechat",
+                "sender": "u2",
+                "account": "bot-1",
+            }
+            first = await controls.command(request)
+            second = await controls.command(dict(request))
+            assert first == second
+            assert len(calls) == 1
+
+            with pytest.raises(ValueError, match="different input"):
+                await controls.command({**request, "args": "different input"})
+
+            # A revoked sender cannot use the historical receipt to read the
+            # result.
+            controls.state = controls.state.model_copy(update={"trusted_senders": ()})
+            revoked = await controls.command(
+                {
+                    **request,
+                    "request_id": "wx-command-revoked",
+                    "args": "one input",
+                }
+            )
+            assert revoked["ok"] is False
+
+            # Concurrent identical requests share one operation.
+            controls.state = controls.state.model_copy(
+                update={"trusted_senders": ("u2",)}
+            )
+            concurrent = {
+                **request,
+                "request_id": "wx-command-concurrent",
+                "args": "same input",
+            }
+            results = await asyncio.gather(
+                controls.command(dict(concurrent)),
+                controls.command(dict(concurrent)),
+            )
+            assert results[0] == results[1]
+            assert len(calls) == 2
+
+    asyncio.run(scenario())
