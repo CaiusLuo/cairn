@@ -100,7 +100,6 @@ Use current code and behavioral tests to guide changes. Architecture and storage
 can evolve with the product; this documentation describes the implementation.
 
 ```sh
-uv run pytest -q tests/docs
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src tests

@@ -23,7 +23,6 @@ Cairn is a personal Agent for a Debian server, with one shared execution service
 - Keep only documentation useful for the current code, installation and operation. Delete stale designs, duplicate guides and historical planning without ceremonial migration procedures.
 - Update the README or active operations guide when a user-facing command changes. Do not present planned features as already implemented.
 - Preserve data or fixtures actually consumed by running code or tests; historical prose and unused experiment outputs may be removed.
-- Review documentation links with `uv run pytest -q tests/docs` when applicable. Adapt documentation-only presence checks when deliberately retiring historical documents.
 
 ## Handoff
 

@@ -8,7 +8,6 @@ Tests follow Cairn's package ownership:
 | `runtime/` | Agent turns, fallback, memory lifecycle, tasks, review, and workflows |
 | `infra/` | Configuration, Git and GitHub adapters, LLM clients, tools, workspace, traces, memory storage, and repository graphs |
 | `terminal/` | CLI startup, provider and model selection, input handling, commands, and rendered output |
-| `docs/` | Documentation navigation: relative links, referenced source paths, and documented test commands |
 | `support/` | Shared deterministic runtime doubles, Git helpers, local-shell readiness helpers, and WeChat service fixtures |
 | `runtime/test_wechat_service*.py` | WeChat service execution, chat routing, recovery and detached-owner regressions |
 
@@ -33,9 +32,7 @@ uv run pytest tests/runtime
 uv run pytest tests/terminal/test_input.py
 ```
 
-`tests/docs` validates the documentation itself, and
-`tests/core/test_architecture.py` validates package boundaries and `core`
-independence. Both are fast and offline.
+`tests/core/test_architecture.py` validates package dependencies offline.
 
 Native Bash tests require a usable local shell, not a platform sandbox. They are
 skipped when `/bin/bash` is absent or the host is Windows. `tests/support/sandbox.py`
