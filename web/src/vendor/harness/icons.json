@@ -1,0 +1,254 @@
+{
+  "home-start": {
+    "body": "<path d=\"m3.5 10 7.3-6a1.9 1.9 0 0 1 2.4 0l7.3 6\"/><path d=\"M5.5 8.4v10.1A1.5 1.5 0 0 0 7 20h3v-5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v5h3a1.5 1.5 0 0 0 1.5-1.5V8.4\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "chat": {
+    "body": "<g class=\"motion-target\"><path d=\"M21 12a8 8 0 0 1-11.3 7.3L4 20l.7-5.7A8 8 0 1 1 21 12z\"/></g>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "board": {
+    "body": "<rect x=\"3.1\" y=\"3.6\" width=\"5\" height=\"16.8\" rx=\"1.6\"/><rect x=\"9.5\" y=\"3.6\" width=\"5\" height=\"16.8\" rx=\"1.6\"/><rect x=\"15.9\" y=\"3.6\" width=\"5\" height=\"16.8\" rx=\"1.6\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "workflow": {
+    "body": "<circle class=\"node-a\" cx=\"6\" cy=\"6\" r=\"2.2\" fill=\"currentColor\" fill-opacity=\"0\"/><circle class=\"node-b\" cx=\"6\" cy=\"18\" r=\"2.2\" fill=\"currentColor\" fill-opacity=\"0\"/><circle class=\"node-c\" cx=\"18\" cy=\"12\" r=\"2.2\" fill=\"currentColor\" fill-opacity=\"0\"/><path pathLength=\"1\" d=\"M8.2 6C12 6 14 8.2 16.45 10.45M8.2 18C12 18 14 15.8 16.45 13.55\"/><path class=\"signal\" pathLength=\"1\" d=\"M8.2 6C12 6 14 8.2 16.45 10.45M8.2 18C12 18 14 15.8 16.45 13.55\" opacity=\"0\" stroke-width=\"2.5\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "runs": {
+    "body": "<circle cx=\"12\" cy=\"12\" r=\"9\"/><path class=\"motion-target\" d=\"M10 9l5 3-5 3z\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "gate": {
+    "body": "<path class=\"gate-shield\" d=\"M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z\"/><path class=\"gate-check agent-check-draw\" pathLength=\"1\" d=\"m9 12 2 2 4-4\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "settings": {
+    "body": "<circle cx=\"12\" cy=\"12\" r=\"3\"/><path class=\"gear\" d=\"M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "panel-left": {
+    "body": "<rect x=\"3\" y=\"3\" width=\"18\" height=\"18\" rx=\"2\"/><path d=\"M9 3v18\"/><path d=\"m16 15-3-3 3-3\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "plus": {
+    "body": "<path d=\"M12 5v14\"/><path d=\"M5 12h14\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "search": {
+    "body": "<circle cx=\"11\" cy=\"11\" r=\"7\"/><path d=\"M21 21l-4.3-4.3\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "folder": {
+    "body": "<path d=\"M3 17V7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8\"/><path class=\"front\" d=\"M3 10h18v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "chevron-down": {
+    "body": "<path d=\"M6 9l6 6 6-6\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "arrow-up": {
+    "body": "<path d=\"M12 19V5M5 12l7-7 7 7\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "stop": {
+    "body": "<g class=\"motion-target\"><rect x=\"6\" y=\"6\" width=\"12\" height=\"12\" rx=\"2\"/></g>",
+    "viewBox": "0 0 24 24",
+    "filled": true,
+    "strokeWidth": 1.2
+  },
+  "chat-artifacts": {
+    "body": "<rect x=\"4\" y=\"4\" width=\"16\" height=\"16\" rx=\"3\"/><path d=\"M14 4v16\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "close": {
+    "body": "<path d=\"M6 6l12 12M18 6L6 18\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "branch": {
+    "body": "<circle class=\"branch-start\" cx=\"12\" cy=\"19\" r=\"2\"/><circle class=\"branch-left\" cx=\"5\" cy=\"5\" r=\"2\"/><circle class=\"branch-right\" cx=\"19\" cy=\"5\" r=\"2\"/><path pathLength=\"1\" class=\"branch-routes\" d=\"M12 17v-5a5 5 0 0 0-5-5H5M12 12a5 5 0 0 1 5-5h2\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "check": {
+    "body": "<path class=\"agent-check-draw\" pathLength=\"1\" d=\"M5 12l5 5 9-11\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "clock": {
+    "body": "<circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 7v5l3 2\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "alert": {
+    "body": "<path d=\"M12 3l9 16H3z\"/><path d=\"M12 9v5\"/><path d=\"M12 17h.01\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "sun": {
+    "body": "<circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "moon": {
+    "body": "<path d=\"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "monitor": {
+    "body": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"12\" rx=\"2\"/><path d=\"M8 20h8M12 16v4\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "server": {
+    "body": "<rect x=\"3\" y=\"3\" width=\"18\" height=\"7\" rx=\"2\"/><rect x=\"3\" y=\"14\" width=\"18\" height=\"7\" rx=\"2\"/><path d=\"M7 6.5h.01\"/><path d=\"M7 17.5h.01\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "lock": {
+    "body": "<rect x=\"5\" y=\"11\" width=\"14\" height=\"10\"/><path d=\"M8 11V8a4 4 0 0 1 8 0v3\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "queue": {
+    "body": "<path d=\"M20 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h6\"/><path class=\"queue-rows\" d=\"M7 7h9M7 11h5M7 15h3\"/><circle cx=\"17\" cy=\"16\" r=\"5\"/><path class=\"queue-hand\" d=\"M17 13v3l2 1\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "edit": {
+    "body": "<g><path d=\"M4 20h4L19 9l-4-4L4 16z\"/><path d=\"M14 6l4 4\"/></g>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "trash": {
+    "body": "<g class=\"lid\"><path d=\"M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2\"/></g><path class=\"bin\" d=\"M6 7l1 13h10l1-13\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "play": {
+    "body": "<g class=\"motion-target\"><path d=\"M7 5l12 7-12 7z\"/></g>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "arrow-right": {
+    "body": "<path d=\"M5 12h14M13 6l6 6-6 6\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "artifact": {
+    "body": "<path d=\"M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z\"/><path d=\"M14 3v5h5\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "undo": {
+    "body": "<g class=\"motion\"><path class=\"p0\" d=\"M9 14 4 9l5-5\"  pathLength=\"100\"/><path class=\"p1\" d=\"M4 9h10.5a5.5 5.5 0 0 1 0 11H11\"  pathLength=\"100\"/></g>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.8
+  },
+  "redo": {
+    "body": "<g class=\"motion\"><path class=\"p0\" d=\"m15 14 5-5-5-5\"  pathLength=\"100\"/><path class=\"p1\" d=\"M20 9H9.5a5.5 5.5 0 0 0 0 11H13\"  pathLength=\"100\"/></g>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.8
+  },
+  "zoom-out": {
+    "body": "<g class=\"motion\"><path class=\"p0\" d=\"M5 12h14\"  pathLength=\"100\"/></g>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.8
+  },
+  "layout": {
+    "body": "<g class=\"motion\"><rect class=\"p0\" x=\"3\" y=\"4\" width=\"6\" height=\"5\" rx=\"1.5\" /><rect class=\"p1\" x=\"15\" y=\"4\" width=\"6\" height=\"5\" rx=\"1.5\" /><rect class=\"p2\" x=\"15\" y=\"15\" width=\"6\" height=\"5\" rx=\"1.5\" /><path class=\"p3\" d=\"M9 6.5h6M12 6.5v11h3\"  pathLength=\"100\"/></g>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.8
+  },
+  "expand": {
+    "body": "<path d=\"M9 3H3v6\"/><path d=\"M3 3l7 7\"/><path d=\"M15 21h6v-6\"/><path d=\"M21 21l-7-7\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "doc": {
+    "body": "<path pathLength=\"1\" d=\"M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z\"/><path pathLength=\"1\" d=\"M14 3v5h5\"/><path pathLength=\"1\" d=\"M9 13h6\"/><path pathLength=\"1\" d=\"M9 17h6\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "terminal": {
+    "body": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\"/><path class=\"prompt\" d=\"M7 9l3 3-3 3\"/><path class=\"cursor\" d=\"M13 15h4\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "refresh": {
+    "body": "<g class=\"motion-target\"><path d=\"M21 12a9 9 0 1 1-3-6.7L21 8\"/><path d=\"M21 3v5h-5\"/></g>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "history": {
+    "body": "<g><path d=\"M3 3v5h5\"/><path d=\"M3.05 13A9 9 0 1 0 6 5.3L3 8\"/></g><path d=\"M12 7v5l4 2\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "menu": {
+    "body": "<path d=\"M4 7h16\"/><path d=\"M4 12h16\"/><path d=\"M4 17h16\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  },
+  "sparkles": {
+    "body": "<path d=\"M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6z\"/><path d=\"M19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8z\"/>",
+    "viewBox": "0 0 24 24",
+    "filled": false,
+    "strokeWidth": 1.7
+  }
+}
