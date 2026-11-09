@@ -6,12 +6,13 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from cairn.core.domain import ConversationSource, TaskStatus
-from cairn.infra.domain_store import DomainStore
-from cairn.infra.runtime_catalog import RuntimeCatalogue, RuntimeTask
-from cairn.infra.task_board.store import TaskBoardStore
-from cairn.runtime.task_board.service import TaskBoardService
-from cairn.runtime.task_service import TaskService
+from cairn.conversation.models import ConversationSource
+from cairn.conversation.store import DomainStore
+from cairn.development.board.service import TaskBoardService
+from cairn.development.board.store import TaskBoardStore
+from cairn.development.catalogue import RuntimeCatalogue, RuntimeTask
+from cairn.development.models import TaskStatus
+from cairn.development.service import TaskService
 
 
 async def _executor(_task: RuntimeTask, _emit: object) -> str:

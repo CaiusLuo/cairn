@@ -5,10 +5,10 @@ from typing import Any
 
 import pytest
 
-from cairn.infra.runtime_catalog import RuntimeCatalogue, RuntimeTask
-from cairn.infra.task_board.store import TaskBoardStore
-from cairn.runtime.task_board.service import TaskBoardService
-from cairn.runtime.task_service import TaskService
+from cairn.development.board.service import TaskBoardService
+from cairn.development.board.store import TaskBoardStore
+from cairn.development.catalogue import RuntimeCatalogue, RuntimeTask
+from cairn.development.service import TaskService
 
 
 def test_one_owner_queue_and_cursor(tmp_path: Path) -> None:

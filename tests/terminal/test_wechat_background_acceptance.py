@@ -13,7 +13,7 @@ CHILD = r"""
 import asyncio, os
 from pathlib import Path
 from cairn.integrations.wechat.state import WechatAccount, WechatState
-from cairn.terminal.headless import HeadlessResult, HeadlessStatus
+from cairn.development.execution.headless import HeadlessResult, HeadlessStatus
 from cairn.integrations.wechat.serve import ConversationDecision, ServeConfig, serve_wechat
 
 async def classifier(text):

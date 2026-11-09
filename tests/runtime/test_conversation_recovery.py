@@ -6,9 +6,9 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from cairn.core.domain import ConversationSource, RunStatus
-from cairn.infra.domain_store import DomainStore
-from cairn.runtime.conversation_service import ConversationService
+from cairn.conversation.models import ConversationSource, RunStatus
+from cairn.conversation.service import ConversationService
+from cairn.conversation.store import DomainStore
 
 
 def test_startup_marks_running_recovery_and_schedules_queued(

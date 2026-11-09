@@ -13,6 +13,7 @@ from cairn.core.context import ContextBudget, ContextBuilder
 from cairn.core.model_manager import ModelManager
 from cairn.core.models import LLMResponse, Message
 from cairn.core.provider_catalog import NamedProvider
+from cairn.development.execution.headless import HeadlessStatus, ProviderApproval
 from cairn.infra.sessions.host import observe_workspace
 from cairn.infra.sessions.models import SessionBinding, ToolFence, TurnIntent
 from cairn.infra.workspace.workspace import Workspace
@@ -25,7 +26,6 @@ from cairn.integrations.wechat.state import WechatAccount
 from cairn.runtime.model_executor import ModelExecutor
 from cairn.runtime.provider_runtime import ProviderRuntime
 from cairn.terminal.durable import open_store
-from cairn.terminal.headless import HeadlessStatus, ProviderApproval
 from tests.support.git import initialize_repository
 from tests.support.runtime import SequenceLLM
 from tests.support.sessions import intent, settled
@@ -83,7 +83,7 @@ def configured(
         )
 
     monkeypatch.setattr(
-        "cairn.terminal.headless.build_provider_runtime", provider_runtime
+        "cairn.development.execution.headless.build_provider_runtime", provider_runtime
     )
     approval = ProviderApproval(
         name="default",
@@ -429,7 +429,7 @@ def test_chat_primary_failure_keeps_cleanup_note_and_retained_writer(
 
     config, llm = configured
     llm.responses = [LLMResponse(content="settled chat")]
-    from cairn.terminal.headless import _run_via_config_async
+    from cairn.development.execution.headless import _run_via_config_async
 
     original_run = _run_via_config_async
     original_close = DurableSession.close
@@ -487,8 +487,8 @@ def test_late_cancel_during_worker_cleanup_is_not_reported_as_success(
 ) -> None:
     from dataclasses import replace
 
+    from cairn.development.execution.headless import HeadlessResult
     from cairn.integrations.wechat.serve import ConversationDecision, serve_wechat
-    from cairn.terminal.headless import HeadlessResult
     from tests.support.wechat_service import _msg
 
     config, _llm = configured

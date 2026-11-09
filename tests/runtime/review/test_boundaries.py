@@ -10,16 +10,16 @@ import pytest
 from cairn.core.budget import RunBudget
 from cairn.core.events import Event
 from cairn.core.models import LLMResponse, Message, ToolCall
-from cairn.infra.git import WorktreeProvider, WorktreeState
-from cairn.runtime.review import FreshReviewer, ReviewStatus
-from cairn.runtime.review import git as review_git_module
-from cairn.runtime.review.git import MAX_DIFF_BYTES
-from cairn.runtime.workflow import (
+from cairn.development.review import FreshReviewer, ReviewStatus
+from cairn.development.review import git as review_git_module
+from cairn.development.review.git import MAX_DIFF_BYTES
+from cairn.development.workflow import (
     GitSnapshot,
     VerificationCheck,
     VerificationResult,
     WorkflowGit,
 )
+from cairn.development.worktree import WorktreeProvider, WorktreeState
 from tests.runtime.review.test_reviewer import TASK, finding, output, proposal
 from tests.runtime.workflow.test_local import git
 from tests.runtime.workflow.test_local import provider as provider

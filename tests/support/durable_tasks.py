@@ -15,7 +15,8 @@ from cairn.core.events import EventHandler
 from cairn.core.llm import LLMClient
 from cairn.core.models import LLMResponse, Message, ToolCall
 from cairn.core.permissions import SessionPermissionHandler
-from cairn.core.tasks import TaskSpec
+from cairn.development.execution import CodingTaskRunner
+from cairn.development.execution.models import TaskSpec
 from cairn.infra.git.context import RepoContextProvider
 from cairn.infra.sessions.host import observe_workspace
 from cairn.infra.sessions.models import HostResolution, SessionBinding
@@ -24,7 +25,6 @@ from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import Agent
 from cairn.runtime.assembly import build_agent
 from cairn.runtime.durable_session import DurableSession
-from cairn.runtime.tasks import CodingTaskRunner
 from cairn.terminal.durable import open_store
 from tests.support.git import initialize_repository
 from tests.support.runtime import SequenceLLM

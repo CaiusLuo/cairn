@@ -25,13 +25,18 @@ from cairn.core.permissions import (
     PermissionRequest,
     SessionPermissionHandler,
 )
-from cairn.infra.git import WorktreeProvider, WorktreeState
+from cairn.development.execution import (
+    CodingTaskRunner,
+    TaskResult,
+    TaskSpec,
+    TaskStatus,
+)
+from cairn.development.verification import FileContentEqualsCheck
+from cairn.development.worktree import WorktreeProvider, WorktreeState
 from cairn.infra.observability.sinks import JsonlTraceSink
 from cairn.infra.observability.storage import TraceStore
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.tasks import CodingTaskRunner, TaskResult, TaskSpec, TaskStatus
-from cairn.runtime.verification import FileContentEqualsCheck
 from tests.support.git import git, initialize_repository
 from tests.support.runtime import SequenceLLM
 from tests.support.sandbox import require_local_shell, sandbox_python

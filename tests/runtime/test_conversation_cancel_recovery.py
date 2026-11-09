@@ -8,12 +8,12 @@ from typing import Any
 
 import pytest
 
-from cairn.core.domain import ConversationSource, RunStatus
-from cairn.infra.domain_store import DomainStore
-from cairn.runtime.conversation_service import (
+from cairn.conversation.models import ConversationSource, RunStatus
+from cairn.conversation.service import (
     ConversationRecoveryRequired,
     ConversationService,
 )
+from cairn.conversation.store import DomainStore
 
 
 def test_cancel_during_tool_call_requires_recovery(tmp_path: Path) -> None:

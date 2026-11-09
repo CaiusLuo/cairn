@@ -93,11 +93,11 @@ def test_cli_schedule_and_wechat_keep_distinct_task_sources(
     from collections.abc import Awaitable, Callable
     from typing import Any
 
-    from cairn.core.task_board import TaskSource
-    from cairn.infra.task_board.store import TaskBoardStore
+    from cairn.development.board.models import TaskSource
+    from cairn.development.board.store import TaskBoardStore
+    from cairn.development.execution.headless import HeadlessResult, HeadlessStatus
     from cairn.integrations.wechat.session import WechatSessionController
     from cairn.scheduling.commands import ScheduleController
-    from cairn.terminal.headless import HeadlessResult, HeadlessStatus
 
     board_dir = tmp_path.parent / (tmp_path.name + "-board")
     state_dir = tmp_path.parent / (tmp_path.name + "-wechat-origin")

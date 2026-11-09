@@ -7,6 +7,12 @@ import pytest
 
 from cairn.core.budget import RunBudget
 from cairn.core.models import LLMResponse, ToolCall
+from cairn.development.execution.headless import (
+    HeadlessResult,
+    HeadlessStatus,
+    ProviderApproval,
+    run_headless_task,
+)
 from cairn.integrations.wechat.serve import (
     ConversationDecision,
     ServeConfig,
@@ -17,12 +23,6 @@ from cairn.integrations.wechat.state import (
     WechatLockError,
     WechatServeLock,
     WechatState,
-)
-from cairn.terminal.headless import (
-    HeadlessResult,
-    HeadlessStatus,
-    ProviderApproval,
-    run_headless_task,
 )
 from tests.support.fake_ilink import FakeILink
 from tests.support.runtime import SequenceLLM
@@ -360,9 +360,9 @@ def test_default_wechat_executor_restores_durable_history_after_restart(
     from cairn.core.budget import RunBudget
     from cairn.core.context import ContextBudget
     from cairn.core.models import LLMResponse
+    from cairn.development.execution.headless import run_headless_task
     from cairn.integrations.wechat.serve import ServeConfig, default_task_executor
     from cairn.integrations.wechat.state import WechatAccount
-    from cairn.terminal.headless import run_headless_task
     from tests.support.git import initialize_repository
     from tests.support.runtime import SequenceLLM
 
@@ -493,7 +493,8 @@ def test_configured_wechat_restores_tool_facts_after_service_restart(
             )
 
         monkeypatch.setattr(
-            "cairn.terminal.headless.build_provider_runtime", fake_provider_runtime
+            "cairn.development.execution.headless.build_provider_runtime",
+            fake_provider_runtime,
         )
         approval = ProviderApproval(
             name="default",

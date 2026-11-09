@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
+from cairn.development.execution.headless import HeadlessResult, HeadlessStatus
 from cairn.integrations.wechat.qr import render_ascii_qr
 from cairn.integrations.wechat.session import WechatSessionController
 from cairn.integrations.wechat.state import WechatAccount
-from cairn.terminal.headless import HeadlessResult, HeadlessStatus
 from tests.support.fake_ilink import FakeILink
 from tests.support.runtime import (
     SequenceLLM,  # noqa: F401  (typing/import compatibility)

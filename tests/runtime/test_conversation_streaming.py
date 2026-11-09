@@ -6,10 +6,10 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from cairn.core.domain import ConversationSource
+from cairn.conversation.models import ConversationSource
+from cairn.conversation.service import RunLedger
+from cairn.conversation.store import DomainStore
 from cairn.core.models import LLMResponse, LLMUsage
-from cairn.infra.domain_store import DomainStore
-from cairn.runtime.conversation_service import RunLedger
 from cairn.runtime.offline_model import OfflineDevelopmentModel
 from tests.support.git import initialize_repository
 

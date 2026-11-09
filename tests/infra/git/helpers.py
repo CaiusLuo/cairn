@@ -1,4 +1,4 @@
-from cairn.infra.git.worktree import WorktreeHandle, WorktreeState
+from cairn.development.worktree import WorktreeHandle, WorktreeState
 from cairn.infra.workspace.workspace import Workspace
 from tests.support.git import git
 

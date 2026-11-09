@@ -8,6 +8,10 @@ from typing import Any, cast
 import pytest
 
 from cairn.core.models import ToolResult
+from cairn.development.execution.headless import (
+    HeadlessResult,
+    HeadlessStatus,
+)
 from cairn.infra.tools.base import ToolExecutionContext
 from cairn.infra.tools.lease import LeaseTool
 from cairn.integrations.wechat.serve import (
@@ -25,10 +29,6 @@ from cairn.integrations.wechat.state import (
     WechatState,
 )
 from cairn.runtime.durable_session import DurableSession
-from cairn.terminal.headless import (
-    HeadlessResult,
-    HeadlessStatus,
-)
 from tests.support.fake_ilink import FakeILink
 from tests.support.wechat_service import (
     _client,

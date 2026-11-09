@@ -10,17 +10,18 @@ import pytest
 
 from cairn.core.budget import RunBudget
 from cairn.core.models import LLMResponse, Message, ToolCall
-from cairn.infra.git import WorktreeProvider, WorktreeState
-from cairn.infra.git.worktree import WorktreeError
-from cairn.infra.workspace.workspace import Workspace
-from cairn.integrations.github.models import GitHubRepository, IssueReference, IssueTask
-from cairn.runtime.tasks import CodingTaskRunner, TaskResult, TaskSpec, TaskStatus
-from cairn.runtime.verification import (
+from cairn.development.execution import (
+    CodingTaskRunner,
+    TaskResult,
+    TaskSpec,
+    TaskStatus,
+)
+from cairn.development.verification import (
     CheckResult,
     FileContentEqualsCheck,
     FileExistsCheck,
 )
-from cairn.runtime.workflow import (
+from cairn.development.workflow import (
     GITHUB_SECRET_ENV_KEYS,
     FixedChecksVerifier,
     GitSnapshot,
@@ -37,7 +38,10 @@ from cairn.runtime.workflow import (
     WorkflowStatus,
     persist_report,
 )
-from cairn.runtime.workflow import runner as workflow_module
+from cairn.development.workflow import runner as workflow_module
+from cairn.development.worktree import WorktreeError, WorktreeProvider, WorktreeState
+from cairn.infra.workspace.workspace import Workspace
+from cairn.integrations.github.models import GitHubRepository, IssueReference, IssueTask
 from tests.support.runtime import FailingLLM, SequenceLLM
 
 SECRETS = GITHUB_SECRET_ENV_KEYS | frozenset(

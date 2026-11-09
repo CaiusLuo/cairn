@@ -7,11 +7,11 @@ import pytest
 
 from cairn.core.budget import RunBudget
 from cairn.core.models import LLMResponse
+from cairn.development.execution.headless import HeadlessStatus, run_headless_task
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.assembly import build_agent
 from cairn.runtime.loop import run_turn
 from cairn.runtime.prompts import BASE_SYSTEM_PROMPT, system_prompt_for
-from cairn.terminal.headless import HeadlessStatus, run_headless_task
 from tests.support.runtime import SequenceLLM
 
 

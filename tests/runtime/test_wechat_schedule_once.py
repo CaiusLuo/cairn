@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from cairn.development.execution.headless import HeadlessResult
 from cairn.integrations.wechat.serve import (
     ConversationDecision,
     ServeConfig,
@@ -11,7 +12,6 @@ from cairn.integrations.wechat.serve import (
 )
 from cairn.integrations.wechat.state import WechatAccount, WechatState
 from cairn.scheduling.store import ScheduleStore
-from cairn.terminal.headless import HeadlessResult
 
 NOW = datetime.now(ZoneInfo("Asia/Shanghai"))
 

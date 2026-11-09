@@ -8,20 +8,20 @@ from typing import Any
 
 import pytest
 
-from cairn.core.task_board import TaskBoardItem, TaskBoardStatus, TaskSource
-from cairn.infra.task_board.store import (
+from cairn.development.board.models import TaskBoardItem, TaskBoardStatus, TaskSource
+from cairn.development.board.service import TaskBoardService
+from cairn.development.board.store import (
     TaskBoardBusy,
     TaskBoardStore,
     TaskBoardValidationError,
 )
-from cairn.infra.tools.base import InvalidArguments, Tool
-from cairn.runtime.task_board.service import TaskBoardService
-from cairn.runtime.task_board.tools import (
+from cairn.development.board.tools import (
     TaskCreateTool,
     TaskDetailTool,
     TaskTodoTool,
     TaskUpdateTool,
 )
+from cairn.infra.tools.base import InvalidArguments, Tool
 
 
 def test_invalid_update_does_not_corrupt_board(tmp_path: Path) -> None:
@@ -53,7 +53,7 @@ def test_set_todo_done_invalid_value_does_not_corrupt(tmp_path: Path) -> None:
 
 
 def test_task_tool_argument_contracts(tmp_path: Path) -> None:
-    from cairn.runtime.task_board.tools import TaskUseTool
+    from cairn.development.board.tools import TaskUseTool
 
     service = TaskBoardService(TaskBoardStore(tmp_path / "tasks"))
     create = TaskCreateTool(service)
@@ -158,8 +158,8 @@ def test_task_store_lock_does_not_block_event_loop(tmp_path: Path) -> None:
 
 
 def test_task_controller_local_idea_and_ascii_todos(tmp_path: Path) -> None:
-    from cairn.runtime.task_board.service import TaskBoardService
-    from cairn.terminal.task_board.controller import TaskBoardController
+    from cairn.development.board.commands import TaskBoardController
+    from cairn.development.board.service import TaskBoardService
 
     service = TaskBoardService(TaskBoardStore(tmp_path / "tasks"))
     controller = TaskBoardController(service)
@@ -180,8 +180,8 @@ def test_task_controller_local_idea_and_ascii_todos(tmp_path: Path) -> None:
 
 
 def test_controller_reports_busy_without_raising(tmp_path: Path) -> None:
-    from cairn.runtime.task_board.service import TaskBoardService
-    from cairn.terminal.task_board.controller import TaskBoardController
+    from cairn.development.board.commands import TaskBoardController
+    from cairn.development.board.service import TaskBoardService
 
     store = TaskBoardStore(tmp_path / "tasks", lock_timeout=0.1)
     controller = TaskBoardController(TaskBoardService(store))
@@ -202,8 +202,8 @@ def test_controller_reports_busy_without_raising(tmp_path: Path) -> None:
 
 
 def test_controller_invalid_update_is_not_not_found(tmp_path: Path) -> None:
-    from cairn.runtime.task_board.service import TaskBoardService
-    from cairn.terminal.task_board.controller import TaskBoardController
+    from cairn.development.board.commands import TaskBoardController
+    from cairn.development.board.service import TaskBoardService
 
     service = TaskBoardService(TaskBoardStore(tmp_path / "tasks"))
     controller = TaskBoardController(service)
@@ -217,8 +217,8 @@ def test_controller_invalid_update_is_not_not_found(tmp_path: Path) -> None:
 
 
 def test_task_bar_reads_fresh_shared_state_across_services(tmp_path: Path) -> None:
-    from cairn.runtime.task_board.service import TaskBoardService
-    from cairn.terminal.task_board.controller import TaskBoardController
+    from cairn.development.board.commands import TaskBoardController
+    from cairn.development.board.service import TaskBoardService
 
     store_a = TaskBoardStore(tmp_path / "tasks")
     service_a = TaskBoardService(store_a)
@@ -237,8 +237,8 @@ def test_task_bar_reads_fresh_shared_state_across_services(tmp_path: Path) -> No
 
 
 def test_task_todo_repeated_done_is_success(tmp_path: Path) -> None:
-    from cairn.runtime.task_board.service import TaskBoardService
-    from cairn.runtime.task_board.tools import TaskTodoTool
+    from cairn.development.board.service import TaskBoardService
+    from cairn.development.board.tools import TaskTodoTool
 
     service = TaskBoardService(TaskBoardStore(tmp_path / "tasks"))
     task = service.create("todo idempotence")
@@ -337,7 +337,7 @@ def test_oversized_task_tool_arguments_fail_before_permission(
 
 
 def test_cli_rejects_oversized_todo_without_truncating(tmp_path: Path) -> None:
-    from cairn.terminal.task_board.controller import TaskBoardController
+    from cairn.development.board.commands import TaskBoardController
 
     store = TaskBoardStore(tmp_path / "tasks")
     service = TaskBoardService(store)
@@ -403,8 +403,8 @@ def test_repeated_cancellation_waits_for_update_and_preserves_first(
 
 
 def test_task_use_links_existing_task_to_current_session(tmp_path: Path) -> None:
-    from cairn.runtime.task_board.service import TaskBoardService
-    from cairn.runtime.task_board.tools import TaskUseTool
+    from cairn.development.board.service import TaskBoardService
+    from cairn.development.board.tools import TaskUseTool
 
     creator = TaskBoardService(
         TaskBoardStore(tmp_path / "tasks"), session_id="old-session"
@@ -428,8 +428,8 @@ def test_task_use_links_existing_task_to_current_session(tmp_path: Path) -> None
 
 
 def test_task_controller_continue_does_not_create_a_new_task(tmp_path: Path) -> None:
-    from cairn.runtime.task_board.service import TaskBoardService
-    from cairn.terminal.task_board.controller import TaskBoardController
+    from cairn.development.board.commands import TaskBoardController
+    from cairn.development.board.service import TaskBoardService
 
     service = TaskBoardService(
         TaskBoardStore(tmp_path / "tasks"), session_id="new-session"
@@ -452,7 +452,7 @@ def test_task_use_preserves_facts_and_cannot_reassign_another_project(
     tmp_path: Path,
     project: str,
 ) -> None:
-    from cairn.runtime.task_board.tools import TaskUseTool
+    from cairn.development.board.tools import TaskUseTool
 
     store = TaskBoardStore(tmp_path / "tasks")
     creator = TaskBoardService(
@@ -511,7 +511,7 @@ def test_continue_without_current_session_keeps_original_association(
 def test_use_selects_locally_while_continue_updates_board_association(
     tmp_path: Path,
 ) -> None:
-    from cairn.terminal.task_board.controller import TaskBoardController
+    from cairn.development.board.commands import TaskBoardController
 
     store = TaskBoardStore(tmp_path / "tasks")
     original = store.create(

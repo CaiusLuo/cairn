@@ -13,14 +13,14 @@ from cairn.core.events import Event
 from cairn.core.models import LLMResponse, Message
 from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
 from cairn.core.repository import RepositoryEvidence
-from cairn.core.tasks import TaskSpec, TaskStatus
+from cairn.development.execution import CodingTaskRunner
+from cairn.development.execution.models import TaskSpec, TaskStatus
 from cairn.infra.git.context import RepoContextProvider
 from cairn.infra.sessions.models import SessionStoreError
 from cairn.infra.sessions.task_models import TaskRecord, TaskRevision
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.agent import SessionAdmissionError
 from cairn.runtime.session import SessionState
-from cairn.runtime.tasks import CodingTaskRunner
 from cairn.terminal.durable import open_store
 from tests.support.durable_tasks import (
     BUDGET,

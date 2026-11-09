@@ -11,6 +11,7 @@ from cairn.core.budget import RunBudget
 from cairn.core.events import Event
 from cairn.core.models import LLMResponse, ToolCall
 from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
+from cairn.development.execution.headless import HeadlessStatus, run_headless_task
 from cairn.infra.workspace.workspace import Workspace
 from cairn.integrations.mcp.activation import (
     McpActivationError,
@@ -21,7 +22,6 @@ from cairn.integrations.mcp.client import McpToolSpec
 from cairn.integrations.mcp.config import McpServerConfig
 from cairn.runtime.assembly import build_agent
 from cairn.runtime.loop import run_turn
-from cairn.terminal.headless import HeadlessStatus, run_headless_task
 from tests.support.runtime import SequenceLLM
 
 SERVER = Path(__file__).resolve().parents[1] / "support" / "mcp_server.py"

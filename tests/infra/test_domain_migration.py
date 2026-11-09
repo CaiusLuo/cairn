@@ -9,13 +9,19 @@ from uuid import uuid4
 
 import pytest
 
-from cairn.core.domain import ConversationSource, RunStatus, TaskStatus
-from cairn.core.task_board import TaskBoardItem, TaskBoardStatus, TaskSource, TaskTodo
+from cairn.conversation.models import ConversationSource, RunStatus
+from cairn.conversation.store import DomainStore
+from cairn.development.board.models import (
+    TaskBoardItem,
+    TaskBoardStatus,
+    TaskSource,
+    TaskTodo,
+)
+from cairn.development.board.store import TaskBoardStore
+from cairn.development.catalogue import RuntimeEvent, RuntimeTask
+from cairn.development.models import TaskStatus
 from cairn.infra import domain_migration
-from cairn.infra.domain_store import DomainStore
-from cairn.infra.runtime_catalog import RuntimeEvent, RuntimeTask
 from cairn.infra.sessions.models import CheckpointReceipt, Revision
-from cairn.infra.task_board.store import TaskBoardStore
 
 
 def _receipt() -> CheckpointReceipt:

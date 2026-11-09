@@ -5,10 +5,14 @@ from uuid import uuid4
 
 import pytest
 
-import cairn.infra.git.worktree as module
+import cairn.development.worktree as module
 from cairn.core.models import LLMResponse, ToolCall
-from cairn.infra.git import WorktreeProvider
-from cairn.infra.git.worktree import WorktreeError, WorktreeHandle, WorktreeState
+from cairn.development.worktree import (
+    WorktreeError,
+    WorktreeHandle,
+    WorktreeProvider,
+    WorktreeState,
+)
 from cairn.infra.workspace.workspace import Workspace
 from cairn.runtime.assembly import build_agent
 from cairn.runtime.loop import run_turn

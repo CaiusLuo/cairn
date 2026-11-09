@@ -115,7 +115,7 @@ def test_sigkill_recovery_preserves_git_and_receipts_without_turn_or_tool_replay
     async def forbidden(*args: Any, **kwargs: Any) -> None:
         pytest.fail("Recovery dispatched an Agent Turn or tool")
 
-    monkeypatch.setattr("cairn.runtime.tasks.runner.run_turn", forbidden)
+    monkeypatch.setattr("cairn.development.execution.runner.run_turn", forbidden)
     monkeypatch.setattr(fresh.agent.tools, "execute", forbidden)
     try:
         if window == "result_commit":

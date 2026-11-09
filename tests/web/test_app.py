@@ -65,8 +65,8 @@ def test_task_status_update_is_persisted_with_revision_guard(tmp_path: Path) -> 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     tasks = tmp_path / "tasks"
-    from cairn.core.task_board import TaskBoardStatus, TaskSource
-    from cairn.infra.task_board.store import TaskBoardStore
+    from cairn.development.board.models import TaskBoardStatus, TaskSource
+    from cairn.development.board.store import TaskBoardStore
 
     store = TaskBoardStore(tasks)
     task = store.create(title="W1 move me", source=TaskSource.WEB)
@@ -102,7 +102,7 @@ def test_task_status_update_validates_status_and_content_type(tmp_path: Path) ->
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     tasks = tmp_path / "tasks"
-    from cairn.infra.task_board.store import TaskBoardStore
+    from cairn.development.board.store import TaskBoardStore
 
     task = TaskBoardStore(tasks).create(title="W1 validation")
     config = WebConfig(

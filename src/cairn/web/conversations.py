@@ -18,8 +18,8 @@ from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from cairn.core.domain import ConversationSource
-from cairn.runtime.conversation_service import (
+from cairn.conversation.models import ConversationSource
+from cairn.conversation.service import (
     ConversationBusy,
     ConversationRecoveryRequired,
     ConversationService,

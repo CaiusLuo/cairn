@@ -27,7 +27,25 @@ from typing import TYPE_CHECKING, Any
 
 from dotenv import dotenv_values
 
-from cairn.core.task_board import TaskSource
+from cairn.development.board.models import TaskSource
+from cairn.development.board.service import TaskBoardService
+from cairn.development.board.store import TaskBoardStore, default_task_board_dir
+from cairn.development.board.tools import (
+    TaskCreateTool,
+    TaskDetailTool,
+    TaskListTool,
+    TaskTodoTool,
+    TaskUpdateTool,
+    TaskUseTool,
+)
+from cairn.development.execution.headless import (
+    DEFAULT_CHECK_TIMEOUT_S,
+    DEFAULT_MAX_STEPS,
+    HeadlessResult,
+    HeadlessStatus,
+    ProviderApproval,
+    _run_via_config_async,
+)
 from cairn.infra.config import default_provider, load_project_providers
 from cairn.infra.sessions.host import observe_workspace
 from cairn.infra.sessions.models import (
@@ -37,7 +55,6 @@ from cairn.infra.sessions.models import (
     SessionStoreError,
 )
 from cairn.infra.sessions.store import SessionStore
-from cairn.infra.task_board.store import TaskBoardStore, default_task_board_dir
 from cairn.infra.tools.base import Tool
 from cairn.infra.workspace.lease import WorkspaceLease
 from cairn.infra.workspace.workspace import Workspace
@@ -76,15 +93,6 @@ from cairn.runtime.agent import Agent
 from cairn.runtime.durable_session import DurableSession
 from cairn.runtime.lifecycle import await_owned, settle_owned
 from cairn.runtime.prompts import system_prompt_for
-from cairn.runtime.task_board.service import TaskBoardService
-from cairn.runtime.task_board.tools import (
-    TaskCreateTool,
-    TaskDetailTool,
-    TaskListTool,
-    TaskTodoTool,
-    TaskUpdateTool,
-    TaskUseTool,
-)
 from cairn.scheduling.models import ScheduleJob, ScheduleKind
 from cairn.scheduling.requests import (
     Clarification,
@@ -102,14 +110,6 @@ from cairn.scheduling.tools import (
     ScheduleManageTool,
 )
 from cairn.terminal.durable import open_store
-from cairn.terminal.headless import (
-    DEFAULT_CHECK_TIMEOUT_S,
-    DEFAULT_MAX_STEPS,
-    HeadlessResult,
-    HeadlessStatus,
-    ProviderApproval,
-    _run_via_config_async,
-)
 
 TaskExecutor = Callable[[str, asyncio.Event, str], Awaitable[HeadlessResult]]
 ConversationExecutor = Callable[[str, str, str], Awaitable[str]]

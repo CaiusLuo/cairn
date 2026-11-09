@@ -9,6 +9,15 @@ import pytest
 
 from cairn.core.budget import RunBudget
 from cairn.core.models import LLMResponse, ToolCall
+from cairn.development.execution.headless import (
+    HeadlessResult,
+    HeadlessStatus,
+    ProviderApproval,
+    ProviderApprovalMismatch,
+    ProviderApprovalRequired,
+    _run_via_config_async,
+    run_headless_task,
+)
 from cairn.integrations.wechat.ilink import (
     ILinkError,
     redirect_base_url,
@@ -19,15 +28,6 @@ from cairn.integrations.wechat.serve import ServeConfig, serve_wechat
 from cairn.integrations.wechat.state import (
     WechatAccount,
     WechatState,
-)
-from cairn.terminal.headless import (
-    HeadlessResult,
-    HeadlessStatus,
-    ProviderApproval,
-    ProviderApprovalMismatch,
-    ProviderApprovalRequired,
-    _run_via_config_async,
-    run_headless_task,
 )
 from tests.support.fake_ilink import FakeILink
 from tests.support.runtime import SequenceLLM
@@ -398,7 +398,9 @@ def test_default_provider_approval_is_rejected_before_credentials_or_model(
     monkeypatch.setattr(
         "cairn.infra.config.admission.resolve_provider_api_key", fail_key
     )
-    monkeypatch.setattr("cairn.terminal.headless.build_provider_runtime", fail_runtime)
+    monkeypatch.setattr(
+        "cairn.development.execution.headless.build_provider_runtime", fail_runtime
+    )
 
     with pytest.raises(ProviderApprovalRequired):
         asyncio.run(
@@ -463,7 +465,9 @@ def test_runtime_build_failure_after_approval_can_redact_resolved_key(
     def fail_runtime(*_a: object, **_k: object) -> object:
         raise RuntimeError("runtime failed with fake-provider-key")
 
-    monkeypatch.setattr("cairn.terminal.headless.build_provider_runtime", fail_runtime)
+    monkeypatch.setattr(
+        "cairn.development.execution.headless.build_provider_runtime", fail_runtime
+    )
     with pytest.raises(RuntimeError, match="fake-provider-key"):
         asyncio.run(
             _run_via_config_async(
@@ -1022,7 +1026,7 @@ def test_wechat_durable_failed_check_can_repair_and_recheck(
 ) -> None:
     from tempfile import TemporaryDirectory
 
-    from cairn.core.tasks import TaskCheckStatus
+    from cairn.development.execution.models import TaskCheckStatus
     from cairn.integrations.wechat.serve import default_task_executor
     from tests.support.git import initialize_repository
 
@@ -1389,9 +1393,9 @@ def test_wechat_tasks_link_to_their_persistent_sender_session(
     from tempfile import TemporaryDirectory
     from typing import Any
 
-    from cairn.core.task_board import TaskSource
+    from cairn.development.board.models import TaskSource
+    from cairn.development.board.store import TaskBoardStore
     from cairn.infra.sessions.store import SessionStore
-    from cairn.infra.task_board.store import TaskBoardStore
     from tests.support.git import initialize_repository
 
     with TemporaryDirectory(

@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from cairn.runtime.report_writer import ReportWriter
+from cairn.development.report import ReportWriter
 
 
 class PersistenceFailed(RuntimeError):

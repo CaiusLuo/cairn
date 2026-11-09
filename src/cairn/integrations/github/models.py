@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from cairn.core.tasks import TaskSpec
+from cairn.development.execution.models import TaskSpec
 
 
 class _FrozenModel(BaseModel):

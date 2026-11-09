@@ -5,7 +5,7 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
-from cairn.core.tasks import TaskSpec
+from cairn.development.execution.models import TaskSpec
 from cairn.integrations.github.models import (
     GitHubRepository,
     IssuePayload,

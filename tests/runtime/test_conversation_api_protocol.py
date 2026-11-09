@@ -8,8 +8,8 @@ from typing import Any
 
 import httpx
 
+from cairn.conversation.models import ConversationSource, RunStatus
 from cairn.core.budget import RunBudget
-from cairn.core.domain import ConversationSource, RunStatus
 from cairn.core.models import LLMResponse, LLMUsage, Message
 from cairn.infra.runtime_client import RuntimeClient
 from cairn.runtime.offline_model import OfflineDevelopmentModel

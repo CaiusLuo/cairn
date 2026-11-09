@@ -23,16 +23,16 @@ from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from cairn.core.task_board import TaskBoardStatus
-from cairn.infra.sessions.models import SessionStoreError
-from cairn.infra.task_board.store import (
+from cairn.development.board.models import TaskBoardStatus
+from cairn.development.board.service import TaskBoardService
+from cairn.development.board.store import (
     TaskBoardBusy,
     TaskBoardRevisionConflict,
     TaskBoardStore,
     TaskBoardValidationError,
 )
-from cairn.runtime.task_board.service import TaskBoardService
-from cairn.runtime.task_service import TaskService
+from cairn.development.service import TaskService
+from cairn.infra.sessions.models import SessionStoreError
 from cairn.web.auth import COOKIE_NAME, AuthGuard, AuthSessions
 from cairn.web.config import WebConfig
 from cairn.web.reader import SnapshotReader

@@ -697,7 +697,7 @@ def test_server_cleanup_finishes_after_repeated_cancellation(
             await asyncio.wait_for(closing, 3)
         assert app.state.runtime.worker.done()
         assert app.state.controls.memory_worker.done()
-        from cairn.infra.runtime_catalog import RuntimeCatalogue
+        from cairn.development.catalogue import RuntimeCatalogue
 
         reopened = RuntimeCatalogue(
             tmp_path / "state",

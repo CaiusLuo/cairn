@@ -19,16 +19,16 @@ from cairn.core.budget import RunBudget
 from cairn.core.context import ContextBudget
 from cairn.core.llm import LLMClient
 from cairn.core.models import LLMResponse, Message, ToolCall
-from cairn.infra.config import ConfigLayout
-from cairn.infra.observability.sinks import JsonlTraceSink, RedactingTraceSink
-from cairn.infra.observability.tracer import Tracer
-from cairn.terminal.headless import (
+from cairn.development.execution.headless import (
     HeadlessResult,
     HeadlessStatus,
     ProviderApproval,
     run_headless_task,
     task_app,
 )
+from cairn.infra.config import ConfigLayout
+from cairn.infra.observability.sinks import JsonlTraceSink, RedactingTraceSink
+from cairn.infra.observability.tracer import Tracer
 from tests.support.runtime import SequenceLLM
 from tests.support.sandbox import require_local_shell
 
@@ -287,10 +287,10 @@ def test_cli_help_is_offline(
 
 import types  # noqa: E402
 
-import cairn.terminal.headless as headless  # noqa: E402
+import cairn.development.execution.headless as headless  # noqa: E402
 from cairn.core.context import ContextBuilder  # noqa: E402
-from cairn.core.tasks import TaskSpec  # noqa: E402
-from cairn.core.tasks import TaskStatus as _TaskStatus  # noqa: E402
+from cairn.development.execution.models import TaskSpec  # noqa: E402
+from cairn.development.execution.models import TaskStatus as _TaskStatus  # noqa: E402
 
 
 def _legacy_toml(ws: Path) -> None:

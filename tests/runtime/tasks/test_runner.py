@@ -10,6 +10,13 @@ from cairn.core.context import ContextBudget, ContextBuilder
 from cairn.core.events import Event
 from cairn.core.models import LLMResponse, Message, ToolCall
 from cairn.core.permissions import PermissionResult
+from cairn.development.execution import (
+    CodingTaskRunner,
+    TaskResult,
+    TaskSpec,
+    TaskStatus,
+)
+from cairn.development.execution import runner as runner_module
 from cairn.infra.git.context import RepoContextProvider
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.workspace.workspace import Workspace
@@ -17,8 +24,6 @@ from cairn.runtime.agent import Agent
 from cairn.runtime.assembly import build_agent
 from cairn.runtime.loop import run_turn
 from cairn.runtime.model_executor import ModelExecutor
-from cairn.runtime.tasks import CodingTaskRunner, TaskResult, TaskSpec, TaskStatus
-from cairn.runtime.tasks import runner as runner_module
 from tests.support.git import git as _git
 from tests.support.git import initialize_repository as _initialize_repository
 from tests.support.runtime import FailingLLM, RecordingSink, SequenceLLM

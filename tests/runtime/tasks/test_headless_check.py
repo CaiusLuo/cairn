@@ -15,21 +15,21 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-import cairn.terminal.headless as headless
+import cairn.development.execution.headless as headless
 from cairn.core.budget import RunBudget
 from cairn.core.models import LLMResponse, ToolCall, ToolResult
-from cairn.core.tasks import TaskCheckStatus
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.lifecycle import SettleOutcome
-from cairn.runtime.tasks import check as check_module
-from cairn.runtime.tasks.check import TaskCheckSpec, _execute_host_check
-from cairn.terminal.headless import (
+from cairn.development.execution import check as check_module
+from cairn.development.execution.check import TaskCheckSpec, _execute_host_check
+from cairn.development.execution.headless import (
     HeadlessResult,
     HeadlessStatus,
     _exit_code,
     run_headless_task,
     task_app,
 )
+from cairn.development.execution.models import TaskCheckStatus
+from cairn.infra.workspace.workspace import Workspace
+from cairn.runtime.lifecycle import SettleOutcome
 from tests.support.runtime import SequenceLLM
 from tests.support.sandbox import require_local_shell
 

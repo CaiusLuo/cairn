@@ -24,7 +24,28 @@ from cairn.core.permissions import (
     SessionPermissionHandler,
 )
 from cairn.core.provider_catalog import NamedProvider, ProviderCatalog
-from cairn.core.task_board import TaskSource
+from cairn.development.board.commands import TaskBoardController
+from cairn.development.board.models import TaskSource
+from cairn.development.board.service import TaskBoardService
+from cairn.development.board.store import (
+    TaskBoardStore,
+    default_task_board_dir,
+    ensure_outside_workspace,
+)
+from cairn.development.board.tools import (
+    TaskCreateTool,
+    TaskDetailTool,
+    TaskListTool,
+    TaskTodoTool,
+    TaskUpdateTool,
+    TaskUseTool,
+)
+from cairn.development.execution.headless import (
+    HeadlessResult,
+    HeadlessStatus,
+    run_headless_task,
+    task_app,
+)
 from cairn.infra.config import (
     CAIRN_MAX_STEPS_ENV_NAME,
     ProjectProviders,
@@ -39,11 +60,6 @@ from cairn.infra.observability.storage import TraceStore
 from cairn.infra.observability.tracer import Tracer
 from cairn.infra.sessions.models import SessionStoreError
 from cairn.infra.skills import SkillLibrary, layered_skills, resolve_skills
-from cairn.infra.task_board.store import (
-    TaskBoardStore,
-    default_task_board_dir,
-    ensure_outside_workspace,
-)
 from cairn.infra.tools.filesystem_access import normalize_access_root
 from cairn.infra.workspace.lease import WorkspaceLease
 from cairn.infra.workspace.workspace import Workspace
@@ -85,15 +101,6 @@ from cairn.runtime.provider_runtime import (
     build_provider_runtime,
 )
 from cairn.runtime.session import SessionState
-from cairn.runtime.task_board.service import TaskBoardService
-from cairn.runtime.task_board.tools import (
-    TaskCreateTool,
-    TaskDetailTool,
-    TaskListTool,
-    TaskTodoTool,
-    TaskUpdateTool,
-    TaskUseTool,
-)
 from cairn.runtime.turn.compaction import CompactionOutcome
 from cairn.runtime.turn.hook import run_compaction
 from cairn.runtime.turn.steering import PendingMessage, SteerQueue
@@ -126,12 +133,6 @@ from cairn.terminal.durable import (
     show_report,
 )
 from cairn.terminal.frame import TranscriptView, frame_live_region
-from cairn.terminal.headless import (
-    HeadlessResult,
-    HeadlessStatus,
-    run_headless_task,
-    task_app,
-)
 from cairn.terminal.input import CliInput
 from cairn.terminal.output import (
     StreamingDisplay,
@@ -148,7 +149,6 @@ from cairn.terminal.output import (
 from cairn.terminal.runtime import app as runtime_app
 from cairn.terminal.selection import parse_selection_tokens
 from cairn.terminal.submission import PendingLine
-from cairn.terminal.task_board.controller import TaskBoardController
 
 app = typer.Typer(
     invoke_without_command=True,

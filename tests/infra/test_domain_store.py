@@ -4,15 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core.domain import (
-    ConversationSource,
-    RunStatus,
-    TaskStatus,
-    workspace_id_for,
-)
-from cairn.core.task_board import TaskBoardItem, TaskBoardStatus, TaskSource
-from cairn.infra.domain_store import DomainStore
-from cairn.infra.task_board.store import TaskBoardStore
+from cairn.conversation.models import ConversationSource, RunStatus, workspace_id_for
+from cairn.conversation.store import DomainStore
+from cairn.development.board.models import TaskBoardItem, TaskBoardStatus, TaskSource
+from cairn.development.board.store import TaskBoardStore
+from cairn.development.models import TaskStatus
 
 
 def store(tmp_path: Path) -> tuple[DomainStore, Path]:

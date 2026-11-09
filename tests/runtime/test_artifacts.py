@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from cairn.runtime.artifacts import atomic_write_text
+from cairn.shared.artifacts import atomic_write_text
 
 StrOrBytesPath = str | bytes | PathLike[str] | PathLike[bytes]
 

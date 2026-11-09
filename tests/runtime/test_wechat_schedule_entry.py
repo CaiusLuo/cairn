@@ -9,12 +9,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from cairn.development.execution.headless import HeadlessResult, HeadlessStatus
 from cairn.integrations.wechat.ilink import ILinkClient
 from cairn.integrations.wechat.serve import ServeConfig, serve_wechat
 from cairn.integrations.wechat.state import WechatAccount, WechatServeLock, WechatState
 from cairn.scheduling.models import ScheduleJob, ScheduleKind
 from cairn.scheduling.store import ScheduleStore
-from cairn.terminal.headless import HeadlessResult, HeadlessStatus
 from tests.support.fake_ilink import FakeILink
 
 NOW = datetime.now(ZoneInfo("Asia/Shanghai"))
@@ -438,8 +438,8 @@ def test_default_serve_distinguishes_scheduled_and_wechat_task_sources(
 ) -> None:
     from typing import Any
 
-    from cairn.core.task_board import TaskSource
-    from cairn.infra.task_board.store import TaskBoardStore
+    from cairn.development.board.models import TaskSource
+    from cairn.development.board.store import TaskBoardStore
 
     workspace = tmp_path / "ws"
     workspace.mkdir()

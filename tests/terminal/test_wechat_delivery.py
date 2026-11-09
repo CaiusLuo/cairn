@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from cairn.core.domain import RunStatus
+from cairn.conversation.models import RunStatus
 from cairn.integrations.wechat.delivery import WechatDeliveryCoordinator
 from cairn.integrations.wechat.state import WechatState
 

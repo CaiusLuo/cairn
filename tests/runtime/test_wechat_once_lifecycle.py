@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from cairn.development.execution.headless import HeadlessResult
 from cairn.integrations.wechat.serve import (
     MAX_INTENT_TASKS,
     ConversationDecision,
@@ -24,7 +25,6 @@ from cairn.integrations.wechat.state import WechatAccount, WechatState
 from cairn.runtime.lifecycle import settle_owned
 from cairn.scheduling.models import ScheduleJob
 from cairn.scheduling.store import ScheduleStore
-from cairn.terminal.headless import HeadlessResult
 from tests.support.wechat_service import _msg
 
 

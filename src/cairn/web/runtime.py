@@ -14,10 +14,10 @@ from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from cairn.infra.runtime_catalog import RuntimeSource
+from cairn.development.catalogue import RuntimeSource
+from cairn.development.service import TaskNeedsRecovery, TaskService
 from cairn.infra.sessions.models import Revision
 from cairn.runtime.lifecycle import settle_owned
-from cairn.runtime.task_service import TaskNeedsRecovery, TaskService
 
 
 class InputMessage(BaseModel):

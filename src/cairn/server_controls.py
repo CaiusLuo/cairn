@@ -18,10 +18,15 @@ import httpx
 import qrcode  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
+from cairn.development.board.commands import TaskBoardController
+from cairn.development.board.service import TaskBoardService
+from cairn.development.catalogue import RuntimeTask
+from cairn.development.execution.headless import HeadlessResult, HeadlessStatus
+from cairn.development.execution.runtime import ServiceExecution
+from cairn.development.service import TaskService
 from cairn.infra.atomic_json import atomic_write
 from cairn.infra.config.server import DEFAULT_SERVICES, Services
 from cairn.infra.redaction import redact_value
-from cairn.infra.runtime_catalog import RuntimeTask
 from cairn.infra.runtime_client import RuntimeClient
 from cairn.infra.skills import layered_skills
 from cairn.infra.tools.skill import ReadSkillResourceTool, ReadSkillTool
@@ -37,9 +42,6 @@ from cairn.memory.tools import (
 )
 from cairn.runtime.agent import Agent
 from cairn.runtime.lifecycle import await_owned, settle_owned
-from cairn.runtime.service_execution import ServiceExecution
-from cairn.runtime.task_board.service import TaskBoardService
-from cairn.runtime.task_service import TaskService
 from cairn.scheduling.commands import ScheduleController
 from cairn.scheduling.store import ScheduleStore
 from cairn.scheduling.tools import (
@@ -47,8 +49,6 @@ from cairn.scheduling.tools import (
     ScheduleListTool,
     ScheduleManageTool,
 )
-from cairn.terminal.headless import HeadlessResult, HeadlessStatus
-from cairn.terminal.task_board.controller import TaskBoardController
 
 
 class ControlState(BaseModel):

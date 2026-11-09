@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-import cairn.infra.git.worktree as module
-from cairn.infra.git.worktree import WorktreeError, WorktreeProvider, WorktreeState
+import cairn.development.worktree as module
+from cairn.development.worktree import WorktreeError, WorktreeProvider, WorktreeState
 from cairn.infra.workspace.workspace import Workspace
 from tests.infra.git.helpers import assert_removed
 from tests.support.git import git

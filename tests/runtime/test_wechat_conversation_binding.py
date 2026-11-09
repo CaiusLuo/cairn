@@ -5,7 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from cairn.infra.domain_store import DomainStore
+from cairn.conversation.store import DomainStore
 
 
 def _bind(store: DomainStore, account: str, sender: str) -> str:

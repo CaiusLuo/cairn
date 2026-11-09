@@ -10,20 +10,20 @@ from cairn.core.budget import RunBudget
 from cairn.core.context import ContextBudget
 from cairn.core.llm import LLMClient
 from cairn.core.models import LLMResponse, LLMUsage, Message, ToolCall
-from cairn.infra.observability.sinks import JsonlTraceSink
-from cairn.infra.observability.storage import TraceStore
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.tasks import (
+from cairn.development.execution import (
     CodingTaskRunner,
     TaskExecutionSummary,
     TaskSpec,
     TaskStatus,
     summarize_task,
 )
-from cairn.runtime.tasks import metrics as metrics_module
-from cairn.runtime.tasks import runner as runner_module
-from cairn.runtime.verification import CheckResult, FileContentEqualsCheck
+from cairn.development.execution import metrics as metrics_module
+from cairn.development.execution import runner as runner_module
+from cairn.development.verification import CheckResult, FileContentEqualsCheck
+from cairn.infra.observability.sinks import JsonlTraceSink
+from cairn.infra.observability.storage import TraceStore
+from cairn.infra.observability.tracer import Tracer
+from cairn.infra.workspace.workspace import Workspace
 from tests.support.durable_tasks import make_host
 from tests.support.runtime import FailingLLM, FailingSink, SequenceLLM
 

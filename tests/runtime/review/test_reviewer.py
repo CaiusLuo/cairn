@@ -6,21 +6,21 @@ import pytest
 
 from cairn.core.budget import RunBudget
 from cairn.core.models import LLMResponse, Message, ToolCall
-from cairn.infra.git import WorktreeProvider
-from cairn.runtime.agent import Agent
-from cairn.runtime.review import (
+from cairn.development.execution import TaskSpec
+from cairn.development.review import (
     FreshReviewer,
     ReviewSeverity,
     ReviewStatus,
 )
-from cairn.runtime.review import reviewer as reviewer_module
-from cairn.runtime.tasks import TaskSpec
-from cairn.runtime.workflow import (
+from cairn.development.review import reviewer as reviewer_module
+from cairn.development.workflow import (
     GitSnapshot,
     VerificationCheck,
     VerificationResult,
     WorkflowGit,
 )
+from cairn.development.worktree import WorktreeProvider
+from cairn.runtime.agent import Agent
 from tests.runtime.workflow.test_local import git
 from tests.runtime.workflow.test_local import provider as provider
 from tests.support.runtime import SequenceLLM

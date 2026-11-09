@@ -21,19 +21,18 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
-from cairn.core.domain import (
+from cairn.conversation.models import (
     Conversation,
     ConversationSource,
     Run,
     RunStatus,
-    Task,
-    TaskStatus,
     utc_now,
     workspace_id_for,
 )
-from cairn.core.task_board import TaskBoardItem, TaskBoardStatus
-from cairn.infra.domain_store import DomainStore
-from cairn.infra.runtime_catalog import CatalogueData, RuntimeEvent, RuntimeTask
+from cairn.conversation.store import DomainStore
+from cairn.development.board.models import TaskBoardItem, TaskBoardStatus
+from cairn.development.catalogue import CatalogueData, RuntimeEvent, RuntimeTask
+from cairn.development.models import Task, TaskStatus
 
 _MIGRATION_VERSION = 1
 _RUN_STATUS = {
