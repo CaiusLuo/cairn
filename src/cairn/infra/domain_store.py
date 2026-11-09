@@ -522,6 +522,79 @@ class DomainStore:
             )
         return updated
 
+    def project_task_execution(
+        self,
+        task_id: str,
+        *,
+        execution_metadata: dict[str, Any],
+        status: TaskStatus | None = None,
+        worktree: str | None = None,
+        branch: str | None = None,
+    ) -> Task | None:
+        """Merge execution projection into one Task under a SQLite write lock.
+
+        The read, sequence check and update are one transaction.  User-authored
+        fields and metadata are copied from the row read inside that transaction,
+        so a concurrent DONE/CLOSED or title/metadata edit cannot be overwritten.
+        """
+        incoming_sequence = execution_metadata.get("execution_sequence")
+        if type(incoming_sequence) is not int or incoming_sequence < 0:
+            raise ValueError("Execution projection requires a non-negative sequence")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            current = self._task(row)
+            metadata = dict(current.metadata)
+            prior_sequence = metadata.get("execution_sequence")
+            if type(prior_sequence) is int and incoming_sequence < prior_sequence:
+                return current
+            merged = {**metadata, **execution_metadata}
+            next_status = current.status
+            if status is not None and current.status not in {
+                TaskStatus.DONE,
+                TaskStatus.CLOSED,
+            }:
+                next_status = status
+            next_worktree = current.worktree if worktree is None else worktree
+            next_branch = current.branch if branch is None else branch
+            changed = (
+                next_status != current.status
+                or next_worktree != current.worktree
+                or next_branch != current.branch
+                or merged != metadata
+            )
+            if not changed:
+                return current
+            updated = Task.model_validate(
+                {
+                    **current.model_dump(),
+                    "status": next_status,
+                    "worktree": next_worktree,
+                    "branch": next_branch,
+                    "metadata": merged,
+                    "updated_at": utc_now(),
+                }
+            )
+            connection.execute(
+                """
+                UPDATE tasks SET status=?, worktree=?, branch=?, updated_at=?,
+                    metadata_json=? WHERE task_id=?
+                """,
+                (
+                    updated.status.value,
+                    updated.worktree,
+                    updated.branch,
+                    updated.updated_at,
+                    _json(updated.metadata),
+                    task_id,
+                ),
+            )
+            return updated
+
     # -- Run ---------------------------------------------------------------
 
     def create_run(

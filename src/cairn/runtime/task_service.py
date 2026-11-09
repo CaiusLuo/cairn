@@ -65,6 +65,8 @@ class TaskService:
         self.executor = executor
         self.domain_store: DomainStore | None = None
         self.domain_projection_error: str | None = None
+        self.projection_failures: dict[str, int] = {}
+        self.projection_retry_tasks: set[asyncio.Task[None]] = set()
         self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=queue_size)
         self.worker: asyncio.Task[None] | None = None
         self.active: asyncio.Task[str] | None = None
@@ -75,6 +77,7 @@ class TaskService:
     async def start(self) -> None:
         if self.worker is not None:
             raise RuntimeError("Runtime already started")
+        self.projection_failures.clear()
         for task in list(self.catalogue.data.tasks.values()):
             if task.status == "running":
                 self.record(
@@ -521,48 +524,60 @@ class TaskService:
     def _execution_status(task: RuntimeTask) -> str:
         return task.status
 
-    def _domain_status(self, task: RuntimeTask, current: Any) -> TaskStatus | None:
-        if current.status in {TaskStatus.DONE, TaskStatus.CLOSED}:
-            return None
-        if task.status == "running":
+    def _domain_status(self, task: RuntimeTask) -> TaskStatus | None:
+        # Business DONE/CLOSED is protected inside DomainStore's transaction.
+        if task.status == "queued":
+            return TaskStatus.TODO
+        if task.status in {"running", "completed"}:
             return TaskStatus.IN_PROGRESS
-        if task.status in {"paused", "recovery_required", "failed"}:
+        if task.status in {
+            "paused",
+            "recovery_required",
+            "failed",
+            "cancelled",
+        }:
             return TaskStatus.WAITING
         return None
 
     def _project_domain(self, task: RuntimeTask) -> None:
         if self.domain_store is None:
             return
-        current = self.domain_store.get_task(task.task_id)
-        if current is None:
-            # Legacy-only tasks keep their existing execution and board path.
-            return
-        metadata = dict(current.metadata)
-        prior_sequence = metadata.get("execution_sequence", -1)
-        if not isinstance(prior_sequence, int):
-            prior_sequence = -1
-        if task.sequence < prior_sequence:
-            return
-        metadata.update(
-            {
-                "execution_status": task.status,
-                "execution_task_id": task.task_id,
-                "execution_sequence": task.sequence,
-                "execution_diagnostic": task.diagnostic,
-                "execution_result": task.result,
-                "execution_session_id": task.session_id,
-                "execution_worktree": task.worktree,
-                "execution_branch": task.branch,
-            }
-        )
-        status = self._domain_status(task, current)
-        self.domain_store.update_task(
+        execution_metadata = {
+            "execution_status": task.status,
+            "execution_task_id": task.task_id,
+            "execution_sequence": task.sequence,
+            "execution_diagnostic": task.diagnostic,
+            "execution_result": task.result,
+            "execution_session_id": task.session_id,
+            "execution_worktree": task.worktree,
+            "execution_branch": task.branch,
+        }
+        self.domain_store.project_task_execution(
             task.task_id,
-            status=status,
+            execution_metadata=execution_metadata,
+            status=self._domain_status(task),
             worktree=task.worktree,
             branch=task.branch,
-            metadata=metadata,
         )
+
+    def _schedule_projection_retry(self, task_id: str, attempt: int) -> None:
+        async def retry() -> None:
+            try:
+                # Bounded backoff; no tight retry loop while SQLite is unavailable.
+                await asyncio.sleep(min(0.1 * (2 ** (attempt - 1)), 1.0))
+                if self.stopping:
+                    return
+                current = self.catalogue.data.tasks.get(task_id)
+                if current is not None:
+                    self.projections[task_id] = current
+                    self.projection_signal.set()
+            finally:
+                current_task = asyncio.current_task()
+                if current_task is not None:
+                    self.projection_retry_tasks.discard(current_task)
+
+        retry_task = asyncio.create_task(retry())
+        self.projection_retry_tasks.add(retry_task)
 
     async def _project(self) -> None:
         if self.board is None and self.domain_store is None:
@@ -584,8 +599,13 @@ class TaskService:
                 try:
                     await asyncio.to_thread(self._project_domain, task)
                     self.domain_projection_error = None
+                    self.projection_failures.pop(task.task_id, None)
                 except Exception as exc:
                     self.domain_projection_error = type(exc).__name__
+                    attempt = self.projection_failures.get(task.task_id, 0) + 1
+                    self.projection_failures[task.task_id] = attempt
+                    if attempt <= 3:
+                        self._schedule_projection_retry(task.task_id, attempt)
                 if self.board is None:
                     continue
                 now = datetime.now(UTC).isoformat()
@@ -624,6 +644,13 @@ class TaskService:
                 late = await await_owned(self.projector)
                 cancellation = cancellation or late
                 self.projector.result()
+            retry_tasks = tuple(self.projection_retry_tasks)
+            for retry in retry_tasks:
+                retry.cancel()
+            for retry in retry_tasks:
+                with suppress(asyncio.CancelledError):
+                    await retry
+            self.projection_retry_tasks.clear()
         finally:
             for task_id in tuple(self.subscribers):
                 self.publish(task_id, {"type": "shutdown"})

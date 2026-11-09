@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from cairn.core.domain import ConversationSource, TaskStatus
@@ -178,9 +179,11 @@ def test_domain_projection_failure_is_recorded_without_losing_execution(
             service.record(task, "accepted")
             await asyncio.sleep(0.05)
 
-            original = domain.update_task
-            domain.update_task = lambda *args, **kwargs: (_ for _ in ()).throw(  # type: ignore[method-assign]
-                OSError("domain write failed")
+            original = domain.project_task_execution
+            domain.project_task_execution = (  # type: ignore[method-assign]
+                lambda *args, **kwargs: (_ for _ in ()).throw(
+                    OSError("domain write failed")
+                )
             )
             service.projections["task-projected"] = service.inspect("task-projected")
             service.projection_signal.set()
@@ -188,8 +191,89 @@ def test_domain_projection_failure_is_recorded_without_losing_execution(
             assert service.domain_projection_error == "OSError"
             # RuntimeCatalogue remains the execution authority.
             assert service.inspect("task-projected").status == "queued"
-            domain.update_task = original  # type: ignore[method-assign]
+            domain.project_task_execution = original  # type: ignore[method-assign]
         finally:
             await service.close()
 
     asyncio.run(scenario())
+
+
+def test_projection_preserves_concurrent_user_closed_and_metadata(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        service, domain, _board = await _service(tmp_path)
+        try:
+            conversation = domain.create_conversation(
+                workspace=tmp_path,
+                source=ConversationSource.CLI,
+                initial_prompt="goal",
+            )
+            domain.create_task(
+                conversation_id=conversation.conversation_id,
+                goal="goal",
+                title="User title",
+                task_id="task-projected",
+                metadata={"user_key": "keep-me"},
+            )
+            task = _task()
+            service.record(task, "accepted")
+            await asyncio.sleep(0.05)
+            domain.update_task(
+                "task-projected",
+                status=TaskStatus.CLOSED,
+                metadata={"user_key": "still-here", "user_note": "do not overwrite"},
+            )
+            service._project_domain(
+                service.inspect("task-projected").model_copy(
+                    update={"status": "completed", "result": "late result"}
+                )
+            )
+            current = domain.get_task("task-projected")
+            assert current is not None
+            assert current.status == TaskStatus.CLOSED
+            assert current.title == "User title"
+            assert current.metadata["user_key"] == "still-here"
+            assert current.metadata["user_note"] == "do not overwrite"
+        finally:
+            await service.close()
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_user_close_and_projection_keep_closed(tmp_path: Path) -> None:
+    domain = DomainStore(tmp_path / "domain.sqlite3")
+    conversation = domain.create_conversation(
+        workspace=tmp_path,
+        source=ConversationSource.CLI,
+        initial_prompt="goal",
+    )
+    domain.create_task(
+        conversation_id=conversation.conversation_id,
+        goal="goal",
+        task_id="task-race",
+        status=TaskStatus.IN_PROGRESS,
+    )
+
+    def project() -> None:
+        domain.project_task_execution(
+            "task-race",
+            execution_metadata={
+                "execution_status": "completed",
+                "execution_task_id": "task-race",
+                "execution_sequence": 4,
+            },
+            status=TaskStatus.IN_PROGRESS,
+        )
+
+    def close() -> None:
+        domain.update_task("task-race", status=TaskStatus.CLOSED)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(project), executor.submit(close)]
+        for future in futures:
+            future.result()
+
+    final = domain.get_task("task-race")
+    assert final is not None
+    assert final.status == TaskStatus.CLOSED
