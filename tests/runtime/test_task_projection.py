@@ -80,6 +80,9 @@ def test_development_task_projection_statuses_order_and_worktree(
             task = _task()
             service.record(task, "accepted")
             await asyncio.sleep(0.05)
+            queued = domain.get_task("task-projected")
+            assert queued is not None
+            assert queued.status == TaskStatus.TODO
 
             await _record(service, task, "running")
             current = domain.get_task("task-projected")

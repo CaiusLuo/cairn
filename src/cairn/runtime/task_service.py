@@ -524,7 +524,7 @@ class TaskService:
     def _domain_status(self, task: RuntimeTask, current: Any) -> TaskStatus | None:
         if current.status in {TaskStatus.DONE, TaskStatus.CLOSED}:
             return None
-        if task.status in {"queued", "running"}:
+        if task.status == "running":
             return TaskStatus.IN_PROGRESS
         if task.status in {"paused", "recovery_required", "failed"}:
             return TaskStatus.WAITING
