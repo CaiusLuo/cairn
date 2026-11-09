@@ -696,7 +696,7 @@ def test_server_cleanup_finishes_after_repeated_cancellation(
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(closing, 3)
         assert app.state.runtime.worker.done()
-        assert app.state.controls.memory_worker.done()
+        assert app.state.controls.memory_journal.worker.done()
         from cairn.development.catalogue import RuntimeCatalogue
 
         reopened = RuntimeCatalogue(

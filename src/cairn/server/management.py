@@ -29,14 +29,10 @@ from cairn.development.execution.runtime import ServiceExecution
 from cairn.development.service import TaskService
 from cairn.integrations.wechat.session import WechatSessionController
 from cairn.memory.commands import MemoryController
+from cairn.memory.journal import TaskJournal
 from cairn.memory.service import PersonalMemoryService
 from cairn.memory.store import PersonalMemoryStore
-from cairn.memory.tools import (
-    MemoryCorrectTool,
-    MemoryForgetTool,
-    MemoryRememberTool,
-    MemorySearchTool,
-)
+from cairn.memory.tools import personal_memory_tools
 from cairn.scheduling.commands import ScheduleController
 from cairn.scheduling.store import ScheduleStore
 from cairn.scheduling.tools import (
@@ -121,8 +117,6 @@ class ServerControls:
         self.qr_content: str | None = None
         self.lock = asyncio.Lock()
         self.operations: dict[str, asyncio.Task[dict[str, Any]]] = {}
-        self.memory_queue: asyncio.Queue[RuntimeTask] = asyncio.Queue(maxsize=64)
-        self.memory_worker: asyncio.Task[None] | None = None
         self.delivery_tasks: set[asyncio.Task[None]] = set()
         self.delivery: Any | None = None
         self.closed = False
@@ -148,6 +142,9 @@ class ServerControls:
             on_account_changed=self._account_changed,
         )
         self.wechat.restore_senders(self.state.trusted_senders)
+        self.memory_journal = TaskJournal(
+            self.memory, owner=self.wechat.recipient_id, notice=self._notice
+        )
         self.schedules = ScheduleController(
             workspace=workspace,
             store=ScheduleStore(schedule_state),
@@ -208,7 +205,7 @@ class ServerControls:
 
     async def start(self) -> None:
         if self.services.memory:
-            self.memory_worker = asyncio.create_task(self._journal())
+            self.memory_journal.start()
         if self.services.schedule:
             await asyncio.to_thread(self.schedules.store.load_jobs)
             await self.schedules.start()
@@ -230,9 +227,7 @@ class ServerControls:
             await await_owned(pending)
         await self.schedules.close()
         await self.wechat.close()
-        if self.memory_worker is not None:
-            await self.memory_queue.join()
-            await settle_owned(self.memory_worker)
+        await self.memory_journal.close()
         if self.delivery_tasks:
             await settle_owned(*tuple(self.delivery_tasks))
 
@@ -816,12 +811,7 @@ class ServerControls:
             agent.personal_context = "\n\n".join(
                 filter(None, (agent.personal_context, self.memory.render_context()))
             )
-            for tool in (
-                MemorySearchTool(self.memory),
-                MemoryRememberTool(self.memory),
-                MemoryForgetTool(self.memory),
-                MemoryCorrectTool(self.memory),
-            ):
+            for tool in personal_memory_tools(self.memory):
                 agent.tools.register_tool(tool)
         if personal and self.services.schedule:
             for kind in (ScheduleCreateTool, ScheduleListTool, ScheduleManageTool):
@@ -877,36 +867,17 @@ class ServerControls:
                 delivery = asyncio.create_task(self._deliver(task))
                 self.delivery_tasks.add(delivery)
                 delivery.add_done_callback(self._delivery_finished)
-        if not self.services.memory:
-            return
-        try:
-            self.memory_queue.put_nowait(task)
-        except asyncio.QueueFull:
-            self._notice("记忆日志队列已满, 本次结果仍保留在任务历史中。")
+        if self.services.memory:
+            self.memory_journal.enqueue(
+                task.input_prompt or task.prompt,
+                self._outcome(task),
+                task.delivery_recipient,
+            )
 
     def _delivery_finished(self, task: asyncio.Task[None]) -> None:
         self.delivery_tasks.discard(task)
         if not task.cancelled() and task.exception() is not None:
             self._notice("微信推送未确认: " + type(task.exception()).__name__)
-
-    async def _journal(self) -> None:
-        while True:
-            task = await self.memory_queue.get()
-            try:
-                if (
-                    task.delivery_recipient is None
-                    or task.delivery_recipient == self.wechat.recipient_id()
-                ):
-                    await asyncio.to_thread(
-                        self.memory.record_task,
-                        prompt=task.input_prompt or task.prompt,
-                        result=self._outcome(task),
-                        task_id=task.task_id,
-                    )
-            except Exception as error:
-                self._notice("记忆日志未保存: " + type(error).__name__)
-            finally:
-                self.memory_queue.task_done()
 
     async def _deliver(self, task: RuntimeTask) -> None:
         key = task.task_id + ":" + str(task.attempts)

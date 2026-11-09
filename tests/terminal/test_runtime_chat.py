@@ -4,13 +4,12 @@ from typing import Any
 import httpx
 from typer.testing import CliRunner
 
-import cairn.interfaces.cli.cli as legacy
 import cairn.interfaces.cli.client as cli
 import cairn.interfaces.cli.runtime_chat as shared
 from cairn.server.client import RuntimeClient
 
 
-def test_interactive_option_dispatches_without_building_a_local_agent(
+def test_interactive_option_dispatches_to_shared_chat(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     token = tmp_path / "runtime.token"
@@ -18,13 +17,9 @@ def test_interactive_option_dispatches_without_building_a_local_agent(
     token.chmod(0o600)
     seen = []
 
-    async def local(*args: Any, **kwargs: Any) -> None:
-        raise AssertionError("Shared CLI must not launch the old local main")
-
     async def remote(api: Any, **kwargs: Any) -> None:
         seen.append((api.url, kwargs))
 
-    monkeypatch.setattr(legacy, "main", local)
     transport = httpx.MockTransport(
         lambda request: httpx.Response(200, json={"workspace": str(Path.cwd())})
     )

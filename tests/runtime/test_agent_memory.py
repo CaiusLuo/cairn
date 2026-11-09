@@ -69,13 +69,6 @@ def test_agent_proposal_requires_approval_and_supports_rollback(tmp_path: Path) 
     assert "rolled back AGENT.md" in store.audit_path.read_text()
 
 
-def test_local_turn_is_journaled_for_cross_task_continuity(tmp_path: Path) -> None:
-    service, store = _service(tmp_path)
-    service.record_turn("what changed?", "updated note.txt", now=NOW)
-    daily = store.read_daily(NOW.date())
-    assert "local turn" in daily and "updated note.txt" in daily
-
-
 def test_agent_can_generate_agent_proposal_from_daily_memory(tmp_path: Path) -> None:
     service, _store = _service(tmp_path)
     service.record_note("Use concise answers", now=NOW)

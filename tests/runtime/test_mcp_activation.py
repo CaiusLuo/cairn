@@ -203,32 +203,6 @@ def test_headless_authorized_mcp_tool_call(
     assert any("hi" in str(message.content) for message in second_messages)
 
 
-def test_terminal_activation_registers_and_removes_tools(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from cairn.interfaces.cli import cli as cli_module
-
-    marker = tmp_path / "started.marker"
-    monkeypatch.setenv("MCP_TEST_MARKER", str(marker))
-    handler = _handler(tmp_path, grant=True)
-    agent = build_agent(
-        workspace=Workspace(tmp_path),
-        llm=SequenceLLM([]),
-        permission_handler=handler,
-        event_handler=None,
-        tracer=None,
-        summarize=False,
-    )
-
-    async def scenario() -> None:
-        async with cli_module._selected_mcp_tools(agent, (_cfg(),), ()):
-            assert "mcp__demo__echo" in agent.tools.tools
-        assert "mcp__demo__echo" not in agent.tools.tools
-
-    asyncio.run(scenario())
-    assert marker.exists()
-
-
 def test_mcp_invalid_arguments_are_preflight_failures(tmp_path: Path) -> None:
     from cairn.agent.tools.base import InvalidArguments
 

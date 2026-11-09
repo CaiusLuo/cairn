@@ -619,22 +619,6 @@ def test_dotenv_and_provider_read_from_each_workspace(
     ]
 
 
-@pytest.mark.parametrize("force_color", [False, True], ids=["uncolored", "colored"])
-def test_registered_under_task_subcommand(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, force_color: bool
-) -> None:
-    from cairn.interfaces.cli.cli import app as cairn_cli
-
-    _set_color_env(monkeypatch, force_color)
-    result = CliRunner().invoke(cairn_cli, ["task", "run", "--help"])
-    assert result.exit_code == 0
-    if force_color:
-        assert "\x1b[" in result.stdout
-    else:
-        assert "\x1b[" not in result.stdout
-    assert "--trust-workspace" in _strip_ansi(result.stdout)
-
-
 def test_provider_approval_binds_ordered_model_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

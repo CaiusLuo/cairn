@@ -238,53 +238,6 @@ def test_known_credential_values_ignore_ordinary_env_settings(tmp_path: Path) ->
     assert "1" not in values
 
 
-def test_wechat_serve_command_passes_default_schedule_store(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from typer.testing import CliRunner
-
-    import cairn.integrations.wechat.app as app_module
-    from cairn.integrations.wechat.state import WechatAccount, WechatState
-
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    state_dir = tmp_path / "wechat"
-    WechatState(state_dir).save_account(
-        WechatAccount(
-            bot_token="token-cli",
-            ilink_bot_id="bot-cli",
-            base_url="https://example.test",
-            ilink_user_id="owner",
-        )
-    )
-    schedule_dir = tmp_path / "schedule"
-    monkeypatch.setenv("CAIRN_SCHEDULE_DIR", str(schedule_dir))
-
-    async def fake_serve(**kwargs: object) -> object:
-        fake_serve.captured = kwargs  # type: ignore[attr-defined]
-        from cairn.integrations.wechat.serve import ServeReport
-
-        return ServeReport()
-
-    monkeypatch.setattr(app_module, "serve_wechat", fake_serve)
-    result = CliRunner().invoke(
-        app_module.wechat_app,
-        [
-            "serve",
-            "--workspace",
-            str(workspace),
-            "--allow-sender",
-            "owner",
-            "--trust-workspace",
-            "--state-dir",
-            str(state_dir),
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    config = fake_serve.captured["config"]  # type: ignore[attr-defined]
-    assert config.schedule_store == schedule_dir
-
-
 def test_default_executor_does_not_read_credentials_before_approval(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

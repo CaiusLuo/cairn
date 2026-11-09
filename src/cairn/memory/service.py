@@ -119,10 +119,6 @@ class PersonalMemoryService:
                 cleaned = cleaned.replace(secret, "[REDACTED]")
         return cleaned
 
-    def system_prompt(self, base: str, now: datetime | None = None) -> str:
-        context = self.render_context(now)
-        return base + ("\n\n" + context if context else "")
-
     def record_task(
         self,
         *,
@@ -147,30 +143,6 @@ class PersonalMemoryService:
             f"- request: {request}\n"
             f"- result: {body or '(no final response)'}\n"
             f"- trace: {trace_id or result.trace_id or '(none)'}\n"
-        )
-        self.store.append_daily(moment.date(), entry)
-
-    def record_turn(
-        self,
-        prompt: str,
-        response: str | None,
-        *,
-        task_id: str | None = None,
-        now: datetime | None = None,
-    ) -> None:
-        if not self.enabled:
-            return
-        moment = now or self.clock()
-        request = self.redact(" ".join(prompt.split())[:600])
-        body = self.redact(" ".join((response or "").split())[:1200])
-        entry = (
-            f"\n## {moment:%H:%M} local turn\n"
-            f"- kind: task\n"
-            f"- source: agent_inferred\n"
-            f"- status: completed\n"
-            f"- task: {task_id or f'local-{moment:%Y%m%d%H%M%S}'}\n"
-            f"- request: {request}\n"
-            f"- result: {body or '(no final response)'}\n"
         )
         self.store.append_daily(moment.date(), entry)
 

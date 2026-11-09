@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from cairn.agent.models.messages import ToolResult
-from cairn.agent.tools.base import InvalidArguments, ToolExecutionContext
+from cairn.agent.tools.base import InvalidArguments, Tool, ToolExecutionContext
 from cairn.memory.models import MemorySource
 from cairn.memory.service import PersonalMemoryService
 
@@ -269,3 +269,13 @@ class MemoryCorrectTool(_MemoryTool):
         except (OSError, ValueError) as exc:
             return self._result(f"could not correct: {exc}", ok=False)
         return self._result("corrected" if changed else "no matching memory")
+
+
+def personal_memory_tools(service: PersonalMemoryService) -> tuple[Tool, ...]:
+    """Build the complete personal-memory tool set for one Agent."""
+    return (
+        MemorySearchTool(service),
+        MemoryRememberTool(service),
+        MemoryForgetTool(service),
+        MemoryCorrectTool(service),
+    )

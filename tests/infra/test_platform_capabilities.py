@@ -32,8 +32,10 @@ for name in ("O_DIRECTORY", "O_NOFOLLOW", "O_CLOEXEC", "O_NONBLOCK"):
 os.supports_dir_fd = set()
 os.supports_follow_symlinks = set()
 
-import cairn.interfaces.cli.cli as cli
+from cairn.interfaces.cli import client as cli
+from cairn.server import bootstrap as server
 assert hasattr(cli, "app"), "CLI entry point missing"
+assert hasattr(server, "app"), "Server entry point missing"
 
 from cairn.shared import platform
 for name in ("O_NOFOLLOW", "O_DIRECTORY", "O_CLOEXEC"):

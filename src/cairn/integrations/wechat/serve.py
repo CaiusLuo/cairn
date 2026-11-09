@@ -86,12 +86,7 @@ from cairn.memory.store import (
 from cairn.memory.store import (
     ensure_outside_workspace as ensure_agent_home_outside_workspace,
 )
-from cairn.memory.tools import (
-    MemoryCorrectTool,
-    MemoryForgetTool,
-    MemoryRememberTool,
-    MemorySearchTool,
-)
+from cairn.memory.tools import personal_memory_tools
 from cairn.scheduling.models import ScheduleJob, ScheduleKind
 from cairn.scheduling.requests import (
     Clarification,
@@ -331,12 +326,7 @@ def default_task_executor(
     personal_memory = PersonalMemoryService(PersonalMemoryStore(agent_home))
     known_secret_values: list[str] = [config.account.bot_token]
     personal_memory.add_secret_values(tuple(known_secret_values))
-    memory_tools = (
-        MemorySearchTool(personal_memory),
-        MemoryRememberTool(personal_memory),
-        MemoryForgetTool(personal_memory),
-        MemoryCorrectTool(personal_memory),
-    )
+    memory_tools = personal_memory_tools(personal_memory)
     task_board_root = default_task_board_dir()
     ensure_outside_workspace(task_board_root, config.workspace)
     task_board = TaskBoardService(
@@ -734,12 +724,7 @@ def default_conversation_executor(
     agent_home = default_agent_home()
     ensure_agent_home_outside_workspace(agent_home, config.workspace)
     personal_memory = PersonalMemoryService(PersonalMemoryStore(agent_home))
-    memory_tools: tuple[Tool, ...] = (
-        MemorySearchTool(personal_memory),
-        MemoryRememberTool(personal_memory),
-        MemoryForgetTool(personal_memory),
-        MemoryCorrectTool(personal_memory),
-    )
+    memory_tools: tuple[Tool, ...] = personal_memory_tools(personal_memory)
     task_board = TaskBoardService(
         TaskBoardStore(default_task_board_dir()),
         project=str(config.workspace),
