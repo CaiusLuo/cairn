@@ -2,7 +2,7 @@
 
 from prompt_toolkit.document import Document
 
-from cairn.terminal.selection import (
+from cairn.interfaces.cli.selection import (
     SelectionTokenLexer,
     format_token,
     parse_selection_tokens,

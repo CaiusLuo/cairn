@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra import server_bootstrap as bootstrap
-from cairn.infra.server_config import load_server_config
+from cairn.server import host as bootstrap
+from cairn.server.config import load_server_config
 
 
 @pytest.fixture

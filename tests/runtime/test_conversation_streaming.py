@@ -43,8 +43,8 @@ def test_follow_wakes_on_intermediate_event(tmp_path: Path) -> None:
     import httpx
 
     from cairn.agent.budget import RunBudget
-    from cairn.infra.runtime_client import RuntimeClient
-    from cairn.server import runtime_app
+    from cairn.server.bootstrap import runtime_app
+    from cairn.server.client import RuntimeClient
 
     source = tmp_path / "source"
     source.mkdir()

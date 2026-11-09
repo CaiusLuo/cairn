@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.server_config import load_server_config
-from cairn.infra.server_paths import ServerPaths
+from cairn.server.config import load_server_config
+from cairn.server.paths import ServerPaths
 
 
 def test_precedence_paths_and_budget_do_not_depend_on_cwd(

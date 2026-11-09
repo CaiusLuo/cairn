@@ -23,10 +23,9 @@ from prompt_toolkit.layout.screen import Char
 from prompt_toolkit.output import DummyOutput
 from rich.text import Text
 
-import cairn.terminal.output as output_module
+import cairn.interfaces.cli.output as output_module
 from cairn.agent.turn.events import Event
-from cairn.shared.action import Action, ActionRow, correction, note
-from cairn.terminal.frame import (
+from cairn.interfaces.cli.frame import (
     ACTIVITY_ROWS,
     COMPOSER_MAX_LINES,
     FRAME_STYLE,
@@ -36,9 +35,10 @@ from cairn.terminal.frame import (
     frame_live_region,
     gap_lines,
 )
-from cairn.terminal.output import StreamingDisplay
-from cairn.terminal.pacing import StreamPacer
-from cairn.terminal.transcript import TRANSCRIPT_GAP_LINES, Transcript
+from cairn.interfaces.cli.output import StreamingDisplay
+from cairn.interfaces.cli.pacing import StreamPacer
+from cairn.interfaces.cli.transcript import TRANSCRIPT_GAP_LINES, Transcript
+from cairn.shared.action import Action, ActionRow, correction, note
 
 
 class _Clock:
@@ -223,7 +223,7 @@ def test_the_status_shows_exactly_the_published_rows() -> None:
 
 
 def test_the_status_control_preserves_semantic_styling_fragments() -> None:
-    from cairn.terminal.output import StreamingDisplay
+    from cairn.interfaces.cli.output import StreamingDisplay
 
     with (
         create_pipe_input() as pipe,

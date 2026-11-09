@@ -9,7 +9,7 @@ from starlette.testclient import TestClient
 
 from cairn.agent.budget import RunBudget
 from cairn.conversation.models import ConversationSource, RunStatus
-from cairn.server import runtime_app
+from cairn.server.bootstrap import runtime_app
 from tests.support.git import initialize_repository
 
 

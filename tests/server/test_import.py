@@ -8,8 +8,8 @@ import httpx
 import pytest
 
 from cairn.agent.workspace.lease import WorkspaceLease
-from cairn.infra.server_paths import ServerPaths
-from cairn.infra.state_import import import_state
+from cairn.server.paths import ServerPaths
+from cairn.server.state_import import import_state
 from tests.server.test_bootstrap import configured
 from tests.support.server_process import ServerProcess, wait_for
 

@@ -17,8 +17,8 @@ import pytest
 
 import cairn.agent.models.providers.litellm_client as llm_module
 import cairn.agent.models.providers.token_counter as counter_module
-import cairn.terminal.cli as cli_module
-import cairn.terminal.output as ui_module
+import cairn.interfaces.cli.cli as cli_module
+import cairn.interfaces.cli.output as ui_module
 from cairn.agent.assembly import build_agent
 from cairn.agent.harness import Agent
 from cairn.agent.models.catalog import NamedProvider
@@ -29,7 +29,7 @@ from cairn.agent.permissions import (
     SessionPermissionHandler,
 )
 from cairn.agent.tools.registry import ToolRegistry
-from cairn.terminal.commands.context import CommandContext
+from cairn.interfaces.cli.commands.context import CommandContext
 from tests.support.streaming import CompletionResponse
 
 

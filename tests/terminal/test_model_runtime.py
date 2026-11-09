@@ -17,7 +17,7 @@ from typer.testing import CliRunner
 
 import cairn.agent.models.providers.litellm_client as llm_module
 import cairn.agent.models.providers.token_counter as counter_module
-import cairn.terminal.cli as cli_module
+import cairn.interfaces.cli.cli as cli_module
 from cairn.agent.budget import RunBudget
 from cairn.agent.context.window import ContextBudget
 from cairn.agent.harness import Agent

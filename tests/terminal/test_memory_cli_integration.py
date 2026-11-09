@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-import cairn.terminal.cli as cli_module
+import cairn.interfaces.cli.cli as cli_module
 from tests.support.cli_harness import configure_cli
 
 
@@ -60,7 +60,7 @@ def test_first_cli_request_redacts_saved_wechat_token(
 ) -> None:
     import os
 
-    import cairn.terminal.cli as cli_module
+    import cairn.interfaces.cli.cli as cli_module
     from cairn.integrations.wechat.state import WechatAccount, WechatState
 
     state_dir = tmp_path.parent / (tmp_path.name + "-wechat-state")

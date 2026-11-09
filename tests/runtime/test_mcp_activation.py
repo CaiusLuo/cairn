@@ -206,7 +206,7 @@ def test_headless_authorized_mcp_tool_call(
 def test_terminal_activation_registers_and_removes_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from cairn.terminal import cli as cli_module
+    from cairn.interfaces.cli import cli as cli_module
 
     marker = tmp_path / "started.marker"
     monkeypatch.setenv("MCP_TEST_MARKER", str(marker))

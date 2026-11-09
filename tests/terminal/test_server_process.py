@@ -9,8 +9,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from cairn.infra.runtime_client import RuntimeClient
 from cairn.integrations.wechat.runtime import WechatRuntimeAdapter
+from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
 from tests.support.server_process import NativeClient, ServerProcess, wait_for
 

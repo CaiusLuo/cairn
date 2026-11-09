@@ -7,8 +7,8 @@ import httpx
 import pytest
 from typer.testing import CliRunner
 
-from cairn import server
-from cairn.infra.runtime_client import RuntimeClient
+from cairn.server import bootstrap as server
+from cairn.server.client import RuntimeClient
 
 
 @pytest.mark.parametrize("wrong_pid", [False, True])

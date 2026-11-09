@@ -146,7 +146,7 @@ def conversation_text(result: HeadlessResult) -> str:
 
 
 if TYPE_CHECKING:
-    from cairn.infra.runtime_client import RuntimeClient
+    from cairn.server.client import RuntimeClient
 
 
 class ConversationDecision(StrEnum):
@@ -854,7 +854,7 @@ class _Service:
         self._runtime_forwarding: set[str] = set()
         runtime_url = getattr(config, "runtime_url", None)
         if runtime_url:
-            from cairn.infra.runtime_client import RuntimeClient, read_runtime_token
+            from cairn.server.client import RuntimeClient, read_runtime_token
 
             runtime_api = config.runtime_client
             if runtime_api is None:

@@ -46,8 +46,8 @@ from cairn.agent.session.store import (
 from cairn.agent.tracing.models import Span
 from cairn.agent.tracing.sinks import JsonlTraceSink
 from cairn.agent.workspace.workspace import Workspace
-from cairn.terminal import cli, durable
-from cairn.terminal.input import CliInput
+from cairn.interfaces.cli import cli, durable
+from cairn.interfaces.cli.input import CliInput
 from tests.support.git import git, initialize_repository
 from tests.support.runtime import NetworkRequestTool, SequenceLLM
 from tests.support.sessions import legacy_store
@@ -682,7 +682,7 @@ def test_streamed_answer_is_provisional_when_commit_fails(harness: Harness) -> N
 def test_provider_noninteractive_environment_fails_before_credentials(
     harness: Harness,
 ) -> None:
-    from cairn.terminal.output import confirm_provider_access
+    from cairn.interfaces.cli.output import confirm_provider_access
 
     harness.monkeypatch.setattr(cli, "confirm_provider_access", confirm_provider_access)
     harness.monkeypatch.setattr(

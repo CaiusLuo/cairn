@@ -12,7 +12,7 @@ import pytest
 
 from cairn.agent.context.compaction import CompactionStatus
 from cairn.agent.turn.compaction import CompactionOutcome, CompactionStep
-from cairn.terminal.commands.compact import (
+from cairn.interfaces.cli.commands.compact import (
     CompactionReport,
     CompactionReportKind,
     handle_compact,

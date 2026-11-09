@@ -64,7 +64,7 @@ def main() -> None:
                 str(python),
                 "-I",
                 "-c",
-                "from cairn.web.assets import default_web_root, require_web_assets; print(require_web_assets(default_web_root()))",
+                "from cairn.interfaces.web.assets import default_web_root, require_web_assets; print(require_web_assets(default_web_root()))",
             ],
             capture_output=True,
             text=True,

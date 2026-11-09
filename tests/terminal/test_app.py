@@ -12,7 +12,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from typer.testing import CliRunner
 
-import cairn.terminal.cli as cli_module
+import cairn.interfaces.cli.cli as cli_module
 from cairn.agent.assembly import build_agent
 from cairn.agent.budget import RunBudget
 from cairn.agent.harness import Agent
@@ -26,10 +26,10 @@ from cairn.agent.tracing.sinks import JsonlTraceSink
 from cairn.agent.tracing.storage import TraceStore
 from cairn.agent.tracing.tracer import Tracer
 from cairn.agent.turn.events import Event
-from cairn.terminal.cli import app
-from cairn.terminal.commands.router import CommandRouter
-from cairn.terminal.frame import TranscriptView
-from cairn.terminal.input import CliInput
+from cairn.interfaces.cli.cli import app
+from cairn.interfaces.cli.commands.router import CommandRouter
+from cairn.interfaces.cli.frame import TranscriptView
+from cairn.interfaces.cli.input import CliInput
 
 runner = CliRunner()
 

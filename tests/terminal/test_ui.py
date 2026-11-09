@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 from rich.prompt import Prompt
 
-import cairn.terminal.output as ui
+import cairn.interfaces.cli.output as ui
 from cairn.agent.models.catalog import NamedProvider
 from cairn.agent.models.messages import ToolCall
 from cairn.agent.models.selection import ModelConfig, ProviderConfig

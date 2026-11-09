@@ -8,8 +8,8 @@ switched between them without knowing which it has.
 
 from rich.text import Text
 
-from cairn.terminal.live import LiveRegion
-from cairn.terminal.output import (
+from cairn.interfaces.cli.live import LiveRegion
+from cairn.interfaces.cli.output import (
     LiveFactory,
     StreamingDisplay,
     _RichLiveRegion,

@@ -56,14 +56,14 @@ case "$load_state" in
 esac
 # Resolve defaults against the unit account, not the shell that invoked sudo.
 echo "Preparing $service for systemd User=$service_user"
-"$root/.venv/bin/python" -m cairn.infra.server_bootstrap prepare "$root" "$config" "$service_user"
+"$root/.venv/bin/python" -m cairn.server.host prepare "$root" "$config" "$service_user"
 if [[ "$service_user" == "$(id -un)" ]]; then
     "$launcher" --config "$config" check-config
 else
     runuser -u "$service_user" -- "$launcher" --config "$config" check-config
 fi
 if [[ "$load_state" == "not-found" ]]; then
-    "$root/.venv/bin/python" -m cairn.infra.server_bootstrap install-unit "$root" "$config" "$service_user" --service "$service"
+    "$root/.venv/bin/python" -m cairn.server.host install-unit "$root" "$config" "$service_user" --service "$service"
     ctl daemon-reload
     ctl enable "$service"
 fi

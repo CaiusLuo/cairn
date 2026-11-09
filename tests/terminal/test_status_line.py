@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cairn.terminal import output as ui
+from cairn.interfaces.cli import output as ui
 
 
 def test_ascii_glyphs_are_available_for_a_plain_terminal() -> None:

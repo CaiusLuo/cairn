@@ -10,7 +10,7 @@ from starlette.testclient import TestClient
 from cairn.agent.budget import RunBudget
 from cairn.agent.models.client import LLMStreamChunk
 from cairn.agent.models.messages import LLMUsage
-from cairn.server import runtime_app
+from cairn.server.bootstrap import runtime_app
 from tests.support.git import initialize_repository
 from tests.support.streaming import ScriptedStreamLLM, StreamBarrier
 

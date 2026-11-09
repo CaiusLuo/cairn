@@ -5,13 +5,13 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-import cairn.terminal.cli as cli_module
+import cairn.interfaces.cli.cli as cli_module
 from cairn.agent.assembly import build_agent
 from cairn.agent.context.window import ContextBudget
 from cairn.agent.harness import Agent
 from cairn.agent.models.providers.litellm_client import LiteLLMClient
 from cairn.agent.models.providers.token_counter import LiteLLMTokenCounter
-from cairn.terminal.input import CliInput
+from cairn.interfaces.cli.input import CliInput
 
 CONTEXT_SETTINGS = ("CAIRN_CONTEXT_MAX_TOKENS", "CAIRN_RESPONSE_MAX_TOKENS")
 

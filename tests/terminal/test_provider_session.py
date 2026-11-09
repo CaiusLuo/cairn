@@ -14,8 +14,8 @@ from typer.testing import CliRunner
 import cairn.agent.models.providers.litellm_client as llm_module
 import cairn.agent.models.providers.token_counter as counter_module
 import cairn.agent.models.runtime as provider_runtime_module
-import cairn.terminal.cli as cli_module
-import cairn.terminal.output as ui_module
+import cairn.interfaces.cli.cli as cli_module
+import cairn.interfaces.cli.output as ui_module
 from cairn.agent.budget import RunBudget
 from cairn.agent.harness import Agent
 from cairn.agent.models.catalog import NamedProvider, ProviderCatalog
@@ -25,8 +25,8 @@ from cairn.agent.permissions import PermissionCapability
 from cairn.agent.tools.registry import ToolRegistry
 from cairn.agent.tracing.storage import TraceStore
 from cairn.agent.turn.loop import run_turn
-from cairn.terminal.commands.context import CommandContext
-from cairn.terminal.commands.provider import handle_provider
+from cairn.interfaces.cli.commands.context import CommandContext
+from cairn.interfaces.cli.commands.provider import handle_provider
 from tests.support.cli_harness import (
     BAILIAN_CREDENTIAL,
     CATALOG_TOML,

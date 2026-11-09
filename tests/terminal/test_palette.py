@@ -5,7 +5,7 @@ filters as they type, and closes without leaving anything in the transcript — 
 of commands is a means to an action, not a record of one.
 """
 
-from cairn.terminal.palette import COMMANDS, MAX_ROWS, Palette
+from cairn.interfaces.cli.palette import COMMANDS, MAX_ROWS, Palette
 
 
 def _open(typed: str = "/") -> Palette:

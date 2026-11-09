@@ -6,9 +6,9 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from cairn.infra.runtime_client import RuntimeClient
 from cairn.integrations.wechat.state import WechatState
-from cairn.server_controls import ControlState
+from cairn.server.client import RuntimeClient
+from cairn.server.management import ControlState
 from tests.support.fake_ilink import FakeILink
 from tests.support.git import initialize_repository
 from tests.support.server_process import ServerProcess

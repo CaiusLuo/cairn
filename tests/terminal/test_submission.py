@@ -15,7 +15,7 @@ import asyncio
 
 import pytest
 
-from cairn.terminal.submission import LineQueue, PendingLine
+from cairn.interfaces.cli.submission import LineQueue, PendingLine
 
 
 def test_a_submission_is_delivered_once() -> None:

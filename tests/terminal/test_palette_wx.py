@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from cairn.terminal.palette import Palette
+from cairn.interfaces.cli.palette import Palette
 
 
 def test_wx_palette_lists_secondary_commands() -> None:

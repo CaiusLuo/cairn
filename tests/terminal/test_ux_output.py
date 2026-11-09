@@ -7,7 +7,7 @@ from io import StringIO
 import pytest
 from rich.console import Console
 
-import cairn.terminal.output as output_module
+import cairn.interfaces.cli.output as output_module
 from cairn.agent.turn.events import Event
 
 

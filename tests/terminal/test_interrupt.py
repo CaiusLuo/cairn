@@ -6,7 +6,7 @@ a hang. What survives afterwards is a receipt, because a partial answer is disca
 but the fact that a turn stopped early is worth keeping.
 """
 
-from cairn.terminal.interrupt import Interruption
+from cairn.interfaces.cli.interrupt import Interruption
 
 
 def test_nothing_is_pending_initially() -> None:

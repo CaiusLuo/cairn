@@ -147,7 +147,7 @@ def test_start_first_use_prepares_and_starts_selected_unit_with_fake_systemctl(
     stubs = {
         executables / "python": """#!/bin/bash
 set -eu
-[[ "$1" == -m && "$2" == cairn.infra.server_bootstrap && "$5" == "$CAIRN_CONFIG" ]]
+[[ "$1" == -m && "$2" == cairn.server.host && "$5" == "$CAIRN_CONFIG" ]]
 case "$3" in
     prepare)
         [[ ! -e "$5" ]]

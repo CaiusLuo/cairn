@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from cairn.terminal.commands.catalog import CATALOG
-from cairn.terminal.commands.help import handle_help
+from cairn.interfaces.cli.commands.catalog import CATALOG
+from cairn.interfaces.cli.commands.help import handle_help
 
 
 def test_catalog_resolves_root_and_nested_commands() -> None:
@@ -28,8 +28,8 @@ def test_help_prints_a_nested_command(capsys) -> None:  # type: ignore[no-untype
 
 def test_router_handles_help_flag_for_all_commands(capsys, tmp_path) -> None:  # type: ignore[no-untyped-def]
     from cairn.agent.tracing.storage import TraceStore
-    from cairn.terminal.commands.context import CommandContext
-    from cairn.terminal.commands.router import CommandRouter
+    from cairn.interfaces.cli.commands.context import CommandContext
+    from cairn.interfaces.cli.commands.router import CommandRouter
 
     router = CommandRouter()
     context = CommandContext(trace_store=TraceStore(tmp_path))
@@ -40,7 +40,7 @@ def test_router_handles_help_flag_for_all_commands(capsys, tmp_path) -> None:  #
 
 
 def test_trace_has_secondary_commands_in_palette_and_help(capsys) -> None:  # type: ignore[no-untyped-def]
-    from cairn.terminal.palette import Palette
+    from cairn.interfaces.cli.palette import Palette
 
     palette = Palette()
     palette.update("/trace ")

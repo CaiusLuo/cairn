@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from rich.console import Console
 
-import cairn.terminal.output as ui
+import cairn.interfaces.cli.output as ui
 from cairn.agent.context.window import (
     ContextBudget,
     ContextBudgetExceeded,

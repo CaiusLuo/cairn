@@ -1,6 +1,6 @@
 """Dynamic palette levels (skills/MCP), search, scrolling and token insertion."""
 
-from cairn.terminal.palette import MAX_ROWS, Palette
+from cairn.interfaces.cli.palette import MAX_ROWS, Palette
 
 ROOT = (("/skill", "Select a skill"), ("/mcp", "Select an MCP server"))
 CHILDREN = {

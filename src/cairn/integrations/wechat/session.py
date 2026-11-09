@@ -20,7 +20,6 @@ from inspect import isawaitable
 from pathlib import Path
 from typing import Any
 
-from cairn.infra.runtime_client import RuntimeClient
 from cairn.integrations.wechat.ilink import ILinkClient, QRCode
 from cairn.integrations.wechat.login import run_login
 from cairn.integrations.wechat.qr import render_ascii_qr
@@ -36,6 +35,7 @@ from cairn.integrations.wechat.state import (
     WechatState,
     ensure_outside_workspace,
 )
+from cairn.server.client import RuntimeClient
 from cairn.shared.action import Action, correction, note
 from cairn.shared.lifecycle import await_owned
 

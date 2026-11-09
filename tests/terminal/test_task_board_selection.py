@@ -6,7 +6,7 @@ import pytest
 from typer.testing import CliRunner
 
 from cairn.development.board.tools import TaskUseTool
-from cairn.terminal.cli import app
+from cairn.interfaces.cli.cli import app
 from tests.support.cli_harness import configure_cli
 
 

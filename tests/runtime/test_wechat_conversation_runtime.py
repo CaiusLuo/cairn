@@ -7,11 +7,11 @@ from pathlib import Path
 
 import httpx
 
-from cairn.infra.runtime_client import RuntimeClient
 from cairn.integrations.wechat.runtime import (
     WechatConversationAdapter,
     wechat_request_id,
 )
+from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
 from tests.support.server_process import ServerProcess
 

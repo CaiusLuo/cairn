@@ -20,9 +20,9 @@ from rich.console import Console, RenderableType
 from rich.text import Text
 
 from cairn.agent.turn.events import Event
-from cairn.terminal import output as ui
-from cairn.terminal.activity import Activity, ActivityKind
-from cairn.terminal.output import StreamingDisplay
+from cairn.interfaces.cli import output as ui
+from cairn.interfaces.cli.activity import Activity, ActivityKind
+from cairn.interfaces.cli.output import StreamingDisplay
 
 
 def test_nothing_is_happening_at_first() -> None:

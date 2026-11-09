@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from cairn import server as runtime_server
 from cairn.agent.models.messages import LLMResponse, Message
 from cairn.agent.models.offline import OfflineDevelopmentModel
+from cairn.server import bootstrap as runtime_server
 
 
 class GatedModel(OfflineDevelopmentModel):

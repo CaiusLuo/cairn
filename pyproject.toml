@@ -28,8 +28,8 @@ dependencies = [
 ]
 
 [project.scripts]
-cairn = "cairn.server:main"
-cairn-cli = "cairn.terminal.client:app"
+cairn = "cairn.server.bootstrap:main"
+cairn-cli = "cairn.interfaces.cli.client:app"
 
 [build-system]
 requires = ["uv_build>=0.11.3,<0.12.0"]

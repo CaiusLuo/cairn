@@ -6,7 +6,7 @@ wrong: a resize, a scroll away from the bottom, and output arriving while they a
 reading earlier lines. Stream pacing is tested in ``test_pacing.py``.
 """
 
-from cairn.terminal.transcript import Transcript
+from cairn.interfaces.cli.transcript import Transcript
 
 
 def test_an_empty_transcript_shows_nothing() -> None:

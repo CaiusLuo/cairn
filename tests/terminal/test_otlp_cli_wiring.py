@@ -4,7 +4,7 @@ from pathlib import Path
 
 from cairn.agent.tracing.otlp import OtlpSpanExporter
 from cairn.agent.tracing.sinks import FanoutTraceSink, JsonlTraceSink
-from cairn.terminal.cli import _build_trace_sink
+from cairn.interfaces.cli.cli import _build_trace_sink
 
 
 def test_export_is_off_without_configuration(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

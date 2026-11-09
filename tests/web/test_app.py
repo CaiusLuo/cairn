@@ -3,8 +3,8 @@ from pathlib import Path
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from cairn.web.app import create_app
-from cairn.web.config import WebConfig
+from cairn.interfaces.web.app import create_app
+from cairn.interfaces.web.config import WebConfig
 
 
 def _app(tmp_path: Path) -> Starlette:

@@ -10,7 +10,7 @@ waiting for that turn to end.
 """
 
 from cairn.agent.turn.steering import PendingMessage, SteerQueue
-from cairn.terminal.queue_view import QueueView
+from cairn.interfaces.cli.queue_view import QueueView
 
 
 def _queue(*texts: str) -> SteerQueue:

@@ -9,7 +9,7 @@ delta boundaries instead of at the terminal width, and a clock that never moved
 because it read the start time as both ends of the interval.
 """
 
-from cairn.terminal.thinking import (
+from cairn.interfaces.cli.thinking import (
     DEFAULT_WIDTH,
     EXPANDED_ROWS,
     FRAME_INTERVAL_SECONDS,

@@ -6,8 +6,8 @@ from typing import Any
 import httpx
 
 from cairn.agent.budget import RunBudget
-from cairn.infra.runtime_client import RuntimeClient
-from cairn.server import runtime_app
+from cairn.server.bootstrap import runtime_app
+from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
 
 

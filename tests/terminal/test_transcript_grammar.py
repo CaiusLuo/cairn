@@ -15,7 +15,7 @@ import io
 import pytest
 from rich.console import Console
 
-from cairn.terminal import output as ui
+from cairn.interfaces.cli import output as ui
 
 
 @pytest.fixture

@@ -18,7 +18,7 @@ slow terminal over a slow link slows down by itself instead of asking the user t
 tune something.
 """
 
-from cairn.terminal.pacing import (
+from cairn.interfaces.cli.pacing import (
     DEFAULT_FRAME_INTERVAL_SECONDS,
     MAXIMUM_FRAME_INTERVAL_SECONDS,
     MINIMUM_FRAME_INTERVAL_SECONDS,

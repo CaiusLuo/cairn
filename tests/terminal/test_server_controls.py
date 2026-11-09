@@ -15,10 +15,10 @@ from cairn.integrations.wechat.runtime import (
     WechatRuntimeAdapter,
 )
 from cairn.integrations.wechat.state import WechatAccount, WechatState
+from cairn.interfaces.cli.input import CliInput
+from cairn.interfaces.cli.runtime_chat import main as shared_main
+from cairn.interfaces.cli.server_commands import ServerCommands
 from cairn.scheduling.runner import current_time
-from cairn.terminal.input import CliInput
-from cairn.terminal.runtime_chat import main as shared_main
-from cairn.terminal.server_commands import ServerCommands
 from tests.support.control_runtime import control_runtime
 from tests.support.fake_ilink import FakeILink
 from tests.support.wechat_service import _msg

@@ -10,8 +10,8 @@ from typer.testing import CliRunner
 
 import cairn.agent.models.providers.litellm_client as llm_module
 import cairn.agent.models.providers.token_counter as counter_module
-import cairn.terminal.cli as cli_module
-import cairn.terminal.output as output_module
+import cairn.interfaces.cli.cli as cli_module
+import cairn.interfaces.cli.output as output_module
 from cairn.agent.budget import RunBudget
 from cairn.agent.harness import Agent
 from cairn.agent.models.messages import LLMResponse
@@ -269,7 +269,7 @@ def _plain_display(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[StringIO, StringIO, Any]:
     """A StreamingDisplay over in-memory, non-terminal console and stdout."""
-    from cairn.terminal.output import StreamingDisplay
+    from cairn.interfaces.cli.output import StreamingDisplay
 
     answer = StringIO()
     log = StringIO()
@@ -421,7 +421,7 @@ def test_open_fence_keeps_settling_the_prose_before_it(
 ) -> None:
     # While a fence stays open, completed prose above it is still printable:
     # only the fence itself waits in the pending tail.
-    from cairn.terminal.output import _split_blocks
+    from cairn.interfaces.cli.output import _split_blocks
 
     settled, pending = _split_blocks("Prose.\n\n```py\nx = 1\n")
     assert settled == "Prose.\n\n"

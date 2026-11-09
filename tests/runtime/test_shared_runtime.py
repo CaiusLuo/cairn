@@ -8,12 +8,12 @@ import httpx
 from cairn.agent.budget import RunBudget
 from cairn.agent.models.messages import LLMResponse, Message
 from cairn.agent.models.offline import OfflineDevelopmentModel
-from cairn.infra.runtime_client import RuntimeClient
 from cairn.integrations.wechat.runtime import (
     WechatConversationAdapter,
     WechatRuntimeAdapter,
 )
-from cairn.server import runtime_app
+from cairn.server.bootstrap import runtime_app
+from cairn.server.client import RuntimeClient
 
 
 def repository(root: Path) -> Path:
@@ -606,8 +606,8 @@ def test_full_wechat_bridge_startup_does_not_initialize_legacy_agent(
 ) -> None:
     from dataclasses import replace
 
-    import cairn.infra.runtime_client as client_module
     import cairn.integrations.wechat.serve as bridge_module
+    import cairn.server.client as client_module
     from tests.support.fake_ilink import FakeILink
     from tests.support.wechat_service import _client, _config, _msg
 
@@ -694,7 +694,7 @@ def test_full_wechat_bridge_startup_does_not_initialize_legacy_agent(
 def test_cli_web_cli_continue_the_same_task_and_committed_history(
     tmp_path: Path,
 ) -> None:
-    from cairn.terminal.runtime_chat import RemoteConversation
+    from cairn.interfaces.cli.runtime_chat import RemoteConversation
 
     async def scenario() -> None:
         app = runtime_app(
@@ -771,8 +771,8 @@ def test_cli_web_cli_continue_the_same_task_and_committed_history(
 def test_interactive_input_can_return_after_a_web_turn(
     tmp_path: Path, capsys: Any
 ) -> None:
-    from cairn.terminal.input import CliInput
-    from cairn.terminal.runtime_chat import main as shared_main
+    from cairn.interfaces.cli.input import CliInput
+    from cairn.interfaces.cli.runtime_chat import main as shared_main
 
     async def scenario() -> None:
         app = runtime_app(
@@ -835,7 +835,7 @@ def test_plain_chat_shares_history_without_git_worktree_or_repository_context(
 ) -> None:
     from cairn.agent.context.git import RepoContextProvider
     from cairn.agent.models.messages import LLMUsage
-    from cairn.terminal.runtime_chat import RemoteConversation
+    from cairn.interfaces.cli.runtime_chat import RemoteConversation
 
     async def scenario() -> None:
         source = repository(tmp_path / "source")
@@ -924,7 +924,7 @@ def test_agent_requests_development_with_checked_history_and_same_task_id(
     tmp_path: Path,
 ) -> None:
     from cairn.agent.models.messages import LLMUsage, ToolCall
-    from cairn.terminal.runtime_chat import RemoteConversation
+    from cairn.interfaces.cli.runtime_chat import RemoteConversation
 
     async def scenario() -> None:
         source = repository(tmp_path / "source")

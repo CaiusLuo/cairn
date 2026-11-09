@@ -5,7 +5,7 @@ it is the one input that must not be shown in full. These tests pin both halves:
 when a paste is collapsed, and that the text it stood for still reaches the model.
 """
 
-from cairn.terminal.paste import (
+from cairn.interfaces.cli.paste import (
     LARGE_PASTE_CHARACTERS,
     LARGE_PASTE_LINES,
     PasteRegistry,

@@ -7,9 +7,9 @@ import httpx
 import pytest
 from typer.testing import CliRunner
 
-import cairn.terminal.client as client
-import cairn.terminal.runtime_chat as chat
-from cairn.infra.runtime_client import RuntimeClient, default_runtime_state_dir
+import cairn.interfaces.cli.client as client
+import cairn.interfaces.cli.runtime_chat as chat
+from cairn.server.client import RuntimeClient
 
 
 @pytest.mark.parametrize("failure", ["offline", "token", "workspace"])
@@ -53,7 +53,7 @@ def test_client_default_state_uses_xdg_and_needs_no_local_provider(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    token = default_runtime_state_dir() / "runtime.token"
+    token = tmp_path / "state/cairn/runtime/runtime.token"
     token.parent.mkdir(parents=True)
     token.write_text("test-token")
     token.chmod(0o600)

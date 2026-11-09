@@ -12,13 +12,13 @@ import pytest
 from cairn.agent.budget import RunBudget
 from cairn.development.catalogue import RuntimeTask
 from cairn.development.service import TaskService
-from cairn.infra.runtime_client import RuntimeClient
 from cairn.integrations.wechat.runtime import (
     WechatConversationAdapter,
     WechatRuntimeAdapter,
 )
 from cairn.integrations.wechat.state import WechatAccount, WechatState
-from cairn.server import runtime_app
+from cairn.server.bootstrap import runtime_app
+from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
 
 

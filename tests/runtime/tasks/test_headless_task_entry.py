@@ -623,7 +623,7 @@ def test_dotenv_and_provider_read_from_each_workspace(
 def test_registered_under_task_subcommand(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, force_color: bool
 ) -> None:
-    from cairn.terminal.cli import app as cairn_cli
+    from cairn.interfaces.cli.cli import app as cairn_cli
 
     _set_color_env(monkeypatch, force_color)
     result = CliRunner().invoke(cairn_cli, ["task", "run", "--help"])

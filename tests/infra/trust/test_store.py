@@ -43,7 +43,7 @@ def test_damaged_trust_store_fails_closed(tmp_path: Path) -> None:
 def test_confirm_trust_persists_first_approval_and_reuses_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from cairn.terminal import output
+    from cairn.interfaces.cli import output
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()

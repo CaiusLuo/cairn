@@ -4,10 +4,10 @@ from typing import Any
 import httpx
 from typer.testing import CliRunner
 
-import cairn.terminal.cli as legacy
-import cairn.terminal.client as cli
-import cairn.terminal.runtime_chat as shared
-from cairn.infra.runtime_client import RuntimeClient
+import cairn.interfaces.cli.cli as legacy
+import cairn.interfaces.cli.client as cli
+import cairn.interfaces.cli.runtime_chat as shared
+from cairn.server.client import RuntimeClient
 
 
 def test_interactive_option_dispatches_without_building_a_local_agent(
@@ -55,7 +55,7 @@ def test_terminal_eof_releases_a_waiting_reader(monkeypatch: Any) -> None:
 
     import pytest
 
-    from cairn.terminal.frame import TranscriptView
+    from cairn.interfaces.cli.frame import TranscriptView
 
     async def scenario() -> None:
         view = TranscriptView()

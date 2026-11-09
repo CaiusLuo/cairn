@@ -17,9 +17,9 @@ from typing import Any
 
 import pytest
 
-import cairn.terminal.cli as cli_module
+import cairn.interfaces.cli.cli as cli_module
 from cairn.agent.budget import BudgetReason, RunBudgetExceeded
-from cairn.terminal.submission import PendingLine
+from cairn.interfaces.cli.submission import PendingLine
 
 
 class _Frame:

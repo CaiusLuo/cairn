@@ -34,4 +34,4 @@ litellm_cache/
 .run/
 
 # Generated Vite assets packaged after npm build
-src/cairn/web/static/
+src/cairn/interfaces/web/static/

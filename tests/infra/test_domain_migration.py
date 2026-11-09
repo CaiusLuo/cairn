@@ -21,7 +21,7 @@ from cairn.development.board.models import (
 from cairn.development.board.store import TaskBoardStore
 from cairn.development.catalogue import RuntimeEvent, RuntimeTask
 from cairn.development.models import TaskStatus
-from cairn.infra import domain_migration
+from cairn.server import domain_migration
 
 
 def _receipt() -> CheckpointReceipt:

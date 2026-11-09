@@ -16,13 +16,13 @@ import pytest
 
 from cairn.agent.models.catalog import NamedProvider
 from cairn.agent.models.selection import ModelConfig, ProviderConfig
-from cairn.shared.action import Action
-from cairn.terminal.cli import (
+from cairn.interfaces.cli.cli import (
     TRUST_ROW,
     _ask_in_surface,
     _permission_prompt_for,
     _trust_decision,
 )
+from cairn.shared.action import Action
 
 
 def _provider() -> NamedProvider:
@@ -417,7 +417,7 @@ def _request(*, command: str = "ls", paths: tuple[str, ...] = ()) -> Any:
 
 
 def test_the_permission_question_states_what_it_would_allow() -> None:
-    from cairn.terminal.cli import _permission_decision
+    from cairn.interfaces.cli.cli import _permission_decision
 
     action = _permission_decision(_request(command="git status", paths=("/tmp/x",)))
 
@@ -428,7 +428,7 @@ def test_the_permission_question_states_what_it_would_allow() -> None:
 
 def test_the_permission_cursor_starts_on_deny() -> None:
     """Enter on an untouched approval must not grant a capability."""
-    from cairn.terminal.cli import _permission_decision
+    from cairn.interfaces.cli.cli import _permission_decision
 
     action = _permission_decision(_request())
 
@@ -440,7 +440,10 @@ def test_the_permission_cursor_starts_on_deny() -> None:
 
 def test_denying_is_a_denial() -> None:
     from cairn.agent.permissions import PermissionChoice
-    from cairn.terminal.cli import _ask_permission_in_surface, _permission_decision
+    from cairn.interfaces.cli.cli import (
+        _ask_permission_in_surface,
+        _permission_decision,
+    )
 
     frame = _Frame()
 
@@ -460,7 +463,10 @@ def test_denying_is_a_denial() -> None:
 
 def test_allowing_once_is_a_single_grant() -> None:
     from cairn.agent.permissions import PermissionChoice
-    from cairn.terminal.cli import PERMISSION_ALLOW_ONCE, _ask_permission_in_surface
+    from cairn.interfaces.cli.cli import (
+        PERMISSION_ALLOW_ONCE,
+        _ask_permission_in_surface,
+    )
 
     frame = _Frame()
 
@@ -479,7 +485,7 @@ def test_allowing_once_is_a_single_grant() -> None:
 def test_an_unknown_permission_row_denies() -> None:
     """Only a named allow row grants; anything else is read as a denial."""
     from cairn.agent.permissions import PermissionChoice
-    from cairn.terminal.cli import _ask_permission_in_surface
+    from cairn.interfaces.cli.cli import _ask_permission_in_surface
 
     frame = _Frame()
 
@@ -497,7 +503,7 @@ def test_an_unknown_permission_row_denies() -> None:
 
 def test_closing_the_permission_question_denies() -> None:
     from cairn.agent.permissions import PermissionChoice
-    from cairn.terminal.cli import _ask_permission_in_surface
+    from cairn.interfaces.cli.cli import _ask_permission_in_surface
 
     frame = _Frame()
 

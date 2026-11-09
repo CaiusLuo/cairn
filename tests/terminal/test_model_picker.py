@@ -8,14 +8,14 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
 import cairn.agent.models.providers.token_counter as counter_module
-import cairn.terminal.cli as cli_module
+import cairn.interfaces.cli.cli as cli_module
 from cairn.agent.models.selection import ModelConfig, ModelManager, ProviderConfig
 from cairn.agent.permissions import PermissionCapability
 from cairn.agent.tracing.storage import TraceStore
+from cairn.interfaces.cli.commands.context import CommandContext
+from cairn.interfaces.cli.commands.router import CommandRouter
+from cairn.interfaces.cli.input import CliInput
 from cairn.shared.action import Action
-from cairn.terminal.commands.context import CommandContext
-from cairn.terminal.commands.router import CommandRouter
-from cairn.terminal.input import CliInput
 from tests.support.cli_harness import BAILIAN_CREDENTIAL, configure_cli
 
 GROUPS = (

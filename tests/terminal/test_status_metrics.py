@@ -16,7 +16,7 @@ measured usage is adopted as it arrives rather than only at the end.
 
 import pytest
 
-from cairn.terminal import output as ui
+from cairn.interfaces.cli import output as ui
 
 
 def _display() -> ui.StreamingDisplay:

@@ -3,7 +3,7 @@
 import pytest
 import typer
 
-import cairn.terminal.cli as cli_module
+import cairn.interfaces.cli.cli as cli_module
 from cairn.agent.models.config import CAIRN_MAX_STEPS_ENV_NAME
 
 
