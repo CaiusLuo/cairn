@@ -13,8 +13,8 @@ from cairn.agent.session.host import observe_workspace
 from cairn.agent.session.models import HostResolution, SessionBinding
 from cairn.agent.session.store import SessionStore
 from cairn.agent.workspace.workspace import Workspace
-from cairn.development.execution import CodingTaskRunner
 from cairn.development.execution.models import TaskSpec
+from cairn.development.execution.runner import CodingTaskRunner
 from tests.support.durable_tasks import BUDGET
 from tests.support.git import initialize_repository
 from tests.support.runtime import SequenceLLM

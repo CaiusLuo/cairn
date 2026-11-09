@@ -29,12 +29,8 @@ from cairn.agent.tracing.storage import TraceStore
 from cairn.agent.tracing.tracer import Tracer
 from cairn.agent.turn.events import Event
 from cairn.agent.workspace.workspace import Workspace
-from cairn.development.execution import (
-    CodingTaskRunner,
-    TaskResult,
-    TaskSpec,
-    TaskStatus,
-)
+from cairn.development.execution.models import TaskResult, TaskSpec, TaskStatus
+from cairn.development.execution.runner import CodingTaskRunner
 from cairn.development.verification import FileContentEqualsCheck
 from cairn.development.worktree import WorktreeProvider, WorktreeState
 from tests.support.git import git, initialize_repository

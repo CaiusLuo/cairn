@@ -208,7 +208,7 @@ def evaluate_permission_policy(tool_call: ToolCall) -> PermissionResult:
 class SessionPermissionHandler:
     """Stateful capability approval for ASK decisions.
 
-    Session grants live here, in core permission state: never in the UI and
+    Session grants live here, in the session permission state: never in the UI and
     never on disk. A fresh instance (a fresh Cairn process) starts with no
     grants. Baseline ALLOW and hard DENY never reach this handler.
 

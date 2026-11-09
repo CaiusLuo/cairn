@@ -1,11 +1,7 @@
 """Host-authorized verification and one-shot repair, sequenced in the runtime.
 
-``cairn task run --check-command`` needs to run the operator's fixed command after
-a turn, hand a bounded failure back to the agent for at most one repair, then run
-the *same* command again. That sequencing belongs to the runtime that already owns
-the task's turn(s); the terminal only parses the CLI and presents the result. This
-module adds no second Agent loop: every attempt is one existing
-``CodingTaskRunner.run`` / ``run_turn``.
+Run the operator's fixed command after a task turn. A failure can trigger one
+repair turn, followed by the same command. Each turn uses CodingTaskRunner.
 
 The verification command is always the operator's value. It is never taken from
 the task text, a model reply or a tool argument. Execution reuses ``BashTool`` for

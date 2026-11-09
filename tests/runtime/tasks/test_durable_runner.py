@@ -20,8 +20,8 @@ from cairn.agent.session.session import SessionState
 from cairn.agent.session.task_models import TaskRecord, TaskRevision
 from cairn.agent.turn.events import Event
 from cairn.agent.workspace.workspace import Workspace
-from cairn.development.execution import CodingTaskRunner
 from cairn.development.execution.models import TaskSpec, TaskStatus
+from cairn.development.execution.runner import CodingTaskRunner
 from tests.support.durable_tasks import (
     BUDGET,
     SPEC,

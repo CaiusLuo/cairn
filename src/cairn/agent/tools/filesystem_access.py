@@ -1,6 +1,6 @@
 """Validation of directories an agent may access outside its workspace.
 
-``core.permissions`` owns the grant *decision*; the filesystem *effect* of
+``agent.permissions`` owns the grant *decision*; the filesystem *effect* of
 proving that a requested path is a real, non-protected directory belongs here,
 in ``infra``, beside the workspace sandbox it widens. One callable is the whole
 contract and is injected into ``SessionPermissionHandler``, so ``core`` depends

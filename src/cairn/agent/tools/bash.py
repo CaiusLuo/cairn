@@ -13,7 +13,7 @@ isolation never falls back to host execution. Both modes keep:
 * a cancelled or failed command still reports what it observed.
 
 Authority is not granted here. Whether a shell may run at all is decided before
-``execute`` by the approval path in ``core.permissions``; a local shell is a
+``execute`` by the approval path in ``agent.permissions``; a local shell is a
 host-level capability, so it is asked for explicitly once per session.
 """
 

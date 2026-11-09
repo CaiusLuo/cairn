@@ -1,17 +1,8 @@
-"""Server-hosted, single-task, non-interactive entry.
+"""Single-task execution for the retained standalone WeChat path.
 
-Public entry: ``cairn task run --workspace DIR --prompt TEXT --trust-workspace``
-plus the provider-approval facts (``--approve-provider-name/-endpoint/-group/
--key-env/-models``), optional ``--allow-shell``/``--json`` and an optional
-``--check-command``. It runs one coding task through the existing
-``CodingTaskRunner`` / ``runtime.loop.run_turn`` boundary against an explicit
-Workspace and returns a machine-readable result. Check/repair sequencing lives in
-``runtime.tasks.check``; this module only parses CLI input and presents results.
-
-Authorization is the operator's explicit CLI facts, never the prompt text, a
-model argument or a tool name. An unapproved launch performs no side effect and
-never waits for interactive input; a capability the operator did not grant is
-denied immediately instead of prompting.
+Use the same CodingTaskRunner and LangGraph turn as Server execution. The host
+supplies provider approval, workspace trust and the optional shell grant before
+execution starts. Results include task status and any requested verification.
 """
 
 from __future__ import annotations
@@ -387,7 +378,7 @@ async def run_headless_task(
 
     def observe(event: Event) -> None:
         # Terminal owns only result correlation (trace id/persisted). Denials and
-        # check sequencing are observed inside runtime.tasks.check.
+        # check sequencing are observed by the check module.
         if event.type in ("trace_start", "trace_finish"):
             trace_id = event.data.get("trace_id")
             if isinstance(trace_id, str) and trace_id:

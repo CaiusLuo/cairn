@@ -11,12 +11,8 @@ import pytest
 from cairn.agent.budget import RunBudget
 from cairn.agent.models.messages import LLMResponse, Message, ToolCall
 from cairn.agent.workspace.workspace import Workspace
-from cairn.development.execution import (
-    CodingTaskRunner,
-    TaskResult,
-    TaskSpec,
-    TaskStatus,
-)
+from cairn.development.execution.models import TaskResult, TaskSpec, TaskStatus
+from cairn.development.execution.runner import CodingTaskRunner
 from cairn.development.verification import (
     CheckResult,
     FileContentEqualsCheck,

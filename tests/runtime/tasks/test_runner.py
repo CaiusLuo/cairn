@@ -17,13 +17,9 @@ from cairn.agent.tracing.tracer import Tracer
 from cairn.agent.turn.events import Event
 from cairn.agent.turn.loop import run_turn
 from cairn.agent.workspace.workspace import Workspace
-from cairn.development.execution import (
-    CodingTaskRunner,
-    TaskResult,
-    TaskSpec,
-    TaskStatus,
-)
 from cairn.development.execution import runner as runner_module
+from cairn.development.execution.models import TaskResult, TaskSpec, TaskStatus
+from cairn.development.execution.runner import CodingTaskRunner
 from tests.support.git import git as _git
 from tests.support.git import initialize_repository as _initialize_repository
 from tests.support.runtime import FailingLLM, RecordingSink, SequenceLLM

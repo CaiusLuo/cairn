@@ -14,15 +14,11 @@ from cairn.agent.tracing.sinks import JsonlTraceSink
 from cairn.agent.tracing.storage import TraceStore
 from cairn.agent.tracing.tracer import Tracer
 from cairn.agent.workspace.workspace import Workspace
-from cairn.development.execution import (
-    CodingTaskRunner,
-    TaskExecutionSummary,
-    TaskSpec,
-    TaskStatus,
-    summarize_task,
-)
 from cairn.development.execution import metrics as metrics_module
 from cairn.development.execution import runner as runner_module
+from cairn.development.execution.metrics import TaskExecutionSummary, summarize_task
+from cairn.development.execution.models import TaskSpec, TaskStatus
+from cairn.development.execution.runner import CodingTaskRunner
 from cairn.development.verification import CheckResult, FileContentEqualsCheck
 from tests.support.durable_tasks import make_host
 from tests.support.runtime import FailingLLM, FailingSink, SequenceLLM

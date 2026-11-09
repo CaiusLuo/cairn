@@ -14,8 +14,8 @@ from cairn.agent.permissions import PermissionHandler
 from cairn.agent.tracing.models import Span
 from cairn.agent.tracing.tracer import Tracer
 from cairn.agent.turn.events import EventHandler
-from cairn.development.execution import CodingTaskRunner
 from cairn.development.execution.models import TaskResult, TaskSpec, TaskStatus
+from cairn.development.execution.runner import CodingTaskRunner
 from cairn.development.report import ReportWriter
 from cairn.development.review.git import (
     ReviewInputError,

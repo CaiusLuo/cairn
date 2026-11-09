@@ -15,7 +15,8 @@ from cairn.agent.session.durable import DurableSession
 from cairn.agent.tracing.tracer import Tracer
 from cairn.agent.turn.events import Event
 from cairn.agent.workspace.workspace import Workspace
-from cairn.development.execution import CodingTaskRunner, TaskSpec, TaskStatus
+from cairn.development.execution.models import TaskSpec, TaskStatus
+from cairn.development.execution.runner import CodingTaskRunner
 from cairn.development.review import (
     FreshReviewer,
     ReviewResult,

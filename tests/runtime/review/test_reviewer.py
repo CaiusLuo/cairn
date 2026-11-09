@@ -7,7 +7,7 @@ import pytest
 from cairn.agent.budget import RunBudget
 from cairn.agent.harness import Agent
 from cairn.agent.models.messages import LLMResponse, Message, ToolCall
-from cairn.development.execution import TaskSpec
+from cairn.development.execution.models import TaskSpec
 from cairn.development.review import (
     FreshReviewer,
     ReviewSeverity,
