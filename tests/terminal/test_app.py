@@ -13,19 +13,19 @@ from prompt_toolkit.output import DummyOutput
 from typer.testing import CliRunner
 
 import cairn.terminal.cli as cli_module
-from cairn.core.budget import RunBudget
-from cairn.core.events import Event
-from cairn.infra.observability.models import (
+from cairn.agent.assembly import build_agent
+from cairn.agent.budget import RunBudget
+from cairn.agent.harness import Agent
+from cairn.agent.tracing.models import (
     Span,
     SpanStatus,
     TraceContext,
     TraceListResult,
 )
-from cairn.infra.observability.sinks import JsonlTraceSink
-from cairn.infra.observability.storage import TraceStore
-from cairn.infra.observability.tracer import Tracer
-from cairn.runtime.agent import Agent
-from cairn.runtime.assembly import build_agent
+from cairn.agent.tracing.sinks import JsonlTraceSink
+from cairn.agent.tracing.storage import TraceStore
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.events import Event
 from cairn.terminal.cli import app
 from cairn.terminal.commands.router import CommandRouter
 from cairn.terminal.frame import TranscriptView

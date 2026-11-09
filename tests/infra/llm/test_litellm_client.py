@@ -5,10 +5,10 @@ from typing import Any
 import litellm
 import pytest
 
-import cairn.infra.llm.litellm_client as litellm_module
-from cairn.core.llm import StreamingLLMClient, StreamProtocolError
-from cairn.core.models import LLMUsage, Message, ToolCall
-from cairn.infra.llm.litellm_client import LiteLLMClient
+import cairn.agent.models.providers.litellm_client as litellm_module
+from cairn.agent.models.client import StreamingLLMClient, StreamProtocolError
+from cairn.agent.models.messages import LLMUsage, Message, ToolCall
+from cairn.agent.models.providers.litellm_client import LiteLLMClient
 
 
 @pytest.mark.parametrize(

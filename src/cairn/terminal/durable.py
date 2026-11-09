@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import os
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -13,8 +12,12 @@ from uuid import uuid4
 
 import typer
 
-from cairn.infra.sessions.host import observe_workspace
-from cairn.infra.sessions.models import (
+from cairn.agent.harness import Agent
+from cairn.agent.models.runtime import ProviderRuntime
+from cairn.agent.session.access import open_store
+from cairn.agent.session.durable import DurableSession
+from cairn.agent.session.host import observe_workspace
+from cairn.agent.session.models import (
     HostResolution,
     ProviderReference,
     RecoveryReport,
@@ -23,16 +26,8 @@ from cairn.infra.sessions.models import (
     SessionSummary,
     same_workspace,
 )
-from cairn.infra.sessions.store import SessionStore
-from cairn.infra.tools.bash import (
-    build_command_env,
-    resolve_tmpdir,
-    resolve_uv_cache_dir,
-)
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.agent import Agent
-from cairn.runtime.durable_session import DurableSession
-from cairn.runtime.provider_runtime import ProviderRuntime
+from cairn.agent.session.store import SessionStore
+from cairn.agent.workspace.workspace import Workspace
 
 
 @dataclass(frozen=True)
@@ -45,34 +40,6 @@ class DurableOptions:
 
 def now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
-
-
-def open_store(
-    directory: Path | None,
-    workspace: Workspace,
-    *,
-    inspect: bool = False,
-    secret_env_keys: frozenset[str] = frozenset(),
-    sensitive_values: tuple[str, ...] = (),
-    additional_roots: tuple[Path, ...] = (),
-    allow_unverified: bool = False,
-) -> SessionStore:
-    # A store inside a scratch or cache directory can be deleted under a live
-    # session, so those roots are refused regardless of the shell's sandboxing.
-    # Match the child environment rather than raw host variables, because
-    # credential filtering may have removed some of them.
-    env = build_command_env(os.environ, secret_env_keys)
-    roots = [workspace.root, *additional_roots]
-    for path in (resolve_tmpdir(env), resolve_uv_cache_dir(env)):
-        if path is not None:
-            roots.append(path)
-    return SessionStore(
-        directory or Path.home() / ".local/state/cairn/sessions",
-        mode="inspect" if inspect else "writer",
-        forbidden_roots=tuple(roots),
-        sensitive_values=sensitive_values,
-        allow_unverified=allow_unverified,
-    )
 
 
 def list_sessions(directory: Path | None, additional_roots: tuple[Path, ...]) -> None:

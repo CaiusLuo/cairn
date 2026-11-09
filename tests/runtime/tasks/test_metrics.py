@@ -6,10 +6,14 @@ from typing import Any
 
 import pytest
 
-from cairn.core.budget import RunBudget
-from cairn.core.context import ContextBudget
-from cairn.core.llm import LLMClient
-from cairn.core.models import LLMResponse, LLMUsage, Message, ToolCall
+from cairn.agent.budget import RunBudget
+from cairn.agent.context.window import ContextBudget
+from cairn.agent.models.client import LLMClient
+from cairn.agent.models.messages import LLMResponse, LLMUsage, Message, ToolCall
+from cairn.agent.tracing.sinks import JsonlTraceSink
+from cairn.agent.tracing.storage import TraceStore
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.execution import (
     CodingTaskRunner,
     TaskExecutionSummary,
@@ -20,10 +24,6 @@ from cairn.development.execution import (
 from cairn.development.execution import metrics as metrics_module
 from cairn.development.execution import runner as runner_module
 from cairn.development.verification import CheckResult, FileContentEqualsCheck
-from cairn.infra.observability.sinks import JsonlTraceSink
-from cairn.infra.observability.storage import TraceStore
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.workspace.workspace import Workspace
 from tests.support.durable_tasks import make_host
 from tests.support.runtime import FailingLLM, FailingSink, SequenceLLM
 

@@ -2,11 +2,11 @@ from typing import Any
 
 import pytest
 
-import cairn.infra.llm.token_counter as token_counter_module
-from cairn.core.context import EstimatedTokenCounter, TokenCount
-from cairn.core.models import Message, ToolCall
-from cairn.infra.llm.litellm_client import to_llm_message
-from cairn.infra.llm.token_counter import LiteLLMTokenCounter
+import cairn.agent.models.providers.token_counter as token_counter_module
+from cairn.agent.context.window import EstimatedTokenCounter, TokenCount
+from cairn.agent.models.messages import Message, ToolCall
+from cairn.agent.models.providers.litellm_client import to_llm_message
+from cairn.agent.models.providers.token_counter import LiteLLMTokenCounter
 
 
 def test_local_tokenizer_counts_are_marked_estimates_and_grow_with_content() -> None:

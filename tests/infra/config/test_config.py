@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core.model_manager import ModelConfig, ModelManager, ProviderConfig
-from cairn.infra.config import load_model_config, validate_runtime_provider
+from cairn.agent.models.config import load_model_config, validate_runtime_provider
+from cairn.agent.models.selection import ModelConfig, ModelManager, ProviderConfig
 
 PROVIDER_TOML = """\
 base_url = "https://example.com/v1"

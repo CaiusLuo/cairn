@@ -9,9 +9,9 @@ test has to build the same shapes, and one definition keeps those shapes equal.
 
 from typing import Any
 
-from cairn.core.compaction.summarizer import SummaryResult
-from cairn.core.context import TokenCount
-from cairn.core.models import Message, ToolCall
+from cairn.agent.context.compaction.summarizer import SummaryResult
+from cairn.agent.context.window import TokenCount
+from cairn.agent.models.messages import Message, ToolCall
 
 
 class CharacterCounter:

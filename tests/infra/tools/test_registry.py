@@ -4,12 +4,12 @@ from typing import Any, cast
 
 import pytest
 
-from cairn.core.models import ToolResult
-from cairn.infra.tools import build_default_registry
-from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext, ToolNotFound
-from cairn.infra.tools.bash import BashTool
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.models.messages import ToolResult
+from cairn.agent.tools.base import InvalidArguments, ToolExecutionContext, ToolNotFound
+from cairn.agent.tools.bash import BashTool
+from cairn.agent.tools.defaults import build_default_registry
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.workspace.workspace import Workspace
 
 
 class EchoTool:

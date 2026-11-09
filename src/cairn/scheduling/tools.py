@@ -13,8 +13,8 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from cairn.core.models import ToolResult
-from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
+from cairn.agent.models.messages import ToolResult
+from cairn.agent.tools.base import InvalidArguments, ToolExecutionContext
 from cairn.scheduling.models import ScheduleJob, ScheduleKind, initial_next_run
 from cairn.scheduling.runner import current_time
 from cairn.scheduling.store import ScheduleStore

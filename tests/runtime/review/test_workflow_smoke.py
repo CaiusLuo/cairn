@@ -4,8 +4,8 @@ from typing import Any
 
 import pytest
 
-from cairn.core.budget import RunBudget
-from cairn.core.models import LLMResponse, Message
+from cairn.agent.budget import RunBudget
+from cairn.agent.models.messages import LLMResponse, Message
 from cairn.development.review import FreshReviewer
 from cairn.development.review import workflow as workflow_module
 from cairn.development.review.workflow import ReviewWorkflow

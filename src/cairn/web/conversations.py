@@ -24,7 +24,7 @@ from cairn.conversation.service import (
     ConversationRecoveryRequired,
     ConversationService,
 )
-from cairn.runtime.lifecycle import settle_owned
+from cairn.shared.lifecycle import settle_owned
 from cairn.web.runtime import request_body
 
 

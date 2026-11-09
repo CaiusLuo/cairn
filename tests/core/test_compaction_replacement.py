@@ -7,14 +7,14 @@ leave a tool result whose call the summary swallowed.
 
 import pytest
 
-from cairn.core.compaction import (
+from cairn.agent.context.compaction import (
     SUMMARY_PREFIX,
     CompactionRecord,
     ReplacementError,
     apply_replacement,
 )
-from cairn.core.context import ContextBudget, ContextBuilder
-from cairn.core.models import Message
+from cairn.agent.context.window import ContextBudget, ContextBuilder
+from cairn.agent.models.messages import Message
 from tests.support.compaction import CharacterCounter, assistant, tool_call, user
 from tests.support.compaction import group as shared_group
 

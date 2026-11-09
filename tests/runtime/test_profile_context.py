@@ -5,7 +5,7 @@ import json
 import threading
 from pathlib import Path
 
-from cairn.core.models import LLMResponse
+from cairn.agent.models.messages import LLMResponse
 from cairn.memory.models import PersonalMemoryContext
 from cairn.memory.service import PersonalMemoryService
 from cairn.memory.store import PersonalMemoryStore

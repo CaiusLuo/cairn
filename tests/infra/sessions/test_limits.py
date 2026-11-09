@@ -5,17 +5,17 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core.context import ContextBudget, ContextBuilder
-from cairn.core.models import Message, ToolCall
-from cairn.core.state import AgentState
-from cairn.infra.sessions.codec import canonical, encode_record, restore_messages
-from cairn.infra.sessions.models import (
+from cairn.agent.context.window import ContextBudget, ContextBuilder
+from cairn.agent.models.messages import Message, ToolCall
+from cairn.agent.session.codec import canonical, encode_record, restore_messages
+from cairn.agent.session.models import (
     MAX_RECORD_BYTES,
     MAX_WAL_BYTES,
     AttemptDiagnostics,
     HostResolution,
     SessionStoreError,
 )
+from cairn.agent.turn.state import AgentState
 from tests.support.sessions import (
     OTHER_TURN,
     SESSION,
@@ -251,7 +251,7 @@ def test_retained_reader_blocks_wal_reclamation_until_idle(
         assert api.maintenance_failed
         wal = Path(str(api.path) + "-wal")
         monkeypatch.setattr(
-            "cairn.infra.sessions.store.MAX_WAL_BYTES", wal.stat().st_size
+            "cairn.agent.session.store.MAX_WAL_BYTES", wal.stat().st_size
         )
         report = api.inspect(SESSION)
         with pytest.raises(SessionStoreError, match="wal_admission_limit"):

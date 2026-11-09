@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.config.server import load_server_config
+from cairn.infra.server_config import load_server_config
 from cairn.infra.server_paths import ServerPaths
 
 

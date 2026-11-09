@@ -3,8 +3,8 @@
 import asyncio
 from pathlib import Path
 
-from cairn.infra.skills import SkillLibrary, layered_skills, resolve_skills
-from cairn.infra.tools.skill import ReadSkillResourceTool
+from cairn.agent.skills import SkillLibrary, layered_skills, resolve_skills
+from cairn.agent.tools.skill import ReadSkillResourceTool
 
 VALID = "---\nname: {name}\ndescription: {desc}\n---\n\n{body}\n"
 
@@ -108,7 +108,7 @@ def test_external_skills_cannot_redirect_or_read_credentials(tmp_path: Path) -> 
 
     import pytest
 
-    from cairn.infra.tools.base import PermissionRefused
+    from cairn.agent.tools.base import PermissionRefused
 
     root = project_root(tmp_path)
     write_skill(root, "local", "local", "Local helper", "BODY")
@@ -140,7 +140,7 @@ def test_symlinked_project_catalog_is_not_loaded(tmp_path: Path) -> None:
 def test_resource_path_preflight_precedes_approval(tmp_path: Path) -> None:
     import pytest
 
-    from cairn.infra.tools.base import InvalidArguments
+    from cairn.agent.tools.base import InvalidArguments
 
     tool = ReadSkillResourceTool(layered_skills(tmp_path))
     for path in ("/etc/passwd", "../other.txt", "resources/../../other.txt"):

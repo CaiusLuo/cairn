@@ -10,7 +10,7 @@ import httpx
 
 
 def default_runtime_state_dir() -> Path:
-    from cairn.infra.config.server import load_server_config
+    from cairn.infra.server_config import load_server_config
 
     return load_server_config().data_root / "runtime"
 

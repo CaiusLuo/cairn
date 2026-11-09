@@ -4,20 +4,20 @@ from typing import Any
 import pytest
 from litellm.exceptions import RateLimitError
 
-from cairn.core.events import Event
-from cairn.core.llm import LLMStreamChunk, StreamProtocolError, ToolCallDelta
-from cairn.core.models import Message, ToolCall, ToolResult
-from cairn.core.permissions import (
+from cairn.agent.harness import Agent
+from cairn.agent.models.client import LLMStreamChunk, StreamProtocolError, ToolCallDelta
+from cairn.agent.models.executor import StreamObserverError
+from cairn.agent.models.messages import Message, ToolCall, ToolResult
+from cairn.agent.permissions import (
     PermissionCapability,
     PermissionDecision,
     PermissionResult,
 )
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.tools.base import ToolExecutionContext
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.runtime.agent import Agent
-from cairn.runtime.loop import run_turn
-from cairn.runtime.model_executor import StreamObserverError
+from cairn.agent.tools.base import ToolExecutionContext
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.events import Event
+from cairn.agent.turn.loop import run_turn
 from tests.support.runtime import (
     TEST_BUDGET,
     NetworkRequestTool,

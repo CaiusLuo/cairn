@@ -13,12 +13,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from cairn.agent.session.models import SessionStoreError, SessionSummary
+from cairn.agent.session.store import SessionStore
+from cairn.agent.tools.bash import resolve_tmpdir, resolve_uv_cache_dir
 from cairn.development.board.models import TaskBoardItem
 from cairn.development.board.store import TaskBoardStore
-from cairn.infra.sessions.models import SessionStoreError, SessionSummary
-from cairn.infra.sessions.store import SessionStore
-from cairn.infra.tools.bash import resolve_tmpdir, resolve_uv_cache_dir
-from cairn.infra.tools.credential_env import SECRET_ENV_KEYS
+from cairn.shared.credential_env import SECRET_ENV_KEYS
 
 SNAPSHOT_VERSION = 1
 

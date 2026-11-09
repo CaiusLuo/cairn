@@ -24,7 +24,7 @@ from cairn.development.board.models import (
     TaskSource,
     TaskTodo,
 )
-from cairn.infra.atomic_json import atomic_write as _atomic_write
+from cairn.shared.atomic_json import atomic_write as _atomic_write
 
 TASK_BOARD_DIR_ENV = "CAIRN_TASK_BOARD_DIR"
 STORE_VERSION = 1

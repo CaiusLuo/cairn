@@ -9,28 +9,28 @@ from typing import Any
 import pytest
 from litellm.exceptions import RateLimitError
 
-from cairn.core.context import ContextBudget, ContextBuilder
-from cairn.core.events import Event
-from cairn.core.llm import LLMClient, LLMStreamChunk, ToolCallDelta
-from cairn.core.model_manager import ModelConfig, ModelManager, ProviderConfig
-from cairn.core.models import LLMResponse, LLMUsage, Message, ToolResult
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.sessions.codec import snapshot_messages
-from cairn.infra.sessions.models import (
+from cairn.agent.context.window import ContextBudget, ContextBuilder
+from cairn.agent.harness import Agent, SessionAdmissionError
+from cairn.agent.models.client import LLMClient, LLMStreamChunk, ToolCallDelta
+from cairn.agent.models.executor import ModelExecutor
+from cairn.agent.models.messages import LLMResponse, LLMUsage, Message, ToolResult
+from cairn.agent.models.selection import ModelConfig, ModelManager, ProviderConfig
+from cairn.agent.session.codec import snapshot_messages
+from cairn.agent.session.durable import DurableSession, SessionDurabilityError
+from cairn.agent.session.models import (
     GitBinding,
     PathIdentity,
     ProviderReference,
     SessionBinding,
     SessionStoreError,
 )
-from cairn.infra.tools.base import ToolExecutionContext
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.runtime.agent import Agent, SessionAdmissionError
-from cairn.runtime.durable_session import DurableSession, SessionDurabilityError
-from cairn.runtime.lifecycle import await_owned
-from cairn.runtime.loop import run_turn
-from cairn.runtime.model_executor import ModelExecutor
-from cairn.runtime.session import SessionState, TurnOutcome
+from cairn.agent.session.session import SessionState, TurnOutcome
+from cairn.agent.tools.base import ToolExecutionContext
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.events import Event
+from cairn.agent.turn.loop import run_turn
+from cairn.shared.lifecycle import await_owned
 from tests.support.durable_sessions import create_session, resolution
 from tests.support.git import git, initialize_repository
 from tests.support.runtime import (

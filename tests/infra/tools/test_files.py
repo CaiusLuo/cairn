@@ -8,8 +8,8 @@ from typing import cast
 
 import pytest
 
-from cairn.infra.tools.base import ToolExecutionFailure, ToolFailureKind
-from cairn.infra.tools.files import (
+from cairn.agent.tools.base import ToolExecutionFailure, ToolFailureKind
+from cairn.agent.tools.files import (
     EDIT_FILE_MAX_BYTES,
     READ_FILE_CHUNK_SIZE,
     EditFileTool,
@@ -18,7 +18,7 @@ from cairn.infra.tools.files import (
     _decode_bounded_utf8,
     _read_bounded_range,
 )
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.workspace.workspace import Workspace
 
 
 class RecordingBytesIO(io.BytesIO):

@@ -9,29 +9,29 @@ from litellm.exceptions import (
     Timeout,
 )
 
-from cairn.core.context import (
+from cairn.agent.context.window import (
     ContextBudget,
     ContextBudgetExceeded,
     ContextBuilder,
     TokenCount,
 )
-from cairn.core.events import Event
-from cairn.core.llm import LLMStreamChunk, StreamProtocolError, ToolCallDelta
-from cairn.core.model_manager import ModelConfig, ModelManager, ProviderConfig
-from cairn.core.models import LLMUsage, Message, ToolCall, ToolResult
-from cairn.core.permissions import (
+from cairn.agent.harness import Agent
+from cairn.agent.models.client import LLMStreamChunk, StreamProtocolError, ToolCallDelta
+from cairn.agent.models.executor import ModelExecutor, StreamObserverError
+from cairn.agent.models.messages import LLMUsage, Message, ToolCall, ToolResult
+from cairn.agent.models.providers import litellm_client as client_module
+from cairn.agent.models.providers.litellm_client import LiteLLMClient
+from cairn.agent.models.selection import ModelConfig, ModelManager, ProviderConfig
+from cairn.agent.permissions import (
     PermissionCapability,
     PermissionDecision,
     PermissionResult,
 )
-from cairn.infra.llm import litellm_client as client_module
-from cairn.infra.llm.litellm_client import LiteLLMClient
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.tools.base import ToolExecutionContext
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.runtime.agent import Agent
-from cairn.runtime.loop import run_turn
-from cairn.runtime.model_executor import ModelExecutor, StreamObserverError
+from cairn.agent.tools.base import ToolExecutionContext
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.events import Event
+from cairn.agent.turn.loop import run_turn
 from tests.support.runtime import TEST_BUDGET, NetworkRequestTool, RecordingSink
 from tests.support.streaming import (
     CompletionResponse,

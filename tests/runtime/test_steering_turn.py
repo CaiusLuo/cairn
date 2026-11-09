@@ -17,12 +17,12 @@ from typing import Any
 
 import pytest
 
-from cairn.core.budget import RunBudget
-from cairn.core.models import LLMResponse, Message, ToolCall, ToolResult
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.runtime.agent import Agent
-from cairn.runtime.loop import run_turn
-from cairn.runtime.turn.steering import PendingMessage, SteerQueue
+from cairn.agent.budget import RunBudget
+from cairn.agent.harness import Agent
+from cairn.agent.models.messages import LLMResponse, Message, ToolCall, ToolResult
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.turn.loop import run_turn
+from cairn.agent.turn.steering import PendingMessage, SteerQueue
 from tests.support.runtime import SequenceLLM
 
 BUDGET = RunBudget(max_steps=6)

@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from cairn.infra.observability.otlp import OtlpSpanExporter
-from cairn.infra.observability.sinks import FanoutTraceSink, JsonlTraceSink
+from cairn.agent.tracing.otlp import OtlpSpanExporter
+from cairn.agent.tracing.sinks import FanoutTraceSink, JsonlTraceSink
 from cairn.terminal.cli import _build_trace_sink
 
 

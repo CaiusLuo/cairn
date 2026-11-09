@@ -3,15 +3,15 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core.model_manager import ModelConfig, ProviderConfig
-from cairn.core.provider_catalog import NamedProvider
-from cairn.infra.config import (
+from cairn.agent.models.catalog import NamedProvider
+from cairn.agent.models.config import (
     DEFAULT_PROVIDER_NAME,
     ConfigLayout,
     ProjectProviders,
     environment_provider,
     load_project_providers,
 )
+from cairn.agent.models.selection import ModelConfig, ProviderConfig
 
 LEGACY_TOML = """\
 base_url = "https://legacy.test/v1"

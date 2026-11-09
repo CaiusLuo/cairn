@@ -6,22 +6,22 @@ from contextlib import contextmanager
 
 import pytest
 
-import cairn.runtime.provider_runtime as provider_module
-from cairn.core.context import ContextBudget, ContextBuilder
-from cairn.core.model_manager import ModelConfig, ProviderConfig
-from cairn.core.models import Message
-from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
-from cairn.core.provider_catalog import NamedProvider, ProviderCatalog
-from cairn.infra.llm.litellm_client import LiteLLMClient
-from cairn.infra.llm.token_counter import LiteLLMTokenCounter
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.runtime.agent import Agent
-from cairn.runtime.provider_runtime import (
+import cairn.agent.models.runtime as provider_module
+from cairn.agent.context.window import ContextBudget, ContextBuilder
+from cairn.agent.harness import Agent
+from cairn.agent.models.catalog import NamedProvider, ProviderCatalog
+from cairn.agent.models.messages import Message
+from cairn.agent.models.providers.litellm_client import LiteLLMClient
+from cairn.agent.models.providers.token_counter import LiteLLMTokenCounter
+from cairn.agent.models.runtime import (
     ProviderRuntime,
     ProviderSession,
     build_provider_runtime,
 )
-from cairn.runtime.session import Session
+from cairn.agent.models.selection import ModelConfig, ProviderConfig
+from cairn.agent.permissions import PermissionCapability, SessionPermissionHandler
+from cairn.agent.session.session import Session
+from cairn.agent.tools.registry import ToolRegistry
 
 BUDGET = ContextBudget(max_tokens=100, response_tokens=20)
 

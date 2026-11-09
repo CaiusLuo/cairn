@@ -2,7 +2,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from cairn.core.repository import RepositoryEvidence
+from cairn.agent.context.evidence import RepositoryEvidence
 
 
 class TaskStatus(StrEnum):

@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import cairn.infra.sessions.codec as codec_module
-from cairn.core.models import Message, ToolCall
-from cairn.infra.sessions.codec import (
+import cairn.agent.session.codec as codec_module
+from cairn.agent.models.messages import Message, ToolCall
+from cairn.agent.session.codec import (
     canonical,
     decode_checkpoint,
     encode_checkpoint,
@@ -16,7 +16,7 @@ from cairn.infra.sessions.codec import (
     restore_messages,
     validate_record,
 )
-from cairn.infra.sessions.models import (
+from cairn.agent.session.models import (
     MAX_MESSAGE_BYTES,
     MAX_MESSAGES,
     MAX_RECORD_BYTES,

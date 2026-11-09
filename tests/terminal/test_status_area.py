@@ -12,7 +12,7 @@ import pytest
 from prompt_toolkit.utils import get_cwidth
 
 import cairn.terminal.output as output_module
-from cairn.core.events import Event
+from cairn.agent.turn.events import Event
 from cairn.terminal.output import StreamingDisplay
 
 

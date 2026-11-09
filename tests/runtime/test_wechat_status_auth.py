@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 import pytest
 
-from cairn.core.budget import RunBudget
+from cairn.agent.budget import RunBudget
 from cairn.development.catalogue import RuntimeTask
 from cairn.development.service import TaskService
 from cairn.infra.runtime_client import RuntimeClient

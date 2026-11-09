@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.sessions.models import SessionStoreError
+from cairn.agent.session.models import SessionStoreError
 from cairn.terminal.durable import _select_session
 from tests.support.sessions import binding, store
 

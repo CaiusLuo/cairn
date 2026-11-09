@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.repo_graph.models import (
+from cairn.agent.context.repo_graph.models import (
     ImportRecord,
     ModuleRecord,
     PythonStatus,
@@ -12,7 +12,7 @@ from cairn.infra.repo_graph.models import (
     SymbolKind,
     SymbolRecord,
 )
-from cairn.infra.repo_graph.python import (
+from cairn.agent.context.repo_graph.python import (
     MAX_IMPORT_NAMES,
     MAX_PYTHON_NAME_LENGTH,
     PythonFacts,

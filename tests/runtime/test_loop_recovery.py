@@ -5,19 +5,19 @@ from typing import Any
 
 import pytest
 
-from cairn.core.budget import RunBudget, RunBudgetExceeded
-from cairn.core.events import Event
-from cairn.core.llm import LLMClient
-from cairn.core.models import LLMResponse, Message, ToolCall, ToolResult
-from cairn.core.permissions import PermissionDecision, PermissionResult
-from cairn.infra.observability.models import Span
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.tools.base import ToolExecutionContext
-from cairn.infra.tools.files import EditFileTool
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.agent import Agent
-from cairn.runtime.loop import run_turn
+from cairn.agent.budget import RunBudget, RunBudgetExceeded
+from cairn.agent.harness import Agent
+from cairn.agent.models.client import LLMClient
+from cairn.agent.models.messages import LLMResponse, Message, ToolCall, ToolResult
+from cairn.agent.permissions import PermissionDecision, PermissionResult
+from cairn.agent.tools.base import ToolExecutionContext
+from cairn.agent.tools.files import EditFileTool
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.tracing.models import Span
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.events import Event
+from cairn.agent.turn.loop import run_turn
+from cairn.agent.workspace.workspace import Workspace
 from tests.support.runtime import (
     TEST_BUDGET,
     FailingLLM,

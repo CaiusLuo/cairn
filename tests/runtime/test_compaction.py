@@ -11,11 +11,11 @@ from typing import Any
 
 import pytest
 
-from cairn.core.compaction import CompactionStatus
-from cairn.core.compaction.summarizer import FAILURE_EMPTY, SummaryResult
-from cairn.core.context import ContextBudget
-from cairn.core.models import Message
-from cairn.runtime.turn.compaction import (
+from cairn.agent.context.compaction import CompactionStatus
+from cairn.agent.context.compaction.summarizer import FAILURE_EMPTY, SummaryResult
+from cairn.agent.context.window import ContextBudget
+from cairn.agent.models.messages import Message
+from cairn.agent.turn.compaction import (
     CompactionInput,
     CompactionOutcome,
     CompactionStep,

@@ -8,7 +8,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Any
 
-from cairn.core.models import Message
+from cairn.agent.models.messages import Message
 from cairn.memory.models import (
     MemoryKind,
     MemorySource,

@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.sessions.codec import restore_messages
-from cairn.infra.sessions.models import SCHEMA_VERSION, SessionStoreError
-from cairn.infra.sessions.store import SessionStore
+from cairn.agent.session.codec import restore_messages
+from cairn.agent.session.models import SCHEMA_VERSION, SessionStoreError
+from cairn.agent.session.store import SessionStore
 from tests.support.sessions import (
     OTHER_TURN,
     SESSION,

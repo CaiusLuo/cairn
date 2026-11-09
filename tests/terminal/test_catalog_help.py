@@ -27,7 +27,7 @@ def test_help_prints_a_nested_command(capsys) -> None:  # type: ignore[no-untype
 
 
 def test_router_handles_help_flag_for_all_commands(capsys, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    from cairn.infra.observability.storage import TraceStore
+    from cairn.agent.tracing.storage import TraceStore
     from cairn.terminal.commands.context import CommandContext
     from cairn.terminal.commands.router import CommandRouter
 

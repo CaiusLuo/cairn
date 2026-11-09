@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.worktree import WorktreeProvider
-from cairn.infra.workspace.workspace import Workspace
 from tests.support.git import git
 
 

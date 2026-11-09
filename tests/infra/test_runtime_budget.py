@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core.budget import DEFAULT_MAX_STEPS, RunBudget
-from cairn.infra.config.runtime_budget import load_task_budget
-from cairn.infra.redaction import StreamRedactor, redact_value
+from cairn.agent.budget import DEFAULT_MAX_STEPS, RunBudget
+from cairn.agent.models.config.runtime_budget import load_task_budget
+from cairn.shared.redaction import StreamRedactor, redact_value
 
 
 def test_host_budget_defaults_and_explicit_override(tmp_path: Path) -> None:

@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from cairn.infra.config import load_project_providers
-from cairn.infra.git.cleanup import finish_cleanup as _finish
-from cairn.infra.git.environment import build_git_env
-from cairn.infra.tools.capture import read_bounded
-from cairn.infra.tools.credential_env import SECRET_ENV_KEYS
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.models.config import load_project_providers
+from cairn.agent.tools.capture import read_bounded
+from cairn.agent.workspace.workspace import Workspace
+from cairn.shared.credential_env import SECRET_ENV_KEYS
+from cairn.shared.git_env import build_git_env
+from cairn.shared.lifecycle import finish_cleanup as _finish
 
 GIT_TIMEOUT = 30.0
 TERMINATE_TIMEOUT = 2.0

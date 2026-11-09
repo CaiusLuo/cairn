@@ -12,9 +12,9 @@ from uuid import uuid4
 
 import httpx
 
-from cairn.core.events import Event, EventType
+from cairn.agent.turn.events import Event, EventType
 from cairn.infra.runtime_client import RuntimeClient
-from cairn.runtime.lifecycle import await_owned, settle_owned
+from cairn.shared.lifecycle import await_owned, settle_owned
 from cairn.terminal.frame import TranscriptView, frame_live_region
 from cairn.terminal.input import CliInput
 from cairn.terminal.output import (

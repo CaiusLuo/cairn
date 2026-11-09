@@ -11,16 +11,16 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core.models import ToolCall
-from cairn.core.permissions import (
+from cairn.agent.models.messages import ToolCall
+from cairn.agent.permissions import (
     PermissionCapability,
     PermissionChoice,
     PermissionRequest,
     PermissionSource,
     SessionPermissionHandler,
 )
-from cairn.infra.tools.filesystem_access import normalize_access_root
-from cairn.infra.workspace.paths import resolve_workspace_path
+from cairn.agent.tools.filesystem_access import normalize_access_root
+from cairn.agent.workspace.paths import resolve_workspace_path
 
 
 def _tool_call(path: Path) -> ToolCall:

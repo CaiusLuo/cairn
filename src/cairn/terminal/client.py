@@ -9,11 +9,11 @@ from typing import Annotated
 import httpx
 import typer
 
-from cairn.infra.config.server import load_server_config
 from cairn.infra.runtime_client import (
     RuntimeClient,
     read_runtime_token,
 )
+from cairn.infra.server_config import load_server_config
 from cairn.terminal.runtime import app as runtime_commands
 
 app = typer.Typer(

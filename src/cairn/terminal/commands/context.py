@@ -2,14 +2,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from cairn.core.model_manager import ModelConfig, ModelManager
-from cairn.core.provider_catalog import ProviderCatalog
-from cairn.infra.observability.storage import TraceStore
-from cairn.runtime.model_executor import ModelExecutor
+from cairn.agent.models.catalog import ProviderCatalog
+from cairn.agent.models.executor import ModelExecutor
+from cairn.agent.models.selection import ModelConfig, ModelManager
+from cairn.agent.tracing.storage import TraceStore
 from cairn.shared.action import Action
 
 if TYPE_CHECKING:
-    from cairn.runtime.turn.compaction import CompactionOutcome
+    from cairn.agent.turn.compaction import CompactionOutcome
 
 
 @dataclass

@@ -9,7 +9,7 @@ The operator points at it and asks for it to steer the running turn instead of
 waiting for that turn to end.
 """
 
-from cairn.runtime.turn.steering import PendingMessage, SteerQueue
+from cairn.agent.turn.steering import PendingMessage, SteerQueue
 from cairn.terminal.queue_view import QueueView
 
 

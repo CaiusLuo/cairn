@@ -11,14 +11,14 @@ from typing import Any, Literal, cast
 
 import pytest
 
-from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
-from cairn.core.repository import RepositoryEvidence
-from cairn.infra.git.context import RepoContextProvider
-from cairn.infra.sessions.models import SCHEMA_VERSION, SessionStoreError
-from cairn.infra.sessions.task_models import TaskRecoveryReport, TaskResolution
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.agent import SessionAdmissionError
-from cairn.terminal.durable import open_store
+from cairn.agent.context.evidence import RepositoryEvidence
+from cairn.agent.context.git import RepoContextProvider
+from cairn.agent.harness import SessionAdmissionError
+from cairn.agent.permissions import PermissionCapability, SessionPermissionHandler
+from cairn.agent.session.access import open_store
+from cairn.agent.session.models import SCHEMA_VERSION, SessionStoreError
+from cairn.agent.session.task_models import TaskRecoveryReport, TaskResolution
+from cairn.agent.workspace.workspace import Workspace
 from tests.support.durable_tasks import (
     SPEC,
     DurableTaskHost,

@@ -8,7 +8,7 @@ import pytest
 from rich.console import Console
 
 import cairn.terminal.output as output_module
-from cairn.core.events import Event
+from cairn.agent.turn.events import Event
 
 
 def _display(

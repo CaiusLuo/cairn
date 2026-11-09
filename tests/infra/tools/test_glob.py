@@ -4,9 +4,9 @@ from typing import Any
 
 import pytest
 
-from cairn.infra.tools.base import InvalidArguments
-from cairn.infra.tools.glob import MAX_SCAN_CANDIDATES, GlobTool
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.tools.base import InvalidArguments
+from cairn.agent.tools.glob import MAX_SCAN_CANDIDATES, GlobTool
+from cairn.agent.workspace.workspace import Workspace
 
 
 def _write(path: Path, content: str = "") -> None:

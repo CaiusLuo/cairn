@@ -12,9 +12,9 @@ from contextlib import ExitStack, closing
 from pathlib import Path
 from uuid import uuid4
 
+from cairn.agent.workspace.lease import WorkspaceLease
 from cairn.development.catalogue import RuntimeCatalogue
 from cairn.infra.server_paths import ServerPaths, overlaps
-from cairn.infra.workspace.lease import WorkspaceLease
 
 COMPONENTS = ("runtime", "wechat", "schedule", "agent")
 

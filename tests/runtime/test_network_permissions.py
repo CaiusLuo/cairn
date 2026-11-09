@@ -16,20 +16,20 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from cairn.core.models import LLMResponse, ToolCall
-from cairn.core.permissions import (
+from cairn.agent.assembly import build_agent
+from cairn.agent.models.messages import LLMResponse, ToolCall
+from cairn.agent.permissions import (
     PermissionCapability,
     PermissionChoice,
     PermissionRequest,
     PermissionSource,
     SessionPermissionHandler,
 )
-from cairn.infra.observability.models import SpanStatus
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.tools.bash import BashTool
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.assembly import build_agent
-from cairn.runtime.loop import run_turn
+from cairn.agent.tools.bash import BashTool
+from cairn.agent.tracing.models import SpanStatus
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.loop import run_turn
+from cairn.agent.workspace.workspace import Workspace
 from tests.support.runtime import (
     TEST_BUDGET,
     RecordingSink,

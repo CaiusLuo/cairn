@@ -6,16 +6,16 @@ from uuid import uuid4
 import pytest
 
 import cairn.development.worktree as module
-from cairn.core.models import LLMResponse, ToolCall
+from cairn.agent.assembly import build_agent
+from cairn.agent.models.messages import LLMResponse, ToolCall
+from cairn.agent.turn.loop import run_turn
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.worktree import (
     WorktreeError,
     WorktreeHandle,
     WorktreeProvider,
     WorktreeState,
 )
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.assembly import build_agent
-from cairn.runtime.loop import run_turn
 from tests.infra.git.helpers import assert_removed
 from tests.support.git import git
 from tests.support.runtime import TEST_BUDGET, SequenceLLM

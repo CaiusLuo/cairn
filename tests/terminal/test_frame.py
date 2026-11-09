@@ -24,7 +24,7 @@ from prompt_toolkit.output import DummyOutput
 from rich.text import Text
 
 import cairn.terminal.output as output_module
-from cairn.core.events import Event
+from cairn.agent.turn.events import Event
 from cairn.shared.action import Action, ActionRow, correction, note
 from cairn.terminal.frame import (
     ACTIVITY_ROWS,
@@ -1613,7 +1613,7 @@ def test_bracketed_paste_is_recorded_once_as_submitted_text() -> None:
 
 
 def test_running_queue_wins_over_history_when_input_empty() -> None:
-    from cairn.runtime.turn.steering import PendingMessage
+    from cairn.agent.turn.steering import PendingMessage
 
     view, _, _ = _view()
     view._history = ["older prompt"]
@@ -1722,7 +1722,7 @@ def test_real_keys_ss3_arrows_recall_history() -> None:
 
 
 def test_real_keys_running_queue_wins_over_history() -> None:
-    from cairn.runtime.turn.steering import PendingMessage
+    from cairn.agent.turn.steering import PendingMessage
 
     async def scenario() -> None:
         with (

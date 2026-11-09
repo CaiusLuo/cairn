@@ -7,8 +7,8 @@ from typing import Any, cast
 
 from starlette.testclient import TestClient
 
+from cairn.agent.budget import RunBudget
 from cairn.conversation.models import ConversationSource, RunStatus
-from cairn.core.budget import RunBudget
 from cairn.server import runtime_app
 from tests.support.git import initialize_repository
 

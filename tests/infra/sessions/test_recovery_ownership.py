@@ -6,12 +6,12 @@ from typing import Literal
 
 import pytest
 
-from cairn.infra.sessions.models import (
+from cairn.agent.session.models import (
     HostResolution,
     SessionStoreError,
     VersionConflict,
 )
-from cairn.runtime.lifecycle import await_owned, settle_owned
+from cairn.shared.lifecycle import await_owned, settle_owned
 from tests.support.sessions import (
     OTHER_TURN,
     SESSION,

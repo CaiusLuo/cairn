@@ -13,8 +13,8 @@ from typing import Any
 
 import pytest
 
-from cairn.infra.observability.models import SpanStatus, new_trace_context, start_span
-from cairn.infra.observability.otlp import (
+from cairn.agent.tracing.models import SpanStatus, new_trace_context, start_span
+from cairn.agent.tracing.otlp import (
     ALLOWED_ATTRIBUTES,
     ExportConfig,
     OtlpSpanExporter,
@@ -23,7 +23,7 @@ from cairn.infra.observability.otlp import (
     resolve_export_config,
     span_to_otlp_json,
 )
-from cairn.infra.observability.sinks import FanoutTraceSink, JsonlTraceSink
+from cairn.agent.tracing.sinks import FanoutTraceSink, JsonlTraceSink
 
 
 class _Collector:

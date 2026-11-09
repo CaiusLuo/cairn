@@ -3,10 +3,10 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-from cairn.infra.sessions.models import HostResolution, RecoveryReport
-from cairn.infra.sessions.store import SessionStore
-from cairn.runtime.agent import Agent
-from cairn.runtime.durable_session import DurableSession
+from cairn.agent.harness import Agent
+from cairn.agent.session.durable import DurableSession
+from cairn.agent.session.models import HostResolution, RecoveryReport
+from cairn.agent.session.store import SessionStore
 from tests.support.sessions import binding, store
 
 

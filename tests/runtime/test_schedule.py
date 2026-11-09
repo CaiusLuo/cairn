@@ -859,7 +859,7 @@ def test_runner_delivers_reminder_without_invoking_model(tmp_path: Path) -> None
 
 
 def test_schedule_create_uses_trusted_message_and_is_idempotent(tmp_path: Path) -> None:
-    from cairn.infra.tools.base import ToolExecutionContext
+    from cairn.agent.tools.base import ToolExecutionContext
     from cairn.scheduling.tools import ScheduleCreateTool
 
     store = ScheduleStore(tmp_path / "schedule")

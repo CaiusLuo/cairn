@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
+from cairn.agent.session.models import CheckpointReceipt
 from cairn.conversation.models import (
     Conversation,
     ConversationSource,
@@ -32,8 +33,7 @@ from cairn.development.service import (
     TaskPaused,
     TaskService,
 )
-from cairn.infra.sessions.models import CheckpointReceipt
-from cairn.runtime.lifecycle import settle_owned
+from cairn.shared.lifecycle import settle_owned
 
 
 class ConversationBusy(RuntimeError):

@@ -10,10 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core.models import ToolResult
-from cairn.infra.tools.base import InvalidArguments
-from cairn.infra.tools.grep import GrepTool
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.models.messages import ToolResult
+from cairn.agent.tools.base import InvalidArguments
+from cairn.agent.tools.grep import GrepTool
+from cairn.agent.workspace.workspace import Workspace
 
 
 def _workspace(tmp_path: Path) -> Workspace:

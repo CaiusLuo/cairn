@@ -6,8 +6,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from cairn.core.models import ToolCall
-from cairn.core.permissions import (
+from cairn.agent.models.messages import ToolCall
+from cairn.agent.permissions import (
     PermissionCapability,
     PermissionChoice,
     PermissionRequest,
@@ -15,8 +15,8 @@ from cairn.core.permissions import (
     SessionPermissionHandler,
     evaluate_permission_policy,
 )
-from cairn.infra.tools import filesystem_access
-from cairn.infra.tools.filesystem_access import normalize_access_root
+from cairn.agent.tools import filesystem_access
+from cairn.agent.tools.filesystem_access import normalize_access_root
 
 
 def _fs_call(*roots: str) -> ToolCall:

@@ -6,8 +6,8 @@ from prompt_toolkit.output import Output
 from prompt_toolkit.shortcuts.choice_input import ChoiceInput
 from prompt_toolkit.styles import Style
 
-from cairn.core.model_manager import ModelConfig
-from cairn.infra.sessions.models import SessionSummary
+from cairn.agent.models.selection import ModelConfig
+from cairn.agent.session.models import SessionSummary
 
 
 def _create_key_bindings() -> KeyBindings:

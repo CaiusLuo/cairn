@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from cairn.runtime.turn.steering import PendingMessage, SteerQueue
+from cairn.agent.turn.steering import PendingMessage, SteerQueue
 
 
 def test_an_empty_queue_drains_to_nothing() -> None:

@@ -5,14 +5,14 @@ from typing import Any
 
 import httpx
 
-from cairn.core.budget import RunBudget
-from cairn.core.models import LLMResponse, Message
+from cairn.agent.budget import RunBudget
+from cairn.agent.models.messages import LLMResponse, Message
+from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.infra.runtime_client import RuntimeClient
 from cairn.integrations.wechat.runtime import (
     WechatConversationAdapter,
     WechatRuntimeAdapter,
 )
-from cairn.runtime.offline_model import OfflineDevelopmentModel
 from cairn.server import runtime_app
 
 
@@ -282,7 +282,7 @@ def test_deadline_requires_review_and_never_replays_write(
 ) -> None:
     import pytest
 
-    from cairn.infra.tools.write import WriteTool
+    from cairn.agent.tools.write import WriteTool
 
     async def scenario() -> None:
         source = repository(tmp_path / "source")
@@ -391,8 +391,8 @@ def test_pause_survives_service_restart_with_usage_and_original_worktree(
 
 
 def test_agent_cannot_read_runtime_private_state(tmp_path: Path) -> None:
-    from cairn.core.models import ToolCall
-    from cairn.infra.credential_paths import is_credential_path
+    from cairn.agent.models.messages import ToolCall
+    from cairn.shared.credential_paths import is_credential_path
 
     async def scenario() -> None:
         source = repository(tmp_path / "source")
@@ -447,7 +447,7 @@ def test_agent_cannot_read_runtime_private_state(tmp_path: Path) -> None:
 def test_unknown_tool_effect_stops_before_another_model_request(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    from cairn.infra.tools.write import WriteTool
+    from cairn.agent.tools.write import WriteTool
 
     async def scenario() -> None:
         source = repository(tmp_path / "source")
@@ -493,8 +493,8 @@ def test_websocket_stream_is_transient_and_reconnects_from_cursor(
 ) -> None:
     from starlette.testclient import TestClient
 
-    from cairn.core.llm import LLMStreamChunk
-    from cairn.core.models import LLMUsage
+    from cairn.agent.models.client import LLMStreamChunk
+    from cairn.agent.models.messages import LLMUsage
     from tests.support.streaming import ScriptedStreamLLM, StreamBarrier
 
     app = runtime_app(
@@ -554,11 +554,11 @@ def test_websocket_stream_is_transient_and_reconnects_from_cursor(
 
 
 def test_approved_provider_runtime_is_reused_without_api_calls(tmp_path: Path) -> None:
-    from cairn.core.context import ContextBudget, ContextBuilder
-    from cairn.core.model_manager import ModelConfig, ModelManager, ProviderConfig
-    from cairn.core.provider_catalog import NamedProvider
-    from cairn.runtime.model_executor import ModelExecutor
-    from cairn.runtime.provider_runtime import ProviderRuntime
+    from cairn.agent.context.window import ContextBudget, ContextBuilder
+    from cairn.agent.models.catalog import NamedProvider
+    from cairn.agent.models.executor import ModelExecutor
+    from cairn.agent.models.runtime import ProviderRuntime
+    from cairn.agent.models.selection import ModelConfig, ModelManager, ProviderConfig
 
     async def scenario() -> None:
         source = repository(tmp_path / "source")
@@ -833,8 +833,8 @@ def test_interactive_input_can_return_after_a_web_turn(
 def test_plain_chat_shares_history_without_git_worktree_or_repository_context(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    from cairn.core.models import LLMUsage
-    from cairn.infra.git.context import RepoContextProvider
+    from cairn.agent.context.git import RepoContextProvider
+    from cairn.agent.models.messages import LLMUsage
     from cairn.terminal.runtime_chat import RemoteConversation
 
     async def scenario() -> None:
@@ -923,7 +923,7 @@ def test_plain_chat_shares_history_without_git_worktree_or_repository_context(
 def test_agent_requests_development_with_checked_history_and_same_task_id(
     tmp_path: Path,
 ) -> None:
-    from cairn.core.models import LLMUsage, ToolCall
+    from cairn.agent.models.messages import LLMUsage, ToolCall
     from cairn.terminal.runtime_chat import RemoteConversation
 
     async def scenario() -> None:
@@ -1055,7 +1055,7 @@ def test_agent_requests_development_with_checked_history_and_same_task_id(
 def test_chat_cannot_write_or_grant_shell_before_worktree_transition(
     tmp_path: Path,
 ) -> None:
-    from cairn.core.models import ToolCall
+    from cairn.agent.models.messages import ToolCall
 
     async def scenario() -> None:
         source = repository(tmp_path / "source")
@@ -1170,7 +1170,7 @@ def test_wechat_plain_messages_reuse_the_same_server_conversation(
 
 
 def test_automatic_handoff_cannot_reset_the_host_budget(tmp_path: Path) -> None:
-    from cairn.core.models import LLMUsage, ToolCall
+    from cairn.agent.models.messages import LLMUsage, ToolCall
 
     async def scenario() -> None:
         calls = 0

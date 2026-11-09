@@ -14,22 +14,22 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core.permissions import (
+from cairn.agent.permissions import (
     AccessKind,
     PermissionCapability,
     PermissionChoice,
     PermissionRequest,
     SessionPermissionHandler,
 )
-from cairn.infra.tools.base import (
+from cairn.agent.tools.base import (
     InvalidArguments,
     PermissionRefused,
     ToolExecutionContext,
 )
-from cairn.infra.tools.files import EditFileTool, ReadFileTool
-from cairn.infra.tools.filesystem_access import normalize_access_root
-from cairn.infra.tools.write import WriteTool
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.tools.files import EditFileTool, ReadFileTool
+from cairn.agent.tools.filesystem_access import normalize_access_root
+from cairn.agent.tools.write import WriteTool
+from cairn.agent.workspace.workspace import Workspace
 
 
 def _handler(
@@ -244,10 +244,10 @@ def test_run_turn_prompts_for_an_outside_write_and_then_allows_it(
     # the validator refuses.
     import tempfile
 
-    from cairn.core.models import LLMResponse, ToolCall
-    from cairn.infra.observability.tracer import Tracer
-    from cairn.runtime.assembly import build_agent
-    from cairn.runtime.loop import run_turn
+    from cairn.agent.assembly import build_agent
+    from cairn.agent.models.messages import LLMResponse, ToolCall
+    from cairn.agent.tracing.tracer import Tracer
+    from cairn.agent.turn.loop import run_turn
     from tests.support.runtime import TEST_BUDGET, RecordingSink, SequenceLLM
 
     workspace = tmp_path / "ws"
@@ -298,9 +298,9 @@ def test_run_turn_allows_an_inside_read_without_prompting(tmp_path: Path) -> Non
     """A file tool with nothing to report never reaches the operator."""
     import json
 
-    from cairn.core.models import LLMResponse, ToolCall
-    from cairn.runtime.assembly import build_agent
-    from cairn.runtime.loop import run_turn
+    from cairn.agent.assembly import build_agent
+    from cairn.agent.models.messages import LLMResponse, ToolCall
+    from cairn.agent.turn.loop import run_turn
     from tests.support.runtime import TEST_BUDGET, SequenceLLM
 
     workspace = tmp_path / "ws"

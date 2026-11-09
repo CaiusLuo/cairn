@@ -8,14 +8,14 @@ from litellm.exceptions import RateLimitError
 from rich.console import Console
 from typer.testing import CliRunner
 
-import cairn.infra.llm.litellm_client as llm_module
-import cairn.infra.llm.token_counter as counter_module
+import cairn.agent.models.providers.litellm_client as llm_module
+import cairn.agent.models.providers.token_counter as counter_module
 import cairn.terminal.cli as cli_module
 import cairn.terminal.output as output_module
-from cairn.core.budget import RunBudget
-from cairn.core.models import LLMResponse
-from cairn.runtime.agent import Agent
-from cairn.runtime.loop import run_turn
+from cairn.agent.budget import RunBudget
+from cairn.agent.harness import Agent
+from cairn.agent.models.messages import LLMResponse
+from cairn.agent.turn.loop import run_turn
 from tests.support.cli_harness import isolate_cli, set_limits
 from tests.support.runtime import SequenceLLM
 from tests.support.streaming import ProviderStream, StreamBarrier, provider_chunk
@@ -242,7 +242,7 @@ def test_cli_generate_only_client_keeps_markdown_rendering(
 def test_stream_display_does_not_interpret_emoji_aliases(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from cairn.core.events import Event
+    from cairn.agent.turn.events import Event
 
     text = StringIO()
     monkeypatch.setattr(
@@ -283,7 +283,7 @@ def _plain_display(
 
 
 def _feed(display: Any, chunks: list[str], *, step: int = 1) -> None:
-    from cairn.core.events import Event
+    from cairn.agent.turn.events import Event
 
     display.observe(Event(type="model_stream_start", data={"step": step, "attempt": 1}))
     for chunk in chunks:
@@ -314,7 +314,7 @@ def test_reasoning_streams_without_cursor_escape_sequences(
     # nothing hand-moves the cursor anymore, so a repaint cannot erase lines
     # that belong to output printed above the reasoning block.
     text, log, display = _plain_display(monkeypatch)
-    from cairn.core.events import Event
+    from cairn.agent.turn.events import Event
 
     display.observe(Event(type="model_stream_start", data={"step": 1, "attempt": 1}))
     for thought in ("plan the change\n", "revise the plan\n"):
@@ -337,7 +337,7 @@ def test_reasoning_is_appended_once_per_line_off_terminal(
     # it becomes a line and never again. Reprinting the whole trailing window on
     # every delta turned four thoughts into ten lines with repeats.
     _answer, log, display = _plain_display(monkeypatch)
-    from cairn.core.events import Event
+    from cairn.agent.turn.events import Event
 
     display.observe(Event(type="model_stream_start", data={"step": 1, "attempt": 1}))
     for thought in ("one", "two", "three", "four"):
@@ -354,7 +354,7 @@ def test_reset_closes_a_live_region_left_open(
 ) -> None:
     # A cancelled attempt can leave the terminal's live region running. The next
     # turn's reset must stop it, or a region nobody owns keeps repainting.
-    from cairn.core.events import Event
+    from cairn.agent.turn.events import Event
 
     text, _log, display = _plain_display(monkeypatch)
     stopped: list[bool] = []
@@ -388,7 +388,7 @@ def test_reset_clears_stream_state_between_turns(
     # delta prints once); reset must keep it from leaking into the *next*
     # turn's display state, so the next answer renders alone.
     text, log, display = _plain_display(monkeypatch)
-    from cairn.core.events import Event
+    from cairn.agent.turn.events import Event
 
     display.observe(Event(type="model_stream_start", data={"step": 1, "attempt": 1}))
     display.observe(Event(type="model_reasoning_delta", data={"text": "STALE\n"}))
@@ -436,7 +436,7 @@ def test_trace_finish_reaches_the_display_and_the_command(
 ) -> None:
     # The CLI used to swallow trace_finish before the display and the console
     # handler saw it, so the display never learned the turn's trace and its totals.
-    from cairn.core.events import Event
+    from cairn.agent.turn.events import Event
 
     _answer, _log, display = _plain_display(monkeypatch)
 
@@ -455,7 +455,7 @@ def test_a_failed_trace_says_nothing_about_absent_tokens(
 ) -> None:
     # A turn that measured no usage has nothing to report about tokens; the
     # unknown-input/unknown-output suffix belonged to no real measurement.
-    from cairn.core.events import Event
+    from cairn.agent.turn.events import Event
 
     text = StringIO()
     monkeypatch.setattr(
@@ -479,7 +479,7 @@ def test_a_durable_turn_reports_a_failed_trace_in_its_own_words(
 ) -> None:
     # Durable mode prints its own "Trace unavailable" line at the turn boundary;
     # the console handler must not add a second one.
-    from cairn.core.events import Event
+    from cairn.agent.turn.events import Event
 
     text = StringIO()
     monkeypatch.setattr(
@@ -504,7 +504,7 @@ def test_an_aborted_attempt_keeps_the_log_free_of_blank_lines(
     # A redirected stream ends its reasoning with a newline already, and its
     # warning goes to the console, so a separating blank line would only add
     # noise to a log a reader is scanning for evidence.
-    from cairn.core.events import Event
+    from cairn.agent.turn.events import Event
 
     _answer, log, display = _plain_display(monkeypatch)
     display.observe(Event(type="model_stream_start", data={"step": 1, "attempt": 1}))
@@ -520,7 +520,7 @@ def test_an_aborted_attempt_separates_the_warning_on_a_terminal(
 ) -> None:
     # On a terminal the reasoning may still be the last thing on screen, so the
     # warning needs one blank line between it and what precedes it.
-    from cairn.core.events import Event
+    from cairn.agent.turn.events import Event
 
     monkeypatch.setattr(output_module, "supports_live_display", lambda: True)
     text = StringIO()
@@ -560,7 +560,7 @@ def test_the_abort_paths_own_disjoint_state(
     # `_discard_attempt_output` drops what the attempt produced and keeps what
     # the turn knows; `_forget_attempt` drops both. A cancel must not forget the
     # completed step the caller still reports.
-    from cairn.core.events import Event
+    from cairn.agent.turn.events import Event
 
     _answer, _log, display = _plain_display(monkeypatch)
     display.observe(Event(type="model_stream_start", data={"step": 3, "attempt": 1}))
@@ -580,7 +580,7 @@ def test_logging_reasoning_does_not_rescan_the_whole_buffer(
     # quadratic time on the log path. Counting the lines the writer touches is a
     # deterministic stand-in for that: each delta must add work for its own line
     # only.
-    from cairn.core.events import Event
+    from cairn.agent.turn.events import Event
 
     _answer, _log, display = _plain_display(monkeypatch)
     calls: list[int] = []

@@ -10,8 +10,8 @@ from typing import Any
 
 import pytest
 
-from cairn.infra.git.context import RepoContextProvider, RepositoryContext
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.context.git import RepoContextProvider, RepositoryContext
+from cairn.agent.workspace.workspace import Workspace
 from tests.support.git import (
     configure_missing_promisor_tree,
     configure_side_effect_filter,

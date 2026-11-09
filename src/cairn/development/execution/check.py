@@ -24,7 +24,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from cairn.core.events import Event, EventHandler
+from cairn.agent.tools.bash import BashTool
+from cairn.agent.turn.events import Event, EventHandler
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.execution.models import (
     TaskCheckStatus,
     TaskResult,
@@ -32,9 +34,7 @@ from cairn.development.execution.models import (
     TaskStatus,
 )
 from cairn.development.execution.runner import CodingTaskRunner
-from cairn.infra.tools.bash import BashTool
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.lifecycle import settle_owned
+from cairn.shared.lifecycle import settle_owned
 
 DEFAULT_CHECK_OUTPUT_LIMIT = 4000
 

@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.sessions.models import (
+from cairn.agent.session.models import (
     HostResolution,
     SessionStoreError,
     VersionConflict,
 )
-from cairn.infra.sessions.task_models import TaskResolution, TaskResultData
+from cairn.agent.session.task_models import TaskResolution, TaskResultData
 from tests.support.sessions import SESSION, T4, binding, fence, intent, store
 from tests.support.task_ledger import INPUT_DIGEST, TASK, commit_task_checkpoint
 

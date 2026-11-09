@@ -36,8 +36,8 @@ from cairn.integrations.wechat.state import (
     WechatState,
     ensure_outside_workspace,
 )
-from cairn.runtime.lifecycle import await_owned
 from cairn.shared.action import Action, correction, note
+from cairn.shared.lifecycle import await_owned
 
 
 class WechatSessionController:

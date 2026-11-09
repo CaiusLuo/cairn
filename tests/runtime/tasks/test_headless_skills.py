@@ -6,14 +6,14 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from cairn.core.budget import RunBudget
-from cairn.core.models import LLMResponse
+from cairn.agent.budget import RunBudget
+from cairn.agent.models.messages import LLMResponse
+from cairn.agent.skills import layered_skills
 from cairn.development.execution.headless import (
     HeadlessStatus,
     run_headless_task,
     task_app,
 )
-from cairn.infra.skills import layered_skills
 from tests.support.runtime import SequenceLLM
 
 BODY = "PROJECT-SKILL-CONTEXT-MARKER"

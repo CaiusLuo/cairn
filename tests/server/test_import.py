@@ -7,9 +7,9 @@ from typing import Any
 import httpx
 import pytest
 
+from cairn.agent.workspace.lease import WorkspaceLease
 from cairn.infra.server_paths import ServerPaths
 from cairn.infra.state_import import import_state
-from cairn.infra.workspace.lease import WorkspaceLease
 from tests.server.test_bootstrap import configured
 from tests.support.server_process import ServerProcess, wait_for
 

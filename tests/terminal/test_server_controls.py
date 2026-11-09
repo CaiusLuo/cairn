@@ -429,7 +429,7 @@ def test_slow_memory_management_does_not_block_status_or_chat(
 
 
 def test_agent_schedule_tool_and_cli_share_the_real_store(tmp_path: Path) -> None:
-    from cairn.core.models import LLMResponse, Message, ToolCall
+    from cairn.agent.models.messages import LLMResponse, Message, ToolCall
 
     async def scenario() -> None:
         app, api = control_runtime(tmp_path)
@@ -520,12 +520,12 @@ def test_agent_schedule_tool_and_cli_share_the_real_store(tmp_path: Path) -> Non
 
 
 def test_model_selection_stays_inside_host_approved_group(tmp_path: Path) -> None:
-    from cairn.core.context import ContextBuilder
-    from cairn.core.model_manager import ModelConfig, ModelManager, ProviderConfig
-    from cairn.core.provider_catalog import NamedProvider
-    from cairn.runtime.model_executor import ModelExecutor
-    from cairn.runtime.offline_model import OfflineDevelopmentModel
-    from cairn.runtime.provider_runtime import ProviderRuntime
+    from cairn.agent.context.window import ContextBuilder
+    from cairn.agent.models.catalog import NamedProvider
+    from cairn.agent.models.executor import ModelExecutor
+    from cairn.agent.models.offline import OfflineDevelopmentModel
+    from cairn.agent.models.runtime import ProviderRuntime
+    from cairn.agent.models.selection import ModelConfig, ModelManager, ProviderConfig
 
     async def scenario() -> None:
         app, api = control_runtime(tmp_path)

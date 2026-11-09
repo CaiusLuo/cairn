@@ -7,10 +7,21 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from cairn.core.budget import RunBudget, RunBudgetExceeded
-from cairn.core.context import ContextBudget, ContextBudgetExceeded, ContextBuilder
-from cairn.core.events import Event, EventHandler
-from cairn.core.llm import LLMClient
+from cairn.agent.budget import RunBudget, RunBudgetExceeded
+from cairn.agent.context.window import (
+    ContextBudget,
+    ContextBudgetExceeded,
+    ContextBuilder,
+)
+from cairn.agent.harness import Agent
+from cairn.agent.models.client import LLMClient
+from cairn.agent.prompts import system_prompt_for
+from cairn.agent.tools.files import ReadFileTool
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.tracing.models import Span
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.events import Event, EventHandler
+from cairn.agent.turn.loop import run_turn
 from cairn.development.execution.models import TaskSpec
 from cairn.development.review.git import (
     ReviewInput,
@@ -21,14 +32,7 @@ from cairn.development.review.git import (
 from cairn.development.review.models import ReviewResult, ReviewStatus, _ReviewResponse
 from cairn.development.workflow.git import SnapshotDriftError, WorkflowGit
 from cairn.development.workflow.models import GitSnapshot, VerificationResult
-from cairn.infra.observability.models import Span
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.tools.files import ReadFileTool
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.runtime.agent import Agent
-from cairn.runtime.lifecycle import await_owned, settle_owned
-from cairn.runtime.loop import run_turn
-from cairn.runtime.prompts import system_prompt_for
+from cairn.shared.lifecycle import await_owned, settle_owned
 
 MAX_REVIEW_OUTPUT_BYTES = 64 * 1024
 

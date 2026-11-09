@@ -1,8 +1,8 @@
 import pytest
 
-from cairn.core.llm import LLMStreamChunk, StreamProtocolError, ToolCallDelta
-from cairn.core.models import LLMUsage
-from cairn.runtime.response_assembly import ResponseAssembler, StreamLimits
+from cairn.agent.models.client import LLMStreamChunk, StreamProtocolError, ToolCallDelta
+from cairn.agent.models.messages import LLMUsage
+from cairn.agent.turn.response import ResponseAssembler, StreamLimits
 
 
 def assemble(*chunks: LLMStreamChunk) -> ResponseAssembler:

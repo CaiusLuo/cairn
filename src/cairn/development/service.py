@@ -21,7 +21,7 @@ from cairn.development.catalogue import (
     RuntimeTask,
 )
 from cairn.development.models import TaskStatus
-from cairn.runtime.lifecycle import await_owned, settle_owned
+from cairn.shared.lifecycle import await_owned, settle_owned
 
 TaskExecutor = Callable[
     [RuntimeTask, Callable[[str, dict[str, Any]], None]], Coroutine[Any, Any, str]

@@ -3,8 +3,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from cairn.core.models import ToolCall
-from cairn.core.permissions import (
+from cairn.agent.models.messages import ToolCall
+from cairn.agent.permissions import (
     PermissionCapability,
     PermissionChoice,
     PermissionDecision,

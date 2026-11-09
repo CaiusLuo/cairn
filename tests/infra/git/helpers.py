@@ -1,5 +1,5 @@
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.worktree import WorktreeHandle, WorktreeState
-from cairn.infra.workspace.workspace import Workspace
 from tests.support.git import git
 
 

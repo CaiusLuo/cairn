@@ -22,9 +22,9 @@ from cairn.integrations.wechat.serve import (
     _Service,
 )
 from cairn.integrations.wechat.state import WechatAccount, WechatState
-from cairn.runtime.lifecycle import settle_owned
 from cairn.scheduling.models import ScheduleJob
 from cairn.scheduling.store import ScheduleStore
+from cairn.shared.lifecycle import settle_owned
 from tests.support.wechat_service import _msg
 
 

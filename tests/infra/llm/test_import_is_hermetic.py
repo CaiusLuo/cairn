@@ -26,7 +26,7 @@ def test_importing_the_provider_package_selects_the_bundled_cost_map() -> None:
         [
             sys.executable,
             "-c",
-            "import os, cairn.infra.llm; print(os.environ['LITELLM_LOCAL_MODEL_COST_MAP'])",
+            "import os, cairn.agent.models.providers; print(os.environ['LITELLM_LOCAL_MODEL_COST_MAP'])",
         ],
         cwd=ROOT,
         capture_output=True,
@@ -48,7 +48,7 @@ def test_an_explicit_choice_still_wins() -> None:
         [
             sys.executable,
             "-c",
-            "import os, cairn.infra.llm; print(os.environ['LITELLM_LOCAL_MODEL_COST_MAP'])",
+            "import os, cairn.agent.models.providers; print(os.environ['LITELLM_LOCAL_MODEL_COST_MAP'])",
         ],
         cwd=ROOT,
         capture_output=True,

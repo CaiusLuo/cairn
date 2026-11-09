@@ -9,12 +9,12 @@ from typing import Annotated
 
 import typer
 
+from cairn.agent.skills import layered_skills, resolve_skills
 from cairn.development.execution.headless import (
     DEFAULT_CHECK_TIMEOUT_S,
     DEFAULT_MAX_STEPS,
     _build_approval,
 )
-from cairn.infra.skills import layered_skills, resolve_skills
 from cairn.integrations.mcp.config import McpServerConfig, load_mcp_servers
 from cairn.integrations.wechat.ilink import ILinkError
 from cairn.integrations.wechat.login import QRLoginError, run_login

@@ -8,9 +8,9 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Literal
 
-from cairn.core.models import Message, ToolCall
-from cairn.infra.sessions.codec import snapshot_messages
-from cairn.infra.sessions.models import (
+from cairn.agent.models.messages import Message, ToolCall
+from cairn.agent.session.codec import snapshot_messages
+from cairn.agent.session.models import (
     CheckpointPayload,
     MessageRange,
     Outcome,
@@ -22,7 +22,7 @@ from cairn.infra.sessions.models import (
     TurnIntent,
     WorkspaceBinding,
 )
-from cairn.infra.sessions.store import SessionStore
+from cairn.agent.session.store import SessionStore
 
 SESSION = "00000000-0000-4000-8000-000000000001"
 TURN = "00000000-0000-4000-8000-000000000002"
@@ -226,7 +226,7 @@ def crash_at(root: Path, window: str) -> None:
 
 
 def competing_writer(root_text: str, barrier: Connection) -> None:
-    from cairn.infra.sessions.models import SessionStoreError
+    from cairn.agent.session.models import SessionStoreError
 
     try:
         api = store(Path(root_text))
@@ -265,7 +265,7 @@ def inspection_writer(
     root_text: str, barrier: Connection, settle_before_probe: bool = False
 ) -> None:
     """A live writer paused before COMMIT or commanded while a reader owns SH."""
-    from cairn.infra.sessions.models import SessionStoreError
+    from cairn.agent.session.models import SessionStoreError
 
     root = Path(root_text)
     bind = binding(root)
@@ -323,7 +323,7 @@ def legacy_store(root: Path, *, version: int = 2) -> SessionStore:
 
     Never relabel or rewrite V2 facts as V1 fixtures. Production has no downgrade.
     """
-    from cairn.infra.sessions.store import (
+    from cairn.agent.session.store import (
         _CHECKPOINT_SCHEMA_V3,
         _SCHEMA,
         _TURN_ORDER_INDEX,

@@ -5,11 +5,18 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from cairn.core.budget import RunBudget
-from cairn.core.context import ContextBudget, ContextBuilder
-from cairn.core.events import Event
-from cairn.core.models import LLMResponse, Message, ToolCall
-from cairn.core.permissions import PermissionResult
+from cairn.agent.assembly import build_agent
+from cairn.agent.budget import RunBudget
+from cairn.agent.context.git import RepoContextProvider
+from cairn.agent.context.window import ContextBudget, ContextBuilder
+from cairn.agent.harness import Agent
+from cairn.agent.models.executor import ModelExecutor
+from cairn.agent.models.messages import LLMResponse, Message, ToolCall
+from cairn.agent.permissions import PermissionResult
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.events import Event
+from cairn.agent.turn.loop import run_turn
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.execution import (
     CodingTaskRunner,
     TaskResult,
@@ -17,13 +24,6 @@ from cairn.development.execution import (
     TaskStatus,
 )
 from cairn.development.execution import runner as runner_module
-from cairn.infra.git.context import RepoContextProvider
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.agent import Agent
-from cairn.runtime.assembly import build_agent
-from cairn.runtime.loop import run_turn
-from cairn.runtime.model_executor import ModelExecutor
 from tests.support.git import git as _git
 from tests.support.git import initialize_repository as _initialize_repository
 from tests.support.runtime import FailingLLM, RecordingSink, SequenceLLM

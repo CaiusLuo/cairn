@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from cairn.infra.tools.base import ToolExecutionContext
+from cairn.agent.tools.base import ToolExecutionContext
 from cairn.memory.service import PersonalMemoryService
 from cairn.memory.store import PersonalMemoryStore
 from cairn.memory.tools import MemoryRememberTool

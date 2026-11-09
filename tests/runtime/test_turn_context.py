@@ -16,17 +16,17 @@ from typing import Any
 
 import pytest
 
-from cairn.core.context import ContextBudget, ContextBuilder, TokenCount
-from cairn.core.models import LLMResponse, Message
-from cairn.infra.git.context import RepoContextProvider, RepositoryContext
-from cairn.infra.skills import SkillLibrary
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.agent import Agent
-from cairn.runtime.durable_session import DurableSession
-from cairn.runtime.loop import run_turn
-from cairn.runtime.turn.context import build_system_messages
-from cairn.runtime.turn.hook import run_compaction
+from cairn.agent.context.git import RepoContextProvider, RepositoryContext
+from cairn.agent.context.window import ContextBudget, ContextBuilder, TokenCount
+from cairn.agent.harness import Agent
+from cairn.agent.models.messages import LLMResponse, Message
+from cairn.agent.session.durable import DurableSession
+from cairn.agent.skills import SkillLibrary
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.turn.context import build_system_messages
+from cairn.agent.turn.hook import run_compaction
+from cairn.agent.turn.loop import run_turn
+from cairn.agent.workspace.workspace import Workspace
 from tests.support.compaction import CharacterCounter, StubSummarizer
 from tests.support.durable_sessions import create_session, resolution
 from tests.support.runtime import TEST_BUDGET, SequenceLLM

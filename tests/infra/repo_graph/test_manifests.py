@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.repo_graph.manifests import MAX_NAME_LENGTH, parse_manifest
-from cairn.infra.repo_graph.models import ManifestKind, ManifestStatus
+from cairn.agent.context.repo_graph.manifests import MAX_NAME_LENGTH, parse_manifest
+from cairn.agent.context.repo_graph.models import ManifestKind, ManifestStatus
 
 
 @pytest.mark.parametrize(

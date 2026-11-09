@@ -6,24 +6,24 @@ from typing import Any
 
 import pytest
 
-from cairn.core.budget import RunBudget, RunBudgetExceeded
-from cairn.core.events import Event, SessionEvent
-from cairn.core.models import LLMResponse, Message, ToolCall, ToolResult
-from cairn.core.permissions import (
+from cairn.agent.budget import RunBudget, RunBudgetExceeded
+from cairn.agent.harness import SessionAdmissionError
+from cairn.agent.models.messages import LLMResponse, Message, ToolCall, ToolResult
+from cairn.agent.permissions import (
     PermissionCapability,
     PermissionChoice,
     PermissionRequest,
     SessionPermissionHandler,
 )
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.sessions.codec import restore_messages, snapshot_messages
-from cairn.infra.sessions.models import MAX_MESSAGE_BYTES, SessionStoreError, ToolFence
-from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
-from cairn.runtime.agent import SessionAdmissionError
-from cairn.runtime.durable_session import DurableSession, SessionDurabilityError
-from cairn.runtime.loop import run_turn
-from cairn.runtime.session import Session, SessionState
-from cairn.runtime.turn_trace import TurnTrace, TurnTraceSummary
+from cairn.agent.session.codec import restore_messages, snapshot_messages
+from cairn.agent.session.durable import DurableSession, SessionDurabilityError
+from cairn.agent.session.models import MAX_MESSAGE_BYTES, SessionStoreError, ToolFence
+from cairn.agent.session.session import Session, SessionState
+from cairn.agent.tools.base import InvalidArguments, ToolExecutionContext
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.events import Event, SessionEvent
+from cairn.agent.turn.loop import run_turn
+from cairn.agent.turn.trace import TurnTrace, TurnTraceSummary
 from tests.support.durable_sessions import create_session, resolution
 from tests.support.runtime import (
     TEST_BUDGET,

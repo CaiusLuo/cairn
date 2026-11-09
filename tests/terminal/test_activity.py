@@ -19,7 +19,7 @@ import pytest
 from rich.console import Console, RenderableType
 from rich.text import Text
 
-from cairn.core.events import Event
+from cairn.agent.turn.events import Event
 from cairn.terminal import output as ui
 from cairn.terminal.activity import Activity, ActivityKind
 from cairn.terminal.output import StreamingDisplay

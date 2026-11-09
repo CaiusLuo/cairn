@@ -1,4 +1,4 @@
-from cairn.core.model_manager import ModelConfig, ModelManager, ProviderConfig
+from cairn.agent.models.selection import ModelConfig, ModelManager, ProviderConfig
 
 
 def test_select_model_updates_current_model_and_remaining_candidates() -> None:

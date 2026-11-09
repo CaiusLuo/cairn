@@ -9,17 +9,17 @@ never ends a turn.
 import asyncio
 from typing import Any
 
-from cairn.core.compaction import SUMMARY_PREFIX
-from cairn.core.compaction.summarizer import SummaryResult
-from cairn.core.context import ContextBudget, ContextBuilder
-from cairn.core.models import LLMResponse, Message, ToolCall, ToolResult
-from cairn.infra.observability.models import SpanStatus
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.runtime.agent import Agent
-from cairn.runtime.loop import run_turn
-from cairn.runtime.turn.compaction import CompactionStep
-from cairn.runtime.turn.hook import run_compaction
+from cairn.agent.context.compaction import SUMMARY_PREFIX
+from cairn.agent.context.compaction.summarizer import SummaryResult
+from cairn.agent.context.window import ContextBudget, ContextBuilder
+from cairn.agent.harness import Agent
+from cairn.agent.models.messages import LLMResponse, Message, ToolCall, ToolResult
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.tracing.models import SpanStatus
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.compaction import CompactionStep
+from cairn.agent.turn.hook import run_compaction
+from cairn.agent.turn.loop import run_turn
 from tests.support.compaction import CharacterCounter, StubSummarizer
 from tests.support.runtime import (
     TEST_BUDGET,

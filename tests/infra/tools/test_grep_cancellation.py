@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from cairn.core.models import ToolResult
-from cairn.infra.tools.grep import GrepTool
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.models.messages import ToolResult
+from cairn.agent.tools.grep import GrepTool
+from cairn.agent.workspace.workspace import Workspace
 
 
 @pytest.mark.parametrize("worker_fails", [False, True])

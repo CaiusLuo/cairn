@@ -7,9 +7,9 @@ from pathlib import Path
 
 from starlette.testclient import TestClient
 
-from cairn.core.budget import RunBudget
-from cairn.core.llm import LLMStreamChunk
-from cairn.core.models import LLMUsage
+from cairn.agent.budget import RunBudget
+from cairn.agent.models.client import LLMStreamChunk
+from cairn.agent.models.messages import LLMUsage
 from cairn.server import runtime_app
 from tests.support.git import initialize_repository
 from tests.support.streaming import ScriptedStreamLLM, StreamBarrier

@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.git.context import GIT_OUTPUT_CAPTURE_LIMIT, RepoContextProvider
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.context.git import GIT_OUTPUT_CAPTURE_LIMIT, RepoContextProvider
+from cairn.agent.workspace.workspace import Workspace
 from tests.support.git import git as _git
 from tests.support.git import initialize_repository as _initialize_repository
 

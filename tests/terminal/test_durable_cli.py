@@ -15,36 +15,37 @@ import pytest
 import typer
 from typer.testing import CliRunner, Result
 
-from cairn.core.context import ContextBudget, ContextBuilder
-from cairn.core.llm import LLMStreamChunk
-from cairn.core.model_manager import ModelManager
-from cairn.core.models import LLMResponse, Message, ToolCall
-from cairn.core.permissions import (
+from cairn.agent.assembly import build_agent
+from cairn.agent.context.window import ContextBudget, ContextBuilder
+from cairn.agent.harness import Agent
+from cairn.agent.models.catalog import NamedProvider
+from cairn.agent.models.client import LLMStreamChunk
+from cairn.agent.models.executor import ModelExecutor
+from cairn.agent.models.messages import LLMResponse, Message, ToolCall
+from cairn.agent.models.runtime import ProviderRuntime
+from cairn.agent.models.selection import ModelManager
+from cairn.agent.permissions import (
     PermissionCapability,
     PermissionChoice,
     SessionPermissionHandler,
 )
-from cairn.core.provider_catalog import NamedProvider
-from cairn.infra.observability.models import Span
-from cairn.infra.observability.sinks import JsonlTraceSink
-from cairn.infra.sessions.models import (
+from cairn.agent.session.access import open_store
+from cairn.agent.session.durable import DurableSession
+from cairn.agent.session.models import (
     SCHEMA_VERSION,
     RecoveryReport,
     SessionStoreError,
     ToolFence,
     TurnIntent,
 )
-from cairn.infra.sessions.store import (
+from cairn.agent.session.store import (
     UNVERIFIED_SQLITE_DECLARATION,
     VERIFIED_SQLITE_VERSIONS,
     SessionStore,
 )
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.agent import Agent
-from cairn.runtime.assembly import build_agent
-from cairn.runtime.durable_session import DurableSession
-from cairn.runtime.model_executor import ModelExecutor
-from cairn.runtime.provider_runtime import ProviderRuntime
+from cairn.agent.tracing.models import Span
+from cairn.agent.tracing.sinks import JsonlTraceSink
+from cairn.agent.workspace.workspace import Workspace
 from cairn.terminal import cli, durable
 from cairn.terminal.input import CliInput
 from tests.support.git import git, initialize_repository
@@ -105,9 +106,7 @@ class Harness:
         return runner.invoke(cli.app, [*args, "--store", str(self.directory)])
 
     def inspect(self, session_id: str) -> RecoveryReport:
-        store = durable.open_store(
-            self.directory, Workspace(self.root / "work"), inspect=True
-        )
+        store = open_store(self.directory, Workspace(self.root / "work"), inspect=True)
         try:
             return store.inspect(session_id)
         finally:
@@ -580,7 +579,7 @@ def test_tmp_store_is_refused_when_tmpdir_covers_it(harness: Harness) -> None:
         # /tmp is this host's TMPDIR, so the store sits inside a scratch root.
         harness.monkeypatch.setenv("TMPDIR", "/tmp")
         with pytest.raises(SessionStoreError) as failure:
-            durable.open_store(directory, Workspace(harness.root / "work"))
+            open_store(directory, Workspace(harness.root / "work"))
         assert failure.value.code == "writable_root_overlap"
         assert not directory.exists()
 

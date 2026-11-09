@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from cairn.agent.models.config import load_project_providers
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.execution import CodingTaskRunner
 from cairn.development.execution.models import TaskResult, TaskStatus
 from cairn.development.report import ReportWriter
@@ -30,10 +32,8 @@ from cairn.development.workflow.models import (
 from cairn.development.workflow.security import GITHUB_SECRET_ENV_KEYS
 from cairn.development.workflow.verification import DeterministicVerifier
 from cairn.development.worktree import WorktreeError, WorktreeHandle, WorktreeProvider
-from cairn.infra.config import load_project_providers
-from cairn.infra.workspace.workspace import Workspace
 from cairn.integrations.github.models import IssueTask
-from cairn.runtime.lifecycle import settle_owned
+from cairn.shared.lifecycle import settle_owned
 
 
 class ReportPersistenceError(RuntimeError):

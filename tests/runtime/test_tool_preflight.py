@@ -8,9 +8,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from cairn.core.events import Event
-from cairn.core.models import LLMResponse, ToolCall, ToolResult
-from cairn.core.permissions import (
+from cairn.agent.models.messages import LLMResponse, ToolCall, ToolResult
+from cairn.agent.permissions import (
     PermissionCapability,
     PermissionChoice,
     PermissionDecision,
@@ -18,13 +17,14 @@ from cairn.core.permissions import (
     PermissionSource,
     SessionPermissionHandler,
 )
-from cairn.infra.observability.models import SpanStatus
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.tools.base import InvalidArguments
-from cairn.infra.tools.bash import BashTool
-from cairn.infra.tools.files import EditFileTool, ReadFileTool
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.loop import run_turn
+from cairn.agent.tools.base import InvalidArguments
+from cairn.agent.tools.bash import BashTool
+from cairn.agent.tools.files import EditFileTool, ReadFileTool
+from cairn.agent.tracing.models import SpanStatus
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.events import Event
+from cairn.agent.turn.loop import run_turn
+from cairn.agent.workspace.workspace import Workspace
 from tests.support.runtime import (
     TEST_BUDGET,
     NetworkRequestTool,

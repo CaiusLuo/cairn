@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.tools.bash import workspace_python
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.tools.bash import workspace_python
+from cairn.agent.workspace.workspace import Workspace
 
 
 def require_local_shell() -> None:
@@ -33,7 +33,7 @@ def require_execution_sandbox() -> None:
     Behavior checks that execute model-generated code refuse to fall back to the
     host, so a host without bwrap/user-namespaces cannot exercise them.
     """
-    from cairn.infra.sandbox import available
+    from cairn.agent.tools.sandbox import available
 
     if not available():
         pytest.skip("bubblewrap execution sandbox is not available on this host")

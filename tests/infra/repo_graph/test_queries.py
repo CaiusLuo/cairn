@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.repo_graph import (
+from cairn.agent.context.repo_graph import (
     BuildLimits,
     FileKind,
     FileStatus,
@@ -14,8 +14,8 @@ from cairn.infra.repo_graph import (
     RepoGraphBuilder,
     SymbolKind,
 )
-from cairn.infra.repo_graph.graph import MAX_QUERY_BYTES
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.context.repo_graph.graph import MAX_QUERY_BYTES
+from cairn.agent.workspace.workspace import Workspace
 
 
 @pytest.fixture

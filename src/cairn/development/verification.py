@@ -11,7 +11,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.workspace.workspace import Workspace
 
 CHECK_READ_CHUNK_SIZE = 16 * 1024
 

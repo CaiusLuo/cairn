@@ -11,20 +11,20 @@ from litellm.exceptions import RateLimitError
 from rich.console import Console
 from typer.testing import CliRunner
 
-import cairn.infra.llm.litellm_client as llm_module
-import cairn.infra.llm.token_counter as counter_module
-import cairn.runtime.provider_runtime as provider_runtime_module
+import cairn.agent.models.providers.litellm_client as llm_module
+import cairn.agent.models.providers.token_counter as counter_module
+import cairn.agent.models.runtime as provider_runtime_module
 import cairn.terminal.cli as cli_module
 import cairn.terminal.output as ui_module
-from cairn.core.budget import RunBudget
-from cairn.core.model_manager import ModelConfig, ProviderConfig
-from cairn.core.permissions import PermissionCapability
-from cairn.core.provider_catalog import NamedProvider, ProviderCatalog
-from cairn.infra.observability.storage import TraceStore
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.runtime.agent import Agent
-from cairn.runtime.loop import run_turn
-from cairn.runtime.provider_runtime import build_provider_runtime
+from cairn.agent.budget import RunBudget
+from cairn.agent.harness import Agent
+from cairn.agent.models.catalog import NamedProvider, ProviderCatalog
+from cairn.agent.models.runtime import build_provider_runtime
+from cairn.agent.models.selection import ModelConfig, ProviderConfig
+from cairn.agent.permissions import PermissionCapability
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.tracing.storage import TraceStore
+from cairn.agent.turn.loop import run_turn
 from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.provider import handle_provider
 from tests.support.cli_harness import (

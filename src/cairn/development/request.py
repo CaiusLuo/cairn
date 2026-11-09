@@ -2,9 +2,9 @@
 
 from typing import Any
 
-from cairn.core.models import ToolResult
-from cairn.infra.tools.arguments import function_schema, reject_unknown_keys
-from cairn.infra.tools.base import (
+from cairn.agent.models.messages import ToolResult
+from cairn.agent.tools.arguments import function_schema, reject_unknown_keys
+from cairn.agent.tools.base import (
     InvalidArguments,
     ToolExecutionContext,
     WorkspaceOnlyTool,

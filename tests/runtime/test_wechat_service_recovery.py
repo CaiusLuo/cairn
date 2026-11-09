@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core.budget import RunBudget
-from cairn.core.models import LLMResponse, ToolCall
+from cairn.agent.budget import RunBudget
+from cairn.agent.models.messages import LLMResponse, ToolCall
 from cairn.development.execution.headless import (
     HeadlessResult,
     HeadlessStatus,
@@ -357,9 +357,9 @@ def test_default_wechat_executor_restores_durable_history_after_restart(
 ) -> None:
     import asyncio
 
-    from cairn.core.budget import RunBudget
-    from cairn.core.context import ContextBudget
-    from cairn.core.models import LLMResponse
+    from cairn.agent.budget import RunBudget
+    from cairn.agent.context.window import ContextBudget
+    from cairn.agent.models.messages import LLMResponse
     from cairn.development.execution.headless import run_headless_task
     from cairn.integrations.wechat.serve import ServeConfig, default_task_executor
     from cairn.integrations.wechat.state import WechatAccount
@@ -426,11 +426,11 @@ def test_configured_wechat_restores_tool_facts_after_service_restart(
     """Exercise the configured provider and both WeChat service lifecycles offline."""
     from tempfile import TemporaryDirectory
 
-    from cairn.core.context import ContextBudget, ContextBuilder
-    from cairn.core.model_manager import ModelManager
-    from cairn.core.provider_catalog import NamedProvider
-    from cairn.runtime.model_executor import ModelExecutor
-    from cairn.runtime.provider_runtime import ProviderRuntime
+    from cairn.agent.context.window import ContextBudget, ContextBuilder
+    from cairn.agent.models.catalog import NamedProvider
+    from cairn.agent.models.executor import ModelExecutor
+    from cairn.agent.models.runtime import ProviderRuntime
+    from cairn.agent.models.selection import ModelManager
     from tests.support.git import initialize_repository
 
     with TemporaryDirectory(
@@ -559,9 +559,9 @@ def test_wechat_repeated_cancellation_settles_before_close_retry(
     from tempfile import TemporaryDirectory
     from typing import Any
 
-    from cairn.core.models import Message
+    from cairn.agent.models.messages import Message
+    from cairn.agent.session.durable import DurableSession
     from cairn.integrations.wechat.serve import default_task_executor
-    from cairn.runtime.durable_session import DurableSession
     from tests.support.git import initialize_repository
 
     with TemporaryDirectory(

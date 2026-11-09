@@ -12,7 +12,7 @@ waiting.
 
 from dataclasses import dataclass, field
 
-from cairn.runtime.turn.steering import SteerQueue
+from cairn.agent.turn.steering import SteerQueue
 
 
 @dataclass(frozen=True, slots=True)

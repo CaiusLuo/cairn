@@ -9,9 +9,9 @@ from typing import Annotated, Any
 
 import typer
 
-from cairn.infra.config.server import load_server_config
 from cairn.infra.runtime_client import RuntimeClient
 from cairn.infra.runtime_client import read_runtime_token as read_token
+from cairn.infra.server_config import load_server_config
 
 app = typer.Typer(
     pretty_exceptions_show_locals=False, help="Use one shared Cairn Agent runtime."

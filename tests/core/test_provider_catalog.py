@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core.model_manager import ModelConfig, ProviderConfig
-from cairn.core.provider_catalog import NamedProvider, ProviderCatalog
-from cairn.infra.config import load_model_config, load_provider_catalog
+from cairn.agent.models.catalog import NamedProvider, ProviderCatalog
+from cairn.agent.models.config import load_model_config, load_provider_catalog
+from cairn.agent.models.selection import ModelConfig, ProviderConfig
 
 CATALOG_TOML = """\
 [[providers]]

@@ -13,15 +13,29 @@ from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
-from cairn.core.budget import RunBudget
-from cairn.core.events import Event
-from cairn.core.llm import LLMClient
-from cairn.core.model_manager import ModelManager
-from cairn.core.permissions import (
+from cairn.agent.budget import RunBudget
+from cairn.agent.harness import Agent
+from cairn.agent.models.client import LLMClient
+from cairn.agent.models.executor import ModelExecutor
+from cairn.agent.models.runtime import ProviderRuntime
+from cairn.agent.models.selection import ModelManager
+from cairn.agent.permissions import (
     PermissionCapability,
     PermissionChoice,
     SessionPermissionHandler,
 )
+from cairn.agent.session.durable import DurableSession
+from cairn.agent.session.host import observe_workspace
+from cairn.agent.session.models import (
+    HostResolution,
+    ProviderReference,
+    Revision,
+    SessionBinding,
+)
+from cairn.agent.session.store import SessionStore
+from cairn.agent.turn.events import Event
+from cairn.agent.workspace.lease import WorkspaceLease
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.catalogue import RuntimeTask
 from cairn.development.execution.models import TaskSpec, TaskStatus
 from cairn.development.execution.runner import CodingTaskRunner
@@ -33,22 +47,8 @@ from cairn.development.service import (
     TaskService,
 )
 from cairn.development.worktree import WorktreeProvider
-from cairn.infra.credential_paths import protect_host_paths
-from cairn.infra.redaction import StreamRedactor, redact_text, redact_value
-from cairn.infra.sessions.host import observe_workspace
-from cairn.infra.sessions.models import (
-    HostResolution,
-    ProviderReference,
-    Revision,
-    SessionBinding,
-)
-from cairn.infra.sessions.store import SessionStore
-from cairn.infra.workspace.lease import WorkspaceLease
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.agent import Agent
-from cairn.runtime.durable_session import DurableSession
-from cairn.runtime.model_executor import ModelExecutor
-from cairn.runtime.provider_runtime import ProviderRuntime
+from cairn.shared.credential_paths import protect_host_paths
+from cairn.shared.redaction import StreamRedactor, redact_text, redact_value
 
 
 class ServiceExecution:
@@ -570,7 +570,7 @@ class ServiceExecution:
         return path
 
     def _historical_messages(self, task: RuntimeTask) -> list[dict[str, Any]]:
-        from cairn.infra.sessions.codec import restore_messages
+        from cairn.agent.session.codec import restore_messages
 
         messages: list[dict[str, Any]] = []
         for origin in task.history_origins:
@@ -595,7 +595,7 @@ class ServiceExecution:
         )
 
     def history(self, task: RuntimeTask) -> list[dict[str, Any]]:
-        from cairn.infra.sessions.codec import restore_messages
+        from cairn.agent.session.codec import restore_messages
 
         messages = self._historical_messages(task)
         if task.session_id is not None:

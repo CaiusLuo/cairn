@@ -10,7 +10,7 @@ from collections.abc import Callable, Coroutine
 
 import pytest
 
-from cairn.runtime.turn.supervisor import QueuedMessage, TurnQueue, supervise_turn
+from cairn.agent.turn.supervisor import QueuedMessage, TurnQueue, supervise_turn
 
 
 def _is_interrupt(text: str) -> bool:

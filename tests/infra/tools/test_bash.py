@@ -9,13 +9,13 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from cairn.infra.tools.bash import (
+from cairn.agent.tools.bash import (
     BashTool,
     _decode_output,
     workspace_python,
 )
-from cairn.infra.tools.capture import PIPE_READ_CHUNK_SIZE, read_bounded
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.tools.capture import PIPE_READ_CHUNK_SIZE, read_bounded
+from cairn.agent.workspace.workspace import Workspace
 
 _CREATE_SUBPROCESS_EXEC = asyncio.create_subprocess_exec
 _LARGE_OUTPUT_CHUNK_BYTES = 64 * 1024
@@ -82,7 +82,7 @@ def test_bash_cleanup_removes_only_owned_process_group(
             return process
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", track_process)
-        monkeypatch.setattr("cairn.infra.tools.bash.sys.platform", "darwin")
+        monkeypatch.setattr("cairn.agent.tools.bash.sys.platform", "darwin")
         tool = BashTool(
             Workspace(tmp_path),
             timeout=0.5 if ending in {"timeout", "parent-exited"} else 30.0,
@@ -250,8 +250,8 @@ def test_bash_tool_preserves_command_text_and_decodes_output(
     process.wait.return_value = 3
     create_process = AsyncMock(return_value=process)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
-    monkeypatch.setattr("cairn.infra.tools.bash.os.killpg", Mock())
-    monkeypatch.setattr("cairn.infra.tools.bash.sys.platform", "darwin")
+    monkeypatch.setattr("cairn.agent.tools.bash.os.killpg", Mock())
+    monkeypatch.setattr("cairn.agent.tools.bash.sys.platform", "darwin")
     command = "  printf '%s' 'hello'\n"
 
     result = asyncio.run(
@@ -305,7 +305,7 @@ def test_bash_collection_cleanup_error_preserves_primary_outcome(
             "create_subprocess_exec",
             AsyncMock(return_value=process),
         )
-        monkeypatch.setattr("cairn.infra.tools.bash.sys.platform", "darwin")
+        monkeypatch.setattr("cairn.agent.tools.bash.sys.platform", "darwin")
         tool = CleanupErrorBashTool(
             Workspace(tmp_path),
             timeout=0.01 if ending == "timeout" else 30.0,
@@ -341,7 +341,7 @@ def test_bash_cleanup_wait_is_bounded(
         process.wait.side_effect = block_wait
 
         monkeypatch.setattr(
-            "cairn.infra.tools.bash.os.killpg",
+            "cairn.agent.tools.bash.os.killpg",
             Mock(),
         )
 
@@ -492,7 +492,7 @@ def test_workspace_python_prefers_the_venv_over_the_running_interpreter(
 
 
 def test_sandboxed_bash_hides_host_root(tmp_path: Path) -> None:
-    from cairn.infra import sandbox
+    from cairn.agent.tools import sandbox
 
     if not sandbox.available():
         pytest.skip("bubblewrap sandbox is unavailable")

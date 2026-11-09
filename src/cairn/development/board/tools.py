@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from cairn.core.models import ToolResult
+from cairn.agent.models.messages import ToolResult
+from cairn.agent.tools.base import InvalidArguments, ToolExecutionContext
 from cairn.development.board.models import (
     TASK_DESCRIPTION_MAX_LENGTH,
     TASK_DETAIL_MAX_LENGTH,
@@ -12,7 +13,6 @@ from cairn.development.board.models import (
     TaskBoardStatus,
 )
 from cairn.development.board.service import TaskBoardService
-from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
 
 
 def _text(value: object, name: str, *, max_length: int | None = None) -> str:

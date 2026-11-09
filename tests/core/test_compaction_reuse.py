@@ -8,12 +8,12 @@ no longer describe the conversation.
 
 import pytest
 
-from cairn.core.compaction import (
+from cairn.agent.context.compaction import (
     CompactionRecord,
     ReusableCompaction,
     StaleCompaction,
 )
-from cairn.core.models import Message
+from cairn.agent.models.messages import Message
 from tests.support.compaction import group
 
 

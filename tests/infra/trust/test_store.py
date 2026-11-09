@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from rich.prompt import Confirm
 
-from cairn.infra.trust.store import TrustedWorkspaceStore, TrustStoreError
+from cairn.agent.trust.store import TrustedWorkspaceStore, TrustStoreError
 
 
 def test_trusted_workspace_survives_restart_and_revokes(tmp_path: Path) -> None:

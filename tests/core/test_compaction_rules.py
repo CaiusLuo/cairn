@@ -8,7 +8,7 @@ implementation instead of the contract, and the boundary choice is body-dependen
 
 import pytest
 
-from cairn.core.compaction import (
+from cairn.agent.context.compaction import (
     ContextBudget,
     CutPointError,
     RetentionWindow,
@@ -17,13 +17,13 @@ from cairn.core.compaction import (
     is_cut_point,
     legal_cut_points,
 )
-from cairn.core.compaction.rules import (
+from cairn.agent.context.compaction.rules import (
     CompactionPolicy,
     CompactionRecord,
     summarizer_reserve,
 )
-from cairn.core.context import TokenCount
-from cairn.core.models import Message
+from cairn.agent.context.window import TokenCount
+from cairn.agent.models.messages import Message
 from tests.support.compaction import assistant, group, tool_call, user
 
 

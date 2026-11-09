@@ -27,17 +27,40 @@ from typing import Annotated, Any
 import typer
 from pydantic import BaseModel, Field
 
-from cairn.core.budget import DEFAULT_MAX_STEPS as DEFAULT_MAX_STEPS
-from cairn.core.budget import RunBudget
-from cairn.core.context import ContextBudget, ContextBuilder
-from cairn.core.events import Event
-from cairn.core.llm import LLMClient
-from cairn.core.permissions import (
+from cairn.agent.budget import DEFAULT_MAX_STEPS as DEFAULT_MAX_STEPS
+from cairn.agent.budget import RunBudget
+from cairn.agent.context.window import ContextBudget, ContextBuilder
+from cairn.agent.harness import Agent
+from cairn.agent.models.client import LLMClient
+from cairn.agent.models.config.admission import (
+    ProviderApproval as ProviderApproval,
+)
+from cairn.agent.models.config.admission import (
+    ProviderApprovalMismatch as ProviderApprovalMismatch,
+)
+from cairn.agent.models.config.admission import (
+    ProviderApprovalRequired as ProviderApprovalRequired,
+)
+from cairn.agent.models.config.admission import (
+    load_approved_provider,
+)
+from cairn.agent.models.executor import ModelExecutor
+from cairn.agent.models.runtime import build_provider_runtime
+from cairn.agent.permissions import (
     PermissionCapability,
     PermissionChoice,
     PermissionRequest,
     SessionPermissionHandler,
 )
+from cairn.agent.session.durable import DurableSession
+from cairn.agent.skills import SkillLibrary, layered_skills, resolve_skills
+from cairn.agent.tools.base import Tool
+from cairn.agent.tools.filesystem_access import normalize_access_root
+from cairn.agent.tracing.sinks import JsonlTraceSink, RedactingTraceSink
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.events import Event
+from cairn.agent.workspace.lease import WorkspaceLease
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.execution.check import (
     CheckedTaskOutcome,
     TaskCheckSpec,
@@ -45,31 +68,8 @@ from cairn.development.execution.check import (
 )
 from cairn.development.execution.models import TaskCheckStatus, TaskSpec, TaskStatus
 from cairn.development.execution.runner import CodingTaskRunner
-from cairn.infra.config.admission import (
-    ProviderApproval as ProviderApproval,
-)
-from cairn.infra.config.admission import (
-    ProviderApprovalMismatch as ProviderApprovalMismatch,
-)
-from cairn.infra.config.admission import (
-    ProviderApprovalRequired as ProviderApprovalRequired,
-)
-from cairn.infra.config.admission import (
-    load_approved_provider,
-)
-from cairn.infra.observability.sinks import JsonlTraceSink, RedactingTraceSink
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.skills import SkillLibrary, layered_skills, resolve_skills
-from cairn.infra.tools.base import Tool
-from cairn.infra.tools.filesystem_access import normalize_access_root
-from cairn.infra.workspace.lease import WorkspaceLease
-from cairn.infra.workspace.workspace import Workspace
 from cairn.integrations.mcp.activation import McpActivationError, open_mcp_servers
 from cairn.integrations.mcp.config import McpServerConfig, load_mcp_servers
-from cairn.runtime.agent import Agent
-from cairn.runtime.durable_session import DurableSession
-from cairn.runtime.model_executor import ModelExecutor
-from cairn.runtime.provider_runtime import build_provider_runtime
 from cairn.shared.artifacts import atomic_write_text
 
 DEFAULT_CHECK_TIMEOUT_S = 300.0

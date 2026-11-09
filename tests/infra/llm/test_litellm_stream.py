@@ -10,17 +10,17 @@ from litellm.litellm_core_utils.litellm_logging import Logging
 from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
 from openai.types.chat import ChatCompletionChunk
 
-import cairn.infra.llm.litellm_client as client_module
-from cairn.core.budget import RunBudget
-from cairn.core.events import Event
-from cairn.core.llm import StreamProtocolError
-from cairn.core.models import LLMUsage, Message
-from cairn.infra.llm.errors import is_fallback_error
-from cairn.infra.llm.litellm_client import LiteLLMClient
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.runtime.agent import Agent
-from cairn.runtime.loop import run_turn
-from cairn.runtime.response_assembly import ResponseAssembler
+import cairn.agent.models.providers.litellm_client as client_module
+from cairn.agent.budget import RunBudget
+from cairn.agent.harness import Agent
+from cairn.agent.models.client import StreamProtocolError
+from cairn.agent.models.messages import LLMUsage, Message
+from cairn.agent.models.providers.errors import is_fallback_error
+from cairn.agent.models.providers.litellm_client import LiteLLMClient
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.turn.events import Event
+from cairn.agent.turn.loop import run_turn
+from cairn.agent.turn.response import ResponseAssembler
 from tests.support.runtime import RecordingTool
 from tests.support.streaming import ProviderStream, StreamBarrier, provider_chunk
 

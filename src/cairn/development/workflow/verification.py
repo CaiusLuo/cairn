@@ -5,6 +5,7 @@ import math
 from collections.abc import Sequence
 from typing import Protocol
 
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.verification import Check, CheckResult
 from cairn.development.workflow.models import (
     GitSnapshot,
@@ -12,7 +13,6 @@ from cairn.development.workflow.models import (
     VerificationCheck,
     VerificationResult,
 )
-from cairn.infra.workspace.workspace import Workspace
 
 
 class DeterministicVerifier(Protocol):

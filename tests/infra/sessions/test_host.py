@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.sessions.host import observe_workspace
-from cairn.infra.sessions.models import SessionStoreError
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.session.host import observe_workspace
+from cairn.agent.session.models import SessionStoreError
+from cairn.agent.workspace.workspace import Workspace
 from tests.support.git import git, initialize_repository
 
 

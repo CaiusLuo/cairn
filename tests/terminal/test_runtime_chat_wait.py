@@ -7,8 +7,8 @@ from pathlib import Path
 
 import httpx
 
+from cairn.agent.budget import RunBudget
 from cairn.conversation.models import ConversationSource, RunStatus
-from cairn.core.budget import RunBudget
 from cairn.infra.runtime_client import RuntimeClient
 from cairn.server import runtime_app
 from cairn.terminal.runtime_chat import RemoteChat

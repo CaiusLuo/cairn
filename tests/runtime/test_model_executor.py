@@ -16,26 +16,26 @@ from litellm.exceptions import (
     Timeout,
 )
 
-from cairn.core.budget import RunBudget
-from cairn.core.context import (
+from cairn.agent.budget import RunBudget
+from cairn.agent.context.window import (
     ContextBudget,
     ContextBudgetExceeded,
     ContextBuilder,
     TokenCount,
 )
-from cairn.core.llm import LLMClient
-from cairn.core.model_manager import ModelConfig, ModelManager, ProviderConfig
-from cairn.core.models import LLMResponse, LLMUsage, Message
-from cairn.infra.llm.errors import is_fallback_error
-from cairn.infra.observability.models import SpanStatus
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.runtime.agent import Agent
-from cairn.runtime.loop import run_turn
-from cairn.runtime.model_executor import (
+from cairn.agent.harness import Agent
+from cairn.agent.models.client import LLMClient
+from cairn.agent.models.executor import (
     AllModelsUnavailable,
     ModelExecutor,
 )
+from cairn.agent.models.messages import LLMResponse, LLMUsage, Message
+from cairn.agent.models.providers.errors import is_fallback_error
+from cairn.agent.models.selection import ModelConfig, ModelManager, ProviderConfig
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.tracing.models import SpanStatus
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.loop import run_turn
 from tests.support.runtime import RecordingSink, RecordingTool, tool_response
 
 

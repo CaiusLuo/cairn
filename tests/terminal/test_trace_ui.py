@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 
 import cairn.terminal.trace_output as trace_ui
-from cairn.infra.observability.models import (
+from cairn.agent.tracing.models import (
     Span,
     SpanStatus,
     TraceContext,

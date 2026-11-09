@@ -7,21 +7,21 @@ from typing import Any, cast
 
 import pytest
 
-from cairn.core.events import Event
-from cairn.core.models import LLMResponse, ToolCall, ToolResult
-from cairn.core.permissions import PermissionChoice, SessionPermissionHandler
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.tools.base import (
+from cairn.agent.harness import Agent
+from cairn.agent.models.messages import LLMResponse, ToolCall, ToolResult
+from cairn.agent.permissions import PermissionChoice, SessionPermissionHandler
+from cairn.agent.tools.base import (
     ToolExecutionContext,
     ToolExecutionFailure,
     ToolFailureKind,
     ToolFailureOutcome,
 )
-from cairn.infra.tools.files import ReadFileTool
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.agent import Agent
-from cairn.runtime.loop import run_turn
+from cairn.agent.tools.files import ReadFileTool
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.events import Event
+from cairn.agent.turn.loop import run_turn
+from cairn.agent.workspace.workspace import Workspace
 from tests.support.runtime import TEST_BUDGET, RecordingSink, SequenceLLM
 
 

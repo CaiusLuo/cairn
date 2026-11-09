@@ -15,20 +15,20 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import cairn.infra.llm.litellm_client as llm_module
-import cairn.infra.llm.token_counter as counter_module
+import cairn.agent.models.providers.litellm_client as llm_module
+import cairn.agent.models.providers.token_counter as counter_module
 import cairn.terminal.cli as cli_module
 import cairn.terminal.output as ui_module
-from cairn.core.permissions import (
+from cairn.agent.assembly import build_agent
+from cairn.agent.harness import Agent
+from cairn.agent.models.catalog import NamedProvider
+from cairn.agent.models.config import resolve_provider_api_key
+from cairn.agent.permissions import (
     PermissionCapability,
     PermissionChoice,
     SessionPermissionHandler,
 )
-from cairn.core.provider_catalog import NamedProvider
-from cairn.infra.config import resolve_provider_api_key
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.runtime.agent import Agent
-from cairn.runtime.assembly import build_agent
+from cairn.agent.tools.registry import ToolRegistry
 from cairn.terminal.commands.context import CommandContext
 from tests.support.streaming import CompletionResponse
 

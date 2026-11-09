@@ -7,13 +7,13 @@ from typing import Any, Literal, cast
 
 import pytest
 
-from cairn.infra.sessions.codec import canonical
-from cairn.infra.sessions.models import (
+from cairn.agent.session.codec import canonical
+from cairn.agent.session.models import (
     MAX_DATABASE_BYTES,
     HostResolution,
     SessionStoreError,
 )
-from cairn.infra.sessions.store import (
+from cairn.agent.session.store import (
     UNVERIFIED_SQLITE_DECLARATION,
     VERIFIED_SQLITE_VERSIONS,
     SessionStore,
@@ -509,7 +509,7 @@ def test_unsupported_lock_and_filesystem_fail_closed(
         raise SessionStoreError("unsupported_filesystem")
 
     monkeypatch.setattr(
-        "cairn.infra.sessions.paths._local_filesystem", unsupported_filesystem
+        "cairn.agent.session.paths._local_filesystem", unsupported_filesystem
     )
     with pytest.raises(SessionStoreError, match="unsupported_filesystem"):
         store(tmp_path)

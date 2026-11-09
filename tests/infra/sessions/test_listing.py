@@ -11,12 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.sessions.models import (
+from cairn.agent.session.models import (
     MAX_LISTED_SESSIONS,
     SESSION_SHORT_ID_LENGTH,
     SessionStoreError,
 )
-from cairn.infra.sessions.store import SessionStore
+from cairn.agent.session.store import SessionStore
 from tests.support.sessions import binding, store
 
 

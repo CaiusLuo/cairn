@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.observability.resolver import TraceResolver
+from cairn.agent.tracing.resolver import TraceResolver
 
 
 def test_resolve_unique_match_includes_directory_named_jsonl(tmp_path: Path) -> None:

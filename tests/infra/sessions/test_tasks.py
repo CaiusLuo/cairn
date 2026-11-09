@@ -9,13 +9,13 @@ from typing import Literal, cast
 
 import pytest
 
-from cairn.infra.sessions.models import (
+from cairn.agent.session.models import (
     Outcome,
     SessionStoreError,
     VersionConflict,
 )
-from cairn.infra.sessions.store import SessionStore
-from cairn.infra.sessions.task_models import (
+from cairn.agent.session.store import SessionStore
+from cairn.agent.session.task_models import (
     TaskDiagnostic,
     TaskPhase,
     TaskRecord,

@@ -11,7 +11,7 @@ from cairn.development.review.models import ReviewStatus
 from cairn.development.workflow.git import SnapshotDriftError, WorkflowGit
 from cairn.development.workflow.models import GitSnapshot, VerificationResult
 from cairn.development.worktree import WorktreeError
-from cairn.infra import platform
+from cairn.shared import platform
 
 MAX_DIFF_BYTES = 32 * 1024
 MAX_WORKSPACE_ENTRIES = 10_000

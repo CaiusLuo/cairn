@@ -13,17 +13,48 @@ from typing import Annotated
 import typer
 from dotenv import dotenv_values
 
-from cairn.core.budget import DEFAULT_MAX_STEPS, RunBudget, RunBudgetExceeded
-from cairn.core.context import ContextBudget
-from cairn.core.events import Event, EventHandler
-from cairn.core.model_manager import ModelConfig
-from cairn.core.permissions import (
+from cairn.agent.assembly import build_agent
+from cairn.agent.budget import DEFAULT_MAX_STEPS, RunBudget, RunBudgetExceeded
+from cairn.agent.context.window import ContextBudget
+from cairn.agent.harness import Agent
+from cairn.agent.models.catalog import NamedProvider, ProviderCatalog
+from cairn.agent.models.config import (
+    CAIRN_MAX_STEPS_ENV_NAME,
+    ProjectProviders,
+    default_provider,
+    load_project_providers,
+    resolve_context_budget,
+    resolve_provider_api_key,
+)
+from cairn.agent.models.runtime import (
+    ProviderRuntime,
+    ProviderSession,
+    build_provider_runtime,
+)
+from cairn.agent.models.selection import ModelConfig
+from cairn.agent.permissions import (
     PermissionCapability,
     PermissionChoice,
     PermissionRequest,
     SessionPermissionHandler,
 )
-from cairn.core.provider_catalog import NamedProvider, ProviderCatalog
+from cairn.agent.prompts import system_prompt_for
+from cairn.agent.session.durable import DurableSession
+from cairn.agent.session.models import SessionStoreError
+from cairn.agent.session.session import SessionState
+from cairn.agent.skills import SkillLibrary, layered_skills, resolve_skills
+from cairn.agent.tools.filesystem_access import normalize_access_root
+from cairn.agent.tracing.otlp import OtlpSpanExporter, build_exporter
+from cairn.agent.tracing.sinks import FanoutTraceSink, JsonlTraceSink
+from cairn.agent.tracing.storage import TraceStore
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.compaction import CompactionOutcome
+from cairn.agent.turn.events import Event, EventHandler
+from cairn.agent.turn.hook import run_compaction
+from cairn.agent.turn.loop import run_turn
+from cairn.agent.turn.steering import PendingMessage, SteerQueue
+from cairn.agent.workspace.lease import WorkspaceLease
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.board.commands import TaskBoardController
 from cairn.development.board.models import TaskSource
 from cairn.development.board.service import TaskBoardService
@@ -46,23 +77,6 @@ from cairn.development.execution.headless import (
     run_headless_task,
     task_app,
 )
-from cairn.infra.config import (
-    CAIRN_MAX_STEPS_ENV_NAME,
-    ProjectProviders,
-    default_provider,
-    load_project_providers,
-    resolve_context_budget,
-    resolve_provider_api_key,
-)
-from cairn.infra.observability.otlp import OtlpSpanExporter, build_exporter
-from cairn.infra.observability.sinks import FanoutTraceSink, JsonlTraceSink
-from cairn.infra.observability.storage import TraceStore
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.sessions.models import SessionStoreError
-from cairn.infra.skills import SkillLibrary, layered_skills, resolve_skills
-from cairn.infra.tools.filesystem_access import normalize_access_root
-from cairn.infra.workspace.lease import WorkspaceLease
-from cairn.infra.workspace.workspace import Workspace
 from cairn.integrations.mcp.activation import open_mcp_servers
 from cairn.integrations.mcp.config import McpServerConfig, load_mcp_servers
 from cairn.integrations.wechat.app import wechat_app
@@ -78,7 +92,6 @@ from cairn.memory.commands import MemoryController
 from cairn.memory.service import PersonalMemoryService
 from cairn.memory.store import (
     PersonalMemoryStore,
-    default_agent_home,
 )
 from cairn.memory.store import (
     ensure_outside_workspace as ensure_agent_home_outside_workspace,
@@ -89,21 +102,6 @@ from cairn.memory.tools import (
     MemoryRememberTool,
     MemorySearchTool,
 )
-from cairn.runtime.agent import Agent
-from cairn.runtime.assembly import build_agent
-from cairn.runtime.durable_session import DurableSession
-from cairn.runtime.lifecycle import await_owned, settle_owned
-from cairn.runtime.loop import run_turn
-from cairn.runtime.prompts import system_prompt_for
-from cairn.runtime.provider_runtime import (
-    ProviderRuntime,
-    ProviderSession,
-    build_provider_runtime,
-)
-from cairn.runtime.session import SessionState
-from cairn.runtime.turn.compaction import CompactionOutcome
-from cairn.runtime.turn.hook import run_compaction
-from cairn.runtime.turn.steering import PendingMessage, SteerQueue
 from cairn.scheduling.commands import ScheduleController
 from cairn.scheduling.store import ScheduleStore, default_schedule_dir
 from cairn.scheduling.tools import (
@@ -120,6 +118,8 @@ from cairn.shared.action import (
     note,
     refusal,
 )
+from cairn.shared.lifecycle import await_owned, settle_owned
+from cairn.shared.state_paths import default_agent_home
 from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.model import model_chooser_at
 from cairn.terminal.commands.provider import provider_chooser_at

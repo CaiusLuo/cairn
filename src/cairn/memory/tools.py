@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from cairn.core.models import ToolResult
-from cairn.infra.tools.base import InvalidArguments, ToolExecutionContext
+from cairn.agent.models.messages import ToolResult
+from cairn.agent.tools.base import InvalidArguments, ToolExecutionContext
 from cairn.memory.models import MemorySource
 from cairn.memory.service import PersonalMemoryService
 

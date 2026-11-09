@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core.budget import RunBudget
-from cairn.core.models import LLMResponse, ToolCall
+from cairn.agent.budget import RunBudget
+from cairn.agent.models.messages import LLMResponse, ToolCall
 from cairn.development.execution.headless import (
     HeadlessResult,
     HeadlessStatus,
@@ -396,7 +396,7 @@ def test_default_provider_approval_is_rejected_before_credentials_or_model(
         raise AssertionError("model runtime must not be built before approval")
 
     monkeypatch.setattr(
-        "cairn.infra.config.admission.resolve_provider_api_key", fail_key
+        "cairn.agent.models.config.admission.resolve_provider_api_key", fail_key
     )
     monkeypatch.setattr(
         "cairn.development.execution.headless.build_provider_runtime", fail_runtime
@@ -458,7 +458,7 @@ def test_runtime_build_failure_after_approval_can_redact_resolved_key(
     )
     monkeypatch.setenv("FAKE_KEY", "fake-provider-key")
     monkeypatch.setattr(
-        "cairn.infra.config.admission.resolve_provider_api_key",
+        "cairn.agent.models.config.admission.resolve_provider_api_key",
         lambda *_a, **_k: "fake-provider-key",
     )
 
@@ -835,9 +835,9 @@ def test_wechat_workspace_observation_uses_current_secret_names(
 ) -> None:
     from tempfile import TemporaryDirectory
 
-    from cairn.infra.sessions.host import observe_workspace
-    from cairn.infra.sessions.models import WorkspaceBinding
-    from cairn.infra.workspace.workspace import Workspace
+    from cairn.agent.session.host import observe_workspace
+    from cairn.agent.session.models import WorkspaceBinding
+    from cairn.agent.workspace.workspace import Workspace
     from cairn.integrations.wechat.serve import default_task_executor
     from tests.support.git import initialize_repository
 
@@ -910,9 +910,9 @@ def test_wechat_durable_session_respects_explicit_capabilities(
     from tempfile import TemporaryDirectory
     from typing import Any
 
-    from cairn.core.models import ToolResult
-    from cairn.core.permissions import CapabilityRequest, PermissionCapability
-    from cairn.infra.tools.base import ToolExecutionContext
+    from cairn.agent.models.messages import ToolResult
+    from cairn.agent.permissions import CapabilityRequest, PermissionCapability
+    from cairn.agent.tools.base import ToolExecutionContext
     from cairn.integrations.wechat.serve import default_task_executor
     from tests.support.git import initialize_repository
 
@@ -1123,8 +1123,8 @@ def test_wechat_session_close_failure_retains_owner_and_primary(
 ) -> None:
     from tempfile import TemporaryDirectory
 
+    from cairn.agent.session.durable import DurableSession
     from cairn.integrations.wechat.serve import default_task_executor
-    from cairn.runtime.durable_session import DurableSession
     from tests.support.git import initialize_repository
 
     with TemporaryDirectory(prefix="cairn-wechat-close-", dir=Path.home()) as root_text:
@@ -1211,8 +1211,8 @@ def test_wechat_reopen_failure_releases_attached_session_owner(
 ) -> None:
     from tempfile import TemporaryDirectory
 
+    from cairn.agent.session.durable import DurableSession
     from cairn.integrations.wechat.serve import default_task_executor
-    from cairn.runtime.durable_session import DurableSession
     from tests.support.git import initialize_repository
 
     with TemporaryDirectory(
@@ -1297,10 +1297,10 @@ def test_wechat_attachment_failure_keeps_writer_for_host_close_retry(
 ) -> None:
     from tempfile import TemporaryDirectory
 
-    from cairn.infra.sessions.host import observe_workspace
-    from cairn.infra.sessions.models import WorkspaceBinding
-    from cairn.infra.sessions.store import SessionStore
-    from cairn.infra.workspace.workspace import Workspace
+    from cairn.agent.session.host import observe_workspace
+    from cairn.agent.session.models import WorkspaceBinding
+    from cairn.agent.session.store import SessionStore
+    from cairn.agent.workspace.workspace import Workspace
     from cairn.integrations.wechat.serve import default_task_executor
     from tests.support.git import initialize_repository
 
@@ -1393,9 +1393,9 @@ def test_wechat_tasks_link_to_their_persistent_sender_session(
     from tempfile import TemporaryDirectory
     from typing import Any
 
+    from cairn.agent.session.store import SessionStore
     from cairn.development.board.models import TaskSource
     from cairn.development.board.store import TaskBoardStore
-    from cairn.infra.sessions.store import SessionStore
     from tests.support.git import initialize_repository
 
     with TemporaryDirectory(

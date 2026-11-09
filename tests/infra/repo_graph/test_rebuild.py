@@ -4,16 +4,16 @@ from pathlib import Path
 
 import pytest
 
-from cairn.development.worktree import WorktreeProvider
-from cairn.infra.repo_graph import (
+from cairn.agent.context.repo_graph import (
     BuildLimits,
     FileStatus,
     IssueReason,
     RelationshipStatus,
     RepoGraphBuilder,
 )
-from cairn.infra.repo_graph import builder as builder_module
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.context.repo_graph import builder as builder_module
+from cairn.agent.workspace.workspace import Workspace
+from cairn.development.worktree import WorktreeProvider
 from tests.infra.git.conftest import source as source
 from tests.support.git import git
 

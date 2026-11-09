@@ -7,13 +7,14 @@ from typing import Any, cast
 
 import pytest
 
-from cairn.core.models import ToolResult
+from cairn.agent.models.messages import ToolResult
+from cairn.agent.session.durable import DurableSession
+from cairn.agent.tools.base import ToolExecutionContext
+from cairn.agent.tools.lease import LeaseTool
 from cairn.development.execution.headless import (
     HeadlessResult,
     HeadlessStatus,
 )
-from cairn.infra.tools.base import ToolExecutionContext
-from cairn.infra.tools.lease import LeaseTool
 from cairn.integrations.wechat.serve import (
     ConversationDecision,
     ConversationExecutionError,
@@ -28,7 +29,6 @@ from cairn.integrations.wechat.state import (
     WechatAccount,
     WechatState,
 )
-from cairn.runtime.durable_session import DurableSession
 from tests.support.fake_ilink import FakeILink
 from tests.support.wechat_service import (
     _client,

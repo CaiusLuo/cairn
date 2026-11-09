@@ -1,6 +1,6 @@
 """Shared argument-preflight coverage for every model-facing file tool.
 
-The per-tool argument checks are owned by ``cairn.infra.tools.arguments``, so the
+The per-tool argument checks are owned by ``cairn.agent.tools.arguments``, so the
 security cases that must hold for all of them are covered once here and
 parametrized over the real tools: read_file, edit_file, write_file, patch_file,
 glob and grep. Each tool's own module keeps its tool-specific policy coverage
@@ -19,18 +19,18 @@ from typing import Any
 
 import pytest
 
-from cairn.infra.tools.arguments import (
+from cairn.agent.tools.arguments import (
     function_schema,
     reject_unknown_keys,
     workspace_path,
 )
-from cairn.infra.tools.base import InvalidArguments, PermissionRefused
-from cairn.infra.tools.files import EditFileTool, ReadFileTool
-from cairn.infra.tools.glob import GlobTool
-from cairn.infra.tools.grep import GrepTool
-from cairn.infra.tools.patch import PatchTool
-from cairn.infra.tools.write import WriteTool
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.tools.base import InvalidArguments, PermissionRefused
+from cairn.agent.tools.files import EditFileTool, ReadFileTool
+from cairn.agent.tools.glob import GlobTool
+from cairn.agent.tools.grep import GrepTool
+from cairn.agent.tools.patch import PatchTool
+from cairn.agent.tools.write import WriteTool
+from cairn.agent.workspace.workspace import Workspace
 
 
 @dataclass(frozen=True)

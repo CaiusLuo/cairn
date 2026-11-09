@@ -1,10 +1,10 @@
 import asyncio
 from pathlib import Path
 
-from cairn.core.models import ToolResult
-from cairn.infra.tools.base import ToolExecutionContext
-from cairn.infra.tools.lease import LeaseTool
-from cairn.infra.workspace.lease import WorkspaceLease
+from cairn.agent.models.messages import ToolResult
+from cairn.agent.tools.base import ToolExecutionContext
+from cairn.agent.tools.lease import LeaseTool
+from cairn.agent.workspace.lease import WorkspaceLease
 
 
 async def _noop(

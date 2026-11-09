@@ -9,29 +9,33 @@ from uuid import UUID, uuid4
 import pytest
 from litellm.exceptions import RateLimitError
 
-from cairn.core.budget import RunBudget, RunBudgetExceeded
-from cairn.core.context import ContextBudget, ContextBudgetExceeded, ContextBuilder
-from cairn.core.events import Event, SessionEvent
-from cairn.core.llm import LLMClient, LLMStreamChunk
-from cairn.core.model_manager import ModelConfig, ModelManager, ProviderConfig
-from cairn.core.models import LLMResponse, ToolCall, ToolResult
-from cairn.core.permissions import PermissionDecision, PermissionResult
-from cairn.core.provider_catalog import NamedProvider
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.tools.base import ToolExecutionContext
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.runtime import loop as loop_module
-from cairn.runtime.agent import Agent
-from cairn.runtime.lifecycle import await_owned
-from cairn.runtime.loop import run_turn
-from cairn.runtime.model_executor import ModelExecutor
-from cairn.runtime.provider_runtime import ProviderRuntime, ProviderSession
-from cairn.runtime.session import (
+from cairn.agent.budget import RunBudget, RunBudgetExceeded
+from cairn.agent.context.window import (
+    ContextBudget,
+    ContextBudgetExceeded,
+    ContextBuilder,
+)
+from cairn.agent.harness import Agent
+from cairn.agent.models.catalog import NamedProvider
+from cairn.agent.models.client import LLMClient, LLMStreamChunk
+from cairn.agent.models.executor import ModelExecutor
+from cairn.agent.models.messages import LLMResponse, ToolCall, ToolResult
+from cairn.agent.models.runtime import ProviderRuntime, ProviderSession
+from cairn.agent.models.selection import ModelConfig, ModelManager, ProviderConfig
+from cairn.agent.permissions import PermissionDecision, PermissionResult
+from cairn.agent.session.session import (
     Session,
     SessionAdmissionError,
     SessionState,
     TurnOutcome,
 )
+from cairn.agent.tools.base import ToolExecutionContext
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn import loop as loop_module
+from cairn.agent.turn.events import Event, SessionEvent
+from cairn.agent.turn.loop import run_turn
+from cairn.shared.lifecycle import await_owned
 from tests.support.runtime import (
     TEST_BUDGET,
     FailingSink,

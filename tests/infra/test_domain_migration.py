@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 
+from cairn.agent.session.models import CheckpointReceipt, Revision
 from cairn.conversation.models import ConversationSource, RunStatus
 from cairn.conversation.store import DomainStore
 from cairn.development.board.models import (
@@ -21,7 +22,6 @@ from cairn.development.board.store import TaskBoardStore
 from cairn.development.catalogue import RuntimeEvent, RuntimeTask
 from cairn.development.models import TaskStatus
 from cairn.infra import domain_migration
-from cairn.infra.sessions.models import CheckpointReceipt, Revision
 
 
 def _receipt() -> CheckpointReceipt:
@@ -312,7 +312,7 @@ def test_offline_owner_lock_blocks_plan_and_source_snapshot_blocks_apply(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime, workspace, board_path = _legacy_files(tmp_path)
-    from cairn.infra.workspace.lease import WorkspaceLease
+    from cairn.agent.workspace.lease import WorkspaceLease
 
     lease = WorkspaceLease(runtime / "owner.lock")
     assert lease.acquire()

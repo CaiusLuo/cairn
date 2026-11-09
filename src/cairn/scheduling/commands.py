@@ -8,7 +8,6 @@ from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 
-from cairn.runtime.lifecycle import await_owned
 from cairn.scheduling.models import (
     ScheduleJob,
     ScheduleKind,
@@ -17,6 +16,7 @@ from cairn.scheduling.models import (
 from cairn.scheduling.runner import ScheduleRunner, TaskExecutor, current_time
 from cairn.scheduling.store import ScheduleStore, ensure_outside_workspace
 from cairn.shared.action import Action, correction, note
+from cairn.shared.lifecycle import await_owned
 
 Deliver = Callable[[str, str], Awaitable[bool]]
 Recipient = Callable[[], str | None]

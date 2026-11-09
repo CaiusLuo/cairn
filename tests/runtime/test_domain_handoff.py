@@ -8,11 +8,11 @@ from typing import Any
 
 import httpx
 
-from cairn.core.budget import RunBudget
-from cairn.core.models import LLMResponse, LLMUsage, Message, ToolCall
+from cairn.agent.budget import RunBudget
+from cairn.agent.models.messages import LLMResponse, LLMUsage, Message, ToolCall
+from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.infra.domain_migration import plan_migration
 from cairn.infra.runtime_client import RuntimeClient
-from cairn.runtime.offline_model import OfflineDevelopmentModel
 from cairn.server import runtime_app
 from tests.support.git import initialize_repository
 

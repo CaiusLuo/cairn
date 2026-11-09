@@ -10,8 +10,8 @@ from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from functools import partial
 
-from cairn.core.compaction import CompactionStatus
-from cairn.runtime.turn.compaction import CompactionOutcome, CompactionStep
+from cairn.agent.context.compaction import CompactionStatus
+from cairn.agent.turn.compaction import CompactionOutcome, CompactionStep
 
 COMPACT_USAGE = "/compact"
 COMPACT_SUMMARY = "Reduce the conversation context on demand."

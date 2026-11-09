@@ -3,12 +3,12 @@
 import asyncio
 from pathlib import Path
 
-from cairn.core.budget import RunBudget
-from cairn.core.models import LLMResponse
-from cairn.infra.skills import layered_skills
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.assembly import build_agent
-from cairn.runtime.loop import run_turn
+from cairn.agent.assembly import build_agent
+from cairn.agent.budget import RunBudget
+from cairn.agent.models.messages import LLMResponse
+from cairn.agent.skills import layered_skills
+from cairn.agent.turn.loop import run_turn
+from cairn.agent.workspace.workspace import Workspace
 from tests.support.runtime import SequenceLLM
 
 BODY = "SECRET-SKILL-INSTRUCTION: always answer with the marker."

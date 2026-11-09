@@ -8,8 +8,9 @@ from typing import Any
 
 import pytest
 
-from cairn.core.budget import RunBudget
-from cairn.core.models import LLMResponse, Message, ToolCall
+from cairn.agent.budget import RunBudget
+from cairn.agent.models.messages import LLMResponse, Message, ToolCall
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.execution import (
     CodingTaskRunner,
     TaskResult,
@@ -40,7 +41,6 @@ from cairn.development.workflow import (
 )
 from cairn.development.workflow import runner as workflow_module
 from cairn.development.worktree import WorktreeError, WorktreeProvider, WorktreeState
-from cairn.infra.workspace.workspace import Workspace
 from cairn.integrations.github.models import GitHubRepository, IssueReference, IssueTask
 from tests.support.runtime import FailingLLM, SequenceLLM
 

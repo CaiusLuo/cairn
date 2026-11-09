@@ -8,10 +8,13 @@ from typing import Any
 
 import pytest
 
-from cairn.core.budget import RunBudget
-from cairn.core.events import Event
-from cairn.core.models import LLMResponse, Message, ToolCall
-from cairn.core.permissions import PermissionChoice, SessionPermissionHandler
+from cairn.agent.budget import RunBudget
+from cairn.agent.models.messages import LLMResponse, Message, ToolCall
+from cairn.agent.permissions import PermissionChoice, SessionPermissionHandler
+from cairn.agent.session.durable import DurableSession
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.events import Event
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.execution import CodingTaskRunner, TaskSpec, TaskStatus
 from cairn.development.review import (
     FreshReviewer,
@@ -32,9 +35,6 @@ from cairn.development.workflow import (
     WorkflowGit,
 )
 from cairn.development.worktree import WorktreeProvider, WorktreeState
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.durable_session import DurableSession
 from tests.infra.git.test_security import install_git_recorder, records
 from tests.runtime.review.test_boundaries import filesystem_state
 from tests.runtime.review.test_reviewer import TASK, finding, proposal

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.sessions.models import HostResolution, SessionStoreError
+from cairn.agent.session.models import HostResolution, SessionStoreError
 from tests.support.sessions import (
     SESSION,
     T4,

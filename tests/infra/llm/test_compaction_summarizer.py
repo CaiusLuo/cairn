@@ -11,15 +11,15 @@ from typing import Any
 
 import pytest
 
-from cairn.core.compaction.summarizer import (
+from cairn.agent.context.compaction.summarizer import (
     FAILURE_EMPTY,
     FAILURE_MODEL_ERROR,
     FAILURE_TOO_LONG,
     SummaryResult,
 )
-from cairn.core.llm import StreamProtocolError
-from cairn.core.models import LLMResponse, LLMUsage, Message, ToolCall
-from cairn.infra.llm.compaction_summarizer import (
+from cairn.agent.models.client import StreamProtocolError
+from cairn.agent.models.messages import LLMResponse, LLMUsage, Message, ToolCall
+from cairn.agent.models.providers.compaction_summarizer import (
     SUMMARY_POLICY,
     LLMCompactionSummarizer,
 )

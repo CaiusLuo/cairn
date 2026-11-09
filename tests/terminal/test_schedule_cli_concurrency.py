@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from typer.testing import CliRunner
 
-import cairn.infra.llm.litellm_client as llm_module
+import cairn.agent.models.providers.litellm_client as llm_module
 import cairn.terminal.cli as cli_module
 from cairn.integrations.wechat.state import WechatAccount, WechatState
 from cairn.scheduling.models import ScheduleJob, ScheduleKind

@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core.models import Message
-from cairn.infra.sessions.models import (
+from cairn.agent.models.messages import Message
+from cairn.agent.session.models import (
     HostResolution,
     Outcome,
     ProviderReference,
@@ -643,7 +643,7 @@ def test_metadata_wall_clock_does_not_order_revisions(
     try:
         initial = api.create(bind).revision
         monkeypatch.setattr(
-            "cairn.infra.sessions.store._now", lambda: "2019-12-31T23:59:59Z"
+            "cairn.agent.session.store._now", lambda: "2019-12-31T23:59:59Z"
         )
         turn = intent(bind, initial)
         active = api.begin_turn(initial, turn)

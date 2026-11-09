@@ -8,15 +8,15 @@ classes (never provider text).
 
 import asyncio
 
-from cairn.core.budget import RunBudget
-from cairn.core.context import ContextBudget, ContextBuilder
-from cairn.core.models import LLMResponse
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.runtime.agent import Agent
-from cairn.runtime.loop import run_turn
-from cairn.runtime.session import Session
-from cairn.runtime.turn_trace import AttemptContext, TurnTrace
+from cairn.agent.budget import RunBudget
+from cairn.agent.context.window import ContextBudget, ContextBuilder
+from cairn.agent.harness import Agent
+from cairn.agent.models.messages import LLMResponse
+from cairn.agent.session.session import Session
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.loop import run_turn
+from cairn.agent.turn.trace import AttemptContext, TurnTrace
 from tests.support.runtime import RecordingSink, SequenceLLM
 
 
@@ -77,7 +77,7 @@ def test_correlation_ids_are_opaque_not_content() -> None:
 
 
 def _request(builder: ContextBuilder):  # type: ignore[no-untyped-def]
-    from cairn.core.models import Message
+    from cairn.agent.models.messages import Message
 
     return builder.build(
         system_messages=[Message(role="system", content="sys")],

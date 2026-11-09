@@ -10,9 +10,9 @@ from typing import Any
 
 import pytest
 
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.worktree import WorktreeError, WorktreeHandle, WorktreeProvider
-from cairn.infra.git.environment import GIT_CONFIG_ENV, build_git_env
-from cairn.infra.workspace.workspace import Workspace
+from cairn.shared.git_env import GIT_CONFIG_ENV, build_git_env
 from tests.infra.git.helpers import assert_removed
 from tests.support.git import git
 

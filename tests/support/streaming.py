@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Self
 
-from cairn.core.llm import LLMStreamChunk
-from cairn.core.models import LLMResponse, Message
+from cairn.agent.models.client import LLMStreamChunk
+from cairn.agent.models.messages import LLMResponse, Message
 
 
 @dataclass(frozen=True)

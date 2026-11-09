@@ -10,22 +10,22 @@ from typing import Any
 
 import pytest
 
-from cairn.core.budget import RunBudget
-from cairn.core.events import EventHandler
-from cairn.core.llm import LLMClient
-from cairn.core.models import LLMResponse, Message, ToolCall
-from cairn.core.permissions import SessionPermissionHandler
+from cairn.agent.assembly import build_agent
+from cairn.agent.budget import RunBudget
+from cairn.agent.context.git import RepoContextProvider
+from cairn.agent.harness import Agent
+from cairn.agent.models.client import LLMClient
+from cairn.agent.models.messages import LLMResponse, Message, ToolCall
+from cairn.agent.permissions import SessionPermissionHandler
+from cairn.agent.session.access import open_store
+from cairn.agent.session.durable import DurableSession
+from cairn.agent.session.host import observe_workspace
+from cairn.agent.session.models import HostResolution, SessionBinding
+from cairn.agent.session.store import SessionStore
+from cairn.agent.turn.events import EventHandler
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.execution import CodingTaskRunner
 from cairn.development.execution.models import TaskSpec
-from cairn.infra.git.context import RepoContextProvider
-from cairn.infra.sessions.host import observe_workspace
-from cairn.infra.sessions.models import HostResolution, SessionBinding
-from cairn.infra.sessions.store import SessionStore
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.agent import Agent
-from cairn.runtime.assembly import build_agent
-from cairn.runtime.durable_session import DurableSession
-from cairn.terminal.durable import open_store
 from tests.support.git import initialize_repository
 from tests.support.runtime import SequenceLLM
 from tests.support.sessions import SESSION, UNVERIFIED_RUNTIME

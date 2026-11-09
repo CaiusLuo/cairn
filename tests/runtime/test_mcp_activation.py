@@ -7,12 +7,14 @@ from typing import Any
 
 import pytest
 
-from cairn.core.budget import RunBudget
-from cairn.core.events import Event
-from cairn.core.models import LLMResponse, ToolCall
-from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
+from cairn.agent.assembly import build_agent
+from cairn.agent.budget import RunBudget
+from cairn.agent.models.messages import LLMResponse, ToolCall
+from cairn.agent.permissions import PermissionCapability, SessionPermissionHandler
+from cairn.agent.turn.events import Event
+from cairn.agent.turn.loop import run_turn
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.execution.headless import HeadlessStatus, run_headless_task
-from cairn.infra.workspace.workspace import Workspace
 from cairn.integrations.mcp.activation import (
     McpActivationError,
     McpToolAdapter,
@@ -20,8 +22,6 @@ from cairn.integrations.mcp.activation import (
 )
 from cairn.integrations.mcp.client import McpToolSpec
 from cairn.integrations.mcp.config import McpServerConfig
-from cairn.runtime.assembly import build_agent
-from cairn.runtime.loop import run_turn
 from tests.support.runtime import SequenceLLM
 
 SERVER = Path(__file__).resolve().parents[1] / "support" / "mcp_server.py"
@@ -230,7 +230,7 @@ def test_terminal_activation_registers_and_removes_tools(
 
 
 def test_mcp_invalid_arguments_are_preflight_failures(tmp_path: Path) -> None:
-    from cairn.infra.tools.base import InvalidArguments
+    from cairn.agent.tools.base import InvalidArguments
 
     adapter = McpToolAdapter(
         client=object(),  # type: ignore[arg-type]
@@ -344,7 +344,7 @@ def test_repeated_cancellation_reaps_stdio_child(
 
 
 def test_nested_mcp_arguments_validate_before_permission() -> None:
-    from cairn.infra.tools.base import InvalidArguments
+    from cairn.agent.tools.base import InvalidArguments
 
     spec = McpToolSpec(
         "nested",
@@ -381,7 +381,7 @@ def test_nested_mcp_arguments_validate_before_permission() -> None:
 
 
 def test_remote_schema_reference_never_fetches_network() -> None:
-    from cairn.infra.tools.base import InvalidArguments
+    from cairn.agent.tools.base import InvalidArguments
 
     adapter = McpToolAdapter(
         client=object(),  # type: ignore[arg-type]

@@ -1,0 +1,25 @@
+from dataclasses import dataclass
+
+from cairn.agent.models.selection import ProviderConfig
+
+
+@dataclass(frozen=True)
+class NamedProvider:
+    """A provider configuration bound to the name that selects it."""
+
+    name: str
+    config: ProviderConfig
+
+
+@dataclass(frozen=True)
+class ProviderCatalog:
+    """Providers in declaration order, as loaded from multi-provider TOML."""
+
+    providers: tuple[NamedProvider, ...]
+
+    def by_name(self, name: str) -> NamedProvider | None:
+        """The provider declared under ``name``, or ``None`` when absent."""
+        return next(
+            (provider for provider in self.providers if provider.name == name),
+            None,
+        )

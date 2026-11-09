@@ -7,11 +7,11 @@ import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-import cairn.infra.llm.token_counter as counter_module
+import cairn.agent.models.providers.token_counter as counter_module
 import cairn.terminal.cli as cli_module
-from cairn.core.model_manager import ModelConfig, ModelManager, ProviderConfig
-from cairn.core.permissions import PermissionCapability
-from cairn.infra.observability.storage import TraceStore
+from cairn.agent.models.selection import ModelConfig, ModelManager, ProviderConfig
+from cairn.agent.permissions import PermissionCapability
+from cairn.agent.tracing.storage import TraceStore
 from cairn.shared.action import Action
 from cairn.terminal.commands.context import CommandContext
 from cairn.terminal.commands.router import CommandRouter

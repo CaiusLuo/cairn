@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core.models import LLMResponse, ToolCall
-from cairn.core.permissions import PermissionDecision, PermissionResult
-from cairn.infra.git.context import RepositoryContext
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.assembly import build_agent
-from cairn.runtime.loop import run_turn
+from cairn.agent.assembly import build_agent
+from cairn.agent.context.git import RepositoryContext
+from cairn.agent.models.messages import LLMResponse, ToolCall
+from cairn.agent.permissions import PermissionDecision, PermissionResult
+from cairn.agent.turn.loop import run_turn
+from cairn.agent.workspace.workspace import Workspace
 from tests.support.git import initialize_repository
 from tests.support.runtime import TEST_BUDGET, SequenceLLM
 

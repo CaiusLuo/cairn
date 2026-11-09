@@ -9,23 +9,23 @@ from typing import Any
 
 import pytest
 
-from cairn.core.context import ContextBudget, ContextBuilder
-from cairn.core.model_manager import ModelManager
-from cairn.core.models import LLMResponse, Message
-from cairn.core.provider_catalog import NamedProvider
+from cairn.agent.context.window import ContextBudget, ContextBuilder
+from cairn.agent.models.catalog import NamedProvider
+from cairn.agent.models.executor import ModelExecutor
+from cairn.agent.models.messages import LLMResponse, Message
+from cairn.agent.models.runtime import ProviderRuntime
+from cairn.agent.models.selection import ModelManager
+from cairn.agent.session.access import open_store
+from cairn.agent.session.host import observe_workspace
+from cairn.agent.session.models import SessionBinding, ToolFence, TurnIntent
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.execution.headless import HeadlessStatus, ProviderApproval
-from cairn.infra.sessions.host import observe_workspace
-from cairn.infra.sessions.models import SessionBinding, ToolFence, TurnIntent
-from cairn.infra.workspace.workspace import Workspace
 from cairn.integrations.wechat.serve import (
     ServeConfig,
     default_conversation_executor,
     default_task_executor,
 )
 from cairn.integrations.wechat.state import WechatAccount
-from cairn.runtime.model_executor import ModelExecutor
-from cairn.runtime.provider_runtime import ProviderRuntime
-from cairn.terminal.durable import open_store
 from tests.support.git import initialize_repository
 from tests.support.runtime import SequenceLLM
 from tests.support.sessions import intent, settled
@@ -424,8 +424,8 @@ def test_chat_primary_failure_keeps_cleanup_note_and_retained_writer(
     monkeypatch: pytest.MonkeyPatch,
     cancelled: bool,
 ) -> None:
+    from cairn.agent.session.durable import DurableSession
     from cairn.integrations.wechat import serve as serve_module
-    from cairn.runtime.durable_session import DurableSession
 
     config, llm = configured
     llm.responses = [LLMResponse(content="settled chat")]

@@ -22,11 +22,11 @@ from typing import Any
 
 import pytest
 
-from cairn.core.models import ToolResult
-from cairn.infra.tools.base import InvalidArguments
-from cairn.infra.tools.glob import GlobTool
-from cairn.infra.workspace.paths import contained_candidate
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.models.messages import ToolResult
+from cairn.agent.tools.base import InvalidArguments
+from cairn.agent.tools.glob import GlobTool
+from cairn.agent.workspace.paths import contained_candidate
+from cairn.agent.workspace.workspace import Workspace
 
 
 def _write(path: Path, content: str = "") -> None:

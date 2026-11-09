@@ -12,11 +12,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from cairn.core.events import Event, SessionEvent
+from cairn.agent.tracing.models import Span, SpanStatus
+from cairn.agent.tracing.storage import TraceStore
+from cairn.agent.turn.events import Event, SessionEvent
 from cairn.development.execution.models import TaskResult, TaskStatus
-from cairn.infra.observability.models import Span, SpanStatus
-from cairn.infra.observability.storage import TraceStore
-from cairn.infra.tools.credential_env import SECRET_ENV_KEYS
+from cairn.shared.credential_env import SECRET_ENV_KEYS
 
 if TYPE_CHECKING:
     from cairn.development.verification import CheckResult

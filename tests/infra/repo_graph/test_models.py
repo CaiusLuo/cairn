@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.repo_graph import BuildLimits, BuildReport, RepoGraph
+from cairn.agent.context.repo_graph import BuildLimits, BuildReport, RepoGraph
 
 
 @pytest.mark.parametrize("value", [0, -1, True, 1.5])

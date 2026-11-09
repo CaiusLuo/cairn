@@ -12,9 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from cairn.infra import sandbox
-from cairn.infra.tools.bash import BashTool
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.tools import sandbox
+from cairn.agent.tools.bash import BashTool
+from cairn.agent.workspace.workspace import Workspace
 
 
 def _tool(root: Path) -> BashTool:

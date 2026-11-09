@@ -14,11 +14,14 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-import cairn.infra.config.admission as admission
-from cairn.core.budget import RunBudget
-from cairn.core.context import ContextBudget
-from cairn.core.llm import LLMClient
-from cairn.core.models import LLMResponse, Message, ToolCall
+import cairn.agent.models.config.admission as admission
+from cairn.agent.budget import RunBudget
+from cairn.agent.context.window import ContextBudget
+from cairn.agent.models.client import LLMClient
+from cairn.agent.models.config import ConfigLayout
+from cairn.agent.models.messages import LLMResponse, Message, ToolCall
+from cairn.agent.tracing.sinks import JsonlTraceSink, RedactingTraceSink
+from cairn.agent.tracing.tracer import Tracer
 from cairn.development.execution.headless import (
     HeadlessResult,
     HeadlessStatus,
@@ -26,9 +29,6 @@ from cairn.development.execution.headless import (
     run_headless_task,
     task_app,
 )
-from cairn.infra.config import ConfigLayout
-from cairn.infra.observability.sinks import JsonlTraceSink, RedactingTraceSink
-from cairn.infra.observability.tracer import Tracer
 from tests.support.runtime import SequenceLLM
 from tests.support.sandbox import require_local_shell
 
@@ -288,7 +288,7 @@ def test_cli_help_is_offline(
 import types  # noqa: E402
 
 import cairn.development.execution.headless as headless  # noqa: E402
-from cairn.core.context import ContextBuilder  # noqa: E402
+from cairn.agent.context.window import ContextBuilder  # noqa: E402
 from cairn.development.execution.models import TaskSpec  # noqa: E402
 from cairn.development.execution.models import TaskStatus as _TaskStatus  # noqa: E402
 
@@ -674,7 +674,7 @@ def test_provider_approval_binds_ordered_model_ids(
 
 
 def test_redacting_trace_sink_unit() -> None:
-    from cairn.infra.observability.models import (
+    from cairn.agent.tracing.models import (
         SpanStatus,
         new_trace_context,
         start_span,

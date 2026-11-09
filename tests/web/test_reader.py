@@ -2,10 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core.models import Message
+from cairn.agent.models.messages import Message
+from cairn.agent.session.store import SessionStore
 from cairn.development.board.models import TaskBoardStatus, TaskSource
 from cairn.development.board.store import TaskBoardStore
-from cairn.infra.sessions.store import SessionStore
 from cairn.web.config import WebConfig
 from cairn.web.reader import SnapshotReader
 from tests.support.sessions import SESSION, binding, intent, settled, store

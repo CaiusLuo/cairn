@@ -15,16 +15,16 @@ from litellm.exceptions import (
 )
 from typer.testing import CliRunner
 
-import cairn.infra.llm.litellm_client as llm_module
-import cairn.infra.llm.token_counter as counter_module
+import cairn.agent.models.providers.litellm_client as llm_module
+import cairn.agent.models.providers.token_counter as counter_module
 import cairn.terminal.cli as cli_module
-from cairn.core.budget import RunBudget
-from cairn.core.context import ContextBudget
-from cairn.core.model_manager import ModelConfig
-from cairn.core.models import Message
-from cairn.core.provider_catalog import NamedProvider
-from cairn.runtime.agent import Agent
-from cairn.runtime.loop import run_turn
+from cairn.agent.budget import RunBudget
+from cairn.agent.context.window import ContextBudget
+from cairn.agent.harness import Agent
+from cairn.agent.models.catalog import NamedProvider
+from cairn.agent.models.messages import Message
+from cairn.agent.models.selection import ModelConfig
+from cairn.agent.turn.loop import run_turn
 from tests.support.cli_harness import (
     completion_response,
     configure_cli,

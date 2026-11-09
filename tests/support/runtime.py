@@ -1,12 +1,12 @@
 from typing import Any
 
-from cairn.core.budget import RunBudget
-from cairn.core.events import Event
-from cairn.core.models import LLMResponse, Message, ToolCall, ToolResult
-from cairn.infra.observability.models import Span
-from cairn.infra.tools.base import Tool, ToolExecutionContext
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.runtime.agent import Agent
+from cairn.agent.budget import RunBudget
+from cairn.agent.harness import Agent
+from cairn.agent.models.messages import LLMResponse, Message, ToolCall, ToolResult
+from cairn.agent.tools.base import Tool, ToolExecutionContext
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.tracing.models import Span
+from cairn.agent.turn.events import Event
 
 TEST_BUDGET = RunBudget(max_steps=20)
 

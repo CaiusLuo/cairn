@@ -6,15 +6,15 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 import cairn.terminal.output as ui
-from cairn.core.events import Event
-from cairn.core.model_manager import ModelConfig, ProviderConfig
-from cairn.core.models import ToolCall
-from cairn.core.permissions import (
+from cairn.agent.models.catalog import NamedProvider
+from cairn.agent.models.messages import ToolCall
+from cairn.agent.models.selection import ModelConfig, ProviderConfig
+from cairn.agent.permissions import (
     PermissionCapability,
     PermissionChoice,
     PermissionRequest,
 )
-from cairn.core.provider_catalog import NamedProvider
+from cairn.agent.turn.events import Event
 
 
 def _capture_console(monkeypatch: pytest.MonkeyPatch) -> StringIO:

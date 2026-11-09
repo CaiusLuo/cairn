@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-from cairn.core.repository import RepositoryEvidence
+from cairn.agent.context.evidence import RepositoryEvidence
 from cairn.development.execution.models import TaskResult, TaskStatus
 from cairn.development.worktree import WorktreeHandle
 from cairn.shared.artifacts import atomic_write_text

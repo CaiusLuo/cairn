@@ -7,8 +7,8 @@ from typing import Any
 from unittest.mock import patch
 
 from cairn import server as runtime_server
-from cairn.core.models import LLMResponse, Message
-from cairn.runtime.offline_model import OfflineDevelopmentModel
+from cairn.agent.models.messages import LLMResponse, Message
+from cairn.agent.models.offline import OfflineDevelopmentModel
 
 
 class GatedModel(OfflineDevelopmentModel):

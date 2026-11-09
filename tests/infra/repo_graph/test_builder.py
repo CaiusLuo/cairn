@@ -4,9 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.descriptors import open_root
-from cairn.infra.repo_graph.builder import DEFAULT_EXCLUSIONS, RepoGraphBuilder
-from cairn.infra.repo_graph.models import (
+from cairn.agent.context.repo_graph.builder import DEFAULT_EXCLUSIONS, RepoGraphBuilder
+from cairn.agent.context.repo_graph.models import (
     BuildLimits,
     FileKind,
     FileStatus,
@@ -15,7 +14,8 @@ from cairn.infra.repo_graph.models import (
     ManifestStatus,
     SkipReason,
 )
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.workspace.workspace import Workspace
+from cairn.shared.descriptors import open_root
 
 
 def test_inventory_is_sorted_counted_hashed_and_read_only(tmp_path: Path) -> None:
@@ -474,7 +474,9 @@ def test_parent_replacement_during_final_verification_is_detected(
             (root / "secret.py").write_bytes(b"secret = 1")
         return fd
 
-    monkeypatch.setattr("cairn.infra.repo_graph.builder.open_root", replacing_open)
+    monkeypatch.setattr(
+        "cairn.agent.context.repo_graph.builder.open_root", replacing_open
+    )
 
     graph = builder.build()
 

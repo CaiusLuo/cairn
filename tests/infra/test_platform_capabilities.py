@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra import platform
+from cairn.shared import platform
 
 
 def _simulate_missing_host_flags() -> str:
@@ -35,7 +35,7 @@ os.supports_follow_symlinks = set()
 import cairn.terminal.cli as cli
 assert hasattr(cli, "app"), "CLI entry point missing"
 
-from cairn.infra import platform
+from cairn.shared import platform
 for name in ("O_NOFOLLOW", "O_DIRECTORY", "O_CLOEXEC"):
     try:
         platform.flag(name)
@@ -108,7 +108,7 @@ def test_open_root_refuses_before_opening_anything(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No descriptor is opened when the capability is missing."""
-    from cairn.infra.descriptors import open_root
+    from cairn.shared.descriptors import open_root
 
     opened: list[object] = []
 
@@ -129,7 +129,7 @@ def _raise_missing() -> None:
 
 def test_symlink_protection_still_holds_on_this_host(tmp_path: Path) -> None:
     """The protection the capability exists for is still enforced."""
-    from cairn.infra.descriptors import open_root
+    from cairn.shared.descriptors import open_root
 
     real = tmp_path / "real"
     real.mkdir()

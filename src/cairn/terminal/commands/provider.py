@@ -7,8 +7,8 @@ current provider unchanged. The selected model remains visible near the composer
 from collections.abc import Awaitable, Callable
 from functools import partial
 
-from cairn.core.model_manager import ModelConfig
-from cairn.core.provider_catalog import NamedProvider
+from cairn.agent.models.catalog import NamedProvider
+from cairn.agent.models.selection import ModelConfig
 from cairn.shared.action import Action, ActionRow, note, refusal
 from cairn.terminal.commands.context import CommandContext
 

@@ -4,11 +4,11 @@ from typing import Any
 
 import pytest
 
-from cairn.core.budget import BudgetReason, RunBudget, RunBudgetExceeded
-from cairn.core.events import Event
-from cairn.core.models import LLMResponse, LLMUsage, ToolCall, ToolResult
-from cairn.infra.tools.base import ToolExecutionContext
-from cairn.runtime.loop import run_turn
+from cairn.agent.budget import BudgetReason, RunBudget, RunBudgetExceeded
+from cairn.agent.models.messages import LLMResponse, LLMUsage, ToolCall, ToolResult
+from cairn.agent.tools.base import ToolExecutionContext
+from cairn.agent.turn.events import Event
+from cairn.agent.turn.loop import run_turn
 from tests.support.runtime import RecordingTool, SequenceLLM, make_agent
 
 
@@ -102,7 +102,7 @@ def test_wall_budget_cancels_tool_and_waits_for_its_cleanup() -> None:
 
 
 def test_durable_fence_capacity_pauses_before_unknown_effects(tmp_path: Path) -> None:
-    from cairn.infra.sessions.models import MAX_INVOCATIONS
+    from cairn.agent.session.models import MAX_INVOCATIONS
     from tests.support.durable_sessions import create_session
 
     async def scenario() -> None:

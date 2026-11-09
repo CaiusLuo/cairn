@@ -6,8 +6,8 @@ from threading import Thread
 
 import pytest
 
-from cairn.infra.sessions.models import SessionStoreError
-from cairn.infra.sessions.store import SessionStore
+from cairn.agent.session.models import SessionStoreError
+from cairn.agent.session.store import SessionStore
 from tests.support.sessions import (
     SESSION,
     binding,

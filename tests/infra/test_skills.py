@@ -5,13 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core.budget import RunBudget
-from cairn.core.events import Event
-from cairn.core.models import LLMResponse, ToolCall
-from cairn.infra.skills import SkillLibrary, builtin_skills, parse_skill
-from cairn.infra.tools.base import InvalidArguments
-from cairn.infra.tools.skill import ReadSkillTool
-from cairn.runtime.loop import run_turn
+from cairn.agent.budget import RunBudget
+from cairn.agent.models.messages import LLMResponse, ToolCall
+from cairn.agent.skills import SkillLibrary, builtin_skills, parse_skill
+from cairn.agent.tools.base import InvalidArguments
+from cairn.agent.tools.skill import ReadSkillTool
+from cairn.agent.turn.events import Event
+from cairn.agent.turn.loop import run_turn
 from tests.support.runtime import RecordingTool, SequenceLLM, make_agent
 
 VALID = """\

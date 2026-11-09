@@ -5,24 +5,24 @@ from typing import Any
 
 import pytest
 
-from cairn.core.budget import RunBudget, RunBudgetExceeded
-from cairn.core.context import (
+from cairn.agent.budget import RunBudget, RunBudgetExceeded
+from cairn.agent.context.git import RepoContextProvider, RepositoryContext
+from cairn.agent.context.window import (
     ContextBudget,
     ContextBudgetExceeded,
     ContextBuilder,
     ConversationHistoryError,
     TokenCount,
 )
-from cairn.core.events import Event
-from cairn.core.models import LLMResponse, Message, ToolCall, ToolResult
-from cairn.infra.git.context import RepoContextProvider, RepositoryContext
-from cairn.infra.observability.models import SpanStatus
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.tools.base import ToolExecutionContext
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.agent import Agent
-from cairn.runtime.loop import run_turn
+from cairn.agent.harness import Agent
+from cairn.agent.models.messages import LLMResponse, Message, ToolCall, ToolResult
+from cairn.agent.tools.base import ToolExecutionContext
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.tracing.models import SpanStatus
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.events import Event
+from cairn.agent.turn.loop import run_turn
+from cairn.agent.workspace.workspace import Workspace
 from tests.support.runtime import (
     TEST_BUDGET,
     RecordingSink,

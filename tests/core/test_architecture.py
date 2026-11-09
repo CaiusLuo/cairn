@@ -1,77 +1,68 @@
-"""Keep the package dependency direction explicit."""
+"""Check the import rules that keep execution, persistence and adapters separate."""
 
 import ast
 from importlib.util import resolve_name
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-PACKAGE_ROOT = ROOT / "src" / "cairn"
-LAYERS = {"core", "infra", "runtime", "terminal", "web"}
-ALLOWED = {
-    "core": {"core"},
-    "infra": {"core", "infra"},
-    "runtime": {"core", "infra", "runtime"},
-    "terminal": {"core", "infra", "runtime", "terminal"},
-    "web": {"core", "infra", "runtime", "web"},
+PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "src" / "cairn"
+PURE_MODULES = {
+    "cairn.agent.budget",
+    "cairn.agent.context.evidence",
+    "cairn.agent.context.window",
+    "cairn.agent.models.catalog",
+    "cairn.agent.models.client",
+    "cairn.agent.models.messages",
+    "cairn.agent.models.selection",
+    "cairn.agent.permissions",
+    "cairn.agent.turn.events",
+    "cairn.agent.turn.state",
+    "cairn.conversation.models",
+    "cairn.development.board.models",
+    "cairn.development.execution.models",
+    "cairn.development.models",
+    "cairn.scheduling.models",
+}
+PURE_PACKAGES = ("cairn.agent.context.compaction",)
+EFFECT_IMPORTS = {
+    "asyncio",
+    "dotenv",
+    "ftplib",
+    "http",
+    "httpx",
+    "litellm",
+    "multiprocessing",
+    "prompt_toolkit",
+    "rich",
+    "shutil",
+    "smtplib",
+    "socket",
+    "sqlite3",
+    "ssl",
+    "subprocess",
+    "tempfile",
+    "tomlkit",
+    "typer",
+    "urllib",
+    "xmlrpc",
 }
 
-#: Concrete adapters and effect modules that a stable domain contract must not
-#: depend on. `core` may import the standard library, but not a library or module
-#: that performs provider calls, process execution, networking or persistence.
-FORBIDDEN_IN_CORE = frozenset(
-    {
-        # Third-party infrastructure declared by the project.
-        "litellm",
-        "tomlkit",
-        "typer",
-        "rich",
-        "prompt_toolkit",
-        "dotenv",
-        # Standard-library effects: processes, networking, sockets, persistence.
-        "asyncio",
-        "subprocess",
-        "multiprocessing",
-        "socket",
-        "ssl",
-        "sqlite3",
-        "shutil",
-        "tempfile",
-        "http",
-        "urllib",
-        "ftplib",
-        "smtplib",
-        "http.client",
-        "xmlrpc",
-    }
-)
+
+def _in_package(module: str, package: str) -> bool:
+    return module == package or module.startswith(package + ".")
 
 
-def _layer_for(module: str) -> str | None:
-    parts = module.split(".")
-    if len(parts) > 1 and parts[0] == "cairn" and parts[1] in LAYERS:
-        return parts[1]
-    return None
-
-
-def _targets(tree: ast.Module, package_name: str) -> set[str]:
+def _targets(tree: ast.Module, package: str) -> set[str]:
     targets: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             targets.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
+            base = node.module or ""
             if node.level:
-                base = resolve_name(
-                    "." * node.level + (node.module or ""), package_name
-                )
-            else:
-                base = node.module or ""
-            if base == "cairn":
-                targets.update(f"cairn.{alias.name}" for alias in node.names)
-            elif base:
+                base = resolve_name("." * node.level + base, package)
+            if base != "cairn":
                 targets.add(base)
-                # A from-import may name a module or an exported value. Module
-                # candidates become graph edges only if that module exists.
-                targets.update(f"{base}.{alias.name}" for alias in node.names)
+            targets.update(f"{base}.{alias.name}" for alias in node.names)
     return targets
 
 
@@ -85,133 +76,101 @@ def _module_context(path: Path) -> tuple[str, str]:
     return module, package
 
 
-def test_package_imports_follow_the_dependency_direction() -> None:
-    violations: list[str] = []
-    for layer in sorted(LAYERS):
-        for path in sorted((PACKAGE_ROOT / layer).rglob("*.py")):
-            _, package_name = _module_context(path)
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for target in _targets(tree, package_name):
-                target_layer = _layer_for(target)
-                if target_layer is not None and target_layer not in ALLOWED[layer]:
-                    violations.append(
-                        f"{path.relative_to(ROOT)} imports {target} ({layer} -> {target_layer})"
-                    )
+def _imports() -> dict[str, set[str]]:
+    imports = {}
+    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
+        module, package = _module_context(path)
+        imports[module] = _targets(ast.parse(path.read_text(encoding="utf-8")), package)
+    return imports
 
-    assert not violations, "Invalid Cairn package dependencies:\n" + "\n".join(
-        violations
+
+def test_agent_and_shared_modules_do_not_depend_on_entrypoints() -> None:
+    allowed = {
+        "cairn.agent": ("cairn.agent", "cairn.shared"),
+        "cairn.shared": ("cairn.shared",),
+    }
+    violations = []
+    for module, targets in _imports().items():
+        for owner, dependencies in allowed.items():
+            if not _in_package(module, owner):
+                continue
+            for target in targets:
+                if target.startswith("cairn.") and not any(
+                    _in_package(target, dependency) for dependency in dependencies
+                ):
+                    violations.append(f"{module} -> {target}")
+    assert not violations, "Invalid Cairn dependencies:\n" + "\n".join(
+        sorted(violations)
     )
 
 
-def _imported_roots(tree: ast.Module) -> set[str]:
-    roots: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            roots.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            roots.add(node.module)
-    return roots
-
-
-def _forbidden_root(module: str) -> str | None:
-    for forbidden in FORBIDDEN_IN_CORE:
-        if module == forbidden or module.startswith(f"{forbidden}."):
-            return forbidden
-    return None
-
-
-def test_core_stays_free_of_infrastructure_dependencies() -> None:
-    violations: list[str] = []
-    for path in sorted((PACKAGE_ROOT / "core").rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for module in sorted(_imported_roots(tree)):
-            forbidden = _forbidden_root(module)
-            if forbidden is not None:
-                violations.append(
-                    f"{path.relative_to(ROOT)} imports {module} "
-                    f"({forbidden} is infrastructure)"
-                )
-
-    assert not violations, (
-        "core must stay independent of provider, process, network and persistence "
-        "modules; move this behaviour into infra and depend on a core contract:\n"
-        + "\n".join(violations)
+def test_models_and_policies_stay_free_of_infrastructure_dependencies() -> None:
+    imports = _imports()
+    assert imports.keys() >= PURE_MODULES
+    pure = PURE_MODULES | {
+        module
+        for module in imports
+        if any(_in_package(module, package) for package in PURE_PACKAGES)
+    }
+    violations = []
+    for module in pure:
+        for target in imports[module]:
+            actual_module = target if target in imports else target.rpartition(".")[0]
+            if target.partition(".")[0] in EFFECT_IMPORTS or (
+                actual_module in imports and actual_module not in pure
+            ):
+                violations.append(f"{module} -> {target}")
+    assert not violations, "Effect dependencies in models:\n" + "\n".join(
+        sorted(violations)
     )
 
 
 def test_packages_have_no_import_cycles() -> None:
-    """No module inside a Cairn layer may be part of an import cycle.
+    imports = _imports()
+    graph = {module: targets & imports.keys() for module, targets in imports.items()}
+    visited: set[str] = set()
 
-    A cycle means two modules must always change together, and it hides which of
-    them owns the contract between them. Type-only imports count: a cycle held
-    together by ``TYPE_CHECKING`` is still two modules that cannot be understood
-    or tested independently.
-    """
-    graph: dict[str, set[str]] = {}
-    for layer in sorted(LAYERS):
-        for path in sorted((PACKAGE_ROOT / layer).rglob("*.py")):
-            module_name, package_name = _module_context(path)
-            graph[module_name] = {
-                target
-                for target in _targets(
-                    ast.parse(path.read_text(encoding="utf-8"), filename=str(path)),
-                    package_name,
-                )
-                if _layer_for(target) is not None
-            }
-
-    cycles: list[str] = []
-
-    def walk(origin: str, node: str, seen: tuple[str, ...]) -> None:
-        for target in sorted(graph.get(node, ())):
-            if target == origin:
-                cycles.append(" -> ".join((*seen, target)))
-            elif target in graph and target not in seen:
-                walk(origin, target, (*seen, target))
+    def walk(module: str, path: tuple[str, ...]) -> None:
+        assert module not in path, "Circular Cairn imports: " + " -> ".join(
+            (*path, module)
+        )
+        if module not in visited:
+            for dependency in sorted(graph[module]):
+                walk(dependency, (*path, module))
+            visited.add(module)
 
     for module in sorted(graph):
-        walk(module, module, (module,))
-
-    assert not cycles, "Circular Cairn imports:\n" + "\n".join(sorted(set(cycles)))
+        walk(module, ())
 
 
-def test_import_targets_include_package_siblings() -> None:
-    tree = ast.parse("from . import schema\nfrom cairn.infra.config import loader")
-    assert _targets(tree, "cairn.infra.config") >= {
-        "cairn.infra.config.schema",
-        "cairn.infra.config.loader",
-    }
-
-
-def test_independent_effect_owners_do_not_import_each_other() -> None:
-    # Local Git and remote GitHub have different safety boundaries.
-    independent = (
-        ("git", "github"),
-        ("github", "git"),
+def test_local_git_and_remote_github_are_independent() -> None:
+    imports = _imports()
+    remote = "cairn.integrations.github"
+    local: tuple[str, ...] = (
+        "cairn.development.worktree",
+        "cairn.agent.context.git",
+        "cairn.shared.git_env",
     )
-    violations: list[str] = []
-    for owner, forbidden in independent:
-        prefix = f"cairn.infra.{forbidden}"
-        for path in sorted((PACKAGE_ROOT / "infra" / owner).rglob("*.py")):
-            _, package = _module_context(path)
-            for target in _targets(ast.parse(path.read_text()), package):
-                if target == prefix or target.startswith(prefix + "."):
-                    violations.append(f"{path.relative_to(ROOT)} imports {target}")
-    assert not violations, "Independent effect owners coupled:\n" + "\n".join(
-        violations
-    )
+    for module, targets in imports.items():
+        if _in_package(module, remote):
+            forbidden = local
+        elif module in local:
+            forbidden = (remote,)
+        else:
+            continue
+        assert not {
+            target
+            for target in targets
+            if any(_in_package(target, package) for package in forbidden)
+        }, module
 
 
-def test_effect_owner_guard_resolves_package_relative_imports() -> None:
-    # Package initializers are importers in their own package, not its parent.
-    # All scans must see a forbidden sibling even when it uses relative syntax.
-    path = PACKAGE_ROOT / "infra" / "git" / "__init__.py"
+def test_import_targets_resolve_package_siblings() -> None:
+    path = PACKAGE_ROOT / "integrations" / "wechat" / "__init__.py"
     module, package = _module_context(path)
-    assert module == package == "cairn.infra.git"
-    targets = _targets(ast.parse("from ...integrations.github import transport"), package)
-    assert "cairn.integrations.github" in targets
-    assert "cairn.integrations.github.transport" in targets
-    assert _module_context(PACKAGE_ROOT / "infra" / "git" / "context.py") == (
-        "cairn.infra.git.context",
-        "cairn.infra.git",
-    )
+    assert module == package == "cairn.integrations.wechat"
+    tree = ast.parse("from . import state\nfrom ..github import transport")
+    assert _targets(tree, package) >= {
+        "cairn.integrations.wechat.state",
+        "cairn.integrations.github.transport",
+    }

@@ -6,15 +6,15 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
-from cairn.core.models import LLMResponse
-from cairn.core.permissions import SessionPermissionHandler
+from cairn.agent.models.messages import LLMResponse
+from cairn.agent.permissions import SessionPermissionHandler
+from cairn.agent.session.durable import DurableSession
+from cairn.agent.session.host import observe_workspace
+from cairn.agent.session.models import HostResolution, SessionBinding
+from cairn.agent.session.store import SessionStore
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.execution import CodingTaskRunner
 from cairn.development.execution.models import TaskSpec
-from cairn.infra.sessions.host import observe_workspace
-from cairn.infra.sessions.models import HostResolution, SessionBinding
-from cairn.infra.sessions.store import SessionStore
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.durable_session import DurableSession
 from tests.support.durable_tasks import BUDGET
 from tests.support.git import initialize_repository
 from tests.support.runtime import SequenceLLM

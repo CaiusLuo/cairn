@@ -16,7 +16,6 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-AGENT_HOME_ENV = "CAIRN_AGENT_HOME"
 DEFAULT_AGENT_MD = """# Personal AGENT
 
 This file belongs to this personal Agent, not the project repository.
@@ -26,15 +25,6 @@ Project AGENTS.md, system rules and permissions take precedence.
 ## Learned
 """
 DEFAULT_MEMORY_MD = "# Long-term Memory\n"
-
-
-def default_agent_home() -> Path:
-    override = os.environ.get(AGENT_HOME_ENV)
-    if override:
-        return Path(override)
-    base = os.environ.get("XDG_STATE_HOME")
-    root = Path(base) if base else Path.home() / ".local" / "state"
-    return root / "cairn" / "agent"
 
 
 def ensure_outside_workspace(state_root: Path, workspace: Path) -> None:

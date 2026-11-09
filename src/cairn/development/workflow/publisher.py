@@ -6,8 +6,8 @@ import os
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from cairn.core.models import ToolCall
-from cairn.core.permissions import (
+from cairn.agent.models.messages import ToolCall
+from cairn.agent.permissions import (
     CapabilityPermissionHandler,
     PermissionCapability,
     PermissionDecision,
@@ -38,7 +38,7 @@ from cairn.integrations.github.transport import (
     PublishedCommit,
     validate_pull_request_url,
 )
-from cairn.runtime.lifecycle import settle_owned
+from cairn.shared.lifecycle import settle_owned
 
 
 class PublicationAttemptError(RuntimeError):

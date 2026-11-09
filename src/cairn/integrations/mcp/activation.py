@@ -24,17 +24,17 @@ from jsonschema import ValidationError
 from jsonschema.validators import validator_for
 from referencing import Registry
 
-from cairn.core.models import ToolCall, ToolResult
-from cairn.core.permissions import (
+from cairn.agent.models.messages import ToolCall, ToolResult
+from cairn.agent.permissions import (
     CapabilityRequest,
     PermissionCapability,
     PermissionHandler,
     PermissionRequest,
 )
-from cairn.infra.tools.base import InvalidArguments
+from cairn.agent.tools.base import InvalidArguments
 from cairn.integrations.mcp.client import McpClient, McpToolSpec, open_mcp_client
 from cairn.integrations.mcp.config import McpServerConfig
-from cairn.runtime.lifecycle import await_owned, settle_owned
+from cairn.shared.lifecycle import await_owned, settle_owned
 
 
 def _redact(text: str, secret_values: Sequence[str]) -> str:

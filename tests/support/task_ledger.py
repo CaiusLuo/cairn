@@ -6,10 +6,10 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Literal
 
-from cairn.infra.sessions.codec import restore_messages
-from cairn.infra.sessions.models import CheckpointReceipt, Outcome
-from cairn.infra.sessions.store import SessionStore
-from cairn.infra.sessions.task_models import TaskRecord
+from cairn.agent.session.codec import restore_messages
+from cairn.agent.session.models import CheckpointReceipt, Outcome
+from cairn.agent.session.store import SessionStore
+from cairn.agent.session.task_models import TaskRecord
 from tests.support.sessions import T4, TURN, fence, intent, messages, settled, store
 
 TASK = "task-1"

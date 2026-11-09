@@ -4,19 +4,24 @@ from collections.abc import Callable, Sequence
 from contextlib import ExitStack, suppress
 from time import perf_counter
 
-from cairn.core.budget import RunBudget, RunBudgetExceeded
-from cairn.core.context import ContextBudget, ContextBudgetExceeded, ContextBuilder
-from cairn.core.events import Event, EventHandler
-from cairn.core.llm import LLMClient
-from cairn.core.permissions import PermissionHandler
-from cairn.core.repository import RepositoryEvidence
-from cairn.development.execution.metrics import TaskExecutionSummary, _TaskObservation
-from cairn.development.execution.models import TaskResult, TaskSpec, TaskStatus
-from cairn.infra.git.context import RepoContextProvider
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.sessions.codec import decode_record, encode_record
-from cairn.infra.sessions.models import Revision, SessionStoreError
-from cairn.infra.sessions.task_models import (
+from cairn.agent.assembly import build_agent
+from cairn.agent.budget import RunBudget, RunBudgetExceeded
+from cairn.agent.context.evidence import RepositoryEvidence
+from cairn.agent.context.git import RepoContextProvider
+from cairn.agent.context.window import (
+    ContextBudget,
+    ContextBudgetExceeded,
+    ContextBuilder,
+)
+from cairn.agent.harness import Agent, SessionAdmissionError
+from cairn.agent.models.client import LLMClient
+from cairn.agent.models.executor import ModelExecutor
+from cairn.agent.permissions import PermissionHandler
+from cairn.agent.prompts import system_prompt_for
+from cairn.agent.session.codec import decode_record, encode_record
+from cairn.agent.session.durable import DurableSession
+from cairn.agent.session.models import Revision, SessionStoreError
+from cairn.agent.session.task_models import (
     TaskDiagnostic,
     TaskRecord,
     TaskRecoveryReport,
@@ -24,18 +29,17 @@ from cairn.infra.sessions.task_models import (
     TaskResolution,
     TaskResultData,
 )
-from cairn.infra.skills import SkillLibrary
-from cairn.infra.tools.base import Tool
-from cairn.infra.tools.lease import LeaseTool
-from cairn.infra.workspace.lease import WorkspaceLease
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.agent import Agent, SessionAdmissionError
-from cairn.runtime.assembly import build_agent
-from cairn.runtime.durable_session import DurableSession
-from cairn.runtime.lifecycle import settle_owned
-from cairn.runtime.loop import run_turn
-from cairn.runtime.model_executor import ModelExecutor
-from cairn.runtime.prompts import system_prompt_for
+from cairn.agent.skills import SkillLibrary
+from cairn.agent.tools.base import Tool
+from cairn.agent.tools.lease import LeaseTool
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.events import Event, EventHandler
+from cairn.agent.turn.loop import run_turn
+from cairn.agent.workspace.lease import WorkspaceLease
+from cairn.agent.workspace.workspace import Workspace
+from cairn.development.execution.metrics import TaskExecutionSummary, _TaskObservation
+from cairn.development.execution.models import TaskResult, TaskSpec, TaskStatus
+from cairn.shared.lifecycle import settle_owned
 
 
 class CodingTaskRunner:

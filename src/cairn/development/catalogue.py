@@ -8,10 +8,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from cairn.infra.atomic_json import atomic_write
-from cairn.infra.redaction import redact_text, redact_value
-from cairn.infra.sessions.models import CheckpointReceipt
-from cairn.infra.workspace.lease import WorkspaceLease
+from cairn.agent.session.models import CheckpointReceipt
+from cairn.agent.workspace.lease import WorkspaceLease
+from cairn.shared.atomic_json import atomic_write
+from cairn.shared.redaction import redact_text, redact_value
 
 RuntimeSource = Literal["cli", "web", "wechat", "schedule"]
 RuntimeStatus = Literal[

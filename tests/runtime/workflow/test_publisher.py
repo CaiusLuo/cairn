@@ -9,7 +9,8 @@ from typing import Any
 
 import pytest
 
-from cairn.core.permissions import (
+from cairn.agent.context.git import RepoContextProvider
+from cairn.agent.permissions import (
     PermissionCapability,
     PermissionChoice,
     PermissionDecision,
@@ -32,7 +33,6 @@ from cairn.development.workflow.publisher import (
     PublicationAttemptError,
 )
 from cairn.development.worktree import WorktreeProvider, WorktreeState
-from cairn.infra.git.context import RepoContextProvider
 from cairn.integrations.github.transport import (
     DraftPR,
     DraftPRPayload,

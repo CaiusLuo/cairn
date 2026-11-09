@@ -14,12 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from cairn.core.models import ToolResult
-from cairn.infra.tools.base import PermissionRefused
-from cairn.infra.tools.files import EditFileTool, ReadFileTool
-from cairn.infra.tools.patch import PatchTool
-from cairn.infra.tools.write import WriteTool
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.models.messages import ToolResult
+from cairn.agent.tools.base import PermissionRefused
+from cairn.agent.tools.files import EditFileTool, ReadFileTool
+from cairn.agent.tools.patch import PatchTool
+from cairn.agent.tools.write import WriteTool
+from cairn.agent.workspace.workspace import Workspace
 
 CREDENTIAL_LAYOUT = (
     (".ssh/id_rsa", "PRIVATE_KEY_BYTES\n"),

@@ -4,8 +4,8 @@ from typing import Any
 
 import pytest
 
-from cairn.core import context as context_module
-from cairn.core.context import (
+from cairn.agent.context import window as context_module
+from cairn.agent.context.window import (
     OMISSION_NOTICE_PREFIX,
     ContextBudget,
     ContextBudgetExceeded,
@@ -14,7 +14,7 @@ from cairn.core.context import (
     EstimatedTokenCounter,
     TokenCount,
 )
-from cairn.core.models import Message, ToolCall
+from cairn.agent.models.messages import Message, ToolCall
 
 
 class SizeCounter:

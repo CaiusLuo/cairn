@@ -18,9 +18,9 @@ from typing import Any
 import tomlkit
 from dotenv import dotenv_values
 
-from cairn.infra.config import default_provider, load_project_providers
-from cairn.infra.config.admission import expected_approval
-from cairn.infra.config.server import parse_server_config
+from cairn.agent.models.config import default_provider, load_project_providers
+from cairn.agent.models.config.admission import expected_approval
+from cairn.infra.server_config import parse_server_config
 
 SYSTEM_UNIT_DIRECTORY = Path("/etc/systemd/system")
 

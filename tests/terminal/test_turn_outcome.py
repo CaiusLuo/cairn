@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 import cairn.terminal.cli as cli_module
-from cairn.core.budget import BudgetReason, RunBudgetExceeded
+from cairn.agent.budget import BudgetReason, RunBudgetExceeded
 from cairn.terminal.submission import PendingLine
 
 
@@ -321,7 +321,7 @@ def test_a_second_ctrl_c_does_not_rerequest_the_cancellation(
 def test_running_extension_selection_is_retained_for_next_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from cairn.runtime.turn.steering import SteerQueue
+    from cairn.agent.turn.steering import SteerQueue
 
     queue = SteerQueue()
     frame = _Frame("[skill:review] [mcp:local] check this")

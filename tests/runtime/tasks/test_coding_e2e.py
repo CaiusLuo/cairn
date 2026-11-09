@@ -16,15 +16,19 @@ from typing import Any
 
 import pytest
 
-from cairn.core.budget import RunBudget
-from cairn.core.events import Event
-from cairn.core.models import LLMResponse, LLMUsage, Message, ToolCall
-from cairn.core.permissions import (
+from cairn.agent.budget import RunBudget
+from cairn.agent.models.messages import LLMResponse, LLMUsage, Message, ToolCall
+from cairn.agent.permissions import (
     PermissionCapability,
     PermissionChoice,
     PermissionRequest,
     SessionPermissionHandler,
 )
+from cairn.agent.tracing.sinks import JsonlTraceSink
+from cairn.agent.tracing.storage import TraceStore
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.events import Event
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.execution import (
     CodingTaskRunner,
     TaskResult,
@@ -33,10 +37,6 @@ from cairn.development.execution import (
 )
 from cairn.development.verification import FileContentEqualsCheck
 from cairn.development.worktree import WorktreeProvider, WorktreeState
-from cairn.infra.observability.sinks import JsonlTraceSink
-from cairn.infra.observability.storage import TraceStore
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.workspace.workspace import Workspace
 from tests.support.git import git, initialize_repository
 from tests.support.runtime import SequenceLLM
 from tests.support.sandbox import require_local_shell, sandbox_python

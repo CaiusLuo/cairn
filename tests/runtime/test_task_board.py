@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from cairn.agent.tools.base import InvalidArguments, Tool
 from cairn.development.board.models import TaskBoardItem, TaskBoardStatus, TaskSource
 from cairn.development.board.service import TaskBoardService
 from cairn.development.board.store import (
@@ -21,7 +22,6 @@ from cairn.development.board.tools import (
     TaskTodoTool,
     TaskUpdateTool,
 )
-from cairn.infra.tools.base import InvalidArguments, Tool
 
 
 def test_invalid_update_does_not_corrupt_board(tmp_path: Path) -> None:
@@ -296,9 +296,9 @@ def test_oversized_task_tool_arguments_fail_before_permission(
 ) -> None:
     import json
 
-    from cairn.core.models import LLMResponse, ToolCall
-    from cairn.infra.observability.tracer import Tracer
-    from cairn.runtime.loop import run_turn
+    from cairn.agent.models.messages import LLMResponse, ToolCall
+    from cairn.agent.tracing.tracer import Tracer
+    from cairn.agent.turn.loop import run_turn
     from tests.support.runtime import (
         TEST_BUDGET,
         RecordingSink,

@@ -10,9 +10,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from cairn.infra import sandbox
-from cairn.infra.tools.bash import BashTool
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.tools import sandbox
+from cairn.agent.tools.bash import BashTool
+from cairn.agent.workspace.workspace import Workspace
 
 
 def test_slow_sandbox_inventory_keeps_loop_live_and_builds_argv_on_owner(

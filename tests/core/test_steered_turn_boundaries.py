@@ -19,8 +19,8 @@ Trimming is what these tests protect: allowing a second user message must not ma
 the builder drop part of the live turn.
 """
 
-from cairn.core.context import ContextBudget, ContextBuilder
-from cairn.core.models import Message
+from cairn.agent.context.window import ContextBudget, ContextBuilder
+from cairn.agent.models.messages import Message
 
 
 def _builder(

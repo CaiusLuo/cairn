@@ -8,16 +8,16 @@ from uuid import UUID
 
 import pytest
 
-from cairn.core.models import Message, ToolCall
-from cairn.infra.sessions.codec import canonical, restore_messages
-from cairn.infra.sessions.models import (
+from cairn.agent.models.messages import Message, ToolCall
+from cairn.agent.session.codec import canonical, restore_messages
+from cairn.agent.session.models import (
     MAX_CHECKPOINT_BYTES,
     SCHEMA_VERSION,
     CheckpointReceipt,
     HostResolution,
     SessionStoreError,
 )
-from cairn.infra.sessions.store import SessionStore
+from cairn.agent.session.store import SessionStore
 from tests.support.sessions import (
     SESSION,
     T4,

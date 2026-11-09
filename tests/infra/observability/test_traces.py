@@ -5,23 +5,23 @@ from typing import Any, TextIO
 
 import pytest
 
-import cairn.infra.observability.storage as storage
-from cairn.core.budget import RunBudget
-from cairn.core.events import Event
-from cairn.core.models import LLMResponse
-from cairn.infra.observability.models import (
+import cairn.agent.tracing.storage as storage
+from cairn.agent.budget import RunBudget
+from cairn.agent.harness import Agent
+from cairn.agent.models.messages import LLMResponse
+from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.tracing.models import (
     Span,
     SpanStatus,
     TraceSummary,
     child_context,
     new_trace_context,
 )
-from cairn.infra.observability.sinks import JsonlTraceSink
-from cairn.infra.observability.storage import TAIL_WINDOW_BYTES, TraceStore
-from cairn.infra.observability.tracer import Tracer
-from cairn.infra.tools.registry import ToolRegistry
-from cairn.runtime.agent import Agent
-from cairn.runtime.loop import run_turn
+from cairn.agent.tracing.sinks import JsonlTraceSink
+from cairn.agent.tracing.storage import TAIL_WINDOW_BYTES, TraceStore
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.events import Event
+from cairn.agent.turn.loop import run_turn
 from tests.support.runtime import SequenceLLM
 
 

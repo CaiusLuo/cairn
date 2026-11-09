@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from cairn.infra.tools.defaults import build_default_registry
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.tools.defaults import build_default_registry
+from cairn.agent.workspace.workspace import Workspace
 from tests.support.runtime import RecordingTool
 
 

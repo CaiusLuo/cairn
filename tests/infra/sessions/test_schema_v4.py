@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.sessions.models import (
+from cairn.agent.session.models import (
     SCHEMA_VERSION,
     SessionBinding,
     SessionStoreError,
@@ -240,7 +240,7 @@ def test_migration_failure_leaves_the_v3_database_intact(tmp_path: Path) -> None
 
 
 def _with_provider(bind: SessionBinding, provider: str) -> SessionBinding:
-    from cairn.infra.sessions.models import ProviderReference
+    from cairn.agent.session.models import ProviderReference
 
     reference = ProviderReference(
         provider=provider,
@@ -308,7 +308,7 @@ def test_a_lossy_migration_is_refused(tmp_path: Path) -> None:
     def lossy(conn: sqlite3.Connection) -> None:
         import json
 
-        from cairn.infra.sessions.store import _TOOL_FENCE_SCHEMA
+        from cairn.agent.session.store import _TOOL_FENCE_SCHEMA
 
         for statement in _TOOL_FENCE_SCHEMA:
             conn.execute(statement)

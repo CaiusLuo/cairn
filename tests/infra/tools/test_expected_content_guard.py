@@ -6,9 +6,9 @@ from typing import Any
 
 import pytest
 
-from cairn.infra.tools.base import InvalidArguments
-from cairn.infra.tools.write import WRITE_FILE_MAX_BYTES, WriteTool
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.tools.base import InvalidArguments
+from cairn.agent.tools.write import WRITE_FILE_MAX_BYTES, WriteTool
+from cairn.agent.workspace.workspace import Workspace
 
 
 def _tool(root: Path) -> WriteTool:

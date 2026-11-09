@@ -8,7 +8,7 @@ from typing import Any, cast
 
 from cairn.development.board.models import TaskBoardItem, TaskBoardStatus, TaskSource
 from cairn.development.board.store import TaskBoardStore
-from cairn.runtime.lifecycle import await_owned
+from cairn.shared.lifecycle import await_owned
 
 
 class TaskBoardService:

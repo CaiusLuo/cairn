@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from cairn.core.budget import RunBudget
-from cairn.core.events import Event
-from cairn.core.models import LLMResponse, Message, ToolCall
+from cairn.agent.budget import RunBudget
+from cairn.agent.models.messages import LLMResponse, Message, ToolCall
+from cairn.agent.turn.events import Event
 from cairn.development.review import FreshReviewer, ReviewStatus
 from cairn.development.review import git as review_git_module
 from cairn.development.review.git import MAX_DIFF_BYTES
@@ -168,7 +168,7 @@ def test_mutation_during_review_invalidates_even_a_valid_model_verdict(
 def test_injected_write_and_network_calls_have_no_authority(
     provider: WorktreeProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from cairn.runtime import tool_execution
+    from cairn.agent.turn import tools as tool_execution
 
     def approval(*args: Any, **kwargs: Any) -> Any:
         pytest.fail("A reviewer must never ask for write or network authority")

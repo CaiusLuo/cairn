@@ -11,11 +11,11 @@ from typing import Any
 
 import pytest
 
-from cairn.infra.tools.base import InvalidArguments
-from cairn.infra.tools.grep import DEFAULT_LIMIT, GrepTool
-from cairn.infra.tools.patch import MAX_HUNKS, PatchTool
-from cairn.infra.tools.write import WRITE_FILE_MAX_BYTES, WriteTool
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.tools.base import InvalidArguments
+from cairn.agent.tools.grep import DEFAULT_LIMIT, GrepTool
+from cairn.agent.tools.patch import MAX_HUNKS, PatchTool
+from cairn.agent.tools.write import WRITE_FILE_MAX_BYTES, WriteTool
+from cairn.agent.workspace.workspace import Workspace
 
 
 def _write(path: Path, content: str = "") -> None:

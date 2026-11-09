@@ -6,11 +6,11 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from cairn.agent.models.messages import LLMResponse, LLMUsage
+from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.conversation.models import ConversationSource
 from cairn.conversation.service import RunLedger
 from cairn.conversation.store import DomainStore
-from cairn.core.models import LLMResponse, LLMUsage
-from cairn.runtime.offline_model import OfflineDevelopmentModel
 from tests.support.git import initialize_repository
 
 
@@ -42,7 +42,7 @@ def test_stream_deltas_are_batched_into_bounded_events(tmp_path: Path) -> None:
 def test_follow_wakes_on_intermediate_event(tmp_path: Path) -> None:
     import httpx
 
-    from cairn.core.budget import RunBudget
+    from cairn.agent.budget import RunBudget
     from cairn.infra.runtime_client import RuntimeClient
     from cairn.server import runtime_app
 

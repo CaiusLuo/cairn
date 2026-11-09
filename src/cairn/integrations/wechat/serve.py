@@ -27,6 +27,22 @@ from typing import TYPE_CHECKING, Any
 
 from dotenv import dotenv_values
 
+from cairn.agent.harness import Agent
+from cairn.agent.models.config import default_provider, load_project_providers
+from cairn.agent.prompts import system_prompt_for
+from cairn.agent.session.access import open_store
+from cairn.agent.session.durable import DurableSession
+from cairn.agent.session.host import observe_workspace
+from cairn.agent.session.models import (
+    HostResolution,
+    ProviderReference,
+    SessionBinding,
+    SessionStoreError,
+)
+from cairn.agent.session.store import SessionStore
+from cairn.agent.tools.base import Tool
+from cairn.agent.workspace.lease import WorkspaceLease
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.board.models import TaskSource
 from cairn.development.board.service import TaskBoardService
 from cairn.development.board.store import TaskBoardStore, default_task_board_dir
@@ -46,18 +62,6 @@ from cairn.development.execution.headless import (
     ProviderApproval,
     _run_via_config_async,
 )
-from cairn.infra.config import default_provider, load_project_providers
-from cairn.infra.sessions.host import observe_workspace
-from cairn.infra.sessions.models import (
-    HostResolution,
-    ProviderReference,
-    SessionBinding,
-    SessionStoreError,
-)
-from cairn.infra.sessions.store import SessionStore
-from cairn.infra.tools.base import Tool
-from cairn.infra.workspace.lease import WorkspaceLease
-from cairn.infra.workspace.workspace import Workspace
 from cairn.integrations.mcp.config import McpServerConfig
 from cairn.integrations.wechat.control import WechatControlServer
 from cairn.integrations.wechat.ilink import (
@@ -78,7 +82,6 @@ from cairn.integrations.wechat.state import (
 from cairn.memory.service import PersonalMemoryService
 from cairn.memory.store import (
     PersonalMemoryStore,
-    default_agent_home,
 )
 from cairn.memory.store import (
     ensure_outside_workspace as ensure_agent_home_outside_workspace,
@@ -89,10 +92,6 @@ from cairn.memory.tools import (
     MemoryRememberTool,
     MemorySearchTool,
 )
-from cairn.runtime.agent import Agent
-from cairn.runtime.durable_session import DurableSession
-from cairn.runtime.lifecycle import await_owned, settle_owned
-from cairn.runtime.prompts import system_prompt_for
 from cairn.scheduling.models import ScheduleJob, ScheduleKind
 from cairn.scheduling.requests import (
     Clarification,
@@ -109,7 +108,8 @@ from cairn.scheduling.tools import (
     ScheduleListTool,
     ScheduleManageTool,
 )
-from cairn.terminal.durable import open_store
+from cairn.shared.lifecycle import await_owned, settle_owned
+from cairn.shared.state_paths import default_agent_home
 
 TaskExecutor = Callable[[str, asyncio.Event, str], Awaitable[HeadlessResult]]
 ConversationExecutor = Callable[[str, str, str], Awaitable[str]]

@@ -14,8 +14,8 @@ from typing import Any, cast
 
 import pytest
 
-from cairn.core.model_manager import ModelConfig, ProviderConfig
-from cairn.core.provider_catalog import NamedProvider
+from cairn.agent.models.catalog import NamedProvider
+from cairn.agent.models.selection import ModelConfig, ProviderConfig
 from cairn.shared.action import Action
 from cairn.terminal.cli import (
     TRUST_ROW,
@@ -248,10 +248,10 @@ def test_real_runtime_permission_bridge_awaits_the_live_surface() -> None:
     """The turn permission boundary yields so the surface can receive a choice."""
     from types import SimpleNamespace
 
-    from cairn.core.models import ToolCall
-    from cairn.core.permissions import SessionPermissionHandler
-    from cairn.runtime.agent import Agent
-    from cairn.runtime.tool_execution import _check_tool_permission_async
+    from cairn.agent.harness import Agent
+    from cairn.agent.models.messages import ToolCall
+    from cairn.agent.permissions import SessionPermissionHandler
+    from cairn.agent.turn.tools import _check_tool_permission_async
 
     frame = _Frame()
     handler = SessionPermissionHandler()
@@ -294,10 +294,10 @@ def test_real_runtime_permission_bridge_fails_closed(
     """Deny, Esc/EOF closure, and task cancellation never grant authority."""
     from types import SimpleNamespace
 
-    from cairn.core.models import ToolCall
-    from cairn.core.permissions import SessionPermissionHandler
-    from cairn.runtime.agent import Agent
-    from cairn.runtime.tool_execution import _check_tool_permission_async
+    from cairn.agent.harness import Agent
+    from cairn.agent.models.messages import ToolCall
+    from cairn.agent.permissions import SessionPermissionHandler
+    from cairn.agent.turn.tools import _check_tool_permission_async
 
     frame = _Frame()
     handler = SessionPermissionHandler()
@@ -334,10 +334,10 @@ def test_real_runtime_permission_bridge_fails_closed(
 
 def test_cancelling_a_real_turn_during_approval_does_not_advance_or_execute() -> None:
     """A stopped ASK rolls back without another model call or an unbalanced span."""
-    from cairn.core.models import LLMResponse, ToolCall
-    from cairn.core.permissions import SessionPermissionHandler
-    from cairn.infra.observability.tracer import Tracer
-    from cairn.runtime.loop import run_turn
+    from cairn.agent.models.messages import LLMResponse, ToolCall
+    from cairn.agent.permissions import SessionPermissionHandler
+    from cairn.agent.tracing.tracer import Tracer
+    from cairn.agent.turn.loop import run_turn
     from tests.support.runtime import (
         TEST_BUDGET,
         RecordingSink,
@@ -405,8 +405,8 @@ def test_cancelling_a_real_turn_during_approval_does_not_advance_or_execute() ->
 
 
 def _request(*, command: str = "ls", paths: tuple[str, ...] = ()) -> Any:
-    from cairn.core.models import ToolCall
-    from cairn.core.permissions import PermissionCapability, PermissionRequest
+    from cairn.agent.models.messages import ToolCall
+    from cairn.agent.permissions import PermissionCapability, PermissionRequest
 
     return PermissionRequest(
         capability=PermissionCapability.LOCAL_SHELL,
@@ -439,7 +439,7 @@ def test_the_permission_cursor_starts_on_deny() -> None:
 
 
 def test_denying_is_a_denial() -> None:
-    from cairn.core.permissions import PermissionChoice
+    from cairn.agent.permissions import PermissionChoice
     from cairn.terminal.cli import _ask_permission_in_surface, _permission_decision
 
     frame = _Frame()
@@ -459,7 +459,7 @@ def test_denying_is_a_denial() -> None:
 
 
 def test_allowing_once_is_a_single_grant() -> None:
-    from cairn.core.permissions import PermissionChoice
+    from cairn.agent.permissions import PermissionChoice
     from cairn.terminal.cli import PERMISSION_ALLOW_ONCE, _ask_permission_in_surface
 
     frame = _Frame()
@@ -478,7 +478,7 @@ def test_allowing_once_is_a_single_grant() -> None:
 
 def test_an_unknown_permission_row_denies() -> None:
     """Only a named allow row grants; anything else is read as a denial."""
-    from cairn.core.permissions import PermissionChoice
+    from cairn.agent.permissions import PermissionChoice
     from cairn.terminal.cli import _ask_permission_in_surface
 
     frame = _Frame()
@@ -496,7 +496,7 @@ def test_an_unknown_permission_row_denies() -> None:
 
 
 def test_closing_the_permission_question_denies() -> None:
-    from cairn.core.permissions import PermissionChoice
+    from cairn.agent.permissions import PermissionChoice
     from cairn.terminal.cli import _ask_permission_in_surface
 
     frame = _Frame()

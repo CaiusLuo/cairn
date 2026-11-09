@@ -9,8 +9,8 @@ from unittest.mock import Mock
 import pytest
 import tomlkit
 
-import cairn.infra.config as config_module
-from cairn.infra.config import (
+import cairn.agent.models.config as config_module
+from cairn.agent.models.config import (
     add_model_id,
     load_model_config,
     load_provider_catalog,

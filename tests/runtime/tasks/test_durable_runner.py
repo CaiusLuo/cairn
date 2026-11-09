@@ -9,19 +9,19 @@ from typing import Any
 
 import pytest
 
-from cairn.core.events import Event
-from cairn.core.models import LLMResponse, Message
-from cairn.core.permissions import PermissionCapability, SessionPermissionHandler
-from cairn.core.repository import RepositoryEvidence
+from cairn.agent.context.evidence import RepositoryEvidence
+from cairn.agent.context.git import RepoContextProvider
+from cairn.agent.harness import SessionAdmissionError
+from cairn.agent.models.messages import LLMResponse, Message
+from cairn.agent.permissions import PermissionCapability, SessionPermissionHandler
+from cairn.agent.session.access import open_store
+from cairn.agent.session.models import SessionStoreError
+from cairn.agent.session.session import SessionState
+from cairn.agent.session.task_models import TaskRecord, TaskRevision
+from cairn.agent.turn.events import Event
+from cairn.agent.workspace.workspace import Workspace
 from cairn.development.execution import CodingTaskRunner
 from cairn.development.execution.models import TaskSpec, TaskStatus
-from cairn.infra.git.context import RepoContextProvider
-from cairn.infra.sessions.models import SessionStoreError
-from cairn.infra.sessions.task_models import TaskRecord, TaskRevision
-from cairn.infra.workspace.workspace import Workspace
-from cairn.runtime.agent import SessionAdmissionError
-from cairn.runtime.session import SessionState
-from cairn.terminal.durable import open_store
 from tests.support.durable_tasks import (
     BUDGET,
     SPEC,
@@ -380,7 +380,7 @@ def test_cooperative_cancellation_records_only_a_cancelled_result(
 
 
 def test_budget_abort_records_a_noncompleted_task_result(root: Path) -> None:
-    from cairn.core.budget import RunBudget
+    from cairn.agent.budget import RunBudget
 
     llm = SequenceLLM([edit_response()])
     host = make_host(root, llm)
@@ -648,7 +648,7 @@ def test_invalid_or_sensitive_spec_is_not_admitted(root: Path, invalid: str) -> 
 
 @pytest.mark.parametrize("invalid", ["task", "session", "digest", "revision", "prompt"])
 def test_typed_turn_attribution_rejects_mismatches(root: Path, invalid: str) -> None:
-    from cairn.runtime.loop import run_turn
+    from cairn.agent.turn.loop import run_turn
 
     llm = SequenceLLM([])
     host = make_host(root, llm)

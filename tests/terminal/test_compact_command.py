@@ -10,8 +10,8 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from cairn.core.compaction import CompactionStatus
-from cairn.runtime.turn.compaction import CompactionOutcome, CompactionStep
+from cairn.agent.context.compaction import CompactionStatus
+from cairn.agent.turn.compaction import CompactionOutcome, CompactionStep
 from cairn.terminal.commands.compact import (
     CompactionReport,
     CompactionReportKind,

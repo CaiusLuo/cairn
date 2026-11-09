@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from cairn.infra.workspace.workspace import Workspace
+from cairn.agent.workspace.workspace import Workspace
 
 
 def test_workspace_normalizes_root(

@@ -6,11 +6,14 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from cairn.core.budget import RunBudget
-from cairn.core.context import ContextBudget
-from cairn.core.events import EventHandler
-from cairn.core.llm import LLMClient
-from cairn.core.permissions import PermissionHandler
+from cairn.agent.budget import RunBudget
+from cairn.agent.context.window import ContextBudget
+from cairn.agent.models.client import LLMClient
+from cairn.agent.models.config import load_project_providers
+from cairn.agent.permissions import PermissionHandler
+from cairn.agent.tracing.models import Span
+from cairn.agent.tracing.tracer import Tracer
+from cairn.agent.turn.events import EventHandler
 from cairn.development.execution import CodingTaskRunner
 from cairn.development.execution.models import TaskResult, TaskSpec, TaskStatus
 from cairn.development.report import ReportWriter
@@ -52,10 +55,7 @@ from cairn.development.workflow.models import (
 from cairn.development.workflow.security import GITHUB_SECRET_ENV_KEYS
 from cairn.development.workflow.verification import DeterministicVerifier
 from cairn.development.worktree import WorktreeError
-from cairn.infra.config import load_project_providers
-from cairn.infra.observability.models import Span
-from cairn.infra.observability.tracer import Tracer
-from cairn.runtime.lifecycle import settle_owned
+from cairn.shared.lifecycle import settle_owned
 
 
 class _DiscardSink:

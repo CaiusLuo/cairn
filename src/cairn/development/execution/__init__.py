@@ -1,4 +1,4 @@
-from cairn.core.repository import RepositoryEvidence
+from cairn.agent.context.evidence import RepositoryEvidence
 from cairn.development.execution.check import (
     CheckedTaskOutcome,
     TaskCheckSpec,
