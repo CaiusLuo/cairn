@@ -93,6 +93,20 @@ class TaskService:
     def inspect(self, task_id: str) -> RuntimeTask:
         return self.catalogue.data.tasks[task_id]
 
+    def inspect_wechat_task(
+        self, task_id: str, *, sender: str | None, account: str | None
+    ) -> RuntimeTask:
+        task = self.inspect(task_id)
+        if (
+            task.source != "wechat"
+            or not sender
+            or not account
+            or task.delivery_recipient != sender
+            or task.delivery_account != account
+        ):
+            raise KeyError(task_id)
+        return task
+
     def list_tasks(self) -> list[RuntimeTask]:
         return list(self.catalogue.data.tasks.values())
 
@@ -317,9 +331,15 @@ class TaskService:
         delivery_recipient: str | None = None,
         delivery_account: str | None = None,
     ) -> RuntimeTask:
+        task = (
+            self.inspect_wechat_task(
+                task_id, sender=delivery_recipient, account=delivery_account
+            )
+            if source == "wechat"
+            else self.inspect(task_id)
+        )
         if self.stopping or self.worker is None or self.worker.done():
             raise RuntimeError("Runtime is not accepting messages")
-        task = self.inspect(task_id)
         fingerprint = hashlib.sha256(
             json.dumps(
                 [prompt, source, delivery_recipient, delivery_account],

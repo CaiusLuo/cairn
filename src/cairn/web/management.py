@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 from typing import Any, Literal, Protocol
 
@@ -51,23 +52,32 @@ def management_routes(controls: Controls, token: str) -> list[Route]:
                 )
             else:
                 bearer = request.headers.get("Authorization", "")
-                if not hmac.compare_digest(
-                    bearer, "Bearer " + token
-                ) and request.headers.get("Origin") != str(request.base_url).rstrip(
-                    "/"
-                ):
+                host_token = hmac.compare_digest(bearer, "Bearer " + token)
+                if not host_token and request.headers.get("Origin") != str(
+                    request.base_url
+                ).rstrip("/"):
                     # Host management needs an exact browser Origin, not merely a
                     # loopback tab on another port with the same cookie.
                     return JSONResponse(
                         {"error": "invalid_origin"}, 403, headers=headers
                     )
                 body = CommandRequest.model_validate(await request_body(request))
+                if (
+                    body.source == "wechat"
+                    and body.task_id is not None
+                    and not host_token
+                ):
+                    return JSONResponse(
+                        {"error": "runtime_token_required"}, 403, headers=headers
+                    )
                 result = await controls.command(body.model_dump())
             return JSONResponse(result, headers=headers)
         except (ValueError, KeyError):
             return JSONResponse(
                 {"error": "invalid_or_stale_command"}, 409, headers=headers
             )
+        except asyncio.QueueFull:
+            return JSONResponse({"error": "runtime_queue_full"}, 429, headers=headers)
         except RuntimeError as error:
             return JSONResponse(
                 {"error": "operation_uncertain", "message": str(error)},

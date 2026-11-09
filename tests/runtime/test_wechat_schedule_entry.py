@@ -52,12 +52,9 @@ def test_serve_entry_runs_due_task_and_pushes_to_authorized_owner(
     workspace.mkdir()
     state_dir = tmp_path / "wechat"
     state = WechatState(state_dir)
-    state.load()["messages"]["msg:1"] = {
-        "sender": "owner",
-        "context_token": "ctx-serve",
-        "updated": 1.0,
-    }
-    state.flush()
+    state.mark(
+        "msg:1", "completed", sender="owner", context_token="ctx-serve", updated=1.0
+    )
     schedule = ScheduleStore(state_dir / "schedule")
     schedule.save_jobs(
         (
@@ -339,12 +336,9 @@ def test_serve_default_executor_redacts_provider_secret_in_send_and_history(
     workspace.mkdir()
     state_dir = tmp_path / "wechat"
     state = WechatState(state_dir)
-    state.load()["messages"]["msg:1"] = {
-        "sender": "owner",
-        "context_token": "ctx-provider",
-        "updated": 1.0,
-    }
-    state.flush()
+    state.mark(
+        "msg:1", "completed", sender="owner", context_token="ctx-provider", updated=1.0
+    )
     schedule = ScheduleStore(state_dir / "schedule")
     schedule.save_jobs(
         (
@@ -454,12 +448,9 @@ def test_default_serve_distinguishes_scheduled_and_wechat_task_sources(
     monkeypatch.setenv("CAIRN_AGENT_HOME", str(tmp_path / "agent"))
     monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(board_dir))
     state = WechatState(state_dir)
-    state.load()["messages"]["seed"] = {
-        "sender": "owner",
-        "context_token": "ctx-serve",
-        "updated": 1.0,
-    }
-    state.flush()
+    state.mark(
+        "seed", "completed", sender="owner", context_token="ctx-serve", updated=1.0
+    )
     schedule = ScheduleStore(state_dir / "schedule")
     schedule.save_jobs(
         (

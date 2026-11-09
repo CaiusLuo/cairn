@@ -147,7 +147,12 @@ class WechatState:
         if "admission_status" in record or "delivery_status" in record:
             admission = record.get("admission_status")
             delivery = record.get("delivery_status")
-            if admission not in ADMISSION_STATUSES or delivery not in DELIVERY_STATUSES:
+            if (
+                not isinstance(admission, str)
+                or not isinstance(delivery, str)
+                or admission not in ADMISSION_STATUSES
+                or delivery not in DELIVERY_STATUSES
+            ):
                 raise ValueError("WeChat delivery intent has an unknown state")
             if record.get("intent_key") != key:
                 raise ValueError("WeChat delivery intent key is damaged")
@@ -158,7 +163,7 @@ class WechatState:
             # or request_id, so those values cannot be invented.  Keep the
             # original record as evidence and quarantine unknown cases.
             legacy = record.get("status")
-            if legacy not in DELIVERY_STATUSES:
+            if not isinstance(legacy, str) or legacy not in DELIVERY_STATUSES:
                 raise ValueError("WeChat delivery intent has an unknown legacy state")
             original = copy.deepcopy(record)
             sent = legacy == "sent"
@@ -210,22 +215,22 @@ class WechatState:
         _atomic_write(self.legacy_backup_path, raw)
 
     def load(self) -> dict[str, Any]:
-        if self._state is not None:
-            return self._state
+        if self._state is None:
+            self._state = self._read_state()
+        return self._state
+
+    def _read_state(self) -> dict[str, Any]:
         try:
             raw = json.loads(self.state_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            # First run: initialise a valid empty state. Only an *existing*
-            # damaged file is a fail-closed error.
-            self._state = {
+            return {
                 "version": STATE_VERSION,
                 "cursor": "",
                 "next_sequence": 1,
                 "messages": {},
                 "delivery_intents": {},
             }
-            return self._state
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             raise ValueError("WeChat runtime state is unreadable") from None
         if not isinstance(raw, dict):
             raise ValueError("WeChat runtime state is malformed")
@@ -266,27 +271,31 @@ class WechatState:
         next_sequence = raw.get("next_sequence", max(sequences, default=0) + 1)
         if type(next_sequence) is not int or next_sequence <= max(sequences, default=0):
             raise ValueError("WeChat message ordering is damaged")
-        self._state = {
+        return {
             "version": STATE_VERSION,
             "cursor": cursor,
             "next_sequence": next_sequence,
             "messages": messages,
             "delivery_intents": delivery_intents,
         }
-        return self._state
 
     def flush(self) -> None:
-        state = self.load()
-        _atomic_write(self.state_path, state)
+        with self._delivery_lock, self._state_file_lock():
+            try:
+                self._read_state()
+                _atomic_write(self.state_path, self.load())
+            except BaseException:
+                self._state = None
+                raise
 
     def get_cursor(self) -> str:
         return str(self.load().get("cursor", ""))
 
     def set_cursor(self, cursor: str) -> None:
         with self._delivery_lock, self._state_file_lock():
-            self._merge_delivery_from_disk()
+            before = self._state_snapshot()
             self.load()["cursor"] = cursor
-            self.flush()
+            self._commit_state(before)
 
     def latest_context(self, sender: str) -> str | None:
         """Latest reply context for a sender, for owner-directed delivery."""
@@ -318,14 +327,6 @@ class WechatState:
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
 
-    def _merge_delivery_from_disk(self) -> None:
-        try:
-            raw = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, OSError, json.JSONDecodeError):
-            return
-        if isinstance(raw, dict) and isinstance(raw.get("delivery_intents"), dict):
-            self.load()["delivery_intents"] = raw["delivery_intents"]
-
     def add_delivery_listener(self, listener: Callable[[str], None]) -> None:
         self._delivery_listeners.append(listener)
 
@@ -338,15 +339,14 @@ class WechatState:
             with suppress(Exception):
                 listener(key)
 
-    def _delivery_snapshot(self) -> dict[str, Any]:
-        # Re-read the file so two WechatState instances in this process cannot
-        # commit stale delivery facts over each other.
+    def _state_snapshot(self) -> dict[str, Any]:
+        # Writers must start from the persisted facts while holding the file lock.
         self._state = None
         return copy.deepcopy(self.load())
 
-    def _delivery_commit(self, before: dict[str, Any]) -> None:
+    def _commit_state(self, before: dict[str, Any]) -> None:
         try:
-            self.flush()
+            _atomic_write(self.state_path, self.load())
         except BaseException:
             self._state = copy.deepcopy(before)
             raise
@@ -373,7 +373,7 @@ class WechatState:
         content_digest = hashlib.sha256(content.encode()).hexdigest()
         key = hashlib.sha256(message_key.encode()).hexdigest()
         with self._delivery_lock, self._state_file_lock():
-            before = self._delivery_snapshot()
+            before = self._state_snapshot()
             try:
                 intents = self.load().setdefault("delivery_intents", {})
                 for other_key, current in intents.items():
@@ -419,7 +419,7 @@ class WechatState:
                     "created_at": time.time(),
                     "updated_at": time.time(),
                 }
-                self._delivery_commit(before)
+                self._commit_state(before)
                 self._notify_delivery(key)
                 return key
             except BaseException:
@@ -434,7 +434,7 @@ class WechatState:
         run_id: str | None = None,
     ) -> dict[str, Any]:
         with self._delivery_lock, self._state_file_lock():
-            before = self._delivery_snapshot()
+            before = self._state_snapshot()
             try:
                 intents = self.load().get("delivery_intents", {})
                 current = intents.get(key)
@@ -455,7 +455,7 @@ class WechatState:
                 if run_id is not None:
                     current["admission_status"] = "accepted"
                 current["updated_at"] = time.time()
-                self._delivery_commit(before)
+                self._commit_state(before)
                 self._notify_delivery(key)
                 return dict(current)
             except BaseException:
@@ -468,7 +468,7 @@ class WechatState:
         if status not in ADMISSION_STATUSES:
             raise ValueError("Unknown WeChat admission status")
         with self._delivery_lock, self._state_file_lock():
-            before = self._delivery_snapshot()
+            before = self._state_snapshot()
             try:
                 intents = self.load().get("delivery_intents", {})
                 current = intents.get(key)
@@ -491,7 +491,7 @@ class WechatState:
                 current["admission_status"] = status
                 current["admission_error"] = error
                 current["updated_at"] = time.time()
-                self._delivery_commit(before)
+                self._commit_state(before)
                 return dict(current)
             except BaseException:
                 self._state = copy.deepcopy(before)
@@ -499,7 +499,7 @@ class WechatState:
 
     def begin_delivery_attempt(self, key: str) -> bool:
         with self._delivery_lock, self._state_file_lock():
-            before = self._delivery_snapshot()
+            before = self._state_snapshot()
             try:
                 intents = self.load().get("delivery_intents", {})
                 current = intents.get(key)
@@ -513,7 +513,7 @@ class WechatState:
                     return False
                 current["delivery_status"] = "started"
                 current["updated_at"] = time.time()
-                self._delivery_commit(before)
+                self._commit_state(before)
                 return True
             except BaseException:
                 self._state = copy.deepcopy(before)
@@ -521,7 +521,7 @@ class WechatState:
 
     def mark_delivery_manual_review(self, key: str, reason: str) -> dict[str, Any]:
         with self._delivery_lock, self._state_file_lock():
-            before = self._delivery_snapshot()
+            before = self._state_snapshot()
             try:
                 intents = self.load().get("delivery_intents", {})
                 current = intents.get(key)
@@ -532,7 +532,7 @@ class WechatState:
                 current["needs_manual_review"] = True
                 current["manual_review_reason"] = reason
                 current["updated_at"] = time.time()
-                self._delivery_commit(before)
+                self._commit_state(before)
                 return dict(current)
             except BaseException:
                 self._state = copy.deepcopy(before)
@@ -540,7 +540,7 @@ class WechatState:
 
     def mark_delivery_sent(self, key: str) -> dict[str, Any]:
         with self._delivery_lock, self._state_file_lock():
-            before = self._delivery_snapshot()
+            before = self._state_snapshot()
             try:
                 intents = self.load().get("delivery_intents", {})
                 current = intents.get(key)
@@ -555,7 +555,7 @@ class WechatState:
                 current["delivery_status"] = "sent"
                 current["delivery_error"] = None
                 current["updated_at"] = time.time()
-                self._delivery_commit(before)
+                self._commit_state(before)
                 return dict(current)
             except BaseException:
                 self._state = copy.deepcopy(before)
@@ -563,7 +563,7 @@ class WechatState:
 
     def mark_delivery_unconfirmed(self, key: str) -> dict[str, Any]:
         with self._delivery_lock, self._state_file_lock():
-            before = self._delivery_snapshot()
+            before = self._state_snapshot()
             try:
                 intents = self.load().get("delivery_intents", {})
                 current = intents.get(key)
@@ -575,7 +575,7 @@ class WechatState:
                     raise ValueError("A sent delivery cannot become unconfirmed")
                 current["delivery_status"] = "unconfirmed"
                 current["updated_at"] = time.time()
-                self._delivery_commit(before)
+                self._commit_state(before)
                 return dict(current)
             except BaseException:
                 self._state = copy.deepcopy(before)
@@ -612,7 +612,7 @@ class WechatState:
     ) -> bool:
         """Persist a new received fact; False when the key already exists."""
         with self._delivery_lock, self._state_file_lock():
-            self._merge_delivery_from_disk()
+            before = self._state_snapshot()
             state = self.load()
             messages = state["messages"]
             if key in messages:
@@ -630,12 +630,12 @@ class WechatState:
                 "updated": time.time(),
                 "received_at": time.time(),
             }
-            self.flush()
+            self._commit_state(before)
             return True
 
     def mark(self, key: str, state: str, **fields: Any) -> None:
         with self._delivery_lock, self._state_file_lock():
-            self._merge_delivery_from_disk()
+            before = self._state_snapshot()
             messages = self.load()["messages"]
             record = messages.get(key, {})
             if not isinstance(record, dict):
@@ -644,7 +644,7 @@ class WechatState:
             record["updated"] = time.time()
             record.update(fields)
             messages[key] = record
-            self.flush()
+            self._commit_state(before)
 
     def resolve_clarification(
         self,
@@ -655,23 +655,27 @@ class WechatState:
         context_token: str,
     ) -> bool:
         """Consume a clarification reply and transition its original once."""
-        messages = self.load()["messages"]
-        original = messages.get(original_key)
-        reply = messages.get(reply_key)
-        if (
-            not isinstance(original, dict)
-            or not isinstance(reply, dict)
-            or original.get("state") != "clarifying"
-            or reply.get("state") != "received"
-        ):
-            return False
-        now = time.time()
-        original.update(state=target_state, context_token=context_token, updated=now)
-        reply.update(
-            state="clarification_consumed", context_token=context_token, updated=now
-        )
-        self.flush()
-        return True
+        with self._delivery_lock, self._state_file_lock():
+            before = self._state_snapshot()
+            messages = self.load()["messages"]
+            original = messages.get(original_key)
+            reply = messages.get(reply_key)
+            if (
+                not isinstance(original, dict)
+                or not isinstance(reply, dict)
+                or original.get("state") != "clarifying"
+                or reply.get("state") != "received"
+            ):
+                return False
+            now = time.time()
+            original.update(
+                state=target_state, context_token=context_token, updated=now
+            )
+            reply.update(
+                state="clarification_consumed", context_token=context_token, updated=now
+            )
+            self._commit_state(before)
+            return True
 
     def records_in_state(self, state: str) -> list[tuple[str, dict[str, Any]]]:
         return self.records_in_states(frozenset({state}))

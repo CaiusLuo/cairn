@@ -462,7 +462,13 @@ def test_agent_schedule_tool_and_cli_share_the_real_store(tmp_path: Path) -> Non
 
         app.state.execution.llm_factory = Model
         async with app.router.lifespan_context(app):
-            task = await api.submit("明天提醒我喝水", "cli", mode="conversation")
+            task = await api.submit(
+                "明天提醒我喝水",
+                "wechat",
+                mode="conversation",
+                delivery_recipient="owner",
+                delivery_account="bot-1",
+            )
             await asyncio.wait_for(app.state.runtime.queue.join(), 10)
             task = await api.inspect(task["task_id"])
             assert task["status"] == "completed" and task["worktree"] is None

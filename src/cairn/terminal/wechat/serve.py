@@ -1713,7 +1713,7 @@ class _Service:
                 # chat.  /task and explicit commands remain on the legacy adapter
                 # until UX-B2's final Run delivery is complete.
                 adapter: Any = self._runtime_adapter
-                argument = raw_text.strip().partition(" ")[2]
+                argument = raw_text.strip().partition(" ")[2].strip()
                 task_query = command == "/task" and argument.startswith("task-")
                 delivery_owned = False
                 if command == "/task" and self._legacy_runtime_adapter is not None:

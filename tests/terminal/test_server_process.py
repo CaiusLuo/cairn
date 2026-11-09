@@ -31,13 +31,8 @@ def test_client_exit_reconnect_web_and_crash_recovery(tmp_path: Path) -> None:
         duplicate = subprocess.run(
             [
                 str(Path(sys.executable).parent / "cairn"),
-                "--workspace",
-                str(source),
-                "--data-root",
-                str(server.data_root),
-                "--worktrees-root",
-                str(tmp_path / "worktrees"),
-                "--offline",
+                "--config",
+                str(server.config),
             ],
             capture_output=True,
             text=True,
@@ -81,7 +76,9 @@ def test_client_exit_reconnect_web_and_crash_recovery(tmp_path: Path) -> None:
                 api.get(f"/api/runtime/tasks/{task_id}").json()["status"] == "running"
             )
             bridge = WechatRuntimeAdapter(RuntimeClient(server.url, token))
-            assert task_id in asyncio.run(bridge.reply("/status " + task_id))
+            assert (
+                asyncio.run(bridge.reply("/status " + task_id)) == "未找到对应的任务。"
+            )
             # Browser cookie authentication observes the same live task.
             with httpx.Client(base_url=server.url, trust_env=False, timeout=5) as web:
                 assert (

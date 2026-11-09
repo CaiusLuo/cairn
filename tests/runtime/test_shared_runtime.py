@@ -75,7 +75,7 @@ def test_cli_web_wechat_share_real_execution_and_worktree(tmp_path: Path) -> Non
             reply = await asyncio.wait_for(
                 wechat.reply("/status " + first["task_id"]), 0.5
             )
-            assert first["task_id"] in reply and progress["worktree"] in reply
+            assert reply == "未找到对应的任务。"
             again = await api.submit(
                 "Create the acceptance result", "cli", "cli-message-1"
             )
@@ -91,7 +91,10 @@ def test_cli_web_wechat_share_real_execution_and_worktree(tmp_path: Path) -> Non
             assert any(event["kind"] == "tool_result" for event in events["events"])
             history = await api.request("GET", f"tasks/{first['task_id']}/history")
             assert any(message["role"] == "tool" for message in history)
-            assert "已提交历史" in await wechat.reply("/history " + first["task_id"])
+            assert (
+                await wechat.reply("/history " + first["task_id"])
+                == "未找到对应的任务。"
+            )
             second = await api.submit(
                 "Create another acceptance result", "web", "web-message-1"
             )
@@ -203,7 +206,6 @@ def test_runtime_http_requires_authentication_and_rejects_authority_arguments(
 
 
 def test_wechat_service_forwards_after_sender_admission(tmp_path: Path) -> None:
-    import json
     from dataclasses import replace
 
     from cairn.infra.wechat.state import WechatState
@@ -260,7 +262,10 @@ def test_wechat_service_forwards_after_sender_admission(tmp_path: Path) -> None:
                 )
                 await bridge._handle(inbound)
                 await asyncio.gather(*tuple(bridge._intent_tasks))
-                assert first["task_id"] in json.dumps(fake.sent)
+                assert (
+                    fake.sent[0]["item_list"][0]["text_item"]["text"]
+                    == "未找到对应的任务。"
+                )
                 assert len(app.state.runtime.list_tasks()) == 1
                 stranger = _Inbound(
                     key="msg:stranger",

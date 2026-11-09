@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -222,3 +223,73 @@ def test_two_state_instances_share_one_delivery_winner(tmp_path: Path) -> None:
     assert state["admission_status"] == "accepted"
     assert first.begin_delivery_attempt(key) is True
     assert second.begin_delivery_attempt(key) is False
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        b'{"version":',
+        b"\xff",
+        b'{"version":1,"cursor":"","messages":[]}',
+        b'{"version":1,"cursor":"","messages":{},"delivery_intents":{"bad":{}}}',
+    ],
+)
+def test_cached_message_writers_preserve_damaged_state(
+    tmp_path: Path, damage: bytes
+) -> None:
+    state = WechatState(tmp_path / "wechat")
+    state.record_received("msg:old", sender="owner", context_token="ctx", text="old")
+    good = state.state_path.read_bytes()
+    state.state_path.write_bytes(damage)
+
+    operations = (
+        lambda: state.set_cursor("next"),
+        lambda: state.record_received(
+            "msg:new", sender="owner", context_token="ctx", text="new"
+        ),
+        lambda: state.mark("msg:old", "clarifying"),
+        lambda: state.resolve_clarification(
+            "msg:old", "msg:new", target_state="queued", context_token="ctx"
+        ),
+        state.flush,
+    )
+    for operation in operations:
+        with pytest.raises(ValueError, match="WeChat"):
+            operation()
+        assert state.state_path.read_bytes() == damage
+
+    state.state_path.write_bytes(good)
+    assert not state.record_received(
+        "msg:old", sender="owner", context_token="ctx", text="old"
+    )
+    assert state.record_received(
+        "msg:new", sender="owner", context_token="ctx", text="new"
+    )
+    assert WechatState(state.root).get_record("msg:old") is not None
+    assert WechatState(state.root).get_record("msg:new") is not None
+
+
+def test_receive_write_failure_leaves_message_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = WechatState(tmp_path / "wechat")
+    state.set_cursor("last")
+    good = state.state_path.read_bytes()
+
+    def fail_replace(_src: str, _dest: Path) -> None:
+        raise OSError("disk full")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_replace)
+        with pytest.raises(OSError, match="disk full"):
+            state.record_received(
+                "msg:retry", sender="owner", context_token="ctx", text="retry"
+            )
+        assert state.get_record("msg:retry") is None
+        assert state.state_path.read_bytes() == good
+
+    assert state.record_received(
+        "msg:retry", sender="owner", context_token="ctx", text="retry"
+    )
+    assert state.get_cursor() == "last"
+    assert WechatState(state.root).get_record("msg:retry") is not None

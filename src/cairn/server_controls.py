@@ -388,6 +388,8 @@ class ServerControls:
     async def command(self, request: dict[str, Any]) -> dict[str, Any]:
         if self.closed:
             raise RuntimeError("Server is stopping")
+        if request.get("source") == "wechat" and request.get("task_id") is not None:
+            return await self._wechat_task_command(request)
         name, args = request["command"], request.get("args", "")
         key = request["request_id"]
         fingerprint = digest({k: v for k, v in request.items() if k != "request_id"})
@@ -725,20 +727,67 @@ class ServerControls:
             "message": self.memory.redact(action.message),
         }
 
+    def _wechat_sender_allowed(self, sender: str | None, account: str | None) -> bool:
+        return bool(
+            sender
+            and account
+            and account == self.wechat.account_id()
+            and (
+                sender == self.wechat.recipient_id()
+                or sender in self.state.trusted_senders
+            )
+        )
+
+    def _require_wechat_task(
+        self, task_id: str, sender: str | None, account: str | None
+    ) -> RuntimeTask:
+        if not self.services.wechat or not self._wechat_sender_allowed(sender, account):
+            raise KeyError(task_id)
+        return self.service.inspect_wechat_task(task_id, sender=sender, account=account)
+
+    async def _wechat_task_command(self, request: dict[str, Any]) -> dict[str, Any]:
+        task_id = request["task_id"]
+        sender, account = request.get("sender"), request.get("account")
+        command = request["command"]
+        try:
+            task = self._require_wechat_task(task_id, sender, account)
+            if command == "/cancel":
+                await self.service.cancel(task_id)
+                task = self._require_wechat_task(task_id, sender, account)
+        except KeyError:
+            return {"ok": False, "message": "未找到对应的任务。"}
+
+        if command == "/history":
+            reader = self.service.history_reader
+            return {"ok": True, "history": reader(task) if reader else []}
+        if command == "/recovery":
+            return {"ok": True, "recovery": self.service.recovery(task_id)}
+        if command == "/reply":
+            prompt = request.get("args", "").strip()
+            if not prompt:
+                raise ValueError("A task reply requires a prompt")
+            task = self.service.message(
+                task_id,
+                prompt,
+                "wechat",
+                request["request_id"],
+                task.sequence,
+                delivery_recipient=sender,
+                delivery_account=account,
+            )
+        elif command == "/continue":
+            task = self.service.continue_task(task_id)
+        elif command not in {"/status", "/task", "/cancel"}:
+            raise ValueError("Unknown WeChat task command")
+        return {"ok": True, "task": task.model_dump(mode="json")}
+
     def validate_task(self, task: RuntimeTask) -> None:
         if (task.delivery_recipient is None) != (task.delivery_account is None):
             raise ValueError("Task delivery requires both recipient and account")
-        if task.delivery_recipient is not None:
-            allowed = set(self.state.trusted_senders)
-            owner = self.wechat.recipient_id()
-            if owner:
-                allowed.add(owner)
-            if (
-                not self.wechat.account_id()
-                or task.delivery_account != self.wechat.account_id()
-                or task.delivery_recipient not in allowed
-            ):
-                raise ValueError("Task delivery identity is not authorized")
+        if task.delivery_recipient is not None and not self._wechat_sender_allowed(
+            task.delivery_recipient, task.delivery_account
+        ):
+            raise ValueError("Task delivery identity is not authorized")
 
     def configure_agent(self, agent: Agent, task: RuntimeTask) -> None:
         # An extra trusted project sender is not the personal-memory owner.

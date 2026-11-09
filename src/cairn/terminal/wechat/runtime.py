@@ -69,15 +69,14 @@ class WechatConversationAdapter:
             return "消息内容为空。"
         if content.startswith("/"):
             command, _, argument = content.partition(" ")
-            if command == "/status":
+            if command == "/status" and not argument.strip().startswith("task-"):
                 return await self._status_reply(account, sender, argument)
-            if command == "/task" and argument.startswith("task-"):
-                return await self._task_query_reply(account, sender, argument)
             return await self.legacy.reply(
                 text,
                 message_id=message_id,
                 sender=sender,
                 account=account,
+                deliver=deliver,
             )
         if not sender or not account:
             return "无法确认微信身份, 消息未执行。"
@@ -147,8 +146,6 @@ class WechatConversationAdapter:
         if not account or not sender:
             return "无法确认微信身份, 未执行。"
         argument = argument.strip()
-        if argument.startswith("task-"):
-            return await self._task_query_reply(account, sender, argument)
         try:
             binding = await self.client.get_wechat_conversation(account, sender)
             conversation_id = str(binding["conversation_id"])
@@ -165,22 +162,6 @@ class WechatConversationAdapter:
         except (httpx.HTTPStatusError, KeyError, ValueError):
             return "未找到对应的 Run 或对话。"
         return self._run_status_text(run)
-
-    async def _task_query_reply(
-        self, account: str | None, sender: str | None, task_id: str
-    ) -> str:
-        if not account or not sender:
-            return "未找到对应的任务。"
-        try:
-            task = await self.client.inspect(task_id)
-        except (httpx.HTTPStatusError, ValueError):
-            return "未找到对应的任务。"
-        if (
-            task.get("delivery_recipient") != sender
-            or task.get("delivery_account") != account
-        ):
-            return "未找到对应的任务。"
-        return self.legacy._technical_reply(task)
 
     @staticmethod
     def _run_status_text(run: dict[str, Any]) -> str:
@@ -295,6 +276,47 @@ class WechatRuntimeAdapter:
             + str(task.get("result") or task.get("diagnostic") or "")
         )
 
+    async def _task_command(
+        self,
+        command: str,
+        task_id: str,
+        prompt: str,
+        *,
+        sender: str | None,
+        account: str | None,
+        message_id: str | None,
+    ) -> str:
+        result = await self.client.request(
+            "POST",
+            "commands",
+            {
+                "command": command,
+                "task_id": task_id,
+                "args": prompt,
+                "source": "wechat",
+                "request_id": message_id or "wechat-control:" + uuid4().hex,
+                "sender": sender,
+                "account": account,
+            },
+        )
+        if not result["ok"]:
+            return str(result["message"])
+        if command == "/history":
+            return (
+                task_id
+                + "\n最近已提交历史:\n"
+                + "\n".join(
+                    f"{m['role']}: {(m.get('content') or '')[:400]}"
+                    for m in result["history"][-6:]
+                )
+            )
+        if command == "/recovery":
+            return json.dumps(result["recovery"], ensure_ascii=False)
+        task = result["task"]
+        if command == "/reply":
+            return f"{task['task_id']}\n状态: {task['status']}"
+        return self._technical_reply(task)
+
     async def reply(
         self,
         text: str,
@@ -307,7 +329,7 @@ class WechatRuntimeAdapter:
         delivery_key: str | None = None,
         request_id: str | None = None,
     ) -> str:
-        del delivery_key, request_id
+        del conversation_key, delivery_key, request_id
         command, _, argument = text.strip().partition(" ")
         if command in {"/schedule", "/memory", "/help"}:
             result = await self.client.request(
@@ -323,85 +345,40 @@ class WechatRuntimeAdapter:
                 },
             )
             return str(result["message"])
-        if command == "/reply":
-            ident, _, prompt = argument.partition(" ")
-            if not prompt.strip():
-                return "用法: /reply TASK_ID 内容"
-            task = await self.client.inspect(ident)
-            task = await self.client.message(
-                ident,
-                prompt,
-                source="wechat",
-                request_id=message_id or "reply-" + str(task["sequence"]),
-                expected_sequence=task["sequence"],
-                delivery_recipient=sender,
-                delivery_account=account,
+        argument = argument.strip()
+        task_id, _, prompt = argument.partition(" ")
+        if command == "/reply" and not prompt.strip():
+            return "用法: /reply TASK_ID 内容"
+        if (
+            command == "/reply"
+            or (
+                command in {"/history", "/recovery", "/cancel", "/continue"}
+                and argument
             )
-            return f"{task['task_id']}\n状态: {task['status']}"
-        if command == "/history" and argument:
-            RuntimeClient._id(argument.strip())
-            messages = await self.client.request(
-                "GET", f"tasks/{argument.strip()}/history"
+            or (command in {"/status", "/task"} and argument.startswith("task-"))
+        ):
+            return await self._task_command(
+                command,
+                task_id if command == "/reply" else argument,
+                prompt if command == "/reply" else "",
+                sender=sender,
+                account=account,
+                message_id=message_id,
             )
-            return (
-                argument.strip()
-                + "\n最近已提交历史:\n"
-                + "\n".join(
-                    f"{m['role']}: {(m.get('content') or '')[:400]}"
-                    for m in messages[-6:]
-                )
-            )
-        if command == "/recovery" and argument:
-            RuntimeClient._id(argument.strip())
-            return json.dumps(
-                await self.client.request("GET", f"tasks/{argument.strip()}/recovery"),
-                ensure_ascii=False,
-            )
-        if command in {"/status", "/task"} and argument.startswith("task-"):
-            task = await self.client.inspect(argument.strip())
-            return self._technical_reply(task)
-        if command in {"/cancel", "/continue"} and argument:
-            task = await self.client.control(argument.strip(), command[1:])
-            return self._technical_reply(task)
         if command == "/status":
-            tasks = await self.client.request("GET", "tasks")
-            return (
-                "\n".join(f"{t['task_id']} {t['status']}" for t in tasks[-10:])
-                or "暂无任务"
-            )
-        development = command == "/task"
-        if not development:
+            return "暂无任务"
+        if command != "/task":
             raise ValueError("普通微信聊天必须使用 WechatConversationAdapter")
-        try:
-            task = await self.client.submit(
-                argument if development else text,
-                "wechat",
-                request_id=message_id,
-                mode="development" if development else "conversation",
-                conversation_key=None if development else conversation_key,
-                delivery_recipient=sender,
-                delivery_account=account,
-            )
-        except httpx.HTTPStatusError as error:
-            if error.response.status_code != 409 or conversation_key is None:
-                raise
-            tasks = await self.client.request("GET", "tasks")
-            busy_task = next(
-                (
-                    item
-                    for item in reversed(tasks)
-                    if item.get("conversation_key") == conversation_key
-                ),
-                None,
-            )
-            if busy_task is None:
-                raise
-            return "上一条消息仍在处理中, 请稍后重发。"
+        task = await self.client.submit(
+            argument,
+            "wechat",
+            request_id=message_id,
+            delivery_recipient=sender,
+            delivery_account=account,
+        )
         if not deliver:
             # ServerControls is the single delivery owner for adapter-forwarded
             # tasks and will send the final result from TaskService.on_settled.
             return ""
         task = await self._wait(str(task["task_id"]))
-        if development:
-            return self._development_reply(task)
-        raise ValueError("普通微信聊天必须使用 WechatConversationAdapter")
+        return self._development_reply(task)
