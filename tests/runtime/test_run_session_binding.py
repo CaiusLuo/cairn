@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 
+from cairn.agent.budget import RunBudget
 from cairn.conversation.models import Conversation, ConversationSource, RunStatus
 from cairn.conversation.service import ConversationService
 from cairn.conversation.store import DomainStore
@@ -167,5 +168,63 @@ def test_missing_session_recovery_requires_explicit_auditable_abandon(
             reconciled.metadata["recovery_note"]
             == "No Session was created; no side effects observed."
         )
+
+    asyncio.run(scenario())
+
+
+def test_missing_session_recovery_is_exposed_over_http(tmp_path: Path) -> None:
+    import httpx
+
+    from cairn.server.bootstrap import runtime_app
+    from tests.support.git import initialize_repository
+
+    async def scenario() -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        initialize_repository(source)
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="zzzz",
+        )
+        conversation = _conversation(app.state.conversations.store, source)
+        run = app.state.conversations.store.create_run(
+            conversation_id=conversation.conversation_id,
+            status=RunStatus.RECOVERY_REQUIRED,
+            prompt="missing session",
+            request_id="missing-session-http",
+            error="process_interrupted",
+        )
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://127.0.0.1:8777",
+                headers={"Authorization": "Bearer zzzz"},
+            ) as client,
+        ):
+            report = (
+                (await client.get(f"/api/runtime/runs/{run.run_id}/recovery"))
+                .raise_for_status()
+                .json()
+            )
+            assert report["missing_session"] is True
+            assert report["revision"] is None
+            response = await client.post(
+                f"/api/runtime/runs/{run.run_id}/reconcile",
+                json={
+                    "revision": None,
+                    "action": "abandon_without_replay",
+                    "reviewed_effects": True,
+                    "note": "No Session existed; nothing was replayed.",
+                },
+            )
+            assert response.status_code == 200, response.text
+            stored = app.state.conversations.store.get_run(run.run_id)
+            assert stored is not None
+            assert stored.status is RunStatus.CANCELLED
+            assert stored.error == "recovery_abandoned_without_session"
 
     asyncio.run(scenario())
