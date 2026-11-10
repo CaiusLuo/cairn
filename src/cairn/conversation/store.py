@@ -181,6 +181,17 @@ class DomainStore:
             );
             """
         )
+        columns = {
+            str(row[1])
+            for row in connection.execute(
+                "PRAGMA table_info(development_handoffs)"
+            ).fetchall()
+        }
+        if "history_origins_json" not in columns:
+            connection.execute(
+                "ALTER TABLE development_handoffs "
+                "ADD COLUMN history_origins_json TEXT NOT NULL DEFAULT '[]'"
+            )
 
     # -- Conversation -----------------------------------------------------
 
