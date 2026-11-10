@@ -181,6 +181,10 @@ class ConversationService:
     async def start(self) -> None:
         if self.worker is not None:
             raise RuntimeError("Conversation service already started")
+        # Resume durable handoff intents before deciding whether a Run was
+        # interrupted. This completes the Task/Run linkage without replaying
+        # an existing RuntimeTask.
+        self.development_handoff.recover_incomplete()
         for run in self.store.list_runs():
             if run.workspace_id != self.workspace_id:
                 continue

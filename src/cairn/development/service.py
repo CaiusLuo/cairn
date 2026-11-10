@@ -240,25 +240,6 @@ class TaskService:
                             "Source message was already bound to another request"
                         )
                     return previous
-        if conversation_key is not None:
-            conversation = next(
-                (
-                    t
-                    for t in reversed(self.list_tasks())
-                    if t.conversation_key == conversation_key
-                ),
-                None,
-            )
-            if conversation is not None:
-                return self.message(
-                    conversation.task_id,
-                    prompt,
-                    source,
-                    request_id or "message-" + uuid4().hex,
-                    conversation.sequence,
-                    delivery_recipient=delivery_recipient,
-                    delivery_account=delivery_account,
-                )
         if self.queue.full():
             raise asyncio.QueueFull
         task = RuntimeTask.model_validate(

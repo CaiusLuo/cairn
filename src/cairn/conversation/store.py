@@ -26,7 +26,13 @@ from cairn.conversation.models import (
     utc_now,
     workspace_id_for,
 )
-from cairn.development.models import Task, TaskStatus, new_task_id
+from cairn.development.models import (
+    HandoffRecord,
+    HandoffStatus,
+    Task,
+    TaskStatus,
+    new_task_id,
+)
 
 SCHEMA_VERSION = 1
 
@@ -152,6 +158,22 @@ class DomainStore:
                 fingerprint TEXT NOT NULL,
                 PRIMARY KEY (conversation_id, request_id)
             );
+            CREATE TABLE IF NOT EXISTS development_handoffs (
+                run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+                conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
+                request_id TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                runtime_task_id TEXT,
+                domain_task_id TEXT,
+                prompt TEXT NOT NULL,
+                source TEXT NOT NULL,
+                diagnostic TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                metadata_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS development_handoffs_status_idx
+                ON development_handoffs(status);
             CREATE TABLE IF NOT EXISTS domain_meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -1006,6 +1028,248 @@ class DomainStore:
             run_id, status=status, error=error, result=result, ended_at=ended_at
         )
 
+    # -- Development Handoff ------------------------------------------------
+
+    def begin_handoff(
+        self,
+        *,
+        run_id: str,
+        conversation_id: str,
+        request_id: str,
+        prompt: str,
+        source: str,
+    ) -> HandoffRecord:
+        """Persist the stable intent before either external store is touched."""
+        now = utc_now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run_row = connection.execute(
+                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if run_row is None:
+                raise KeyError(run_id)
+            if run_row["conversation_id"] != conversation_id:
+                raise ValueError("Handoff Run belongs to another Conversation")
+            existing = connection.execute(
+                "SELECT * FROM development_handoffs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if existing is not None:
+                current = self._handoff(existing)
+                if (
+                    current.conversation_id != conversation_id
+                    or current.request_id != request_id
+                    or current.prompt != prompt
+                    or current.source != source
+                ):
+                    raise ValueError("Handoff intent belongs to different input")
+                return current
+            record = HandoffRecord(
+                run_id=run_id,
+                conversation_id=conversation_id,
+                request_id=request_id,
+                prompt=prompt,
+                source=source,
+                created_at=now,
+                updated_at=now,
+            )
+            connection.execute(
+                """
+                INSERT INTO development_handoffs
+                    (run_id, conversation_id, request_id, status, runtime_task_id,
+                     domain_task_id, prompt, source, diagnostic, created_at,
+                     updated_at, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.run_id,
+                    record.conversation_id,
+                    record.request_id,
+                    record.status.value,
+                    record.runtime_task_id,
+                    record.domain_task_id,
+                    record.prompt,
+                    record.source,
+                    record.diagnostic,
+                    record.created_at,
+                    record.updated_at,
+                    _json(record.metadata),
+                ),
+            )
+            return record
+
+    def get_handoff(self, run_id: str) -> HandoffRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM development_handoffs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return None if row is None else self._handoff(row)
+
+    def list_incomplete_handoffs(self) -> tuple[HandoffRecord, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM development_handoffs "
+                "WHERE status != ? ORDER BY created_at, run_id",
+                (HandoffStatus.COMPLETED.value,),
+            ).fetchall()
+        return tuple(self._handoff(row) for row in rows)
+
+    def update_handoff(
+        self,
+        run_id: str,
+        *,
+        status: HandoffStatus | None = None,
+        runtime_task_id: str | None = None,
+        domain_task_id: str | None = None,
+        diagnostic: str | None = None,
+    ) -> HandoffRecord:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM development_handoffs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            current = self._handoff(row)
+            next_status = current.status if status is None else HandoffStatus(status)
+            if (
+                current.status is HandoffStatus.COMPLETED
+                and next_status is not HandoffStatus.COMPLETED
+            ):
+                raise ValueError("Completed handoff cannot be reopened")
+            for label, existing, incoming in (
+                ("RuntimeTask", current.runtime_task_id, runtime_task_id),
+                ("Domain Task", current.domain_task_id, domain_task_id),
+            ):
+                if (
+                    existing is not None
+                    and incoming is not None
+                    and existing != incoming
+                ):
+                    raise ValueError(f"Handoff is already bound to another {label}")
+            updated = current.model_copy(
+                update={
+                    "status": next_status,
+                    "runtime_task_id": current.runtime_task_id
+                    if runtime_task_id is None
+                    else runtime_task_id,
+                    "domain_task_id": current.domain_task_id
+                    if domain_task_id is None
+                    else domain_task_id,
+                    "diagnostic": current.diagnostic
+                    if diagnostic is None
+                    else diagnostic,
+                    "updated_at": utc_now(),
+                }
+            )
+            connection.execute(
+                """
+                UPDATE development_handoffs SET status=?, runtime_task_id=?,
+                    domain_task_id=?, diagnostic=?, updated_at=?, metadata_json=?
+                WHERE run_id=?
+                """,
+                (
+                    updated.status.value,
+                    updated.runtime_task_id,
+                    updated.domain_task_id,
+                    updated.diagnostic,
+                    updated.updated_at,
+                    _json(updated.metadata),
+                    run_id,
+                ),
+            )
+            return updated
+
+    def create_task_if_absent(
+        self,
+        *,
+        conversation_id: str,
+        task_id: str,
+        title: str,
+        goal: str,
+        status: TaskStatus = TaskStatus.TODO,
+        metadata: dict[str, Any] | None = None,
+    ) -> Task:
+        """Create one Domain Task once; a retried handoff reuses the same ID."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            conversation = connection.execute(
+                "SELECT * FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if conversation is None:
+                raise KeyError(conversation_id)
+            existing = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if existing is not None:
+                task = self._task(existing)
+                if task.conversation_id != conversation_id:
+                    raise ValueError("Task already belongs to another Conversation")
+                return task
+            task = Task(
+                task_id=task_id,
+                conversation_id=conversation_id,
+                workspace_id=cast(str, conversation["workspace_id"]),
+                title=title,
+                goal=goal,
+                status=status,
+                metadata=metadata or {},
+            )
+            connection.execute(
+                """
+                INSERT INTO tasks
+                    (task_id, conversation_id, workspace_id, title, goal, status,
+                     issue_url, worktree, branch, created_at, updated_at, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task.task_id,
+                    task.conversation_id,
+                    task.workspace_id,
+                    task.title,
+                    task.goal,
+                    task.status.value,
+                    task.issue_url,
+                    task.worktree,
+                    task.branch,
+                    task.created_at,
+                    task.updated_at,
+                    _json(task.metadata),
+                ),
+            )
+            return task
+
+    def associate_run_task(self, run_id: str, task_id: str) -> Run:
+        """Associate one Run with its Domain Task first-writer-wins."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            current = self._run(row)
+            if current.task_id is not None:
+                if current.task_id != task_id:
+                    raise ValueError("Run is already associated with another Task")
+                return current
+            task_row = connection.execute(
+                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if task_row is None:
+                raise KeyError(task_id)
+            if task_row["conversation_id"] != current.conversation_id:
+                raise ValueError("Run Task must belong to its Conversation")
+            updated = current.model_copy(
+                update={"task_id": task_id, "updated_at": utc_now()}
+            )
+            connection.execute(
+                "UPDATE runs SET task_id=?, updated_at=? "
+                "WHERE run_id=? AND task_id IS NULL",
+                (task_id, updated.updated_at, run_id),
+            )
+            return updated
+
     # -- Legacy adapter/migration helpers ---------------------------------
 
     def has_migration(
@@ -1083,6 +1347,23 @@ class DomainStore:
             issue_url=row["issue_url"],
             worktree=row["worktree"],
             branch=row["branch"],
+            created_at=cast(str, row["created_at"]),
+            updated_at=cast(str, row["updated_at"]),
+            metadata=cast(dict[str, Any], _loads(row["metadata_json"], {})),
+        )
+
+    @staticmethod
+    def _handoff(row: sqlite3.Row) -> HandoffRecord:
+        return HandoffRecord(
+            run_id=cast(str, row["run_id"]),
+            conversation_id=cast(str, row["conversation_id"]),
+            request_id=cast(str, row["request_id"]),
+            status=HandoffStatus(cast(str, row["status"])),
+            runtime_task_id=cast(str | None, row["runtime_task_id"]),
+            domain_task_id=cast(str | None, row["domain_task_id"]),
+            prompt=cast(str, row["prompt"]),
+            source=cast(str, row["source"]),
+            diagnostic=cast(str | None, row["diagnostic"]),
             created_at=cast(str, row["created_at"]),
             updated_at=cast(str, row["updated_at"]),
             metadata=cast(dict[str, Any], _loads(row["metadata_json"], {})),
