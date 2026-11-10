@@ -306,6 +306,12 @@ class ServiceExecution:
                         binding=fresh,
                     ),
                 )
+            # RunLedger publishes its durable identity only after the Session
+            # store has accepted the Session. TaskService has no such method and
+            # keeps its existing RuntimeCatalogue lifecycle unchanged.
+            bind_session = getattr(ledger, "bind_session", None)
+            if callable(bind_session):
+                bind_session(session_id)
             message_start = len(agent.state.messages)
             sessions.append(session)
             return session

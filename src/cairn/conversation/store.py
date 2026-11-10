@@ -833,6 +833,36 @@ class DomainStore:
             ).fetchall()
         return tuple(self._run(row) for row in rows)
 
+    def bind_run_session(self, run_id: str, session_id: str) -> Run:
+        """Bind one durable Session identity to a Run under a write transaction.
+
+        The first successful Session creation wins. Repeating the same binding
+        is idempotent; a different Session can never silently replace it.
+        """
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ValueError("session_id must be a non-empty string")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            current = self._run(row)
+            if current.session_id is not None:
+                if current.session_id != session_id:
+                    raise ValueError("Run is already bound to another Session")
+                return current
+            updated = current.model_copy(
+                update={"session_id": session_id, "updated_at": utc_now()}
+            )
+            connection.execute(
+                "UPDATE runs SET session_id = ?, updated_at = ? "
+                "WHERE run_id = ? AND session_id IS NULL",
+                (session_id, updated.updated_at, run_id),
+            )
+            return updated
+
     def update_run(
         self,
         run_id: str,

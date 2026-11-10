@@ -6,7 +6,7 @@ import { Icon } from "./Icon";
 import { href } from "./Shell";
 
 type Recovery = {
-  revision: Record<string, unknown>;
+  revision?: Record<string, unknown> | null;
   action: "abandon_without_replay" | "acknowledge_checkpoint";
   expected_sequence?: number;
   checkpoint_outcome: string;

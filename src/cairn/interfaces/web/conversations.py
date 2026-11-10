@@ -38,7 +38,9 @@ class ConversationCreate(BaseModel):
 
 class RecoveryReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    revision: dict[str, Any]
+    # A missing-Session Run has no Session Revision to submit. The service
+    # requires an explicit abandon_without_replay review for that case.
+    revision: dict[str, Any] | None = None
     action: Literal["abandon_without_replay", "acknowledge_checkpoint"]
     reviewed_effects: Literal[True]
     note: str = Field(min_length=1, max_length=1024)

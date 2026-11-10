@@ -58,6 +58,7 @@ class RunLedger:
         history_origins: tuple[CheckpointReceipt, ...] = (),
         session_id: str | None = None,
         on_event: Callable[[str, bool], None] | None = None,
+        on_session_bound: Callable[[str], None] | None = None,
     ) -> None:
         self.store = store
         self.run_id = run.run_id
@@ -76,7 +77,23 @@ class RunLedger:
         self.visible_text = ""
         self.trace_ref: str | None = None
         self.open_tools = 0
+        self._session_id = session_id
         self._on_event = on_event
+        self._on_session_bound = on_session_bound
+
+    @property
+    def session_id(self) -> str | None:
+        return self._session_id
+
+    def bind_session(self, session_id: str) -> None:
+        """Publish the first reliable Session identity to the host callback."""
+        if self._session_id == session_id:
+            return
+        if self._session_id is not None:
+            raise ValueError("Run Session identity changed during execution")
+        self._session_id = session_id
+        if self._on_session_bound is not None:
+            self._on_session_bound(session_id)
 
     def _wake(self, kind: str, *, persisted: bool) -> None:
         if self._on_event is not None:
@@ -351,11 +368,14 @@ class ConversationService:
         return report.receipt.model_dump(mode="json")
 
     def _evidence(self, ledger: RunLedger) -> dict[str, Any]:
+        # Only a Session accepted by SessionStore is a publishable identity.
+        # The transient task may hold a UUID before DurableSession.create fails.
+        session_id = ledger.session_id
         return {
             "budget": dict(ledger.task.metrics),
             "trace_ref": ledger.trace_ref,
-            "checkpoint_receipt": self._clean_receipt(ledger.task.session_id),
-            "session_id": ledger.task.session_id,
+            "checkpoint_receipt": self._clean_receipt(session_id),
+            "session_id": session_id,
         }
 
     def _cancelled_outcome(
@@ -404,9 +424,39 @@ class ConversationService:
         if run.status is not RunStatus.RECOVERY_REQUIRED:
             raise ValueError("Run does not require recovery")
         if run.session_id is None:
-            raise ValueError("Run has no Session checkpoint to inspect")
+            # A crash can happen after the run row is accepted but before the
+            # SessionStore row exists. There is no checkpoint to inspect, so
+            # expose an explicit, auditable abandon path instead of raising and
+            # leaving the Conversation permanently blocked.
+            return {
+                "run_id": run.run_id,
+                "session_id": None,
+                "expected_cursor": self.cursor(run_id),
+                "status": "missing_session",
+                "action": "abandon_without_replay",
+                "revision": None,
+                "checkpoint_outcome": "missing_session",
+                "unresolved_turn_id": None,
+                "worktree": None,
+                "fences": [],
+                "diagnostic": run.error or "session_not_recorded",
+                "missing_session": True,
+            }
         task = self._runtime_task(run)
-        review = self.execution.recovery(task)
+        try:
+            review = self.execution.recovery(task)
+        except Exception as exc:
+            # Preserve a bounded diagnostic on the Run so a failed inspection
+            # remains auditable instead of becoming an unexplained dead end.
+            with suppress(Exception):
+                self.store.update_run(
+                    run_id,
+                    metadata={
+                        **run.metadata,
+                        "recovery_diagnostic": type(exc).__name__,
+                    },
+                )
+            raise
         return {
             "run_id": run.run_id,
             "session_id": run.session_id,
@@ -418,8 +468,39 @@ class ConversationService:
         run = self.get_run(run_id)
         if run is None:
             raise ValueError("Run not found")
-        if run.status is not RunStatus.RECOVERY_REQUIRED or run.session_id is None:
+        if run.status is not RunStatus.RECOVERY_REQUIRED:
             raise ValueError("Run does not require recovery")
+        if run.session_id is None:
+            if (
+                review.get("action") != "abandon_without_replay"
+                or review.get("reviewed_effects") is not True
+            ):
+                raise ValueError(
+                    "Missing-Session Run requires an explicit abandon_without_replay review"
+                )
+            note = review.get("note")
+            if (
+                not isinstance(note, str)
+                or not note.strip()
+                or any(secret in note for secret in self.execution.sensitive_values)
+            ):
+                raise ValueError(
+                    "Describe the reviewed surviving effects without secrets"
+                )
+            diagnostic = run.error or "session_not_recorded"
+            metadata = {
+                **run.metadata,
+                "recovery_note": note,
+                "recovery_action": "abandon_without_replay",
+                "recovery_diagnostic": diagnostic,
+            }
+            return self.store.update_run(
+                run_id,
+                status=RunStatus.CANCELLED,
+                error="recovery_abandoned_without_session",
+                metadata=metadata,
+                ended_at=utc_now(),
+            )
         task = self._runtime_task(run)
         self.execution.reconcile(task, review)
         metadata = {
@@ -497,12 +578,17 @@ class ConversationService:
         if prior is not None and prior.checkpoint_receipt is not None:
             with suppress(ValueError):
                 origins = (CheckpointReceipt.model_validate(prior.checkpoint_receipt),)
+
+        def bind_run_session(session_id: str) -> None:
+            self.store.bind_run_session(run_id, session_id)
+
         ledger = RunLedger(
             self.store,
             run,
             history_origins=origins,
             session_id=run.session_id or (prior.session_id if prior else None),
             on_event=lambda _kind, persisted: self.changed.set() if persisted else None,
+            on_session_bound=bind_run_session,
         )
         self.active_ledgers[run_id] = ledger
 
@@ -515,6 +601,10 @@ class ConversationService:
                 self.publish(run_id, {"type": "event", "kind": kind, "data": data})
 
         try:
+            # A prior Session is already a reliable identity; publish it before
+            # reopening so a crash while reopening still leaves an auditable link.
+            if ledger.session_id is not None:
+                bind_run_session(ledger.session_id)
             result = await self.execution(ledger.task, emit, service=ledger)
             ledger.flush_preview()
             self.store.update_run(

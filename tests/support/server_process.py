@@ -112,8 +112,11 @@ class NativeClient:
 
 
 class ServerProcess:
-    def __init__(self, source: Path, root: Path) -> None:
+    def __init__(
+        self, source: Path, root: Path, *, extra_env: dict[str, str] | None = None
+    ) -> None:
         self.source, self.root = source, root
+        self.extra_env = dict(extra_env or {})
         self.port = free_port()
         self.url = f"http://127.0.0.1:{self.port}"
         self.data_root = root / "state"
@@ -164,6 +167,7 @@ class ServerProcess:
                     "CAIRN_AGENT_HOME": str(self.state / "agent"),
                     # The FakeILink acceptance server is loopback HTTP.
                     "CAIRN_TEST_ALLOW_INSECURE_LOCAL_WECHAT": "1",
+                    **self.extra_env,
                 },
             )
 
