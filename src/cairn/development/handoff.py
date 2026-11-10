@@ -80,6 +80,10 @@ class DevelopmentHandoff:
             return
         if handoff.status is HandoffStatus.NEEDS_REVIEW:
             raise ValueError("Handoff requires explicit review before retrying")
+        if handoff.status is HandoffStatus.REVIEWING:
+            raise ValueError("Handoff review is in progress")
+        if handoff.status is HandoffStatus.ABANDONED:
+            raise ValueError("Handoff was abandoned")
         self._advance(
             run,
             handoff,
