@@ -1275,7 +1275,7 @@ class DomainStore:
                         return current, review
                     raise ValueError("Review request state is incomplete")
                 if review.status is HandoffReviewStatus.FAILED:
-                    raise ValueError("Review request already failed")
+                    return current, review
                 raise ValueError("Handoff review is already in progress")
             if current.status in {HandoffStatus.COMPLETED, HandoffStatus.ABANDONED}:
                 raise ValueError("Handoff is already terminal")

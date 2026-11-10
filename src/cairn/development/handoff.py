@@ -194,7 +194,7 @@ class DevelopmentHandoff:
             )
         except ValueError as exc:
             raise HandoffReviewConflict(str(exc)) from exc
-        if review.status.value == "completed":
+        if review.status.value in {"completed", "failed"}:
             return self.report(run_id)
         try:
             if action == "adopt_existing":
