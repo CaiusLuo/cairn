@@ -8,6 +8,7 @@ pending Domain Task is created for an uncertain external write.
 
 from collections.abc import Callable
 from contextlib import suppress
+from pathlib import Path
 from typing import Any
 
 from cairn.agent.session.models import CheckpointReceipt
@@ -49,6 +50,8 @@ class DevelopmentHandoff:
                 return
             if existing.status is HandoffStatus.NEEDS_REVIEW:
                 raise ValueError("Handoff requires explicit review before retrying")
+            if existing.status is HandoffStatus.REVIEWING:
+                raise ValueError("Handoff review is in progress")
             if existing.status is HandoffStatus.ABANDONED:
                 raise ValueError("Handoff was abandoned")
         try:
@@ -86,8 +89,12 @@ class DevelopmentHandoff:
 
     def recover_incomplete(self) -> tuple[HandoffRecord, ...]:
         """Resume durable handoffs left behind by a crash or failed step."""
+        self.store.recover_interrupted_handoff_reviews()
         recovered: list[HandoffRecord] = []
         for handoff in self.store.list_incomplete_handoffs():
+            if handoff.status is HandoffStatus.REVIEWING:
+                self._mark_needs_review(handoff, "review_interrupted")
+                continue
             if handoff.status in {
                 HandoffStatus.NEEDS_REVIEW,
                 HandoffStatus.ABANDONED,
@@ -170,32 +177,46 @@ class DevelopmentHandoff:
         expected_updated_at: str,
         note: str,
     ) -> dict[str, Any]:
-        handoff = self.store.get_handoff(run_id)
-        if handoff is None:
-            raise KeyError(run_id)
-        last_request = handoff.metadata.get("review_request_id")
-        if last_request == request_id:
-            if handoff.metadata.get("review_action") != action:
-                raise ValueError("Review request already has another action")
-            return self.report(run_id)
-        if handoff.updated_at != expected_updated_at:
-            raise HandoffReviewConflict("handoff_version_conflict")
-        if handoff.status is HandoffStatus.ABANDONED:
-            return self.report(run_id)
-        if action == "adopt_existing":
-            await self._adopt_existing(handoff, run_id)
-        elif action == "abandon":
-            await self._abandon(handoff, run_id)
-        else:
+        if action not in {"adopt_existing", "abandon"}:
             raise ValueError("Unsupported handoff review action")
-        self.store.update_handoff(
-            run_id,
-            metadata={
-                "review_request_id": request_id,
-                "review_action": action,
-                "review_note": note,
-            },
-        )
+        try:
+            handoff, review = self.store.begin_handoff_review(
+                run_id,
+                request_id=request_id,
+                action=action,
+                expected_updated_at=expected_updated_at,
+                note=note,
+            )
+        except ValueError as exc:
+            raise HandoffReviewConflict(str(exc)) from exc
+        if review.status.value == "completed":
+            return self.report(run_id)
+        try:
+            if action == "adopt_existing":
+                await self._adopt_existing(handoff, run_id)
+                final_status = HandoffStatus.COMPLETED
+            else:
+                await self._abandon(handoff, run_id)
+                final_status = HandoffStatus.ABANDONED
+        except Exception as exc:
+            diagnostic = (
+                str(exc)
+                if isinstance(exc, HandoffReviewConflict)
+                else type(exc).__name__
+            )
+            with suppress(Exception):
+                self.store.fail_handoff_review(
+                    run_id, request_id, diagnostic=diagnostic
+                )
+            if isinstance(exc, HandoffReviewConflict):
+                raise
+            raise HandoffReviewConflict("handoff_review_failed") from exc
+        try:
+            self.store.finish_handoff_review(
+                run_id, request_id, final_status=final_status
+            )
+        except Exception as exc:
+            raise HandoffReviewConflict("handoff_review_commit_failed") from exc
         return self.report(run_id)
 
     async def _adopt_existing(self, handoff: HandoffRecord, run_id: str) -> None:
@@ -206,19 +227,25 @@ class DevelopmentHandoff:
         runtime_task = self.tasks.inspect(handoff.runtime_task_id)
         domain_task = self.store.get_task(handoff.domain_task_id)
         if domain_task is None:
-            raise ValueError("Handoff Domain Task no longer exists")
+            raise HandoffReviewConflict("Handoff Domain Task no longer exists")
         run = self.store.get_run(run_id)
         if run is None:
-            raise KeyError(run_id)
+            raise HandoffReviewConflict("Handoff Run no longer exists")
         if (
             runtime_task.task_id != domain_task.task_id
+            or runtime_task.request_id != handoff.request_id
+            or runtime_task.conversation_key != handoff.conversation_id
+            or runtime_task.mode != "development"
             or domain_task.conversation_id != run.conversation_id
+            or domain_task.workspace_id != run.workspace_id
         ):
-            raise ValueError("Handoff Task identity does not match the Run")
+            raise HandoffReviewConflict("Handoff Task identity does not match the Run")
         origins = self._load_origins(handoff)
         self._validate_history_origins(origins)
         if tuple(runtime_task.history_origins) != origins:
-            raise ValueError("Handoff RuntimeTask history origins are incomplete")
+            raise HandoffReviewConflict(
+                "Handoff RuntimeTask history origins are incomplete"
+            )
         self.store.associate_run_task(run_id, domain_task.task_id)
         self.store.update_run(
             run_id,
@@ -231,30 +258,81 @@ class DevelopmentHandoff:
             session_id=run.session_id,
             ended_at=run.ended_at or utc_now(),
         )
-        self.store.update_handoff(run_id, status=HandoffStatus.COMPLETED)
 
     async def _abandon(self, handoff: HandoffRecord, run_id: str) -> None:
-        if self.tasks is not None and handoff.runtime_task_id is not None:
-            with suppress(KeyError):
-                runtime_task = self.tasks.inspect(handoff.runtime_task_id)
-                if runtime_task.status in {"queued", "running"}:
-                    try:
-                        await self.tasks.cancel(runtime_task.task_id)
-                    except Exception as exc:
-                        self._record_diagnostic(handoff, exc)
-                        raise
         run = self.store.get_run(run_id)
-        if run is not None and run.status not in {
-            RunStatus.COMPLETED,
-            RunStatus.CANCELLED,
-        }:
+        conversation = self.store.get_conversation(run.conversation_id) if run else None
+        if (
+            run is None
+            or conversation is None
+            or run.conversation_id != handoff.conversation_id
+            or conversation.workspace_id != run.workspace_id
+        ):
+            raise HandoffReviewConflict("Handoff Run/Conversation identity mismatch")
+        if handoff.domain_task_id is not None:
+            domain_task = self.store.get_task(handoff.domain_task_id)
+            if (
+                domain_task is None
+                or domain_task.task_id != handoff.domain_task_id
+                or domain_task.conversation_id != run.conversation_id
+                or domain_task.workspace_id != run.workspace_id
+            ):
+                raise HandoffReviewConflict("Handoff Domain Task identity mismatch")
+        if handoff.runtime_task_id is None:
+            self._cancel_run_for_abandon(run_id, run)
+            return
+        if self.tasks is None:
+            raise HandoffReviewConflict("TaskService unavailable for safe abandon")
+        try:
+            runtime_task = self.tasks.inspect(handoff.runtime_task_id)
+        except KeyError as exc:
+            raise HandoffReviewConflict("Handoff RuntimeTask is missing") from exc
+        if (
+            runtime_task.task_id != handoff.runtime_task_id
+            or runtime_task.request_id != handoff.request_id
+            or runtime_task.conversation_key != handoff.conversation_id
+            or runtime_task.mode != "development"
+        ):
+            raise HandoffReviewConflict("Handoff RuntimeTask identity mismatch")
+        if runtime_task.worktree is not None:
+            worktrees = getattr(self.execution, "worktrees", None)
+            if worktrees is None or not Path(
+                runtime_task.worktree
+            ).resolve().is_relative_to(worktrees):
+                raise HandoffReviewConflict("Handoff RuntimeTask workspace mismatch")
+        if runtime_task.status == "recovery_required":
+            raise HandoffReviewConflict("Handoff RuntimeTask has unknown effects")
+        if runtime_task.status in {"queued", "running"}:
+            try:
+                settled = await self.tasks.cancel(runtime_task.task_id)
+            except Exception as exc:
+                raise HandoffReviewConflict(
+                    "Handoff RuntimeTask cancellation failed"
+                ) from exc
+            if (
+                settled.task_id != runtime_task.task_id
+                or settled.request_id != handoff.request_id
+                or settled.conversation_key != handoff.conversation_id
+                or settled.status not in {"cancelled", "completed", "paused"}
+            ):
+                raise HandoffReviewConflict(
+                    "Handoff RuntimeTask cancellation is not safely settled"
+                )
+            runtime_task = settled
+        elif runtime_task.status not in {"cancelled", "completed", "paused"}:
+            raise HandoffReviewConflict(
+                "Handoff RuntimeTask cannot be safely abandoned"
+            )
+        self._cancel_run_for_abandon(run_id, run)
+
+    def _cancel_run_for_abandon(self, run_id: str, run: Run) -> None:
+        if run.status not in {RunStatus.COMPLETED, RunStatus.CANCELLED}:
             self.store.update_run(
                 run_id,
                 status=RunStatus.CANCELLED,
                 error="handoff_abandoned",
                 ended_at=utc_now(),
             )
-        self.store.update_handoff(run_id, status=HandoffStatus.ABANDONED)
 
     def _advance(
         self,

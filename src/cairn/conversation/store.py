@@ -28,6 +28,8 @@ from cairn.conversation.models import (
 )
 from cairn.development.models import (
     HandoffRecord,
+    HandoffReviewRecord,
+    HandoffReviewStatus,
     HandoffStatus,
     Task,
     TaskStatus,
@@ -175,6 +177,20 @@ class DomainStore:
             );
             CREATE INDEX IF NOT EXISTS development_handoffs_status_idx
                 ON development_handoffs(status);
+            CREATE TABLE IF NOT EXISTS handoff_reviews (
+                request_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES development_handoffs(run_id),
+                action TEXT NOT NULL,
+                expected_updated_at TEXT NOT NULL,
+                note TEXT NOT NULL,
+                status TEXT NOT NULL,
+                result_status TEXT,
+                diagnostic TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS handoff_reviews_run_idx
+                ON handoff_reviews(run_id);
             CREATE TABLE IF NOT EXISTS domain_meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -1220,6 +1236,269 @@ class DomainStore:
             )
             return updated
 
+    def begin_handoff_review(
+        self,
+        run_id: str,
+        *,
+        request_id: str,
+        action: str,
+        expected_updated_at: str,
+        note: str,
+    ) -> tuple[HandoffRecord, HandoffReviewRecord]:
+        """Atomically claim one review while holding the handoff write lock."""
+        now = utc_now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            handoff_row = connection.execute(
+                "SELECT * FROM development_handoffs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if handoff_row is None:
+                raise KeyError(run_id)
+            current = self._handoff(handoff_row)
+            review_row = connection.execute(
+                "SELECT * FROM handoff_reviews WHERE request_id = ?", (request_id,)
+            ).fetchone()
+            if review_row is not None:
+                review = self._handoff_review(review_row)
+                if (
+                    review.run_id != run_id
+                    or review.action != action
+                    or review.expected_updated_at != expected_updated_at
+                    or review.note != note
+                ):
+                    raise ValueError("Review request belongs to different input")
+                if review.status is HandoffReviewStatus.COMPLETED:
+                    if current.status in {
+                        HandoffStatus.COMPLETED,
+                        HandoffStatus.ABANDONED,
+                    }:
+                        return current, review
+                    raise ValueError("Review request state is incomplete")
+                if review.status is HandoffReviewStatus.FAILED:
+                    raise ValueError("Review request already failed")
+                raise ValueError("Handoff review is already in progress")
+            if current.status in {HandoffStatus.COMPLETED, HandoffStatus.ABANDONED}:
+                raise ValueError("Handoff is already terminal")
+            if current.status is HandoffStatus.REVIEWING:
+                raise ValueError("Handoff review is already in progress")
+            if current.updated_at != expected_updated_at:
+                raise ValueError("handoff_version_conflict")
+            cursor = connection.execute(
+                "UPDATE development_handoffs SET status=?, updated_at=? "
+                "WHERE run_id=? AND status=? AND updated_at=?",
+                (
+                    HandoffStatus.REVIEWING.value,
+                    now,
+                    run_id,
+                    current.status.value,
+                    current.updated_at,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("handoff_version_conflict")
+            updated = current.model_copy(
+                update={"status": HandoffStatus.REVIEWING, "updated_at": now}
+            )
+            review = HandoffReviewRecord(
+                request_id=request_id,
+                run_id=run_id,
+                action=action,
+                expected_updated_at=expected_updated_at,
+                note=note,
+                status=HandoffReviewStatus.IN_PROGRESS,
+                created_at=now,
+                updated_at=now,
+            )
+            connection.execute(
+                """
+                INSERT INTO handoff_reviews
+                    (request_id, run_id, action, expected_updated_at, note, status,
+                     result_status, diagnostic, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    review.request_id,
+                    review.run_id,
+                    review.action,
+                    review.expected_updated_at,
+                    review.note,
+                    review.status.value,
+                    review.result_status,
+                    review.diagnostic,
+                    review.created_at,
+                    review.updated_at,
+                ),
+            )
+            return updated, review
+
+    def finish_handoff_review(
+        self,
+        run_id: str,
+        request_id: str,
+        *,
+        final_status: HandoffStatus,
+    ) -> HandoffRecord:
+        if final_status not in {HandoffStatus.COMPLETED, HandoffStatus.ABANDONED}:
+            raise ValueError("Invalid final handoff status")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            review_row = connection.execute(
+                "SELECT * FROM handoff_reviews WHERE request_id = ?", (request_id,)
+            ).fetchone()
+            if review_row is None:
+                raise KeyError(request_id)
+            review = self._handoff_review(review_row)
+            handoff_row = connection.execute(
+                "SELECT * FROM development_handoffs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if handoff_row is None:
+                raise KeyError(run_id)
+            current = self._handoff(handoff_row)
+            if review.status is HandoffReviewStatus.COMPLETED:
+                return current
+            if review.status is HandoffReviewStatus.FAILED:
+                raise ValueError("Review request already failed")
+            if review.run_id != run_id or current.status is not HandoffStatus.REVIEWING:
+                raise ValueError("handoff_review_state_conflict")
+            now = utc_now()
+            updated = current.model_copy(
+                update={
+                    "status": final_status,
+                    "updated_at": now,
+                    "metadata": {
+                        **current.metadata,
+                        "review_request_id": request_id,
+                        "review_action": review.action,
+                        "review_note": review.note,
+                    },
+                }
+            )
+            cursor = connection.execute(
+                "UPDATE development_handoffs SET status=?, updated_at=?, "
+                "metadata_json=? WHERE run_id=? AND status=?",
+                (
+                    updated.status.value,
+                    updated.updated_at,
+                    _json(updated.metadata),
+                    run_id,
+                    HandoffStatus.REVIEWING.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("handoff_review_state_conflict")
+            connection.execute(
+                "UPDATE handoff_reviews SET status=?, result_status=?, updated_at=? "
+                "WHERE request_id=?",
+                (
+                    HandoffReviewStatus.COMPLETED.value,
+                    final_status.value,
+                    now,
+                    request_id,
+                ),
+            )
+            return updated
+
+    def fail_handoff_review(
+        self, run_id: str, request_id: str, *, diagnostic: str
+    ) -> HandoffRecord:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            review_row = connection.execute(
+                "SELECT * FROM handoff_reviews WHERE request_id = ?", (request_id,)
+            ).fetchone()
+            if review_row is None:
+                raise KeyError(request_id)
+            review = self._handoff_review(review_row)
+            handoff_row = connection.execute(
+                "SELECT * FROM development_handoffs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if handoff_row is None:
+                raise KeyError(run_id)
+            current = self._handoff(handoff_row)
+            if review.status is HandoffReviewStatus.COMPLETED:
+                return current
+            if review.status is HandoffReviewStatus.FAILED:
+                return current
+            if review.run_id != run_id or current.status is not HandoffStatus.REVIEWING:
+                raise ValueError("handoff_review_state_conflict")
+            now = utc_now()
+            updated = current.model_copy(
+                update={
+                    "status": HandoffStatus.NEEDS_REVIEW,
+                    "diagnostic": diagnostic,
+                    "updated_at": now,
+                }
+            )
+            cursor = connection.execute(
+                "UPDATE development_handoffs SET status=?, diagnostic=?, updated_at=? "
+                "WHERE run_id=? AND status=?",
+                (
+                    updated.status.value,
+                    updated.diagnostic,
+                    updated.updated_at,
+                    run_id,
+                    HandoffStatus.REVIEWING.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("handoff_review_state_conflict")
+            connection.execute(
+                "UPDATE handoff_reviews SET status=?, diagnostic=?, updated_at=? "
+                "WHERE request_id=?",
+                (
+                    HandoffReviewStatus.FAILED.value,
+                    diagnostic,
+                    now,
+                    request_id,
+                ),
+            )
+            return updated
+
+    def recover_interrupted_handoff_reviews(self) -> int:
+        """Turn reviews interrupted by a crash into an explicit review state."""
+        recovered = 0
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT * FROM handoff_reviews WHERE status = ?",
+                (HandoffReviewStatus.IN_PROGRESS.value,),
+            ).fetchall()
+            for row in rows:
+                review = self._handoff_review(row)
+                handoff_row = connection.execute(
+                    "SELECT * FROM development_handoffs WHERE run_id = ?",
+                    (review.run_id,),
+                ).fetchone()
+                if handoff_row is None:
+                    continue
+                current = self._handoff(handoff_row)
+                if current.status is not HandoffStatus.REVIEWING:
+                    continue
+                now = utc_now()
+                connection.execute(
+                    "UPDATE development_handoffs SET status=?, diagnostic=?, "
+                    "updated_at=? WHERE run_id=? AND status=?",
+                    (
+                        HandoffStatus.NEEDS_REVIEW.value,
+                        "review_interrupted",
+                        now,
+                        review.run_id,
+                        HandoffStatus.REVIEWING.value,
+                    ),
+                )
+                connection.execute(
+                    "UPDATE handoff_reviews SET status=?, diagnostic=?, updated_at=? "
+                    "WHERE request_id=?",
+                    (
+                        HandoffReviewStatus.FAILED.value,
+                        "review_interrupted",
+                        now,
+                        review.request_id,
+                    ),
+                )
+                recovered += 1
+        return recovered
+
     def create_task_if_absent(
         self,
         *,
@@ -1411,6 +1690,21 @@ class DomainStore:
             created_at=cast(str, row["created_at"]),
             updated_at=cast(str, row["updated_at"]),
             metadata=cast(dict[str, Any], _loads(row["metadata_json"], {})),
+        )
+
+    @staticmethod
+    def _handoff_review(row: sqlite3.Row) -> HandoffReviewRecord:
+        return HandoffReviewRecord(
+            request_id=cast(str, row["request_id"]),
+            run_id=cast(str, row["run_id"]),
+            action=cast(str, row["action"]),
+            expected_updated_at=cast(str, row["expected_updated_at"]),
+            note=cast(str, row["note"]),
+            status=HandoffReviewStatus(cast(str, row["status"])),
+            result_status=cast(str | None, row["result_status"]),
+            diagnostic=cast(str | None, row["diagnostic"]),
+            created_at=cast(str, row["created_at"]),
+            updated_at=cast(str, row["updated_at"]),
         )
 
     @staticmethod

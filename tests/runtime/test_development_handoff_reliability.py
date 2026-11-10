@@ -503,3 +503,274 @@ def test_handoff_review_requires_operator_authorization(tmp_path: Path) -> None:
             assert record is not None and record.status is HandoffStatus.NEEDS_REVIEW
 
     asyncio.run(scenario())
+
+
+class _FakeTasks:
+    def __init__(
+        self,
+        task: RuntimeTask,
+        *,
+        cancel_result: RuntimeTask | None = None,
+        slow: bool = False,
+    ) -> None:
+        self.task = task
+        self.cancel_result = cancel_result or task.model_copy(
+            update={"status": "cancelled"}
+        )
+        self.slow = slow
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancelled = False
+
+    def inspect(self, task_id: str) -> RuntimeTask:
+        if task_id != self.task.task_id:
+            raise KeyError(task_id)
+        return self.task
+
+    async def cancel(self, task_id: str) -> RuntimeTask:
+        self.cancelled = True
+        self.started.set()
+        if self.slow:
+            await self.release.wait()
+        return self.cancel_result
+
+
+def _direct_review_setup(
+    tmp_path: Path, *, task: RuntimeTask | None = None
+) -> tuple[DomainStore, TaskService, Any, Any, Any, _FakeTasks]:
+    source, store, tasks = _task_service(tmp_path)
+    run = _run(store, source)
+    domain = store.create_task_if_absent(
+        conversation_id=run.conversation_id,
+        task_id=task.task_id if task is not None else "task-review",
+        title="review",
+        goal="review",
+        status=TaskStatus.IN_PROGRESS,
+    )
+    runtime = task or RuntimeTask(
+        task_id=domain.task_id,
+        prompt="review",
+        source="cli",
+        mode="development",
+        request_id="handoff:" + run.run_id,
+        conversation_key=run.conversation_id,
+        status="queued",
+    )
+    store.begin_handoff(
+        run_id=run.run_id,
+        conversation_id=run.conversation_id,
+        request_id="handoff:" + run.run_id,
+        prompt="review",
+        source="cli",
+    )
+    store.update_handoff(
+        run.run_id,
+        status=HandoffStatus.RUNTIME_CREATED,
+        runtime_task_id=runtime.task_id,
+    )
+    store.update_handoff(
+        run.run_id,
+        status=HandoffStatus.DOMAIN_CREATED,
+        domain_task_id=domain.task_id,
+    )
+    store.update_handoff(
+        run.run_id,
+        status=HandoffStatus.NEEDS_REVIEW,
+        diagnostic="injected",
+    )
+    fake = _FakeTasks(runtime)
+    handoff = DevelopmentHandoff(
+        store,
+        SimpleNamespace(worktrees=tmp_path / "worktrees"),  # type: ignore[arg-type]
+        fake,  # type: ignore[arg-type]
+    )
+    return store, tasks, run, domain, handoff, fake
+
+
+def test_abandon_rejects_runtime_task_identity_mismatch(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        store, tasks, run, domain, handoff, fake = _direct_review_setup(tmp_path)
+        try:
+            record = store.get_handoff(run.run_id)
+            assert record is not None
+            fake.task = fake.task.model_copy(update={"request_id": "wrong-request"})
+            with pytest.raises(HandoffReviewConflict, match="identity mismatch"):
+                await handoff.review(
+                    run.run_id,
+                    request_id="abandon-mismatch",
+                    action="abandon",
+                    expected_updated_at=record.updated_at,
+                    note="must not cancel a foreign task",
+                )
+            assert not fake.cancelled
+            current = store.get_handoff(run.run_id)
+            assert current is not None and current.status is HandoffStatus.NEEDS_REVIEW
+            stored_run = store.get_run(run.run_id)
+            assert stored_run is not None and stored_run.status is RunStatus.RUNNING
+            assert store.get_task(domain.task_id) is not None
+        finally:
+            await _close_tasks(tasks)
+
+    asyncio.run(scenario())
+
+
+def test_abandon_keeps_needs_review_when_cancel_result_is_unknown(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        source, store, tasks = _task_service(tmp_path)
+        try:
+            run = _run(store, source)
+            domain = store.create_task_if_absent(
+                conversation_id=run.conversation_id,
+                task_id="task-unknown",
+                title="review",
+                goal="review",
+                status=TaskStatus.IN_PROGRESS,
+            )
+            runtime = RuntimeTask(
+                task_id=domain.task_id,
+                prompt="review",
+                source="cli",
+                mode="development",
+                request_id="handoff:" + run.run_id,
+                conversation_key=run.conversation_id,
+                status="running",
+            )
+            store.begin_handoff(
+                run_id=run.run_id,
+                conversation_id=run.conversation_id,
+                request_id="handoff:" + run.run_id,
+                prompt="review",
+                source="cli",
+            )
+            store.update_handoff(
+                run.run_id,
+                status=HandoffStatus.RUNTIME_CREATED,
+                runtime_task_id=runtime.task_id,
+            )
+            store.update_handoff(
+                run.run_id,
+                status=HandoffStatus.DOMAIN_CREATED,
+                domain_task_id=domain.task_id,
+            )
+            store.update_handoff(
+                run.run_id,
+                status=HandoffStatus.NEEDS_REVIEW,
+                diagnostic="injected",
+            )
+            fake = _FakeTasks(
+                runtime,
+                cancel_result=runtime.model_copy(
+                    update={"status": "recovery_required"}
+                ),
+            )
+            handoff = DevelopmentHandoff(
+                store,
+                SimpleNamespace(worktrees=tmp_path / "worktrees"),  # type: ignore[arg-type]
+                fake,  # type: ignore[arg-type]
+            )
+            record = store.get_handoff(run.run_id)
+            assert record is not None
+            with pytest.raises(HandoffReviewConflict, match="safely settled"):
+                await handoff.review(
+                    run.run_id,
+                    request_id="abandon-unknown",
+                    action="abandon",
+                    expected_updated_at=record.updated_at,
+                    note="unknown side effects",
+                )
+            assert fake.cancelled
+            current = store.get_handoff(run.run_id)
+            assert current is not None and current.status is HandoffStatus.NEEDS_REVIEW
+            assert store.get_task(domain.task_id) is not None
+            stored_run = store.get_run(run.run_id)
+            assert stored_run is not None and stored_run.status is RunStatus.RUNNING
+        finally:
+            await _close_tasks(tasks)
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_reviews_have_one_winner_and_stable_idempotency(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        store, tasks, run, domain, handoff, fake = _direct_review_setup(tmp_path)
+        fake.slow = True
+        try:
+            record = store.get_handoff(run.run_id)
+            assert record is not None
+            first = asyncio.create_task(
+                handoff.review(
+                    run.run_id,
+                    request_id="concurrent-abandon",
+                    action="abandon",
+                    expected_updated_at=record.updated_at,
+                    note="operator one",
+                )
+            )
+            await fake.started.wait()
+            with pytest.raises(HandoffReviewConflict, match="already in progress"):
+                await handoff.review(
+                    run.run_id,
+                    request_id="concurrent-adopt",
+                    action="adopt_existing",
+                    expected_updated_at=record.updated_at,
+                    note="operator two",
+                )
+            fake.release.set()
+            result = await first
+            assert result["handoff"]["status"] == "abandoned"
+            again = await handoff.review(
+                run.run_id,
+                request_id="concurrent-abandon",
+                action="abandon",
+                expected_updated_at=record.updated_at,
+                note="operator one",
+            )
+            assert again["handoff"]["status"] == "abandoned"
+            with pytest.raises(HandoffReviewConflict, match="different input"):
+                await handoff.review(
+                    run.run_id,
+                    request_id="concurrent-abandon",
+                    action="abandon",
+                    expected_updated_at=record.updated_at,
+                    note="different operator note",
+                )
+            assert store.get_task(domain.task_id) is not None
+        finally:
+            await _close_tasks(tasks)
+
+    asyncio.run(scenario())
+
+
+def test_review_interrupted_by_crash_is_recovered_to_needs_review(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        store, tasks, run, domain, handoff, fake = _direct_review_setup(tmp_path)
+        try:
+            record = store.get_handoff(run.run_id)
+            assert record is not None
+            store.begin_handoff_review(
+                run.run_id,
+                request_id="crash-review",
+                action="abandon",
+                expected_updated_at=record.updated_at,
+                note="will be interrupted",
+            )
+            # Simulate a process crash after claim, before external work.
+            assert store.recover_interrupted_handoff_reviews() == 1
+            current = store.get_handoff(run.run_id)
+            assert current is not None
+            assert current.status is HandoffStatus.NEEDS_REVIEW
+            assert current.diagnostic == "review_interrupted"
+            recovered = handoff.recover_incomplete()
+            assert recovered == ()
+            assert store.get_task(domain.task_id) is not None
+            assert not fake.cancelled
+        finally:
+            await _close_tasks(tasks)
+
+    asyncio.run(scenario())

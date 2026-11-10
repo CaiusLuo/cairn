@@ -24,6 +24,7 @@ class HandoffStatus(StrEnum):
     RUN_LINKED = "run_linked"
     COMPLETED = "completed"
     NEEDS_REVIEW = "needs_review"
+    REVIEWING = "reviewing"
     ABANDONED = "abandoned"
 
 
@@ -49,6 +50,29 @@ class HandoffRecord(BaseModel):
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class HandoffReviewStatus(StrEnum):
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class HandoffReviewRecord(BaseModel):
+    """One operator review attempt with a persistent idempotency key."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
+
+    request_id: str = Field(min_length=1, max_length=200)
+    run_id: str = Field(min_length=1, max_length=100)
+    action: str = Field(min_length=1, max_length=32)
+    expected_updated_at: str = Field(min_length=1, max_length=100)
+    note: str = Field(default="", max_length=1024)
+    status: HandoffReviewStatus = HandoffReviewStatus.IN_PROGRESS
+    result_status: str | None = Field(default=None, max_length=32)
+    diagnostic: str | None = Field(default=None, max_length=2000)
+    created_at: str = Field(default_factory=utc_now)
+    updated_at: str = Field(default_factory=utc_now)
 
 
 class TaskStatus(StrEnum):
