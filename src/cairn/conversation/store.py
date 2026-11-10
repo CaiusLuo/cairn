@@ -168,6 +168,7 @@ class DomainStore:
                 prompt TEXT NOT NULL,
                 source TEXT NOT NULL,
                 diagnostic TEXT,
+                history_origins_json TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 metadata_json TEXT NOT NULL
@@ -1038,6 +1039,7 @@ class DomainStore:
         request_id: str,
         prompt: str,
         source: str,
+        history_origins: tuple[dict[str, Any], ...] = (),
     ) -> HandoffRecord:
         """Persist the stable intent before either external store is touched."""
         now = utc_now()
@@ -1062,6 +1064,22 @@ class DomainStore:
                     or current.source != source
                 ):
                     raise ValueError("Handoff intent belongs to different input")
+                if current.history_origins != tuple(history_origins):
+                    if not current.history_origins and history_origins:
+                        now = utc_now()
+                        connection.execute(
+                            "UPDATE development_handoffs SET history_origins_json=?, "
+                            "updated_at=? WHERE run_id=?",
+                            (_json(list(history_origins)), now, run_id),
+                        )
+                        current = current.model_copy(
+                            update={
+                                "history_origins": tuple(history_origins),
+                                "updated_at": now,
+                            }
+                        )
+                    else:
+                        raise ValueError("Handoff history origins changed")
                 return current
             record = HandoffRecord(
                 run_id=run_id,
@@ -1069,6 +1087,7 @@ class DomainStore:
                 request_id=request_id,
                 prompt=prompt,
                 source=source,
+                history_origins=history_origins,
                 created_at=now,
                 updated_at=now,
             )
@@ -1076,9 +1095,9 @@ class DomainStore:
                 """
                 INSERT INTO development_handoffs
                     (run_id, conversation_id, request_id, status, runtime_task_id,
-                     domain_task_id, prompt, source, diagnostic, created_at,
-                     updated_at, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     domain_task_id, prompt, source, diagnostic,
+                     history_origins_json, created_at, updated_at, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.run_id,
@@ -1090,6 +1109,7 @@ class DomainStore:
                     record.prompt,
                     record.source,
                     record.diagnostic,
+                    _json(list(record.history_origins)),
                     record.created_at,
                     record.updated_at,
                     _json(record.metadata),
@@ -1108,8 +1128,8 @@ class DomainStore:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM development_handoffs "
-                "WHERE status != ? ORDER BY created_at, run_id",
-                (HandoffStatus.COMPLETED.value,),
+                "WHERE status NOT IN (?, ?) ORDER BY created_at, run_id",
+                (HandoffStatus.COMPLETED.value, HandoffStatus.ABANDONED.value),
             ).fetchall()
         return tuple(self._handoff(row) for row in rows)
 
@@ -1121,6 +1141,8 @@ class DomainStore:
         runtime_task_id: str | None = None,
         domain_task_id: str | None = None,
         diagnostic: str | None = None,
+        history_origins: tuple[dict[str, Any], ...] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> HandoffRecord:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1158,13 +1180,20 @@ class DomainStore:
                     "diagnostic": current.diagnostic
                     if diagnostic is None
                     else diagnostic,
+                    "history_origins": history_origins
+                    if history_origins
+                    else current.history_origins,
+                    "metadata": {**current.metadata, **metadata}
+                    if metadata is not None
+                    else current.metadata,
                     "updated_at": utc_now(),
                 }
             )
             connection.execute(
                 """
                 UPDATE development_handoffs SET status=?, runtime_task_id=?,
-                    domain_task_id=?, diagnostic=?, updated_at=?, metadata_json=?
+                    domain_task_id=?, diagnostic=?, history_origins_json=?,
+                    updated_at=?, metadata_json=?
                 WHERE run_id=?
                 """,
                 (
@@ -1172,6 +1201,7 @@ class DomainStore:
                     updated.runtime_task_id,
                     updated.domain_task_id,
                     updated.diagnostic,
+                    _json(list(updated.history_origins)),
                     updated.updated_at,
                     _json(updated.metadata),
                     run_id,
@@ -1364,6 +1394,9 @@ class DomainStore:
             prompt=cast(str, row["prompt"]),
             source=cast(str, row["source"]),
             diagnostic=cast(str | None, row["diagnostic"]),
+            history_origins=tuple(
+                cast(list[dict[str, Any]], _loads(row["history_origins_json"], []))
+            ),
             created_at=cast(str, row["created_at"]),
             updated_at=cast(str, row["updated_at"]),
             metadata=cast(dict[str, Any], _loads(row["metadata_json"], {})),

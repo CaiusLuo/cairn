@@ -251,6 +251,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .wb-review form > label { display: grid; gap: 5px; }
 .wb-review .wb-confirm { display: flex; flex-direction: row; align-items: center; gap: 8px; }
 .wb-review button { justify-self: start; }
+.wb-inline-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .wb-followup textarea { width: 100%; min-height: 75px; margin-bottom: 8px; }
 .wb-drawer {
   position: fixed; inset: 0 0 0 auto; margin: 0; padding: 0; border: 0; border-left: 1px solid var(--hui-border);

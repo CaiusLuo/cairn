@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from cairn.agent.session.models import CheckpointReceipt
 from cairn.conversation.store import DomainStore
 from cairn.development.board.models import TaskBoardItem, TaskBoardStatus, TaskSource
 from cairn.development.board.service import TaskBoardService
@@ -222,6 +223,7 @@ class TaskService:
         conversation_key: str | None = None,
         delivery_recipient: str | None = None,
         delivery_account: str | None = None,
+        history_origins: tuple[CheckpointReceipt, ...] = (),
     ) -> RuntimeTask:
         if self.stopping or self.worker is None or self.worker.done():
             raise RuntimeError("Runtime is not accepting tasks")
@@ -235,6 +237,7 @@ class TaskService:
                         or previous.conversation_key != conversation_key
                         or previous.delivery_recipient != delivery_recipient
                         or previous.delivery_account != delivery_account
+                        or previous.history_origins != history_origins
                     ):
                         raise ValueError(
                             "Source message was already bound to another request"
@@ -253,6 +256,7 @@ class TaskService:
                 "model_id": self.default_model_id,
                 "delivery_recipient": delivery_recipient,
                 "delivery_account": delivery_account,
+                "history_origins": history_origins,
             }
         )
         validator = self.validate_submission

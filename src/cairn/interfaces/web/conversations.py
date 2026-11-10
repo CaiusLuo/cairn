@@ -24,6 +24,7 @@ from cairn.conversation.service import (
     ConversationRecoveryRequired,
     ConversationService,
 )
+from cairn.development.handoff import HandoffReviewConflict
 from cairn.interfaces.web.auth import operator_request
 from cairn.interfaces.web.runtime import request_body
 from cairn.shared.lifecycle import settle_owned
@@ -43,6 +44,14 @@ class RecoveryReview(BaseModel):
     revision: dict[str, Any] | None = None
     action: Literal["abandon_without_replay", "acknowledge_checkpoint"]
     reviewed_effects: Literal[True]
+    note: str = Field(min_length=1, max_length=1024)
+
+
+class HandoffReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: str = Field(min_length=1, max_length=200)
+    action: Literal["adopt_existing", "abandon"]
+    expected_updated_at: str = Field(min_length=1, max_length=100)
     note: str = Field(min_length=1, max_length=1024)
 
 
@@ -97,7 +106,13 @@ def conversation_routes(
             "error": run.error,
             "session_id": run.session_id,
             "next_action": (
-                "development_handoff_pending"
+                "handoff_review"
+                if run.error
+                in {
+                    "development_handoff_requires_review",
+                    "development_handoff_failed",
+                }
+                else "development_handoff_pending"
                 if run.error == "development_handoff_pending"
                 else None
             ),
@@ -111,6 +126,36 @@ def conversation_routes(
             run_id = request.path_params.get("run_id")
             request_id_value = request.path_params.get("request_id")
             action = request.path_params.get("action")
+            if request.url.path.startswith("/api/runtime/handoffs/"):
+                assert isinstance(run_id, str)
+                if action == "review":
+                    if request.method != "POST":
+                        return JSONResponse(
+                            {"error": "method_not_allowed"}, status_code=405
+                        )
+                    if not operator_request(request, runtime_token):
+                        return JSONResponse({"error": "invalid_origin"}, 403)
+                    review_body = HandoffReview.model_validate(
+                        await request_body(request)
+                    )
+                    return JSONResponse(
+                        await service.review_handoff(
+                            run_id,
+                            request_id=review_body.request_id,
+                            action=review_body.action,
+                            expected_updated_at=review_body.expected_updated_at,
+                            note=review_body.note,
+                        ),
+                        headers={"Cache-Control": "no-store"},
+                    )
+                if request.method != "GET":
+                    return JSONResponse(
+                        {"error": "method_not_allowed"}, status_code=405
+                    )
+                return JSONResponse(
+                    service.handoff_report(run_id),
+                    headers={"Cache-Control": "no-store"},
+                )
             if request.url.path == "/api/runtime/runs":
                 return JSONResponse(
                     [
@@ -301,6 +346,8 @@ def conversation_routes(
             return JSONResponse({"error": "conversation_busy"}, 409)
         except ConversationRecoveryRequired:
             return JSONResponse({"error": "conversation_recovery_required"}, 409)
+        except HandoffReviewConflict:
+            return JSONResponse({"error": "handoff_version_conflict"}, 409)
         except (ValueError, ValidationError):
             return JSONResponse({"error": "invalid_request"}, 409)
         except asyncio.QueueFull:
@@ -419,6 +466,12 @@ def conversation_routes(
         ),
         Route(
             "/api/runtime/conversations/{conversation_id}/{action}",
+            handle,
+            methods=["GET", "POST"],
+        ),
+        Route("/api/runtime/handoffs/{run_id}", handle, methods=["GET"]),
+        Route(
+            "/api/runtime/handoffs/{run_id}/{action}",
             handle,
             methods=["GET", "POST"],
         ),

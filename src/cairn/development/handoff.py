@@ -1,7 +1,7 @@
 """Durable Conversation Run -> Development Task handoff.
 
 The DomainStore handoff row is the stable join key across the SQLite
-Conversation/Task store and the RuntimeCatalogue JSON task store.  Each step is
+Conversation/Task store and the RuntimeCatalogue JSON task store. Each step is
 idempotent and a failed step is resumed from the persisted stage; no synthetic
 pending Domain Task is created for an uncertain external write.
 """
@@ -10,12 +10,17 @@ from collections.abc import Callable
 from contextlib import suppress
 from typing import Any
 
+from cairn.agent.session.models import CheckpointReceipt
 from cairn.conversation.models import ConversationSource, Run, RunStatus, utc_now
 from cairn.conversation.store import DomainStore
 from cairn.development.catalogue import RuntimeTask
 from cairn.development.execution.runtime import ServiceExecution
 from cairn.development.models import HandoffRecord, HandoffStatus, TaskStatus
 from cairn.development.service import TaskService
+
+
+class HandoffReviewConflict(ValueError):
+    """The operator reviewed a stale Handoff version."""
 
 
 class DevelopmentHandoff:
@@ -37,12 +42,35 @@ class DevelopmentHandoff:
     ) -> None:
         source = run.source or ConversationSource.CLI
         prompt = execution.development_prompt or execution.prompt
+        existing = self.store.get_handoff(run.run_id)
+        if existing is not None:
+            if existing.status is HandoffStatus.COMPLETED:
+                self._ensure_completed_run(run, existing)
+                return
+            if existing.status is HandoffStatus.NEEDS_REVIEW:
+                raise ValueError("Handoff requires explicit review before retrying")
+            if existing.status is HandoffStatus.ABANDONED:
+                raise ValueError("Handoff was abandoned")
+        try:
+            origins = self._prepare_history_origins(execution)
+        except Exception as exc:
+            handoff = self.store.begin_handoff(
+                run_id=run.run_id,
+                conversation_id=run.conversation_id,
+                request_id="handoff:" + run.run_id,
+                prompt=prompt,
+                source=source.value,
+                history_origins=(),
+            )
+            self._mark_needs_review(handoff, "history_origins_unavailable")
+            raise exc
         handoff = self.store.begin_handoff(
             run_id=run.run_id,
             conversation_id=run.conversation_id,
             request_id="handoff:" + run.run_id,
             prompt=prompt,
             source=source.value,
+            history_origins=tuple(origin.model_dump(mode="json") for origin in origins),
         )
         if handoff.status is HandoffStatus.COMPLETED:
             self._ensure_completed_run(run, handoff)
@@ -60,7 +88,10 @@ class DevelopmentHandoff:
         """Resume durable handoffs left behind by a crash or failed step."""
         recovered: list[HandoffRecord] = []
         for handoff in self.store.list_incomplete_handoffs():
-            if handoff.status is HandoffStatus.NEEDS_REVIEW:
+            if handoff.status in {
+                HandoffStatus.NEEDS_REVIEW,
+                HandoffStatus.ABANDONED,
+            }:
                 continue
             run = self.store.get_run(handoff.run_id)
             if run is None:
@@ -82,6 +113,148 @@ class DevelopmentHandoff:
             except Exception as exc:
                 self._record_diagnostic(handoff, exc)
         return tuple(recovered)
+
+    def report(self, run_id: str) -> dict[str, Any]:
+        handoff = self.store.get_handoff(run_id)
+        if handoff is None:
+            raise KeyError(run_id)
+        run = self.store.get_run(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        conversation = self.store.get_conversation(run.conversation_id)
+        domain_task = (
+            self.store.get_task(handoff.domain_task_id)
+            if handoff.domain_task_id is not None
+            else None
+        )
+        runtime_task = None
+        if handoff.runtime_task_id is not None and self.tasks is not None:
+            with suppress(KeyError):
+                runtime_task = self.tasks.inspect(handoff.runtime_task_id)
+        actions: list[str] = []
+        if (
+            handoff.status is not HandoffStatus.COMPLETED
+            and handoff.status is not HandoffStatus.ABANDONED
+        ):
+            if (
+                handoff.runtime_task_id is not None
+                and handoff.domain_task_id is not None
+            ):
+                actions.append("adopt_existing")
+            actions.append("abandon")
+        return {
+            "handoff": handoff.model_dump(mode="json"),
+            "run": run.model_dump(mode="json"),
+            "conversation": (
+                conversation.model_dump(mode="json")
+                if conversation is not None
+                else None
+            ),
+            "domain_task": (
+                domain_task.model_dump(mode="json") if domain_task is not None else None
+            ),
+            "runtime_task": (
+                runtime_task.model_dump(mode="json")
+                if runtime_task is not None
+                else None
+            ),
+            "actions": actions,
+        }
+
+    async def review(
+        self,
+        run_id: str,
+        *,
+        request_id: str,
+        action: str,
+        expected_updated_at: str,
+        note: str,
+    ) -> dict[str, Any]:
+        handoff = self.store.get_handoff(run_id)
+        if handoff is None:
+            raise KeyError(run_id)
+        last_request = handoff.metadata.get("review_request_id")
+        if last_request == request_id:
+            if handoff.metadata.get("review_action") != action:
+                raise ValueError("Review request already has another action")
+            return self.report(run_id)
+        if handoff.updated_at != expected_updated_at:
+            raise HandoffReviewConflict("handoff_version_conflict")
+        if handoff.status is HandoffStatus.ABANDONED:
+            return self.report(run_id)
+        if action == "adopt_existing":
+            await self._adopt_existing(handoff, run_id)
+        elif action == "abandon":
+            await self._abandon(handoff, run_id)
+        else:
+            raise ValueError("Unsupported handoff review action")
+        self.store.update_handoff(
+            run_id,
+            metadata={
+                "review_request_id": request_id,
+                "review_action": action,
+                "review_note": note,
+            },
+        )
+        return self.report(run_id)
+
+    async def _adopt_existing(self, handoff: HandoffRecord, run_id: str) -> None:
+        if handoff.runtime_task_id is None or handoff.domain_task_id is None:
+            raise ValueError("Handoff has no complete Task identity to adopt")
+        if self.tasks is None:
+            raise RuntimeError("Development Handoff requires TaskService")
+        runtime_task = self.tasks.inspect(handoff.runtime_task_id)
+        domain_task = self.store.get_task(handoff.domain_task_id)
+        if domain_task is None:
+            raise ValueError("Handoff Domain Task no longer exists")
+        run = self.store.get_run(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        if (
+            runtime_task.task_id != domain_task.task_id
+            or domain_task.conversation_id != run.conversation_id
+        ):
+            raise ValueError("Handoff Task identity does not match the Run")
+        origins = self._load_origins(handoff)
+        self._validate_history_origins(origins)
+        if tuple(runtime_task.history_origins) != origins:
+            raise ValueError("Handoff RuntimeTask history origins are incomplete")
+        self.store.associate_run_task(run_id, domain_task.task_id)
+        self.store.update_run(
+            run_id,
+            status=RunStatus.COMPLETED,
+            result="development handoff reviewed",
+            task_id=domain_task.task_id,
+            budget=dict(run.budget),
+            trace_ref=run.trace_ref,
+            checkpoint_receipt=run.checkpoint_receipt,
+            session_id=run.session_id,
+            ended_at=run.ended_at or utc_now(),
+        )
+        self.store.update_handoff(run_id, status=HandoffStatus.COMPLETED)
+
+    async def _abandon(self, handoff: HandoffRecord, run_id: str) -> None:
+        if self.tasks is not None and handoff.runtime_task_id is not None:
+            with suppress(KeyError):
+                runtime_task = self.tasks.inspect(handoff.runtime_task_id)
+                if runtime_task.status in {"queued", "running"}:
+                    try:
+                        await self.tasks.cancel(runtime_task.task_id)
+                    except Exception as exc:
+                        self._record_diagnostic(handoff, exc)
+                        raise
+        run = self.store.get_run(run_id)
+        if run is not None and run.status not in {
+            RunStatus.COMPLETED,
+            RunStatus.CANCELLED,
+        }:
+            self.store.update_run(
+                run_id,
+                status=RunStatus.CANCELLED,
+                error="handoff_abandoned",
+                ended_at=utc_now(),
+            )
+        self.store.update_handoff(run_id, status=HandoffStatus.ABANDONED)
 
     def _advance(
         self,
@@ -122,14 +295,23 @@ class DevelopmentHandoff:
         handoff: HandoffRecord,
         execution: RuntimeTask | None,
     ) -> HandoffRecord:
+        try:
+            origins = self._load_origins(handoff)
+            self._validate_history_origins(origins)
+        except Exception as exc:
+            self._mark_needs_review(handoff, "history_origins_unavailable")
+            raise exc
         if handoff.runtime_task_id is not None:
             if self.tasks is None:
                 raise RuntimeError("Development Handoff requires TaskService")
             try:
-                self.tasks.inspect(handoff.runtime_task_id)
+                task = self.tasks.inspect(handoff.runtime_task_id)
             except KeyError:
                 self._mark_needs_review(handoff, "runtime_task_missing")
                 raise
+            if tuple(task.history_origins) != origins:
+                self._mark_needs_review(handoff, "history_origins_mismatch")
+                raise ValueError("RuntimeTask history origins are incomplete")
             return handoff
         if self.tasks is None:
             raise RuntimeError("Development Handoff requires TaskService")
@@ -141,6 +323,7 @@ class DevelopmentHandoff:
                 request_id=handoff.request_id,
                 mode="development",
                 conversation_key=run.conversation_id,
+                history_origins=origins,
             )
         except Exception as exc:
             if isinstance(exc, (ValueError, KeyError)):
@@ -153,28 +336,7 @@ class DevelopmentHandoff:
             status=HandoffStatus.RUNTIME_CREATED,
             runtime_task_id=task.task_id,
         )
-        if execution is not None:
-            self._record_history_origins(task, execution)
         return handoff
-
-    def _record_history_origins(
-        self, task: RuntimeTask, execution: RuntimeTask
-    ) -> None:
-        assert self.tasks is not None
-        origins = list(execution.history_origins)
-        if execution.session_id is not None:
-            try:
-                report = self.execution.store.inspect(execution.session_id)
-            except Exception:
-                return
-            if report.status == "clean":
-                origins.append(report.receipt)
-        if not origins:
-            return
-        self.tasks.record(
-            task.model_copy(update={"history_origins": tuple(origins)}),
-            "handoff_history",
-        )
 
     def _ensure_domain_task(
         self, run: Run, handoff: HandoffRecord
@@ -220,6 +382,51 @@ class DevelopmentHandoff:
             raise ValueError("Handoff has no RuntimeTask identity")
         return handoff.runtime_task_id
 
+    def _prepare_history_origins(
+        self, execution: RuntimeTask
+    ) -> tuple[CheckpointReceipt, ...]:
+        origins = {
+            origin.revision.session_id: origin for origin in execution.history_origins
+        }
+        if execution.session_id is not None:
+            report = self.execution.store.inspect(execution.session_id)
+            if report.status != "clean":
+                raise ValueError("checkpoint_not_clean")
+            origins[execution.session_id] = report.receipt
+        result = tuple(origins.values())
+        self._validate_history_origins(result)
+        return result
+
+    def _load_origins(self, handoff: HandoffRecord) -> tuple[CheckpointReceipt, ...]:
+        try:
+            return tuple(
+                CheckpointReceipt.model_validate(origin)
+                for origin in handoff.history_origins
+            )
+        except Exception as exc:
+            raise ValueError("history_origins_invalid") from exc
+
+    def _validate_history_origins(self, origins: tuple[CheckpointReceipt, ...]) -> None:
+        if len(origins) > 8:
+            raise ValueError("too_many_history_origins")
+        for origin in origins:
+            try:
+                report = self.execution.store.inspect(origin.revision.session_id)
+            except Exception as exc:
+                raise ValueError("history_session_unavailable") from exc
+            if report.status != "clean":
+                raise ValueError("history_session_not_clean")
+            if report.revision.session_id != origin.revision.session_id:
+                raise ValueError("history_session_mismatch")
+            if origin.revision.head_seq > report.revision.head_seq:
+                raise ValueError("history_receipt_newer_than_session")
+            if report.receipt != origin:
+                raise ValueError("history_receipt_mismatch")
+            if origin.turn_id is not None and not any(
+                attempt.intent.turn_id == origin.turn_id for attempt in report.attempts
+            ):
+                raise ValueError("history_turn_missing")
+
     def _ensure_completed_run(self, run: Run, handoff: HandoffRecord) -> None:
         if handoff.domain_task_id is None:
             raise ValueError("Completed handoff has no Domain Task identity")
@@ -250,6 +457,9 @@ class DevelopmentHandoff:
 
     def _record_diagnostic(self, handoff: HandoffRecord, exc: Exception) -> None:
         with suppress(Exception):
+            current = self.store.get_handoff(handoff.run_id)
+            if current is not None and current.status is HandoffStatus.NEEDS_REVIEW:
+                return
             self.store.update_handoff(
                 handoff.run_id,
                 diagnostic=type(exc).__name__,

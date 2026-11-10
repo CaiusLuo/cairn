@@ -15,6 +15,22 @@ type Recovery = {
   fences: Record<string, unknown>[];
 };
 
+type HandoffReport = {
+  handoff: {
+    run_id: string;
+    status: string;
+    runtime_task_id: string | null;
+    domain_task_id: string | null;
+    diagnostic: string | null;
+    updated_at: string;
+    history_origins: Record<string, unknown>[];
+  };
+  run: { run_id: string; conversation_id: string; task_id: string | null; status: string };
+  domain_task: { task_id: string; conversation_id: string } | null;
+  runtime_task: { task_id: string; status: string; history_origins?: unknown[] } | null;
+  actions: ("adopt_existing" | "abandon")[];
+};
+
 export function Approvals({ task, run, tasks, runs, refresh, navigate, error }: {
   task: string; run: string; tasks: Task[]; runs: Run[]; refresh: () => void; navigate: (path: string) => void; error?: string;
 }) {
@@ -27,7 +43,7 @@ export function Approvals({ task, run, tasks, runs, refresh, navigate, error }: 
   return <div className="wb-page">
     <PageHeader icon="gate" title="待我确认" description="检查已持久化的执行证据，明确记录恢复决定。"/>
     <ErrorText value={error}/>
-    {path ? <Review key={path} path={path} returnUrl={returnUrl} onApplied={() => { refresh(); navigate(returnUrl); }} /> :
+    {path ? <><Review key={path} path={path} returnUrl={returnUrl} onApplied={() => { refresh(); navigate(returnUrl); }} />{run && <HandoffReview runId={run} onApplied={() => { refresh(); navigate(returnUrl); }} />}</> :
       <>
         <div className="wb-run-list">{rows.map(row => <a key={row.id} href={href("approvals", "task" in row ? { task: row.task! } : { run: row.run! })}><span className="task-symbol"><Icon name="gate" size={15}/></span><div><strong>{row.text}</strong><small>{row.id}</small></div><Icon name="arrow-right" size={16}/></a>)}</div>
         {!rows.length && <Empty icon="gate" text="当前没有需要恢复核对的执行。"/>}
@@ -74,5 +90,48 @@ function Review({ path, returnUrl, onApplied }: { path: string; returnUrl: strin
       <button className="primary" disabled={!confirmed || !note.trim() || busy}>记录核对决定</button>
     </form>}
     <a className="wb-inline-link" href={returnUrl}>返回执行详情</a>
+  </section>;
+}
+
+function HandoffReview({ runId, onApplied }: { runId: string; onApplied: () => void }) {
+  const review = useResource<HandoffReport>(`handoffs/${encodeURIComponent(runId)}`);
+  const data = review.data;
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  if (!data || data.actions.length === 0) return null;
+  async function submit(action: "adopt_existing" | "abandon") {
+    if (busy || !note.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      await runtimeApi(`handoffs/${encodeURIComponent(runId)}/review`, {
+        request_id: crypto.randomUUID(),
+        action,
+        expected_updated_at: data!.handoff.updated_at,
+        note: note.trim(),
+      });
+      onApplied();
+    } catch (reason) {
+      setError(String(reason));
+      review.refresh();
+    } finally { setBusy(false); }
+  }
+  return <section className="wb-card wb-review">
+    <h2>Development Handoff 核对</h2>
+    <ErrorText value={error || review.error}/>
+    <dl>
+      <dt>Handoff 状态</dt><dd>{data.handoff.status}</dd>
+      <dt>Run</dt><dd>{data.run.run_id}</dd>
+      <dt>RuntimeTask</dt><dd>{data.handoff.runtime_task_id ?? "—"}</dd>
+      <dt>Domain Task</dt><dd>{data.handoff.domain_task_id ?? "—"}</dd>
+      <dt>失败诊断</dt><dd>{data.handoff.diagnostic ?? "—"}</dd>
+      <dt>历史来源</dt><dd>{data.handoff.history_origins.length} 个 Checkpoint</dd>
+    </dl>
+    <label>核对说明<textarea maxLength={1024} required value={note} onChange={event => setNote(event.target.value)} placeholder="说明核对到的 Task 身份与实际影响"/></label>
+    <div className="wb-inline-actions">
+      {data.actions.includes("adopt_existing") && <button type="button" className="primary" disabled={busy || !note.trim()} onClick={() => void submit("adopt_existing")}>确认已有 Task 并补偿</button>}
+      {data.actions.includes("abandon") && <button type="button" disabled={busy || !note.trim()} onClick={() => void submit("abandon")}>放弃 Handoff</button>}
+    </div>
   </section>;
 }

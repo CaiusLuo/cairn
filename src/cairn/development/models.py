@@ -24,6 +24,7 @@ class HandoffStatus(StrEnum):
     RUN_LINKED = "run_linked"
     COMPLETED = "completed"
     NEEDS_REVIEW = "needs_review"
+    ABANDONED = "abandoned"
 
 
 class HandoffRecord(BaseModel):
@@ -44,6 +45,7 @@ class HandoffRecord(BaseModel):
     prompt: str = Field(min_length=1, max_length=32000)
     source: str = Field(min_length=1, max_length=32)
     diagnostic: str | None = Field(default=None, max_length=2000)
+    history_origins: tuple[dict[str, Any], ...] = Field(default=(), max_length=8)
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)

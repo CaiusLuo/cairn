@@ -205,6 +205,14 @@ class RuntimeClient:
     async def cancel_run(self, run_id: str) -> dict[str, Any]:
         return dict(await self.request("POST", f"runs/{run_id}/cancel", {}))
 
+    async def get_handoff(self, run_id: str) -> dict[str, Any]:
+        return dict(await self.request("GET", f"handoffs/{run_id}"))
+
+    async def review_handoff(
+        self, run_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        return dict(await self.request("POST", f"handoffs/{run_id}/review", payload))
+
     async def get_run_recovery(self, run_id: str) -> dict[str, Any]:
         return dict(await self.request("GET", f"runs/{run_id}/recovery"))
 

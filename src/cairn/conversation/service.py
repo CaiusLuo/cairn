@@ -8,6 +8,7 @@ it is never written to RuntimeCatalogue on this path.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -27,6 +28,7 @@ from cairn.conversation.store import DomainStore
 from cairn.development.catalogue import RuntimeTask
 from cairn.development.execution.runtime import ServiceExecution
 from cairn.development.handoff import DevelopmentHandoff
+from cairn.development.models import HandoffStatus
 from cairn.development.service import (
     TaskAdvanced,
     TaskNeedsRecovery,
@@ -34,6 +36,8 @@ from cairn.development.service import (
     TaskService,
 )
 from cairn.shared.lifecycle import settle_owned
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ConversationBusy(RuntimeError):
@@ -421,6 +425,26 @@ class ConversationService:
         assert updated is not None
         return updated
 
+    def handoff_report(self, run_id: str) -> dict[str, Any]:
+        return self.development_handoff.report(run_id)
+
+    async def review_handoff(
+        self,
+        run_id: str,
+        *,
+        request_id: str,
+        action: str,
+        expected_updated_at: str,
+        note: str,
+    ) -> dict[str, Any]:
+        return await self.development_handoff.review(
+            run_id,
+            request_id=request_id,
+            action=action,
+            expected_updated_at=expected_updated_at,
+            note=note,
+        )
+
     def recovery(self, run_id: str) -> dict[str, Any]:
         run = self.get_run(run_id)
         if run is None:
@@ -549,6 +573,33 @@ class ConversationService:
                 if not queues:
                     del self.subscribers[run_id]
 
+    def _record_handoff_failure(
+        self, run_id: str, ledger: RunLedger, exc: Exception
+    ) -> None:
+        handoff = self.store.get_handoff(run_id)
+        if handoff is not None and handoff.status is HandoffStatus.COMPLETED:
+            self.store.update_run(
+                run_id,
+                status=RunStatus.COMPLETED,
+                result="development handoff queued",
+                task_id=handoff.domain_task_id,
+                **self._evidence(ledger),
+                ended_at=utc_now(),
+            )
+            return
+        error = (
+            "development_handoff_requires_review"
+            if handoff is not None
+            else "development_handoff_failed"
+        )
+        self.store.update_run(
+            run_id,
+            status=RunStatus.RECOVERY_REQUIRED,
+            error=error,
+            **self._evidence(ledger),
+            ended_at=utc_now(),
+        )
+
     async def _work(self) -> None:
         while True:
             run_id = await self.queue.get()
@@ -558,7 +609,26 @@ class ConversationService:
             try:
                 await task
             except asyncio.CancelledError:
-                pass
+                if self.stopping:
+                    raise
+            except Exception:
+                # _run owns normal failure persistence. This is a last-resort
+                # worker boundary so one malformed Run cannot kill the queue.
+                LOGGER.exception(
+                    "conversation worker swallowed an unhandled run failure"
+                )
+                with suppress(Exception):
+                    current = self.store.get_run(run_id)
+                    if current is not None and current.status in {
+                        RunStatus.QUEUED,
+                        RunStatus.RUNNING,
+                    }:
+                        self.store.update_run(
+                            run_id,
+                            status=RunStatus.FAILED,
+                            error="conversation_worker_error",
+                            ended_at=utc_now(),
+                        )
             finally:
                 self.active_task = None
                 self.queue.task_done()
@@ -638,9 +708,13 @@ class ConversationService:
             )
         except TaskAdvanced:
             ledger.flush_preview()
-            self.development_handoff.complete(
-                run, ledger.task, lambda: self._evidence(ledger)
-            )
+            try:
+                self.development_handoff.complete(
+                    run, ledger.task, lambda: self._evidence(ledger)
+                )
+            except Exception as exc:
+                LOGGER.exception("development handoff failed for run %s", run_id)
+                self._record_handoff_failure(run_id, ledger, exc)
         except asyncio.CancelledError:
             ledger.flush_preview()
             status, error = self._cancelled_outcome(run_id, ledger)
