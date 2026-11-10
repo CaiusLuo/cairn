@@ -47,6 +47,8 @@ class DevelopmentHandoff:
         if handoff.status is HandoffStatus.COMPLETED:
             self._ensure_completed_run(run, handoff)
             return
+        if handoff.status is HandoffStatus.NEEDS_REVIEW:
+            raise ValueError("Handoff requires explicit review before retrying")
         self._advance(
             run,
             handoff,
