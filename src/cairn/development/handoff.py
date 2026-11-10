@@ -139,10 +139,11 @@ class DevelopmentHandoff:
             with suppress(KeyError):
                 runtime_task = self.tasks.inspect(handoff.runtime_task_id)
         actions: list[str] = []
-        if (
-            handoff.status is not HandoffStatus.COMPLETED
-            and handoff.status is not HandoffStatus.ABANDONED
-        ):
+        if handoff.status not in {
+            HandoffStatus.COMPLETED,
+            HandoffStatus.ABANDONED,
+            HandoffStatus.REVIEWING,
+        }:
             if (
                 handoff.runtime_task_id is not None
                 and handoff.domain_task_id is not None
