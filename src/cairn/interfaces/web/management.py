@@ -11,6 +11,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from cairn.development.service import (
+    TaskBusy,
+    TaskNotContinuable,
+    TaskRecoveryRequired,
+)
 from cairn.interfaces.web.auth import operator_request
 from cairn.interfaces.web.runtime import request_body
 
@@ -71,6 +76,22 @@ def management_routes(controls: Controls, token: str) -> list[Route]:
                     )
                 result = await controls.command(body.model_dump())
             return JSONResponse(result, headers=headers)
+        except TaskBusy as error:
+            return JSONResponse(
+                {"error": "task_busy", "message": str(error)}, 409, headers=headers
+            )
+        except TaskRecoveryRequired as error:
+            return JSONResponse(
+                {"error": "task_recovery_required", "message": str(error)},
+                409,
+                headers=headers,
+            )
+        except TaskNotContinuable as error:
+            return JSONResponse(
+                {"error": "task_not_continuable", "message": str(error)},
+                409,
+                headers=headers,
+            )
         except (ValueError, KeyError):
             return JSONResponse(
                 {"error": "invalid_or_stale_command"}, 409, headers=headers

@@ -1,10 +1,13 @@
 from pathlib import Path
+from typing import Any
 
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
+from cairn.development.service import TaskBusy
 from cairn.interfaces.web.app import create_app
 from cairn.interfaces.web.config import WebConfig
+from cairn.interfaces.web.management import management_routes
 
 
 def _app(tmp_path: Path) -> Starlette:
@@ -17,6 +20,31 @@ def _app(tmp_path: Path) -> Starlette:
         web_root=None,
     )
     return create_app(config)
+
+
+class _BusyControls:
+    workspace = Path("/tmp/workspace")
+
+    async def command(self, request: dict[str, Any]) -> dict[str, Any]:
+        raise TaskBusy("Task is still executing")
+
+    async def snapshot(self, section: str) -> dict[str, Any]:
+        return {}
+
+    def commands(self) -> list[dict[str, Any]]:
+        return []
+
+
+def test_management_returns_explicit_task_conflict_codes() -> None:
+    app = Starlette(routes=management_routes(_BusyControls(), "host-token"))
+    client = TestClient(app, base_url="http://127.0.0.1")
+    response = client.post(
+        "/api/runtime/commands",
+        headers={"Origin": "http://127.0.0.1"},
+        json={"command": "/reply", "request_id": "reply-1"},
+    )
+    assert response.status_code == 409
+    assert response.json()["error"] == "task_busy"
 
 
 def test_health_and_snapshot_are_read_only(tmp_path: Path) -> None:
