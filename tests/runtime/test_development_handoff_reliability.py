@@ -19,7 +19,11 @@ from cairn.agent.session.models import CheckpointReceipt, Revision
 from cairn.conversation.models import Conversation, ConversationSource, Run, RunStatus
 from cairn.conversation.store import DomainStore
 from cairn.development.catalogue import RuntimeCatalogue, RuntimeTask
-from cairn.development.handoff import DevelopmentHandoff, HandoffReviewConflict
+from cairn.development.handoff import (
+    DevelopmentHandoff,
+    HandoffReviewConflict,
+    HandoffReviewFailed,
+)
 from cairn.development.models import HandoffStatus, Task, TaskStatus
 from cairn.development.service import TaskService
 from cairn.server.bootstrap import runtime_app
@@ -521,6 +525,7 @@ class _FakeTasks:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
         self.cancelled = False
+        self.cancel_calls = 0
 
     def inspect(self, task_id: str) -> RuntimeTask:
         if task_id != self.task.task_id:
@@ -529,6 +534,7 @@ class _FakeTasks:
 
     async def cancel(self, task_id: str) -> RuntimeTask:
         self.cancelled = True
+        self.cancel_calls += 1
         self.started.set()
         if self.slow:
             await self.release.wait()
@@ -770,6 +776,93 @@ def test_review_interrupted_by_crash_is_recovered_to_needs_review(
             assert recovered == ()
             assert store.get_task(domain.task_id) is not None
             assert not fake.cancelled
+        finally:
+            await _close_tasks(tasks)
+
+    asyncio.run(scenario())
+
+
+def test_review_cancellation_persists_needs_review_and_blocks_replay(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        store, tasks, run, domain, handoff, fake = _direct_review_setup(tmp_path)
+        fake.slow = True
+        try:
+            record = store.get_handoff(run.run_id)
+            assert record is not None
+            in_flight = asyncio.create_task(
+                handoff.review(
+                    run.run_id,
+                    request_id="cancel-review",
+                    action="abandon",
+                    expected_updated_at=record.updated_at,
+                    note="cancel during external cancel",
+                )
+            )
+            await fake.started.wait()
+            in_flight.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await in_flight
+            current = store.get_handoff(run.run_id)
+            assert current is not None
+            assert current.status is HandoffStatus.NEEDS_REVIEW
+            assert current.diagnostic == "review_cancelled"
+            assert store.get_task(domain.task_id) is not None
+            with pytest.raises(HandoffReviewFailed, match="review_cancelled"):
+                await handoff.review(
+                    run.run_id,
+                    request_id="cancel-review",
+                    action="abandon",
+                    expected_updated_at=record.updated_at,
+                    note="cancel during external cancel",
+                )
+            assert fake.cancel_calls == 1
+        finally:
+            await _close_tasks(tasks)
+
+    asyncio.run(scenario())
+
+
+def test_failed_review_replay_keeps_failure_semantics_without_side_effects(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        store, tasks, run, domain, handoff, fake = _direct_review_setup(tmp_path)
+        try:
+            record = store.get_handoff(run.run_id)
+            assert record is not None
+            fake.task = fake.task.model_copy(update={"request_id": "wrong-request"})
+            with pytest.raises(HandoffReviewConflict, match="identity mismatch"):
+                await handoff.review(
+                    run.run_id,
+                    request_id="failed-replay",
+                    action="abandon",
+                    expected_updated_at=record.updated_at,
+                    note="identity mismatch",
+                )
+            assert fake.cancel_calls == 0
+            with pytest.raises(HandoffReviewFailed, match="identity mismatch"):
+                await handoff.review(
+                    run.run_id,
+                    request_id="failed-replay",
+                    action="abandon",
+                    expected_updated_at=record.updated_at,
+                    note="identity mismatch",
+                )
+            assert fake.cancel_calls == 0
+            with pytest.raises(HandoffReviewConflict, match="different input"):
+                await handoff.review(
+                    run.run_id,
+                    request_id="failed-replay",
+                    action="abandon",
+                    expected_updated_at=record.updated_at,
+                    note="different note",
+                )
+            assert fake.cancel_calls == 0
+            current = store.get_handoff(run.run_id)
+            assert current is not None and current.status is HandoffStatus.NEEDS_REVIEW
+            assert store.get_task(domain.task_id) is not None
         finally:
             await _close_tasks(tasks)
 

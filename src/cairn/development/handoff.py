@@ -6,6 +6,7 @@ idempotent and a failed step is resumed from the persisted stage; no synthetic
 pending Domain Task is created for an uncertain external write.
 """
 
+import asyncio
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -22,6 +23,14 @@ from cairn.development.service import TaskService
 
 class HandoffReviewConflict(ValueError):
     """The operator reviewed a stale Handoff version."""
+
+
+class HandoffReviewFailed(HandoffReviewConflict):
+    """A review with this request id already failed; do not replay it."""
+
+    def __init__(self, diagnostic: str) -> None:
+        self.diagnostic = diagnostic or "handoff_review_failed"
+        super().__init__(self.diagnostic)
 
 
 class DevelopmentHandoff:
@@ -194,8 +203,10 @@ class DevelopmentHandoff:
             )
         except ValueError as exc:
             raise HandoffReviewConflict(str(exc)) from exc
-        if review.status.value in {"completed", "failed"}:
+        if review.status.value == "completed":
             return self.report(run_id)
+        if review.status.value == "failed":
+            raise HandoffReviewFailed(review.diagnostic or "handoff_review_failed")
         try:
             if action == "adopt_existing":
                 await self._adopt_existing(handoff, run_id)
@@ -203,6 +214,15 @@ class DevelopmentHandoff:
             else:
                 await self._abandon(handoff, run_id)
                 final_status = HandoffStatus.ABANDONED
+        except asyncio.CancelledError:
+            # The review can be cancelled while TaskService.cancel() is
+            # awaiting the active executor. The external outcome is unknown;
+            # persist a reviewable state and propagate cancellation.
+            with suppress(Exception):
+                self.store.fail_handoff_review(
+                    run_id, request_id, diagnostic="review_cancelled"
+                )
+            raise
         except Exception as exc:
             diagnostic = (
                 str(exc)

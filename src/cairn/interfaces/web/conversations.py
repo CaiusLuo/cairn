@@ -24,7 +24,7 @@ from cairn.conversation.service import (
     ConversationRecoveryRequired,
     ConversationService,
 )
-from cairn.development.handoff import HandoffReviewConflict
+from cairn.development.handoff import HandoffReviewConflict, HandoffReviewFailed
 from cairn.interfaces.web.auth import operator_request
 from cairn.interfaces.web.runtime import request_body
 from cairn.shared.lifecycle import settle_owned
@@ -346,6 +346,14 @@ def conversation_routes(
             return JSONResponse({"error": "conversation_busy"}, 409)
         except ConversationRecoveryRequired:
             return JSONResponse({"error": "conversation_recovery_required"}, 409)
+        except HandoffReviewFailed as exc:
+            return JSONResponse(
+                {
+                    "error": "handoff_review_failed",
+                    "diagnostic": exc.diagnostic,
+                },
+                409,
+            )
         except HandoffReviewConflict:
             return JSONResponse({"error": "handoff_version_conflict"}, 409)
         except (ValueError, ValidationError):
