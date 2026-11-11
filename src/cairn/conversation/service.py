@@ -258,7 +258,7 @@ class ConversationService:
             if handoff is not None and handoff.status is HandoffStatus.COMPLETED:
                 return self._development_entry_payload(conversation, run, handoff)
         if run.status is not RunStatus.RUNNING:
-            self.store.update_run(run.run_id, status=RunStatus.RUNNING)
+            self.store.update_run(run.run_id, status=RunStatus.RUNNING, error="")
             run = self.store.get_run(run.run_id) or run
 
         origins = self._development_history_origins(

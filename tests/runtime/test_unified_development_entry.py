@@ -245,3 +245,42 @@ def test_explicit_development_preserves_conversation_history_origin(
             assert handoff.status is HandoffStatus.COMPLETED
 
     asyncio.run(scenario())
+
+
+def test_explicit_development_handoff_failure_retries_same_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario() -> None:
+        app = _app(tmp_path)
+        async with app.router.lifespan_context(app):
+            api = _client(app)
+            handoff = app.state.conversations.development_handoff
+            original = handoff._ensure_runtime_task
+
+            def fail_once(*args: Any, **kwargs: Any) -> Any:
+                raise RuntimeError("injected handoff failure")
+
+            monkeypatch.setattr(handoff, "_ensure_runtime_task", fail_once)
+            with pytest.raises(httpx.HTTPStatusError) as failed:
+                await api.create_development(
+                    "Recoverable explicit goal",
+                    "cli",
+                    "recoverable-dev",
+                )
+            assert failed.value.response.status_code == 503
+
+            monkeypatch.setattr(handoff, "_ensure_runtime_task", original)
+            recovered = await api.create_development(
+                "Recoverable explicit goal",
+                "cli",
+                "recoverable-dev",
+            )
+            assert recovered["task_id"]
+            assert len(app.state.conversations.store.list_tasks()) == 1
+            handoff_record = app.state.conversations.store.get_handoff(
+                recovered["run_id"]
+            )
+            assert handoff_record is not None
+            assert handoff_record.status is HandoffStatus.COMPLETED
+
+    asyncio.run(scenario())
