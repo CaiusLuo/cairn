@@ -19,6 +19,7 @@ from cairn.development.catalogue import (
     RuntimeCatalogue,
     RuntimeEvent,
     RuntimeSource,
+    RuntimeStatus,
     RuntimeTask,
     TaskInput,
 )
@@ -174,7 +175,7 @@ class TaskService:
     def _track_input(
         self,
         task: RuntimeTask,
-        status: str,
+        status: RuntimeStatus,
         *,
         settled_sequence: int | None = None,
         result: str | None = None,
@@ -206,7 +207,7 @@ class TaskService:
     def _settle_input(
         self,
         task: RuntimeTask,
-        status: str,
+        status: RuntimeStatus,
         *,
         result: str | None = None,
         diagnostic: str | None = None,
