@@ -446,13 +446,21 @@ class ConversationService:
                 raise ConversationBusy("Conversation already has an active Run")
         if existing is None and self.queue.full():
             raise asyncio.QueueFull
-        run = self.store.accept_run(
-            conversation_id=conversation_id,
-            prompt=prompt,
-            source=source,
-            request_id=request_id,
-            model_id=model_id,
-        )
+        try:
+            run = self.store.accept_run(
+                conversation_id=conversation_id,
+                prompt=prompt,
+                source=source,
+                request_id=request_id,
+                model_id=model_id,
+            )
+        except ValueError as exc:
+            message = str(exc)
+            if "requiring recovery review" in message:
+                raise ConversationRecoveryRequired(message) from exc
+            if "active Run" in message:
+                raise ConversationBusy(message) from exc
+            raise
         if existing is None and run.run_id not in self.queued_ids:
             self.queued_ids.add(run.run_id)
             self.queue.put_nowait(run.run_id)
