@@ -14,6 +14,7 @@ from cairn.agent.budget import RunBudget
 from cairn.agent.models.messages import LLMResponse, Message
 from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.development.catalogue import RuntimeCatalogue, RuntimeTask, TaskInput
+from cairn.development.service import TaskNeedsRecovery
 from cairn.interfaces.cli.runtime_chat import RemoteConversation
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
@@ -177,6 +178,12 @@ def test_active_recovery_and_terminal_states_refuse_or_accept_explicitly(
             assert busy.value.response.status_code == 409
             assert busy.value.response.json()["error"] == "task_busy"
 
+            # The CLI translates the same conflict into an actionable message.
+            with pytest.raises(ValueError, match="still executing"):
+                await cli.send(
+                    "CLI must translate the conflict", request_id="cli-busy-1"
+                )
+
             # A detached client cursor cannot cancel the Server-owned execution.
             follower = asyncio.create_task(cli.wait())
             await asyncio.sleep(0.05)
@@ -264,6 +271,53 @@ def test_active_recovery_and_terminal_states_refuse_or_accept_explicitly(
                 "cli-paused-1",
             ]
             assert resumed["inputs"][-1]["status"] == "completed"
+
+    asyncio.run(scenario())
+
+
+def test_uncertain_effect_settles_the_input_and_blocks_replay(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app = _app(tmp_path)
+        async with app.router.lifespan_context(app):
+            api = _client(app)
+            entry = await api.create_development(
+                "Uncertain effect task", "web", "uncertain-create-1"
+            )
+            await asyncio.wait_for(app.state.runtime.queue.join(), 30)
+            created = await api.inspect(entry["task_id"])
+
+            async def uncertain(task: Any, emit: Any) -> str:
+                raise TaskNeedsRecovery()
+
+            app.state.runtime.executor = uncertain
+            accepted = await api.message(
+                entry["task_id"],
+                "Touch the host without replaying it",
+                source="cli",
+                request_id="uncertain-1",
+                expected_sequence=created["sequence"],
+            )
+            assert accepted["status"] == "queued"
+            await asyncio.wait_for(app.state.runtime.queue.join(), 30)
+
+            interrupted = await api.inspect(entry["task_id"])
+            assert interrupted["status"] == "recovery_required"
+            assert interrupted["inputs"][-1]["request_id"] == "uncertain-1"
+            assert interrupted["inputs"][-1]["status"] == "recovery_required"
+            assert interrupted["inputs"][-1]["diagnostic"] == (
+                "effects_require_host_review"
+            )
+
+            with pytest.raises(httpx.HTTPStatusError) as blocked:
+                await api.message(
+                    entry["task_id"],
+                    "Must be reviewed first",
+                    source="web",
+                    request_id="uncertain-2",
+                    expected_sequence=interrupted["sequence"],
+                )
+            assert blocked.value.response.status_code == 409
+            assert blocked.value.response.json()["error"] == "task_recovery_required"
 
     asyncio.run(scenario())
 

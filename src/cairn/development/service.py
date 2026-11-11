@@ -269,16 +269,16 @@ class TaskService:
         ):
             raise ValueError("Fresh recovery review required")
         self.reconciler(task, report)
-        return self.record(
-            task.model_copy(
-                update={
-                    "status": "paused",
-                    "diagnostic": None,
-                    "recovery_note": report["note"],
-                }
-            ),
-            "reconciled",
+        reviewed = task.model_copy(
+            update={
+                "status": "paused",
+                "diagnostic": None,
+                "recovery_note": report["note"],
+            }
         )
+        # The host reviewed the interrupted input; settle its receipt at the
+        # reconciliation event instead of leaving it stuck at recovery_required.
+        return self.record(self._settle_input(reviewed, "paused"), "reconciled")
 
     def submit(
         self,

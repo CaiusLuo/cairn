@@ -59,6 +59,10 @@ def test_web_task_continues_from_cli_across_server_restart(tmp_path: Path) -> No
         assert followed["inputs"][-1]["request_id"] == "process-cli-follow-1"
         assert followed["inputs"][-1]["status"] == "completed"
 
+        duplicate = asyncio.run(append("Continue from the CLI", "process-cli-follow-1"))
+        assert duplicate["attempts"] == followed["attempts"]
+        assert duplicate["inputs"] == followed["inputs"]
+
         server.stop(crash=True)
         server.start()
         client = _client(server)
@@ -170,6 +174,11 @@ def test_crashed_followup_requires_recovery_before_another_input(
             client.request("POST", f"tasks/{task_id}/reconcile", review)
         )
         assert paused["status"] == "paused"
+        reviewed_input = paused["inputs"][-1]
+        assert reviewed_input["request_id"] == "crash-follow-1"
+        assert reviewed_input["status"] == "paused"
+        assert reviewed_input["settled_sequence"] == paused["sequence"]
+        assert reviewed_input["diagnostic"] is None
 
         resumed = asyncio.run(
             client.message(
