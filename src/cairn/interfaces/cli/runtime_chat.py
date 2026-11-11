@@ -361,7 +361,19 @@ async def main(
             detail = task.get("error") or task.get("diagnostic") or ""
             print(f"{status}: {detail}" if detail else status)
 
+    async def select_target(
+        ident: str,
+    ) -> tuple[RemoteChat | RemoteConversation, list[dict[str, Any]]]:
+        if ident.startswith("task-"):
+            target: RemoteChat | RemoteConversation = RemoteConversation(api)
+        elif ident.startswith(("conv-", "run-")):
+            target = RemoteChat(api)
+        else:
+            raise ValueError("Use a Task, Conversation or Run ID")
+        return target, await target.select(ident)
+
     async def manage(line: str, *, following: bool = False) -> bool:
+        nonlocal remote
         command, _, argument = line.strip().partition(" ")
         if command not in control_names:
             return False
@@ -376,7 +388,7 @@ async def main(
             and result.get("task_id")
             and argument.split()[:1] == ["use"]
         ):
-            await remote.select(result["task_id"])
+            remote, _ = await select_target(result["task_id"])
         elif remote.task:
             remote.task = await remote.refresh()
         return True
@@ -508,9 +520,12 @@ async def main(
                         return
                     continue
                 if command == "/use":
-                    history = await remote.select(argument)
-                    assert remote.task is not None
-                    show(remote.task, explicit=True)
+                    if not argument.strip():
+                        print("Use /use TASK_ID, /use CONVERSATION_ID or /use RUN_ID.")
+                        continue
+                    remote, history = await select_target(argument.strip())
+                    if remote.task is not None:
+                        show(remote.task, explicit=True)
                     for message in history:
                         if message["role"] == "assistant" and message.get("content"):
                             print_assistant_response(message["content"])

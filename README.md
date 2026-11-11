@@ -67,6 +67,9 @@ history and execution recovery. Settings manages WeChat, schedules and memory. U
 Chat normally, or enter `/develop GOAL`. `/status`, `/history`, `/cancel`,
 `/new` and `/use CONVERSATION_ID` operate on the same server-owned Conversation;
 `/continue` and development task controls remain on the explicit development path.
+`/use TASK_ID` and `/task use TASK_ID` switch the client to that explicit Task,
+while `/use RUN_ID` selects a Conversation Run; appended input keeps the selected
+Task, Session and Worktree.
 Conversation creation and messages accept a stable `request_id`; retries return
 the original Conversation/Run and never fork a duplicate. A Development Task
 created from Web or CLI can be continued from either entry by Task ID. Each
