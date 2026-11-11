@@ -216,6 +216,140 @@ class ConversationService:
             request_id=request_id,
         )
 
+    def create_development(
+        self,
+        prompt: str,
+        source: ConversationSource,
+        request_id: str,
+        *,
+        conversation_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create an explicit Development Task through the shared handoff path.
+
+        This is an admission API, not a chat turn: it never calls the model.
+        Conversation, Run, Handoff intent, RuntimeTask and Domain Task share
+        one stable request identity and can be retried safely.
+        """
+        if not request_id:
+            raise ValueError("Development request_id is required")
+        if conversation_id is None:
+            conversation = self.store.create_conversation(
+                workspace=self.workspace,
+                source=source,
+                initial_prompt=prompt,
+                request_id="development-conv:" + request_id,
+            )
+        else:
+            existing_conversation = self.get_conversation(conversation_id)
+            if existing_conversation is None:
+                raise ValueError("Conversation not found")
+            conversation = existing_conversation
+        run_request_id = "development:" + request_id
+        run = self.store.accept_run(
+            conversation_id=conversation.conversation_id,
+            prompt=prompt,
+            source=source,
+            request_id=run_request_id,
+            mode="development",
+            status=RunStatus.RUNNING,
+        )
+        if run.task_id is not None:
+            handoff = self.store.get_handoff(run.run_id)
+            if handoff is not None and handoff.status is HandoffStatus.COMPLETED:
+                return self._development_entry_payload(conversation, run, handoff)
+        if run.status is not RunStatus.RUNNING:
+            self.store.update_run(run.run_id, status=RunStatus.RUNNING)
+            run = self.store.get_run(run.run_id) or run
+
+        origins = self._development_history_origins(
+            conversation.conversation_id, exclude_run_id=run.run_id
+        )
+        execution = RuntimeTask(
+            task_id=run.run_id,
+            prompt=prompt,
+            source=source.value,
+            mode="development",
+            conversation_key=conversation.conversation_id,
+            input_prompt=prompt,
+            history_origins=origins,
+        )
+
+        def evidence() -> dict[str, Any]:
+            current = self.store.get_run(run.run_id) or run
+            return {
+                "budget": dict(current.budget),
+                "trace_ref": current.trace_ref,
+                "checkpoint_receipt": current.checkpoint_receipt,
+                "session_id": current.session_id,
+            }
+
+        try:
+            self.development_handoff.complete(run, execution, evidence)
+        except Exception:
+            handoff = self.store.get_handoff(run.run_id)
+            if handoff is not None and handoff.status is HandoffStatus.COMPLETED:
+                current = self.store.get_run(run.run_id) or run
+                return self._development_entry_payload(conversation, current, handoff)
+            self.store.update_run(
+                run.run_id,
+                status=RunStatus.RECOVERY_REQUIRED,
+                error="development_entry_failed",
+                ended_at=utc_now(),
+            )
+            raise
+        resolved = self.store.get_run(run.run_id)
+        if resolved is None:
+            raise RuntimeError("Development Run disappeared during handoff")
+        handoff = self.store.get_handoff(run.run_id)
+        if handoff is None or handoff.status is not HandoffStatus.COMPLETED:
+            raise RuntimeError("Development Handoff did not complete")
+        return self._development_entry_payload(conversation, resolved, handoff)
+
+    def _development_history_origins(
+        self, conversation_id: str, *, exclude_run_id: str
+    ) -> tuple[CheckpointReceipt, ...]:
+        for candidate in reversed(
+            self.store.list_runs_for_conversation(conversation_id)
+        ):
+            if candidate.run_id == exclude_run_id:
+                continue
+            if candidate.checkpoint_receipt is None:
+                continue
+            try:
+                return (CheckpointReceipt.model_validate(candidate.checkpoint_receipt),)
+            except ValueError:
+                continue
+        return ()
+
+    def _development_entry_payload(
+        self, conversation: Conversation, run: Run, handoff: Any
+    ) -> dict[str, Any]:
+        task_id = run.task_id or handoff.domain_task_id
+        domain_task = self.store.get_task(task_id) if task_id is not None else None
+        runtime_task = None
+        tasks = self.development_handoff.tasks
+        if task_id is not None and tasks is not None:
+            with suppress(KeyError):
+                runtime_task = tasks.inspect(task_id)
+        task_payload = (
+            runtime_task.model_dump(mode="json")
+            if runtime_task is not None
+            else domain_task.model_dump(mode="json")
+            if domain_task is not None
+            else None
+        )
+        return {
+            "conversation_id": conversation.conversation_id,
+            "run_id": run.run_id,
+            "task_id": task_id,
+            "status": run.status.value,
+            "task": task_payload,
+            "run": run.model_dump(mode="json"),
+            "handoff": handoff.model_dump(mode="json")
+            if hasattr(handoff, "model_dump")
+            else handoff,
+        }
+
     def ensure_wechat_conversation(
         self,
         account_id: str,

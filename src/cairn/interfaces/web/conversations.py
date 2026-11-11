@@ -47,6 +47,14 @@ class RecoveryReview(BaseModel):
     note: str = Field(min_length=1, max_length=1024)
 
 
+class DevelopmentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    prompt: str = Field(min_length=1, max_length=32000)
+    source: ConversationSource = ConversationSource.CLI
+    request_id: str = Field(min_length=1, max_length=200)
+    conversation_id: str | None = Field(default=None, max_length=100)
+
+
 class HandoffReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: str = Field(min_length=1, max_length=200)
@@ -154,6 +162,22 @@ def conversation_routes(
                     )
                 return JSONResponse(
                     service.handoff_report(run_id),
+                    headers={"Cache-Control": "no-store"},
+                )
+            if (
+                request.method == "POST"
+                and request.url.path == "/api/runtime/developments"
+            ):
+                development_body = DevelopmentCreate.model_validate(
+                    await request_body(request)
+                )
+                return JSONResponse(
+                    service.create_development(
+                        development_body.prompt,
+                        development_body.source,
+                        development_body.request_id,
+                        conversation_id=development_body.conversation_id,
+                    ),
                     headers={"Cache-Control": "no-store"},
                 )
             if request.url.path == "/api/runtime/runs":
@@ -477,6 +501,7 @@ def conversation_routes(
             handle,
             methods=["GET", "POST"],
         ),
+        Route("/api/runtime/developments", handle, methods=["POST"]),
         Route("/api/runtime/handoffs/{run_id}", handle, methods=["GET"]),
         Route(
             "/api/runtime/handoffs/{run_id}/{action}",

@@ -413,8 +413,21 @@ async def main(
                             "Use /develop GOAL to start an explicit development task."
                         )
                         continue
+                    conversation_id = (
+                        remote.conversation["conversation_id"]
+                        if isinstance(remote, RemoteChat) and remote.conversation
+                        else None
+                    )
+                    created = await api.create_development(
+                        argument,
+                        "cli",
+                        "cli-develop:" + uuid4().hex,
+                        conversation_id=conversation_id,
+                    )
                     remote = RemoteConversation(api, mode="development")
-                    show(await remote.send(argument))
+                    await remote.select(created["task_id"])
+                    assert remote.task is not None
+                    show(remote.task, explicit=True)
                     if not await follow():
                         return
                     continue

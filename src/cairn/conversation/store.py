@@ -777,6 +777,7 @@ class DomainStore:
         mode: str = "conversation",
         task_id: str | None = None,
         model_id: str | None = None,
+        status: RunStatus = RunStatus.QUEUED,
     ) -> Run:
         """Atomically accept one request and create its Run, or return the original."""
         import hashlib
@@ -822,7 +823,7 @@ class DomainStore:
                 conversation_id=conversation_id,
                 task_id=task_id,
                 workspace_id=cast(str, conversation["workspace_id"]),
-                status=RunStatus.QUEUED,
+                status=status,
                 prompt=prompt,
                 request_id=request_id,
                 source=source,

@@ -166,6 +166,23 @@ class RuntimeClient:
             )
         )
 
+    async def create_development(
+        self,
+        prompt: str,
+        source: str,
+        request_id: str,
+        *,
+        conversation_id: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "prompt": prompt,
+            "source": source,
+            "request_id": request_id,
+        }
+        if conversation_id is not None:
+            body["conversation_id"] = conversation_id
+        return dict(await self.request("POST", "developments", body))
+
     async def send_conversation(
         self,
         conversation_id: str,

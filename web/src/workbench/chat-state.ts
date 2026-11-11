@@ -23,13 +23,14 @@ export function readSubmission(key: string): Submission | null {
 export async function sendSubmission(submission: Submission, key: string) {
   sessionStorage.setItem(key, JSON.stringify(submission));
   if (submission.mode === "development") {
-    const task = await runtimeApi<Task>("tasks", {
-      prompt: submission.prompt, source: "web", mode: "development", request_id: submission.id,
-      // Standalone work gets its own Task. A reused catalogue key would post a
-      // follow-up to another Task in the current compatibility execution path.
+    const created = await runtimeApi<{ task: Task }>("developments", {
+      prompt: submission.prompt,
+      source: "web",
+      request_id: submission.id,
+      ...(submission.conversation ? { conversation_id: submission.conversation } : {}),
     });
     sessionStorage.removeItem(key);
-    return { task };
+    return { task: created.task };
   }
   if (!submission.conversation) {
     const created = await runtimeApi<Conversation>("conversations", {
