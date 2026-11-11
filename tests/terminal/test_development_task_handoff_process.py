@@ -76,10 +76,12 @@ def test_web_created_task_continues_from_real_cli_and_survives_exit(
         wait_for(lambda: "离线开发链路完成".encode() in terminal.output)
         time.sleep(0.3)
 
+        # A follow-up session already contains tool facts, so the test model
+        # pauses at the "after" gate rather than at its first call.
         # Exit the client while the next turn is executing. The Server owns it.
-        (server.gates / "before").touch()
+        (server.gates / "after").touch()
         terminal.send("Hold this turn open")
-        wait_for(lambda: (server.gates / "before.entered").exists())
+        wait_for(lambda: (server.gates / "after.entered").exists())
         assert asyncio.run(client.inspect(task_id))["status"] == "running"
         terminal.send("/exit")
         assert terminal.process.wait(timeout=10) == 0, bytes(terminal.output).decode(
@@ -87,7 +89,7 @@ def test_web_created_task_continues_from_real_cli_and_survives_exit(
         )[-2000:]
         assert asyncio.run(client.inspect(task_id))["status"] == "running"
 
-        (server.gates / "before").unlink()
+        (server.gates / "after").unlink()
         finished = _wait_status(client, task_id, "completed")
         assert finished["task_id"] == task_id
         assert [item["request_id"] for item in finished["inputs"]] == [
