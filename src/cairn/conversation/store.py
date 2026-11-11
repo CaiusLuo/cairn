@@ -800,6 +800,12 @@ class DomainStore:
                 if existing["fingerprint"] != fingerprint:
                     raise ValueError("Request ID belongs to a different input")
                 return self._run(existing)
+            recovery = connection.execute(
+                "SELECT 1 FROM runs WHERE conversation_id = ? AND status = ? LIMIT 1",
+                (conversation_id, RunStatus.RECOVERY_REQUIRED.value),
+            ).fetchone()
+            if recovery is not None:
+                raise ValueError("Conversation has a Run requiring recovery review")
             active = connection.execute(
                 "SELECT 1 FROM runs WHERE conversation_id = ? "
                 "AND status IN ('queued', 'running') LIMIT 1",

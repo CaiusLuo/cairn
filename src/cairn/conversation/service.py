@@ -245,14 +245,22 @@ class ConversationService:
                 raise ValueError("Conversation not found")
             conversation = existing_conversation
         run_request_id = "development:" + request_id
-        run = self.store.accept_run(
-            conversation_id=conversation.conversation_id,
-            prompt=prompt,
-            source=source,
-            request_id=run_request_id,
-            mode="development",
-            status=RunStatus.RUNNING,
-        )
+        try:
+            run = self.store.accept_run(
+                conversation_id=conversation.conversation_id,
+                prompt=prompt,
+                source=source,
+                request_id=run_request_id,
+                mode="development",
+                status=RunStatus.RUNNING,
+            )
+        except ValueError as exc:
+            message = str(exc)
+            if "requiring recovery review" in message:
+                raise ConversationRecoveryRequired(message) from exc
+            if "active Run" in message:
+                raise ConversationBusy(message) from exc
+            raise
         if run.task_id is not None:
             handoff = self.store.get_handoff(run.run_id)
             if handoff is not None and handoff.status is HandoffStatus.COMPLETED:

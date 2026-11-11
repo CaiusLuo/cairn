@@ -12,6 +12,7 @@ import pytest
 from cairn.agent.budget import RunBudget
 from cairn.agent.models.messages import LLMResponse
 from cairn.agent.models.offline import OfflineDevelopmentModel
+from cairn.conversation.models import ConversationSource, RunStatus
 from cairn.development.models import HandoffStatus
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
@@ -282,5 +283,215 @@ def test_explicit_development_handoff_failure_retries_same_identity(
             )
             assert handoff_record is not None
             assert handoff_record.status is HandoffStatus.COMPLETED
+
+    asyncio.run(scenario())
+
+
+class _FakeDevelopmentApi:
+    def __init__(self, *, lose_first_response: bool = False) -> None:
+        self.created: dict[str, dict[str, Any]] = {}
+        self.request_ids: list[str] = []
+        self.lose_first_response = lose_first_response
+        self.failed_once = False
+
+    async def create_development(
+        self,
+        prompt: str,
+        source: str,
+        request_id: str,
+        *,
+        conversation_id: str | None = None,
+    ) -> dict[str, Any]:
+        del source, conversation_id
+        self.request_ids.append(request_id)
+        if request_id not in self.created:
+            self.created[request_id] = {
+                "task": {"task_id": "task-" + request_id, "prompt": prompt}
+            }
+            if self.lose_first_response and not self.failed_once:
+                self.failed_once = True
+                raise httpx.TransportError("response lost after acceptance")
+        return self.created[request_id]
+
+    async def inspect(self, task_id: str) -> dict[str, Any]:
+        return {"task_id": task_id}
+
+
+def test_cli_development_retry_reuses_request_id_after_lost_response() -> None:
+    async def scenario() -> None:
+        from cairn.interfaces.cli.runtime_chat import RemoteDevelopment
+
+        api = _FakeDevelopmentApi(lose_first_response=True)
+        development = RemoteDevelopment(api)  # type: ignore[arg-type]
+        with pytest.raises(httpx.TransportError):
+            await development.start("lost response goal")
+        assert development.pending is not None
+        task = await development.start("lost response goal")
+        assert task["task_id"] == "task-" + api.request_ids[0]
+        assert len(set(api.request_ids)) == 1
+        assert development.pending is None
+
+    asyncio.run(scenario())
+
+
+def test_cli_development_pending_blocks_a_new_request_id() -> None:
+    async def scenario() -> None:
+        from cairn.interfaces.cli.runtime_chat import RemoteDevelopment
+
+        api = _FakeDevelopmentApi(lose_first_response=True)
+        development = RemoteDevelopment(api)  # type: ignore[arg-type]
+        with pytest.raises(httpx.TransportError):
+            await development.start("original goal")
+        with pytest.raises(ValueError, match="Retry"):
+            await development.start("different goal")
+        assert len(api.request_ids) == 1
+
+    asyncio.run(scenario())
+
+
+def test_recovery_required_conversation_rejects_new_development(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        app = _app(tmp_path)
+        async with app.router.lifespan_context(app):
+            api = _client(app)
+            store = app.state.conversations.store
+            conversation = store.create_conversation(
+                workspace=tmp_path / "source",
+                source=ConversationSource.CLI,
+                initial_prompt="recovery conversation",
+            )
+            store.create_run(
+                conversation_id=conversation.conversation_id,
+                status=RunStatus.RECOVERY_REQUIRED,
+                prompt="needs review",
+                request_id="recovery-existing",
+                source=ConversationSource.CLI,
+            )
+            with pytest.raises(httpx.HTTPStatusError) as rejection:
+                await api.create_development(
+                    "must not bypass recovery",
+                    "web",
+                    "recovery-new",
+                    conversation_id=conversation.conversation_id,
+                )
+            assert rejection.value.response.status_code == 409
+            assert not any(
+                task["task_id"] == "recovery-new"
+                for task in await api.request("GET", "tasks")
+            )
+
+    asyncio.run(scenario())
+
+
+def test_same_request_can_retry_after_accepted_recovery_state(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        app = _app(tmp_path)
+        async with app.router.lifespan_context(app):
+            api = _client(app)
+            entry = await api.create_development(
+                "accepted before recovery",
+                "cli",
+                "accepted-recovery",
+            )
+            store = app.state.conversations.store
+            store.update_run(
+                entry["run_id"],
+                status=RunStatus.RECOVERY_REQUIRED,
+                error="test_recovery",
+            )
+            retry = await api.create_development(
+                "accepted before recovery",
+                "cli",
+                "accepted-recovery",
+            )
+            assert retry["task_id"] == entry["task_id"]
+            assert retry["run_id"] == entry["run_id"]
+
+    asyncio.run(scenario())
+
+
+def test_active_run_mutual_exclusion_still_applies_to_development(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        app = _app(tmp_path)
+        async with app.router.lifespan_context(app):
+            store = app.state.conversations.store
+            conversation = store.create_conversation(
+                workspace=tmp_path / "source",
+                source=ConversationSource.CLI,
+                initial_prompt="active conversation",
+            )
+            store.create_run(
+                conversation_id=conversation.conversation_id,
+                status=RunStatus.RUNNING,
+                prompt="active",
+                request_id="active-existing",
+                source=ConversationSource.CLI,
+            )
+            api = _client(app)
+            with pytest.raises(httpx.HTTPStatusError) as rejection:
+                await api.create_development(
+                    "must wait for active run",
+                    "web",
+                    "active-new",
+                    conversation_id=conversation.conversation_id,
+                )
+            assert rejection.value.response.status_code == 409
+            assert len(app.state.conversations.store.list_tasks()) == 0
+
+    asyncio.run(scenario())
+
+
+def test_needs_review_handoff_cannot_be_silently_retried(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app = _app(tmp_path)
+        async with app.router.lifespan_context(app):
+            store = app.state.conversations.store
+            conversation = store.create_conversation(
+                workspace=tmp_path / "source",
+                source=ConversationSource.CLI,
+                initial_prompt="needs review",
+            )
+            run = store.accept_run(
+                conversation_id=conversation.conversation_id,
+                prompt="needs review",
+                source=ConversationSource.CLI,
+                request_id="development:needs-review",
+                mode="development",
+                status=RunStatus.RUNNING,
+            )
+            store.begin_handoff(
+                run_id=run.run_id,
+                conversation_id=conversation.conversation_id,
+                request_id="handoff:" + run.run_id,
+                prompt="needs review",
+                source="cli",
+            )
+            store.update_handoff(
+                run.run_id,
+                status=HandoffStatus.NEEDS_REVIEW,
+                diagnostic="operator_review_required",
+            )
+            api = _client(app)
+            with pytest.raises(httpx.HTTPStatusError) as rejection:
+                await api.create_development(
+                    "needs review",
+                    "cli",
+                    "needs-review",
+                    conversation_id=conversation.conversation_id,
+                )
+            assert rejection.value.response.status_code == 409
+            handoff = store.get_handoff(run.run_id)
+            assert handoff is not None
+            assert handoff.status is HandoffStatus.NEEDS_REVIEW
+            assert handoff.diagnostic == "operator_review_required"
+            current = store.get_run(run.run_id)
+            assert current is not None
+            assert current.status is RunStatus.RECOVERY_REQUIRED
 
     asyncio.run(scenario())

@@ -144,6 +144,55 @@ class RemoteChat:
         return self._set_run({**run, "cursor": self.task.get("cursor", 0)})
 
 
+class RemoteDevelopment:
+    """CLI cursor for one explicit Development request.
+
+    The pending tuple is deliberately kept until a successful response. A
+    retry of the same prompt/conversation reuses the original request_id, so a
+    lost response cannot silently create a second Task.
+    """
+
+    def __init__(self, api: RuntimeClient) -> None:
+        self.api = api
+        self.pending: tuple[str, str | None, str] | None = None
+        self.task: dict[str, Any] | None = None
+
+    async def start(
+        self,
+        prompt: str,
+        *,
+        conversation_id: str | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        if self.pending is not None:
+            pending_prompt, pending_conversation, pending_request = self.pending
+            if pending_prompt != prompt or pending_conversation != conversation_id:
+                raise ValueError(
+                    "Retry the unacknowledged development request before starting another"
+                )
+            request_id = pending_request
+        else:
+            request_id = request_id or "cli-develop:" + uuid4().hex
+            self.pending = (prompt, conversation_id, request_id)
+        try:
+            created = await self.api.create_development(
+                prompt,
+                "cli",
+                request_id,
+                conversation_id=conversation_id,
+            )
+            task = created.get("task")
+            if not isinstance(task, dict) or "task_id" not in task:
+                task = await self.api.inspect(created["task_id"])
+        except httpx.HTTPStatusError as error:
+            if 400 <= error.response.status_code < 500:
+                self.pending = None
+            raise
+        self.task = task
+        self.pending = None
+        return task
+
+
 class RemoteConversation:
     """A client cursor, not a second execution lifecycle."""
 
@@ -243,6 +292,7 @@ async def main(
         if task_id is None or task_id.startswith(("conv-", "run-"))
         else RemoteConversation(api)
     )
+    development = RemoteDevelopment(api)
     try:
         catalog = await api.request("GET", "commands")
     except httpx.HTTPStatusError as error:
@@ -418,15 +468,26 @@ async def main(
                         if isinstance(remote, RemoteChat) and remote.conversation
                         else None
                     )
-                    created = await api.create_development(
-                        argument,
-                        "cli",
-                        "cli-develop:" + uuid4().hex,
-                        conversation_id=conversation_id,
-                    )
+                    try:
+                        task = await development.start(
+                            argument, conversation_id=conversation_id
+                        )
+                    except ValueError as error:
+                        print(str(error))
+                        continue
+                    except httpx.HTTPError as error:
+                        if development.pending is not None:
+                            print(
+                                "Development request unconfirmed; retry the same goal with "
+                                f"/develop {argument} ({type(error).__name__})."
+                            )
+                        else:
+                            print(
+                                f"Development request rejected: {type(error).__name__}."
+                            )
+                        continue
                     remote = RemoteConversation(api, mode="development")
-                    await remote.select(created["task_id"])
-                    assert remote.task is not None
+                    remote.task = task
                     show(remote.task, explicit=True)
                     if not await follow():
                         return
