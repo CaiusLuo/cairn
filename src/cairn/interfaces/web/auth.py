@@ -18,7 +18,7 @@ from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 COOKIE_NAME = "cairn_web_session"
-PUBLIC_PATHS = frozenset({"/login.html", "/api/login", "/api/health"})
+PUBLIC_PATHS = frozenset({"/favicon.svg", "/login.html", "/api/login", "/api/health"})
 PUBLIC_PREFIXES = ("/assets/",)
 
 

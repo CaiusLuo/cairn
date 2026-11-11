@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { CairnMark, Icon, type IconName } from "./Icon";
+import { CairnLogo } from "./Brand";
+import { Icon, type IconName } from "./Icon";
 import { isActive, sourceLabel, type Conversation } from "./data";
 
 export type View = "home" | "chat" | "tasks" | "workflow" | "runs" | "approvals" | "settings";
@@ -86,7 +87,7 @@ export function Shell({ view, active, conversations, workspace, status, navigate
     {mobileOpen && <button className="wb-scrim" aria-label="关闭会话侧栏" onClick={() => setMobileOpen(false)} />}
     <aside id="workbench-sidebar" className="wb-side" inert={narrow ? !mobileOpen : collapsed}>
       <div className="wb-side-card">
-        <div className="wb-brand"><CairnMark size={24}/><strong>Cairn</strong><button className="icon-button" aria-label="关闭会话侧栏" title="关闭会话侧栏" onClick={() => { setMobileOpen(false); if (!narrow) { setCollapsed(true); localStorage.setItem("cairn-sidebar", "closed"); } }}><Icon name="panel-left" size={15}/></button></div>
+        <div className="wb-brand"><CairnLogo className="wb-brand-logo"/><button className="icon-button" aria-label="关闭会话侧栏" title="关闭会话侧栏" onClick={() => { setMobileOpen(false); if (!narrow) { setCollapsed(true); localStorage.setItem("cairn-sidebar", "closed"); } }}><Icon name="panel-left" size={15}/></button></div>
         <div className="workspace-switch">
           <button className="workspace-trigger" aria-expanded={workspaceOpen} onClick={() => setWorkspaceOpen(value => !value)}><Icon name="folder" size={15}/><span>{workspace?.split(/[\\/]/).filter(Boolean).at(-1) ?? "工作区"}</span><Icon name="chevron-down" size={13}/></button>
           {workspaceOpen && <div className="workspace-popover"><strong>当前工作区</strong><code>{workspace ?? "等待 Server 连接"}</code><small>由宿主配置</small></div>}

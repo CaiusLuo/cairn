@@ -1,4 +1,6 @@
-# Cairn
+<p align="center">
+  <img src="assets/cairn-github-readme.png" alt="Cairn — agent harness" width="720">
+</p>
 
 Cairn is a personal Agent for Debian servers. A shared Runtime runs the Agent;
 CLI, Web and WeChat clients can use the same Conversation/Run identity, progress,

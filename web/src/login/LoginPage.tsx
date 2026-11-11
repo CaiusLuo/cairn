@@ -1,6 +1,7 @@
 import { useState } from "react";
 import "../styles/login.css";
 import { AsciiOcean } from "../vendor/ascii-sharks/react";
+import { CairnMark } from "../workbench/Brand";
 
 export function LoginPage() {
   const [username, setUsername] = useState("");
@@ -39,15 +40,10 @@ export function LoginPage() {
       <AsciiOcean className="login-ocean" sharks={[{ kind: "hammerhead", size: 1 }, { kind: "classic", size: 0.72 }]} />
       <div className="login-vignette" />
       <section className="login-card" aria-labelledby="login-title">
-        <div className="login-brand">
-          <svg className="brand__mark" viewBox="0 0 28 30" aria-hidden="true">
-            <path d="M6.1 8.2c.2-1.9 2.2-3.4 4.7-3.4 2.3 0 4 1.2 4.2 3 .1 1.6-1.7 2.9-4.1 2.9-2.7 0-4.9-1.1-4.8-2.5Z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
-            <path d="M3.9 15.9c.1-2.2 3.2-3.9 6.8-3.9 3.4 0 6.1 1.5 6.2 3.6.1 2-2.8 3.5-6.2 3.5-3.7 0-6.9-1.4-6.8-3.2Z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
-            <path d="M7.8 23.4c.1-1.7 2.7-3 5.7-3 3 0 5.4 1.2 5.5 2.8.1 1.7-2.4 2.9-5.5 2.9-3.2 0-5.8-1.1-5.7-2.7Z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
-          </svg>
-          <span className="brand__name">cairn</span>
+        <div className="login-title">
+          <CairnMark size={32}/>
+          <h1 id="login-title">Sign in</h1>
         </div>
-        <h1 id="login-title">Sign in</h1>
         <form className="login-form" onSubmit={submit}>
           <label>
             <span>Username</span>
