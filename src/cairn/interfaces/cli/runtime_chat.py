@@ -364,6 +364,8 @@ async def main(
     async def select_target(
         ident: str,
     ) -> tuple[RemoteChat | RemoteConversation, list[dict[str, Any]]]:
+        if remote.pending is not None:
+            raise ValueError("Retry the unacknowledged input before switching")
         if ident.startswith("task-"):
             target: RemoteChat | RemoteConversation = RemoteConversation(api)
         elif ident.startswith(("conv-", "run-")):
@@ -529,6 +531,12 @@ async def main(
                     for message in history:
                         if message["role"] == "assistant" and message.get("content"):
                             print_assistant_response(message["content"])
+                    if (
+                        remote.task is not None
+                        and remote.task["status"] in {"queued", "running"}
+                        and not await follow()
+                    ):
+                        return
                     continue
                 if command in {"/status", "/history", "/continue", "/cancel"}:
                     if remote.task is None:
@@ -555,6 +563,14 @@ async def main(
                         return
                     continue
                 if await manage(line):
+                    if (
+                        command == "/task"
+                        and argument.split()[:1] == ["use"]
+                        and remote.task is not None
+                        and remote.task["status"] in {"queued", "running"}
+                        and not await follow()
+                    ):
+                        return
                     continue
                 if command.startswith("/"):
                     print("未知命令, 使用 /help 查看当前 Server 支持的操作。")
