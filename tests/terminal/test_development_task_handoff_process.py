@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from pathlib import Path
 from typing import Any, cast
 
@@ -70,6 +71,10 @@ def test_web_created_task_continues_from_real_cli_and_survives_exit(
         )
         assert len(followed["inputs"]) == 1
         assert followed["inputs"][0]["request_id"].startswith("cli:")
+        # The receipt settles just before the CLI prints the final response;
+        # wait for the client to return to its prompt before typing again.
+        wait_for(lambda: "离线开发链路完成".encode() in terminal.output)
+        time.sleep(0.3)
 
         # Exit the client while the next turn is executing. The Server owns it.
         (server.gates / "before").touch()
