@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { runtimeApi } from "../runtime-api";
+import { RuntimeError, runtimeApi } from "../runtime-api";
 import { readSubmission, sendSubmission, useRunStream, type Submission } from "./chat-state";
 import { isActive, sourceLabel, useResource, type Conversation, type Message, type Run, type WorkbenchConfig } from "./data";
 import { Badge, Drawer, Markdown, Outputs, Timeline } from "./evidence";
@@ -38,7 +38,9 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   const [canceling, setCanceling] = useState(false);
   const [error, setError] = useState("");
   const [artifacts, setArtifacts] = useState(false);
+  const [, setRetryTick] = useState(0);
   const inFlight = useRef(false);
+  const retryAt = useRef(0);
   const mounted = useRef(true);
   const tail = useRef<HTMLDivElement>(null);
   const transcript = useRef<HTMLDivElement>(null);
@@ -69,7 +71,16 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
         else { setAcknowledged(result.run); detail.refresh(); }
       }
     } catch (reason) {
-      if (mounted.current) setError(String(reason));
+      if (!mounted.current) return;
+      if (reason instanceof RuntimeError && reason.status === 409 && reason.message === "conversation_busy") {
+        sessionStorage.removeItem(key);
+        setPending(null);
+        setQueue(rows => rows.some(row => row.id === next.id) ? rows : [...rows, { id: next.id, prompt: next.prompt, model: next.model }]);
+        retryAt.current = Date.now() + 1200;
+        window.setTimeout(() => { if (mounted.current) setRetryTick(value => value + 1); }, 1300);
+      } else {
+        setError(String(reason));
+      }
     } finally {
       inFlight.current = false;
       if (mounted.current) setSending(false);
@@ -82,12 +93,16 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   }
 
   useEffect(() => {
-    if (auto && queue[0] && run?.status === "completed" && !pending && !sending && config) sendQueued(queue[0]);
+    if (auto && queue[0] && run?.status === "completed" && !sending && config && Date.now() >= retryAt.current) sendQueued(queue[0]);
   });
 
   function sendDraft() {
     const prompt = draft.trim();
-    if (!prompt || pending || sending || !config || (failed && mode === "conversation")) return;
+    if (!prompt || sending || !config || (failed && mode === "conversation")) return;
+    if (pending) {
+      sessionStorage.removeItem(key);
+      setPending(null);
+    }
     const next = { id: crypto.randomUUID(), prompt, model: mode === "conversation" && model ? model : undefined };
     setDraft("");
     stickToBottom.current = true;
@@ -123,7 +138,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
         <button aria-label="删除排队消息" onClick={() => setQueue(rows => rows.filter(row => row.id !== item.id))}><Icon name="trash" size={14}/></button>
       </div>)}
     </div>}
-    {pending && <div className="submission-review" role="status"><span>待确认请求 · {pending.prompt.slice(0, 100)}</span><button disabled={sending} onClick={() => void submit(pending)}>用原编号重试</button><button disabled={sending} onClick={() => { sessionStorage.removeItem(key); setPending(null); detail.refresh(); }}>清除本地记录</button></div>}
+    {pending && <div className="submission-review" role="status"><span>待确认请求 · {pending.prompt.slice(0, 100)}（发送新消息会放弃这条记录）</span><button disabled={sending} onClick={() => void submit(pending)}>用原编号重试</button><button disabled={sending} onClick={() => { sessionStorage.removeItem(key); setPending(null); detail.refresh(); }}>放弃这条记录</button></div>}
     {(error || detail.error || history.error) && <p className="wb-error" role="alert">{error || detail.error || history.error}</p>}
     <form className="wb-composer" onSubmit={event => { event.preventDefault(); sendDraft(); }}>
       <textarea aria-label="消息" placeholder={mode === "development" ? "描述要完成的开发目标…" : "问 Cairn，或交给它一项工作…"} value={draft} maxLength={32000} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); sendDraft(); } }}/>
@@ -138,7 +153,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
         </select></label>
         <div className="composer-send">
           {active && <button className="composer-icon" type="button" aria-label="中断运行" title="中断运行" disabled={canceling} onClick={() => void cancel()}><Icon name="stop" size={17}/></button>}
-          <button className="send-button" type="submit" aria-label={active && mode === "conversation" ? "加入发送队列" : "发送"} title={active && mode === "conversation" ? "加入发送队列" : "发送"} disabled={!draft.trim() || !config || sending || !!pending || (failed && mode === "conversation")}><Icon name={active && mode === "conversation" ? "queue" : "arrow-up"} size={18}/></button>
+          <button className="send-button" type="submit" aria-label={active && mode === "conversation" ? "加入发送队列" : "发送"} title={active && mode === "conversation" ? "加入发送队列" : "发送"} disabled={!draft.trim() || !config || sending || (failed && mode === "conversation")}><Icon name={active && mode === "conversation" ? "queue" : "arrow-up"} size={18}/></button>
         </div>
       </div>
     </form>

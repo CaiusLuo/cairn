@@ -83,6 +83,10 @@ try {
     const retry = page.getByRole("button", { name: "用原编号重试" });
     await retry.waitFor();
     await page.getByRole("alert").waitFor();
+    // A pending retry must not lock new input.
+    await page.getByRole("textbox", { name: "消息" }).fill("New input while retry is pending");
+    assert(await page.locator("button.send-button").isEnabled());
+    await page.getByRole("textbox", { name: "消息" }).fill("");
     await retry.click();
     await retry.waitFor({ state: "detached" });
     await page.unroute("**/messages");
@@ -90,6 +94,25 @@ try {
     const continued = await read("conversations/" + cli.conversation_id);
     assert.equal(continued.runs.length, 2);
     assert.equal(continued.runs[1].source, "web");
+
+    // A busy response is queued and retried automatically, not left as a stuck request.
+    let busy = true;
+    await page.route("**/messages", async route => {
+      if (!busy) return route.continue();
+      busy = false;
+      await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "conversation_busy" }) });
+    });
+    const beforeQueuedAssistant = await page.locator(".wb-message.assistant").count();
+    await send("Queue while another run is active");
+    await page.locator(".queued-tray").waitFor();
+    await page.waitForFunction(
+      count => document.querySelectorAll(".wb-message.assistant").length > count,
+      beforeQueuedAssistant,
+      { timeout: 15000 }
+    );
+    await page.locator(".queued-tray").waitFor({ state: "detached" });
+    await page.unroute("**/messages");
+    assert.equal((await read("conversations/" + cli.conversation_id)).runs.length, 3);
     await shot("Cairn-workbench-chat");
     const chatUrl = page.url();
     assert((await read("tasks")).every(item => item.mode === "development"));
@@ -136,7 +159,7 @@ try {
     await page.getByLabel("跟进说明").fill("Verify the existing artifact");
     await page.getByRole("button", { name: "发送跟进" }).click();
     await page.locator(".wb-detail-grid section").filter({ has: page.getByRole("heading", { name: "最近执行" }) }).locator("dd").first().filter({ hasText: /^2$/ }).waitFor();
-    await page.locator('.status-badge[data-status="completed"]').waitFor();
+    await page.locator('.status-badge[data-status="completed"]').first().waitFor();
 
     let approvalUrl;
     const recoveryId = process.env.CAIRN_WEB_E2E_RECOVERY_TASK;
