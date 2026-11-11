@@ -148,6 +148,15 @@ function TaskDetail({ id, navigate, refresh }: { id: string; navigate: (path: st
         <section className="wb-card"><h2>工作树</h2><dl><dt>分支</dt><dd>{task.branch ?? "等待分配"}</dd><dt>路径</dt><dd>{task.worktree ?? "等待分配"}</dd><dt>Session</dt><dd>{task.session_id ?? "—"}</dd></dl></section>
         <section className="wb-card"><h2>最近执行</h2><dl><dt>执行次数</dt><dd>{task.attempts}</dd><dt>来源</dt><dd>{sourceLabel(task.source)}</dd><dt>步骤</dt><dd>{typeof task.metrics.steps === "number" ? task.metrics.steps : "—"}</dd></dl></section>
       </div>
+      {!!task.inputs?.length && <section className="wb-card">
+        <h2>接力输入</h2>
+        <div className="wb-input-list">{task.inputs.map(input => <div className="wb-input-row" key={input.request_id}>
+          <div><Badge status={input.status}/><strong>{sourceLabel(input.source)}</strong><code>{input.request_id}</code></div>
+          {input.settled_sequence !== null && <small className="wb-muted">结算事件 #{input.settled_sequence}</small>}
+          {input.diagnostic && <p className="wb-error" role="status">{input.diagnostic}</p>}
+          {input.result_excerpt && <p className="wb-muted">{input.result_excerpt}{input.result_truncated ? "…" : ""}</p>}
+        </div>)}</div>
+      </section>}
       {task.diagnostic && <p className="wb-error" role="status">{task.diagnostic}</p>}
       {task.status === "recovery_required" && <a className="wb-inline-link" href={href("approvals", { task: id })}>打开恢复核对 <Icon name="arrow-right" size={14}/></a>}
       <section className="wb-card"><h2>执行时间线</h2><ErrorText value={events.error}/><Timeline events={events.rows}/><button onClick={() => navigate(href("workflow", { task: id }))}>查看流程图</button></section>

@@ -68,8 +68,14 @@ Chat normally, or enter `/develop GOAL`. `/status`, `/history`, `/cancel`,
 `/new` and `/use CONVERSATION_ID` operate on the same server-owned Conversation;
 `/continue` and development task controls remain on the explicit development path.
 Conversation creation and messages accept a stable `request_id`; retries return
-the original Conversation/Run and never fork a duplicate. Run cancellation is a
-`POST /api/runtime/runs/{run_id}/cancel`; recovery review uses
+the original Conversation/Run and never fork a duplicate. A Development Task
+created from Web or CLI can be continued from either entry by Task ID. Each
+appended input keeps its own `request_id`, and the Task exposes durable per-input
+receipts with the settled event sequence, result excerpt and retained
+Session/Worktree identity. Paused and completed Tasks accept another input in
+place; active turns and recovery-required Tasks are refused with distinct
+conflict responses, and failed/cancelled Tasks require a new Task.
+Run cancellation is a `POST /api/runtime/runs/{run_id}/cancel`; recovery review uses
 `GET /api/runtime/runs/{run_id}/recovery` and
 `POST /api/runtime/runs/{run_id}/reconcile`.
 `/wx` starts login;

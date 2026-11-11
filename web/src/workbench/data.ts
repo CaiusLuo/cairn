@@ -70,6 +70,18 @@ export type WorkbenchConfig = {
   development_network: boolean;
 };
 
+export type TaskInput = {
+  request_id: string;
+  source: string;
+  status: string;
+  settled_sequence: number | null;
+  result_excerpt: string | null;
+  result_truncated: boolean;
+  diagnostic: string | null;
+  session_id: string | null;
+  worktree: string | null;
+};
+
 export type Task = {
   task_id: string;
   prompt: string;
@@ -82,6 +94,7 @@ export type Task = {
   conversation_key: string | null;
   attempts: number;
   sequence: number;
+  inputs?: TaskInput[];
   result: string | null;
   diagnostic: string | null;
   metrics: Record<string, unknown>;

@@ -16,7 +16,13 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from cairn.agent.session.models import Revision
 from cairn.development.catalogue import RuntimeSource
-from cairn.development.service import TaskNeedsRecovery, TaskService
+from cairn.development.service import (
+    TaskBusy,
+    TaskNeedsRecovery,
+    TaskNotContinuable,
+    TaskRecoveryRequired,
+    TaskService,
+)
 from cairn.interfaces.web.auth import operator_request
 from cairn.shared.lifecycle import settle_owned
 
@@ -143,6 +149,16 @@ def task_routes(
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
         except KeyError:
             return JSONResponse({"error": "task_not_found"}, 404)
+        except TaskBusy as error:
+            return JSONResponse({"error": "task_busy", "message": str(error)}, 409)
+        except TaskRecoveryRequired as error:
+            return JSONResponse(
+                {"error": "task_recovery_required", "message": str(error)}, 409
+            )
+        except TaskNotContinuable as error:
+            return JSONResponse(
+                {"error": "task_not_continuable", "message": str(error)}, 409
+            )
         except (ValueError, ValidationError, TaskNeedsRecovery):
             return JSONResponse({"error": "invalid_request_or_unsafe_continue"}, 409)
         except asyncio.QueueFull:

@@ -25,6 +25,21 @@ RuntimeStatus = Literal[
 ]
 
 
+class TaskInput(BaseModel):
+    """Durable receipt for one appended input and its execution evidence."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    request_id: str = Field(min_length=1, max_length=200)
+    source: RuntimeSource
+    status: RuntimeStatus = "queued"
+    settled_sequence: int | None = Field(default=None, ge=0)
+    result_excerpt: str | None = Field(default=None, max_length=1000)
+    result_truncated: bool = False
+    diagnostic: str | None = Field(default=None, max_length=500)
+    session_id: str | None = None
+    worktree: str | None = None
+
+
 class RuntimeTask(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     task_id: str = Field(default_factory=lambda: "task-" + uuid4().hex)
@@ -43,6 +58,7 @@ class RuntimeTask(BaseModel):
     input_id: str | None = Field(default=None, max_length=200)
     input_prompt: str | None = Field(default=None, min_length=1, max_length=32000)
     input_receipts: dict[str, str] = Field(default_factory=dict, max_length=1000)
+    inputs: tuple[TaskInput, ...] = Field(default=(), max_length=50)
     session_id: str | None = None
     worktree: str | None = None
     branch: str | None = None
@@ -132,6 +148,21 @@ class RuntimeCatalogue:
                 if isinstance(value := getattr(task, key), str)
             }
         )
+        if task.inputs:
+            task = task.model_copy(
+                update={
+                    "inputs": tuple(
+                        item.model_copy(
+                            update={
+                                key: redact_text(value, self.sensitive_values)
+                                for key in ("result_excerpt", "diagnostic")
+                                if isinstance(value := getattr(item, key), str)
+                            }
+                        )
+                        for item in task.inputs
+                    )
+                }
+            )
         task = task.model_copy(
             update={"metrics": redact_value(task.metrics, self.sensitive_values)}
         )

@@ -232,6 +232,11 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .wb-task-meta svg { vertical-align: text-bottom; margin-right: 4px; }
 .card-diagnostic { margin: 0; font-size: 12px; color: var(--hui-error); overflow-wrap: anywhere; }
 .wb-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }
+.wb-input-list { display: grid; gap: 8px; }
+.wb-input-row { display: grid; gap: 5px; padding: 8px 10px; border: 1px solid var(--hui-border-soft); border-radius: 8px; font-size: 12px; }
+.wb-input-row > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.wb-input-row code { font: 11px var(--hui-mono); overflow-wrap: anywhere; }
+.wb-input-row p { margin: 0; }
 .wb-run-list { display: grid; gap: 7px; }
 .wb-run-list > a { border: 1px solid var(--hui-border); border-radius: 10px; padding: 9px 11px; display: flex; align-items: center; gap: 10px; }
 .wb-run-list > a > div { flex: 1; min-width: 0; }

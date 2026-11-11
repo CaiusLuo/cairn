@@ -253,6 +253,21 @@ class RemoteConversation:
         except httpx.HTTPStatusError as error:
             if 400 <= error.response.status_code < 500:
                 self.pending = None  # A deterministic refusal did not accept input.
+                detail = None
+                with suppress(Exception):
+                    detail = error.response.json().get("error")
+                if detail in {
+                    "task_busy",
+                    "task_recovery_required",
+                    "task_not_continuable",
+                }:
+                    raise ValueError(
+                        {
+                            "task_busy": "Task is still executing; observe this turn before appending",
+                            "task_recovery_required": "Task requires host recovery review before another input",
+                            "task_not_continuable": "Task cannot accept another input; start a new Task",
+                        }[detail]
+                    ) from error
             raise
         self.pending = None
         return self.task
@@ -534,8 +549,13 @@ async def main(
                 if not await follow():
                     return
             except (ValueError, RuntimeError, httpx.HTTPError) as error:
+                detail = (
+                    str(error)
+                    if isinstance(error, (ValueError, RuntimeError))
+                    else type(error).__name__
+                )
                 print(
-                    f"Shared Runtime request failed: {type(error).__name__}. Keep the task ID and inspect it before retrying."
+                    f"Shared Runtime request failed: {detail}. Keep the task ID and inspect it before retrying."
                 )
     finally:
         await settle_owned(wechat_watcher)

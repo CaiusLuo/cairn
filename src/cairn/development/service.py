@@ -20,6 +20,7 @@ from cairn.development.catalogue import (
     RuntimeEvent,
     RuntimeSource,
     RuntimeTask,
+    TaskInput,
 )
 from cairn.development.models import TaskStatus
 from cairn.shared.lifecycle import await_owned, settle_owned
@@ -39,6 +40,18 @@ class TaskAdvanced(Exception):
 
 class TaskNeedsRecovery(Exception):
     """Observed effects require explicit host review before another turn."""
+
+
+class TaskBusy(ValueError):
+    """Another turn is already active; observe it before appending input."""
+
+
+class TaskRecoveryRequired(ValueError):
+    """Unresolved effects must be reviewed before another input."""
+
+
+class TaskNotContinuable(ValueError):
+    """A terminal state cannot accept another input; start a new Task."""
 
 
 class TaskService:
@@ -81,12 +94,17 @@ class TaskService:
         self.projection_failures.clear()
         for task in list(self.catalogue.data.tasks.values()):
             if task.status == "running":
+                interrupted = task.model_copy(
+                    update={
+                        "status": "recovery_required",
+                        "diagnostic": "process_interrupted",
+                    }
+                )
                 self.record(
-                    task.model_copy(
-                        update={
-                            "status": "recovery_required",
-                            "diagnostic": "process_interrupted",
-                        }
+                    self._settle_input(
+                        interrupted,
+                        "recovery_required",
+                        diagnostic="process_interrupted",
                     ),
                     "interrupted",
                 )
@@ -152,6 +170,54 @@ class TaskService:
             },
         )
         return updated
+
+    def _track_input(
+        self,
+        task: RuntimeTask,
+        status: str,
+        *,
+        settled_sequence: int | None = None,
+        result: str | None = None,
+        diagnostic: str | None = None,
+    ) -> RuntimeTask:
+        """Update the durable receipt for the input currently executing."""
+        if task.input_id is None:
+            return task
+        inputs: list[TaskInput] = []
+        matched = False
+        for item in task.inputs:
+            if item.request_id == task.input_id:
+                matched = True
+                item = TaskInput.model_validate(
+                    {
+                        **item.model_dump(),
+                        "status": status,
+                        "settled_sequence": settled_sequence,
+                        "result_excerpt": None if result is None else result[:1000],
+                        "result_truncated": result is not None and len(result) > 1000,
+                        "diagnostic": diagnostic,
+                        "session_id": task.session_id,
+                        "worktree": task.worktree,
+                    }
+                )
+            inputs.append(item)
+        return task.model_copy(update={"inputs": tuple(inputs)}) if matched else task
+
+    def _settle_input(
+        self,
+        task: RuntimeTask,
+        status: str,
+        *,
+        result: str | None = None,
+        diagnostic: str | None = None,
+    ) -> RuntimeTask:
+        return self._track_input(
+            task,
+            status,
+            settled_sequence=task.sequence + 1,
+            result=result,
+            diagnostic=diagnostic,
+        )
 
     def publish(self, task_id: str, message: dict[str, Any]) -> None:
         """Bounded transient fanout; a slow reader reconnects using durable cursors."""
@@ -289,8 +355,10 @@ class TaskService:
     async def cancel(self, task_id: str) -> RuntimeTask:
         task = self.inspect(task_id)
         if task.status == "queued":
+            cancelled = task.model_copy(update={"status": "cancelled"})
             return self.record(
-                task.model_copy(update={"status": "cancelled"}), "cancelled"
+                self._settle_input(cancelled, "cancelled", diagnostic="cancelled"),
+                "cancelled",
             )
         if task_id == self.active_id and self.active is not None:
             await settle_owned(self.active)
@@ -310,12 +378,15 @@ class TaskService:
         if self.queue.full():
             raise asyncio.QueueFull
         task = self.record(
-            task.model_copy(
-                update={
-                    "status": "queued",
-                    "resume_requested": True,
-                    "metrics": {**task.metrics, "window": {}},
-                }
+            self._track_input(
+                task.model_copy(
+                    update={
+                        "status": "queued",
+                        "resume_requested": True,
+                        "metrics": {**task.metrics, "window": {}},
+                    }
+                ),
+                "queued",
             ),
             "continued",
         )
@@ -333,6 +404,13 @@ class TaskService:
         delivery_recipient: str | None = None,
         delivery_account: str | None = None,
     ) -> RuntimeTask:
+        """Append one input to the existing Task identity.
+
+        queued/running: refuse with TaskBusy; observe the active turn first.
+        recovery_required: refuse with TaskRecoveryRequired; review first.
+        paused/completed: accept and execute in the retained Session/Worktree.
+        failed/cancelled: refuse with TaskNotContinuable; start a new Task.
+        """
         task = (
             self.inspect_wechat_task(
                 task_id, sender=delivery_recipient, account=delivery_account
@@ -352,13 +430,20 @@ class TaskService:
             if task.input_receipts[request_id] != fingerprint:
                 raise ValueError("Message id already belongs to another input")
             return task
-        if task.sequence != expected_sequence or task.status not in {
-            "completed",
-            "paused",
-        }:
-            raise ValueError(
-                "Refresh history before sending; running/recovery tasks cannot accept a new turn"
+        if task.status in {"queued", "running"}:
+            raise TaskBusy(
+                "Task is still executing; observe this turn before appending input"
             )
+        if task.status == "recovery_required":
+            raise TaskRecoveryRequired(
+                "Task requires host recovery review before another input"
+            )
+        if task.status not in {"completed", "paused"}:
+            raise TaskNotContinuable(
+                f"Task status {task.status} cannot accept another input"
+            )
+        if task.sequence != expected_sequence:
+            raise ValueError("Refresh history before sending")
         if self.queue.full():
             raise asyncio.QueueFull
         candidate = RuntimeTask.model_validate(
@@ -375,6 +460,10 @@ class TaskService:
                 else None,
                 "metrics": {**task.metrics, "window": {}},
                 "input_receipts": {**task.input_receipts, request_id: fingerprint},
+                "inputs": (
+                    *task.inputs,
+                    TaskInput(request_id=request_id, source=source),
+                )[-50:],
                 "result": None,
                 "diagnostic": None,
             }
@@ -401,8 +490,11 @@ class TaskService:
         if task.status != "queued":
             return
         task = self.record(
-            task.model_copy(
-                update={"status": "running", "attempts": task.attempts + 1}
+            self._track_input(
+                task.model_copy(
+                    update={"status": "running", "attempts": task.attempts + 1}
+                ),
+                "running",
             ),
             "running",
         )
@@ -430,12 +522,17 @@ class TaskService:
             result = await asyncio.shield(self.active)
         except asyncio.CancelledError:
             await settle_owned(self.active)
+            interrupted = self.inspect(task_id).model_copy(
+                update={
+                    "status": "recovery_required",
+                    "diagnostic": "execution_cancelled",
+                }
+            )
             self.record(
-                self.inspect(task_id).model_copy(
-                    update={
-                        "status": "recovery_required",
-                        "diagnostic": "execution_cancelled",
-                    }
+                self._settle_input(
+                    interrupted,
+                    "recovery_required",
+                    diagnostic="execution_cancelled",
                 ),
                 "interrupted",
             )
@@ -443,12 +540,17 @@ class TaskService:
                 raise
         except TaskAdvanced:
             if advanced:
+                interrupted = self.inspect(task_id).model_copy(
+                    update={
+                        "status": "recovery_required",
+                        "diagnostic": "repeated_handoff",
+                    }
+                )
                 self.record(
-                    self.inspect(task_id).model_copy(
-                        update={
-                            "status": "recovery_required",
-                            "diagnostic": "repeated_handoff",
-                        }
+                    self._settle_input(
+                        interrupted,
+                        "recovery_required",
+                        diagnostic="repeated_handoff",
                     ),
                     "interrupted",
                 )
@@ -461,37 +563,45 @@ class TaskService:
                 )
                 advance = True
         except TaskNeedsRecovery:
+            interrupted = self.inspect(task_id).model_copy(
+                update={
+                    "status": "recovery_required",
+                    "diagnostic": "effects_require_host_review",
+                }
+            )
             self.record(
-                self.inspect(task_id).model_copy(
-                    update={
-                        "status": "recovery_required",
-                        "diagnostic": "effects_require_host_review",
-                    }
+                self._settle_input(
+                    interrupted,
+                    "recovery_required",
+                    diagnostic="effects_require_host_review",
                 ),
                 "interrupted",
             )
         except TaskPaused as exc:
+            paused = self.inspect(task_id).model_copy(
+                update={"status": "paused", "result": str(exc)}
+            )
             self.record(
-                self.inspect(task_id).model_copy(
-                    update={"status": "paused", "result": str(exc)}
-                ),
+                self._settle_input(paused, "paused", result=str(exc)),
                 "paused",
             )
         except Exception as exc:
+            failed = self.inspect(task_id).model_copy(
+                update={
+                    "status": "failed",
+                    "diagnostic": type(exc).__name__,
+                }
+            )
             self.record(
-                self.inspect(task_id).model_copy(
-                    update={
-                        "status": "failed",
-                        "diagnostic": type(exc).__name__,
-                    }
-                ),
+                self._settle_input(failed, "failed", diagnostic=type(exc).__name__),
                 "failed",
             )
         else:
+            completed = self.inspect(task_id).model_copy(
+                update={"status": "completed", "result": result}
+            )
             self.record(
-                self.inspect(task_id).model_copy(
-                    update={"status": "completed", "result": result}
-                ),
+                self._settle_input(completed, "completed", result=result),
                 "completed",
             )
         finally:
