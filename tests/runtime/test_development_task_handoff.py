@@ -13,7 +13,13 @@ import pytest
 from cairn.agent.budget import RunBudget
 from cairn.agent.models.messages import LLMResponse, Message
 from cairn.agent.models.offline import OfflineDevelopmentModel
-from cairn.development.catalogue import RuntimeCatalogue, RuntimeTask, TaskInput
+from cairn.development.catalogue import (
+    INPUT_DIAGNOSTIC_LIMIT,
+    INPUT_EXCERPT_LIMIT,
+    RuntimeCatalogue,
+    RuntimeTask,
+    TaskInput,
+)
 from cairn.development.service import TaskNeedsRecovery
 from cairn.interfaces.cli.runtime_chat import RemoteConversation
 from cairn.server.bootstrap import runtime_app
@@ -322,11 +328,12 @@ def test_uncertain_effect_settles_the_input_and_blocks_replay(tmp_path: Path) ->
     asyncio.run(scenario())
 
 
-def test_appended_input_evidence_is_redacted(tmp_path: Path) -> None:
+def test_appended_input_evidence_is_redacted_and_reloads(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    forbidden = (tmp_path / "source", tmp_path / "worktrees")
+    secret = "{{SECRET_1npazs7q}}"
     catalogue = RuntimeCatalogue(
-        tmp_path / "state",
-        forbidden_roots=(tmp_path / "source", tmp_path / "worktrees"),
-        sensitive_values=("handoff-secret",),
+        state, forbidden_roots=forbidden, sensitive_values=(secret,)
     )
     try:
         task = RuntimeTask(
@@ -336,13 +343,24 @@ def test_appended_input_evidence_is_redacted(tmp_path: Path) -> None:
                 TaskInput(
                     request_id="redacted-input",
                     source="cli",
-                    result_excerpt="contains handoff-secret",
-                    diagnostic="handoff-secret",
+                    result_excerpt=(secret * 200)[:INPUT_EXCERPT_LIMIT],
+                    diagnostic=(secret * 50)[:INPUT_DIAGNOSTIC_LIMIT],
                 ),
             ),
         )
         recorded = catalogue.record(task, "completed")
-        assert recorded.inputs[0].result_excerpt == "contains [redacted]"
-        assert recorded.inputs[0].diagnostic == "[redacted]"
+        excerpt = recorded.inputs[0].result_excerpt or ""
+        diagnostic = recorded.inputs[0].diagnostic or ""
+        assert secret not in excerpt and secret not in diagnostic
+        assert "[redacted]" in excerpt
+        assert len(excerpt) <= INPUT_EXCERPT_LIMIT
+        assert len(diagnostic) <= INPUT_DIAGNOSTIC_LIMIT
     finally:
         catalogue.close()
+
+    # A growing redaction replacement must not leave state that fails reload.
+    reopened = RuntimeCatalogue(state, forbidden_roots=forbidden)
+    try:
+        assert reopened.data.tasks[task.task_id].inputs == recorded.inputs
+    finally:
+        reopened.close()

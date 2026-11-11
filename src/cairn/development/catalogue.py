@@ -24,6 +24,27 @@ RuntimeStatus = Literal[
     "recovery_required",
 ]
 
+INPUT_EXCERPT_LIMIT = 1000
+INPUT_DIAGNOSTIC_LIMIT = 500
+
+
+def fit_input_text(
+    text: str, *, limit: int, sensitive_values: tuple[str, ...]
+) -> tuple[str, bool]:
+    """Redact before truncating so a credential cannot survive at the cut."""
+    redacted = redact_text(text, sensitive_values)
+    return redacted[:limit], len(redacted) > limit
+
+
+def _fit_optional_input_text(
+    text: str | None, *, limit: int, sensitive_values: tuple[str, ...]
+) -> str | None:
+    return (
+        None
+        if text is None
+        else fit_input_text(text, limit=limit, sensitive_values=sensitive_values)[0]
+    )
+
 
 class TaskInput(BaseModel):
     """Durable receipt for one appended input and its execution evidence."""
@@ -33,9 +54,9 @@ class TaskInput(BaseModel):
     source: RuntimeSource
     status: RuntimeStatus = "queued"
     settled_sequence: int | None = Field(default=None, ge=0)
-    result_excerpt: str | None = Field(default=None, max_length=1000)
+    result_excerpt: str | None = Field(default=None, max_length=INPUT_EXCERPT_LIMIT)
     result_truncated: bool = False
-    diagnostic: str | None = Field(default=None, max_length=500)
+    diagnostic: str | None = Field(default=None, max_length=INPUT_DIAGNOSTIC_LIMIT)
     session_id: str | None = None
     worktree: str | None = None
 
@@ -149,14 +170,24 @@ class RuntimeCatalogue:
             }
         )
         if task.inputs:
+            # Validate the redacted text so a growing replacement cannot leave
+            # persisted state that a restart refuses to load.
             task = task.model_copy(
                 update={
                     "inputs": tuple(
-                        item.model_copy(
-                            update={
-                                key: redact_text(value, self.sensitive_values)
-                                for key in ("result_excerpt", "diagnostic")
-                                if isinstance(value := getattr(item, key), str)
+                        TaskInput.model_validate(
+                            {
+                                **item.model_dump(),
+                                "result_excerpt": _fit_optional_input_text(
+                                    item.result_excerpt,
+                                    limit=INPUT_EXCERPT_LIMIT,
+                                    sensitive_values=self.sensitive_values,
+                                ),
+                                "diagnostic": _fit_optional_input_text(
+                                    item.diagnostic,
+                                    limit=INPUT_DIAGNOSTIC_LIMIT,
+                                    sensitive_values=self.sensitive_values,
+                                ),
                             }
                         )
                         for item in task.inputs

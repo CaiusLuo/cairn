@@ -7,7 +7,11 @@ import pytest
 
 from cairn.development.board.service import TaskBoardService
 from cairn.development.board.store import TaskBoardStore
-from cairn.development.catalogue import RuntimeCatalogue, RuntimeTask
+from cairn.development.catalogue import (
+    INPUT_EXCERPT_LIMIT,
+    RuntimeCatalogue,
+    RuntimeTask,
+)
 from cairn.development.service import TaskService
 
 
@@ -81,6 +85,55 @@ def test_restart_preserves_interruption_without_replay(tmp_path: Path) -> None:
         await asyncio.sleep(0)
         assert calls == []
         await service.close()
+
+    asyncio.run(scenario())
+
+
+def test_input_receipt_redacts_before_truncating_and_reloads(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        root = tmp_path / "state"
+        marker = "secretmarker"
+        secret = marker + "s3cr3t-boundary-s3cr3t"
+        payload = "x" * 990 + secret + "y" * 100
+
+        async def execute(
+            task: RuntimeTask, emit: Callable[[str, dict[str, Any]], None]
+        ) -> str:
+            return payload
+
+        service = TaskService(
+            RuntimeCatalogue(root, forbidden_roots=(), sensitive_values=(secret,)),
+            execute,
+        )
+        await service.start()
+        first = service.submit("first", "cli")
+        await asyncio.wait_for(service.queue.join(), 2)
+        service.message(
+            first.task_id,
+            "second",
+            "cli",
+            "redact-1",
+            service.inspect(first.task_id).sequence,
+        )
+        await asyncio.wait_for(service.queue.join(), 2)
+
+        completed = service.inspect(first.task_id)
+        receipt = completed.inputs[-1]
+        excerpt = receipt.result_excerpt or ""
+        assert receipt.request_id == "redact-1"
+        # The secret spans the truncation boundary; redacting after truncating
+        # would leave a readable prefix in the durable receipt.
+        assert secret not in excerpt
+        assert marker[:10] not in excerpt
+        assert len(excerpt) <= INPUT_EXCERPT_LIMIT
+        assert receipt.result_truncated is True
+        await service.close()
+
+        reopened = RuntimeCatalogue(root, forbidden_roots=())
+        try:
+            assert reopened.data.tasks[first.task_id].inputs == completed.inputs
+        finally:
+            reopened.close()
 
     asyncio.run(scenario())
 
