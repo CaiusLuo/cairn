@@ -85,15 +85,6 @@ def test_use_and_task_use_route_to_the_right_client(tmp_path: Path) -> None:
         server.start()
         client = _client(server)
         token_file = server.state / "runtime.token"
-        (server.gates / "before").touch()
-        entry = asyncio.run(
-            client.create_development("Routing task", "web", "routing-web-1")
-        )
-        task_id = entry["task_id"]
-        wait_for(lambda: (server.gates / "before.entered").exists())
-        running = asyncio.run(client.inspect(task_id))
-        assert running["status"] == "running"
-        assert running["session_id"] and running["worktree"]
 
         conversation = asyncio.run(
             client.create_conversation(
@@ -112,6 +103,18 @@ def test_use_and_task_use_route_to_the_right_client(tmp_path: Path) -> None:
         run_id = seed["run_id"]
         _wait_runs(client, conversation_id, 1)
 
+        # Hold a fresh Task at its first model call so the CLI must attach to
+        # a live execution rather than just select a completed record.
+        (server.gates / "before").touch()
+        entry = asyncio.run(
+            client.create_development("Routing task", "web", "routing-web-1")
+        )
+        task_id = entry["task_id"]
+        wait_for(lambda: (server.gates / "before.entered").exists())
+        running = asyncio.run(client.inspect(task_id))
+        assert running["status"] == "running"
+        assert running["session_id"] and running["worktree"]
+
         terminal = NativeClient(source, server.url, token_file)
         wait_for(lambda: b"Shared Runtime" in terminal.output)
 
@@ -121,6 +124,7 @@ def test_use_and_task_use_route_to_the_right_client(tmp_path: Path) -> None:
         wait_for(lambda: task_id.encode() in terminal.output)
         _wait_quiet(terminal)
         time.sleep(0.3)
+        (server.gates / "before").unlink()
         created = _wait_status(client, task_id, "completed")
         assert created["status"] == "completed"
         wait_for(lambda: "离线开发链路完成".encode() in terminal.output)
