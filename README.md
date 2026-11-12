@@ -63,7 +63,9 @@ uv run cairn-cli --config /etc/cairn/config.toml
 ```
 
 Open `http://127.0.0.1:8777/chat.html`; username is `cairn`, password is
-`data_root/runtime/runtime.token`. The Web Workbench shares this Server for conversations, development tasks, run
+`data_root/runtime/runtime.token`. One sign-in lasts 30 days and survives
+service restarts; the browser cookie is backed by hashed sessions in
+`data_root/runtime/web-sessions.json`. The Web Workbench shares this Server for conversations, development tasks, run
 history and execution recovery. Settings manages WeChat, schedules and memory. Use an SSH tunnel for a remote server.
 
 Chat normally, or enter `/develop GOAL`. `/status`, `/history`, `/cancel`,

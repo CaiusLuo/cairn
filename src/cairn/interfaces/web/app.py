@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -33,7 +34,12 @@ from cairn.development.board.store import (
     TaskBoardValidationError,
 )
 from cairn.development.service import TaskService
-from cairn.interfaces.web.auth import COOKIE_NAME, AuthGuard, AuthSessions
+from cairn.interfaces.web.auth import (
+    COOKIE_NAME,
+    SESSION_TTL_SECONDS,
+    AuthGuard,
+    AuthSessions,
+)
 from cairn.interfaces.web.config import WebConfig
 from cairn.interfaces.web.reader import SnapshotReader
 
@@ -133,6 +139,7 @@ def create_app(
     runtime: TaskService | None = None,
     conversations: Any | None = None,
     runtime_token: str | None = None,
+    session_file: Path | None = None,
 ) -> Starlette:
     if runtime is not None and (not config.auth_passphrase or not runtime_token):
         raise ValueError("Runtime routes require authenticated host configuration")
@@ -144,7 +151,9 @@ def create_app(
 
     task_service = TaskBoardService(TaskBoardStore(config.tasks_dir))
 
-    auth_sessions = AuthSessions(config.username, config.auth_passphrase)
+    auth_sessions = AuthSessions(
+        config.username, config.auth_passphrase, path=session_file
+    )
 
     async def login_page(_request: Request) -> Response:
         return RedirectResponse("/login.html", status_code=307)
@@ -175,7 +184,7 @@ def create_app(
             httponly=True,
             samesite="strict",
             secure=False,
-            max_age=12 * 60 * 60,
+            max_age=SESSION_TTL_SECONDS,
             path="/",
         )
         return response

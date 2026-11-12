@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -6,6 +7,7 @@ from starlette.testclient import TestClient
 
 from cairn.development.service import TaskBusy
 from cairn.interfaces.web.app import create_app
+from cairn.interfaces.web.auth import COOKIE_NAME, AuthSessions
 from cairn.interfaces.web.config import WebConfig
 from cairn.interfaces.web.management import management_routes
 
@@ -20,6 +22,19 @@ def _app(tmp_path: Path) -> Starlette:
         web_root=None,
     )
     return create_app(config)
+
+
+def _auth_app(tmp_path: Path, session_file: Path | None = None) -> Starlette:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    config = WebConfig(
+        workspace=workspace,
+        sessions_dir=tmp_path / "sessions",
+        tasks_dir=tmp_path / "tasks",
+        web_root=None,
+        auth_passphrase="correct-horse",
+    )
+    return create_app(config, session_file=session_file)
 
 
 class _BusyControls:
@@ -158,16 +173,7 @@ def test_task_status_update_validates_status_and_content_type(tmp_path: Path) ->
 
 
 def test_login_cookie_gates_api_reads(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    config = WebConfig(
-        workspace=workspace,
-        sessions_dir=tmp_path / "sessions",
-        tasks_dir=tmp_path / "tasks",
-        web_root=None,
-        auth_passphrase="correct-horse",
-    )
-    client = TestClient(create_app(config), base_url="http://127.0.0.1")
+    client = TestClient(_auth_app(tmp_path), base_url="http://127.0.0.1")
     assert client.get("/api/snapshot").status_code == 401
     assert client.get("/api/health").status_code == 200
     assert (
@@ -184,3 +190,89 @@ def test_login_cookie_gates_api_reads(tmp_path: Path) -> None:
     assert login.status_code == 200
     assert login.json() == {"ok": True}
     assert client.get("/api/snapshot").status_code == 200
+
+
+def test_login_session_survives_app_restart(tmp_path: Path) -> None:
+    session_file = tmp_path / "state" / "web-sessions.json"
+    client = TestClient(
+        _auth_app(tmp_path, session_file=session_file), base_url="http://127.0.0.1"
+    )
+    login = client.post(
+        "/api/login",
+        json={"username": "cairn", "auth_passphrase": "correct-horse"},
+    )
+    assert login.status_code == 200
+    assert "Max-Age=2592000" in login.headers["set-cookie"]
+    token = client.cookies.get(COOKIE_NAME)
+    assert token
+
+    stored = session_file.read_text(encoding="utf-8")
+    assert token not in stored
+    assert session_file.stat().st_mode & 0o777 == 0o600
+
+    restarted = TestClient(
+        _auth_app(tmp_path, session_file=session_file), base_url="http://127.0.0.1"
+    )
+    restarted.cookies.set(COOKIE_NAME, token)
+    assert restarted.get("/api/snapshot").status_code == 200
+
+
+def test_session_store_ignores_expired_and_corrupt_state(tmp_path: Path) -> None:
+    path = tmp_path / "web-sessions.json"
+    token = AuthSessions("cairn", "pw", path=path, ttl_seconds=0).issue()
+    assert not AuthSessions("cairn", "pw", path=path, ttl_seconds=0).valid(token)
+
+    path.write_text("not json", encoding="utf-8")
+    corrupt = AuthSessions("cairn", "pw", path=path)
+    assert not corrupt.valid(token)
+    fresh = corrupt.issue()
+    assert AuthSessions("cairn", "pw", path=path).valid(fresh)
+
+
+def test_session_store_handles_concurrent_issuance(tmp_path: Path) -> None:
+    path = tmp_path / "web-sessions.json"
+    sessions = AuthSessions("cairn", "pw", path=path)
+    tokens: list[str] = []
+    tokens_lock = threading.Lock()
+
+    def issue_ten() -> None:
+        for _ in range(10):
+            token = sessions.issue()
+            with tokens_lock:
+                tokens.append(token)
+
+    threads = [threading.Thread(target=issue_ten) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(set(tokens)) == 60
+    reloaded = AuthSessions("cairn", "pw", path=path)
+    assert all(reloaded.valid(token) for token in tokens)
+
+
+def test_authenticated_login_page_redirects_to_safe_next(tmp_path: Path) -> None:
+    client = TestClient(_auth_app(tmp_path), base_url="http://127.0.0.1")
+    client.post(
+        "/api/login",
+        json={"username": "cairn", "auth_passphrase": "correct-horse"},
+    )
+    redirect = client.get(
+        "/login.html",
+        params={"next": "/chat.html?conversation=abc"},
+        follow_redirects=False,
+    )
+    assert redirect.status_code == 307
+    assert redirect.headers["location"] == "/chat.html?conversation=abc"
+    for unsafe in (
+        "//evil.example",
+        "/\\evil.example",
+        "/login.html?next=/",
+        "https://evil.example",
+        "/\t//evil.example",
+    ):
+        response = client.get(
+            "/login.html", params={"next": unsafe}, follow_redirects=False
+        )
+        assert response.status_code == 307
+        assert response.headers["location"] == "/"
