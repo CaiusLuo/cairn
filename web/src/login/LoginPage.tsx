@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { flushSync } from "react-dom";
 import "../styles/login.css";
 import { AsciiOcean } from "../vendor/ascii-sharks/react";
 import { CairnMark } from "../workbench/Brand";
@@ -9,6 +8,7 @@ import {
   readThemePreference,
   resolveTheme,
   storeThemePreference,
+  transitionTheme,
   type ThemePreference,
 } from "../theme";
 
@@ -94,19 +94,11 @@ export function LoginPage() {
   }, []);
 
   function chooseTheme(next: ThemePreference) {
-    const commit = () => {
+    transitionTheme(() => {
       applyTheme(resolveTheme(next, matchMedia("(prefers-color-scheme: dark)").matches));
       setTheme(next);
       storeThemePreference(next);
-    };
-    const transitionDocument = document as Document & {
-      startViewTransition?: (update: () => void) => unknown;
-    };
-    if (!matchMedia("(prefers-reduced-motion: reduce)").matches && transitionDocument.startViewTransition) {
-      transitionDocument.startViewTransition(() => flushSync(commit));
-    } else {
-      commit();
-    }
+    });
   }
 
   async function submit(event: React.FormEvent) {

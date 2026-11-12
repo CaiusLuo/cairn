@@ -5,16 +5,32 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Cairn — Tasks</title>
+    <script>
+      (() => {
+        try {
+          const stored = localStorage.getItem("cairn-theme");
+          const preference = stored === "paper" ? "light" : stored === "slate" ? "dark" : stored;
+          const hour = new Date().getHours();
+          const theme = preference === "light" || preference === "dark"
+            ? preference
+            : preference === "system"
+              ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+              : (hour >= 6 && hour < 18 ? "light" : "dark");
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        } catch {
+          document.documentElement.dataset.theme = "light";
+        }
+      })();
+    </script>
     <style>
-      html, body { margin: 0; background: #fff; color: #252529; }
-      @media (prefers-color-scheme: dark) { html, body { background: #141417; color: #ededf0; } }
+      html:root, body { margin: 0; background: #f4f5f7; color: #232327; }
       html[data-theme="dark"], html[data-theme="dark"] body { background: #141417; color: #ededf0; }
       .boot-screen { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; }
       .boot-stage { position: relative; display: grid; place-items: center; width: 104px; height: 104px; }
       .boot-mark { position: relative; z-index: 1; width: 64px; height: 64px; }
       .boot-shadow { position: absolute; bottom: 8px; width: 48px; height: 10px; border-radius: 50%; background: #7a49f2; opacity: .3; filter: blur(5px); }
-      .boot-label { color: #716d8d; line-height: 1.7; letter-spacing: .02em; }
-      @media (prefers-color-scheme: dark) { .boot-label { color: #a19cae; } }
+      .boot-label { color: #5f5a78; line-height: 1.7; letter-spacing: .02em; }
       html[data-theme="dark"] .boot-label { color: #a19cae; }
       @media (prefers-reduced-motion: reduce) { .boot-shadow { display: none; } }
     </style>

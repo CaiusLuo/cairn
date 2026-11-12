@@ -1,3 +1,5 @@
+import { flushSync } from "react-dom";
+
 export type ThemePreference = "light" | "dark" | "system";
 export type ResolvedTheme = "light" | "dark";
 
@@ -41,4 +43,16 @@ export function resolveTheme(
 export function applyTheme(theme: ResolvedTheme): void {
   document.documentElement.dataset.theme = theme;
   document.documentElement.style.colorScheme = theme;
+}
+
+/** Run a theme change as a page crossfade when the browser and user allow motion. */
+export function transitionTheme(update: () => void): void {
+  const transitionDocument = document as Document & {
+    startViewTransition?: (callback: () => void) => unknown;
+  };
+  if (!matchMedia("(prefers-reduced-motion: reduce)").matches && transitionDocument.startViewTransition) {
+    transitionDocument.startViewTransition(() => flushSync(update));
+  } else {
+    update();
+  }
 }

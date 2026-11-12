@@ -1,4 +1,12 @@
 import { useEffect, useState, type ReactNode } from "react";
+import {
+  applyTheme,
+  readThemePreference,
+  resolveTheme,
+  storeThemePreference,
+  transitionTheme,
+  type ThemePreference,
+} from "../theme";
 import { CairnLogo } from "./Brand";
 import { Icon, type IconName } from "./Icon";
 import { isActive, sourceLabel, type Conversation } from "./data";
@@ -20,22 +28,27 @@ export function href(view: View, params: Record<string, string> = {}) {
   return page + (query.size ? "?" + query : "");
 }
 
+const themeOrder: ThemePreference[] = ["light", "dark", "system"];
+const themeLabels: Record<ThemePreference, string> = { light: "亮色", dark: "暗色", system: "跟随系统" };
+
 export function useAppearance() {
-  const [theme, setTheme] = useState(() => {
-    const prior = localStorage.getItem("cairn-theme");
-    return prior === "paper" ? "light" : prior === "slate" ? "dark" : prior ?? "system";
-  });
+  const [theme, setTheme] = useState<ThemePreference>(() => readThemePreference() ?? resolveTheme(null));
   useEffect(() => {
     const system = matchMedia("(prefers-color-scheme: dark)");
-    const update = () => {
-      document.documentElement.dataset.theme = theme === "system" ? (system.matches ? "dark" : "light") : theme;
-    };
+    const update = () => applyTheme(resolveTheme(theme, system.matches));
     update();
+    if (theme !== "system") return;
     system.addEventListener("change", update);
-    localStorage.setItem("cairn-theme", theme);
     return () => system.removeEventListener("change", update);
   }, [theme]);
-  return { theme, setTheme };
+  function chooseTheme(next: ThemePreference) {
+    transitionTheme(() => {
+      applyTheme(resolveTheme(next));
+      setTheme(next);
+      storeThemePreference(next);
+    });
+  }
+  return { theme, chooseTheme };
 }
 
 export function Shell({ view, active, conversations, workspace, status, navigate, children }: {
@@ -66,7 +79,7 @@ export function Shell({ view, active, conversations, workspace, status, navigate
   const [filter, setFilter] = useState("");
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [visible, setVisible] = useState(12);
-  const { theme, setTheme } = useAppearance();
+  const { theme, chooseTheme } = useAppearance();
   const items = conversations.filter(item => item.initial_prompt.toLocaleLowerCase().includes(filter.toLocaleLowerCase()));
   const current = navigation.find(item => item.view === view);
   const connection = { online: "Server 已连接", offline: "Server 已断开", connecting: "正在连接 Server" }[status];
@@ -81,7 +94,7 @@ export function Shell({ view, active, conversations, workspace, status, navigate
       <div className="rail-group">
         <button className="rail-link" aria-label="切换会话侧栏" aria-controls="workbench-sidebar" aria-expanded={narrow ? mobileOpen : !collapsed} title="切换会话侧栏" onClick={() => { if (narrow) setMobileOpen(value => !value); else { setCollapsed(!collapsed); localStorage.setItem("cairn-sidebar", collapsed ? "open" : "closed"); } }}><Icon name="panel-left" /></button>
         {link(href("settings"), "设置", "settings", view === "settings")}
-        <button className="rail-link" aria-label="切换主题" title="切换主题" onClick={() => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark")}><Icon name={theme === "system" ? "monitor" : theme === "dark" ? "moon" : "sun"} /></button>
+        <button className="rail-link" aria-label="切换主题" title={`当前主题：${themeLabels[theme]}（点击切换）`} onClick={() => chooseTheme(themeOrder[(themeOrder.indexOf(theme) + 1) % themeOrder.length])}><Icon name={theme === "system" ? "monitor" : theme === "dark" ? "moon" : "sun"} /></button>
       </div>
     </nav>
     {mobileOpen && <button className="wb-scrim" aria-label="关闭会话侧栏" onClick={() => setMobileOpen(false)} />}

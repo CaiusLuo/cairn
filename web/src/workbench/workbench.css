@@ -3,8 +3,8 @@
   font: 14px/1.5 var(--hui-sans);
   color: var(--hui-text);
   background: var(--hui-surface);
-  --rail: #f6f6f6;
-  --selected: #f1f1f1;
+  --rail: #e9ebee;
+  --selected: #dfe2e8;
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -53,10 +53,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .cairn-logo { display: inline-flex; align-items: center; height: 30px; }
 .cairn-logo img { display: block; width: auto; height: 100%; }
 .cairn-logo .cairn-logo__dark { display: none; }
-[data-theme="dark"] .cairn-logo .cairn-logo__light,
-[data-theme="slate"] .cairn-logo .cairn-logo__light { display: none; }
-[data-theme="dark"] .cairn-logo .cairn-logo__dark,
-[data-theme="slate"] .cairn-logo .cairn-logo__dark { display: block; }
+[data-theme="dark"] .cairn-logo .cairn-logo__light { display: none; }
+[data-theme="dark"] .cairn-logo .cairn-logo__dark { display: block; }
 .cairn-mark { display: block; flex: none; }
 .wb-brand-logo { height: 30px; }
 .icon-button {

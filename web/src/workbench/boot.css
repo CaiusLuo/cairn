@@ -24,15 +24,11 @@
   filter: blur(5px);
 }
 .boot-label {
-  --boot-letter-peak: #5f5878;
-  color: #716d8d;
+  --boot-letter-peak: #4f4a66;
+  color: #5f5a78;
   line-height: 1.7;
   letter-spacing: .02em;
   white-space: nowrap;
-}
-.boot-screen[data-surface="login"] .boot-label {
-  --boot-letter-peak: #4f4a66;
-  color: #5f5a78;
 }
 .boot-screen[data-dark="true"] .boot-label,
 :root[data-theme="dark"] .boot-label {
