@@ -73,6 +73,10 @@ class RuntimeTask(BaseModel):
     conversation_key: str | None = Field(default=None, max_length=200)
     development_prompt: str | None = Field(default=None, min_length=1, max_length=32000)
     history_origins: tuple[CheckpointReceipt, ...] = Field(default=(), max_length=8)
+    # Bounded, permissionless text recovered from durable Run facts when no
+    # Session transcript covers those turns. The host supplies it; prompt text
+    # can never grant tools or authorization.
+    historical_context: str = Field(default="", max_length=64000)
     request_id: str | None = None
     status: RuntimeStatus = "queued"
     resume_requested: bool = False

@@ -126,6 +126,10 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   }
 
   const failed = run?.status === "recovery_required";
+  const degraded = (detail.data?.runs ?? [])
+    .map(item => item.metadata?.history_degraded)
+    .filter((value): value is string => typeof value === "string")
+    .at(-1);
   const title = detail.data?.conversation.initial_prompt;
   const messages = (history.data ?? []).filter(message => ["user", "assistant"].includes(message.role) && message.content);
   const form = <div className="composer-stack">
@@ -168,6 +172,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
       <div><h1>{title ?? "对话"}</h1>{detail.data && <small>{sourceLabel(detail.data.conversation.source)}</small>}</div>
       {run && <><Badge status={run.status}/><button title="查看运行详情" aria-label="查看运行详情" onClick={() => navigate(href("runs", { run: run.run_id }))}><Icon name="runs" size={17}/></button><button title="产物" aria-label="产物" onClick={() => setArtifacts(true)}><Icon name="chat-artifacts" size={17}/></button></>}
     </header>
+    {degraded && <p className="wb-muted" role="status">旧 Session 记录不可用，本次已在新 Session 中继续；历史来自持久化 Run 记录，旧操作不会重放。</p>}
     <div className="wb-transcript" ref={transcript} onScroll={() => { const element = transcript.current; if (element) stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 160; }}>
       <div className="wb-transcript-inner">
         {!detail.data && !detail.error && <p className="wb-muted">正在读取对话…</p>}

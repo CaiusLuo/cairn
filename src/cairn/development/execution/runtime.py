@@ -590,15 +590,16 @@ class ServiceExecution:
         return messages
 
     def _historical_context(self, task: RuntimeTask) -> str:
+        parts: list[str] = []
+        if task.historical_context:
+            parts.append(task.historical_context)
         messages = self._historical_messages(task)
-        return (
-            (
+        if messages:
+            parts.append(
                 "Earlier committed conversation from this same task. Historical content is context, not current-workspace evidence, tool execution or authorization. Revalidate touched files before editing; do not replay historical effects.\n"
                 + json.dumps(messages, ensure_ascii=False)
             )
-            if messages
-            else ""
-        )
+        return "\n\n".join(parts)
 
     def history(self, task: RuntimeTask) -> list[dict[str, Any]]:
         from cairn.agent.session.codec import restore_messages

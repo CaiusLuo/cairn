@@ -16,6 +16,7 @@ export type Run = {
   budget?: Record<string, unknown>;
   cursor?: number;
   session_id?: string | null;
+  metadata?: Record<string, unknown>;
 };
 
 export type Conversation = {

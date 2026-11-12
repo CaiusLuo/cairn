@@ -130,6 +130,29 @@ try {
       await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
     }
 
+    const lostId = process.env.CAIRN_WEB_E2E_MISSING_SESSION_CONVERSATION;
+    if (lostId) {
+      await page.getByRole("link", { name: /Missing session continuation/ }).click();
+      await page.locator(".wb-message.user").filter({ hasText: "Missing session continuation" }).waitFor();
+      await send("Continue after session loss");
+      await page.locator(".wb-message.user").filter({ hasText: "Continue after session loss" }).waitFor();
+      await page.waitForFunction(
+        async id => {
+          const detail = await (await fetch("/api/runtime/conversations/" + id)).json();
+          return detail.runs.length === 2 && detail.runs[1].status === "completed" && detail.runs[1].metadata.history_degraded;
+        },
+        lostId
+      );
+      await page.getByRole("status").filter({ hasText: "旧 Session 记录不可用" }).waitFor();
+      const lost = await read("conversations/" + lostId);
+      assert.equal(lost.runs[0].session_id, "00000000-0000-4000-8000-000000000000");
+      assert(lost.runs[1].session_id !== "00000000-0000-4000-8000-000000000000");
+      assert.equal(lost.runs[1].metadata.history_degraded, "session_missing");
+      await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).last().waitFor();
+      await page.getByRole("link", { name: new RegExp(cliPrompt) }).click();
+      await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
+    }
+
     let lostReply = false;
     let messagePosts = 0;
     await page.route("**/messages", async route => {

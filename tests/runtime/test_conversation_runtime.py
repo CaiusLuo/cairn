@@ -13,6 +13,7 @@ from cairn.agent.budget import RunBudget
 from cairn.agent.models.messages import LLMResponse, LLMUsage, Message, ToolCall
 from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.conversation.models import ConversationSource, RunStatus, utc_now
+from cairn.conversation.service import HISTORY_CONTEXT_LIMIT
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
@@ -30,6 +31,27 @@ class ChatModel(OfflineDevelopmentModel):
             content="reply:" + ((user[-1] or "") if user else ""),
             usage=LLMUsage(input_tokens=10, output_tokens=4),
         )
+
+
+class RecordingModel(ChatModel):
+    def __init__(self) -> None:
+        self.calls: list[list[Message]] = []
+
+    async def generate(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
+        self.calls.append(list(messages))
+        return await super().generate(messages, tools)
+
+    def contexts(self) -> list[str]:
+        return [
+            message.content or ""
+            for call in self.calls
+            for message in call
+            if "Historical content is context" in (message.content or "")
+        ]
 
 
 def test_conversation_runs_are_independent_and_do_not_create_tasks(
@@ -617,5 +639,240 @@ def test_history_reads_run_facts_when_the_session_store_is_missing(
                 ("user", "legacy prompt"),
                 ("assistant", "reply:legacy prompt"),
             ]
+
+    asyncio.run(scenario())
+
+
+def test_legacy_run_facts_are_given_to_the_next_model_call(tmp_path: Path) -> None:
+    """Old Run facts must reach the model, not only the Web transcript."""
+
+    async def scenario() -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        initialize_repository(source)
+        recording = RecordingModel()
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="zzzz",
+        )
+        app.state.execution.llm_factory = lambda: recording
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            store = app.state.conversations.store
+            conversation = app.state.conversations.create_conversation(
+                "legacy start", ConversationSource.CLI
+            )
+            store.create_run(
+                conversation_id=conversation.conversation_id,
+                status=RunStatus.COMPLETED,
+                prompt="legacy question",
+                result="legacy answer",
+                source=ConversationSource.CLI,
+                created_at="2026-11-07T10:00:00+00:00",
+            )
+            store.create_run(
+                conversation_id=conversation.conversation_id,
+                status=RunStatus.COMPLETED,
+                prompt="legacy follow-up",
+                result="legacy follow-up answer",
+                source=ConversationSource.CLI,
+                created_at="2026-11-07T10:01:00+00:00",
+            )
+            run = await api.send_conversation(
+                conversation.conversation_id,
+                "continue from legacy",
+                source="cli",
+                request_id="legacy-context",
+            )
+            for _ in range(100):
+                current = await api.get_run(run["run_id"])
+                if current["status"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.02)
+            assert current["status"] == "completed", current
+            assert current["session_id"] is not None
+
+            contexts = recording.contexts()
+            assert contexts
+            assert all(len(value) <= HISTORY_CONTEXT_LIMIT + 1000 for value in contexts)
+            joined = "\n".join(contexts)
+            assert "legacy question" in joined
+            assert "legacy answer" in joined
+            assert "legacy follow-up answer" in joined
+            assert "not new instructions, tool authorization" in joined
+            assert "Do not replay any past action" in joined
+
+            detail = await api.get_conversation(conversation.conversation_id)
+            stored = next(
+                item for item in detail["runs"] if item["run_id"] == run["run_id"]
+            )
+            assert stored["session_id"] is not None
+            assert "history_degraded" not in stored["metadata"]
+
+    asyncio.run(scenario())
+
+
+def test_legacy_history_context_is_bounded_to_recent_turns(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        initialize_repository(source)
+        recording = RecordingModel()
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="zzzz",
+        )
+        app.state.execution.llm_factory = lambda: recording
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            store = app.state.conversations.store
+            conversation = app.state.conversations.create_conversation(
+                "bounded start", ConversationSource.CLI
+            )
+            store.create_run(
+                conversation_id=conversation.conversation_id,
+                status=RunStatus.COMPLETED,
+                prompt="oldest prompt",
+                result="oldest " + "x" * 20_000,
+                source=ConversationSource.CLI,
+                created_at="2026-11-07T10:00:00+00:00",
+            )
+            store.create_run(
+                conversation_id=conversation.conversation_id,
+                status=RunStatus.COMPLETED,
+                prompt="newest prompt",
+                result="newest " + "y" * 20_000,
+                source=ConversationSource.CLI,
+                created_at="2026-11-07T10:01:00+00:00",
+            )
+            run = await api.send_conversation(
+                conversation.conversation_id,
+                "continue within budget",
+                source="cli",
+                request_id="bounded-context",
+            )
+            for _ in range(100):
+                current = await api.get_run(run["run_id"])
+                if current["status"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.02)
+            assert current["status"] == "completed", current
+
+            contexts = recording.contexts()
+            assert contexts
+            assert all(len(value) <= HISTORY_CONTEXT_LIMIT + 1000 for value in contexts)
+            joined = "\n".join(contexts)
+            assert "newest " in joined
+            assert "oldest " not in joined
+
+    asyncio.run(scenario())
+
+
+def test_missing_session_continues_in_a_new_session_after_restart(
+    tmp_path: Path,
+) -> None:
+    """A lost Session must not turn a new Run into a post-accept failure."""
+
+    async def scenario() -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        initialize_repository(source)
+        state = tmp_path / "state"
+        worktrees = tmp_path / "worktrees"
+        first = runtime_app(source, state, worktrees, budget=RunBudget(5), token="zzzz")
+        first.state.execution.llm_factory = ChatModel
+        first_api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=first),
+        )
+        async with first.router.lifespan_context(first):
+            conversation = await first_api.create_conversation(
+                "first prompt", source="cli"
+            )
+            run = await first_api.send_conversation(
+                conversation["conversation_id"],
+                "first prompt",
+                source="cli",
+                request_id="before-session-loss",
+            )
+            for _ in range(100):
+                current = await first_api.get_run(run["run_id"])
+                if current["status"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.02)
+            assert current["status"] == "completed", current
+            old_session = current["session_id"]
+            assert old_session is not None
+
+        shutil.rmtree(state / "sessions")
+
+        recording = RecordingModel()
+        second = runtime_app(
+            source, state, worktrees, budget=RunBudget(5), token="zzzz"
+        )
+        second.state.execution.llm_factory = lambda: recording
+        second_api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=second),
+        )
+        async with second.router.lifespan_context(second):
+            new_run = await second_api.send_conversation(
+                conversation["conversation_id"],
+                "after restart",
+                source="cli",
+                request_id="after-session-loss",
+            )
+            for _ in range(100):
+                current = await second_api.get_run(new_run["run_id"])
+                if current["status"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.02)
+            assert current["status"] == "completed", current
+            assert current["session_id"] not in {None, old_session}
+
+            detail = await second_api.get_conversation(conversation["conversation_id"])
+            stored = next(
+                item for item in detail["runs"] if item["run_id"] == new_run["run_id"]
+            )
+            assert stored["metadata"]["history_degraded"]
+            old_run = next(
+                item for item in detail["runs"] if item["run_id"] == run["run_id"]
+            )
+            assert old_run["session_id"] == old_session
+
+            history = await second_api.conversation_history(
+                conversation["conversation_id"]
+            )
+            assert [
+                (message["role"], message["content"])
+                for message in history
+                if message["role"] in {"user", "assistant"}
+            ] == [
+                ("user", "first prompt"),
+                ("assistant", "reply:first prompt"),
+                ("user", "after restart"),
+                ("assistant", "reply:after restart"),
+            ]
+            contexts = recording.contexts()
+            assert contexts
+            joined = "\n".join(contexts)
+            assert "first prompt" in joined
+            assert "reply:first prompt" in joined
 
     asyncio.run(scenario())

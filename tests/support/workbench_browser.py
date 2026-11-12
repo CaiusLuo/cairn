@@ -80,13 +80,50 @@ def main() -> None:
                     )
 
                 wait_for(legacy_settled)
-                # Reproduce the deployed data shape: old Runs predate Session
-                # identity, so history must come from durable Run facts.
+                missing = (
+                    api.post(
+                        "/api/runtime/conversations",
+                        json={
+                            "prompt": "Missing session continuation",
+                            "source": "cli",
+                            "request_id": "missing-session",
+                        },
+                    )
+                    .raise_for_status()
+                    .json()
+                )
+                api.post(
+                    f"/api/runtime/conversations/{missing['conversation_id']}/messages",
+                    json={
+                        "prompt": "Missing session continuation",
+                        "source": "cli",
+                        "request_id": "missing-session-message",
+                    },
+                ).raise_for_status()
+
+                def missing_settled() -> bool:
+                    return any(
+                        item["conversation_id"] == missing["conversation_id"]
+                        and (item["latest_run"] or {}).get("status") == "completed"
+                        for item in api.get("/api/runtime/conversations").json()
+                    )
+
+                wait_for(missing_settled)
+                # Reproduce the deployed shapes: old Runs predate Session
+                # identity, and a newer Run points at a Session row that no
+                # longer exists.
                 server.stop()
                 with sqlite3.connect(server.state / "domain.sqlite3") as database:
                     database.execute(
                         "UPDATE runs SET session_id = NULL WHERE conversation_id = ?",
                         (legacy["conversation_id"],),
+                    )
+                    database.execute(
+                        "UPDATE runs SET session_id = ? WHERE conversation_id = ?",
+                        (
+                            "00000000-0000-4000-8000-000000000000",
+                            missing["conversation_id"],
+                        ),
                     )
                 server.start()
 
@@ -122,6 +159,9 @@ def main() -> None:
                     "CAIRN_WEB_E2E_URL": server.url,
                     "CAIRN_WEB_E2E_TOKEN_FILE": str(token),
                     "CAIRN_WEB_E2E_LEGACY_CONVERSATION": legacy["conversation_id"],
+                    "CAIRN_WEB_E2E_MISSING_SESSION_CONVERSATION": missing[
+                        "conversation_id"
+                    ],
                     "CAIRN_WEB_E2E_RECOVERY_TASK": task["task_id"],
                     "CAIRN_WEB_E2E_REAL_MODEL": "0",
                 }
