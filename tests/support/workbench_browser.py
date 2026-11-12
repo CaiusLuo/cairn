@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -50,6 +51,45 @@ def main() -> None:
                 finally:
                     terminal.close()
 
+                legacy = (
+                    api.post(
+                        "/api/runtime/conversations",
+                        json={
+                            "prompt": "Legacy browser history",
+                            "source": "cli",
+                            "request_id": "legacy-browser",
+                        },
+                    )
+                    .raise_for_status()
+                    .json()
+                )
+                api.post(
+                    f"/api/runtime/conversations/{legacy['conversation_id']}/messages",
+                    json={
+                        "prompt": "Legacy browser history",
+                        "source": "cli",
+                        "request_id": "legacy-browser-message",
+                    },
+                ).raise_for_status()
+
+                def legacy_settled() -> bool:
+                    return any(
+                        item["conversation_id"] == legacy["conversation_id"]
+                        and (item["latest_run"] or {}).get("status") == "completed"
+                        for item in api.get("/api/runtime/conversations").json()
+                    )
+
+                wait_for(legacy_settled)
+                # Reproduce the deployed data shape: old Runs predate Session
+                # identity, so history must come from durable Run facts.
+                server.stop()
+                with sqlite3.connect(server.state / "domain.sqlite3") as database:
+                    database.execute(
+                        "UPDATE runs SET session_id = NULL WHERE conversation_id = ?",
+                        (legacy["conversation_id"],),
+                    )
+                server.start()
+
                 gate = server.gates / "after"
                 gate.touch()
                 task = (
@@ -81,6 +121,7 @@ def main() -> None:
                     **os.environ,
                     "CAIRN_WEB_E2E_URL": server.url,
                     "CAIRN_WEB_E2E_TOKEN_FILE": str(token),
+                    "CAIRN_WEB_E2E_LEGACY_CONVERSATION": legacy["conversation_id"],
                     "CAIRN_WEB_E2E_RECOVERY_TASK": task["task_id"],
                     "CAIRN_WEB_E2E_REAL_MODEL": "0",
                 }

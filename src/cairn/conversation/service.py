@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
-from cairn.agent.session.models import CheckpointReceipt
+from cairn.agent.session.models import CheckpointReceipt, SessionStoreError
 from cairn.conversation.models import (
     Conversation,
     ConversationSource,
@@ -491,18 +491,56 @@ class ConversationService:
         return self.events(run_id, after)
 
     def history(self, conversation_id: str) -> list[dict[str, Any]]:
-        if self.get_conversation(conversation_id) is None:
+        """Read the durable transcript without requiring a live Session.
+
+        Runs written before Session identity existed have no checkpoint to
+        restore, and a Session store can be lost independently of the Domain
+        store.  Both cases still have durable Run facts (prompt, result), so an
+        absent or unreadable Session store degrades to that read-only projection
+        instead of hiding the conversation or failing the whole request.
+        Nothing is replayed.
+        """
+        conversation = self.get_conversation(conversation_id)
+        if conversation is None:
             return []
-        runs = [
-            run
-            for run in self.store.list_runs_for_conversation(conversation_id)
-            if run.session_id is not None
-        ]
+        runs = self.store.list_runs_for_conversation(conversation_id)
         if not runs:
-            return []
-        latest = runs[-1]
-        task = self._runtime_task(latest)
-        return self.execution.history(task)
+            return [{"role": "user", "content": conversation.initial_prompt}]
+        session_runs = [run for run in runs if run.session_id is not None]
+        if session_runs:
+            first_session_index = next(
+                index for index, run in enumerate(runs) if run.session_id is not None
+            )
+            try:
+                messages = self.execution.history(self._runtime_task(session_runs[-1]))
+            except SessionStoreError as error:
+                LOGGER.warning(
+                    "session history unavailable for conversation %s: %s",
+                    conversation_id,
+                    error,
+                )
+                messages = None
+            if messages:
+                if any(run.session_id is None for run in runs[first_session_index:]):
+                    # A sessionless Run inside the session chain cannot be
+                    # placed against the transcript, so use the durable Run
+                    # order for the whole conversation.
+                    return self._run_fact_messages(runs)
+                return [
+                    *self._run_fact_messages(runs[:first_session_index]),
+                    *messages,
+                ]
+        return self._run_fact_messages(runs)
+
+    @staticmethod
+    def _run_fact_messages(runs: tuple[Run, ...]) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
+        for run in runs:
+            if run.prompt:
+                messages.append({"role": "user", "content": run.prompt})
+            if run.result:
+                messages.append({"role": "assistant", "content": run.result})
+        return messages
 
     def _runtime_task(self, run: Run) -> RuntimeTask:
         return RuntimeTask(

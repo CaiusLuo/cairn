@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ import httpx
 from cairn.agent.budget import RunBudget
 from cairn.agent.models.messages import LLMResponse, LLMUsage, Message, ToolCall
 from cairn.agent.models.offline import OfflineDevelopmentModel
+from cairn.conversation.models import ConversationSource, RunStatus, utc_now
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
@@ -271,5 +273,349 @@ def test_second_request_while_run_is_active_returns_conflict(tmp_path: Path) -> 
                     break
                 await asyncio.sleep(0.02)
             assert current["status"] == "completed", current
+
+    asyncio.run(scenario())
+
+
+def test_history_reads_durable_run_facts_without_a_session(tmp_path: Path) -> None:
+    """Runs written before Session identity existed must still be readable."""
+
+    async def scenario() -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        initialize_repository(source)
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="zzzz",
+        )
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            service = app.state.conversations
+            conversation = service.create_conversation(
+                "legacy first", ConversationSource.CLI
+            )
+            service.store.create_run(
+                conversation_id=conversation.conversation_id,
+                status=RunStatus.COMPLETED,
+                prompt="legacy first",
+                result="historic answer",
+                source=ConversationSource.CLI,
+                created_at="2026-11-07T10:00:00+00:00",
+            )
+            service.store.create_run(
+                conversation_id=conversation.conversation_id,
+                status=RunStatus.COMPLETED,
+                prompt="legacy second",
+                result="another historic answer",
+                source=ConversationSource.CLI,
+                created_at="2026-11-07T10:01:00+00:00",
+            )
+
+            history = await api.conversation_history(conversation.conversation_id)
+            assert [
+                (message["role"], message["content"])
+                for message in history
+                if message["role"] in {"user", "assistant"}
+            ] == [
+                ("user", "legacy first"),
+                ("assistant", "historic answer"),
+                ("user", "legacy second"),
+                ("assistant", "another historic answer"),
+            ]
+
+    asyncio.run(scenario())
+
+
+def test_history_returns_the_initial_prompt_before_any_run(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        initialize_repository(source)
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="zzzz",
+        )
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            conversation = app.state.conversations.create_conversation(
+                "not executed yet", ConversationSource.CLI
+            )
+            history = await api.conversation_history(conversation.conversation_id)
+            assert history == [{"role": "user", "content": "not executed yet"}]
+
+    asyncio.run(scenario())
+
+
+def test_history_prepends_legacy_run_facts_before_the_session_transcript(
+    tmp_path: Path,
+) -> None:
+    """A conversation continued after the Session upgrade keeps its old turns."""
+
+    async def scenario() -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        initialize_repository(source)
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="zzzz",
+        )
+        app.state.execution.llm_factory = ChatModel
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            conversation = app.state.conversations.create_conversation(
+                "legacy prompt", ConversationSource.CLI
+            )
+            app.state.conversations.store.create_run(
+                conversation_id=conversation.conversation_id,
+                status=RunStatus.COMPLETED,
+                prompt="legacy prompt",
+                result="historic answer",
+                source=ConversationSource.CLI,
+                created_at="2026-11-07T10:00:00+00:00",
+            )
+            run = await api.send_conversation(
+                conversation.conversation_id,
+                "session prompt",
+                source="cli",
+                request_id="mixed-history",
+            )
+            for _ in range(100):
+                current = await api.get_run(run["run_id"])
+                if current["status"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.02)
+            assert current["status"] == "completed", current
+
+            history = await api.conversation_history(conversation.conversation_id)
+            assert [
+                (message["role"], message["content"])
+                for message in history
+                if message["role"] in {"user", "assistant"}
+            ] == [
+                ("user", "legacy prompt"),
+                ("assistant", "historic answer"),
+                ("user", "session prompt"),
+                ("assistant", "reply:session prompt"),
+            ]
+
+    asyncio.run(scenario())
+
+
+def test_history_keeps_a_sessionless_run_after_the_session_transcript(
+    tmp_path: Path,
+) -> None:
+    """A run that failed before getting a Session must not vanish from history."""
+
+    async def scenario() -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        initialize_repository(source)
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="zzzz",
+        )
+        app.state.execution.llm_factory = ChatModel
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            conversation = app.state.conversations.create_conversation(
+                "session prompt", ConversationSource.CLI
+            )
+            run = await api.send_conversation(
+                conversation.conversation_id,
+                "session prompt",
+                source="cli",
+                request_id="session-then-failure",
+            )
+            for _ in range(100):
+                current = await api.get_run(run["run_id"])
+                if current["status"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.02)
+            assert current["status"] == "completed", current
+            app.state.conversations.store.create_run(
+                conversation_id=conversation.conversation_id,
+                status=RunStatus.FAILED,
+                prompt="failed before session",
+                error="provider unavailable",
+                source=ConversationSource.CLI,
+                created_at="2099-01-01T00:00:00+00:00",
+            )
+
+            history = await api.conversation_history(conversation.conversation_id)
+            assert [
+                (message["role"], message["content"])
+                for message in history
+                if message["role"] in {"user", "assistant"}
+            ] == [
+                ("user", "session prompt"),
+                ("assistant", "reply:session prompt"),
+                ("user", "failed before session"),
+            ]
+
+    asyncio.run(scenario())
+
+
+def test_history_orders_a_sessionless_run_between_session_runs(
+    tmp_path: Path,
+) -> None:
+    """An interleaved failed Run keeps its durable position, not the tail."""
+
+    async def scenario() -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        initialize_repository(source)
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="zzzz",
+        )
+        app.state.execution.llm_factory = ChatModel
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            conversation = app.state.conversations.create_conversation(
+                "first prompt", ConversationSource.CLI
+            )
+            first = await api.send_conversation(
+                conversation.conversation_id,
+                "first prompt",
+                source="cli",
+                request_id="first-session",
+            )
+            for _ in range(100):
+                current = await api.get_run(first["run_id"])
+                if current["status"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.02)
+            assert current["status"] == "completed", current
+            app.state.conversations.store.create_run(
+                conversation_id=conversation.conversation_id,
+                status=RunStatus.FAILED,
+                prompt="failed middle",
+                error="provider unavailable",
+                source=ConversationSource.CLI,
+                created_at=utc_now(),
+            )
+            second = await api.send_conversation(
+                conversation.conversation_id,
+                "second prompt",
+                source="cli",
+                request_id="second-session",
+            )
+            for _ in range(100):
+                current = await api.get_run(second["run_id"])
+                if current["status"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.02)
+            assert current["status"] == "completed", current
+
+            history = await api.conversation_history(conversation.conversation_id)
+            assert [
+                (message["role"], message["content"])
+                for message in history
+                if message["role"] in {"user", "assistant"}
+            ] == [
+                ("user", "first prompt"),
+                ("assistant", "reply:first prompt"),
+                ("user", "failed middle"),
+                ("user", "second prompt"),
+                ("assistant", "reply:second prompt"),
+            ]
+
+    asyncio.run(scenario())
+
+
+def test_history_reads_run_facts_when_the_session_store_is_missing(
+    tmp_path: Path,
+) -> None:
+    """A lost Session store must not make a completed Run unreadable."""
+
+    async def scenario() -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        initialize_repository(source)
+        state = tmp_path / "state"
+        worktrees = tmp_path / "worktrees"
+        first = runtime_app(source, state, worktrees, budget=RunBudget(5), token="zzzz")
+        first.state.execution.llm_factory = ChatModel
+        first_api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=first),
+        )
+        async with first.router.lifespan_context(first):
+            conversation = await first_api.create_conversation(
+                "legacy prompt", source="cli"
+            )
+            run = await first_api.send_conversation(
+                conversation["conversation_id"],
+                "legacy prompt",
+                source="cli",
+                request_id="legacy-session",
+            )
+            for _ in range(100):
+                current = await first_api.get_run(run["run_id"])
+                if current["status"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.02)
+            assert current["status"] == "completed", current
+            assert current["session_id"] is not None
+
+        shutil.rmtree(state / "sessions")
+
+        second = runtime_app(
+            source, state, worktrees, budget=RunBudget(5), token="zzzz"
+        )
+        second.state.execution.llm_factory = ChatModel
+        second_api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=second),
+        )
+        async with second.router.lifespan_context(second):
+            history = await second_api.conversation_history(
+                conversation["conversation_id"]
+            )
+            assert [
+                (message["role"], message["content"])
+                for message in history
+                if message["role"] in {"user", "assistant"}
+            ] == [
+                ("user", "legacy prompt"),
+                ("assistant", "reply:legacy prompt"),
+            ]
 
     asyncio.run(scenario())

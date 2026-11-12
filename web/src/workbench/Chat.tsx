@@ -21,7 +21,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
 }) {
   const key = `cairn.web.pending.${config?.workspace ?? "workspace"}:${id || "new"}`;
   const detail = useResource<{ conversation: Conversation; runs: Run[] }>(id ? `conversations/${encodeURIComponent(id)}` : null, 1200);
-  const observed = detail.data?.runs.at(-1);
+  const observed = detail.data?.runs?.at(-1);
   const [acknowledged, setAcknowledged] = useState<Run>();
   const run = acknowledged && observed?.run_id !== acknowledged.run_id &&
     (!observed?.created_at || (acknowledged.created_at ?? "") > observed.created_at) ? acknowledged : observed;
@@ -139,7 +139,10 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
       </div>)}
     </div>}
     {pending && <div className="submission-review" role="status"><span>待确认请求 · {pending.prompt.slice(0, 100)}（发送新消息会放弃这条记录）</span><button disabled={sending} onClick={() => void submit(pending)}>用原编号重试</button><button disabled={sending} onClick={() => { sessionStorage.removeItem(key); setPending(null); detail.refresh(); }}>放弃这条记录</button></div>}
-    {(error || detail.error || history.error) && <p className="wb-error" role="alert">{error || detail.error || history.error}</p>}
+    {(error || detail.error || history.error) && <p className="wb-error wb-error-action" role="alert">
+      <span>{error || detail.error || history.error}</span>
+      {!error && <button type="button" onClick={() => { detail.refresh(); history.refresh(); }}>重试</button>}
+    </p>}
     <form className="wb-composer" onSubmit={event => { event.preventDefault(); sendDraft(); }}>
       <textarea aria-label="消息" placeholder={mode === "development" ? "描述要完成的开发目标…" : "问 Cairn，或交给它一项工作…"} value={draft} maxLength={32000} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); sendDraft(); } }}/>
       <div className="composer-controls">

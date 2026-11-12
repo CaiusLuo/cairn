@@ -137,6 +137,9 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
 .wb-muted { color: var(--hui-muted); font-size: 13px; }
 .wb-error { color: var(--hui-error); background: color-mix(in srgb, var(--hui-error) 8%, transparent); border-radius: 8px; padding: 9px 12px; overflow-wrap: anywhere; }
+.wb-error-action { display: flex; align-items: center; gap: 10px; }
+.wb-error-action > span { min-width: 0; }
+.wb-error-action button { flex: none; margin-left: auto; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 600; text-decoration: underline; cursor: pointer; }
 .wb-main .wb-inline-link { display: inline-flex; align-items: center; gap: 5px; color: var(--hui-accent); font-size: 13px; }
 .wb-inline-link:hover { text-decoration: underline; }
 .wb-main .wb-back { border-color: transparent; color: var(--hui-secondary); padding-left: 0; margin-bottom: 10px; }

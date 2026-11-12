@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { runtimeApi } from "../runtime-api";
+import { RuntimeError, runtimeApi } from "../runtime-api";
 import { isActive, type Conversation, type ExecutionEvent, type Run, type Task } from "./data";
 
 export type Submission = {
@@ -21,6 +21,9 @@ export function readSubmission(key: string): Submission | null {
 }
 
 export async function sendSubmission(submission: Submission, key: string) {
+  // A record left in storage means this is a retry after a lost response.
+  // Query the durable request identity before posting again.
+  const resuming = sessionStorage.getItem(key) !== null;
   sessionStorage.setItem(key, JSON.stringify(submission));
   if (submission.mode === "development") {
     const created = await runtimeApi<{ task: Task }>("developments", {
@@ -38,6 +41,17 @@ export async function sendSubmission(submission: Submission, key: string) {
     });
     submission.conversation = created.conversation_id;
     sessionStorage.setItem(key, JSON.stringify(submission));
+  }
+  if (resuming) {
+    try {
+      const existing = await runtimeApi<Run>(
+        `conversations/${encodeURIComponent(submission.conversation)}/runs/by-request/${encodeURIComponent(submission.id)}`
+      );
+      sessionStorage.removeItem(key);
+      return { run: existing };
+    } catch (reason) {
+      if (!(reason instanceof RuntimeError && reason.status === 404)) throw reason;
+    }
   }
   const run = await runtimeApi<Run>(`conversations/${encodeURIComponent(submission.conversation)}/messages`, {
     prompt: submission.prompt, source: "web", request_id: submission.id,

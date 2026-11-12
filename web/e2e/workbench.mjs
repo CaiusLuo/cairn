@@ -68,11 +68,73 @@ try {
     const cliPrompt = "CLI browser takeover";
     const cli = (await read("conversations")).find(item => item.initial_prompt === cliPrompt && item.source === "cli");
     assert(cli, "The test fixture must start a real CLI conversation.");
+    let failHistory = true;
+    await page.route("**/history", async route => {
+      if (!failHistory) return route.continue();
+      await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "internal_error" }) });
+    });
+    await page.getByRole("link", { name: new RegExp(cliPrompt) }).click();
+    await page.getByRole("alert").waitFor();
+    assert.match(await page.getByRole("alert").innerText(), /Server 处理失败/);
+    failHistory = false;
+    await page.getByRole("button", { name: "重试" }).click();
+    await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
+    await page.unroute("**/history");
+
+    await page.goto(new URL("/chat.html?conversation=conv-missing", url).href);
+    await page.getByRole("alert").waitFor();
+    assert.match(await page.getByRole("alert").innerText(), /对话不存在/);
     await page.getByRole("link", { name: new RegExp(cliPrompt) }).click();
     await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
 
+    await page.context().setOffline(true);
+    await page.getByRole("link", { name: "工作台", exact: true }).click();
+    await page.getByRole("link", { name: new RegExp(cliPrompt) }).click();
+    await page.getByRole("alert").waitFor();
+    assert.match(await page.getByRole("alert").innerText(), /无法连接 Server/);
+    await page.context().setOffline(false);
+    await page.getByRole("button", { name: "重试" }).click();
+    await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
+
+    await page.getByRole("link", { name: "工作台", exact: true }).click();
+    await send("Web-created conversation");
+    await page.getByRole("heading", { name: "Web-created conversation" }).waitFor();
+    const createdId = new URL(page.url()).searchParams.get("conversation");
+    assert(createdId && createdId !== cli.conversation_id);
+    await page.reload();
+    await page.locator(".wb-message.user").filter({ hasText: "Web-created conversation" }).waitFor();
+    await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
+    await page.getByRole("link", { name: new RegExp(cliPrompt) }).click();
+    await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
+
+    const legacyId = process.env.CAIRN_WEB_E2E_LEGACY_CONVERSATION;
+    if (legacyId) {
+      await page.getByRole("link", { name: /Legacy browser history/ }).click();
+      await page.locator(".wb-message.user").filter({ hasText: "Legacy browser history" }).waitFor();
+      await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
+      const legacy = await read("conversations/" + legacyId);
+      assert.equal(legacy.runs[0].session_id, null);
+      await send("Legacy follow-up");
+      await page.locator(".wb-message.user").filter({ hasText: "Legacy follow-up" }).waitFor();
+      await page.waitForFunction(
+        async id => {
+          const detail = await (await fetch("/api/runtime/conversations/" + id)).json();
+          return detail.runs.length === 2 && detail.runs[1].status === "completed";
+        },
+        legacyId
+      );
+      const continuedLegacy = await read("conversations/" + legacyId);
+      assert.equal(continuedLegacy.runs[1].session_id !== null, true);
+      await page.locator(".wb-message.user").filter({ hasText: "Legacy browser history" }).waitFor();
+      await page.getByRole("link", { name: new RegExp(cliPrompt) }).click();
+      await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
+    }
+
     let lostReply = false;
+    let messagePosts = 0;
     await page.route("**/messages", async route => {
+      if (route.request().method() !== "POST") return route.continue();
+      messagePosts += 1;
       if (lostReply) return route.continue();
       lostReply = true;
       const response = await route.fetch();
@@ -89,6 +151,7 @@ try {
     await page.getByRole("textbox", { name: "消息" }).fill("");
     await retry.click();
     await retry.waitFor({ state: "detached" });
+    assert.equal(messagePosts, 1, "A pending retry must read the existing Run instead of re-posting");
     await page.unroute("**/messages");
     await page.locator('.status-badge[data-status="completed"]').waitFor();
     const continued = await read("conversations/" + cli.conversation_id);
