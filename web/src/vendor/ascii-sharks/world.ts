@@ -21,7 +21,7 @@ export const SHARK_NODES = 20;
 export type SharkKind = "classic" | "hammerhead" | "zebra" | "tiger" | "greathammer" | "mako" | "thresher" | "nurse";
 
 /** Which sharks to put in the water; size is relative to the biggest. */
-export type SharkSpec = { kind: SharkKind; size: number };
+export type SharkSpec = { kind: SharkKind; size: number; orbit?: [number, number] };
 
 // The landing hero: four of the same shark at different depths.
 const DEFAULT_SHARKS: SharkSpec[] = [
@@ -142,9 +142,9 @@ export class World {
 
     this.sharks = [];
     for (let i = 0; i < sharkCount; i++) {
-      const { kind, size } = this.sharkSpecs[i];
+      const { kind, size, orbit = [0.28, 0.4] } = this.sharkSpecs[i];
       const length = baseLength * size;
-      const orbitRadius = minSide * rand(0.28, 0.4);
+      const orbitRadius = minSide * rand(orbit[0], orbit[1]);
       const a = (i / sharkCount) * TAU + rand(-0.4, 0.4);
       const orbitDir: 1 | -1 = i % 2 === 0 ? 1 : -1;
       const x = W / 2 + Math.cos(a) * orbitRadius * (W / minSide) * 0.9;

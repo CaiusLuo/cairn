@@ -2,9 +2,9 @@ import { useEffect, useRef } from "react";
 import cairnMark from "../assets/cairn-mark.svg";
 import "./boot.css";
 
-type BootScreenProps = { dark?: boolean; label?: string };
+type BootScreenProps = { dark?: boolean; label?: string; surface?: "login" };
 
-export function BootScreen({ dark = false, label = "正在加载 Cairn…" }: BootScreenProps) {
+export function BootScreen({ dark = false, label = "正在加载 Cairn…", surface }: BootScreenProps) {
   const mark = useRef<HTMLImageElement>(null);
   const shadow = useRef<HTMLDivElement>(null);
   const labelRef = useRef<HTMLSpanElement>(null);
@@ -60,7 +60,7 @@ export function BootScreen({ dark = false, label = "正在加载 Cairn…" }: Bo
   }, []);
 
   return (
-    <div className="boot-screen" data-dark={dark} role="status" aria-live="polite" aria-label={label}>
+    <div className="boot-screen" data-dark={dark} data-surface={surface} role="status" aria-live="polite" aria-label={label}>
       <div className="boot-stage">
         <img ref={mark} className="boot-mark" src={cairnMark} alt="" aria-hidden="true" />
         <div ref={shadow} className="boot-shadow" aria-hidden="true" />

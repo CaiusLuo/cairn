@@ -9,6 +9,7 @@
   color: var(--hui-text, #252529);
   font: 14px/1.5 var(--hui-sans, ui-sans-serif, system-ui, sans-serif);
 }
+.boot-screen[data-surface="login"] { background: #e9ebee; }
 .boot-screen[data-dark="true"] { background: #0b1114; color: #ededf0; }
 .boot-stage { position: relative; display: grid; place-items: center; width: 104px; height: 104px; }
 .boot-mark { position: relative; z-index: 1; width: 64px; height: 64px; }
@@ -28,6 +29,10 @@
   line-height: 1.7;
   letter-spacing: .02em;
   white-space: nowrap;
+}
+.boot-screen[data-surface="login"] .boot-label {
+  --boot-letter-peak: #4f4a66;
+  color: #5f5a78;
 }
 .boot-screen[data-dark="true"] .boot-label,
 :root[data-theme="dark"] .boot-label {
