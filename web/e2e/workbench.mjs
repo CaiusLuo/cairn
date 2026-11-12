@@ -68,6 +68,25 @@ try {
     const cliPrompt = "CLI browser takeover";
     const cli = (await read("conversations")).find(item => item.initial_prompt === cliPrompt && item.source === "cli");
     assert(cli, "The test fixture must start a real CLI conversation.");
+    const shell = await api.get("/chat.html");
+    assert(shell.ok());
+    assert((await shell.text()).includes("正在加载 Cairn…"), "The chat shell must paint before JavaScript loads");
+
+    // A deep link must return to the same conversation after login, without a reload.
+    const fresh = await browser.newContext();
+    try {
+      const freshPage = await fresh.newPage();
+      await freshPage.goto(new URL(`/chat.html?conversation=${cli.conversation_id}`, url).href);
+      await freshPage.getByLabel("Username").fill("cairn");
+      await freshPage.getByLabel("Password").fill(token);
+      await freshPage.getByRole("button", { name: "Sign in" }).click();
+      await freshPage.locator(".wb-chat").waitFor();
+      assert.equal(new URL(freshPage.url()).pathname, "/chat.html");
+      assert.equal(new URL(freshPage.url()).searchParams.get("conversation"), cli.conversation_id);
+    } finally {
+      await fresh.close();
+    }
+
     let failHistory = true;
     await page.route("**/history", async route => {
       if (!failHistory) return route.continue();

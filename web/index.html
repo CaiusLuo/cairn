@@ -5,9 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Cairn 工作台</title>
+    <style>
+      html, body { margin: 0; background: #fff; color: #252529; }
+      @media (prefers-color-scheme: dark) { html, body { background: #141417; color: #ededf0; } }
+      html[data-theme="dark"], html[data-theme="dark"] body { background: #141417; color: #ededf0; }
+      .boot { min-height: 100vh; display: flex; align-items: center; justify-content: center; font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; opacity: .7; }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><p class="boot" role="status">正在加载 Cairn…</p></div>
     <script type="module" src="/src/main-workbench.tsx"></script>
   </body>
 </html>

@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
-import { SettingsPage } from "../SettingsPage";
-import { Approvals } from "./Approvals";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { Chat } from "./Chat";
 import { useResource, type Conversation, type Run, type Task, type WorkbenchConfig } from "./data";
 import { Runs, Tasks } from "./execution";
 import { Shell, type View } from "./Shell";
-import { Workflow } from "./Workflow";
+
+// Heavy, route-specific views stay out of the initial chat bundle. The
+// workflow canvas alone pulls in the React Flow renderer.
+const Approvals = lazy(() => import("./Approvals").then(module => ({ default: module.Approvals })));
+const SettingsPage = lazy(() => import("../SettingsPage").then(module => ({ default: module.SettingsPage })));
+const Workflow = lazy(() => import("./Workflow").then(module => ({ default: module.Workflow })));
 
 function currentRoute() {
   const params = new URLSearchParams(location.search);
@@ -42,11 +45,13 @@ export function App() {
 
   return <Shell view={view} active={id} navigate={navigate} conversations={conversations.data ?? []} workspace={config.data?.workspace}
     status={config.error ? "offline" : config.data ? "online" : "connecting"}>
-    {(view === "home" || view === "chat") && <Chat key={id || params.get("mode") || "new"} id={id} initialMode={params.get("mode") === "development" ? "development" : "conversation"} config={config.data} navigate={navigate} onSubmit={refresh}/>}
-    {view === "tasks" && <Tasks tasks={development} id={task} navigate={navigate} refresh={refresh} loading={!tasks.data} error={tasks.error}/>}
-    {view === "runs" && <Runs runs={runs.data ?? []} id={run} navigate={navigate} error={runs.error}/>}
-    {view === "workflow" && <Workflow tasks={development} selected={task} navigate={navigate} error={tasks.error}/>}
-    {view === "approvals" && <Approvals task={task} run={run} tasks={development} runs={runs.data ?? []} navigate={navigate} refresh={refresh} error={runs.error || tasks.error}/>}
-    {view === "settings" && <SettingsPage key={params.get("section")} />}
+    <Suspense fallback={<p className="wb-muted" role="status">正在加载界面…</p>}>
+      {(view === "home" || view === "chat") && <Chat key={id || params.get("mode") || "new"} id={id} initialMode={params.get("mode") === "development" ? "development" : "conversation"} config={config.data} navigate={navigate} onSubmit={refresh}/>}
+      {view === "tasks" && <Tasks tasks={development} id={task} navigate={navigate} refresh={refresh} loading={!tasks.data} error={tasks.error}/>}
+      {view === "runs" && <Runs runs={runs.data ?? []} id={run} navigate={navigate} error={runs.error}/>}
+      {view === "workflow" && <Workflow tasks={development} selected={task} navigate={navigate} error={tasks.error}/>}
+      {view === "approvals" && <Approvals task={task} run={run} tasks={development} runs={runs.data ?? []} navigate={navigate} refresh={refresh} error={runs.error || tasks.error}/>}
+      {view === "settings" && <SettingsPage key={params.get("section")} />}
+    </Suspense>
   </Shell>;
 }

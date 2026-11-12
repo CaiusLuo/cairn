@@ -3,6 +3,14 @@ import "../styles/login.css";
 import { AsciiOcean } from "../vendor/ascii-sharks/react";
 import { CairnMark } from "../workbench/Brand";
 
+let workbenchWarmed = false;
+
+function warmWorkbench() {
+  if (workbenchWarmed) return;
+  workbenchWarmed = true;
+  void import("../workbench/App").catch(() => { workbenchWarmed = false; });
+}
+
 export function LoginPage() {
   const [username, setUsername] = useState("");
   const [passwordValue, setPasswordValue] = useState("");
@@ -47,7 +55,7 @@ export function LoginPage() {
         <form className="login-form" onSubmit={submit}>
           <label>
             <span>Username</span>
-            <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" autoFocus required />
+            <input value={username} onChange={(event) => setUsername(event.target.value)} onFocus={warmWorkbench} autoComplete="username" autoFocus required />
           </label>
           <label>
             <span>Password</span>
