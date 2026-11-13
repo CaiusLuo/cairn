@@ -253,27 +253,54 @@ try {
     await shot("Cairn-workbench-artifacts");
     await page.keyboard.press("Escape");
     await drawer.waitFor({ state: "detached" });
-    await page.getByRole("button", { name: "查看流程图" }).click();
-    await page.locator(".react-flow__node").first().waitFor();
-    await page.locator(".react-flow__node").first().click();
-    await page.getByText(/已记录事件 #/).waitFor();
-    const node = await page.locator(".react-flow__node").first().boundingBox();
-    assert(node);
-    await page.mouse.move(node.x + node.width / 2, node.y + node.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(node.x + node.width / 2 + 30, node.y + node.height / 2 + 45, { steps: 8 });
-    await page.mouse.up();
-    const undo = page.getByRole("button", { name: "撤销布局" });
-    await undo.click();
-    assert(await page.getByRole("button", { name: "重做布局" }).isEnabled());
-    await shot("Cairn-workbench-workflow");
-    const workflowUrl = page.url();
-    assert(await page.locator(".react-flow__handle.connectable").count() === 0);
+    // Removed graph view: old bookmarked URLs still reach the task.
+    await page.goto(taskUrl + "&view=workflow");
+    await page.getByRole("heading", { name: "工作树" }).waitFor();
     await page.goto(taskUrl);
     await page.getByLabel("跟进说明").fill("Verify the existing artifact");
     await page.getByRole("button", { name: "发送跟进" }).click();
     await page.locator(".wb-detail-grid section").filter({ has: page.getByRole("heading", { name: "最近执行" }) }).locator("dd").first().filter({ hasText: /^2$/ }).waitFor();
     await page.locator('.status-badge[data-status="completed"]').first().waitFor();
+
+    await page.getByRole("link", { name: "知识", exact: true }).click();
+    await page.getByRole("heading", { name: "知识", exact: true }).waitFor();
+    const clipText = "剪贴验收原文\n\n- 第一行保留\n- **Markdown** 原样保存";
+    await page.getByLabel("片段原文").fill(clipText);
+    await page.getByLabel("片段标签").fill("验收, 剪贴");
+    await page.getByRole("button", { name: "保存片段" }).click();
+    await page.getByRole("heading", { name: "剪贴验收原文", exact: true }).waitFor();
+    const knowledgeUrl = page.url();
+    const storedClips = (await (await api.get("/api/knowledge/clips?query=" + encodeURIComponent("剪贴验收原文"))).json()).clips;
+    assert.equal(storedClips.length, 1);
+    assert.equal(storedClips[0].content, clipText);
+    assert.deepEqual(storedClips[0].tags, ["验收", "剪贴"]);
+    assert.equal(storedClips[0].content_hash.length, 64);
+
+    await page.getByLabel("搜索知识片段").fill("Markdown");
+    await page.getByRole("heading", { name: "剪贴验收原文", exact: true }).waitFor();
+    await page.getByRole("button", { name: /剪贴验收原文/ }).click();
+    const clipDialog = page.getByRole("dialog", { name: "知识片段" });
+    await clipDialog.waitFor();
+    await clipDialog.getByText("SHA-256", { exact: false }).waitFor();
+    await clipDialog.getByRole("button", { name: "预览 Markdown" }).click();
+    await clipDialog.locator("strong").filter({ hasText: "Markdown" }).waitFor();
+    await clipDialog.getByRole("button", { name: "显示原文" }).click();
+    await clipDialog.getByRole("button", { name: "编辑内容" }).click();
+    await clipDialog.getByLabel("编辑片段内容").fill(clipText + "\n追加行");
+    await clipDialog.getByRole("button", { name: "保存修改" }).click();
+    await clipDialog.getByText("追加行", { exact: false }).waitFor();
+    const editedClips = (await (await api.get("/api/knowledge/clips?query=" + encodeURIComponent("追加行"))).json()).clips;
+    assert.equal(editedClips[0].content, clipText + "\n追加行");
+    await clipDialog.getByRole("button", { name: "归档片段" }).click();
+    await clipDialog.getByText("已归档", { exact: true }).first().waitFor();
+    await page.keyboard.press("Escape");
+    await clipDialog.waitFor({ state: "detached" });
+    await page.getByRole("checkbox", { name: "显示已归档" }).check();
+    await page.getByRole("heading", { name: "剪贴验收原文", exact: true }).waitFor();
+    await page.getByRole("button", { name: "恢复", exact: true }).click();
+    await page.getByRole("heading", { name: "剪贴验收原文", exact: true }).waitFor();
+    assert.equal((await (await api.get("/api/knowledge/clips?query=" + encodeURIComponent("追加行"))).json()).clips[0].archived_at, null);
+    await shot("Cairn-workbench-knowledge");
 
     let approvalUrl;
     const recoveryId = process.env.CAIRN_WEB_E2E_RECOVERY_TASK;
@@ -324,7 +351,7 @@ try {
     for (const [name, path, heading] of [
       ["chat", chatUrl, "CLI browser takeover"],
       ["task", taskUrl, "工作树"],
-      ["workflow", workflowUrl, "流程"],
+      ["knowledge", knowledgeUrl, "知识"],
       ["run", runUrl, "执行时间线"],
       ...(approvalUrl ? [["approval", approvalUrl, "恢复核对"]] : []),
     ]) {
@@ -332,11 +359,6 @@ try {
       await page.getByRole("heading", { name: heading, exact: true }).waitFor();
       await assertNoOverflow();
       await shot("Cairn-workbench-mobile-" + name);
-      if (name === "workflow") {
-        const first = page.locator(".react-flow__node").first();
-        await first.click();
-        await page.getByText(/已记录事件 #/).waitFor();
-      }
       if (name === "task") {
         await page.getByRole("button", { name: "产物" }).click();
         const mobileDrawer = page.getByRole("dialog", { name: "任务产物" });

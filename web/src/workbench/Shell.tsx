@@ -12,20 +12,20 @@ import { CairnLogo } from "./Brand";
 import { Icon, type IconName } from "./Icon";
 import { conversationTitle, isActive, sourceLabel, type Conversation } from "./data";
 
-export type View = "home" | "chat" | "tasks" | "workflow" | "runs" | "approvals" | "settings";
+export type View = "home" | "chat" | "tasks" | "knowledge" | "runs" | "approvals" | "settings";
 const navigation: { view: View; label: string; icon: IconName }[] = [
   { view: "home", label: "工作台", icon: "home-start" },
   { view: "chat", label: "对话", icon: "chat" },
   { view: "tasks", label: "开发任务", icon: "board" },
+  { view: "knowledge", label: "知识", icon: "doc" },
   { view: "approvals", label: "待我确认", icon: "gate" },
-  { view: "workflow", label: "流程", icon: "workflow" },
   { view: "runs", label: "运行", icon: "runs" },
 ];
 
 export function href(view: View, params: Record<string, string> = {}) {
   const query = new URLSearchParams(params);
-  if (view === "workflow" || view === "runs" || view === "approvals") query.set("view", view);
-  const page = { chat: "/chat.html", tasks: "/tasks.html", settings: "/settings.html" }[view as "chat" | "tasks" | "settings"] ?? "/";
+  if (view === "runs" || view === "approvals") query.set("view", view);
+  const page = { chat: "/chat.html", tasks: "/tasks.html", knowledge: "/knowledge.html", settings: "/settings.html" }[view as "chat" | "tasks" | "knowledge" | "settings"] ?? "/";
   return page + (query.size ? "?" + query : "");
 }
 

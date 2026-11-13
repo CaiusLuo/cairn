@@ -120,6 +120,20 @@ def test_web_config_rejects_unsafe_roots_and_non_loopback_host(tmp_path: Path) -
             workspace=workspace,
             sessions_dir=tmp_path / "sessions",
             tasks_dir=tmp_path / "tasks",
+            knowledge_dir=workspace / "knowledge",
+        )
+    with pytest.raises(ValueError):
+        WebConfig(
+            workspace=workspace,
+            sessions_dir=tmp_path / "sessions",
+            tasks_dir=tmp_path / "tasks",
+            knowledge_dir=tmp_path / "tasks",
+        )
+    with pytest.raises(ValueError):
+        WebConfig(
+            workspace=workspace,
+            sessions_dir=tmp_path / "sessions",
+            tasks_dir=tmp_path / "tasks",
             host="0.0.0.0",
         )
 

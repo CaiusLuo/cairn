@@ -113,6 +113,7 @@ def runtime_app(
                 workspace=workspace,
                 sessions_dir=state / "sessions",
                 tasks_dir=state / "board",
+                knowledge_dir=state / "knowledge",
                 host=host,
                 port=port,
                 auth_passphrase=token,

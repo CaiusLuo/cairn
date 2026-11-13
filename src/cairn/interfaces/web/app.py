@@ -41,7 +41,9 @@ from cairn.interfaces.web.auth import (
     AuthSessions,
 )
 from cairn.interfaces.web.config import WebConfig
+from cairn.interfaces.web.knowledge import knowledge_routes
 from cairn.interfaces.web.reader import SnapshotReader
+from cairn.knowledge.store import KnowledgeStore
 
 _ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -150,6 +152,12 @@ def create_app(
     )
 
     task_service = TaskBoardService(TaskBoardStore(config.tasks_dir))
+    # Knowledge writes are operator state, so the route only exists alongside
+    # the cookie/bearer guard; the read-only snapshot mode stays read-only.
+    assert config.knowledge_dir is not None
+    knowledge_store = (
+        KnowledgeStore(config.knowledge_dir) if config.auth_passphrase else None
+    )
 
     auth_sessions = AuthSessions(
         config.username, config.auth_passphrase, path=session_file
@@ -338,6 +346,8 @@ def create_app(
         Route("/api/tasks/{task_id}", update_task, methods=["PATCH"]),
         WebSocketRoute("/api/ws", websocket_status),
     ]
+    if knowledge_store is not None:
+        routes.extend(knowledge_routes(knowledge_store, runtime_token))
     if runtime is not None:
         from cairn.interfaces.web.runtime import task_routes
 

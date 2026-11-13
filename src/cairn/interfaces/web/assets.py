@@ -11,7 +11,14 @@ def default_web_root() -> Path:
 
 
 def require_web_assets(root: Path) -> Path:
-    required = ("index.html", "chat.html", "tasks.html", "settings.html", "login.html")
+    required = (
+        "index.html",
+        "chat.html",
+        "tasks.html",
+        "knowledge.html",
+        "settings.html",
+        "login.html",
+    )
     if (
         not all((root / name).is_file() for name in required)
         or not (root / "assets").is_dir()

@@ -302,20 +302,47 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .wb-outputs input { width: 100%; }
 .wb-output { margin-top: 9px; padding: 0 9px 5px; border: 1px solid var(--hui-border); border-radius: 9px; overflow-wrap: anywhere; }
 
-.wb-flow-page { width: 100%; }
-.flow-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 11px; color: var(--hui-muted); font-size: 12px; }
-.flow-workspace { display: grid; grid-template-columns: minmax(0,1fr) minmax(175px, 25%); border: 1px solid var(--hui-border); border-radius: 14px; overflow: hidden; min-width: 0; }
-.flow-canvas { min-width: 0; height: clamp(330px, 65dvh, 760px); position: relative; background: var(--hui-stage); }
-.flow-canvas .react-flow { --xy-background-color-default: var(--hui-stage); --xy-background-pattern-dots-color-default: var(--hui-border-strong); --xy-edge-stroke-default: var(--hui-tertiary); --xy-minimap-background-color-default: var(--hui-surface); --xy-minimap-mask-background-color-default: var(--hui-scrim); --xy-controls-button-background-color-default: var(--hui-surface); --xy-controls-button-background-color-hover-default: var(--hui-soft); --xy-controls-button-color-default: var(--hui-secondary); }
-.flow-node { width: 180px; min-height: 63px; display: flex; align-items: center; gap: 8px; padding: 10px; border: 1px solid var(--hui-border-strong); border-radius: 9px; background: var(--hui-surface); box-shadow: var(--hui-ind-shadow); }
-.flow-node.selected { border-color: var(--hui-accent); box-shadow: 0 0 0 2px var(--hui-accent-soft); }
-.flow-node strong, .flow-node small { display: block; }
-.flow-node small { color: var(--hui-muted); font-size: 11px; }
-.flow-actions { position: absolute; z-index: 4; top: 10px; left: 10px; display: flex; flex-wrap: wrap; gap: 5px; }
-.flow-actions button { display: inline-flex; gap: 5px; align-items: center; font-size: 12px; }
-.flow-inspector { padding: 12px; border-left: 1px solid var(--hui-border); min-width: 0; }
-.flow-inspector h2 { margin: 0; font-size: 14px; }
-.flow-inspector p { font-size: 12px; color: var(--hui-muted); }
+.knowledge-compose { display: grid; gap: 10px; }
+.knowledge-compose > textarea {
+  width: 100%; min-height: 142px; resize: vertical; line-height: 1.65;
+  padding: 10px 12px; border-radius: 9px; border: 1px solid var(--hui-border-strong);
+  background: var(--hui-surface); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+}
+.knowledge-compose-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.knowledge-compose-row > label {
+  flex: 1 1 220px; min-width: 0; display: flex; align-items: center; gap: 6px;
+  padding-left: 9px; border: 1px solid var(--hui-border-strong); border-radius: 8px; color: var(--hui-muted);
+}
+.knowledge-compose-row input { flex: 1; min-width: 0; border: 0; }
+.knowledge-count { color: var(--hui-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.knowledge-compose-row > button { display: inline-flex; align-items: center; gap: 5px; }
+.wb-toolbar > label.knowledge-archive-toggle { padding: 6px 10px; gap: 6px; cursor: pointer; }
+.knowledge-archive-toggle input { width: auto; accent-color: var(--hui-accent); }
+.knowledge-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(270px, 100%), 1fr)); gap: 12px; }
+.knowledge-card { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--hui-border); border-radius: 14px; background: var(--hui-surface); overflow: hidden; }
+.knowledge-card.is-archived { opacity: .72; }
+.knowledge-card-main { flex: 1; display: grid; gap: 8px; align-content: start; padding: 15px; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.knowledge-card-main:hover { background: var(--hui-soft); }
+.knowledge-meta { display: flex; justify-content: space-between; gap: 8px; color: var(--hui-muted); font-size: 11px; }
+.knowledge-card h2 { margin: 0; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
+.knowledge-preview { margin: 0; color: var(--hui-secondary); font-size: 13px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+.knowledge-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.knowledge-tag { padding: 2px 7px; border-radius: 999px; background: var(--hui-accent-soft); color: var(--hui-accent); font-size: 11px; }
+.knowledge-card footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 15px; border-top: 1px solid var(--hui-border); }
+.knowledge-card footer small { color: var(--hui-muted); font-size: 11px; }
+.knowledge-card footer button { padding: 4px 8px; border: 1px solid var(--hui-border-strong); border-radius: 7px; background: var(--hui-surface); font-size: 12px; }
+.knowledge-detail-meta { display: flex; flex-wrap: wrap; gap: 5px 12px; color: var(--hui-muted); font-size: 11px; margin-bottom: 8px; }
+.knowledge-detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.knowledge-content {
+  margin: 0; padding: 12px; max-height: 52dvh; overflow: auto; border-radius: 9px;
+  background: var(--hui-soft); white-space: pre-wrap; overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.7;
+}
+.knowledge-edit { display: grid; gap: 9px; }
+.knowledge-edit > label { display: grid; gap: 5px; font-size: 12px; color: var(--hui-muted); }
+.knowledge-edit textarea { width: 100%; min-height: 230px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.65; }
+.knowledge-edit input { width: 100%; }
+.knowledge-hash { margin: 10px 0 0; color: var(--hui-muted); font-size: 11px; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 .settings-main .muted { color: var(--hui-muted); }
 .settings-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -340,8 +367,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   .wb-transcript-inner { padding: 21px 13px; }
   .wb-chat-compose { padding: 7px 10px 11px; }
   .wb-page { padding-top: 18px; }
-  .flow-workspace { grid-template-columns: 1fr; }
-  .flow-inspector { border-left: 0; border-top: 1px solid var(--hui-border); }
+  .knowledge-grid { grid-template-columns: 1fr; }
+  .knowledge-compose-row > button { flex-basis: 100%; justify-content: center; }
 }
 @media (max-width: 520px) {
   .composer-harness { display: none; }
@@ -358,5 +385,4 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   .wb-chat-header .status-badge { max-width: 90px; overflow: hidden; text-overflow: ellipsis; }
   .wb-run-list > a > svg { display: none; }
   .wb-timeline summary time { display: none; }
-  .flow-canvas .react-flow__minimap { display: none; }
 }

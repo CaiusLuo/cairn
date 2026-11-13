@@ -38,7 +38,13 @@ def test_custom_root_web_api_and_restart_share_persistent_state(tmp_path: Path) 
         token = (server.state / "runtime.token").read_text().strip()
         headers = {"Authorization": "Bearer " + token}
         with httpx.Client(base_url=server.url, headers=headers, trust_env=False) as api:
-            for page in ("/chat.html", "/tasks.html", "/settings.html", "/index.html"):
+            for page in (
+                "/chat.html",
+                "/tasks.html",
+                "/knowledge.html",
+                "/settings.html",
+                "/index.html",
+            ):
                 assert api.get(page).status_code == 200
             assert api.get("/api/health").status_code == 200
             assert api.get("/api/runtime/tasks").json() == []

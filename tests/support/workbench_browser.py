@@ -249,7 +249,16 @@ def main() -> None:
                     original.st_ino,
                     original.st_mtime_ns,
                 )
+                clips = (
+                    api.get("/api/knowledge/clips", params={"query": "追加行"})
+                    .raise_for_status()
+                    .json()["clips"]
+                )
+                assert len(clips) == 1
+                assert clips[0]["content"].endswith("追加行")
+                assert clips[0]["archived_at"] is None
                 print("Recovery acknowledgement survived restart without replay.")
+                print("Knowledge clip survived Server restart.")
         finally:
             server.stop()
 

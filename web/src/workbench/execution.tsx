@@ -160,9 +160,9 @@ function TaskDetail({ id, navigate, refresh }: { id: string; navigate: (path: st
       </section>}
       {task.diagnostic && <p className="wb-error" role="status">{task.diagnostic}</p>}
       {task.status === "recovery_required" && <a className="wb-inline-link" href={href("approvals", { task: id })}>打开恢复核对 <Icon name="arrow-right" size={14}/></a>}
-      <section className="wb-card"><h2>执行时间线</h2><ErrorText value={events.error}/><Timeline events={events.rows}/><button onClick={() => navigate(href("workflow", { task: id }))}>查看流程图</button></section>
+      <section className="wb-card"><h2>执行时间线</h2><ErrorText value={events.error}/><Timeline events={events.rows}/></section>
       {task.result && <section className="wb-card"><h2>任务结果</h2><Markdown text={task.result}/></section>}
-      <section className="wb-card"><h2>验证与依赖</h2><p className="wb-muted">已记录的验证输出见产物与执行时间线。独立测试结论和任务依赖等待 Workflow 契约。</p></section>
+      <section className="wb-card"><h2>验证与依赖</h2><p className="wb-muted">已记录的验证输出见产物与执行时间线。独立测试结论和任务依赖等待 Server 契约。</p></section>
       <TaskFollowup task={task} resource={resource} onSent={() => { info.refresh(); refresh(); }}/>
       {outputs && <Drawer title="任务产物" close={() => setOutputs(false)}><ErrorText value={history.error}/><Outputs result={task.result} history={history.data ?? []}/></Drawer>}
     </>}
