@@ -719,6 +719,115 @@ def test_legacy_run_facts_are_given_to_the_next_model_call(tmp_path: Path) -> No
     asyncio.run(scenario())
 
 
+def test_quote_heavy_legacy_history_stays_within_task_bounds(tmp_path: Path) -> None:
+    """Escaping must not push recovered history past the Task field limit."""
+
+    async def scenario() -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        initialize_repository(source)
+        recording = RecordingModel()
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="zzzz",
+        )
+        app.state.execution.llm_factory = lambda: recording
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            store = app.state.conversations.store
+            conversation = app.state.conversations.create_conversation(
+                "legacy start", ConversationSource.CLI
+            )
+            store.create_run(
+                conversation_id=conversation.conversation_id,
+                status=RunStatus.COMPLETED,
+                prompt="legacy question",
+                result='"' * (HISTORY_CONTEXT_LIMIT - 64),
+                source=ConversationSource.CLI,
+                created_at="2026-11-07T10:00:00+00:00",
+            )
+            run = await api.send_conversation(
+                conversation.conversation_id,
+                "continue from quote-heavy legacy run",
+                source="cli",
+                request_id="quote-heavy-history",
+            )
+            current: dict[str, Any] = {}
+            for _ in range(100):
+                current = await api.get_run(run["run_id"])
+                if current["status"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.02)
+            assert current["status"] == "completed", current
+            contexts = recording.contexts()
+            assert contexts
+            assert all(len(value) <= HISTORY_CONTEXT_LIMIT for value in contexts)
+
+    asyncio.run(scenario())
+
+
+def test_setup_failure_settles_observers_and_fails_the_run(tmp_path: Path) -> None:
+    """A failure before execution must not leave the run active or silent."""
+
+    async def scenario() -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        initialize_repository(source)
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="zzzz",
+        )
+        app.state.execution.llm_factory = lambda: ChatModel()
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            service = app.state.conversations
+            settled: list[dict[str, Any]] = []
+            service.add_run_settled_listener(
+                lambda settled_run: settled.append(settled_run.model_dump(mode="json"))
+            )
+
+            def explode(*_args: Any, **_kwargs: Any) -> str:
+                raise RuntimeError("history setup exploded")
+
+            service._history_context = explode  # type: ignore[method-assign]
+            conversation = service.create_conversation(
+                "setup failure", ConversationSource.CLI
+            )
+            run = await api.send_conversation(
+                conversation.conversation_id,
+                "hello",
+                source="cli",
+                request_id="setup-failure",
+            )
+            current: dict[str, Any] = {}
+            for _ in range(100):
+                current = await api.get_run(run["run_id"])
+                if current["status"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.02)
+            assert current["status"] == "failed", current
+            assert current["error"] == "conversation_worker_error"
+            assert service.active_run_id is None
+            assert settled and settled[-1]["run_id"] == run["run_id"]
+            assert settled[-1]["status"] == "failed"
+
+    asyncio.run(scenario())
+
+
 def test_legacy_history_context_is_bounded_to_recent_turns(tmp_path: Path) -> None:
     async def scenario() -> None:
         source = tmp_path / "source"
