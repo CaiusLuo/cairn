@@ -300,8 +300,11 @@ try {
     const runUrl = page.url();
     await page.setViewportSize({ width: 390, height: 844 });
     await page.getByRole("link", { name: "工作台", exact: true }).click();
+    // The toggle cycles light -> dark -> system; pin a known starting point.
+    await page.evaluate(() => localStorage.setItem("cairn-theme", "light"));
+    await page.reload();
     await page.getByRole("button", { name: "切换主题" }).click();
-    assert.equal(await page.locator("html").getAttribute("data-theme"), "dark");
+    await page.waitForSelector('html[data-theme="dark"]', { state: "attached" });
     await assertNoOverflow();
     await shot("Cairn-workbench-mobile");
     const toggle = page.getByRole("button", { name: "切换会话侧栏" });
