@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { newRequestId } from "../ids";
 import { runtimeApi } from "../runtime-api";
 import { dateLabel, isActive, sourceLabel, useResource, type ExecutionEvent, type Message, type Run, type Task } from "./data";
 import { activityEvents, Badge, Drawer, Markdown, Outputs, Timeline } from "./evidence";
@@ -86,7 +87,7 @@ function TaskFollowup({ task, resource, onSent }: { task: Task; resource: string
 
   async function submit() {
     if (busy || (!pending && (!acceptsInput || !draft.trim()))) return;
-    const input = pending ?? { prompt: draft.trim(), request_id: crypto.randomUUID(), expected_sequence: task.sequence };
+    const input = pending ?? { prompt: draft.trim(), request_id: newRequestId(), expected_sequence: task.sequence };
     setBusy(true);
     setError("");
     try {

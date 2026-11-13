@@ -338,6 +338,26 @@ try {
     await page.getByRole("link", { name: "设置", exact: true }).click();
     await page.getByRole("heading", { name: "微信连接" }).waitFor();
     await assertNoOverflow();
+
+    // A plain-HTTP origin (no secure context) does not expose
+    // crypto.randomUUID; sends must still produce their request.
+    await page.addInitScript(() => {
+      Object.defineProperty(Crypto.prototype, "randomUUID", { get: () => undefined });
+    });
+    let plainHttpPost = false;
+    await page.route("**/api/runtime/conversations", async route => {
+      if (route.request().method() !== "POST") return route.continue();
+      plainHttpPost = true;
+      await route.abort();
+    });
+    const errorsBeforePlainHttp = errors.length;
+    await page.goto(new URL("/chat.html", url).href);
+    await send("Send without crypto.randomUUID");
+    await page.waitForTimeout(750);
+    assert(plainHttpPost, "A plain-HTTP send must still post a conversation");
+    assert.equal(errors.length, errorsBeforePlainHttp, "A plain-HTTP send must not raise a page error");
+    await page.unroute("**/api/runtime/conversations");
+    console.log("Plain-HTTP request identity passed.");
     console.log("Workbench browser E2E passed.");
   }
   assert.deepEqual(errors, []);

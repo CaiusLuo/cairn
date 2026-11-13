@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { newRequestId } from "../ids";
 import { RuntimeError, runtimeApi } from "../runtime-api";
 import { readSubmission, sendSubmission, useRunStream, type Submission } from "./chat-state";
 import { isActive, sourceLabel, useResource, type Conversation, type Message, type Run, type WorkbenchConfig } from "./data";
@@ -103,7 +104,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
       sessionStorage.removeItem(key);
       setPending(null);
     }
-    const next = { id: crypto.randomUUID(), prompt, model: mode === "conversation" && model ? model : undefined };
+    const next = { id: newRequestId(), prompt, model: mode === "conversation" && model ? model : undefined };
     setDraft("");
     stickToBottom.current = true;
     if (active && mode === "conversation") setQueue(rows => [...rows, next]);

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { newRequestId } from "../ids";
 import { runtimeApi } from "../runtime-api";
 import { type Run, type Task, useResource } from "./data";
 import { Empty, ErrorText, PageHeader } from "./execution";
@@ -106,7 +107,7 @@ function HandoffReview({ runId, onApplied }: { runId: string; onApplied: () => v
     setError("");
     try {
       await runtimeApi(`handoffs/${encodeURIComponent(runId)}/review`, {
-        request_id: crypto.randomUUID(),
+        request_id: newRequestId(),
         action,
         expected_updated_at: data!.handoff.updated_at,
         note: note.trim(),

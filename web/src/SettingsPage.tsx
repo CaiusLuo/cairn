@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { newRequestId } from "./ids";
 import { PageHeader } from "./workbench/execution";
 import { runtimeApi as api } from "./runtime-api";
 
@@ -36,7 +37,7 @@ export function SettingsPage() {
     if (busy) return false;
     setBusy(true); setError(""); setFeedback("");
     const signature = JSON.stringify([name, args, confirmed, expected]);
-    if (!requests.current.has(signature)) requests.current.set(signature, { command: name, args, source: "web", request_id: crypto.randomUUID(), confirmed, expected_proposal: expected });
+    if (!requests.current.has(signature)) requests.current.set(signature, { command: name, args, source: "web", request_id: newRequestId(), confirmed, expected_proposal: expected });
     try {
       const value = await api("commands", requests.current.get(signature)); requests.current.delete(signature); setFeedback(value.message); await refresh(); return value.ok === true;
     } catch (reason) { setError(String(reason)); return false; }
