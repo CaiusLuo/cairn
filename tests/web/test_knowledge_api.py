@@ -156,6 +156,35 @@ def test_create_read_update_search_and_archive(tmp_path: Path) -> None:
     assert len(client.get("/api/knowledge/clips").json()["clips"]) == 1
 
 
+def test_pages_cover_all_clips_and_search_restarts_from_zero(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    for index in range(120):
+        created = _create(
+            client,
+            f"bulk {index:03d}",
+            tags=["bulk"],
+            request_id=f"bulk-{index}",
+        )
+        assert created.status_code == 200
+
+    seen: list[str] = []
+    for offset in (0, 50, 100):
+        response = client.get(
+            f"/api/knowledge/clips?query=bulk&limit=50&offset={offset}"
+        )
+        assert response.status_code == 200
+        seen.extend(item["clip_id"] for item in response.json()["clips"])
+    assert len(seen) == 120
+    assert len(set(seen)) == 120
+
+    matches = client.get("/api/knowledge/clips?query=bulk%20119&limit=50").json()
+    assert len(matches["clips"]) == 1
+    assert matches["clips"][0]["content"] == "bulk 119"
+    assert (
+        client.get("/api/knowledge/clips?query=absent&limit=50").json()["clips"] == []
+    )
+
+
 def test_invalid_input_is_rejected_without_echoing_content(tmp_path: Path) -> None:
     client = _client(tmp_path)
     cases: list[dict[str, object]] = [
@@ -237,3 +266,10 @@ def test_clip_is_readable_after_an_app_restart(tmp_path: Path) -> None:
     response = restarted.get("/api/knowledge/clips/" + created["clip_id"])
     assert response.status_code == 200
     assert response.json()["content"] == "survives restart"
+
+    replay = _create(restarted, "survives restart", request_id="restart-api")
+    assert replay.status_code == 200
+    assert replay.json()["clip_id"] == created["clip_id"]
+    assert len(restarted.get("/api/knowledge/clips").json()["clips"]) == 1
+    conflict = _create(restarted, "different after restart", request_id="restart-api")
+    assert conflict.status_code == 409

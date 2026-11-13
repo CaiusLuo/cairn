@@ -302,6 +302,71 @@ try {
     assert.equal((await (await api.get("/api/knowledge/clips?query=" + encodeURIComponent("追加行"))).json()).clips[0].archived_at, null);
     await shot("Cairn-workbench-knowledge");
 
+    // The Server can commit while its response is lost. The next retry must
+    // reuse the persisted request identity instead of creating a second clip.
+    const lostText = "响应丢失恢复\n\n这条只应保存一次";
+    const lostTags = "恢复, 丢失";
+    let dropClipResponse = true;
+    await page.route("**/api/knowledge/clips*", async route => {
+      if (!dropClipResponse || route.request().method() !== "POST") return route.continue();
+      dropClipResponse = false;
+      const response = await route.fetch();
+      assert(response.ok(), "The simulated committed clip was rejected");
+      await route.abort("failed");
+    });
+    await page.getByLabel("搜索知识片段").fill("");
+    await page.getByLabel("片段原文").fill(lostText);
+    await page.getByLabel("片段标签").fill(lostTags);
+    await page.getByRole("button", { name: "保存片段" }).click();
+    await page.getByRole("status").filter({ hasText: "上次保存尚未确认" }).waitFor();
+    await page.unroute("**/api/knowledge/clips*");
+    await page.getByLabel("片段原文").fill(lostText + " 改");
+    await page.getByRole("button", { name: "保存片段", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "重试上次保存" }).count(), 0);
+    await page.getByLabel("片段原文").fill(lostText);
+    await page.getByRole("button", { name: "重试上次保存" }).waitFor();
+    await page.reload();
+    await page.getByRole("heading", { name: "知识", exact: true }).waitFor();
+    await page.getByRole("status").filter({ hasText: "上次保存尚未确认" }).waitFor();
+    await page.getByRole("button", { name: "重试保存" }).click();
+    await page.getByRole("status").filter({ hasText: "上次保存尚未确认" }).waitFor({ state: "detached" });
+    await page.getByRole("heading", { name: "响应丢失恢复", exact: true }).waitFor();
+    const recovered = (await (await api.get("/api/knowledge/clips?query=" + encodeURIComponent("响应丢失恢复"))).json()).clips;
+    assert.equal(recovered.length, 1);
+    assert.equal(recovered[0].content, lostText);
+    assert.deepEqual(recovered[0].tags, ["恢复", "丢失"]);
+    assert.equal(await page.evaluate(() => localStorage.getItem("cairn.web.pending.clip")), null);
+    console.log("Committed but lost knowledge response recovered with the same request.");
+
+    for (let index = 0; index < 120; index += 1) {
+      const response = await api.post("/api/knowledge/clips", {
+        data: { content: `批量片段 ${index}`, source: "web", tags: ["bulk-pagination"], request_id: `bulk-${index}` },
+      });
+      assert(response.ok(), "Could not seed bulk clip " + index);
+    }
+    await page.getByLabel("搜索知识片段").fill("bulk-pagination");
+    await page.locator(".knowledge-card").filter({ hasText: "响应丢失恢复" }).waitFor({ state: "detached" });
+    await page.waitForFunction(() => document.querySelectorAll(".knowledge-card").length === 50);
+    await page.getByRole("button", { name: "加载更多" }).click();
+    await page.waitForFunction(() => document.querySelectorAll(".knowledge-card").length === 100);
+    await page.getByRole("button", { name: "加载更多" }).click();
+    await page.waitForFunction(() => document.querySelectorAll(".knowledge-card").length === 120);
+    await page.getByRole("button", { name: "加载更多" }).waitFor({ state: "detached" });
+    const bulkTitles = await page.locator(".knowledge-card h2").allTextContents();
+    assert.equal(bulkTitles.length, 120);
+    assert.equal(new Set(bulkTitles).size, 120);
+    await page.getByLabel("搜索知识片段").fill("批量片段 119");
+    await page.waitForFunction(() => document.querySelectorAll(".knowledge-card").length === 1);
+    assert.equal(await page.getByRole("button", { name: "加载更多" }).count(), 0);
+    await page.getByLabel("搜索知识片段").fill("");
+    await page.waitForFunction(() => document.querySelectorAll(".knowledge-card").length === 50);
+    await page.getByRole("button", { name: "加载更多" }).click();
+    await page.waitForFunction(() => document.querySelectorAll(".knowledge-card").length === 100);
+    await page.getByRole("checkbox", { name: "显示已归档" }).check();
+    await page.waitForFunction(() => document.querySelectorAll(".knowledge-card").length === 50);
+    await page.getByRole("button", { name: "加载更多" }).waitFor();
+    console.log("Knowledge pagination, search reset and archive reset passed with 120 clips.");
+
     let approvalUrl;
     const recoveryId = process.env.CAIRN_WEB_E2E_RECOVERY_TASK;
     if (recoveryId) {

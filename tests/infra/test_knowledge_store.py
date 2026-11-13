@@ -118,6 +118,26 @@ def test_list_searches_content_and_tags_and_pages(tmp_path: Path) -> None:
         store.list_clips(query="x" * 501)
 
 
+def test_pages_cover_every_clip_once(tmp_path: Path) -> None:
+    store = KnowledgeStore(tmp_path / "knowledge")
+    created = [
+        store.create(f"bulk {index:03d}", tags=["bulk"], request_id=f"bulk-{index}")[0]
+        for index in range(120)
+    ]
+    collected: list[str] = []
+    offset = 0
+    while True:
+        page = store.list_clips(query="bulk", limit=50, offset=offset)
+        collected.extend(clip.clip_id for clip in page)
+        if len(page) < 50:
+            break
+        offset += len(page)
+    assert len(collected) == 120
+    assert len(set(collected)) == 120
+    assert set(collected) == {clip.clip_id for clip in created}
+    assert store.list_clips(query="bulk 119", limit=50) == (created[-1],)
+
+
 def test_clips_survive_a_new_store_instance(tmp_path: Path) -> None:
     root = tmp_path / "knowledge"
     clip, _ = KnowledgeStore(root).create("durable text", request_id="restart")
