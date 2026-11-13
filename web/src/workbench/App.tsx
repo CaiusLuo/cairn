@@ -44,7 +44,7 @@ export function App() {
   const refresh = useCallback(() => { conversations.refresh(); tasks.refresh(); runs.refresh(); }, [conversations.refresh, tasks.refresh, runs.refresh]);
 
   return <Shell view={view} active={id} navigate={navigate} conversations={conversations.data ?? []} workspace={config.data?.workspace}
-    status={config.error ? "offline" : config.data ? "online" : "connecting"}>
+    status={config.error ? "offline" : config.data ? "online" : "connecting"} onConversationsChanged={conversations.refresh}>
     <Suspense fallback={<p className="wb-muted" role="status">正在加载界面…</p>}>
       {(view === "home" || view === "chat") && <Chat key={id || params.get("mode") || "new"} id={id} initialMode={params.get("mode") === "development" ? "development" : "conversation"} config={config.data} navigate={navigate} onSubmit={refresh}/>}
       {view === "tasks" && <Tasks tasks={development} id={task} navigate={navigate} refresh={refresh} loading={!tasks.data} error={tasks.error}/>}

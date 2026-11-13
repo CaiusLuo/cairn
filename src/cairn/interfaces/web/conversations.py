@@ -21,6 +21,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from cairn.conversation.models import ConversationSource
 from cairn.conversation.service import (
     ConversationBusy,
+    ConversationProtected,
     ConversationRecoveryRequired,
     ConversationService,
 )
@@ -69,6 +70,11 @@ class ConversationMessage(BaseModel):
     source: ConversationSource = ConversationSource.CLI
     request_id: str = Field(min_length=1, max_length=200)
     model_id: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class ConversationRename(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1, max_length=200)
 
 
 class WechatConversationCreate(BaseModel):
@@ -265,6 +271,33 @@ def conversation_routes(
             if (
                 request.method == "POST"
                 and conversation_id is not None
+                and action == "rename"
+            ):
+                assert isinstance(conversation_id, str)
+                rename_body = ConversationRename.model_validate(
+                    await request_body(request)
+                )
+                renamed = service.rename_conversation(
+                    conversation_id, rename_body.title
+                )
+                return JSONResponse(
+                    renamed.model_dump(mode="json"),
+                    headers={"Cache-Control": "no-store"},
+                )
+            if (
+                request.method == "POST"
+                and conversation_id is not None
+                and action == "delete"
+            ):
+                assert isinstance(conversation_id, str)
+                service.delete_conversation(conversation_id)
+                return JSONResponse(
+                    {"deleted": conversation_id},
+                    headers={"Cache-Control": "no-store"},
+                )
+            if (
+                request.method == "POST"
+                and conversation_id is not None
                 and action in {None, "messages"}
             ):
                 assert isinstance(conversation_id, str)
@@ -390,6 +423,8 @@ def conversation_routes(
             return JSONResponse({"error": "conversation_or_run_not_found"}, 404)
         except ConversationBusy:
             return JSONResponse({"error": "conversation_busy"}, 409)
+        except ConversationProtected:
+            return JSONResponse({"error": "conversation_protected"}, 409)
         except ConversationRecoveryRequired:
             return JSONResponse({"error": "conversation_recovery_required"}, 409)
         except HandoffReviewFailed as exc:

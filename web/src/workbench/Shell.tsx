@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { runtimeApi } from "../runtime-api";
 import {
   applyTheme,
   readThemePreference,
@@ -31,6 +32,12 @@ export function href(view: View, params: Record<string, string> = {}) {
 const themeOrder: ThemePreference[] = ["light", "dark", "system"];
 const themeLabels: Record<ThemePreference, string> = { light: "亮色", dark: "暗色", system: "跟随系统" };
 
+function mutationError(error: unknown, fallback: string) {
+  if (!(error instanceof Error)) return fallback;
+  if (error.message === "conversation_busy") return "对话仍在执行，请等待运行结束后再试。";
+  return error.message;
+}
+
 export function useAppearance() {
   const [theme, setTheme] = useState<ThemePreference>(() => readThemePreference() ?? resolveTheme(null));
   useEffect(() => {
@@ -51,13 +58,14 @@ export function useAppearance() {
   return { theme, chooseTheme };
 }
 
-export function Shell({ view, active, conversations, workspace, status, navigate, children }: {
+export function Shell({ view, active, conversations, workspace, status, navigate, onConversationsChanged, children }: {
   view: View;
   active?: string;
   conversations: Conversation[];
   workspace?: string;
   status: "online" | "offline" | "connecting";
   navigate: (url: string) => void;
+  onConversationsChanged?: () => void;
   children: ReactNode;
 }) {
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("cairn-sidebar") === "closed");
@@ -79,10 +87,70 @@ export function Shell({ view, active, conversations, workspace, status, navigate
   const [filter, setFilter] = useState("");
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [visible, setVisible] = useState(12);
+  const [menu, setMenu] = useState<{ id: string; top: number; left: number; up: boolean } | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [mutating, setMutating] = useState(false);
   const { theme, chooseTheme } = useAppearance();
-  const items = conversations.filter(item => item.initial_prompt.toLocaleLowerCase().includes(filter.toLocaleLowerCase()));
+  const items = conversations.filter(item => (item.title || item.initial_prompt).toLocaleLowerCase().includes(filter.toLocaleLowerCase()));
   const current = navigation.find(item => item.view === view);
   const connection = { online: "Server 已连接", offline: "Server 已断开", connecting: "正在连接 Server" }[status];
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (!target?.closest(".wb-session-actions, .wb-session-menu")) setMenu(null);
+    };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setMenu(null); };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", escape);
+    return () => { window.removeEventListener("pointerdown", close); window.removeEventListener("keydown", escape); };
+  }, [menu]);
+
+  function toggleMenu(item: Conversation, button: HTMLButtonElement) {
+    if (menu?.id === item.conversation_id) { setMenu(null); return; }
+    const rect = button.getBoundingClientRect();
+    const up = rect.bottom + 104 > window.innerHeight;
+    setMenu({ id: item.conversation_id, top: up ? rect.top - 5 : rect.bottom + 5, left: rect.right, up });
+  }
+
+  function startRename(item: Conversation) {
+    setRenaming(item.conversation_id);
+    setRenameDraft(item.title || item.initial_prompt);
+    setMenu(null);
+  }
+
+  async function saveRename(item: Conversation) {
+    const title = renameDraft.trim();
+    if (!title) { setRenaming(null); return; }
+    setMutating(true);
+    try {
+      await runtimeApi(`conversations/${encodeURIComponent(item.conversation_id)}/rename`, { title });
+      setRenaming(null);
+      onConversationsChanged?.();
+    } catch (error) {
+      window.alert(mutationError(error, "重命名失败"));
+    } finally {
+      setMutating(false);
+    }
+  }
+
+  async function removeConversation(item: Conversation) {
+    setMenu(null);
+    const label = conversationTitle(item.title || item.initial_prompt, 40);
+    if (!window.confirm(`删除对话「${label}」？该对话的运行记录会一并删除，且无法恢复。`)) return;
+    setMutating(true);
+    try {
+      await runtimeApi(`conversations/${encodeURIComponent(item.conversation_id)}/delete`, {});
+      if (active === item.conversation_id) navigate(href("home"));
+      onConversationsChanged?.();
+    } catch (error) {
+      window.alert(mutationError(error, "删除失败"));
+    } finally {
+      setMutating(false);
+    }
+  }
 
   function link(url: string, label: string, icon: IconName, selected: boolean) {
     return <a href={url} className="rail-link" aria-label={label} aria-current={selected ? "page" : undefined} title={label} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); setMobileOpen(false); navigate(url); } }}><Icon name={icon} size={19} /></a>;
@@ -113,9 +181,24 @@ export function Shell({ view, active, conversations, workspace, status, navigate
         <details className="conversation-tree" open>
           <summary><Icon name="chat" size={15}/>最近对话 <span>{items.length}</span></summary>
           {items.length ? <ul>{items.slice(0, visible).map(item => <li key={item.conversation_id}>
-            <a href={href("chat", { conversation: item.conversation_id })} aria-current={active === item.conversation_id ? "page" : undefined} title={item.initial_prompt} onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(event.currentTarget.getAttribute("href")!); setMobileOpen(false); }}>
-              <span>{conversationTitle(item.initial_prompt)}</span>{item.latest_run && isActive(item.latest_run.status) ? <i className="wb-live-dot" aria-label="执行中"/> : <small>{sourceLabel(item.source)}</small>}
-            </a>
+            {renaming === item.conversation_id ? <form className="wb-session-rename" onSubmit={event => { event.preventDefault(); void saveRename(item); }}>
+              <input autoFocus aria-label="重命名对话" maxLength={200} value={renameDraft} disabled={mutating} onChange={event => setRenameDraft(event.target.value)} onKeyDown={event => { if (event.key === "Escape") setRenaming(null); }} />
+              <button type="submit" aria-label="保存名称" title="保存名称" disabled={mutating || !renameDraft.trim()}><Icon name="check" size={14}/></button>
+              <button type="button" aria-label="取消重命名" title="取消重命名" disabled={mutating} onClick={() => setRenaming(null)}><Icon name="close" size={14}/></button>
+            </form> : <>
+              <a href={href("chat", { conversation: item.conversation_id })} aria-current={active === item.conversation_id ? "page" : undefined} title={item.title || item.initial_prompt} onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(event.currentTarget.getAttribute("href")!); setMobileOpen(false); }}>
+                <span>{conversationTitle(item.title || item.initial_prompt)}</span>{item.latest_run && isActive(item.latest_run.status) ? <i className="wb-live-dot" aria-label="执行中"/> : <small>{sourceLabel(item.source)}</small>}
+              </a>
+              <div className="wb-session-actions">
+                <button type="button" className="wb-session-more" aria-label="对话详情" title="对话详情" aria-haspopup="menu" aria-expanded={menu?.id === item.conversation_id} disabled={mutating} onClick={event => { event.preventDefault(); event.stopPropagation(); toggleMenu(item, event.currentTarget); }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>
+                </button>
+              </div>
+              {menu?.id === item.conversation_id && <div className="wb-session-menu" role="menu" style={{ top: menu.top, left: menu.left, transform: menu.up ? "translate(-100%, -100%)" : "translateX(-100%)" }}>
+                <button type="button" role="menuitem" onClick={() => startRename(item)}><Icon name="edit" size={14}/>重命名</button>
+                <button type="button" role="menuitem" className="danger" onClick={() => void removeConversation(item)}><Icon name="trash" size={14}/>删除对话</button>
+              </div>}
+            </>}
           </li>)}</ul> : <p>{filter ? "没有匹配的对话" : "暂无对话"}</p>}
           {items.length > visible && <button className="side-more" onClick={() => setVisible(value => value + 12)}>展开其余 {items.length - visible} 条</button>}
         </details>

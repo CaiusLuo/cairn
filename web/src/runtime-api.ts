@@ -3,6 +3,8 @@ export class RuntimeError extends Error {
 }
 function failureText(path: string, status: number, error?: string) {
   if (status === 404 && /^conversations\/[^/]+$/.test(path)) return "对话不存在或已被删除。";
+  if (error === "conversation_protected") return "该对话包含开发任务，不能删除；请改用归档。";
+  if (error === "conversation_recovery_required") return "对话还有待核对的运行，请先处理恢复。";
   if (status === 500) return "Server 处理失败，请稍后重试或检查服务日志。";
   if (status === 503) return "Server 暂时不可用，请稍后重试或检查服务日志。";
   return error || `请求失败 (${status})`;

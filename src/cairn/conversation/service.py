@@ -50,6 +50,10 @@ class ConversationRecoveryRequired(RuntimeError):
     """An earlier Run has unresolved effects and must be reviewed first."""
 
 
+class ConversationProtected(RuntimeError):
+    """A conversation owns durable work and cannot be deleted."""
+
+
 class RunLedger:
     """Transient execution facts backed by one DomainStore Run."""
 
@@ -414,6 +418,31 @@ class ConversationService:
         ):
             raise ConversationBusy("Conversation already has an active Run")
         return self.store.set_conversation_archived(conversation_id, archived=archived)
+
+    def rename_conversation(self, conversation_id: str, title: str) -> Conversation:
+        if self.get_conversation(conversation_id) is None:
+            raise KeyError(conversation_id)
+        cleaned = " ".join(title.split())
+        if not cleaned:
+            raise ValueError("Conversation title must not be empty")
+        return self.store.set_conversation_title(conversation_id, cleaned)
+
+    def delete_conversation(self, conversation_id: str) -> None:
+        if self.get_conversation(conversation_id) is None:
+            raise KeyError(conversation_id)
+        runs = self.runs_for_conversation(conversation_id)
+        if any(
+            run.status in {RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.PAUSED}
+            for run in runs
+        ):
+            raise ConversationBusy("Conversation already has an active Run")
+        if any(run.status is RunStatus.RECOVERY_REQUIRED for run in runs):
+            raise ConversationRecoveryRequired(
+                "Conversation has a Run with unresolved effects"
+            )
+        if self.store.list_tasks_for_conversation(conversation_id):
+            raise ConversationProtected("Conversation owns development tasks")
+        self.store.delete_conversation(conversation_id)
 
     def get_run(self, run_id: str) -> Run | None:
         run = self.store.get_run(run_id)

@@ -45,6 +45,15 @@ async function send(text) {
   await page.getByRole("textbox", { name: "消息" }).fill(text);
   await page.getByRole("button", { name: "发送", exact: true }).click();
 }
+async function conversationLink(pattern) {
+  await page.locator(".conversation-tree li").first().waitFor();
+  const link = page.getByRole("link", { name: pattern });
+  if (!(await link.count())) {
+    const more = page.locator(".side-more");
+    if (await more.count()) await more.click();
+  }
+  return link;
+}
 
 try {
   await authenticate();
@@ -92,7 +101,7 @@ try {
       if (!failHistory) return route.continue();
       await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "internal_error" }) });
     });
-    await page.getByRole("link", { name: new RegExp(cliPrompt) }).click();
+    await (await conversationLink(new RegExp(cliPrompt))).click();
     await page.getByRole("alert").waitFor();
     assert.match(await page.getByRole("alert").innerText(), /Server 处理失败/);
     failHistory = false;
@@ -103,12 +112,12 @@ try {
     await page.goto(new URL("/chat.html?conversation=conv-missing", url).href);
     await page.getByRole("alert").waitFor();
     assert.match(await page.getByRole("alert").innerText(), /对话不存在/);
-    await page.getByRole("link", { name: new RegExp(cliPrompt) }).click();
+    await (await conversationLink(new RegExp(cliPrompt))).click();
     await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
 
     await page.context().setOffline(true);
     await page.getByRole("link", { name: "工作台", exact: true }).click();
-    await page.getByRole("link", { name: new RegExp(cliPrompt) }).click();
+    await (await conversationLink(new RegExp(cliPrompt))).click();
     await page.getByRole("alert").waitFor();
     assert.match(await page.getByRole("alert").innerText(), /无法连接 Server/);
     await page.context().setOffline(false);
@@ -123,12 +132,12 @@ try {
     await page.reload();
     await page.locator(".wb-message.user").filter({ hasText: "Web-created conversation" }).waitFor();
     await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
-    await page.getByRole("link", { name: new RegExp(cliPrompt) }).click();
+    await (await conversationLink(new RegExp(cliPrompt))).click();
     await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
 
     const legacyId = process.env.CAIRN_WEB_E2E_LEGACY_CONVERSATION;
     if (legacyId) {
-      await page.getByRole("link", { name: /Legacy browser history/ }).click();
+      await (await conversationLink(/Legacy browser history/)).click();
       await page.locator(".wb-message.user").filter({ hasText: "Legacy browser history" }).waitFor();
       await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
       const legacy = await read("conversations/" + legacyId);
@@ -145,13 +154,13 @@ try {
       const continuedLegacy = await read("conversations/" + legacyId);
       assert.equal(continuedLegacy.runs[1].session_id !== null, true);
       await page.locator(".wb-message.user").filter({ hasText: "Legacy browser history" }).waitFor();
-      await page.getByRole("link", { name: new RegExp(cliPrompt) }).click();
+      await (await conversationLink(new RegExp(cliPrompt))).click();
       await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
     }
 
     const lostId = process.env.CAIRN_WEB_E2E_MISSING_SESSION_CONVERSATION;
     if (lostId) {
-      await page.getByRole("link", { name: /Missing session continuation/ }).click();
+      await (await conversationLink(/Missing session continuation/)).click();
       await page.locator(".wb-message.user").filter({ hasText: "Missing session continuation" }).waitFor();
       await send("Continue after session loss");
       await page.locator(".wb-message.user").filter({ hasText: "Continue after session loss" }).waitFor();
@@ -168,7 +177,7 @@ try {
       assert(lost.runs[1].session_id !== "00000000-0000-4000-8000-000000000000");
       assert.equal(lost.runs[1].metadata.history_degraded, "session_missing");
       await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).last().waitFor();
-      await page.getByRole("link", { name: new RegExp(cliPrompt) }).click();
+      await (await conversationLink(new RegExp(cliPrompt))).click();
       await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
     }
 
@@ -395,6 +404,63 @@ try {
       assert(titleLayout.headerOverflow <= 0, "The chat header must stay inside the main pane");
       assert(titleLayout.buttonsInside, "Header actions must stay inside the main pane");
       console.log("Long conversation title layout passed.");
+    }
+
+    const renameId = process.env.CAIRN_WEB_E2E_RENAME_CONVERSATION;
+    if (renameId) {
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await page.goto(new URL("/chat.html", url).href);
+      await page.getByRole("status").filter({ hasText: "Server 已连接" }).waitFor();
+      const tree = page.locator(".conversation-tree");
+      await tree.locator("li").first().waitFor();
+      const listed = await read("conversations");
+      const expectedIds = listed.map(item => item.conversation_id);
+      const domIds = await tree.locator("li a").evaluateAll(nodes => nodes.map(node => {
+        const href = node.getAttribute("href") ?? "";
+        return new URL(href, location.origin).searchParams.get("conversation") ?? "";
+      }));
+      assert.deepEqual(domIds, expectedIds.slice(0, 12), "The tree shows the newest conversations first");
+      const more = tree.locator(".side-more");
+      if (expectedIds.length > 12) {
+        assert.match(await more.innerText(), /^展开其余 \d+ 条$/, "The tree offers the remaining conversations");
+        await more.click();
+        await page.waitForFunction(total => document.querySelectorAll(".conversation-tree li").length === total, expectedIds.length);
+        const expanded = await tree.locator("li a").evaluateAll(nodes => nodes.map(node => {
+          const href = node.getAttribute("href") ?? "";
+          return new URL(href, location.origin).searchParams.get("conversation") ?? "";
+        }));
+        assert.deepEqual(expanded, expectedIds, "Expanding reveals every conversation in activity order");
+      } else {
+        assert.equal(await more.count(), 0, "No expand control is needed for a short tree");
+      }
+
+      const row = tree.locator("li").filter({ has: page.locator(`a[href*="${renameId}"]`) });
+      assert.equal(await row.count(), 1, "The rename fixture must be visible");
+      await row.hover();
+      await row.locator(".wb-session-more").click();
+      const menu = page.locator(".wb-session-menu");
+      await menu.waitFor();
+      await menu.getByRole("menuitem", { name: "重命名" }).click();
+      const renameInput = tree.getByLabel("重命名对话");
+      await renameInput.fill("Browser renamed conversation");
+      await renameInput.press("Enter");
+      await page.waitForFunction(([id, text]) => {
+        const link = document.querySelector(`a[href*="${id}"]`);
+        return link?.querySelector("span")?.textContent === text;
+      }, [renameId, "Browser renamed conversation"]);
+      const renamed = await read("conversations/" + renameId);
+      assert.equal(renamed.conversation.title, "Browser renamed conversation");
+      await row.locator("a").click();
+      await page.locator(".wb-chat-header h1").filter({ hasText: "Browser renamed conversation" }).waitFor();
+
+      page.once("dialog", dialog => dialog.accept());
+      await row.hover();
+      await row.locator(".wb-session-more").click();
+      await page.locator(".wb-session-menu").getByRole("menuitem", { name: "删除对话" }).click();
+      await page.waitForFunction(id => !document.querySelector(`a[href*="${id}"]`), renameId);
+      const remaining = await read("conversations");
+      assert(!remaining.some(item => item.conversation_id === renameId), "Deleting removes the conversation");
+      console.log("Conversation tree ordering, rename and delete passed.");
     }
     console.log("Workbench browser E2E passed.");
   }

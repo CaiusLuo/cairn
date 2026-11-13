@@ -214,7 +214,7 @@ def test_archived_conversation_is_hidden_until_restored(tmp_path: Path) -> None:
         for item in domain.list_conversations(
             workspace_id=workspace_id, include_archived=True
         )
-    ] == [visible.conversation_id, hidden.conversation_id]
+    ] == [hidden.conversation_id, visible.conversation_id]
     assert domain.get_conversation(hidden.conversation_id) is not None
 
     restored = domain.set_conversation_archived(hidden.conversation_id, archived=False)
@@ -222,4 +222,84 @@ def test_archived_conversation_is_hidden_until_restored(tmp_path: Path) -> None:
     assert [
         item.conversation_id
         for item in domain.list_conversations(workspace_id=workspace_id)
-    ] == [visible.conversation_id, hidden.conversation_id]
+    ] == [hidden.conversation_id, visible.conversation_id]
+
+
+def test_rename_and_latest_activity_ordering(tmp_path: Path) -> None:
+    domain, workspace = store(tmp_path)
+    workspace_id = workspace_id_for(workspace)
+    older = domain.create_conversation(
+        workspace=workspace,
+        source=ConversationSource.CLI,
+        initial_prompt="Older",
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    newer = domain.create_conversation(
+        workspace=workspace,
+        source=ConversationSource.CLI,
+        initial_prompt="Newer",
+        created_at="2026-01-02T00:00:00+00:00",
+    )
+    assert [
+        item.conversation_id
+        for item in domain.list_conversations(workspace_id=workspace_id)
+    ] == [newer.conversation_id, older.conversation_id]
+
+    domain.create_run(
+        conversation_id=older.conversation_id,
+        created_at="2026-01-03T00:00:00+00:00",
+    )
+    assert [
+        item.conversation_id
+        for item in domain.list_conversations(workspace_id=workspace_id)
+    ] == [older.conversation_id, newer.conversation_id]
+
+    renamed = domain.set_conversation_title(older.conversation_id, "Renamed")
+    assert renamed.title == "Renamed"
+    fetched = domain.get_conversation(older.conversation_id)
+    assert fetched is not None and fetched.title == "Renamed"
+
+
+def test_delete_conversation_removes_runs_and_releases_requests(tmp_path: Path) -> None:
+    domain, workspace = store(tmp_path)
+    conversation = domain.create_conversation(
+        workspace=workspace,
+        source=ConversationSource.WEB,
+        initial_prompt="Delete me",
+        request_id="delete-create",
+    )
+    run = domain.create_run(
+        conversation_id=conversation.conversation_id,
+        request_id="delete-run",
+        prompt="hello",
+    )
+    domain.append_run_event(run.run_id, "started", {})
+
+    domain.delete_conversation(conversation.conversation_id)
+
+    assert domain.get_conversation(conversation.conversation_id) is None
+    assert domain.list_runs_for_conversation(conversation.conversation_id) == ()
+    recreated = domain.create_conversation(
+        workspace=workspace,
+        source=ConversationSource.WEB,
+        initial_prompt="Delete me",
+        request_id="delete-create",
+    )
+    assert recreated.conversation_id != conversation.conversation_id
+
+
+def test_delete_conversation_with_tasks_is_refused(tmp_path: Path) -> None:
+    domain, workspace = store(tmp_path)
+    conversation = domain.create_conversation(
+        workspace=workspace,
+        source=ConversationSource.WEB,
+        initial_prompt="Has task",
+    )
+    domain.create_task(
+        conversation_id=conversation.conversation_id,
+        title="Task",
+        goal="Keep the worktree record",
+    )
+    with pytest.raises(ValueError, match="development tasks"):
+        domain.delete_conversation(conversation.conversation_id)
+    assert domain.get_conversation(conversation.conversation_id) is not None

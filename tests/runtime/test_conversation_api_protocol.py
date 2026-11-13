@@ -294,3 +294,40 @@ def test_conversation_archive_hides_and_restores_listing(tmp_path: Path) -> None
             assert conversation_id in {item["conversation_id"] for item in listed}
 
     asyncio.run(scenario())
+
+
+def test_conversation_rename_and_delete(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app = _app(tmp_path)
+        app.state.execution.llm_factory = ChatModel
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            created = await api.create_conversation(
+                "rename me", source="web", request_id="rename-create"
+            )
+            conversation_id = created["conversation_id"]
+            renamed = await api.request(
+                "POST",
+                f"conversations/{conversation_id}/rename",
+                {"title": "  Operator   title  "},
+            )
+            assert renamed["title"] == "Operator title"
+            detail = await api.get_conversation(conversation_id)
+            assert detail["conversation"]["title"] == "Operator title"
+
+            deleted = await api.request(
+                "POST", f"conversations/{conversation_id}/delete"
+            )
+            assert deleted == {"deleted": conversation_id}
+            listed = await api.request("GET", "conversations")
+            assert conversation_id not in {item["conversation_id"] for item in listed}
+            recreated = await api.create_conversation(
+                "rename me", source="web", request_id="rename-create"
+            )
+            assert recreated["conversation_id"] != conversation_id
+
+    asyncio.run(scenario())

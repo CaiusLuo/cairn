@@ -109,6 +109,17 @@ def main() -> None:
                     )
 
                 wait_for(missing_settled)
+                # Enough conversations to exercise the latest-first limit and
+                # the expand control in the conversation tree.
+                for index in range(13):
+                    api.post(
+                        "/api/runtime/conversations",
+                        json={
+                            "prompt": f"Pagination fixture {index}",
+                            "source": "cli",
+                            "request_id": f"pagination-fixture-{index}",
+                        },
+                    ).raise_for_status()
                 long_title = "Long conversation title " + "超长标题" * 40 + " END"
                 long_conversation = (
                     api.post(
@@ -139,6 +150,18 @@ def main() -> None:
                     )
 
                 wait_for(long_settled)
+                rename_conversation = (
+                    api.post(
+                        "/api/runtime/conversations",
+                        json={
+                            "prompt": "Rename delete fixture",
+                            "source": "cli",
+                            "request_id": "rename-delete-fixture",
+                        },
+                    )
+                    .raise_for_status()
+                    .json()
+                )
                 # Reproduce the deployed shapes: old Runs predate Session
                 # identity, and a newer Run points at a Session row that no
                 # longer exists.
@@ -193,6 +216,9 @@ def main() -> None:
                         "conversation_id"
                     ],
                     "CAIRN_WEB_E2E_LONG_TITLE_CONVERSATION": long_conversation[
+                        "conversation_id"
+                    ],
+                    "CAIRN_WEB_E2E_RENAME_CONVERSATION": rename_conversation[
                         "conversation_id"
                     ],
                     "CAIRN_WEB_E2E_RECOVERY_TASK": task["task_id"],

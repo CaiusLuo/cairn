@@ -90,6 +90,7 @@ class DomainStore:
                 workspace_id TEXT NOT NULL,
                 source TEXT NOT NULL,
                 initial_prompt TEXT NOT NULL,
+                title TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 archived_at TEXT,
@@ -204,6 +205,8 @@ class DomainStore:
         }
         if "archived_at" not in columns:
             connection.execute("ALTER TABLE conversations ADD COLUMN archived_at TEXT")
+        if "title" not in columns:
+            connection.execute("ALTER TABLE conversations ADD COLUMN title TEXT")
         columns = {
             str(row[1])
             for row in connection.execute(
@@ -425,6 +428,79 @@ class DomainStore:
         assert row is not None
         return self._conversation(row)
 
+    def set_conversation_title(
+        self, conversation_id: str, title: str | None
+    ) -> Conversation:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(conversation_id)
+            connection.execute(
+                "UPDATE conversations SET title = ? WHERE conversation_id = ?",
+                (title, conversation_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+        assert row is not None
+        return self._conversation(row)
+
+    def delete_conversation(self, conversation_id: str) -> None:
+        """Remove a conversation with its runs, receipts and bindings.
+
+        Tasks are durable work items with worktrees attached, so a
+        conversation that owns one must be archived instead of deleted.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(conversation_id)
+            if connection.execute(
+                "SELECT 1 FROM tasks WHERE conversation_id = ? LIMIT 1",
+                (conversation_id,),
+            ).fetchone():
+                raise ValueError("Conversation owns development tasks")
+            connection.execute(
+                "DELETE FROM handoff_reviews WHERE run_id IN "
+                "(SELECT run_id FROM development_handoffs WHERE conversation_id = ?)",
+                (conversation_id,),
+            )
+            connection.execute(
+                "DELETE FROM development_handoffs WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            connection.execute(
+                "DELETE FROM run_events WHERE run_id IN "
+                "(SELECT run_id FROM runs WHERE conversation_id = ?)",
+                (conversation_id,),
+            )
+            connection.execute(
+                "DELETE FROM run_requests WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            connection.execute(
+                "DELETE FROM runs WHERE conversation_id = ?", (conversation_id,)
+            )
+            connection.execute(
+                "DELETE FROM wechat_bindings WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            connection.execute(
+                "DELETE FROM conversation_requests WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            connection.execute(
+                "DELETE FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+
     def list_conversations(
         self, *, workspace_id: str | None = None, include_archived: bool = False
     ) -> tuple[Conversation, ...]:
@@ -438,9 +514,10 @@ class DomainStore:
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM conversations"
-                + where
-                + " ORDER BY created_at, conversation_id",
+                "SELECT * FROM conversations" + where + " ORDER BY COALESCE("
+                "(SELECT MAX(runs.created_at) FROM runs "
+                "WHERE runs.conversation_id = conversations.conversation_id),"
+                " conversations.updated_at) DESC, conversation_id DESC",
                 parameters,
             ).fetchall()
         return tuple(self._conversation(row) for row in rows)
@@ -758,6 +835,10 @@ class DomainStore:
                     run.ended_at,
                     _json(run.metadata),
                 ),
+            )
+            connection.execute(
+                "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
+                (run.created_at, conversation_id),
             )
         return run
 
@@ -1689,6 +1770,7 @@ class DomainStore:
             workspace_id=cast(str, row["workspace_id"]),
             source=ConversationSource(cast(str, row["source"])),
             initial_prompt=cast(str, row["initial_prompt"]),
+            title=cast(str | None, row["title"]),
             created_at=cast(str, row["created_at"]),
             updated_at=cast(str, row["updated_at"]),
             archived_at=cast(str | None, row["archived_at"]),

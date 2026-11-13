@@ -87,10 +87,31 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .conversation-tree ul { list-style: none; margin: 5px 0 0 14px; padding: 0 0 0 11px; border-left: 1px solid var(--hui-border); }
 .conversation-tree li { position: relative; }
 .conversation-tree li::before { content: ""; width: 8px; height: 1px; background: var(--hui-border); position: absolute; top: 50%; left: -11px; }
-.conversation-tree a { display: flex; align-items: center; gap: 7px; height: 35px; padding: 0 7px; border-radius: 7px; font-size: 13px; }
+.conversation-tree a { display: flex; align-items: center; gap: 7px; height: 35px; padding: 0 27px 0 7px; border-radius: 7px; font-size: 13px; }
 .conversation-tree a:hover, .conversation-tree a[aria-current="page"] { background: var(--selected); }
 .conversation-tree a span { flex: 1; min-width: 0; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
 .conversation-tree small { color: var(--hui-muted); font-size: 10px; white-space: nowrap; }
+.wb-session-actions { position: absolute; right: 2px; top: 50%; transform: translateY(-50%); }
+.wb-session-more {
+  display: grid; place-items: center; width: 23px; height: 24px; padding: 0; border: 0; border-radius: 5px;
+  background: transparent; color: var(--hui-muted); opacity: 0; pointer-events: none; transition: opacity 120ms, background 120ms;
+}
+.conversation-tree li:hover .wb-session-more, .wb-session-actions:focus-within .wb-session-more,
+.wb-session-more[aria-expanded="true"] { opacity: 1; pointer-events: auto; }
+.wb-session-more:hover, .wb-session-more[aria-expanded="true"] { background: var(--selected); color: var(--hui-text); }
+.wb-session-menu {
+  position: fixed; z-index: 30; min-width: 128px; display: grid; gap: 2px; padding: 4px;
+  background: var(--hui-surface); border: 1px solid var(--hui-border); border-radius: 9px; box-shadow: var(--hui-popover-shadow);
+}
+.wb-session-menu button { display: flex; align-items: center; gap: 7px; width: 100%; padding: 7px 8px; border: 0; border-radius: 6px; background: none; color: var(--hui-text); font-size: 12px; text-align: left; }
+.wb-session-menu button:hover { background: var(--selected); }
+.wb-session-menu button.danger { color: var(--hui-error); }
+.wb-session-rename { display: flex; align-items: center; gap: 3px; height: 35px; padding: 0 2px 0 7px; }
+.wb-session-rename input { flex: 1; min-width: 0; height: 26px; padding: 0 6px; border: 1px solid var(--hui-border-strong); border-radius: 6px; background: var(--hui-canvas); color: var(--hui-text); font-size: 12px; }
+.wb-session-rename button { display: grid; place-items: center; width: 23px; height: 23px; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--hui-muted); }
+.wb-session-rename button:hover:not(:disabled) { background: var(--selected); color: var(--hui-text); }
+.wb-session-rename button:disabled { opacity: .4; }
+@media (hover: none) { .wb-session-more { opacity: 1; pointer-events: auto; } }
 .side-more { background: none; border: 0; border-radius: 6px; color: var(--hui-muted); padding: 5px 8px; margin-left: 20px; font-size: 12px; }
 .wb-connection { margin-top: auto; color: var(--hui-muted); font-size: 11px; display: flex; align-items: center; gap: 7px; padding: 8px 3px 0; }
 .wb-connection span, .wb-live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--hui-warn); flex: none; }

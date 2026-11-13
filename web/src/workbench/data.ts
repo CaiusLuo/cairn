@@ -23,6 +23,7 @@ export type Conversation = {
   conversation_id: string;
   source: string;
   initial_prompt: string;
+  title?: string | null;
   updated_at: string;
   archived_at?: string | null;
   latest_run?: Run | null;

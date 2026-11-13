@@ -131,7 +131,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
     .map(item => item.metadata?.history_degraded)
     .filter((value): value is string => typeof value === "string")
     .at(-1);
-  const title = detail.data?.conversation.initial_prompt;
+  const title = detail.data?.conversation.title || detail.data?.conversation.initial_prompt;
   const messages = (history.data ?? []).filter(message => ["user", "assistant"].includes(message.role) && message.content);
   const form = <div className="composer-stack">
     {!!queue.length && <div className="queued-tray">

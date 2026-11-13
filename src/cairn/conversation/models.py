@@ -57,6 +57,8 @@ class Conversation(BaseModel):
     workspace_id: str = Field(min_length=1, max_length=100)
     source: ConversationSource
     initial_prompt: str = Field(min_length=1, max_length=32000)
+    # An operator-chosen name; the first prompt remains the fallback title.
+    title: str | None = Field(default=None, max_length=200)
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
     # Archived conversations stay readable by ID but disappear from the
