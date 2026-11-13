@@ -33,6 +33,11 @@ from cairn.interfaces.web.app import create_app
 from cairn.interfaces.web.assets import default_web_root, require_web_assets
 from cairn.interfaces.web.config import WebConfig
 from cairn.interfaces.web.management import management_routes
+from cairn.interfaces.web.reviews import review_routes
+from cairn.knowledge.store import KnowledgeStore
+from cairn.review.collector import ReviewSourceCollector
+from cairn.review.service import DailyReviewService
+from cairn.review.store import ReviewStore
 from cairn.server.client import read_runtime_token as read_token
 from cairn.server.config import (
     DEFAULT_SERVICES,
@@ -108,6 +113,7 @@ def runtime_app(
     service.recovery_reader = execution.recovery
     service.reconciler = execution.reconcile
     try:
+        knowledge_store = KnowledgeStore(state / "knowledge")
         web = create_app(
             WebConfig(
                 workspace=workspace,
@@ -123,6 +129,7 @@ def runtime_app(
             conversations=conversations,
             runtime_token=token,
             session_file=state / "web-sessions.json",
+            knowledge_store=knowledge_store,
         )
     except BaseException:
         execution.close()
@@ -150,6 +157,31 @@ def runtime_app(
     execution.protected_paths += protected_paths
     web.router.routes[0:0] = management_routes(controls, token)
     web.state.controls = controls
+    try:
+        reviews = DailyReviewService(
+            store=ReviewStore(knowledge_store),
+            collector=ReviewSourceCollector(
+                knowledge=knowledge_store,
+                workspace=workspace,
+                domain=domain_store,
+                memory=controls.memory.store,
+                memory_enabled=controls.memory.enabled,
+                sensitive_values=execution.sensitive_values,
+            ),
+            llm=None if provider_runtime is None else provider_runtime.llm,
+            model_id=(
+                None
+                if provider_runtime is None
+                else provider_runtime.model_manager.current_model_id()
+            ),
+            sensitive_values=execution.sensitive_values,
+        )
+    except BaseException:
+        execution.close()
+        catalogue.close()
+        raise
+    web.router.routes[0:0] = review_routes(reviews, token)
+    web.state.reviews = reviews
     delivery = WechatDeliveryCoordinator(
         conversations=conversations,
         wechat=controls.wechat,
@@ -159,7 +191,9 @@ def runtime_app(
     controls.delivery = delivery
 
     def lifespan(_app: Any) -> AbstractAsyncContextManager[None]:
-        return running_runtime(execution, service, conversations, controls, delivery)
+        return running_runtime(
+            execution, service, conversations, controls, delivery, reviews
+        )
 
     web.router.lifespan_context = lifespan
     web.state.runtime = service

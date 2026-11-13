@@ -871,6 +871,44 @@ class DomainStore:
             ).fetchall()
         return tuple(self._run(row) for row in rows)
 
+    def review_activity_between(
+        self,
+        *,
+        workspace_id: str,
+        start: str,
+        end: str,
+    ) -> tuple[tuple[Task, ...], tuple[Run, ...]]:
+        """Read Tasks and Runs touched in one explicit UTC half-open window.
+
+        This is a read-only projection for review generation. It never changes
+        business status, execution status or history; the returned Pydantic
+        models are detached snapshots.
+        """
+        if not workspace_id:
+            raise ValueError("workspace_id must not be blank")
+        if not start or not end or start >= end:
+            raise ValueError("activity window is invalid")
+        with self._connect() as connection:
+            task_rows = connection.execute(
+                "SELECT * FROM tasks WHERE workspace_id = ? "
+                "AND ((created_at >= ? AND created_at < ?) "
+                "OR (updated_at >= ? AND updated_at < ?)) "
+                "ORDER BY updated_at, task_id",
+                (workspace_id, start, end, start, end),
+            ).fetchall()
+            run_rows = connection.execute(
+                "SELECT * FROM runs WHERE workspace_id = ? "
+                "AND ((created_at >= ? AND created_at < ?) "
+                "OR (updated_at >= ? AND updated_at < ?) "
+                "OR (ended_at >= ? AND ended_at < ?)) "
+                "ORDER BY created_at, run_id",
+                (workspace_id, start, end, start, end, start, end),
+            ).fetchall()
+        return (
+            tuple(self._task(row) for row in task_rows),
+            tuple(self._run(row) for row in run_rows),
+        )
+
     def get_run_by_request(self, conversation_id: str, request_id: str) -> Run | None:
         with self._connect() as connection:
             row = connection.execute(

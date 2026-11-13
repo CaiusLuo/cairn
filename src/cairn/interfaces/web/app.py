@@ -43,7 +43,9 @@ from cairn.interfaces.web.auth import (
 from cairn.interfaces.web.config import WebConfig
 from cairn.interfaces.web.knowledge import knowledge_routes
 from cairn.interfaces.web.reader import SnapshotReader
+from cairn.interfaces.web.reviews import review_routes
 from cairn.knowledge.store import KnowledgeStore
+from cairn.review.service import DailyReviewService
 
 _ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -142,6 +144,8 @@ def create_app(
     conversations: Any | None = None,
     runtime_token: str | None = None,
     session_file: Path | None = None,
+    knowledge_store: KnowledgeStore | None = None,
+    reviews: DailyReviewService | None = None,
 ) -> Starlette:
     if runtime is not None and (not config.auth_passphrase or not runtime_token):
         raise ValueError("Runtime routes require authenticated host configuration")
@@ -155,8 +159,10 @@ def create_app(
     # Knowledge writes are operator state, so the route only exists alongside
     # the cookie/bearer guard; the read-only snapshot mode stays read-only.
     assert config.knowledge_dir is not None
-    knowledge_store = (
-        KnowledgeStore(config.knowledge_dir) if config.auth_passphrase else None
+    clip_store = (
+        (knowledge_store or KnowledgeStore(config.knowledge_dir))
+        if config.auth_passphrase
+        else None
     )
 
     auth_sessions = AuthSessions(
@@ -346,8 +352,10 @@ def create_app(
         Route("/api/tasks/{task_id}", update_task, methods=["PATCH"]),
         WebSocketRoute("/api/ws", websocket_status),
     ]
-    if knowledge_store is not None:
-        routes.extend(knowledge_routes(knowledge_store, runtime_token))
+    if clip_store is not None:
+        routes.extend(knowledge_routes(clip_store, runtime_token))
+        if reviews is not None:
+            routes.extend(review_routes(reviews, runtime_token))
     if runtime is not None:
         from cairn.interfaces.web.runtime import task_routes
 

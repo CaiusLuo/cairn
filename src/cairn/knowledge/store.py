@@ -26,8 +26,8 @@ from cairn.knowledge.models import (
     normalize_tags,
     utc_now,
 )
+from cairn.knowledge.schema import SCHEMA_VERSION, create_schema
 
-SCHEMA_VERSION = 1
 DEFAULT_LIST_LIMIT = 50
 MAX_LIST_LIMIT = 200
 
@@ -58,7 +58,9 @@ class KnowledgeStore:
             raise ValueError("Knowledge store cannot be a symlink")
         with self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in (0, SCHEMA_VERSION):
+            # Version 1 is the K1 clip-only schema; create_schema performs the
+            # additive upgrade to the shared Clip/Review schema.
+            if version not in (0, 1, SCHEMA_VERSION):
                 raise ValueError("Unsupported knowledge store schema")
             self._create_schema(connection)
             connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -81,27 +83,7 @@ class KnowledgeStore:
 
     @staticmethod
     def _create_schema(connection: sqlite3.Connection) -> None:
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS clips (
-                clip_id TEXT PRIMARY KEY,
-                content TEXT NOT NULL,
-                source TEXT NOT NULL,
-                tags_json TEXT NOT NULL,
-                content_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                archived_at TEXT
-            );
-            CREATE INDEX IF NOT EXISTS clips_updated_idx
-                ON clips(updated_at DESC, clip_id DESC);
-            CREATE TABLE IF NOT EXISTS clip_requests (
-                request_id TEXT PRIMARY KEY,
-                fingerprint TEXT NOT NULL,
-                clip_id TEXT NOT NULL REFERENCES clips(clip_id) ON DELETE CASCADE
-            );
-            """
-        )
+        create_schema(connection)
 
     @staticmethod
     def _clip(row: sqlite3.Row) -> Clip:
@@ -244,6 +226,27 @@ class KnowledgeStore:
                 + clause
                 + " ORDER BY updated_at DESC, clip_id DESC LIMIT ? OFFSET ?",
                 params,
+            ).fetchall()
+        return tuple(self._clip(row) for row in rows)
+
+    def list_clips_touched_between(self, start: str, end: str) -> tuple[Clip, ...]:
+        """Return every clip whose exact stored timestamp falls in ``[start, end)``.
+
+        ``start`` and ``end`` are canonical UTC ISO strings. The window is
+        intentionally based on ``updated_at``: a clip created that day and a
+        clip edited that day are both included, while an untouched older clip is
+        not. Archived clips remain part of the user's day and are not hidden
+        from a review.
+        """
+        if not isinstance(start, str) or not isinstance(end, str):
+            raise ValueError("review window bounds must be strings")
+        if not start or not end or start >= end:
+            raise ValueError("review window is invalid")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM clips WHERE updated_at >= ? AND updated_at < ? "
+                "ORDER BY updated_at, clip_id",
+                (start, end),
             ).fetchall()
         return tuple(self._clip(row) for row in rows)
 
