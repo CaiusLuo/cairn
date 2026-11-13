@@ -803,7 +803,7 @@ def test_setup_failure_settles_observers_and_fails_the_run(tmp_path: Path) -> No
             def explode(*_args: Any, **_kwargs: Any) -> str:
                 raise RuntimeError("history setup exploded")
 
-            service._history_context = explode  # type: ignore[method-assign]
+            service._history_context = explode
             conversation = service.create_conversation(
                 "setup failure", ConversationSource.CLI
             )
