@@ -147,9 +147,9 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .wb-shortcuts a:nth-child(3) > span { background: color-mix(in srgb, var(--hui-success) 10%, transparent); }
 .wb-shortcuts a:nth-child(3) svg { color: var(--hui-success); }
 .side-collapsed .wb-side { visibility: hidden; }
-.wb-chat { height: 100%; display: grid; grid-template-rows: auto minmax(0,1fr) auto; }
+.wb-chat { height: 100%; display: grid; grid-template-rows: auto minmax(0,1fr) auto; grid-template-columns: minmax(0, 1fr); min-width: 0; }
 .wb-chat-header {
-  display: flex; align-items: center; gap: 9px; min-height: 59px; padding: 8px 22px; border-bottom: 1px solid var(--hui-border-soft);
+  display: flex; align-items: center; gap: 9px; min-width: 0; min-height: 59px; padding: 8px 22px; border-bottom: 1px solid var(--hui-border-soft);
 }
 .wb-chat-header > div { flex: 1; min-width: 0; }
 .wb-chat-header h1 { margin: 0; font-size: 15px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

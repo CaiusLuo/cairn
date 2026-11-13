@@ -109,6 +109,36 @@ def main() -> None:
                     )
 
                 wait_for(missing_settled)
+                long_title = "Long conversation title " + "超长标题" * 40 + " END"
+                long_conversation = (
+                    api.post(
+                        "/api/runtime/conversations",
+                        json={
+                            "prompt": long_title,
+                            "source": "cli",
+                            "request_id": "long-title",
+                        },
+                    )
+                    .raise_for_status()
+                    .json()
+                )
+                api.post(
+                    f"/api/runtime/conversations/{long_conversation['conversation_id']}/messages",
+                    json={
+                        "prompt": long_title,
+                        "source": "cli",
+                        "request_id": "long-title-message",
+                    },
+                ).raise_for_status()
+
+                def long_settled() -> bool:
+                    return any(
+                        item["conversation_id"] == long_conversation["conversation_id"]
+                        and (item["latest_run"] or {}).get("status") == "completed"
+                        for item in api.get("/api/runtime/conversations").json()
+                    )
+
+                wait_for(long_settled)
                 # Reproduce the deployed shapes: old Runs predate Session
                 # identity, and a newer Run points at a Session row that no
                 # longer exists.
@@ -160,6 +190,9 @@ def main() -> None:
                     "CAIRN_WEB_E2E_TOKEN_FILE": str(token),
                     "CAIRN_WEB_E2E_LEGACY_CONVERSATION": legacy["conversation_id"],
                     "CAIRN_WEB_E2E_MISSING_SESSION_CONVERSATION": missing[
+                        "conversation_id"
+                    ],
+                    "CAIRN_WEB_E2E_LONG_TITLE_CONVERSATION": long_conversation[
                         "conversation_id"
                     ],
                     "CAIRN_WEB_E2E_RECOVERY_TASK": task["task_id"],

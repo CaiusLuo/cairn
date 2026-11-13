@@ -361,6 +361,32 @@ try {
     assert.equal(errors.length, errorsBeforePlainHttp, "A plain-HTTP send must not raise a page error");
     await page.unroute("**/api/runtime/conversations");
     console.log("Plain-HTTP request identity passed.");
+
+    const longTitleId = process.env.CAIRN_WEB_E2E_LONG_TITLE_CONVERSATION;
+    if (longTitleId) {
+      await page.goto(new URL(`/chat.html?conversation=${longTitleId}`, url).href);
+      await page.locator(".wb-chat-header h1").filter({ hasText: "Long conversation title" }).waitFor();
+      const titleLayout = await page.evaluate(() => {
+        const main = document.querySelector(".wb-main");
+        const header = document.querySelector(".wb-chat-header");
+        const title = header.querySelector("h1");
+        const mainBox = main.getBoundingClientRect();
+        const buttons = [...header.querySelectorAll("button")];
+        return {
+          mainOverflow: main.scrollWidth - main.clientWidth,
+          headerOverflow: Math.round(header.getBoundingClientRect().right - mainBox.right),
+          titleOverflow: title.scrollWidth - title.clientWidth,
+          textOverflow: getComputedStyle(title).textOverflow,
+          buttonsInside: buttons.every(button => button.getBoundingClientRect().right <= mainBox.right + 1),
+        };
+      });
+      assert(titleLayout.titleOverflow > 0, "The long title fixture must actually overflow");
+      assert.equal(titleLayout.textOverflow, "ellipsis");
+      assert(titleLayout.mainOverflow <= 1, "A long title must not widen the main pane");
+      assert(titleLayout.headerOverflow <= 0, "The chat header must stay inside the main pane");
+      assert(titleLayout.buttonsInside, "Header actions must stay inside the main pane");
+      console.log("Long conversation title layout passed.");
+    }
     console.log("Workbench browser E2E passed.");
   }
   assert.deepEqual(errors, []);
