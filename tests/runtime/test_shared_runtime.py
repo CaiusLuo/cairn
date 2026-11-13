@@ -298,11 +298,15 @@ def test_deadline_requires_review_and_never_replays_write(
             await asyncio.Event().wait()
 
         monkeypatch.setattr(WriteTool, "execute", interrupted_write)
+        # The deadline must expire while the write tool is blocked, not during
+        # worktree admission; 0.15s let a busy CI runner pause the task before
+        # the tool ever ran. The tool blocks forever, so any comfortable budget
+        # still lands the deadline inside the executed write.
         app = runtime_app(
             source,
             tmp_path / "state",
             tmp_path / "worktrees",
-            budget=RunBudget(5, max_seconds=0.15),
+            budget=RunBudget(5, max_seconds=5.0),
             token="test-token",
         )
         api = RuntimeClient(
