@@ -120,6 +120,7 @@ export function Knowledge() {
     const epoch = ++loadEpoch.current;
     const controller = new AbortController();
     setLoading(true);
+    setLoadingMore(false);
     setListError("");
     setClips([]);
     setHasMore(false);

@@ -360,6 +360,25 @@ try {
     assert.equal(await page.getByRole("button", { name: "加载更多" }).count(), 0);
     await page.getByLabel("搜索知识片段").fill("");
     await page.waitForFunction(() => document.querySelectorAll(".knowledge-card").length === 50);
+
+    // A filter change while the next page is in flight must not leave the
+    // load-more control stuck in its loading state.
+    const knowledgeList = /\/api\/knowledge\/clips\?/;
+    let delayNextKnowledgePage = true;
+    await page.route(knowledgeList, async route => {
+      if (!delayNextKnowledgePage || new URL(route.request().url()).searchParams.get("offset") !== "50") return route.continue();
+      delayNextKnowledgePage = false;
+      await new Promise(resolve => setTimeout(resolve, 600));
+      return route.continue();
+    });
+    await page.getByRole("button", { name: "加载更多" }).click();
+    await page.getByLabel("搜索知识片段").fill("批量片段 119");
+    await page.waitForFunction(() => document.querySelectorAll(".knowledge-card").length === 1);
+    await page.getByLabel("搜索知识片段").fill("");
+    await page.waitForFunction(() => document.querySelectorAll(".knowledge-card").length === 50);
+    await page.getByRole("button", { name: "加载更多" }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "加载更多" }).isEnabled(), true);
+
     await page.getByRole("button", { name: "加载更多" }).click();
     await page.waitForFunction(() => document.querySelectorAll(".knowledge-card").length === 100);
     await page.getByRole("checkbox", { name: "显示已归档" }).check();
