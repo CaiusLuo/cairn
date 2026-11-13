@@ -396,8 +396,24 @@ class ConversationService:
             return None
         return conversation
 
-    def list_conversations(self) -> tuple[Conversation, ...]:
-        return self.store.list_conversations(workspace_id=self.workspace_id)
+    def list_conversations(
+        self, *, include_archived: bool = False
+    ) -> tuple[Conversation, ...]:
+        return self.store.list_conversations(
+            workspace_id=self.workspace_id, include_archived=include_archived
+        )
+
+    def set_conversation_archived(
+        self, conversation_id: str, *, archived: bool
+    ) -> Conversation:
+        if self.get_conversation(conversation_id) is None:
+            raise KeyError(conversation_id)
+        if archived and any(
+            run.status in {RunStatus.QUEUED, RunStatus.RUNNING}
+            for run in self.runs_for_conversation(conversation_id)
+        ):
+            raise ConversationBusy("Conversation already has an active Run")
+        return self.store.set_conversation_archived(conversation_id, archived=archived)
 
     def get_run(self, run_id: str) -> Run | None:
         run = self.store.get_run(run_id)

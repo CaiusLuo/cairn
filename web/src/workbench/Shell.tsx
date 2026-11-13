@@ -9,7 +9,7 @@ import {
 } from "../theme";
 import { CairnLogo } from "./Brand";
 import { Icon, type IconName } from "./Icon";
-import { isActive, sourceLabel, type Conversation } from "./data";
+import { conversationTitle, isActive, sourceLabel, type Conversation } from "./data";
 
 export type View = "home" | "chat" | "tasks" | "workflow" | "runs" | "approvals" | "settings";
 const navigation: { view: View; label: string; icon: IconName }[] = [
@@ -114,7 +114,7 @@ export function Shell({ view, active, conversations, workspace, status, navigate
           <summary><Icon name="chat" size={15}/>最近对话 <span>{items.length}</span></summary>
           {items.length ? <ul>{items.slice(0, visible).map(item => <li key={item.conversation_id}>
             <a href={href("chat", { conversation: item.conversation_id })} aria-current={active === item.conversation_id ? "page" : undefined} title={item.initial_prompt} onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(event.currentTarget.getAttribute("href")!); setMobileOpen(false); }}>
-              <span>{item.initial_prompt}</span>{item.latest_run && isActive(item.latest_run.status) ? <i className="wb-live-dot" aria-label="执行中"/> : <small>{sourceLabel(item.source)}</small>}
+              <span>{conversationTitle(item.initial_prompt)}</span>{item.latest_run && isActive(item.latest_run.status) ? <i className="wb-live-dot" aria-label="执行中"/> : <small>{sourceLabel(item.source)}</small>}
             </a>
           </li>)}</ul> : <p>{filter ? "没有匹配的对话" : "暂无对话"}</p>}
           {items.length > visible && <button className="side-more" onClick={() => setVisible(value => value + 12)}>展开其余 {items.length - visible} 条</button>}

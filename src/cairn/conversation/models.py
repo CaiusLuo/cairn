@@ -59,6 +59,9 @@ class Conversation(BaseModel):
     initial_prompt: str = Field(min_length=1, max_length=32000)
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
+    # Archived conversations stay readable by ID but disappear from the
+    # conversation tree until restored.
+    archived_at: str | None = None
     # Entry-point details and legacy facts that do not belong to a Task/Run.
     metadata: dict[str, Any] = Field(default_factory=dict)
 

@@ -92,6 +92,7 @@ class DomainStore:
                 initial_prompt TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                archived_at TEXT,
                 metadata_json TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS wechat_bindings (
@@ -197,6 +198,12 @@ class DomainStore:
             );
             """
         )
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(conversations)").fetchall()
+        }
+        if "archived_at" not in columns:
+            connection.execute("ALTER TABLE conversations ADD COLUMN archived_at TEXT")
         columns = {
             str(row[1])
             for row in connection.execute(
@@ -397,20 +404,45 @@ class DomainStore:
                 return self._conversation(row)
         return conversation
 
-    def list_conversations(
-        self, *, workspace_id: str | None = None
-    ) -> tuple[Conversation, ...]:
+    def set_conversation_archived(
+        self, conversation_id: str, *, archived: bool
+    ) -> Conversation:
         with self._connect() as connection:
-            if workspace_id is None:
-                rows = connection.execute(
-                    "SELECT * FROM conversations ORDER BY created_at, conversation_id"
-                ).fetchall()
-            else:
-                rows = connection.execute(
-                    "SELECT * FROM conversations WHERE workspace_id = ? "
-                    "ORDER BY created_at, conversation_id",
-                    (workspace_id,),
-                ).fetchall()
+            row = connection.execute(
+                "SELECT * FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(conversation_id)
+            connection.execute(
+                "UPDATE conversations SET archived_at = ? WHERE conversation_id = ?",
+                (utc_now() if archived else None, conversation_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+        assert row is not None
+        return self._conversation(row)
+
+    def list_conversations(
+        self, *, workspace_id: str | None = None, include_archived: bool = False
+    ) -> tuple[Conversation, ...]:
+        conditions: list[str] = []
+        parameters: list[str] = []
+        if workspace_id is not None:
+            conditions.append("workspace_id = ?")
+            parameters.append(workspace_id)
+        if not include_archived:
+            conditions.append("archived_at IS NULL")
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM conversations"
+                + where
+                + " ORDER BY created_at, conversation_id",
+                parameters,
+            ).fetchall()
         return tuple(self._conversation(row) for row in rows)
 
     # -- Task --------------------------------------------------------------
@@ -1659,6 +1691,7 @@ class DomainStore:
             initial_prompt=cast(str, row["initial_prompt"]),
             created_at=cast(str, row["created_at"]),
             updated_at=cast(str, row["updated_at"]),
+            archived_at=cast(str | None, row["archived_at"]),
             metadata=cast(dict[str, Any], _loads(row["metadata_json"], {})),
         )
 

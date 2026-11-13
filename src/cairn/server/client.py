@@ -202,6 +202,16 @@ class RuntimeClient:
     async def get_conversation(self, conversation_id: str) -> dict[str, Any]:
         return dict(await self.request("GET", f"conversations/{conversation_id}"))
 
+    async def set_conversation_archived(
+        self, conversation_id: str, *, archived: bool
+    ) -> dict[str, Any]:
+        if not conversation_id:
+            raise ValueError("Invalid conversation id")
+        action = "archive" if archived else "unarchive"
+        return dict(
+            await self.request("POST", f"conversations/{conversation_id}/{action}")
+        )
+
     async def find_run_by_request(
         self, conversation_id: str, request_id: str
     ) -> dict[str, Any]:

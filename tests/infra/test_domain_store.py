@@ -188,3 +188,38 @@ def test_accept_run_is_atomic_and_idempotent(tmp_path: Path) -> None:
     event = domain.append_run_event(first.run_id, "conversation_ready", {})
     assert event.sequence == 1
     assert domain.list_run_events(first.run_id)[0].kind == "conversation_ready"
+
+
+def test_archived_conversation_is_hidden_until_restored(tmp_path: Path) -> None:
+    domain, workspace = store(tmp_path)
+    workspace_id = workspace_id_for(workspace)
+    visible = domain.create_conversation(
+        workspace=workspace,
+        source=ConversationSource.WEB,
+        initial_prompt="Visible",
+    )
+    hidden = domain.create_conversation(
+        workspace=workspace,
+        source=ConversationSource.CLI,
+        initial_prompt="Hidden",
+    )
+    archived = domain.set_conversation_archived(hidden.conversation_id, archived=True)
+    assert archived.archived_at is not None
+    assert [
+        item.conversation_id
+        for item in domain.list_conversations(workspace_id=workspace_id)
+    ] == [visible.conversation_id]
+    assert [
+        item.conversation_id
+        for item in domain.list_conversations(
+            workspace_id=workspace_id, include_archived=True
+        )
+    ] == [visible.conversation_id, hidden.conversation_id]
+    assert domain.get_conversation(hidden.conversation_id) is not None
+
+    restored = domain.set_conversation_archived(hidden.conversation_id, archived=False)
+    assert restored.archived_at is None
+    assert [
+        item.conversation_id
+        for item in domain.list_conversations(workspace_id=workspace_id)
+    ] == [visible.conversation_id, hidden.conversation_id]

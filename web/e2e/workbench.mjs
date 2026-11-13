@@ -364,8 +364,17 @@ try {
 
     const longTitleId = process.env.CAIRN_WEB_E2E_LONG_TITLE_CONVERSATION;
     if (longTitleId) {
+      await page.setViewportSize({ width: 1024, height: 900 });
       await page.goto(new URL(`/chat.html?conversation=${longTitleId}`, url).href);
       await page.locator(".wb-chat-header h1").filter({ hasText: "Long conversation title" }).waitFor();
+      const headerTitle = page.locator(".wb-chat-header h1");
+      const headerText = await headerTitle.innerText();
+      const fullTitle = await headerTitle.getAttribute("title");
+      assert(fullTitle.includes("超长标题"), "The full prompt must stay available on hover");
+      assert(headerText.length <= 65, "The displayed title must be shortened");
+      const sidebarTitle = page.locator(`a[href*="${longTitleId}"] span`).first();
+      await sidebarTitle.waitFor();
+      assert.equal(await sidebarTitle.innerText(), headerText, "Header and sidebar must show the same title");
       const titleLayout = await page.evaluate(() => {
         const main = document.querySelector(".wb-main");
         const header = document.querySelector(".wb-chat-header");

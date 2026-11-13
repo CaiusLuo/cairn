@@ -24,12 +24,18 @@ export type Conversation = {
   source: string;
   initial_prompt: string;
   updated_at: string;
+  archived_at?: string | null;
   latest_run?: Run | null;
 };
 
 export const isActive = (status: string) => status === "queued" || status === "running";
 export const sourceLabel = (source?: string) => ({ cli: "CLI", web: "Web", wechat: "微信", schedule: "定时任务" }[source ?? ""] ?? source ?? "");
 export const dateLabel = (date?: string | null) => date ? new Date(date).toLocaleString("zh-CN", { dateStyle: "medium", timeStyle: "short" }) : "—";
+export function conversationTitle(prompt?: string | null, limit = 64) {
+  const line = (prompt ?? "").split(/\r?\n/, 1)[0].replace(/\s+/g, " ").trim();
+  if (!line) return "对话";
+  return line.length > limit ? line.slice(0, limit).trimEnd() + "…" : line;
+}
 
 type Resource<T> = { data?: T; error?: string };
 

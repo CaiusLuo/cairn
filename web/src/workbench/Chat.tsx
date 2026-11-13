@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { newRequestId } from "../ids";
 import { RuntimeError, runtimeApi } from "../runtime-api";
 import { readSubmission, sendSubmission, useRunStream, type Submission } from "./chat-state";
-import { isActive, sourceLabel, useResource, type Conversation, type Message, type Run, type WorkbenchConfig } from "./data";
+import { conversationTitle, isActive, sourceLabel, useResource, type Conversation, type Message, type Run, type WorkbenchConfig } from "./data";
 import { Badge, Drawer, Markdown, Outputs, Timeline } from "./evidence";
 import { CairnMark } from "./Brand";
 import { Icon } from "./Icon";
@@ -170,7 +170,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   if (!id) return <div className="wb-home"><div className="wb-home-inner"><BrandIntro/>{form}<div className="wb-shortcuts">{shortcuts.map(item => <a key={item.title} href={item.href} onClick={event => { event.preventDefault(); navigate(item.href); }}><span><Icon name={item.icon}/></span><strong>{item.title}</strong><small>{item.detail}</small></a>)}</div></div></div>;
   return <section className="wb-chat">
     <header className="wb-chat-header">
-      <div><h1>{title ?? "对话"}</h1>{detail.data && <small>{sourceLabel(detail.data.conversation.source)}</small>}</div>
+      <div><h1 title={title}>{conversationTitle(title)}</h1>{detail.data && <small>{sourceLabel(detail.data.conversation.source)}</small>}</div>
       {run && <><Badge status={run.status}/><button title="查看运行详情" aria-label="查看运行详情" onClick={() => navigate(href("runs", { run: run.run_id }))}><Icon name="runs" size={17}/></button><button title="产物" aria-label="产物" onClick={() => setArtifacts(true)}><Icon name="chat-artifacts" size={17}/></button></>}
     </header>
     {degraded && <p className="wb-muted" role="status">旧 Session 记录不可用，本次已在新 Session 中继续；历史来自持久化 Run 记录，旧操作不会重放。</p>}

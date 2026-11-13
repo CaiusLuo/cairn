@@ -249,7 +249,24 @@ def conversation_routes(
                     created.model_dump(mode="json"),
                     headers={"Cache-Control": "no-store"},
                 )
-            if request.method == "POST" and conversation_id is not None:
+            if (
+                request.method == "POST"
+                and conversation_id is not None
+                and action in {"archive", "unarchive"}
+            ):
+                assert isinstance(conversation_id, str)
+                updated = service.set_conversation_archived(
+                    conversation_id, archived=action == "archive"
+                )
+                return JSONResponse(
+                    updated.model_dump(mode="json"),
+                    headers={"Cache-Control": "no-store"},
+                )
+            if (
+                request.method == "POST"
+                and conversation_id is not None
+                and action in {None, "messages"}
+            ):
                 assert isinstance(conversation_id, str)
                 message_body = ConversationMessage.model_validate(
                     await request_body(request)
@@ -346,6 +363,9 @@ def conversation_routes(
                     },
                     headers={"Cache-Control": "no-store"},
                 )
+            include_archived = request.query_params.get(
+                "include_archived", ""
+            ).lower() in {"1", "true", "yes"}
             return JSONResponse(
                 [
                     {
@@ -360,7 +380,9 @@ def conversation_routes(
                             else None
                         ),
                     }
-                    for conversation in service.list_conversations()
+                    for conversation in service.list_conversations(
+                        include_archived=include_archived
+                    )
                 ],
                 headers={"Cache-Control": "no-store"},
             )

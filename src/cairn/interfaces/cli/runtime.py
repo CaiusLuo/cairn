@@ -68,6 +68,38 @@ def list_tasks(
     output(asyncio.run(client(ctx, url, token_file).request("GET", "tasks")))
 
 
+@app.command()
+def archive(
+    ctx: typer.Context,
+    conversation_id: str,
+    token_file: Annotated[Path | None, typer.Option()] = None,
+    url: str | None = None,
+) -> None:
+    output(
+        asyncio.run(
+            client(ctx, url, token_file).set_conversation_archived(
+                conversation_id, archived=True
+            )
+        )
+    )
+
+
+@app.command()
+def unarchive(
+    ctx: typer.Context,
+    conversation_id: str,
+    token_file: Annotated[Path | None, typer.Option()] = None,
+    url: str | None = None,
+) -> None:
+    output(
+        asyncio.run(
+            client(ctx, url, token_file).set_conversation_archived(
+                conversation_id, archived=False
+            )
+        )
+    )
+
+
 @app.command("continue")
 def continue_task(
     ctx: typer.Context,

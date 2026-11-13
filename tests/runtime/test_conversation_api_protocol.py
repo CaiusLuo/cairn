@@ -256,3 +256,41 @@ def test_workbench_admits_and_persists_only_approved_run_model(tmp_path: Path) -
             assert wrong_workspace.status_code == 409
 
     asyncio.run(scenario())
+
+
+def test_conversation_archive_hides_and_restores_listing(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app = _app(tmp_path)
+        app.state.execution.llm_factory = ChatModel
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            created = await api.create_conversation(
+                "archivable", source="web", request_id="archive-create"
+            )
+            conversation_id = created["conversation_id"]
+            archived = await api.request(
+                "POST", f"conversations/{conversation_id}/archive"
+            )
+            assert archived["archived_at"]
+
+            listed = await api.request("GET", "conversations")
+            assert conversation_id not in {item["conversation_id"] for item in listed}
+            with_archived = await api.request("GET", "conversations?include_archived=1")
+            assert conversation_id in {
+                item["conversation_id"] for item in with_archived
+            }
+            detail = await api.get_conversation(conversation_id)
+            assert detail["conversation"]["archived_at"] == archived["archived_at"]
+
+            restored = await api.request(
+                "POST", f"conversations/{conversation_id}/unarchive"
+            )
+            assert restored["archived_at"] is None
+            listed = await api.request("GET", "conversations")
+            assert conversation_id in {item["conversation_id"] for item in listed}
+
+    asyncio.run(scenario())
