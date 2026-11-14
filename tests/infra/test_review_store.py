@@ -546,6 +546,30 @@ def test_started_delivery_recovers_as_unconfirmed_without_resend(
     )
 
 
+def test_a_definite_rejection_returns_the_delivery_to_pending(
+    tmp_path: Path,
+) -> None:
+    store = ReviewStore(tmp_path / "knowledge")
+    created = _create(store, request_id="delivery-defer").review
+    _complete_with_delivery(store, created.review_id)
+    store.begin_delivery(created.review_id, account_id="bot-a", sender_id="owner")
+
+    deferred = store.defer_delivery(created.review_id, "context_token_rejected")
+    assert deferred.status is ReviewDeliveryStatus.PENDING
+    assert deferred.last_error == "context_token_rejected"
+    assert deferred.attempts == 1
+
+    # A later attempt with a fresh context can still claim the same row.
+    retried = store.begin_delivery(
+        created.review_id,
+        account_id="bot-a",
+        sender_id="owner",
+        context_token="ctx2",
+    )
+    assert retried.allowed is True
+    assert retried.delivery.attempts == 2
+
+
 def test_sent_delivery_cannot_be_requeued_or_unconfirmed(tmp_path: Path) -> None:
     store = ReviewStore(tmp_path / "knowledge")
     created = _create(store, request_id="delivery-terminal").review

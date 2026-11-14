@@ -178,7 +178,7 @@ class ServerControls:
         if self.delivery is not None:
             self.delivery.rescan()
         if self.review_delivery is not None:
-            self.review_delivery.rescan()
+            self.review_delivery.rescan(force=True)
 
     def _qr(self, qr: Any) -> None:
         if qr is None:

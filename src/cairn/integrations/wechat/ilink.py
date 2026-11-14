@@ -26,6 +26,14 @@ class ILinkError(RuntimeError):
     """A protocol or transport failure. Messages never include the token."""
 
 
+class ILinkSendRejected(ILinkError):
+    """The server answered sendMessage with an explicit non-zero ret.
+
+    The message was not accepted. Unlike a transport failure, a later retry
+    cannot duplicate an accepted send.
+    """
+
+
 def validate_base_url(url: str, *, allow_insecure_local: bool = False) -> str:
     """Reject plaintext/credentialed targets before a token is sent to them.
 
@@ -245,7 +253,7 @@ class ILinkClient:
         data = await self._post("/ilink/bot/sendmessage", {"msg": msg})
         ret = data.get("ret")
         if ret not in (None, 0):
-            raise ILinkError(f"sendMessage failed with ret={ret}")
+            raise ILinkSendRejected(f"sendMessage failed with ret={ret}")
         return data
 
     async def notify_start(self) -> None:

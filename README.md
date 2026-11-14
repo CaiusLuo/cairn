@@ -82,8 +82,10 @@ The Server also schedules the daily review itself at 20:30 `Asia/Shanghai`, cove
 from the previous day's cutoff, and catches up a missed cutoff after restart. Set `review_schedule = false`
 under `[services]` to disable it. A scheduled completed review gets a durable delivery record: it is pushed
 to WeChat as plain mobile-sized text once a logged-in account and recipient context are available, and stays
-pending otherwise. `POST /api/knowledge/reviews/{id}/delivery/resend` retries an `unconfirmed` or
-`manual_review` delivery after inspection; pass `{"rebind": true}` after switching accounts. Delivery never
+pending otherwise. iLink may refuse a send with `ret=-2` once the last inbound reply context is no longer
+accepted; that is a definite non-send, so the review stays pending and is sent after the next inbound WeChat
+message provides a fresh context. `POST /api/knowledge/reviews/{id}/delivery/resend` retries an `unconfirmed`
+or `manual_review` delivery after inspection; pass `{"rebind": true}` after switching accounts. Delivery never
 changes the review's completed state, and an attempt whose result is unknown is never resent automatically.
 
 Chat normally, or enter `/develop GOAL`. `/status`, `/history`, `/cancel`,

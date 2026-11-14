@@ -241,7 +241,7 @@ def review_routes(
             return _error(503, "review_store_unavailable")
         coordinator = getattr(request.app.state, "review_delivery", None)
         if coordinator is not None:
-            coordinator.rescan()
+            coordinator.rescan(force=True)
         return JSONResponse(
             {"delivery": delivery_payload(delivery)},
             status_code=202,

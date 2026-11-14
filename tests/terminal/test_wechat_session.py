@@ -7,7 +7,10 @@ import pytest
 
 from cairn.development.execution.headless import HeadlessResult, HeadlessStatus
 from cairn.integrations.wechat.qr import render_ascii_qr
-from cairn.integrations.wechat.session import WechatSessionController
+from cairn.integrations.wechat.session import (
+    ProactiveSendOutcome,
+    WechatSessionController,
+)
 from cairn.integrations.wechat.state import WechatAccount
 from tests.support.fake_ilink import FakeILink
 from tests.support.runtime import (
@@ -583,3 +586,11 @@ def test_rejected_context_is_reported_as_a_failed_send(
         )
         assert controller.delivery_readiness()["ready"] is True
         assert asyncio.run(controller.deliver("owner", "review")) is False
+        account = state.load_account()
+        assert account is not None
+        outcome = asyncio.run(
+            controller.deliver_for_account_outcome(
+                "owner", "review", account.ilink_bot_id
+            )
+        )
+        assert outcome is ProactiveSendOutcome.REJECTED

@@ -7,6 +7,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from cairn.integrations.wechat.session import ProactiveSendOutcome
 from cairn.review.delivery import (
     ReviewDeliveryCoordinator,
     format_review_message,
@@ -79,11 +80,13 @@ class FakeWechat:
         recipient: str | None = "owner",
         context: str | None = "ctx-1",
         fail: bool = False,
+        outcome: ProactiveSendOutcome = ProactiveSendOutcome.SENT,
     ) -> None:
         self.account = account
         self.recipient = recipient
         self.context = context
         self.fail = fail
+        self.outcome = outcome
         self.sent: list[tuple[str, str, str, str]] = []
 
     @property
@@ -99,6 +102,19 @@ class FakeWechat:
     def latest_context(self, _sender: str) -> str | None:
         return self.context
 
+    async def deliver_for_account_outcome(
+        self,
+        sender: str,
+        text: str,
+        account_id: str,
+        *,
+        context_token: str | None = None,
+    ) -> ProactiveSendOutcome:
+        self.sent.append((sender, text, account_id, context_token or ""))
+        if self.fail:
+            return ProactiveSendOutcome.UNKNOWN
+        return self.outcome
+
     async def deliver_for_account(
         self,
         sender: str,
@@ -107,8 +123,10 @@ class FakeWechat:
         *,
         context_token: str | None = None,
     ) -> bool:
-        self.sent.append((sender, text, account_id, context_token or ""))
-        return not self.fail
+        outcome = await self.deliver_for_account_outcome(
+            sender, text, account_id, context_token=context_token
+        )
+        return outcome is ProactiveSendOutcome.SENT
 
 
 def _coordinator(
@@ -116,12 +134,14 @@ def _coordinator(
     wechat: FakeWechat,
     *,
     message_chars: int = 3_500,
+    retry_seconds: float = 300.0,
 ) -> ReviewDeliveryCoordinator:
     return ReviewDeliveryCoordinator(
         store=store,
         wechat=wechat,  # type: ignore[arg-type]
         poll_interval=0.05,
         message_chars=message_chars,
+        retry_seconds=retry_seconds,
     )
 
 
@@ -235,18 +255,59 @@ def test_failed_send_is_unconfirmed_and_not_retried_automatically(
     asyncio.run(scenario())
 
 
+def test_rejected_context_stays_pending_until_a_fresh_one_arrives(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    review = _completed_review(store)
+    wechat = FakeWechat(outcome=ProactiveSendOutcome.REJECTED)
+    coordinator = _coordinator(store, wechat, retry_seconds=300)
+
+    async def scenario() -> None:
+        await coordinator._consider(review.review_id)
+        delivery = store.get_delivery(review.review_id)
+        assert delivery is not None
+        assert delivery.status is ReviewDeliveryStatus.PENDING
+        assert delivery.last_error == "context_token_rejected"
+        assert delivery.attempts == 1
+        assert len(wechat.sent) == 1
+
+        # A refused context is not an unknown result; retry later rather than
+        # requiring manual review, and do not hammer the upstream endpoint.
+        await coordinator.start()
+        try:
+            await asyncio.sleep(0.03)
+            assert len(wechat.sent) == 1
+            wechat.outcome = ProactiveSendOutcome.SENT
+            coordinator.rescan(force=True)
+            for _ in range(50):
+                if store.get_delivery(review.review_id).status is (  # type: ignore[union-attr]
+                    ReviewDeliveryStatus.SENT
+                ):
+                    break
+                await asyncio.sleep(0.01)
+            assert store.get_delivery(review.review_id).status is (  # type: ignore[union-attr]
+                ReviewDeliveryStatus.SENT
+            )
+            assert len(wechat.sent) == 2
+        finally:
+            await coordinator.close()
+
+    asyncio.run(scenario())
+
+
 def test_lost_send_response_is_unconfirmed_and_not_resent(
     tmp_path: Path,
 ) -> None:
     class LostResponseWechat(FakeWechat):
-        async def deliver_for_account(
+        async def deliver_for_account_outcome(
             self,
             sender: str,
             text: str,
             account_id: str,
             *,
             context_token: str | None = None,
-        ) -> bool:
+        ) -> ProactiveSendOutcome:
             self.sent.append((sender, text, account_id, context_token or ""))
             raise RuntimeError("response lost after the remote send")
 

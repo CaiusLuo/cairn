@@ -10,9 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from datetime import datetime
 
-from cairn.integrations.wechat.session import WechatSessionController
+from cairn.integrations.wechat.session import (
+    ProactiveSendOutcome,
+    WechatSessionController,
+)
 from cairn.review.models import (
     ReviewDeliveryStatus,
     StoredReview,
@@ -23,6 +27,7 @@ from cairn.review.store import ReviewStore
 DEFAULT_POLL_SECONDS = 30.0
 DEFAULT_MAX_PARALLEL = 4
 DEFAULT_MESSAGE_CHARS = 3_500
+DEFAULT_RETRY_SECONDS = 300.0
 
 
 def format_review_message(
@@ -101,13 +106,16 @@ class ReviewDeliveryCoordinator:
         poll_interval: float = DEFAULT_POLL_SECONDS,
         max_parallel: int = DEFAULT_MAX_PARALLEL,
         message_chars: int = DEFAULT_MESSAGE_CHARS,
+        retry_seconds: float = DEFAULT_RETRY_SECONDS,
     ) -> None:
         self.store = store
         self.wechat = wechat
         self.poll_interval = max(0.05, poll_interval)
         self.max_parallel = max(1, max_parallel)
         self.message_chars = message_chars
+        self.retry_seconds = max(0.0, retry_seconds)
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._deferred: dict[str, float] = {}
         self._loop_task: asyncio.Task[None] | None = None
         self._wake = asyncio.Event()
         self._stopped = True
@@ -136,10 +144,12 @@ class ReviewDeliveryCoordinator:
                 await task
         self._tasks.clear()
 
-    def rescan(self) -> None:
+    def rescan(self, *, force: bool = False) -> None:
         """Wake the coordinator after completion, login or manual retry."""
         if self._stopped:
             return
+        if force:
+            self._deferred.clear()
         self._wake.set()
 
     async def _loop(self) -> None:
@@ -165,10 +175,13 @@ class ReviewDeliveryCoordinator:
             self.store.list_deliveries,
             statuses=frozenset({ReviewDeliveryStatus.PENDING}),
         )
+        now = time.monotonic()
         for delivery in pending:
             if len(self._tasks) >= self.max_parallel:
                 return
             if delivery.review_id in self._tasks:
+                continue
+            if now < self._deferred.get(delivery.review_id, 0.0):
                 continue
             task = asyncio.create_task(self._consider(delivery.review_id))
             self._tasks[delivery.review_id] = task
@@ -208,14 +221,28 @@ class ReviewDeliveryCoordinator:
             return
         try:
             body = format_review_message(review, max_chars=self.message_chars)
-            delivered = await self.wechat.deliver_for_account(
+            outcome = await self.wechat.deliver_for_account_outcome(
                 recipient,
                 body,
                 account_id,
                 context_token=context,
             )
-            if delivered:
+            if outcome is ProactiveSendOutcome.SENT:
                 await asyncio.to_thread(self.store.mark_delivery_sent, review_id)
+            elif outcome in (
+                ProactiveSendOutcome.REJECTED,
+                ProactiveSendOutcome.UNAVAILABLE,
+            ):
+                # The remote explicitly refused, or the account/context went
+                # away before the call. A fresh inbound context may make the
+                # same review deliverable, so keep the outbox row pending.
+                error = (
+                    "context_token_rejected"
+                    if outcome is ProactiveSendOutcome.REJECTED
+                    else "send_unavailable"
+                )
+                await asyncio.to_thread(self.store.defer_delivery, review_id, error)
+                self._deferred[review_id] = time.monotonic() + self.retry_seconds
             else:
                 await asyncio.to_thread(
                     self.store.mark_delivery_unconfirmed,
@@ -254,6 +281,7 @@ def delivery_payload(delivery: StoredReviewDelivery | None) -> dict[str, object]
 
 __all__ = [
     "DEFAULT_MESSAGE_CHARS",
+    "DEFAULT_RETRY_SECONDS",
     "ReviewDeliveryCoordinator",
     "delivery_payload",
     "format_review_message",

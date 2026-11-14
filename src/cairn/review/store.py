@@ -657,6 +657,38 @@ class ReviewStore:
                 raise ValueError("review delivery could not be read back")
             return self._delivery(row)
 
+    def defer_delivery(self, review_id: str, error: str) -> StoredReviewDelivery:
+        """Return a definite non-send to pending so a fresh context can retry."""
+        now = utc_now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(review_id)
+            current = self._delivery(row)
+            if current.status is ReviewDeliveryStatus.PENDING:
+                return current
+            if current.status is not ReviewDeliveryStatus.STARTED:
+                raise ValueError("only a started delivery can be deferred")
+            connection.execute(
+                "UPDATE review_deliveries SET status = ?, last_error = ?, "
+                "updated_at = ? WHERE review_id = ? AND status = 'started'",
+                (
+                    ReviewDeliveryStatus.PENDING.value,
+                    error[:500],
+                    now,
+                    review_id,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError("review delivery could not be read back")
+            return self._delivery(row)
+
     def requeue_delivery(
         self, review_id: str, *, rebind: bool = False
     ) -> StoredReviewDelivery:
