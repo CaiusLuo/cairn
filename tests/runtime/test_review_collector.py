@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, date
+from datetime import UTC, date, time
 from pathlib import Path
 
 import pytest
@@ -508,3 +508,77 @@ def test_invalid_timezone_is_rejected(tmp_path: Path) -> None:
         collector.collect_daily(DAY, "Mars/Olympus")
     with pytest.raises(ValueError):
         collector.collect_daily(DAY, "  ")
+
+
+def test_cutoff_window_is_contiguous_and_carries_late_sources_forward(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    store = KnowledgeStore(tmp_path / "knowledge")
+    memory = PersonalMemoryStore(tmp_path / "agent")
+    previous_late = _clip_at(
+        store,
+        "previous day after cutoff",
+        "2026-01-14T13:00:00+00:00",
+        request_id="previous-late",
+    )
+    current_early = _clip_at(
+        store,
+        "current day before cutoff",
+        "2026-01-15T12:29:59+00:00",
+        request_id="current-early",
+    )
+    current_late = _clip_at(
+        store,
+        "current day after cutoff",
+        "2026-01-15T13:00:00+00:00",
+        request_id="current-late",
+    )
+    memory.write_daily(
+        date(2026, 1, 14),
+        "# 2026-01-14\n\n"
+        "## 19:00\n- source: user_explicit\nBefore the window.\n\n"
+        "## 21:00\n- source: user_explicit\nPrevious day late entry.\n",
+    )
+    memory.write_daily(
+        date(2026, 1, 15),
+        "# 2026-01-15\n\n"
+        "## 20:29\n- source: user_explicit\nBefore today's cutoff.\n\n"
+        "## 20:30\n- source: user_explicit\nAt the cutoff.\n",
+    )
+
+    review_input = _collector(store, workspace, memory=memory).collect_daily(
+        DAY, TZ, cutoff=time(20, 30)
+    )
+    ids = {
+        source.source_id
+        for source in review_input.sources
+        if source.source_type == "knowledge_clip"
+    }
+    assert ids == {previous_late, current_early}
+    assert current_late not in ids
+    assert review_input.period_start.astimezone(UTC).isoformat() == (
+        "2026-01-14T12:30:00+00:00"
+    )
+    assert review_input.period_end.astimezone(UTC).isoformat() == (
+        "2026-01-15T12:30:00+00:00"
+    )
+    memory_times = {
+        source.occurred_at
+        for source in review_input.sources
+        if source.source_type == "personal_memory"
+    }
+    assert memory_times == {
+        "2026-01-14T21:00:00+08:00",
+        "2026-01-15T20:29:00+08:00",
+    }
+
+    next_input = _collector(store, workspace, memory=memory).collect_daily(
+        date(2026, 1, 16), TZ, cutoff=time(20, 30)
+    )
+    next_ids = {
+        source.source_id
+        for source in next_input.sources
+        if source.source_type == "knowledge_clip"
+    }
+    assert current_late in next_ids

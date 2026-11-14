@@ -119,6 +119,7 @@ class ServerControls:
         self.operations: dict[str, asyncio.Task[dict[str, Any]]] = {}
         self.delivery_tasks: set[asyncio.Task[None]] = set()
         self.delivery: Any | None = None
+        self.review_delivery: Any | None = None
         self.closed = False
         api = RuntimeClient(
             f"http://127.0.0.1:{port}",
@@ -176,6 +177,8 @@ class ServerControls:
         self.qr_content = None
         if self.delivery is not None:
             self.delivery.rescan()
+        if self.review_delivery is not None:
+            self.review_delivery.rescan()
 
     def _qr(self, qr: Any) -> None:
         if qr is None:

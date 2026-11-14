@@ -472,6 +472,20 @@ class WechatSessionController:
     def restore_senders(self, senders: tuple[str, ...]) -> None:
         self._allowed_senders.update(senders)
 
+    def delivery_readiness(self) -> dict[str, object]:
+        """Report whether a proactive send has its required protocol facts."""
+        try:
+            account = self._state.load_account()
+        except ValueError:
+            return {"ready": False, "blocker": "account_unreadable"}
+        if account is None or not account.ilink_bot_id:
+            return {"ready": False, "blocker": "no_account"}
+        if not account.ilink_user_id:
+            return {"ready": False, "blocker": "no_recipient"}
+        if not self._latest_context(account.ilink_user_id):
+            return {"ready": False, "blocker": "no_context_token"}
+        return {"ready": True, "blocker": None}
+
     def management_status(self) -> dict[str, object]:
         return {
             "account_saved": bool(self.account_id()),
@@ -480,6 +494,7 @@ class WechatSessionController:
             and not self._login_task.done(),
             "verification_required": self._verify_requested,
             "status": self._status().message,
+            "proactive_delivery": self.delivery_readiness(),
         }
 
     def _status(self) -> Action:

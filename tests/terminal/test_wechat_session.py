@@ -447,3 +447,139 @@ def test_background_start_failure_reports_log(tmp_path: Path) -> None:
     action = asyncio.run(controller._start(account))
     assert "后台启动" in action.message
     assert "provider approval failed" in action.message
+
+
+def test_proactive_delivery_reports_missing_context_as_a_blocker(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    from cairn.integrations.wechat.state import WechatState
+
+    with FakeILink() as fake:
+        WechatState(state_dir).save_account(
+            WechatAccount(
+                bot_token="token-blocked",
+                ilink_bot_id="bot-blocked",
+                base_url=fake.url,
+                ilink_user_id="owner",
+            )
+        )
+
+        async def executor(
+            prompt: str, cancel: asyncio.Event, task_id: str
+        ) -> HeadlessResult:
+            return HeadlessResult(
+                task_id=task_id,
+                status=HeadlessStatus.COMPLETED,
+                workspace=str(workspace),
+            )
+
+        controller = WechatSessionController(
+            workspace=workspace,
+            state_dir=state_dir,
+            task_executor=executor,
+            emit=lambda _line: None,
+            allow_insecure_local_http=True,
+        )
+        assert controller.delivery_readiness() == {
+            "ready": False,
+            "blocker": "no_context_token",
+        }
+        assert asyncio.run(controller.deliver("owner", "no context")) is False
+        assert fake.sent == []
+
+
+def test_explicit_context_allows_proactive_send_without_recent_inbound(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    from cairn.integrations.wechat.state import WechatState
+
+    with FakeILink() as fake:
+        WechatState(state_dir).save_account(
+            WechatAccount(
+                bot_token="token-explicit",
+                ilink_bot_id="bot-explicit",
+                base_url=fake.url,
+                ilink_user_id="owner",
+            )
+        )
+
+        async def executor(
+            prompt: str, cancel: asyncio.Event, task_id: str
+        ) -> HeadlessResult:
+            return HeadlessResult(
+                task_id=task_id,
+                status=HeadlessStatus.COMPLETED,
+                workspace=str(workspace),
+            )
+
+        controller = WechatSessionController(
+            workspace=workspace,
+            state_dir=state_dir,
+            task_executor=executor,
+            emit=lambda _line: None,
+            allow_insecure_local_http=True,
+        )
+        delivered = asyncio.run(
+            controller.deliver_for_account(
+                "owner",
+                "daily review",
+                "bot-explicit",
+                context_token="ctx-explicit",
+            )
+        )
+        assert delivered is True
+        assert fake.sent[-1]["context_token"] == "ctx-explicit"
+        assert fake.sent[-1]["to_user_id"] == "owner"
+
+
+def test_rejected_context_is_reported_as_a_failed_send(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state_dir = tmp_path / "state"
+    from cairn.integrations.wechat.state import WechatState
+
+    state = WechatState(state_dir)
+    with FakeILink() as fake:
+        state.save_account(
+            WechatAccount(
+                bot_token="token-rejected",
+                ilink_bot_id="bot-rejected",
+                base_url=fake.url,
+                ilink_user_id="owner",
+            )
+        )
+        state.load()["messages"]["msg:old"] = {
+            "state": "completed",
+            "sender": "owner",
+            "context_token": "ctx-rejected",
+            "updated": 1.0,
+        }
+        state.flush()
+        fake.send_ret = 1
+
+        async def executor(
+            prompt: str, cancel: asyncio.Event, task_id: str
+        ) -> HeadlessResult:
+            return HeadlessResult(
+                task_id=task_id,
+                status=HeadlessStatus.COMPLETED,
+                workspace=str(workspace),
+            )
+
+        controller = WechatSessionController(
+            workspace=workspace,
+            state_dir=state_dir,
+            task_executor=executor,
+            emit=lambda _line: None,
+            allow_insecure_local_http=True,
+        )
+        assert controller.delivery_readiness()["ready"] is True
+        assert asyncio.run(controller.deliver("owner", "review")) is False

@@ -101,20 +101,39 @@ class ReviewSourceCollector:
             raise ValueError("max_chars must be positive")
         self.max_chars = max_chars
 
-    def collect_daily(self, day: date, timezone: str) -> ReviewInput:
+    def collect_daily(
+        self,
+        day: date,
+        timezone: str,
+        *,
+        cutoff: time | None = None,
+    ) -> ReviewInput:
+        """Collect the half-open window ending at ``day``'s cutoff.
+
+        The default window is the local calendar day. A host schedule may pass
+        a daily cutoff such as 20:30; the window then runs from the previous
+        day's cutoff to this day's cutoff, so late sources are carried into the
+        next review without a gap or an overlap.
+        """
         if not isinstance(day, date):
             raise ValueError("date must be a date")
         if not isinstance(timezone, str) or not timezone.strip():
             raise ValueError("timezone must not be blank")
         if len(timezone) > 64:
             raise ValueError("timezone is too long")
+        if cutoff is not None and not isinstance(cutoff, time):
+            raise ValueError("cutoff must be a time")
         try:
             zone = ZoneInfo(timezone.strip())
         except (ZoneInfoNotFoundError, ValueError):
             raise ValueError("unknown timezone") from None
 
-        start_local = datetime.combine(day, time.min, tzinfo=zone)
-        end_local = datetime.combine(day + timedelta(days=1), time.min, tzinfo=zone)
+        if cutoff is None:
+            start_local = datetime.combine(day, time.min, tzinfo=zone)
+            end_local = datetime.combine(day + timedelta(days=1), time.min, tzinfo=zone)
+        else:
+            start_local = datetime.combine(day - timedelta(days=1), cutoff, tzinfo=zone)
+            end_local = datetime.combine(day, cutoff, tzinfo=zone)
         start_utc = _utc_iso(start_local)
         end_utc = _utc_iso(end_local)
 
@@ -152,7 +171,13 @@ class ReviewSourceCollector:
         grouping["development_run"].extend(runs)
         statuses.append(run_status)
 
-        memory, memory_status = self._collect_memory(day, zone)
+        memory, memory_status = self._collect_memory(
+            day,
+            zone,
+            cutoff=cutoff,
+            start_local=start_local,
+            end_local=end_local,
+        )
         sources.extend(memory)
         grouping["personal_memory"].extend(memory)
         statuses.append(memory_status)
@@ -286,7 +311,13 @@ class ReviewSourceCollector:
         )
 
     def _collect_memory(
-        self, day: date, zone: ZoneInfo
+        self,
+        day: date,
+        zone: ZoneInfo,
+        *,
+        cutoff: time | None,
+        start_local: datetime,
+        end_local: datetime,
     ) -> tuple[list[SourceSnapshot], SourceCollectionStatus]:
         if self.memory is None:
             return [], _status(
@@ -300,82 +331,101 @@ class ReviewSourceCollector:
                 SourceCollectionState.UNAVAILABLE,
                 notes=("Personal memory is disabled for this Server.",),
             )
-        try:
-            body = self.memory.read_daily(day)
-        except (OSError, ValueError) as exc:
-            return [], _status(
-                "personal_memory",
-                SourceCollectionState.UNAVAILABLE,
-                notes=(f"Daily journal unavailable ({type(exc).__name__}).",),
-            )
-        if not body.strip():
+        journal_days = (day,) if cutoff is None else (day - timedelta(days=1), day)
+        bodies: list[tuple[date, str]] = []
+        for journal_day in journal_days:
+            try:
+                body = self.memory.read_daily(journal_day)
+            except (OSError, ValueError) as exc:
+                return [], _status(
+                    "personal_memory",
+                    SourceCollectionState.UNAVAILABLE,
+                    notes=(f"Daily journal unavailable ({type(exc).__name__}).",),
+                )
+            if body.strip():
+                bodies.append((journal_day, body))
+        if not bodies:
             return [], _status(
                 "personal_memory",
                 SourceCollectionState.EMPTY,
                 notes=(
-                    "No daily journal entry for this local date.",
+                    "No daily journal entry for this local window.",
                     "MEMORY.md has no per-entry timestamp and is not included.",
                 ),
             )
-        blocks = [
-            block.strip()
-            for block in re.split(r"(?m)(?=^## )", body)
-            if block.strip().startswith("## ")
-        ]
         snapshots: list[SourceSnapshot] = []
         skipped = 0
-        for block in blocks:
-            heading = block.splitlines()[0]
-            match = _MEMORY_HEADING.match(heading)
-            if match is None:
-                skipped += 1
-                continue
-            hour, minute = int(match.group(1)), int(match.group(2))
-            if not (0 <= hour <= 23 and 0 <= minute <= 59):
-                skipped += 1
-                continue
-            occurred = datetime.combine(
-                day, time(hour=hour, minute=minute), tzinfo=zone
-            )
-            raw_hash = _sha256(block)
-            source_line = self._journal_field(block, "source")
-            kind_line = self._journal_field(block, "kind")
-            explicit = source_line == "user_explicit"
-            snapshot_body = redact_text(block, self.sensitive_values)
-            snapshot_body, body_truncated = _truncate(snapshot_body, MEMORY_ENTRY_CHARS)
-            payload = {
-                "date": day.isoformat(),
-                "local_time": occurred.isoformat(),
-                "kind": kind_line,
-                "source": source_line or "agent_inferred",
-                "journal_entry": snapshot_body,
-            }
-            snapshot, truncated = _truncate(_json(payload), MAX_SOURCE_CHARS)
-            snapshots.append(
-                SourceSnapshot(
-                    source_type="personal_memory",
-                    source_id=(
-                        f"memory-{day.isoformat()}-{hour:02d}{minute:02d}-"
-                        f"{raw_hash[:12]}"
-                    ),
-                    content_hash=raw_hash,
-                    occurred_at=occurred.isoformat(),
-                    trust=(
-                        SourceTrust.USER_RECORDED
-                        if explicit
-                        else SourceTrust.AGENT_INFERRED
-                    ),
-                    may_prove_completion=False,
-                    verification=("user_recorded" if explicit else "agent_inferred"),
-                    snapshot=snapshot,
-                    truncated=body_truncated or truncated,
+        total_blocks = 0
+        for journal_day, body in bodies:
+            blocks = [
+                block.strip()
+                for block in re.split(r"(?m)(?=^## )", body)
+                if block.strip().startswith("## ")
+            ]
+            total_blocks += len(blocks)
+            for block in blocks:
+                heading = block.splitlines()[0]
+                match = _MEMORY_HEADING.match(heading)
+                if match is None:
+                    skipped += 1
+                    continue
+                hour, minute = int(match.group(1)), int(match.group(2))
+                if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                    skipped += 1
+                    continue
+                occurred = datetime.combine(
+                    journal_day, time(hour=hour, minute=minute), tzinfo=zone
                 )
-            )
+                if cutoff is not None and not (start_local <= occurred < end_local):
+                    continue
+                raw_hash = _sha256(block)
+                source_line = self._journal_field(block, "source")
+                kind_line = self._journal_field(block, "kind")
+                explicit = source_line == "user_explicit"
+                snapshot_body = redact_text(block, self.sensitive_values)
+                snapshot_body, body_truncated = _truncate(
+                    snapshot_body, MEMORY_ENTRY_CHARS
+                )
+                payload = {
+                    "date": journal_day.isoformat(),
+                    "local_time": occurred.isoformat(),
+                    "kind": kind_line,
+                    "source": source_line or "agent_inferred",
+                    "journal_entry": snapshot_body,
+                }
+                snapshot, truncated = _truncate(_json(payload), MAX_SOURCE_CHARS)
+                snapshots.append(
+                    SourceSnapshot(
+                        source_type="personal_memory",
+                        source_id=(
+                            f"memory-{journal_day.isoformat()}-"
+                            f"{hour:02d}{minute:02d}-{raw_hash[:12]}"
+                        ),
+                        content_hash=raw_hash,
+                        occurred_at=occurred.isoformat(),
+                        trust=(
+                            SourceTrust.USER_RECORDED
+                            if explicit
+                            else SourceTrust.AGENT_INFERRED
+                        ),
+                        may_prove_completion=False,
+                        verification=(
+                            "user_recorded" if explicit else "agent_inferred"
+                        ),
+                        snapshot=snapshot,
+                        truncated=body_truncated or truncated,
+                    )
+                )
         notes = [
             "MEMORY.md has no per-entry timestamp and is not included.",
             "agent_inferred entries are Cairn's own journal, not proof of "
             "user completion.",
         ]
+        if cutoff is not None:
+            notes.append(
+                "Journal entries at or after the cutoff are carried into the "
+                "next review."
+            )
         if skipped:
             notes.append(
                 f"{skipped} journal block(s) had no valid local HH:MM time and "
@@ -385,7 +435,7 @@ class ReviewSourceCollector:
             SourceCollectionState.OK
             if snapshots
             else SourceCollectionState.EMPTY
-            if not blocks
+            if not total_blocks
             else SourceCollectionState.PARTIAL
         )
         return snapshots, SourceCollectionStatus(

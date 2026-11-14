@@ -20,6 +20,7 @@ class Services:
     wechat: bool = True
     schedule: bool = True
     memory: bool = True
+    review_schedule: bool = True
 
 
 DEFAULT_SERVICES = Services()

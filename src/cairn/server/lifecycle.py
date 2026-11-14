@@ -9,6 +9,8 @@ from cairn.conversation.service import ConversationService
 from cairn.development.execution.runtime import ServiceExecution
 from cairn.development.service import TaskService
 from cairn.integrations.wechat.delivery import WechatDeliveryCoordinator
+from cairn.review.delivery import ReviewDeliveryCoordinator
+from cairn.review.schedule import ReviewScheduleCoordinator
 from cairn.review.service import DailyReviewService
 from cairn.server.management import ServerControls
 from cairn.shared.lifecycle import await_owned
@@ -22,6 +24,8 @@ async def running_runtime(
     controls: ServerControls,
     delivery: WechatDeliveryCoordinator,
     reviews: DailyReviewService | None = None,
+    review_delivery: ReviewDeliveryCoordinator | None = None,
+    review_schedule: ReviewScheduleCoordinator | None = None,
 ) -> AsyncIterator[None]:
     try:
         _ = execution.store
@@ -30,6 +34,10 @@ async def running_runtime(
         await controls.start()
         if reviews is not None:
             await reviews.start()
+        if review_delivery is not None:
+            await review_delivery.start()
+        if review_schedule is not None:
+            await review_schedule.start()
         await delivery.start()
         yield
     finally:
@@ -37,22 +45,30 @@ async def running_runtime(
 
         async def cleanup() -> None:
             try:
-                await delivery.close()
+                if review_schedule is not None:
+                    await review_schedule.close()
             finally:
                 try:
-                    if reviews is not None:
-                        await reviews.close()
+                    if review_delivery is not None:
+                        await review_delivery.close()
                 finally:
                     try:
-                        await controls.close()
+                        await delivery.close()
                     finally:
                         try:
-                            await conversations.close()
+                            if reviews is not None:
+                                await reviews.close()
                         finally:
                             try:
-                                await service.close()
+                                await controls.close()
                             finally:
-                                execution.close()
+                                try:
+                                    await conversations.close()
+                                finally:
+                                    try:
+                                        await service.close()
+                                    finally:
+                                        execution.close()
 
         owned = asyncio.create_task(cleanup())
         late = await await_owned(owned)

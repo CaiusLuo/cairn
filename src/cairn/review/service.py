@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
-from datetime import date
+from datetime import date, time
 from typing import Protocol
 
 from cairn.agent.models.client import LLMClient
@@ -79,7 +79,9 @@ Hard rules:
 
 
 class ReviewCollector(Protocol):
-    def collect_daily(self, day: date, timezone: str) -> ReviewInput: ...
+    def collect_daily(
+        self, day: date, timezone: str, *, cutoff: time | None = None
+    ) -> ReviewInput: ...
 
 
 class ReviewGenerationError(RuntimeError):
@@ -150,13 +152,25 @@ class DailyReviewService:
         *,
         timezone: str = "Asia/Shanghai",
         regenerate: bool = False,
+        cutoff: time | None = None,
+        deliver: bool = False,
     ) -> StoredReview:
-        """Create/reuse a review and schedule generation without awaiting it."""
+        """Create/reuse a review and schedule generation without awaiting it.
+
+        ``cutoff`` is host-schedule policy, not user input: it keeps the review
+        window contiguous across days. ``deliver`` writes a pending WeChat
+        delivery row atomically with completion; it never waits for login.
+        """
         if not self._started:
             await self.start()
-        review_input = await asyncio.to_thread(
-            self.collector.collect_daily, day, timezone
-        )
+        if cutoff is None:
+            review_input = await asyncio.to_thread(
+                self.collector.collect_daily, day, timezone
+            )
+        else:
+            review_input = await asyncio.to_thread(
+                self.collector.collect_daily, day, timezone, cutoff=cutoff
+            )
         result = await asyncio.to_thread(
             self.store.create_or_get,
             request_id=request_id,
@@ -177,12 +191,26 @@ class DailyReviewService:
             if not review_input.included_sources:
                 # Nothing to summarize: finish locally with a short, explicit
                 # no-source note. This avoids a pointless model call.
-                return await self._finish_without_sources(result.review, review_input)
-            self._ensure_generation(result.review.review_id, review_input)
+                return await self._finish_without_sources(
+                    result.review,
+                    review_input,
+                    request_delivery=deliver,
+                )
+            self._ensure_generation(
+                result.review.review_id,
+                review_input,
+                request_delivery=deliver,
+            )
+        elif deliver and result.review.status is ReviewStatus.COMPLETED:
+            await asyncio.to_thread(self.store.ensure_delivery, result.review.review_id)
         return result.review
 
     async def _finish_without_sources(
-        self, review: StoredReview, review_input: ReviewInput
+        self,
+        review: StoredReview,
+        review_input: ReviewInput,
+        *,
+        request_delivery: bool = False,
     ) -> StoredReview:
         await asyncio.to_thread(self.store.mark_generating, review.review_id, None)
         summary = self._insufficient_summary(review_input)
@@ -193,15 +221,28 @@ class DailyReviewService:
             summary=summary,
             summary_markdown=markdown,
             model_id=None,
+            request_delivery=request_delivery,
         )
 
-    def _ensure_generation(self, review_id: str, review_input: ReviewInput) -> None:
+    def _ensure_generation(
+        self,
+        review_id: str,
+        review_input: ReviewInput,
+        *,
+        request_delivery: bool = False,
+    ) -> None:
         if self._closed:
             return
         current = self._tasks.get(review_id)
         if current is not None and not current.done():
             return
-        task = asyncio.create_task(self._run(review_id, review_input))
+        task = asyncio.create_task(
+            self._run(
+                review_id,
+                review_input,
+                request_delivery=request_delivery,
+            )
+        )
         self._tasks[review_id] = task
 
         def finished(done: asyncio.Task[None]) -> None:
@@ -210,12 +251,20 @@ class DailyReviewService:
 
         task.add_done_callback(finished)
 
-    async def _run(self, review_id: str, review_input: ReviewInput) -> None:
+    async def _run(
+        self,
+        review_id: str,
+        review_input: ReviewInput,
+        *,
+        request_delivery: bool = False,
+    ) -> None:
         try:
             claimed = await asyncio.to_thread(
                 self.store.mark_generating, review_id, self.model_id
             )
             if claimed.status is not ReviewStatus.GENERATING:
+                if request_delivery and claimed.status is ReviewStatus.COMPLETED:
+                    await asyncio.to_thread(self.store.ensure_delivery, review_id)
                 return
             if self.llm is None:
                 raise ReviewGenerationError("provider_unavailable")
@@ -235,6 +284,7 @@ class DailyReviewService:
                 summary=summary,
                 summary_markdown=markdown,
                 model_id=self.model_id,
+                request_delivery=request_delivery,
             )
         except asyncio.CancelledError:
             await asyncio.to_thread(self.store.fail, review_id, "generation_cancelled")

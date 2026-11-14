@@ -94,7 +94,9 @@ class FakeCollector:
     def __init__(self, review_input: ReviewInput) -> None:
         self.review_input = review_input
 
-    def collect_daily(self, day: date, timezone: str) -> ReviewInput:
+    def collect_daily(
+        self, day: date, timezone: str, *, cutoff: Any = None
+    ) -> ReviewInput:
         return self.review_input
 
 
@@ -355,3 +357,78 @@ def test_completed_report_is_readable_from_a_new_app(tmp_path: Path) -> None:
         assert detail.json()["overview"] == "Persisted report."
         assert detail.json()["source_snapshots"][0]["source_id"] == "run-1"
         assert "run-1" in detail.json()["source_snapshots"][0]["snapshot"]
+
+
+def test_delivery_status_is_visible_and_manual_resend_is_authenticated(
+    tmp_path: Path,
+) -> None:
+    gate = threading.Event()
+    gate.set()
+    web, service, _store = _app(
+        tmp_path, llm=BlockingLLM(gate, [_payload("Delivered report.")])
+    )
+
+    async def create_scheduled() -> str:
+        review = await service.generate_daily_review(
+            DAY, "scheduled-delivery", deliver=True
+        )
+        await service.wait_for_review(review.review_id)
+        return review.review_id
+
+    review_id = asyncio.run(create_scheduled())
+    delivery = service.store.get_delivery(review_id)
+    assert delivery is not None
+    assert delivery.status.value == "pending"
+
+    with TestClient(web, base_url=ORIGIN) as client:
+        _login(client)
+        detail = client.get(f"/api/knowledge/reviews/{review_id}")
+        assert detail.status_code == 200
+        assert detail.json()["delivery"]["status"] == "pending"
+        assert detail.json()["delivery"]["attempts"] == 0
+
+        # A pending delivery is not a manual-retry state.
+        blocked = client.post(
+            f"/api/knowledge/reviews/{review_id}/delivery/resend",
+            json={},
+            headers={"Origin": ORIGIN},
+        )
+        assert blocked.status_code == 409
+
+        oversized = client.post(
+            f"/api/knowledge/reviews/{review_id}/delivery/resend",
+            content=b"x" * (16 * 1024 + 1),
+            headers={"Origin": ORIGIN},
+        )
+        assert oversized.status_code == 413
+
+        service.store.begin_delivery(
+            review_id,
+            account_id="bot-a",
+            sender_id="owner",
+            context_token="ctx-1",
+        )
+        service.store.mark_delivery_unconfirmed(review_id, "send_unconfirmed")
+        requeued = client.post(
+            f"/api/knowledge/reviews/{review_id}/delivery/resend",
+            json={"rebind": True},
+            headers={"Origin": ORIGIN},
+        )
+        assert requeued.status_code == 202
+        assert requeued.json()["delivery"]["status"] == "pending"
+
+        assert (
+            client.post(
+                "/api/knowledge/reviews/missing/delivery/resend",
+                json={},
+                headers={"Origin": ORIGIN},
+            ).status_code
+            == 404
+        )
+
+    with TestClient(web, base_url=ORIGIN) as anonymous:
+        assert anonymous.post(
+            f"/api/knowledge/reviews/{review_id}/delivery/resend",
+            json={},
+            headers={"Origin": ORIGIN},
+        ).status_code in {401, 403}

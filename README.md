@@ -78,6 +78,14 @@ with the same `request_id`, date, timezone and regeneration mode are idempotent 
 between; a reused id with different intent is rejected. A completed report is never overwritten, and explicit
 regeneration creates a new version.
 
+The Server also schedules the daily review itself at 20:30 `Asia/Shanghai`, covering the contiguous window
+from the previous day's cutoff, and catches up a missed cutoff after restart. Set `review_schedule = false`
+under `[services]` to disable it. A scheduled completed review gets a durable delivery record: it is pushed
+to WeChat as plain mobile-sized text once a logged-in account and recipient context are available, and stays
+pending otherwise. `POST /api/knowledge/reviews/{id}/delivery/resend` retries an `unconfirmed` or
+`manual_review` delivery after inspection; pass `{"rebind": true}` after switching accounts. Delivery never
+changes the review's completed state, and an attempt whose result is unknown is never resent automatically.
+
 Chat normally, or enter `/develop GOAL`. `/status`, `/history`, `/cancel`,
 `/new` and `/use CONVERSATION_ID` operate on the same server-owned Conversation;
 `/continue` and development task controls remain on the explicit development path.

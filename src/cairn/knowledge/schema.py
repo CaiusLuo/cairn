@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS clips (
@@ -66,6 +66,20 @@ CREATE TABLE IF NOT EXISTS review_requests (
     fingerprint TEXT NOT NULL,
     review_id TEXT NOT NULL REFERENCES reviews(review_id)
 );
+CREATE TABLE IF NOT EXISTS review_deliveries (
+    review_id TEXT PRIMARY KEY REFERENCES reviews(review_id) ON DELETE CASCADE,
+    delivery_key TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    account_digest TEXT NOT NULL DEFAULT '',
+    sender_digest TEXT NOT NULL DEFAULT '',
+    context_token TEXT NOT NULL DEFAULT '',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS review_deliveries_status_idx
+    ON review_deliveries(status, updated_at);
 """
 
 

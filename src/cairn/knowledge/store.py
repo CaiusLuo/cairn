@@ -58,9 +58,9 @@ class KnowledgeStore:
             raise ValueError("Knowledge store cannot be a symlink")
         with self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            # Versions 1 and 2 are older Clip/Review schemas; create_schema
-            # performs the additive upgrade to the current shared schema.
-            if version not in (0, 1, 2, SCHEMA_VERSION):
+            # Older Clip/Review schemas are upgraded additively by
+            # ``create_schema``; no export or rebuild is required.
+            if version not in (0, 1, 2, 3, SCHEMA_VERSION):
                 raise ValueError("Unsupported knowledge store schema")
             self._create_schema(connection)
             connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")

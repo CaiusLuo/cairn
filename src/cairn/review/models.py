@@ -36,6 +36,14 @@ class ReviewStatus(StrEnum):
     FAILED = "failed"
 
 
+class ReviewDeliveryStatus(StrEnum):
+    PENDING = "pending"
+    STARTED = "started"
+    SENT = "sent"
+    UNCONFIRMED = "unconfirmed"
+    MANUAL_REVIEW = "manual_review"
+
+
 class SourceTrust(StrEnum):
     """How much authority a source has for factual claims."""
 
@@ -357,6 +365,34 @@ class StoredReview(BaseModel):
     supersedes_review_id: str | None = None
 
 
+class StoredReviewDelivery(BaseModel):
+    """The host-owned delivery fact for one completed review.
+
+    ``account_digest`` and ``sender_digest`` are bound on the first attempt.
+    They are digests so the private identities never leave the host store.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    review_id: str = Field(min_length=1, max_length=100)
+    delivery_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: ReviewDeliveryStatus
+    account_digest: str = Field(default="", max_length=64)
+    sender_digest: str = Field(default="", max_length=64)
+    context_token: str = Field(default="", max_length=4096)
+    attempts: int = Field(default=0, ge=0)
+    last_error: str | None = Field(default=None, max_length=500)
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryAttemptResult:
+    delivery: StoredReviewDelivery
+    allowed: bool
+    reason: str = ""
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewCreateResult:
     review: StoredReview
@@ -375,7 +411,9 @@ __all__ = [
     "REVIEW_REQUEST_ID_MAX_LENGTH",
     "REVIEW_TIMEZONE_MAX_LENGTH",
     "DailyReview",
+    "DeliveryAttemptResult",
     "ReviewCreateResult",
+    "ReviewDeliveryStatus",
     "ReviewInput",
     "ReviewItem",
     "ReviewStatus",
@@ -386,6 +424,7 @@ __all__ = [
     "SourceSnapshot",
     "SourceTrust",
     "StoredReview",
+    "StoredReviewDelivery",
     "new_review_id",
     "review_input_fingerprint",
 ]

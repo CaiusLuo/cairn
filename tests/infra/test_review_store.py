@@ -14,6 +14,7 @@ from cairn.knowledge.store import KnowledgeStore
 from cairn.review.models import (
     DailyReview,
     ReviewCreateResult,
+    ReviewDeliveryStatus,
     ReviewItem,
     ReviewStatus,
     ReviewType,
@@ -166,8 +167,14 @@ def test_k1_database_upgrades_without_losing_clips(tmp_path: Path) -> None:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-    assert version == 3
-    assert {"clips", "clip_requests", "reviews", "review_requests"} <= tables
+    assert version == 4
+    assert {
+        "clips",
+        "clip_requests",
+        "reviews",
+        "review_requests",
+        "review_deliveries",
+    } <= tables
 
     reviews = ReviewStore(store)
     result = _create(reviews)
@@ -240,7 +247,7 @@ def test_v2_reviews_upgrade_without_losing_existing_reports(tmp_path: Path) -> N
         columns = {
             row[1] for row in check.execute("PRAGMA table_info(reviews)").fetchall()
         }
-    assert version == 3
+    assert version == 4
     assert "source_snapshots_json" in columns
     assert _create(reviews, request_id="after-upgrade").created is True
 
@@ -436,3 +443,118 @@ def test_list_filters_type_and_pages(tmp_path: Path) -> None:
         store.list_reviews(limit=0)
     with pytest.raises(ValueError):
         store.list_reviews(offset=-1)
+
+
+def _complete_with_delivery(store: ReviewStore, review_id: str) -> None:
+    store.mark_generating(review_id, "test-model")
+    store.complete(
+        review_id,
+        summary=_summary(),
+        summary_markdown="# report\n",
+        model_id="test-model",
+        request_delivery=True,
+    )
+
+
+def test_completed_review_creates_one_pending_delivery(tmp_path: Path) -> None:
+    store = ReviewStore(tmp_path / "knowledge")
+    created = _create(store, request_id="delivery-created").review
+    _complete_with_delivery(store, created.review_id)
+
+    delivery = store.get_delivery(created.review_id)
+    assert delivery is not None
+    assert delivery.status is ReviewDeliveryStatus.PENDING
+    assert delivery.attempts == 0
+    assert len(delivery.delivery_key) == 64
+
+    again = store.ensure_delivery(created.review_id)
+    assert again.delivery_key == delivery.delivery_key
+    assert again.created_at == delivery.created_at
+
+
+def test_delivery_identity_is_bound_before_send_and_switch_is_refused(
+    tmp_path: Path,
+) -> None:
+    store = ReviewStore(tmp_path / "knowledge")
+    created = _create(store, request_id="delivery-identity").review
+    _complete_with_delivery(store, created.review_id)
+
+    first = store.begin_delivery(
+        created.review_id,
+        account_id="bot-a",
+        sender_id="owner",
+        context_token="ctx-1",
+    )
+    assert first.allowed is True
+    assert first.delivery.status is ReviewDeliveryStatus.STARTED
+    assert first.delivery.attempts == 1
+
+    # A second worker cannot claim the same started attempt.
+    second = store.begin_delivery(
+        created.review_id, account_id="bot-a", sender_id="owner"
+    )
+    assert second.allowed is False
+    assert second.reason == "started"
+
+    store.mark_delivery_unconfirmed(created.review_id, "send_unconfirmed")
+    store.requeue_delivery(created.review_id)
+    switched = store.begin_delivery(
+        created.review_id, account_id="bot-b", sender_id="owner"
+    )
+    assert switched.allowed is False
+    assert switched.reason == "identity_changed"
+    assert switched.delivery.status is ReviewDeliveryStatus.MANUAL_REVIEW
+    assert switched.delivery.last_error == "delivery identity changed"
+
+
+def test_requeue_with_rebind_is_the_only_way_to_change_delivery_identity(
+    tmp_path: Path,
+) -> None:
+    store = ReviewStore(tmp_path / "knowledge")
+    created = _create(store, request_id="delivery-rebind").review
+    _complete_with_delivery(store, created.review_id)
+    store.begin_delivery(created.review_id, account_id="bot-a", sender_id="owner")
+    store.mark_delivery_unconfirmed(created.review_id)
+    store.requeue_delivery(created.review_id, rebind=True)
+
+    rebound = store.begin_delivery(
+        created.review_id, account_id="bot-b", sender_id="new-owner"
+    )
+    assert rebound.allowed is True
+    assert rebound.delivery.attempts == 2
+    assert rebound.delivery.status is ReviewDeliveryStatus.STARTED
+
+
+def test_started_delivery_recovers_as_unconfirmed_without_resend(
+    tmp_path: Path,
+) -> None:
+    store = ReviewStore(tmp_path / "knowledge")
+    created = _create(store, request_id="delivery-recovery").review
+    _complete_with_delivery(store, created.review_id)
+    store.begin_delivery(created.review_id, account_id="bot-a", sender_id="owner")
+
+    assert store.recover_started_deliveries() == 1
+    recovered = store.get_delivery(created.review_id)
+    assert recovered is not None
+    assert recovered.status is ReviewDeliveryStatus.UNCONFIRMED
+    assert recovered.last_error == "delivery result unknown after restart"
+    assert (
+        store.begin_delivery(
+            created.review_id, account_id="bot-a", sender_id="owner"
+        ).allowed
+        is False
+    )
+
+
+def test_sent_delivery_cannot_be_requeued_or_unconfirmed(tmp_path: Path) -> None:
+    store = ReviewStore(tmp_path / "knowledge")
+    created = _create(store, request_id="delivery-terminal").review
+    _complete_with_delivery(store, created.review_id)
+    store.begin_delivery(created.review_id, account_id="bot-a", sender_id="owner")
+    sent = store.mark_delivery_sent(created.review_id)
+    assert sent.status is ReviewDeliveryStatus.SENT
+
+    with pytest.raises(ValueError):
+        store.mark_delivery_unconfirmed(created.review_id)
+    with pytest.raises(ValueError):
+        store.requeue_delivery(created.review_id)

@@ -13,6 +13,7 @@ class FakeILink:
         self.confirm: dict[str, Any] = {}
         self.updates: list[dict[str, Any]] = []
         self.sent: list[dict[str, Any]] = []
+        self.send_ret = 0
         self.requests: list[dict[str, Any]] = []
         self.verify_codes: list[str] = []
         self.config_calls: list[dict[str, Any]] = []
@@ -72,7 +73,7 @@ class FakeILink:
             msg = payload.get("msg")
             if isinstance(msg, dict):
                 self.sent.append(msg)
-            return {"ret": 0}
+            return {"ret": self.send_ret}
         if route in ("/ilink/bot/msg/notifystart", "/ilink/bot/msg/notifystop"):
             return {"ret": 0}
         return {"error": "not found"}

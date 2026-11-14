@@ -105,9 +105,13 @@ class FakeCollector:
     def __init__(self, review_input: ReviewInput) -> None:
         self.review_input = review_input
         self.calls = 0
+        self.cutoffs: list[Any] = []
 
-    def collect_daily(self, day: date, timezone: str) -> ReviewInput:
+    def collect_daily(
+        self, day: date, timezone: str, *, cutoff: Any = None
+    ) -> ReviewInput:
         self.calls += 1
+        self.cutoffs.append(cutoff)
         return self.review_input
 
 
@@ -802,5 +806,80 @@ def test_completed_report_is_readable_after_restart_and_stale_rows_fail(
             assert interrupted.error == "interrupted_by_restart"
         finally:
             await restarted.close()
+
+    asyncio.run(scenario())
+
+
+def test_scheduled_review_creates_delivery_outbox_on_completion(
+    tmp_path: Path,
+) -> None:
+    from cairn.review.models import ReviewDeliveryStatus
+
+    llm = FakeLLM()
+    service = _service(tmp_path, llm=llm)
+
+    async def scenario() -> None:
+        review = await service.generate_daily_review(DAY, "host-review", deliver=True)
+        settled = await service.wait_for_review(review.review_id)
+        assert settled.status is ReviewStatus.COMPLETED
+        delivery = service.store.get_delivery(review.review_id)
+        assert delivery is not None
+        assert delivery.status is ReviewDeliveryStatus.PENDING
+        await service.close()
+
+    asyncio.run(scenario())
+
+
+def test_manual_review_and_no_source_review_delivery_policy(tmp_path: Path) -> None:
+    from cairn.review.models import ReviewDeliveryStatus
+
+    llm = FakeLLM()
+    service = _service(tmp_path, llm=llm)
+
+    async def scenario() -> None:
+        manual = await service.generate_daily_review(DAY, "manual-review")
+        await service.wait_for_review(manual.review_id)
+        assert service.store.get_delivery(manual.review_id) is None
+
+        await service.close()
+
+    asyncio.run(scenario())
+
+    no_source_service = _service(
+        tmp_path / "no-source", llm=FakeLLM(), review_input=_input(sources=())
+    )
+
+    async def no_source() -> None:
+        review = await no_source_service.generate_daily_review(
+            DAY, "host-no-source", deliver=True
+        )
+        assert review.status is ReviewStatus.COMPLETED
+        delivery = no_source_service.store.get_delivery(review.review_id)
+        assert delivery is not None
+        assert delivery.status is ReviewDeliveryStatus.PENDING
+        await no_source_service.close()
+
+    asyncio.run(no_source())
+
+
+def test_cutoff_is_forwarded_to_the_collector(tmp_path: Path) -> None:
+    from datetime import time
+
+    llm = FakeLLM()
+    collector = FakeCollector(_input())
+    service = DailyReviewService(
+        store=ReviewStore(tmp_path / "knowledge"),
+        collector=collector,
+        llm=llm,
+        model_id=MODEL_ID,
+    )
+
+    async def scenario() -> None:
+        review = await service.generate_daily_review(
+            DAY, "cutoff-review", cutoff=time(20, 30)
+        )
+        await service.wait_for_review(review.review_id)
+        assert collector.cutoffs == [time(20, 30)]
+        await service.close()
 
     asyncio.run(scenario())

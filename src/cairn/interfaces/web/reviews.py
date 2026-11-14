@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from datetime import date
@@ -13,11 +14,13 @@ from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
 from cairn.interfaces.web.auth import operator_request
+from cairn.review.delivery import delivery_payload
 from cairn.review.models import (
     REVIEW_REQUEST_ID_MAX_LENGTH,
     REVIEW_TIMEZONE_MAX_LENGTH,
     ReviewType,
     StoredReview,
+    StoredReviewDelivery,
 )
 from cairn.review.service import DailyReviewService
 from cairn.review.store import (
@@ -41,13 +44,17 @@ def _error(status: int, code: str) -> JSONResponse:
     return JSONResponse({"error": code}, status_code=status, headers=_json_headers())
 
 
-async def _body(request: Request) -> object:
+async def _read_limited(request: Request) -> bytes:
     body = bytearray()
     async for chunk in request.stream():
         if len(body) + len(chunk) > MAX_BODY_BYTES:
             raise ValueError("review request is too large")
         body.extend(chunk)
-    return json.loads(body)
+    return bytes(body)
+
+
+async def _body(request: Request) -> object:
+    return json.loads(await _read_limited(request))
 
 
 class DailyReviewRequest(BaseModel):
@@ -107,9 +114,13 @@ def _summary_payload(record: StoredReview) -> dict[str, object]:
     return payload
 
 
-def _detail_payload(record: StoredReview) -> dict[str, object]:
+def _detail_payload(
+    record: StoredReview,
+    delivery: StoredReviewDelivery | None = None,
+) -> dict[str, object]:
     return {
         **_summary_payload(record),
+        "delivery": delivery_payload(delivery),
         "source_manifest": [
             entry.model_dump(mode="json") for entry in record.source_manifest
         ],
@@ -194,11 +205,48 @@ def review_routes(
         review_id = request.path_params.get("review_id", "")
         try:
             record = await service.get_review(review_id)
+            delivery = await asyncio.to_thread(service.store.get_delivery, review_id)
         except (OSError, sqlite3.Error):
             return _error(503, "review_store_unavailable")
         if record is None:
             return _error(404, "review_not_found")
-        return JSONResponse(_detail_payload(record), headers=_json_headers())
+        return JSONResponse(_detail_payload(record, delivery), headers=_json_headers())
+
+    async def resend(request: Request) -> JSONResponse:
+        if not operator_request(request, runtime_token):
+            return _error(403, "invalid_origin")
+        review_id = request.path_params.get("review_id", "")
+        rebind = False
+        try:
+            raw = await _read_limited(request)
+        except ValueError:
+            return _error(413, "review_request_too_large")
+        if raw:
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                return _error(400, "invalid_json")
+            if not isinstance(payload, dict) or set(payload) - {"rebind"}:
+                return _error(422, "invalid_review_request")
+            rebind = payload.get("rebind", False) is True
+        try:
+            delivery = await asyncio.to_thread(
+                service.store.requeue_delivery, review_id, rebind=rebind
+            )
+        except KeyError:
+            return _error(404, "review_delivery_not_found")
+        except ValueError:
+            return _error(409, "review_delivery_not_retryable")
+        except (OSError, sqlite3.Error):
+            return _error(503, "review_store_unavailable")
+        coordinator = getattr(request.app.state, "review_delivery", None)
+        if coordinator is not None:
+            coordinator.rescan()
+        return JSONResponse(
+            {"delivery": delivery_payload(delivery)},
+            status_code=202,
+            headers=_json_headers(),
+        )
 
     return [
         Route(
@@ -211,6 +259,11 @@ def review_routes(
             "/api/knowledge/reviews/{review_id}",
             detail,
             methods=["GET"],
+        ),
+        Route(
+            "/api/knowledge/reviews/{review_id}/delivery/resend",
+            resend,
+            methods=["POST"],
         ),
     ]
 

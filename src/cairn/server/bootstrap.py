@@ -36,6 +36,8 @@ from cairn.interfaces.web.management import management_routes
 from cairn.interfaces.web.reviews import review_routes
 from cairn.knowledge.store import KnowledgeStore
 from cairn.review.collector import ReviewSourceCollector
+from cairn.review.delivery import ReviewDeliveryCoordinator
+from cairn.review.schedule import ReviewScheduleCoordinator
 from cairn.review.service import DailyReviewService
 from cairn.review.store import ReviewStore
 from cairn.server.client import read_runtime_token as read_token
@@ -189,10 +191,33 @@ def runtime_app(
     )
     web.state.delivery = delivery
     controls.delivery = delivery
+    review_delivery = ReviewDeliveryCoordinator(
+        store=reviews.store,
+        wechat=controls.wechat,
+    )
+    web.state.review_delivery = review_delivery
+    controls.review_delivery = review_delivery
+    review_schedule = (
+        ReviewScheduleCoordinator(
+            service=reviews,
+            store=controls.schedules.store,
+            on_settled=lambda _review: review_delivery.rescan(),
+        )
+        if provider_runtime is not None and services.review_schedule
+        else None
+    )
+    web.state.review_schedule = review_schedule
 
     def lifespan(_app: Any) -> AbstractAsyncContextManager[None]:
         return running_runtime(
-            execution, service, conversations, controls, delivery, reviews
+            execution,
+            service,
+            conversations,
+            controls,
+            delivery,
+            reviews,
+            review_delivery,
+            review_schedule,
         )
 
     web.router.lifespan_context = lifespan
