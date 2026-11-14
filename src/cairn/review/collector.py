@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cairn.conversation.models import Run, RunStatus, workspace_id_for
 from cairn.conversation.store import DomainStore
-from cairn.development.models import Task
+from cairn.development.models import Task, TaskStatus
 from cairn.knowledge.models import Clip
 from cairn.knowledge.store import KnowledgeStore
 from cairn.memory.store import PersonalMemoryStore
@@ -136,8 +136,9 @@ class ReviewSourceCollector:
                 "knowledge_favorites",
                 SourceCollectionState.UNAVAILABLE,
                 notes=(
-                    "K1 Clip has no favorite flag; every Clip touched in the "
-                    "window was collected by updated_at.",
+                    "K1 Clip has no favorite flag; every non-archived Clip "
+                    "touched in the window was collected by updated_at.",
+                    "Archived clips are excluded by default.",
                 ),
             )
         )
@@ -224,6 +225,7 @@ class ReviewSourceCollector:
             "knowledge_clip",
             SourceCollectionState.OK if snapshots else SourceCollectionState.EMPTY,
             discovered=len(snapshots),
+            notes=("Archived clips are excluded by default.",),
         )
 
     def _collect_tasks(
@@ -436,11 +438,19 @@ class ReviewSourceCollector:
         execution_status_text = (
             execution_status if isinstance(execution_status, str) else ""
         )
+        accepted = task.status is TaskStatus.DONE
+        execution_text = execution_status_text or "missing"
+        verification = (
+            f"business_status={task.status.value}; execution_status={execution_text}"
+        )
+        if execution_status_text == "completed" and not accepted:
+            verification += "; execution_only"
         payload = {
             "task_id": task.task_id,
             "title": task.title,
             "goal": task.goal,
             "business_status": task.status.value,
+            "accepted_by_operator": accepted,
             "execution_status": execution_status_text or None,
             "execution_diagnostic": metadata.get("execution_diagnostic"),
             "execution_result": metadata.get("execution_result"),
@@ -462,12 +472,10 @@ class ReviewSourceCollector:
             content_hash=raw_hash,
             occurred_at=task.updated_at,
             trust=SourceTrust.SYSTEM_RECEIPT,
-            may_prove_completion=execution_status_text == "completed",
-            verification=(
-                "execution_status=completed"
-                if execution_status_text == "completed"
-                else f"execution_status={execution_status_text or 'missing'}"
-            ),
+            # A completed Run only proves execution. Operator acceptance is
+            # represented by the Task's durable business status DONE.
+            may_prove_completion=accepted,
+            verification=verification,
             snapshot=snapshot,
             truncated=truncated,
         )
@@ -498,8 +506,13 @@ class ReviewSourceCollector:
             content_hash=raw_hash,
             occurred_at=run.ended_at or run.updated_at,
             trust=SourceTrust.SYSTEM_RECEIPT,
-            may_prove_completion=run.status is RunStatus.COMPLETED,
-            verification=f"run_status={run.status.value}",
+            # Run completion is execution evidence only; it is not operator
+            # acceptance that the intended goal was delivered.
+            may_prove_completion=False,
+            verification=(
+                f"run_status={run.status.value}"
+                + ("; execution_only" if run.status is RunStatus.COMPLETED else "")
+            ),
             snapshot=snapshot,
             truncated=truncated,
         )
@@ -516,10 +529,10 @@ class ReviewSourceCollector:
         used = 0
         result: list[SourceSnapshot] = []
         for source in ordered:
-            cost = len(source.snapshot) + 160
+            cost = source.prompt_chars()
             if used + cost <= self.max_chars:
                 result.append(source)
-                used += len(source.snapshot)
+                used += cost
             else:
                 result.append(
                     source.model_copy(

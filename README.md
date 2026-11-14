@@ -71,9 +71,12 @@ are stored outside the Agent workspace and are never injected into ordinary Agen
 
 Daily reviews are generated from the day's clips, Task/Run receipts and personal journal through
 `POST /api/knowledge/reviews/daily`; `GET /api/knowledge/reviews` and
-`GET /api/knowledge/reviews/{id}` return the persisted report and its source manifest. Generation uses one
-restricted provider call with no tools and sends only a bounded, redacted source snapshot. Repeated requests are
-idempotent, and a completed report is never overwritten; explicit regeneration creates a new version.
+`GET /api/knowledge/reviews/{id}` return the persisted report, its source manifest and the bounded redacted
+source snapshots used at generation time. Archived clips are excluded. Generation uses one
+restricted provider call with no tools and sends only a bounded, redacted source snapshot. Repeated requests
+with the same `request_id`, date, timezone and regeneration mode are idempotent even if sources changed in
+between; a reused id with different intent is rejected. A completed report is never overwritten, and explicit
+regeneration creates a new version.
 
 Chat normally, or enter `/develop GOAL`. `/status`, `/history`, `/cancel`,
 `/new` and `/use CONVERSATION_ID` operate on the same server-owned Conversation;

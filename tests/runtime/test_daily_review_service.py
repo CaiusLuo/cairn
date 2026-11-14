@@ -26,7 +26,7 @@ from cairn.review.models import (
     SourceTrust,
 )
 from cairn.review.service import NO_SOURCE_MESSAGES, DailyReviewService
-from cairn.review.store import ReviewPeriodCompleted, ReviewRequestConflict, ReviewStore
+from cairn.review.store import ReviewPeriodCompleted, ReviewStore
 
 DAY = date(2026, 1, 15)
 TZ = "Asia/Shanghai"
@@ -201,6 +201,9 @@ def test_valid_report_is_persisted_with_citations_and_no_tools(tmp_path: Path) -
             assert tools is None
             assert messages[0].role == "system"
             assert "You have no tools" in (messages[0].content or "")
+            assert "may_prove_completion=true represents operator acceptance" in (
+                messages[0].content or ""
+            )
             user = messages[1].content or ""
             assert "run-1" in user
             assert "may_prove_completion" in user
@@ -269,6 +272,107 @@ def test_real_clip_flows_from_collector_to_cited_report(tmp_path: Path) -> None:
             user = llm.calls[0][0][1].content or ""
             assert clip.clip_id in user
             assert "SQLite WAL reset notes" in user
+        finally:
+            await service.close()
+
+    asyncio.run(scenario())
+
+
+def test_report_source_snapshots_survive_clip_edits_and_archiving(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        knowledge = KnowledgeStore(tmp_path / "knowledge")
+        clip, _ = knowledge.create(
+            "original wording",
+            source="web",
+            tags=["test"],
+            request_id="snapshot-clip",
+        )
+        with sqlite3.connect(knowledge.path) as connection:
+            connection.execute(
+                "UPDATE clips SET created_at = ?, updated_at = ? WHERE clip_id = ?",
+                (
+                    "2026-01-15T02:00:00+00:00",
+                    "2026-01-15T02:00:00+00:00",
+                    clip.clip_id,
+                ),
+            )
+
+        def clip_payload(overview: str) -> str:
+            return _payload(
+                overview=overview,
+                completed_activities=[],
+                knowledge_insights=[
+                    {"text": "Captured a note.", "source_refs": [clip.clip_id]}
+                ],
+                source_refs=[clip.clip_id],
+            )
+
+        llm = FakeLLM(
+            [
+                LLMResponse(content=clip_payload("Original report.")),
+                LLMResponse(content=clip_payload("Edited report.")),
+            ]
+        )
+        service = DailyReviewService(
+            store=ReviewStore(knowledge),
+            collector=ReviewSourceCollector(
+                knowledge=knowledge,
+                workspace=workspace,
+            ),
+            llm=llm,
+            model_id=MODEL_ID,
+        )
+        try:
+            first = await service.generate_daily_review(
+                DAY, "snapshot-request", timezone=TZ
+            )
+            completed = await service.wait_for_review(first.review_id)
+            assert completed.source_snapshots[0].source_id == clip.clip_id
+            assert "original wording" in completed.source_snapshots[0].snapshot
+            original_snapshot = completed.source_snapshots[0].snapshot
+
+            knowledge.update(clip.clip_id, content="edited wording")
+            with sqlite3.connect(knowledge.path) as connection:
+                connection.execute(
+                    "UPDATE clips SET updated_at = ? WHERE clip_id = ?",
+                    ("2026-01-15T02:00:00+00:00", clip.clip_id),
+                )
+            replay = await service.generate_daily_review(
+                DAY, "snapshot-request", timezone=TZ
+            )
+            assert replay.review_id == completed.review_id
+            replayed = await service.get_review(completed.review_id)
+            assert replayed is not None
+            assert replayed.source_snapshots[0].snapshot == original_snapshot
+            assert "edited wording" not in replayed.source_snapshots[0].snapshot
+
+            regenerated = await service.generate_daily_review(
+                DAY, "snapshot-regenerate", timezone=TZ, regenerate=True
+            )
+            newer = await service.wait_for_review(regenerated.review_id)
+            assert newer.status is ReviewStatus.COMPLETED
+            assert "edited wording" in newer.source_snapshots[0].snapshot
+            old = await service.get_review(completed.review_id)
+            assert old is not None
+            assert old.source_snapshots[0].snapshot == original_snapshot
+
+            knowledge.set_archived(clip.clip_id, archived=True)
+            archived = await service.generate_daily_review(
+                DAY, "snapshot-archived", timezone=TZ, regenerate=True
+            )
+            archived = await service.wait_for_review(archived.review_id)
+            assert archived.status is ReviewStatus.COMPLETED
+            assert archived.summary is not None
+            assert archived.summary.overview in NO_SOURCE_MESSAGES
+            assert archived.source_snapshots == ()
+            unchanged = await service.get_review(completed.review_id)
+            assert unchanged is not None
+            assert unchanged.source_snapshots[0].snapshot == original_snapshot
+            assert len(llm.calls) == 2
         finally:
             await service.close()
 
@@ -376,8 +480,78 @@ def test_request_id_is_idempotent_and_regeneration_creates_a_version(
             )
             with pytest.raises(ReviewPeriodCompleted):
                 await service.generate_daily_review(DAY, "request-4", timezone=TZ)
-            with pytest.raises(ReviewRequestConflict):
-                await service.generate_daily_review(DAY, "request-1", timezone=TZ)
+            retried = await service.generate_daily_review(DAY, "request-1", timezone=TZ)
+            assert retried.review_id == first_done.review_id
+            assert retried.status is ReviewStatus.COMPLETED
+            assert len(llm.calls) == 2
+        finally:
+            await service.close()
+
+    asyncio.run(scenario())
+
+
+def test_lost_response_retry_returns_the_accepted_review_after_clip_changes(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        knowledge = KnowledgeStore(tmp_path / "knowledge")
+        clip, _ = knowledge.create(
+            "first clip text",
+            source="web",
+            tags=["test"],
+            request_id="first-clip",
+        )
+        with sqlite3.connect(knowledge.path) as connection:
+            connection.execute(
+                "UPDATE clips SET created_at = ?, updated_at = ? WHERE clip_id = ?",
+                (
+                    "2026-01-15T02:00:00+00:00",
+                    "2026-01-15T02:00:00+00:00",
+                    clip.clip_id,
+                ),
+            )
+        payload = _payload(
+            overview="The first clip was captured.",
+            completed_activities=[],
+            knowledge_insights=[
+                {"text": "Captured a note.", "source_refs": [clip.clip_id]}
+            ],
+            source_refs=[clip.clip_id],
+        )
+        llm = FakeLLM([LLMResponse(content=payload)])
+        service = DailyReviewService(
+            store=ReviewStore(knowledge),
+            collector=ReviewSourceCollector(
+                knowledge=knowledge,
+                workspace=workspace,
+            ),
+            llm=llm,
+            model_id=MODEL_ID,
+        )
+        try:
+            first = await service.generate_daily_review(
+                DAY, "lost-response", timezone=TZ
+            )
+            completed = await service.wait_for_review(first.review_id)
+            assert completed.status is ReviewStatus.COMPLETED
+
+            # Simulate a client that never saw the 202 response and retries
+            # after the day's sources changed.
+            knowledge.create(
+                "second clip text",
+                source="web",
+                tags=["test"],
+                request_id="second-clip",
+            )
+            retried = await service.generate_daily_review(
+                DAY, "lost-response", timezone=TZ
+            )
+            assert retried.review_id == completed.review_id
+            assert retried.status is ReviewStatus.COMPLETED
+            assert retried.summary == completed.summary
+            assert len(llm.calls) == 1
         finally:
             await service.close()
 

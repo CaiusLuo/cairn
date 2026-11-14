@@ -40,16 +40,18 @@ def _hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _review_input() -> ReviewInput:
+def _review_input(
+    snapshot_text: str = '{"run_id":"run-1","status":"completed"}',
+) -> ReviewInput:
     snapshot = SourceSnapshot(
         source_type="development_run",
         source_id="run-1",
-        content_hash=_hash("run"),
+        content_hash=_hash(snapshot_text),
         occurred_at="2026-01-15T10:00:00+08:00",
         trust=SourceTrust.SYSTEM_RECEIPT,
         may_prove_completion=True,
         verification="run_status=completed",
-        snapshot='{"run_id":"run-1","status":"completed"}',
+        snapshot=snapshot_text,
     )
     start = datetime(DAY.year, DAY.month, DAY.day, tzinfo=ZoneInfo(TZ))
     return ReviewInput.build(
@@ -242,6 +244,8 @@ def test_create_poll_list_detail_replay_and_regenerate(tmp_path: Path) -> None:
         assert detail["overview"] == "First report."
         assert detail["summary"]["completed_activities"][0]["source_refs"] == ["run-1"]
         assert detail["source_manifest"][0]["source_id"] == "run-1"
+        assert detail["source_snapshots"][0]["source_id"] == "run-1"
+        assert "run-1" in detail["source_snapshots"][0]["snapshot"]
         assert detail["collection_status"][0]["source_type"] == "development_run"
         assert "First report." in detail["summary_markdown"]
 
@@ -258,6 +262,32 @@ def test_create_poll_list_detail_replay_and_regenerate(tmp_path: Path) -> None:
         assert replay.json()["review_id"] == review_id
         assert replay.json()["status"] == "completed"
         assert llm.calls == 1
+
+        # A lost response is retried after the day's sources changed; the
+        # request identity still maps to the first accepted review.
+        collector = _service.collector
+        assert isinstance(collector, FakeCollector)
+        collector.review_input = _review_input(
+            '{"run_id":"run-1","status":"changed-after-acceptance"}'
+        )
+        retried = client.post(
+            "/api/knowledge/reviews/daily",
+            json=payload,
+            headers={"Origin": ORIGIN},
+        )
+        assert retried.status_code == 202
+        assert retried.json()["review_id"] == review_id
+        assert retried.json()["status"] == "completed"
+        assert llm.calls == 1
+
+        # The same request_id with a different intent is still a conflict.
+        timezone_conflict = client.post(
+            "/api/knowledge/reviews/daily",
+            json={**payload, "timezone": "UTC"},
+            headers={"Origin": ORIGIN},
+        )
+        assert timezone_conflict.status_code == 409
+        assert timezone_conflict.json()["error"] == "request_id_conflict"
 
         conflict = client.post(
             "/api/knowledge/reviews/daily",
@@ -323,3 +353,5 @@ def test_completed_report_is_readable_from_a_new_app(tmp_path: Path) -> None:
         assert detail.status_code == 200
         assert detail.json()["status"] == "completed"
         assert detail.json()["overview"] == "Persisted report."
+        assert detail.json()["source_snapshots"][0]["source_id"] == "run-1"
+        assert "run-1" in detail.json()["source_snapshots"][0]["snapshot"]

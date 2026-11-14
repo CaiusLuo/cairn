@@ -20,6 +20,7 @@ from cairn.review.models import (
     SourceCollectionState,
     SourceCollectionStatus,
     SourceManifestEntry,
+    SourceSnapshot,
     SourceTrust,
 )
 from cairn.review.store import (
@@ -29,6 +30,7 @@ from cairn.review.store import (
 )
 
 DAY = date(2026, 1, 15)
+TZ = "Asia/Shanghai"
 START = "2026-01-14T16:00:00+00:00"
 END = "2026-01-15T16:00:00+00:00"
 FINGERPRINT = "a" * 64
@@ -71,6 +73,8 @@ def _create(
     day: date = DAY,
     start: str = START,
     end: str = END,
+    timezone: str = TZ,
+    source_snapshots: tuple[SourceSnapshot, ...] = (),
 ) -> ReviewCreateResult:
     return store.create_or_get(
         request_id=request_id,
@@ -78,10 +82,11 @@ def _create(
         day=day,
         period_start=start,
         period_end=end,
-        timezone="Asia/Shanghai",
+        timezone=timezone,
         input_fingerprint=fingerprint,
         source_manifest=_manifest(),
         collection_status=_status(),
+        source_snapshots=source_snapshots,
         regenerate=regenerate,
     )
 
@@ -161,7 +166,7 @@ def test_k1_database_upgrades_without_losing_clips(tmp_path: Path) -> None:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-    assert version == 2
+    assert version == 3
     assert {"clips", "clip_requests", "reviews", "review_requests"} <= tables
 
     reviews = ReviewStore(store)
@@ -169,7 +174,78 @@ def test_k1_database_upgrades_without_losing_clips(tmp_path: Path) -> None:
     assert result.review.status is ReviewStatus.PENDING
 
 
-def test_request_replay_conflict_and_one_active_review_per_period(
+def test_v2_reviews_upgrade_without_losing_existing_reports(tmp_path: Path) -> None:
+    root = tmp_path / "knowledge"
+    root.mkdir()
+    path = root / "knowledge.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE reviews (
+            review_id TEXT PRIMARY KEY,
+            review_type TEXT NOT NULL,
+            review_date TEXT NOT NULL,
+            period_start TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            timezone TEXT NOT NULL,
+            status TEXT NOT NULL,
+            source_manifest_json TEXT NOT NULL,
+            collection_status_json TEXT NOT NULL,
+            input_fingerprint TEXT NOT NULL,
+            summary_json TEXT,
+            summary_markdown TEXT,
+            model_id TEXT,
+            generation_attempts INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            error TEXT,
+            version INTEGER NOT NULL DEFAULT 1,
+            supersedes_review_id TEXT REFERENCES reviews(review_id)
+        );
+        """
+    )
+    connection.execute(
+        "INSERT INTO reviews VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, "
+        "NULL, 0, ?, ?, NULL, ?, 1, NULL)",
+        (
+            "review-v2",
+            "daily",
+            DAY.isoformat(),
+            START,
+            END,
+            TZ,
+            "failed",
+            "[]",
+            "[]",
+            FINGERPRINT,
+            "2026-01-15T00:00:00+00:00",
+            "2026-01-15T00:01:00+00:00",
+            "interrupted_by_restart",
+        ),
+    )
+    connection.execute("PRAGMA user_version=2")
+    connection.commit()
+    connection.close()
+
+    store = KnowledgeStore(root)
+    reviews = ReviewStore(store)
+    preserved = reviews.get("review-v2")
+    assert preserved is not None
+    assert preserved.status is ReviewStatus.FAILED
+    assert preserved.source_snapshots == ()
+
+    with sqlite3.connect(path) as check:
+        version = check.execute("PRAGMA user_version").fetchone()[0]
+        columns = {
+            row[1] for row in check.execute("PRAGMA table_info(reviews)").fetchall()
+        }
+    assert version == 3
+    assert "source_snapshots_json" in columns
+    assert _create(reviews, request_id="after-upgrade").created is True
+
+
+def test_request_replay_survives_source_changes_but_not_intent_changes(
     tmp_path: Path,
 ) -> None:
     store = ReviewStore(tmp_path / "knowledge")
@@ -182,14 +258,55 @@ def test_request_replay_conflict_and_one_active_review_per_period(
     assert replay.reason == "request_replay"
     assert replay.review.review_id == first.review.review_id
 
+    # A retry can observe newly added or edited Clips; that must still map to
+    # the review accepted by the first request instead of conflicting.
+    changed_sources = _create(store, request_id="same-request", fingerprint="c" * 64)
+    assert changed_sources.created is False
+    assert changed_sources.reason == "request_replay"
+    assert changed_sources.review.review_id == first.review.review_id
+
+    # The same request_id with a different intent is still a conflict.
     with pytest.raises(ReviewRequestConflict):
-        _create(store, request_id="same-request", fingerprint="c" * 64)
+        _create(
+            store,
+            request_id="same-request",
+            fingerprint="c" * 64,
+            timezone="UTC",
+        )
+    with pytest.raises(ReviewRequestConflict):
+        _create(
+            store,
+            request_id="same-request",
+            fingerprint="c" * 64,
+            regenerate=True,
+        )
 
     other = _create(store, request_id="other-request", fingerprint="d" * 64)
     assert other.created is False
     assert other.reason == "active_reused"
     assert other.review.review_id == first.review.review_id
     assert len(store.list_reviews()) == 1
+
+
+def test_source_snapshots_are_persisted_with_the_report(tmp_path: Path) -> None:
+    store = ReviewStore(tmp_path / "knowledge")
+    snapshot = SourceSnapshot(
+        source_type="knowledge_clip",
+        source_id="clip-1",
+        content_hash="b" * 64,
+        occurred_at="2026-01-15T02:00:00+00:00",
+        trust=SourceTrust.USER_PROVIDED,
+        snapshot="the exact redacted text used for generation",
+    )
+    created = _create(
+        store,
+        request_id="snapshot-request",
+        source_snapshots=(snapshot,),
+    )
+    reloaded = ReviewStore(store.knowledge).get(created.review.review_id)
+    assert reloaded is not None
+    assert reloaded.source_snapshots == (snapshot,)
+    assert reloaded.source_snapshots[0].manifest_entry().source_id == "clip-1"
 
 
 def test_concurrent_distinct_requests_reuse_one_active_review(tmp_path: Path) -> None:

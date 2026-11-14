@@ -17,6 +17,7 @@ from cairn.review.models import (
     ReviewStatus,
     ReviewType,
     SourceCollectionState,
+    SourceSnapshot,
     StoredReview,
 )
 from cairn.review.store import ReviewStore
@@ -55,8 +56,13 @@ Return exactly one JSON object and no other text. It must have these keys:
 Hard rules:
 - Use only facts present in the supplied sources. Never infer a completed
   activity from a clip, a plan, a recommendation, or agent_inferred memory.
+- A completed Run or an execution_status of completed proves only that a run
+  executed. It does not prove that the goal was accepted or delivered. Only a
+  source with may_prove_completion=true represents operator acceptance.
 - A completed_activities item is allowed only when at least one cited source has
   may_prove_completion=true. Otherwise return an empty completed_activities.
+  Describe executed but unaccepted work as executed or attempted in
+  knowledge_insights or problems, not as a completed activity.
 - Every completed_activities, knowledge_insights and problems item must cite at
   least one source_id supplied in the user message. Recommendations may cite
   sources but do not have to.
@@ -155,15 +161,16 @@ class DailyReviewService:
             self.store.create_or_get,
             request_id=request_id,
             review_type=review_input.review_type,
-            day=review_input.date,
+            day=day,
             period_start=review_input.period_start.isoformat(),
             period_end=review_input.period_end.isoformat(),
-            timezone=review_input.timezone,
+            timezone=timezone,
             input_fingerprint=review_input.input_fingerprint,
             source_manifest=tuple(
                 source.manifest_entry() for source in review_input.sources
             ),
             collection_status=review_input.collection_status,
+            source_snapshots=self._persisted_sources(review_input),
             regenerate=regenerate,
         )
         if result.created:
@@ -250,19 +257,22 @@ class DailyReviewService:
         except Exception:
             raise ReviewGenerationError("model_error") from None
 
+    def _persisted_sources(
+        self, review_input: ReviewInput
+    ) -> tuple[SourceSnapshot, ...]:
+        """Keep the exact redacted evidence that the report was based on."""
+        return tuple(
+            source.model_copy(
+                update={"snapshot": redact_text(source.snapshot, self.sensitive_values)}
+            )
+            for source in review_input.included_sources
+        )
+
     def _messages(self, review_input: ReviewInput) -> list[Message]:
         sources = [
-            {
-                "source_id": source.source_id,
-                "source_type": source.source_type,
-                "occurred_at": source.occurred_at,
-                "trust": source.trust.value,
-                "may_prove_completion": source.may_prove_completion,
-                "verification": source.verification,
-                "content_hash": source.content_hash,
-                "truncated": source.truncated,
-                "data": redact_text(source.snapshot, self.sensitive_values),
-            }
+            source.prompt_payload(
+                data=redact_text(source.snapshot, self.sensitive_values)
+            )
             for source in review_input.included_sources
         ]
         omitted = [

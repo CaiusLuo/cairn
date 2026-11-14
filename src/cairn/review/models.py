@@ -135,6 +135,24 @@ class SourceSnapshot(BaseModel):
             truncated=self.truncated,
         )
 
+    def prompt_payload(self, *, data: str | None = None) -> dict[str, object]:
+        """The source shape sent to the model; ``data`` may be redacted."""
+        return {
+            "source_id": self.source_id,
+            "source_type": self.source_type,
+            "occurred_at": self.occurred_at,
+            "trust": self.trust.value,
+            "may_prove_completion": self.may_prove_completion,
+            "verification": self.verification,
+            "content_hash": self.content_hash,
+            "truncated": self.truncated,
+            "data": self.snapshot if data is None else data,
+        }
+
+    def prompt_chars(self) -> int:
+        """Characters this source adds to the prompt, including its JSON wrapper."""
+        return len(_json(self.prompt_payload()))
+
 
 def review_input_fingerprint(
     *,
@@ -210,7 +228,7 @@ class ReviewInput(BaseModel):
             input_fingerprint=fingerprint,
             budget_chars=budget_chars,
             used_chars=sum(
-                len(source.snapshot) for source in sources if source.included
+                source.prompt_chars() for source in sources if source.included
             ),
         )
 
@@ -325,6 +343,7 @@ class StoredReview(BaseModel):
     status: ReviewStatus
     source_manifest: tuple[SourceManifestEntry, ...]
     collection_status: tuple[SourceCollectionStatus, ...]
+    source_snapshots: tuple[SourceSnapshot, ...] = ()
     input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     summary: DailyReview | None = None
     summary_markdown: str | None = None

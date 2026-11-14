@@ -116,6 +116,9 @@ def _detail_payload(record: StoredReview) -> dict[str, object]:
         "collection_status": [
             status.model_dump(mode="json") for status in record.collection_status
         ],
+        "source_snapshots": [
+            source.model_dump(mode="json") for source in record.source_snapshots
+        ],
         "summary": (
             None if record.summary is None else record.summary.model_dump(mode="json")
         ),

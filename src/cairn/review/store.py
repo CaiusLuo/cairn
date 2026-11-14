@@ -27,6 +27,7 @@ from cairn.review.models import (
     ReviewType,
     SourceCollectionStatus,
     SourceManifestEntry,
+    SourceSnapshot,
     StoredReview,
     new_review_id,
 )
@@ -95,6 +96,13 @@ class ReviewStore:
                     _loads(row["collection_status_json"], []),
                 )
             )
+            source_snapshots = tuple(
+                SourceSnapshot.model_validate(item)
+                for item in cast(
+                    list[dict[str, Any]],
+                    _loads(row["source_snapshots_json"], []),
+                )
+            )
             summary_json = cast(str | None, row["summary_json"])
             summary = (
                 None
@@ -111,6 +119,7 @@ class ReviewStore:
                 status=status,
                 source_manifest=manifest,
                 collection_status=collection,
+                source_snapshots=source_snapshots,
                 input_fingerprint=cast(str, row["input_fingerprint"]),
                 summary=summary,
                 summary_markdown=cast(str | None, row["summary_markdown"]),
@@ -132,14 +141,15 @@ class ReviewStore:
         review_type: ReviewType,
         day: date,
         timezone: str,
-        input_fingerprint: str,
         regenerate: bool,
     ) -> str:
+        # Request identity is the caller's intent, not the current source
+        # fingerprint. A retry may collect newly added or edited sources and
+        # still map back to the review accepted by the first request.
         payload = [
             review_type.value,
             day.isoformat(),
             timezone,
-            input_fingerprint,
             bool(regenerate),
         ]
         return hashlib.sha256(_json(payload).encode("utf-8")).hexdigest()
@@ -156,6 +166,7 @@ class ReviewStore:
         input_fingerprint: str,
         source_manifest: tuple[SourceManifestEntry, ...],
         collection_status: tuple[SourceCollectionStatus, ...],
+        source_snapshots: tuple[SourceSnapshot, ...] = (),
         regenerate: bool = False,
     ) -> ReviewCreateResult:
         """Atomically create a review or return the requested/idempotent one.
@@ -173,7 +184,6 @@ class ReviewStore:
             review_type=review_type,
             day=day,
             timezone=timezone,
-            input_fingerprint=input_fingerprint,
             regenerate=regenerate,
         )
         now = utc_now()
@@ -273,11 +283,11 @@ class ReviewStore:
                 INSERT INTO reviews
                     (review_id, review_type, review_date, period_start, period_end,
                      timezone, status, source_manifest_json, collection_status_json,
-                     input_fingerprint, summary_json, summary_markdown, model_id,
-                     generation_attempts, created_at, updated_at, completed_at, error,
-                     version, supersedes_review_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?, NULL,
-                        NULL, ?, ?)
+                     source_snapshots_json, input_fingerprint, summary_json,
+                     summary_markdown, model_id, generation_attempts, created_at,
+                     updated_at, completed_at, error, version, supersedes_review_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?,
+                        NULL, NULL, ?, ?)
                 """,
                 (
                     review_id,
@@ -290,6 +300,9 @@ class ReviewStore:
                     _json([entry.model_dump(mode="json") for entry in source_manifest]),
                     _json(
                         [status.model_dump(mode="json") for status in collection_status]
+                    ),
+                    _json(
+                        [source.model_dump(mode="json") for source in source_snapshots]
                     ),
                     input_fingerprint,
                     now,

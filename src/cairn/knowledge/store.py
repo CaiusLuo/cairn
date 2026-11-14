@@ -58,9 +58,9 @@ class KnowledgeStore:
             raise ValueError("Knowledge store cannot be a symlink")
         with self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            # Version 1 is the K1 clip-only schema; create_schema performs the
-            # additive upgrade to the shared Clip/Review schema.
-            if version not in (0, 1, SCHEMA_VERSION):
+            # Versions 1 and 2 are older Clip/Review schemas; create_schema
+            # performs the additive upgrade to the current shared schema.
+            if version not in (0, 1, 2, SCHEMA_VERSION):
                 raise ValueError("Unsupported knowledge store schema")
             self._create_schema(connection)
             connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -229,23 +229,33 @@ class KnowledgeStore:
             ).fetchall()
         return tuple(self._clip(row) for row in rows)
 
-    def list_clips_touched_between(self, start: str, end: str) -> tuple[Clip, ...]:
-        """Return every clip whose exact stored timestamp falls in ``[start, end)``.
+    def list_clips_touched_between(
+        self,
+        start: str,
+        end: str,
+        *,
+        include_archived: bool = False,
+    ) -> tuple[Clip, ...]:
+        """Return clips whose exact stored timestamp falls in ``[start, end)``.
 
         ``start`` and ``end`` are canonical UTC ISO strings. The window is
         intentionally based on ``updated_at``: a clip created that day and a
         clip edited that day are both included, while an untouched older clip is
-        not. Archived clips remain part of the user's day and are not hidden
-        from a review.
+        not. Archived clips are excluded by default; callers that explicitly
+        need them can opt in.
         """
         if not isinstance(start, str) or not isinstance(end, str):
             raise ValueError("review window bounds must be strings")
         if not start or not end or start >= end:
             raise ValueError("review window is invalid")
+        if type(include_archived) is not bool:
+            raise ValueError("include_archived must be a boolean")
+        archived_filter = "" if include_archived else "AND archived_at IS NULL "
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM clips WHERE updated_at >= ? AND updated_at < ? "
-                "ORDER BY updated_at, clip_id",
+                + archived_filter
+                + "ORDER BY updated_at, clip_id",
                 (start, end),
             ).fetchall()
         return tuple(self._clip(row) for row in rows)

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS clips (
@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     status TEXT NOT NULL,
     source_manifest_json TEXT NOT NULL,
     collection_status_json TEXT NOT NULL,
+    source_snapshots_json TEXT NOT NULL DEFAULT '[]',
     input_fingerprint TEXT NOT NULL,
     summary_json TEXT,
     summary_markdown TEXT,
@@ -69,8 +70,16 @@ CREATE TABLE IF NOT EXISTS review_requests (
 
 
 def create_schema(connection: sqlite3.Connection) -> None:
-    """Create every table/index and leave existing rows untouched."""
+    """Create every table/index and add new review columns to older stores."""
     connection.executescript(SCHEMA)
+    review_columns = {
+        str(row[1]) for row in connection.execute("PRAGMA table_info(reviews)")
+    }
+    if "source_snapshots_json" not in review_columns:
+        connection.execute(
+            "ALTER TABLE reviews ADD COLUMN "
+            "source_snapshots_json TEXT NOT NULL DEFAULT '[]'"
+        )
 
 
 __all__ = ["SCHEMA", "SCHEMA_VERSION", "create_schema"]

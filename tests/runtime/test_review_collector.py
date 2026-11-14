@@ -77,7 +77,7 @@ def _collector(
     )
 
 
-def test_utc_window_is_half_open_and_archived_clips_are_collected(
+def test_utc_window_is_half_open_and_archived_clips_are_excluded(
     tmp_path: Path,
 ) -> None:
     workspace = _workspace(tmp_path)
@@ -93,6 +93,12 @@ def test_utc_window_is_half_open_and_archived_clips_are_collected(
         "at start",
         START,
         request_id="at-start",
+    )
+    archived = _clip_at(
+        store,
+        "archived at start",
+        START,
+        request_id="archived-at-start",
         archived=True,
     )
     before_end = _clip_at(
@@ -112,6 +118,7 @@ def test_utc_window_is_half_open_and_archived_clips_are_collected(
     ids = {source.source_id for source in review_input.sources}
     assert ids == {at_start, before_end}
     assert before not in ids and after not in ids
+    assert archived not in ids
     assert review_input.period_start.astimezone(UTC).isoformat() == START
     assert review_input.period_end.astimezone(UTC).isoformat() == END
 
@@ -124,15 +131,46 @@ def test_utc_window_is_half_open_and_archived_clips_are_collected(
     assert clip_status.discovered == 2
     assert clip_status.included == 2
 
-    archived = store.get(at_start)
-    assert archived is not None
-    assert archived.archived_at is not None
-    assert archived.content == "at start"
-    assert archived.content_hash == next(
+    stored = store.get(at_start)
+    assert stored is not None
+    assert stored.archived_at is None
+    assert stored.content == "at start"
+    assert stored.content_hash == next(
         source.content_hash
         for source in review_input.sources
         if source.source_id == at_start
     )
+
+    archived_clip = store.get(archived)
+    assert archived_clip is not None
+    assert archived_clip.archived_at is not None
+    assert archived_clip.content == "archived at start"
+
+
+def test_archived_clip_is_restored_inside_the_window(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    store = KnowledgeStore(tmp_path / "knowledge")
+    clip_id = _clip_at(
+        store,
+        "archive and restore",
+        "2026-01-15T02:00:00+00:00",
+        request_id="archive-restore",
+        archived=True,
+    )
+    collector = _collector(store, workspace)
+    assert clip_id not in {
+        source.source_id for source in collector.collect_daily(DAY, TZ).sources
+    }
+
+    store.set_archived(clip_id, archived=False)
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "UPDATE clips SET updated_at = ? WHERE clip_id = ?",
+            ("2026-01-15T02:00:00+00:00", clip_id),
+        )
+    restored = collector.collect_daily(DAY, TZ)
+    assert clip_id in {source.source_id for source in restored.sources}
+    assert store.get(clip_id).archived_at is None  # type: ignore[union-attr]
 
 
 def test_failed_and_completed_task_runs_are_not_confused(tmp_path: Path) -> None:
@@ -166,6 +204,17 @@ def test_failed_and_completed_task_runs_are_not_confused(tmp_path: Path) -> None
         task_id="task-done-only",
         status=TaskStatus.DONE,
         created_at="2026-01-14T19:00:00+00:00",
+    )
+    domain.create_task(
+        conversation_id=conversation_id,
+        goal="accepted and executed",
+        task_id="task-accepted-executed",
+        status=TaskStatus.DONE,
+        created_at="2026-01-14T19:30:00+00:00",
+        metadata={
+            "execution_status": "completed",
+            "execution_result": "release verified",
+        },
     )
     domain.create_task(
         conversation_id=conversation_id,
@@ -207,28 +256,46 @@ def test_failed_and_completed_task_runs_are_not_confused(tmp_path: Path) -> None
     review_input = _collector(store, workspace, domain=domain).collect_daily(DAY, TZ)
     by_id = {source.source_id: source for source in review_input.sources}
 
-    assert by_id["task-completed"].may_prove_completion is True
+    assert by_id["task-completed"].may_prove_completion is False
     assert by_id["task-completed"].trust is SourceTrust.SYSTEM_RECEIPT
-    assert by_id["task-completed"].verification == "execution_status=completed"
+    assert by_id["task-completed"].verification == (
+        "business_status=todo; execution_status=completed; execution_only"
+    )
     assert "published release" in by_id["task-completed"].snapshot
 
     assert by_id["task-failed"].may_prove_completion is False
-    assert by_id["task-failed"].verification == "execution_status=failed"
+    assert by_id["task-failed"].verification == (
+        "business_status=todo; execution_status=failed"
+    )
     assert "tests failed" in by_id["task-failed"].snapshot
 
-    assert by_id["task-done-only"].may_prove_completion is False
-    assert by_id["task-done-only"].verification == "execution_status=missing"
-    assert "task-outside" not in by_id
-    assert "task-updated" in by_id
+    assert by_id["task-done-only"].may_prove_completion is True
+    assert by_id["task-done-only"].verification == (
+        "business_status=done; execution_status=missing"
+    )
+    assert '"accepted_by_operator":true' in by_id["task-done-only"].snapshot
 
-    assert by_id["run-completed"].may_prove_completion is True
-    assert by_id["run-completed"].verification == "run_status=completed"
+    assert by_id["task-accepted-executed"].may_prove_completion is True
+    assert by_id["task-accepted-executed"].verification == (
+        "business_status=done; execution_status=completed"
+    )
+    assert "release verified" in by_id["task-accepted-executed"].snapshot
+
+    assert by_id["task-updated"].may_prove_completion is False
+    assert by_id["task-updated"].verification == (
+        "business_status=todo; execution_status=completed; execution_only"
+    )
+    assert "task-outside" not in by_id
+
+    assert by_id["run-completed"].may_prove_completion is False
+    assert by_id["run-completed"].verification == (
+        "run_status=completed; execution_only"
+    )
     assert by_id["run-failed"].may_prove_completion is False
     assert by_id["run-failed"].verification == "run_status=failed"
     assert review_input.completion_source_ids == {
-        "task-completed",
-        "task-updated",
-        "run-completed",
+        "task-done-only",
+        "task-accepted-executed",
     }
 
     assert domain.get_task("task-failed").metadata["execution_status"] == "failed"  # type: ignore[union-attr]
@@ -370,6 +437,13 @@ def test_budget_omissions_stay_in_manifest_with_original_identity(
     assert clip_status.discovered == 2
     assert clip_status.included == 1
     assert clip_status.omitted == 1
+    assert review_input.used_chars == sum(
+        source.prompt_chars() for source in review_input.included_sources
+    )
+    assert review_input.used_chars > sum(
+        len(source.snapshot) for source in review_input.included_sources
+    )
+    assert review_input.used_chars <= review_input.budget_chars
     assert store.get(second).content == "older " + "y" * 400  # type: ignore[union-attr]
 
 
