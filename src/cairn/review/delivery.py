@@ -47,8 +47,9 @@ def format_review_message(
             return value
 
     lines = [
-        f"{summary.date.isoformat()} 每日复盘",
-        f"窗口 {moment(record.period_start)} → {moment(record.period_end)}",
+        "Cairn · 每日复盘",
+        f"日期: {summary.date.isoformat()}",
+        f"覆盖: {moment(record.period_start)} → {moment(record.period_end)}",
         "",
         "概览",
         summary.overview,

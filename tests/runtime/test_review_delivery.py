@@ -418,7 +418,8 @@ def test_message_is_plain_text_mobile_sized_and_truncated(
     review = _completed_review(real)
     text = format_review_message(review)
     assert "##" not in text and "**" not in text and "`" not in text
-    assert "每日复盘" in text
+    assert text.startswith("Cairn · 每日复盘")
+    assert "日期: 2026-01-15" in text
     assert "概览" in text
     assert "今日进展" in text
     assert "来源: knowledge_clip 2" in text
