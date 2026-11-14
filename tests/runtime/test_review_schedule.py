@@ -3,14 +3,24 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from cairn.review.models import ReviewStatus
+from cairn.knowledge.store import KnowledgeStore
+from cairn.review.models import (
+    ReviewDeliveryStatus,
+    ReviewInput,
+    ReviewStatus,
+    ReviewType,
+    SourceCollectionState,
+    SourceCollectionStatus,
+)
 from cairn.review.schedule import ReviewScheduleCoordinator
+from cairn.review.service import DailyReviewService
+from cairn.review.store import ReviewStore
 from cairn.scheduling.models import ScheduleJob, ScheduleKind
 from cairn.scheduling.store import ScheduleStore
 
@@ -60,6 +70,38 @@ class FakeService:
         return SimpleNamespace(
             review_id=review_id,
             status=ReviewStatus.COMPLETED,
+        )
+
+
+class EmptyCollector:
+    """A real service input with no sources: no provider call is needed."""
+
+    def collect_daily(
+        self, day: Any, timezone: str, *, cutoff: Any = None
+    ) -> ReviewInput:
+        zone = ZoneInfo(timezone)
+        if cutoff is None:
+            start = datetime.combine(day, time.min, tzinfo=zone)
+            end = datetime.combine(day + timedelta(days=1), time.min, tzinfo=zone)
+        else:
+            start = datetime.combine(day - timedelta(days=1), cutoff, tzinfo=zone)
+            end = datetime.combine(day, cutoff, tzinfo=zone)
+        return ReviewInput.build(
+            review_type=ReviewType.DAILY,
+            day=day,
+            timezone=timezone,
+            period_start=start,
+            period_end=end,
+            sources=(),
+            collection_status=(
+                SourceCollectionStatus(
+                    source_type="knowledge_clip",
+                    status=SourceCollectionState.EMPTY,
+                    discovered=0,
+                    included=0,
+                ),
+            ),
+            budget_chars=60_000,
         )
 
 
@@ -120,6 +162,28 @@ def test_cutoff_day_is_the_most_recent_2030_boundary(tmp_path: Path) -> None:
         due = coordinator.due_day(moment)
         assert due is not None
         assert due.isoformat() == expected
+
+
+def test_scheduled_review_completes_without_wechat_login(tmp_path: Path) -> None:
+    reviews = ReviewStore(KnowledgeStore(tmp_path / "knowledge"))
+    service = DailyReviewService(
+        store=reviews,
+        collector=EmptyCollector(),
+        llm=None,
+    )
+    coordinator = ReviewScheduleCoordinator(
+        service=service,
+        store=ScheduleStore(tmp_path / "schedules"),
+        clock=lambda: AFTER_CUTOFF,
+        settle_timeout=1.0,
+    )
+
+    review = asyncio.run(coordinator.tick())
+    assert review is not None
+    assert review.status is ReviewStatus.COMPLETED
+    delivery = reviews.get_delivery(review.review_id)
+    assert delivery is not None
+    assert delivery.status is ReviewDeliveryStatus.PENDING
 
 
 def test_generation_identity_includes_cutoff_and_timezone(tmp_path: Path) -> None:
