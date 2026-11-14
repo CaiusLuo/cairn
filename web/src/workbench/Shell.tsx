@@ -10,7 +10,7 @@ import {
 } from "../theme";
 import { CairnLogo } from "./Brand";
 import { Icon, type IconName } from "./Icon";
-import { conversationTitle, isActive, sourceLabel, type Conversation } from "./data";
+import { conversationTitle, isActive, sourceIcon, sourceLabel, type Conversation } from "./data";
 
 export type View = "home" | "chat" | "tasks" | "knowledge" | "runs" | "approvals" | "settings";
 const navigation: { view: View; label: string; icon: IconName }[] = [
@@ -187,7 +187,7 @@ export function Shell({ view, active, conversations, workspace, status, navigate
               <button type="button" aria-label="取消重命名" title="取消重命名" disabled={mutating} onClick={() => setRenaming(null)}><Icon name="close" size={14}/></button>
             </form> : <>
               <a href={href("chat", { conversation: item.conversation_id })} aria-current={active === item.conversation_id ? "page" : undefined} title={item.title || item.initial_prompt} onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(event.currentTarget.getAttribute("href")!); setMobileOpen(false); }}>
-                <span>{conversationTitle(item.title || item.initial_prompt)}</span>{item.latest_run && isActive(item.latest_run.status) ? <i className="wb-live-dot" aria-label="执行中"/> : <small>{sourceLabel(item.source)}</small>}
+                <span>{conversationTitle(item.title || item.initial_prompt)}</span>{item.latest_run && isActive(item.latest_run.status) ? <i className="wb-live-dot" aria-label="执行中"/> : <small className="wb-session-source" role="img" aria-label={sourceLabel(item.source)} title={sourceLabel(item.source)}><Icon name={sourceIcon(item.source)} size={13}/></small>}
               </a>
               <div className="wb-session-actions">
                 <button type="button" className="wb-session-more" aria-label="对话详情" title="对话详情" aria-haspopup="menu" aria-expanded={menu?.id === item.conversation_id} disabled={mutating} onClick={event => { event.preventDefault(); event.stopPropagation(); toggleMenu(item, event.currentTarget); }}>

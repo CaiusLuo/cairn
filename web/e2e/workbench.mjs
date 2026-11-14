@@ -77,6 +77,7 @@ try {
     const cliPrompt = "CLI browser takeover";
     const cli = (await read("conversations")).find(item => item.initial_prompt === cliPrompt && item.source === "cli");
     assert(cli, "The test fixture must start a real CLI conversation.");
+    await page.getByRole("img", { name: "CLI" }).first().waitFor();
     const shell = await api.get("/chat.html");
     assert(shell.ok());
     assert((await shell.text()).includes("正在加载 Cairn…"), "The chat shell must paint before JavaScript loads");
@@ -127,6 +128,7 @@ try {
     await page.getByRole("link", { name: "工作台", exact: true }).click();
     await send("Web-created conversation");
     await page.getByRole("heading", { name: "Web-created conversation" }).waitFor();
+    await page.getByRole("img", { name: "Web" }).first().waitFor();
     const createdId = new URL(page.url()).searchParams.get("conversation");
     assert(createdId && createdId !== cli.conversation_id);
     await page.reload();
@@ -235,6 +237,8 @@ try {
     await post("conversations/" + wx.conversation_id + "/messages", { prompt: "微信工作台验收", request_id: "browser-wx-1", source: "wechat" });
     await page.getByRole("link", { name: /微信工作台验收/ }).click();
     await page.getByRole("heading", { name: "微信工作台验收" }).waitFor();
+    await page.getByRole("img", { name: "微信" }).first().waitFor();
+    if (images) await page.locator("#workbench-sidebar").screenshot({ path: join(images, "Cairn-workbench-sessions.png"), animations: "disabled" });
     await post("conversations/" + wx.conversation_id + "/messages", { prompt: "微信新增运行，无需刷新", request_id: "browser-wx-2", source: "wechat" });
     await page.locator(".wb-message.user").filter({ hasText: "微信新增运行，无需刷新" }).waitFor();
 
