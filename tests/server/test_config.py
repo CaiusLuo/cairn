@@ -38,6 +38,9 @@ def test_precedence_paths_and_budget_do_not_depend_on_cwd(
         '[server]\napi_key = "never-store-keys"',
         '[logging]\nlevel = "invalid"',
         '[services]\nwechat = "yes"',
+        '[review]\nenabled = "yes"',
+        '[review]\ntime = "25:00"',
+        '[review]\ntimezone = "Bad/Zone"',
         "[budget]\nmax_steps = 0",
         '[server]\nhost = "0.0.0.0"',
         '[secrets]\nkey = "private"',
@@ -48,6 +51,23 @@ def test_invalid_config_is_rejected(tmp_path: Path, text: str) -> None:
     path.write_text(text)
     with pytest.raises(ValueError):
         load_server_config(path)
+
+
+def test_review_schedule_is_disabled_until_explicitly_configured(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("")
+    default = load_server_config(path)
+    assert not default.review.enabled
+    assert default.review.time == "20:30"
+    assert default.review.timezone == "Asia/Shanghai"
+
+    path.write_text('[review]\nenabled = true\ntime = "21:15"\ntimezone = "UTC"\n')
+    configured = load_server_config(path)
+    assert configured.review.enabled
+    assert configured.review.time == "21:15"
+    assert configured.review.timezone == "UTC"
 
 
 def test_env_data_root_wins_over_toml(

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date
@@ -142,15 +143,20 @@ class ReviewStore:
     def _delivery(row: sqlite3.Row) -> StoredReviewDelivery:
         try:
             return StoredReviewDelivery(
+                delivery_id=cast(str, row["delivery_id"]),
                 review_id=cast(str, row["review_id"]),
-                delivery_key=cast(str, row["delivery_key"]),
+                review_version=int(row["review_version"]),
+                channel=cast(str, row["channel"]),
+                account_id=cast(str, row["account_id"]),
+                recipient=cast(str, row["recipient"]),
                 status=ReviewDeliveryStatus(cast(str, row["status"])),
-                account_digest=cast(str, row["account_digest"]),
-                sender_digest=cast(str, row["sender_digest"]),
-                context_token=cast(str, row["context_token"]),
+                attempt_id=cast(str, row["attempt_id"]),
                 attempts=int(row["attempts"]),
+                context_token=cast(str, row["context_token"]),
                 last_error=cast(str | None, row["last_error"]),
                 created_at=cast(str, row["created_at"]),
+                attempted_at=cast(str | None, row["attempted_at"]),
+                completed_at=cast(str | None, row["completed_at"]),
                 updated_at=cast(str, row["updated_at"]),
             )
         except (ValueError, TypeError) as exc:
@@ -463,7 +469,7 @@ class ReviewStore:
         self, connection: sqlite3.Connection, review_id: str, now: str
     ) -> StoredReviewDelivery:
         review = connection.execute(
-            "SELECT status FROM reviews WHERE review_id = ?", (review_id,)
+            "SELECT status, version FROM reviews WHERE review_id = ?", (review_id,)
         ).fetchone()
         if review is None:
             raise KeyError(review_id)
@@ -474,16 +480,19 @@ class ReviewStore:
         ).fetchone()
         if existing is not None:
             return self._delivery(existing)
-        delivery_key = hashlib.sha256(
+        delivery_id = hashlib.sha256(
             f"review-delivery:{review_id}".encode()
         ).hexdigest()
         connection.execute(
-            "INSERT INTO review_deliveries(review_id, delivery_key, status, "
-            "account_digest, sender_digest, context_token, attempts, last_error, "
-            "created_at, updated_at) VALUES (?, ?, ?, '', '', '', 0, NULL, ?, ?)",
+            "INSERT INTO review_deliveries(delivery_id, review_id, "
+            "review_version, channel, account_id, recipient, status, attempt_id, "
+            "attempts, context_token, last_error, created_at, attempted_at, "
+            "completed_at, updated_at) VALUES (?, ?, ?, 'wechat', '', '', ?, '', "
+            "0, '', NULL, ?, NULL, NULL, ?)",
             (
+                delivery_id,
                 review_id,
-                delivery_key,
+                int(review["version"]),
                 ReviewDeliveryStatus.PENDING.value,
                 now,
                 now,
@@ -535,8 +544,6 @@ class ReviewStore:
         """Persist the attempt and bind its identity before any network send."""
         if not account_id or not sender_id:
             raise ValueError("delivery requires an exact account and recipient")
-        account_digest = hashlib.sha256(account_id.encode("utf-8")).hexdigest()
-        sender_digest = hashlib.sha256(sender_id.encode("utf-8")).hexdigest()
         now = utc_now()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -546,22 +553,25 @@ class ReviewStore:
             if row is None:
                 raise KeyError(review_id)
             current = self._delivery(row)
-            if current.status is not ReviewDeliveryStatus.PENDING:
+            if current.status not in (
+                ReviewDeliveryStatus.PENDING,
+                ReviewDeliveryStatus.BLOCKED_OFFLINE,
+            ):
                 return DeliveryAttemptResult(
                     delivery=current,
                     allowed=False,
                     reason=current.status.value,
                 )
-            if current.account_digest and (
-                current.account_digest != account_digest
-                or current.sender_digest != sender_digest
+            if current.account_id and (
+                current.account_id != account_id or current.recipient != sender_id
             ):
                 connection.execute(
                     "UPDATE review_deliveries SET status = ?, last_error = ?, "
-                    "updated_at = ? WHERE review_id = ? AND status = 'pending'",
+                    "completed_at = ?, updated_at = ? WHERE review_id = ?",
                     (
-                        ReviewDeliveryStatus.MANUAL_REVIEW.value,
+                        ReviewDeliveryStatus.FAILED_PERMANENT.value,
                         "delivery identity changed",
+                        now,
                         now,
                         review_id,
                     ),
@@ -577,16 +587,19 @@ class ReviewStore:
                     allowed=False,
                     reason="identity_changed",
                 )
+            attempt_id = uuid.uuid4().hex
             connection.execute(
-                "UPDATE review_deliveries SET status = ?, account_digest = ?, "
-                "sender_digest = ?, context_token = ?, attempts = attempts + 1, "
-                "last_error = NULL, updated_at = ? "
-                "WHERE review_id = ? AND status = 'pending'",
+                "UPDATE review_deliveries SET status = ?, account_id = ?, "
+                "recipient = ?, context_token = ?, attempt_id = ?, "
+                "attempts = attempts + 1, last_error = NULL, attempted_at = ?, "
+                "completed_at = NULL, updated_at = ? WHERE review_id = ?",
                 (
-                    ReviewDeliveryStatus.STARTED.value,
-                    account_digest,
-                    sender_digest,
+                    ReviewDeliveryStatus.SENDING.value,
+                    account_id,
+                    sender_id,
                     context_token or current.context_token,
+                    attempt_id,
+                    now,
                     now,
                     review_id,
                 ),
@@ -598,7 +611,8 @@ class ReviewStore:
                 raise ValueError("review delivery could not be read back")
             return DeliveryAttemptResult(delivery=self._delivery(row), allowed=True)
 
-    def mark_delivery_sent(self, review_id: str) -> StoredReviewDelivery:
+    def mark_delivery_accepted(self, review_id: str) -> StoredReviewDelivery:
+        """The upstream accepted the message; this does not imply it was read."""
         now = utc_now()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -608,14 +622,14 @@ class ReviewStore:
             if row is None:
                 raise KeyError(review_id)
             current = self._delivery(row)
-            if current.status is ReviewDeliveryStatus.SENT:
+            if current.status is ReviewDeliveryStatus.ACCEPTED:
                 return current
-            if current.status is not ReviewDeliveryStatus.STARTED:
-                raise ValueError("review delivery must be started before sent")
+            if current.status is not ReviewDeliveryStatus.SENDING:
+                raise ValueError("review delivery must be sending before accepted")
             connection.execute(
                 "UPDATE review_deliveries SET status = ?, last_error = NULL, "
-                "updated_at = ? WHERE review_id = ? AND status = 'started'",
-                (ReviewDeliveryStatus.SENT.value, now, review_id),
+                "completed_at = ?, updated_at = ? WHERE review_id = ?",
+                (ReviewDeliveryStatus.ACCEPTED.value, now, now, review_id),
             )
             row = connection.execute(
                 "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
@@ -624,9 +638,10 @@ class ReviewStore:
                 raise ValueError("review delivery could not be read back")
             return self._delivery(row)
 
-    def mark_delivery_unconfirmed(
+    def mark_delivery_unknown(
         self, review_id: str, error: str | None = None
     ) -> StoredReviewDelivery:
+        """The send may have happened; it must never be retried automatically."""
         now = utc_now()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -636,16 +651,17 @@ class ReviewStore:
             if row is None:
                 raise KeyError(review_id)
             current = self._delivery(row)
-            if current.status is ReviewDeliveryStatus.SENT:
-                raise ValueError("a sent review delivery cannot become unconfirmed")
-            if current.status is not ReviewDeliveryStatus.STARTED:
+            if current.status is ReviewDeliveryStatus.ACCEPTED:
+                raise ValueError("an accepted review delivery cannot become unknown")
+            if current.status is not ReviewDeliveryStatus.SENDING:
                 return current
             connection.execute(
                 "UPDATE review_deliveries SET status = ?, last_error = ?, "
-                "updated_at = ? WHERE review_id = ? AND status = 'started'",
+                "completed_at = ?, updated_at = ? WHERE review_id = ?",
                 (
-                    ReviewDeliveryStatus.UNCONFIRMED.value,
+                    ReviewDeliveryStatus.DELIVERY_UNKNOWN.value,
                     (error or "delivery result unknown")[:500],
+                    now,
                     now,
                     review_id,
                 ),
@@ -658,7 +674,7 @@ class ReviewStore:
             return self._delivery(row)
 
     def defer_delivery(self, review_id: str, error: str) -> StoredReviewDelivery:
-        """Return a definite non-send to pending so a fresh context can retry."""
+        """A definite non-send: stay retryable until a fresh context arrives."""
         now = utc_now()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -668,15 +684,15 @@ class ReviewStore:
             if row is None:
                 raise KeyError(review_id)
             current = self._delivery(row)
-            if current.status is ReviewDeliveryStatus.PENDING:
+            if current.status is ReviewDeliveryStatus.BLOCKED_OFFLINE:
                 return current
-            if current.status is not ReviewDeliveryStatus.STARTED:
-                raise ValueError("only a started delivery can be deferred")
+            if current.status is not ReviewDeliveryStatus.SENDING:
+                raise ValueError("only a sending delivery can be deferred")
             connection.execute(
                 "UPDATE review_deliveries SET status = ?, last_error = ?, "
-                "updated_at = ? WHERE review_id = ? AND status = 'started'",
+                "completed_at = NULL, updated_at = ? WHERE review_id = ?",
                 (
-                    ReviewDeliveryStatus.PENDING.value,
+                    ReviewDeliveryStatus.BLOCKED_OFFLINE.value,
                     error[:500],
                     now,
                     review_id,
@@ -702,20 +718,23 @@ class ReviewStore:
             if row is None:
                 raise KeyError(review_id)
             current = self._delivery(row)
-            if current.status is not ReviewDeliveryStatus.UNCONFIRMED and (
-                current.status is not ReviewDeliveryStatus.MANUAL_REVIEW
+            if current.status not in (
+                ReviewDeliveryStatus.DELIVERY_UNKNOWN,
+                ReviewDeliveryStatus.FAILED_PERMANENT,
+                ReviewDeliveryStatus.BLOCKED_OFFLINE,
             ):
                 raise ValueError(
-                    "only an unconfirmed or manual-review delivery can retry"
+                    "only a blocked, unknown or permanently failed delivery can retry"
                 )
             connection.execute(
-                "UPDATE review_deliveries SET status = ?, account_digest = ?, "
-                "sender_digest = ?, context_token = ?, last_error = NULL, "
-                "updated_at = ? WHERE review_id = ?",
+                "UPDATE review_deliveries SET status = ?, account_id = ?, "
+                "recipient = ?, context_token = ?, attempt_id = '', "
+                "last_error = NULL, completed_at = NULL, updated_at = ? "
+                "WHERE review_id = ?",
                 (
                     ReviewDeliveryStatus.PENDING.value,
-                    "" if rebind else current.account_digest,
-                    "" if rebind else current.sender_digest,
+                    "" if rebind else current.account_id,
+                    "" if rebind else current.recipient,
                     "" if rebind else current.context_token,
                     now,
                     review_id,
@@ -728,21 +747,23 @@ class ReviewStore:
                 raise ValueError("review delivery could not be read back")
             return self._delivery(row)
 
-    def recover_started_deliveries(self) -> int:
-        """A started row was in the unknown window; never resend it automatically."""
+    def recover_sending_deliveries(self) -> int:
+        """A sending row is in the unknown window; never resend it automatically."""
         now = utc_now()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
-                "SELECT review_id FROM review_deliveries WHERE status = 'started'"
+                "SELECT review_id FROM review_deliveries WHERE status = 'sending'"
             ).fetchall()
             for row in rows:
                 connection.execute(
                     "UPDATE review_deliveries SET status = ?, last_error = ?, "
-                    "updated_at = ? WHERE review_id = ? AND status = 'started'",
+                    "completed_at = ?, updated_at = ? WHERE review_id = ? "
+                    "AND status = 'sending'",
                     (
-                        ReviewDeliveryStatus.UNCONFIRMED.value,
+                        ReviewDeliveryStatus.DELIVERY_UNKNOWN.value,
                         "delivery result unknown after restart",
+                        now,
                         now,
                         cast(str, row["review_id"]),
                     ),

@@ -8,6 +8,7 @@ import os
 import secrets
 import socket
 from contextlib import AbstractAsyncContextManager
+from datetime import time as wall_time
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -42,7 +43,9 @@ from cairn.review.service import DailyReviewService
 from cairn.review.store import ReviewStore
 from cairn.server.client import read_runtime_token as read_token
 from cairn.server.config import (
+    DEFAULT_REVIEW,
     DEFAULT_SERVICES,
+    ReviewConfig,
     ServerConfig,
     Services,
     load_server_config,
@@ -75,6 +78,7 @@ def runtime_app(
     schedule_state: Path | None = None,
     host: str = "127.0.0.1",
     services: Services = DEFAULT_SERVICES,
+    review: ReviewConfig = DEFAULT_REVIEW,
     protected_paths: tuple[Path, ...] = (),
 ) -> Any:
     catalogue = RuntimeCatalogue(
@@ -202,8 +206,10 @@ def runtime_app(
             service=reviews,
             store=controls.schedules.store,
             on_settled=lambda _review: review_delivery.rescan(),
+            timezone=review.timezone,
+            cutoff=wall_time.fromisoformat(review.time),
         )
-        if provider_runtime is not None and services.review_schedule
+        if provider_runtime is not None and review.enabled
         else None
     )
     web.state.review_schedule = review_schedule
@@ -321,6 +327,7 @@ def run_server(config: ServerConfig) -> None:
             agent_home=paths.agent,
             schedule_state=paths.schedules,
             services=config.services,
+            review=config.review,
             protected_paths=tuple(
                 p for p in (config.config_file, config.provider_approval) if p
             ),

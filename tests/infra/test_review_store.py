@@ -465,10 +465,12 @@ def test_completed_review_creates_one_pending_delivery(tmp_path: Path) -> None:
     assert delivery is not None
     assert delivery.status is ReviewDeliveryStatus.PENDING
     assert delivery.attempts == 0
-    assert len(delivery.delivery_key) == 64
+    assert len(delivery.delivery_id) == 64
+    assert delivery.review_version == 1
+    assert delivery.channel == "wechat"
 
     again = store.ensure_delivery(created.review_id)
-    assert again.delivery_key == delivery.delivery_key
+    assert again.delivery_id == delivery.delivery_id
     assert again.created_at == delivery.created_at
 
 
@@ -486,24 +488,26 @@ def test_delivery_identity_is_bound_before_send_and_switch_is_refused(
         context_token="ctx-1",
     )
     assert first.allowed is True
-    assert first.delivery.status is ReviewDeliveryStatus.STARTED
+    assert first.delivery.status is ReviewDeliveryStatus.SENDING
     assert first.delivery.attempts == 1
+    assert first.delivery.attempt_id
+    assert first.delivery.attempted_at
 
-    # A second worker cannot claim the same started attempt.
+    # A second worker cannot claim the same sending attempt.
     second = store.begin_delivery(
         created.review_id, account_id="bot-a", sender_id="owner"
     )
     assert second.allowed is False
-    assert second.reason == "started"
+    assert second.reason == "sending"
 
-    store.mark_delivery_unconfirmed(created.review_id, "send_unconfirmed")
+    store.mark_delivery_unknown(created.review_id, "send_unconfirmed")
     store.requeue_delivery(created.review_id)
     switched = store.begin_delivery(
         created.review_id, account_id="bot-b", sender_id="owner"
     )
     assert switched.allowed is False
     assert switched.reason == "identity_changed"
-    assert switched.delivery.status is ReviewDeliveryStatus.MANUAL_REVIEW
+    assert switched.delivery.status is ReviewDeliveryStatus.FAILED_PERMANENT
     assert switched.delivery.last_error == "delivery identity changed"
 
 
@@ -513,8 +517,10 @@ def test_requeue_with_rebind_is_the_only_way_to_change_delivery_identity(
     store = ReviewStore(tmp_path / "knowledge")
     created = _create(store, request_id="delivery-rebind").review
     _complete_with_delivery(store, created.review_id)
-    store.begin_delivery(created.review_id, account_id="bot-a", sender_id="owner")
-    store.mark_delivery_unconfirmed(created.review_id)
+    first_attempt = store.begin_delivery(
+        created.review_id, account_id="bot-a", sender_id="owner"
+    ).delivery.attempt_id
+    store.mark_delivery_unknown(created.review_id)
     store.requeue_delivery(created.review_id, rebind=True)
 
     rebound = store.begin_delivery(
@@ -522,10 +528,11 @@ def test_requeue_with_rebind_is_the_only_way_to_change_delivery_identity(
     )
     assert rebound.allowed is True
     assert rebound.delivery.attempts == 2
-    assert rebound.delivery.status is ReviewDeliveryStatus.STARTED
+    assert rebound.delivery.status is ReviewDeliveryStatus.SENDING
+    assert rebound.delivery.attempt_id != first_attempt
 
 
-def test_started_delivery_recovers_as_unconfirmed_without_resend(
+def test_sending_delivery_recovers_as_unknown_without_resend(
     tmp_path: Path,
 ) -> None:
     store = ReviewStore(tmp_path / "knowledge")
@@ -533,10 +540,10 @@ def test_started_delivery_recovers_as_unconfirmed_without_resend(
     _complete_with_delivery(store, created.review_id)
     store.begin_delivery(created.review_id, account_id="bot-a", sender_id="owner")
 
-    assert store.recover_started_deliveries() == 1
+    assert store.recover_sending_deliveries() == 1
     recovered = store.get_delivery(created.review_id)
     assert recovered is not None
-    assert recovered.status is ReviewDeliveryStatus.UNCONFIRMED
+    assert recovered.status is ReviewDeliveryStatus.DELIVERY_UNKNOWN
     assert recovered.last_error == "delivery result unknown after restart"
     assert (
         store.begin_delivery(
@@ -546,7 +553,7 @@ def test_started_delivery_recovers_as_unconfirmed_without_resend(
     )
 
 
-def test_a_definite_rejection_returns_the_delivery_to_pending(
+def test_a_definite_rejection_returns_the_delivery_to_blocked_offline(
     tmp_path: Path,
 ) -> None:
     store = ReviewStore(tmp_path / "knowledge")
@@ -555,7 +562,7 @@ def test_a_definite_rejection_returns_the_delivery_to_pending(
     store.begin_delivery(created.review_id, account_id="bot-a", sender_id="owner")
 
     deferred = store.defer_delivery(created.review_id, "context_token_rejected")
-    assert deferred.status is ReviewDeliveryStatus.PENDING
+    assert deferred.status is ReviewDeliveryStatus.BLOCKED_OFFLINE
     assert deferred.last_error == "context_token_rejected"
     assert deferred.attempts == 1
 
@@ -575,10 +582,10 @@ def test_sent_delivery_cannot_be_requeued_or_unconfirmed(tmp_path: Path) -> None
     created = _create(store, request_id="delivery-terminal").review
     _complete_with_delivery(store, created.review_id)
     store.begin_delivery(created.review_id, account_id="bot-a", sender_id="owner")
-    sent = store.mark_delivery_sent(created.review_id)
-    assert sent.status is ReviewDeliveryStatus.SENT
+    sent = store.mark_delivery_accepted(created.review_id)
+    assert sent.status is ReviewDeliveryStatus.ACCEPTED
 
     with pytest.raises(ValueError):
-        store.mark_delivery_unconfirmed(created.review_id)
+        store.mark_delivery_unknown(created.review_id)
     with pytest.raises(ValueError):
         store.requeue_delivery(created.review_id)

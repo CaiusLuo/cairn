@@ -67,15 +67,20 @@ CREATE TABLE IF NOT EXISTS review_requests (
     review_id TEXT NOT NULL REFERENCES reviews(review_id)
 );
 CREATE TABLE IF NOT EXISTS review_deliveries (
-    review_id TEXT PRIMARY KEY REFERENCES reviews(review_id) ON DELETE CASCADE,
-    delivery_key TEXT NOT NULL UNIQUE,
+    delivery_id TEXT PRIMARY KEY,
+    review_id TEXT NOT NULL UNIQUE REFERENCES reviews(review_id) ON DELETE CASCADE,
+    review_version INTEGER NOT NULL,
+    channel TEXT NOT NULL,
+    account_id TEXT NOT NULL DEFAULT '',
+    recipient TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL,
-    account_digest TEXT NOT NULL DEFAULT '',
-    sender_digest TEXT NOT NULL DEFAULT '',
-    context_token TEXT NOT NULL DEFAULT '',
+    attempt_id TEXT NOT NULL DEFAULT '',
     attempts INTEGER NOT NULL DEFAULT 0,
+    context_token TEXT NOT NULL DEFAULT '',
     last_error TEXT,
     created_at TEXT NOT NULL,
+    attempted_at TEXT,
+    completed_at TEXT,
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS review_deliveries_status_idx

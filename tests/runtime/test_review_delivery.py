@@ -145,7 +145,7 @@ def _coordinator(
     )
 
 
-def test_pending_review_is_sent_once_and_marked_sent(tmp_path: Path) -> None:
+def test_pending_review_is_sent_once_and_accepted(tmp_path: Path) -> None:
     store = _store(tmp_path)
     review = _completed_review(store)
     wechat = FakeWechat()
@@ -155,7 +155,8 @@ def test_pending_review_is_sent_once_and_marked_sent(tmp_path: Path) -> None:
         await coordinator._consider(review.review_id)
         delivery = store.get_delivery(review.review_id)
         assert delivery is not None
-        assert delivery.status is ReviewDeliveryStatus.SENT
+        assert delivery.status is ReviewDeliveryStatus.ACCEPTED
+        assert delivery.completed_at is not None
         assert len(wechat.sent) == 1
         assert wechat.sent[0][0] == "owner"
         assert "今天完成了可验证的复盘链路。" in wechat.sent[0][1]
@@ -205,7 +206,7 @@ def test_account_switch_is_refused_after_identity_is_bound(
         await before._consider(review.review_id)
         delivery = store.get_delivery(review.review_id)
         assert delivery is not None
-        assert delivery.status is ReviewDeliveryStatus.UNCONFIRMED
+        assert delivery.status is ReviewDeliveryStatus.DELIVERY_UNKNOWN
         store.requeue_delivery(review.review_id)
 
     asyncio.run(first())
@@ -217,14 +218,14 @@ def test_account_switch_is_refused_after_identity_is_bound(
         await after._consider(review.review_id)
         delivery = store.get_delivery(review.review_id)
         assert delivery is not None
-        assert delivery.status is ReviewDeliveryStatus.MANUAL_REVIEW
+        assert delivery.status is ReviewDeliveryStatus.FAILED_PERMANENT
         assert delivery.last_error == "delivery identity changed"
         assert after_wechat.sent == []
 
     asyncio.run(second())
 
 
-def test_failed_send_is_unconfirmed_and_not_retried_automatically(
+def test_failed_send_is_unknown_and_not_retried_automatically(
     tmp_path: Path,
 ) -> None:
     store = _store(tmp_path)
@@ -236,7 +237,7 @@ def test_failed_send_is_unconfirmed_and_not_retried_automatically(
         await coordinator._consider(review.review_id)
         delivery = store.get_delivery(review.review_id)
         assert delivery is not None
-        assert delivery.status is ReviewDeliveryStatus.UNCONFIRMED
+        assert delivery.status is ReviewDeliveryStatus.DELIVERY_UNKNOWN
         assert delivery.last_error == "send_unconfirmed"
         assert delivery.attempts == 1
 
@@ -249,13 +250,13 @@ def test_failed_send_is_unconfirmed_and_not_retried_automatically(
         await coordinator._consider(review.review_id)
         assert len(wechat.sent) == 1
         assert store.get_delivery(review.review_id).status is (  # type: ignore[union-attr]
-            ReviewDeliveryStatus.UNCONFIRMED
+            ReviewDeliveryStatus.DELIVERY_UNKNOWN
         )
 
     asyncio.run(scenario())
 
 
-def test_rejected_context_stays_pending_until_a_fresh_one_arrives(
+def test_rejected_context_stays_blocked_until_a_fresh_one_arrives(
     tmp_path: Path,
 ) -> None:
     store = _store(tmp_path)
@@ -267,9 +268,10 @@ def test_rejected_context_stays_pending_until_a_fresh_one_arrives(
         await coordinator._consider(review.review_id)
         delivery = store.get_delivery(review.review_id)
         assert delivery is not None
-        assert delivery.status is ReviewDeliveryStatus.PENDING
+        assert delivery.status is ReviewDeliveryStatus.BLOCKED_OFFLINE
         assert delivery.last_error == "context_token_rejected"
         assert delivery.attempts == 1
+        assert delivery.attempt_id
         assert len(wechat.sent) == 1
 
         # A refused context is not an unknown result; retry later rather than
@@ -282,12 +284,12 @@ def test_rejected_context_stays_pending_until_a_fresh_one_arrives(
             coordinator.rescan(force=True)
             for _ in range(50):
                 if store.get_delivery(review.review_id).status is (  # type: ignore[union-attr]
-                    ReviewDeliveryStatus.SENT
+                    ReviewDeliveryStatus.ACCEPTED
                 ):
                     break
                 await asyncio.sleep(0.01)
             assert store.get_delivery(review.review_id).status is (  # type: ignore[union-attr]
-                ReviewDeliveryStatus.SENT
+                ReviewDeliveryStatus.ACCEPTED
             )
             assert len(wechat.sent) == 2
         finally:
@@ -296,7 +298,7 @@ def test_rejected_context_stays_pending_until_a_fresh_one_arrives(
     asyncio.run(scenario())
 
 
-def test_lost_send_response_is_unconfirmed_and_not_resent(
+def test_lost_send_response_is_unknown_and_not_resent(
     tmp_path: Path,
 ) -> None:
     class LostResponseWechat(FakeWechat):
@@ -320,7 +322,7 @@ def test_lost_send_response_is_unconfirmed_and_not_resent(
         await coordinator._consider(review.review_id)
         delivery = store.get_delivery(review.review_id)
         assert delivery is not None
-        assert delivery.status is ReviewDeliveryStatus.UNCONFIRMED
+        assert delivery.status is ReviewDeliveryStatus.DELIVERY_UNKNOWN
         assert delivery.last_error == "delivery_error:RuntimeError"
         assert delivery.attempts == 1
         assert len(wechat.sent) == 1
@@ -346,14 +348,14 @@ def test_manual_requeue_retries_after_operator_review(tmp_path: Path) -> None:
         await coordinator._consider(review.review_id)
         delivery = store.get_delivery(review.review_id)
         assert delivery is not None
-        assert delivery.status is ReviewDeliveryStatus.SENT
+        assert delivery.status is ReviewDeliveryStatus.ACCEPTED
         assert delivery.attempts == 2
         assert len(wechat.sent) == 2
 
     asyncio.run(scenario())
 
 
-def test_start_recovers_started_attempt_without_sending(tmp_path: Path) -> None:
+def test_start_recovers_sending_attempt_without_sending(tmp_path: Path) -> None:
     store = _store(tmp_path)
     review = _completed_review(store)
     store.begin_delivery(
@@ -371,7 +373,7 @@ def test_start_recovers_started_attempt_without_sending(tmp_path: Path) -> None:
             await asyncio.sleep(0.02)
             delivery = store.get_delivery(review.review_id)
             assert delivery is not None
-            assert delivery.status is ReviewDeliveryStatus.UNCONFIRMED
+            assert delivery.status is ReviewDeliveryStatus.DELIVERY_UNKNOWN
             assert wechat.sent == []
         finally:
             await coordinator.close()
@@ -401,7 +403,7 @@ def test_polling_delivers_pending_review_when_readiness_returns(
             assert len(wechat.sent) == 1
             assert (
                 store.get_delivery(review.review_id).status  # type: ignore[union-attr]
-                is ReviewDeliveryStatus.SENT
+                is ReviewDeliveryStatus.ACCEPTED
             )
         finally:
             await coordinator.close()

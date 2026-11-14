@@ -207,7 +207,10 @@ class ReviewScheduleCoordinator:
         return settled
 
     def _request_id(self, day: date) -> str:
-        return f"{REVIEW_REQUEST_PREFIX}:{day.isoformat()}:{self.timezone}"
+        return (
+            f"{REVIEW_REQUEST_PREFIX}:{day.isoformat()}:{self.timezone}:"
+            f"{self.cutoff.strftime('%H:%M')}"
+        )
 
 
 __all__ = [

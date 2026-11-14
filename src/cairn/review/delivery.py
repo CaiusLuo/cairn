@@ -122,9 +122,9 @@ class ReviewDeliveryCoordinator:
 
     async def start(self) -> None:
         self._stopped = False
-        # A started row means the process may have sent it. Never retry it
+        # A sending row means the process may have sent it. Never retry it
         # automatically; an operator must inspect it first.
-        await asyncio.to_thread(self.store.recover_started_deliveries)
+        await asyncio.to_thread(self.store.recover_sending_deliveries)
         self._loop_task = asyncio.create_task(self._loop())
         self.rescan()
 
@@ -173,7 +173,12 @@ class ReviewDeliveryCoordinator:
             return
         pending = await asyncio.to_thread(
             self.store.list_deliveries,
-            statuses=frozenset({ReviewDeliveryStatus.PENDING}),
+            statuses=frozenset(
+                {
+                    ReviewDeliveryStatus.PENDING,
+                    ReviewDeliveryStatus.BLOCKED_OFFLINE,
+                }
+            ),
         )
         now = time.monotonic()
         for delivery in pending:
@@ -196,7 +201,10 @@ class ReviewDeliveryCoordinator:
 
     async def _consider(self, review_id: str) -> None:
         delivery = await asyncio.to_thread(self.store.get_delivery, review_id)
-        if delivery is None or delivery.status is not ReviewDeliveryStatus.PENDING:
+        if delivery is None or delivery.status not in (
+            ReviewDeliveryStatus.PENDING,
+            ReviewDeliveryStatus.BLOCKED_OFFLINE,
+        ):
             return
         review = await asyncio.to_thread(self.store.get, review_id)
         if review is None or review.summary is None:
@@ -228,7 +236,7 @@ class ReviewDeliveryCoordinator:
                 context_token=context,
             )
             if outcome is ProactiveSendOutcome.SENT:
-                await asyncio.to_thread(self.store.mark_delivery_sent, review_id)
+                await asyncio.to_thread(self.store.mark_delivery_accepted, review_id)
             elif outcome in (
                 ProactiveSendOutcome.REJECTED,
                 ProactiveSendOutcome.UNAVAILABLE,
@@ -245,14 +253,14 @@ class ReviewDeliveryCoordinator:
                 self._deferred[review_id] = time.monotonic() + self.retry_seconds
             else:
                 await asyncio.to_thread(
-                    self.store.mark_delivery_unconfirmed,
+                    self.store.mark_delivery_unknown,
                     review_id,
                     "send_unconfirmed",
                 )
         except asyncio.CancelledError:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(
-                    self.store.mark_delivery_unconfirmed,
+                    self.store.mark_delivery_unknown,
                     review_id,
                     "delivery_cancelled",
                 )
@@ -260,7 +268,7 @@ class ReviewDeliveryCoordinator:
         except Exception as exc:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(
-                    self.store.mark_delivery_unconfirmed,
+                    self.store.mark_delivery_unknown,
                     review_id,
                     f"delivery_error:{type(exc).__name__}",
                 )
@@ -270,11 +278,17 @@ def delivery_payload(delivery: StoredReviewDelivery | None) -> dict[str, object]
     if delivery is None:
         return None
     return {
+        "delivery_id": delivery.delivery_id,
         "review_id": delivery.review_id,
+        "review_version": delivery.review_version,
+        "channel": delivery.channel,
         "status": delivery.status.value,
+        "attempt_id": delivery.attempt_id,
         "attempts": delivery.attempts,
         "last_error": delivery.last_error,
         "created_at": delivery.created_at,
+        "attempted_at": delivery.attempted_at,
+        "completed_at": delivery.completed_at,
         "updated_at": delivery.updated_at,
     }
 

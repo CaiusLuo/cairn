@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cairn.agent.budget import DEFAULT_MAX_STEPS, RunBudget
 from cairn.server.paths import ServerPaths, default_data_root
@@ -20,10 +22,20 @@ class Services:
     wechat: bool = True
     schedule: bool = True
     memory: bool = True
-    review_schedule: bool = True
 
 
 DEFAULT_SERVICES = Services()
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewConfig:
+    enabled: bool = False
+    time: str = "20:30"
+    timezone: str = "Asia/Shanghai"
+
+
+DEFAULT_REVIEW = ReviewConfig()
+_REVIEW_TIME = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +63,7 @@ class ServerConfig:
         )
     )
     services: Services = field(default_factory=Services)
+    review: ReviewConfig = field(default_factory=ReviewConfig)
     logging: Logging = field(default_factory=Logging)
 
     @property
@@ -136,9 +149,11 @@ def parse_server_config(
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError:
         raise ValueError("Invalid Server TOML configuration") from None
-    sections = {"server", "budget", "services", "logging"}
+    sections = {"server", "budget", "services", "review", "logging"}
     if set(data) - sections or any(not isinstance(v, dict) for v in data.values()):
-        raise ValueError("Expected only [server], [budget], [services], [logging]")
+        raise ValueError(
+            "Expected only [server], [budget], [services], [review], [logging]"
+        )
     server_fields = {
         "workspace",
         "data_root",
@@ -156,6 +171,7 @@ def parse_server_config(
         "server": server_fields,
         "budget": budget_fields,
         "services": {f.name for f in fields(Services)},
+        "review": {f.name for f in fields(ReviewConfig)},
         "logging": {f.name for f in fields(Logging)},
     }
     for section, names in allowed.items():
@@ -261,6 +277,32 @@ def parse_server_config(
         "trace",
     }:
         raise ValueError("Invalid logging.level")
+    review_group = dict(data.get("review", {}))
+    for key in allowed["review"]:
+        env = os.environ.get("CAIRN_REVIEW_" + key.upper())
+        if env is not None:
+            review_group[key] = _boolean(env) if key == "enabled" else env
+    if type(review_group.get("enabled", False)) is not bool:
+        raise ValueError("review.enabled must be boolean")
+    daily_time = review_group.get("time", "20:30")
+    if not isinstance(daily_time, str) or not _REVIEW_TIME.fullmatch(daily_time):
+        raise ValueError("review.time must be HH:MM")
+    review_timezone = review_group.get("timezone", "Asia/Shanghai")
+    if not isinstance(review_timezone, str) or not review_timezone.strip():
+        raise ValueError("review.timezone must not be blank")
+    try:
+        ZoneInfo(review_timezone.strip())
+    except (ZoneInfoNotFoundError, ValueError):
+        raise ValueError("review.timezone is unknown") from None
+    review = ReviewConfig(
+        enabled=review_group.get("enabled", False),
+        time=daily_time,
+        timezone=review_timezone.strip(),
+    )
     return ServerConfig(
-        config_file=chosen, **values, budget=RunBudget(**budget), **groups
+        config_file=chosen,
+        **values,
+        budget=RunBudget(**budget),
+        review=review,
+        **groups,
     )

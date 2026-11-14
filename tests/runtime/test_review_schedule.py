@@ -122,6 +122,28 @@ def test_cutoff_day_is_the_most_recent_2030_boundary(tmp_path: Path) -> None:
         assert due.isoformat() == expected
 
 
+def test_generation_identity_includes_cutoff_and_timezone(tmp_path: Path) -> None:
+    service = FakeService()
+    store = ScheduleStore(tmp_path / "schedules")
+    shanghai = ReviewScheduleCoordinator(
+        service=service,  # type: ignore[arg-type]
+        store=store,
+        clock=lambda: AFTER_CUTOFF,
+    )
+    utc = ReviewScheduleCoordinator(
+        service=service,  # type: ignore[arg-type]
+        store=store,
+        clock=lambda: AFTER_CUTOFF,
+        timezone="UTC",
+        cutoff=time(21, 15),
+    )
+    day = AFTER_CUTOFF.date()
+    assert (
+        shanghai._request_id(day) == "host-daily-review:2026-01-15:Asia/Shanghai:20:30"
+    )
+    assert utc._request_id(day) == "host-daily-review:2026-01-15:UTC:21:15"
+
+
 def test_tick_generates_once_with_cutoff_and_delivery_intent(
     tmp_path: Path,
 ) -> None:
@@ -135,7 +157,7 @@ def test_tick_generates_once_with_cutoff_and_delivery_intent(
         assert service.calls == [
             {
                 "day": AFTER_CUTOFF.date(),
-                "request_id": "host-daily-review:2026-01-15:Asia/Shanghai",
+                "request_id": "host-daily-review:2026-01-15:Asia/Shanghai:20:30",
                 "timezone": TZ,
                 "regenerate": False,
                 "cutoff": time(20, 30),

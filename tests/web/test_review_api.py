@@ -408,7 +408,7 @@ def test_delivery_status_is_visible_and_manual_resend_is_authenticated(
             sender_id="owner",
             context_token="ctx-1",
         )
-        service.store.mark_delivery_unconfirmed(review_id, "send_unconfirmed")
+        service.store.mark_delivery_unknown(review_id, "send_unconfirmed")
         requeued = client.post(
             f"/api/knowledge/reviews/{review_id}/delivery/resend",
             json={"rebind": True},

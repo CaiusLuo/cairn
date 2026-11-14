@@ -38,10 +38,11 @@ class ReviewStatus(StrEnum):
 
 class ReviewDeliveryStatus(StrEnum):
     PENDING = "pending"
-    STARTED = "started"
-    SENT = "sent"
-    UNCONFIRMED = "unconfirmed"
-    MANUAL_REVIEW = "manual_review"
+    BLOCKED_OFFLINE = "blocked_offline"
+    SENDING = "sending"
+    ACCEPTED = "accepted"
+    DELIVERY_UNKNOWN = "delivery_unknown"
+    FAILED_PERMANENT = "failed_permanent"
 
 
 class SourceTrust(StrEnum):
@@ -366,23 +367,24 @@ class StoredReview(BaseModel):
 
 
 class StoredReviewDelivery(BaseModel):
-    """The host-owned delivery fact for one completed review.
-
-    ``account_digest`` and ``sender_digest`` are bound on the first attempt.
-    They are digests so the private identities never leave the host store.
-    """
+    """The host-owned delivery fact for one completed review version."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    delivery_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     review_id: str = Field(min_length=1, max_length=100)
-    delivery_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+    review_version: int = Field(ge=1)
+    channel: str = Field(default="wechat", min_length=1, max_length=32)
+    account_id: str = Field(default="", max_length=200)
+    recipient: str = Field(default="", max_length=200)
     status: ReviewDeliveryStatus
-    account_digest: str = Field(default="", max_length=64)
-    sender_digest: str = Field(default="", max_length=64)
-    context_token: str = Field(default="", max_length=4096)
+    attempt_id: str = Field(default="", max_length=64)
     attempts: int = Field(default=0, ge=0)
+    context_token: str = Field(default="", max_length=4096)
     last_error: str | None = Field(default=None, max_length=500)
     created_at: str
+    attempted_at: str | None = None
+    completed_at: str | None = None
     updated_at: str
 
 
