@@ -57,15 +57,18 @@ def test_runtime_bootstrap_exposes_reviews_and_finishes_empty_days(
         assert detail.json()["summary_markdown"]
         assert body["overview"] in detail.json()["summary_markdown"]
 
+        # The daily report occupies a host-cutoff window in W03, so it is real
+        # weekly evidence that would need a model. This runtime has no provider;
+        # use the following empty week to verify local completion.
         weekly = client.post(
             "/api/knowledge/reviews/weekly",
-            json={"week_id": "2026-W03", "request_id": "runtime-empty-week"},
+            json={"week_id": "2026-W04", "request_id": "runtime-empty-week"},
             headers={"Origin": "http://127.0.0.1:8777"},
         )
         assert weekly.status_code == 202
         weekly_body = weekly.json()
         assert weekly_body["status"] == "completed"
-        assert weekly_body["week_id"] == "2026-W03"
+        assert weekly_body["week_id"] == "2026-W04"
         weekly_detail = client.get(f"/api/knowledge/reviews/{weekly_body['review_id']}")
         assert weekly_detail.status_code == 200
-        assert weekly_detail.json()["summary"]["week_id"] == "2026-W03"
+        assert weekly_detail.json()["summary"]["week_id"] == "2026-W04"
