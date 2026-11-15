@@ -338,6 +338,60 @@ class DailyReview(BaseModel):
         return values
 
 
+class WeeklyReview(BaseModel):
+    """Server-validated weekly report; daily reviews are evidence, not authority."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    week_id: str = Field(pattern=r"^\d{4}-W\d{2}$")
+    period_start: datetime
+    period_end: datetime
+    overview: str = Field(min_length=1, max_length=6000)
+    major_events: tuple[ReviewItem, ...] = Field(default=(), max_length=6)
+    progress: tuple[ReviewItem, ...] = Field(default=(), max_length=6)
+    knowledge_insights: tuple[ReviewItem, ...] = Field(default=(), max_length=5)
+    recurring_problems: tuple[ReviewItem, ...] = Field(default=(), max_length=5)
+    next_week_priorities: tuple[ReviewItem, ...] = Field(default=(), max_length=5)
+    source_refs: tuple[str, ...] = Field(default=(), max_length=MAX_SOURCE_REFS)
+    confidence_notes: tuple[str, ...] = Field(default=(), max_length=5)
+
+    @field_validator("overview")
+    @classmethod
+    def _overview_has_content(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("overview must not be blank")
+        return value
+
+    @field_validator("source_refs")
+    @classmethod
+    def _top_refs_are_clean(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        cleaned: list[str] = []
+        for value in values:
+            if not isinstance(value, str):
+                raise ValueError("source refs must be strings")
+            item = value.strip().strip("`")
+            if not item:
+                raise ValueError("source refs must not be blank")
+            if len(item) > 200:
+                raise ValueError("a source ref must be at most 200 characters")
+            if item not in cleaned:
+                cleaned.append(item)
+        return tuple(cleaned)
+
+    @field_validator("confidence_notes")
+    @classmethod
+    def _confidence_notes_are_bounded(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        for value in values:
+            if not value.strip():
+                raise ValueError("confidence notes must not be blank")
+            if len(value) > 500:
+                raise ValueError("a confidence note must be at most 500 characters")
+        return values
+
+
+ReviewSummary = DailyReview | WeeklyReview
+
+
 class StoredReview(BaseModel):
     """One immutable review version as persisted in the knowledge database."""
 
@@ -354,7 +408,7 @@ class StoredReview(BaseModel):
     collection_status: tuple[SourceCollectionStatus, ...]
     source_snapshots: tuple[SourceSnapshot, ...] = ()
     input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    summary: DailyReview | None = None
+    summary: ReviewSummary | None = None
     summary_markdown: str | None = None
     model_id: str | None = None
     generation_attempts: int = Field(default=0, ge=0)
@@ -440,6 +494,7 @@ __all__ = [
     "ReviewInput",
     "ReviewItem",
     "ReviewStatus",
+    "ReviewSummary",
     "ReviewType",
     "SourceCollectionState",
     "SourceCollectionStatus",
@@ -448,6 +503,7 @@ __all__ = [
     "SourceTrust",
     "StoredReview",
     "StoredReviewDelivery",
+    "WeeklyReview",
     "new_review_id",
     "review_input_fingerprint",
 ]

@@ -31,6 +31,10 @@ DEFAULT_SERVICES = Services()
 class ReviewConfig:
     enabled: bool = False
     time: str = "20:30"
+    # Weekly generation is independent of the daily schedule and of WeChat
+    # login. It summarizes the seven daily windows ending at Sunday's cutoff.
+    weekly_enabled: bool = False
+    weekly_time: str = "20:40"
     timezone: str = "Asia/Shanghai"
     # Host authorization for proactive WeChat delivery. ``recipient`` is the
     # WeChat user ID that may receive scheduled reviews; it is never inferred
@@ -286,12 +290,24 @@ def parse_server_config(
     for key in allowed["review"]:
         env = os.environ.get("CAIRN_REVIEW_" + key.upper())
         if env is not None:
-            review_group[key] = _boolean(env) if key == "enabled" else env
+            review_group[key] = (
+                _boolean(env) if key in {"enabled", "weekly_enabled"} else env
+            )
     if type(review_group.get("enabled", False)) is not bool:
         raise ValueError("review.enabled must be boolean")
+    if type(review_group.get("weekly_enabled", False)) is not bool:
+        raise ValueError("review.weekly_enabled must be boolean")
     daily_time = review_group.get("time", "20:30")
     if not isinstance(daily_time, str) or not _REVIEW_TIME.fullmatch(daily_time):
         raise ValueError("review.time must be HH:MM")
+    weekly_time = review_group.get("weekly_time", "20:40")
+    if not isinstance(weekly_time, str) or not _REVIEW_TIME.fullmatch(weekly_time):
+        raise ValueError("review.weekly_time must be HH:MM")
+    weekly_enabled = review_group.get("weekly_enabled", False)
+    if weekly_enabled and weekly_time <= daily_time:
+        # The weekly window ends at the daily cutoff; running earlier would
+        # summarize a period whose daily review has not happened yet.
+        raise ValueError("review.weekly_time must be later than review.time")
     review_timezone = review_group.get("timezone", "Asia/Shanghai")
     if not isinstance(review_timezone, str) or not review_timezone.strip():
         raise ValueError("review.timezone must not be blank")
@@ -312,11 +328,15 @@ def parse_server_config(
     review_account = review_account.strip()
     review_recipient = review_recipient.strip()
     enabled = review_group.get("enabled", False)
-    if enabled and not review_recipient:
-        raise ValueError("review.recipient is required when review is enabled")
+    if (enabled or weekly_enabled) and not review_recipient:
+        raise ValueError(
+            "review.recipient is required when a review schedule is enabled"
+        )
     review = ReviewConfig(
         enabled=enabled,
         time=daily_time,
+        weekly_enabled=weekly_enabled,
+        weekly_time=weekly_time,
         timezone=review_timezone.strip(),
         account_id=review_account,
         recipient=review_recipient,

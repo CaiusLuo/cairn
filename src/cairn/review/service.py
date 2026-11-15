@@ -1,4 +1,4 @@
-"""Restricted generation and lifecycle of daily review reports."""
+"""Restricted generation and lifecycle of daily and weekly review reports."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import asyncio
 import json
 import random
 from datetime import date, time
-from typing import Protocol
+from typing import Any, Protocol
 
 from cairn.agent.models.client import LLMClient
 from cairn.agent.models.messages import LLMResponse, Message
@@ -16,6 +16,7 @@ from cairn.review.models import (
     ReviewInput,
     ReviewItem,
     ReviewStatus,
+    ReviewSummary,
     ReviewType,
     SourceCollectionState,
     SourceSnapshot,
@@ -93,19 +94,20 @@ class ReviewGenerationError(RuntimeError):
         super().__init__(code)
 
 
-class DailyReviewService:
+class ReviewServiceBase:
     """Own the small asynchronous boundary between HTTP and one LLM call.
 
-    ``generate_daily_review`` performs local collection and persistence before
-    returning. The provider call runs in a background task, so a slow or
-    unavailable model never holds an HTTP request open.
+    ``generate_*`` performs local collection and persistence before returning.
+    The provider call runs in a background task, so a slow or unavailable model
+    never holds an HTTP request open. Subclasses supply the report shape, its
+    prompt, citation rules and Markdown renderer.
     """
 
     def __init__(
         self,
         *,
         store: ReviewStore,
-        collector: ReviewCollector,
+        collector: Any,
         llm: LLMClient | None = None,
         model_id: str | None = None,
         timeout_seconds: float = TIMEOUT_SECONDS,
@@ -147,6 +149,193 @@ class DailyReviewService:
             await asyncio.to_thread(self.store.fail, review_id, "generation_cancelled")
         self._tasks.clear()
         self._started = False
+
+    async def _finish_without_sources(
+        self,
+        review: StoredReview,
+        review_input: ReviewInput,
+        *,
+        request_delivery: bool = False,
+    ) -> StoredReview:
+        await asyncio.to_thread(self.store.mark_generating, review.review_id, None)
+        summary = self._insufficient_summary(review_input)
+        markdown = self._render_markdown(summary, review_input)
+        return await asyncio.to_thread(
+            self.store.complete,
+            review.review_id,
+            summary=summary,
+            summary_markdown=markdown,
+            model_id=None,
+            request_delivery=request_delivery,
+            delivery_target=self.delivery_target if request_delivery else None,
+        )
+
+    def _ensure_generation(
+        self,
+        review_id: str,
+        review_input: ReviewInput,
+        *,
+        request_delivery: bool = False,
+    ) -> None:
+        if self._closed:
+            return
+        current = self._tasks.get(review_id)
+        if current is not None and not current.done():
+            return
+        task = asyncio.create_task(
+            self._run(
+                review_id,
+                review_input,
+                request_delivery=request_delivery,
+            )
+        )
+        self._tasks[review_id] = task
+
+        def finished(done: asyncio.Task[None]) -> None:
+            if self._tasks.get(review_id) is done:
+                self._tasks.pop(review_id, None)
+
+        task.add_done_callback(finished)
+
+    async def _run(
+        self,
+        review_id: str,
+        review_input: ReviewInput,
+        *,
+        request_delivery: bool = False,
+    ) -> None:
+        try:
+            claimed = await asyncio.to_thread(
+                self.store.mark_generating, review_id, self.model_id
+            )
+            if claimed.status is not ReviewStatus.GENERATING:
+                if request_delivery and claimed.status is ReviewStatus.COMPLETED:
+                    await asyncio.to_thread(
+                        self.store.ensure_delivery,
+                        review_id,
+                        target=self.delivery_target,
+                    )
+                return
+            if self.llm is None:
+                raise ReviewGenerationError("provider_unavailable")
+            response = await self._call_model(self._messages(review_input))
+            if response.tool_calls:
+                raise ReviewGenerationError("model_tool_calls_forbidden")
+            content = response.content
+            if content is None or not content.strip():
+                raise ReviewGenerationError("empty_model_response")
+            if len(content) > MAX_MODEL_OUTPUT_CHARS:
+                raise ReviewGenerationError("model_output_too_large")
+            summary = self._parse_and_validate(content, review_input)
+            markdown = self._render_markdown(summary, review_input)
+            await asyncio.to_thread(
+                self.store.complete,
+                review_id,
+                summary=summary,
+                summary_markdown=markdown,
+                model_id=self.model_id,
+                request_delivery=request_delivery,
+                delivery_target=(self.delivery_target if request_delivery else None),
+            )
+        except asyncio.CancelledError:
+            await asyncio.to_thread(self.store.fail, review_id, "generation_cancelled")
+            raise
+        except ReviewGenerationError as exc:
+            await asyncio.to_thread(self.store.fail, review_id, exc.code)
+        except Exception:
+            await asyncio.to_thread(self.store.fail, review_id, "model_error")
+
+    async def _call_model(self, messages: list[Message]) -> LLMResponse:
+        assert self.llm is not None
+        try:
+            return await asyncio.wait_for(
+                self.llm.generate(messages, tools=None),
+                timeout=self.timeout_seconds,
+            )
+        except TimeoutError:
+            raise ReviewGenerationError("model_timeout") from None
+        except Exception:
+            raise ReviewGenerationError("model_error") from None
+
+    def _persisted_sources(
+        self, review_input: ReviewInput
+    ) -> tuple[SourceSnapshot, ...]:
+        """Keep the exact redacted evidence that the report was based on."""
+        return tuple(
+            source.model_copy(
+                update={"snapshot": redact_text(source.snapshot, self.sensitive_values)}
+            )
+            for source in review_input.included_sources
+        )
+
+    def _messages(self, review_input: ReviewInput) -> list[Message]:
+        raise NotImplementedError
+
+    def _parse_and_validate(
+        self, content: str, review_input: ReviewInput
+    ) -> ReviewSummary:
+        raise NotImplementedError
+
+    def _render_markdown(
+        self, summary: ReviewSummary, review_input: ReviewInput
+    ) -> str:
+        raise NotImplementedError
+
+    def _insufficient_summary(self, review_input: ReviewInput) -> ReviewSummary:
+        raise NotImplementedError
+
+    @staticmethod
+    def _extract_json(content: str) -> object:
+        text = content.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if len(lines) >= 3 and lines[-1].strip().startswith("```"):
+                text = "\n".join(lines[1:-1]).strip()
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            raise ReviewGenerationError("invalid_model_json")
+        try:
+            return json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            raise ReviewGenerationError("invalid_model_json") from None
+
+    async def wait_for_review(
+        self, review_id: str, *, timeout: float = 30.0
+    ) -> StoredReview:
+        """Test/operator helper; the HTTP API remains status-query only."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            record = await asyncio.to_thread(self.store.get, review_id)
+            if record is not None and record.status in {
+                ReviewStatus.COMPLETED,
+                ReviewStatus.FAILED,
+            }:
+                return record
+            if loop.time() >= deadline:
+                raise TimeoutError("review generation did not settle")
+            await asyncio.sleep(0.02)
+
+    async def get_review(self, review_id: str) -> StoredReview | None:
+        return await asyncio.to_thread(self.store.get, review_id)
+
+    async def list_reviews(
+        self,
+        *,
+        review_type: ReviewType | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[StoredReview, ...]:
+        return await asyncio.to_thread(
+            self.store.list_reviews,
+            review_type=review_type,
+            limit=limit,
+            offset=offset,
+        )
+
+
+class DailyReviewService(ReviewServiceBase):
+    """Generate one daily report per local cutoff window."""
 
     async def generate_daily_review(
         self,
@@ -216,125 +405,6 @@ class DailyReviewService:
             )
         return result.review
 
-    async def _finish_without_sources(
-        self,
-        review: StoredReview,
-        review_input: ReviewInput,
-        *,
-        request_delivery: bool = False,
-    ) -> StoredReview:
-        await asyncio.to_thread(self.store.mark_generating, review.review_id, None)
-        summary = self._insufficient_summary(review_input)
-        markdown = render_markdown(summary, review_input)
-        return await asyncio.to_thread(
-            self.store.complete,
-            review.review_id,
-            summary=summary,
-            summary_markdown=markdown,
-            model_id=None,
-            request_delivery=request_delivery,
-            delivery_target=self.delivery_target if request_delivery else None,
-        )
-
-    def _ensure_generation(
-        self,
-        review_id: str,
-        review_input: ReviewInput,
-        *,
-        request_delivery: bool = False,
-    ) -> None:
-        if self._closed:
-            return
-        current = self._tasks.get(review_id)
-        if current is not None and not current.done():
-            return
-        task = asyncio.create_task(
-            self._run(
-                review_id,
-                review_input,
-                request_delivery=request_delivery,
-            )
-        )
-        self._tasks[review_id] = task
-
-        def finished(done: asyncio.Task[None]) -> None:
-            if self._tasks.get(review_id) is done:
-                self._tasks.pop(review_id, None)
-
-        task.add_done_callback(finished)
-
-    async def _run(
-        self,
-        review_id: str,
-        review_input: ReviewInput,
-        *,
-        request_delivery: bool = False,
-    ) -> None:
-        try:
-            claimed = await asyncio.to_thread(
-                self.store.mark_generating, review_id, self.model_id
-            )
-            if claimed.status is not ReviewStatus.GENERATING:
-                if request_delivery and claimed.status is ReviewStatus.COMPLETED:
-                    await asyncio.to_thread(
-                        self.store.ensure_delivery,
-                        review_id,
-                        target=self.delivery_target,
-                    )
-                return
-            if self.llm is None:
-                raise ReviewGenerationError("provider_unavailable")
-            response = await self._call_model(review_input)
-            if response.tool_calls:
-                raise ReviewGenerationError("model_tool_calls_forbidden")
-            content = response.content
-            if content is None or not content.strip():
-                raise ReviewGenerationError("empty_model_response")
-            if len(content) > MAX_MODEL_OUTPUT_CHARS:
-                raise ReviewGenerationError("model_output_too_large")
-            summary = self._parse_and_validate(content, review_input)
-            markdown = render_markdown(summary, review_input)
-            await asyncio.to_thread(
-                self.store.complete,
-                review_id,
-                summary=summary,
-                summary_markdown=markdown,
-                model_id=self.model_id,
-                request_delivery=request_delivery,
-                delivery_target=(self.delivery_target if request_delivery else None),
-            )
-        except asyncio.CancelledError:
-            await asyncio.to_thread(self.store.fail, review_id, "generation_cancelled")
-            raise
-        except ReviewGenerationError as exc:
-            await asyncio.to_thread(self.store.fail, review_id, exc.code)
-        except Exception:
-            await asyncio.to_thread(self.store.fail, review_id, "model_error")
-
-    async def _call_model(self, review_input: ReviewInput) -> LLMResponse:
-        assert self.llm is not None
-        messages = self._messages(review_input)
-        try:
-            return await asyncio.wait_for(
-                self.llm.generate(messages, tools=None),
-                timeout=self.timeout_seconds,
-            )
-        except TimeoutError:
-            raise ReviewGenerationError("model_timeout") from None
-        except Exception:
-            raise ReviewGenerationError("model_error") from None
-
-    def _persisted_sources(
-        self, review_input: ReviewInput
-    ) -> tuple[SourceSnapshot, ...]:
-        """Keep the exact redacted evidence that the report was based on."""
-        return tuple(
-            source.model_copy(
-                update={"snapshot": redact_text(source.snapshot, self.sensitive_values)}
-            )
-            for source in review_input.included_sources
-        )
-
     def _messages(self, review_input: ReviewInput) -> list[Message]:
         sources = [
             source.prompt_payload(
@@ -384,21 +454,6 @@ class DailyReviewService:
             raise ReviewGenerationError("invalid_model_output")
         summary = self._validate_citations(summary, review_input)
         return self._redact_summary(summary)
-
-    @staticmethod
-    def _extract_json(content: str) -> object:
-        text = content.strip()
-        if text.startswith("```"):
-            lines = text.splitlines()
-            if len(lines) >= 3 and lines[-1].strip().startswith("```"):
-                text = "\n".join(lines[1:-1]).strip()
-        start, end = text.find("{"), text.rfind("}")
-        if start < 0 or end <= start:
-            raise ReviewGenerationError("invalid_model_json")
-        try:
-            return json.loads(text[start : end + 1])
-        except json.JSONDecodeError:
-            raise ReviewGenerationError("invalid_model_json") from None
 
     @staticmethod
     def _validate_citations(
@@ -464,8 +519,7 @@ class DailyReviewService:
             }
         )
 
-    @staticmethod
-    def _insufficient_summary(review_input: ReviewInput) -> DailyReview:
+    def _insufficient_summary(self, review_input: ReviewInput) -> DailyReview:
         if review_input.sources:
             return DailyReview(
                 date=review_input.date,
@@ -478,39 +532,12 @@ class DailyReviewService:
             confidence_notes=("当天没有收集到任何可复盘的来源。",),
         )
 
-    async def wait_for_review(
-        self, review_id: str, *, timeout: float = 30.0
-    ) -> StoredReview:
-        """Test/operator helper; the HTTP API remains status-query only."""
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            record = await asyncio.to_thread(self.store.get, review_id)
-            if record is not None and record.status in {
-                ReviewStatus.COMPLETED,
-                ReviewStatus.FAILED,
-            }:
-                return record
-            if loop.time() >= deadline:
-                raise TimeoutError("review generation did not settle")
-            await asyncio.sleep(0.02)
-
-    async def get_review(self, review_id: str) -> StoredReview | None:
-        return await asyncio.to_thread(self.store.get, review_id)
-
-    async def list_reviews(
-        self,
-        *,
-        review_type: ReviewType | None = None,
-        limit: int = 20,
-        offset: int = 0,
-    ) -> tuple[StoredReview, ...]:
-        return await asyncio.to_thread(
-            self.store.list_reviews,
-            review_type=review_type,
-            limit=limit,
-            offset=offset,
-        )
+    def _render_markdown(
+        self, summary: ReviewSummary, review_input: ReviewInput
+    ) -> str:
+        if not isinstance(summary, DailyReview):
+            raise TypeError("daily review service produced a non-daily summary")
+        return render_markdown(summary, review_input)
 
 
 def render_markdown(summary: DailyReview, review_input: ReviewInput) -> str:
@@ -558,5 +585,6 @@ __all__ = [
     "DailyReviewService",
     "ReviewCollector",
     "ReviewGenerationError",
+    "ReviewServiceBase",
     "render_markdown",
 ]

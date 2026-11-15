@@ -20,8 +20,10 @@ from cairn.integrations.wechat.session import (
 from cairn.review.models import (
     DeliveryTarget,
     ReviewDeliveryStatus,
+    ReviewItem,
     StoredReview,
     StoredReviewDelivery,
+    WeeklyReview,
 )
 from cairn.review.store import ReviewStore
 
@@ -40,6 +42,8 @@ def format_review_message(
         raise ValueError("a review must be completed before delivery")
     if max_chars < 120:
         raise ValueError("message limit is too small for a readable review")
+    if isinstance(summary, WeeklyReview):
+        return _format_weekly_message(record, summary, max_chars=max_chars)
 
     def moment(value: str) -> str:
         try:
@@ -89,6 +93,66 @@ def format_review_message(
     if len(text) <= max_chars:
         return text
     marker = "\n…\n(内容过长, 完整日报见 Web)"
+    keep = max_chars - len(marker)
+    truncated = text[:keep]
+    last_break = truncated.rfind("\n")
+    if last_break > keep // 2:
+        truncated = truncated[:last_break]
+    return truncated.rstrip() + marker
+
+
+def _format_weekly_message(
+    record: StoredReview, summary: WeeklyReview, *, max_chars: int
+) -> str:
+    """Render the weekly report for mobile reading, without Markdown tables."""
+
+    def moment(value: str) -> str:
+        try:
+            return datetime.fromisoformat(value).strftime("%m-%d %H:%M")
+        except ValueError:
+            return value
+
+    lines = [
+        "Cairn · 每周复盘",
+        f"周次: {summary.week_id}",
+        f"覆盖: {moment(record.period_start)} → {moment(record.period_end)}",
+        "",
+        "概览",
+        summary.overview,
+    ]
+
+    def section(title: str, items: tuple[ReviewItem, ...]) -> None:
+        if not items:
+            return
+        lines.extend(["", title])
+        for index, item in enumerate(items, start=1):
+            line = f"{index}. {item.text}"
+            if item.source_refs:
+                line += f" (依据: {', '.join(item.source_refs[:3])})"
+            lines.append(line)
+
+    section("重要事件", summary.major_events)
+    section("本周进展", summary.progress)
+    section("知识收获", summary.knowledge_insights)
+    section("反复出现的问题", summary.recurring_problems)
+    section("下周优先事项", summary.next_week_priorities)
+
+    if summary.confidence_notes:
+        lines.extend(["", "说明"])
+        lines.extend(f"- {note}" for note in summary.confidence_notes)
+
+    source_bits = [
+        f"{status.source_type} {status.included}"
+        for status in record.collection_status
+        if status.included
+    ]
+    if source_bits:
+        lines.extend(["", "来源: " + " · ".join(source_bits)])
+
+    text = "\n".join(lines).strip()
+    if len(text) <= max_chars:
+        return text
+    marker = "\n…\n(内容过长, 完整周报见 Web)"
     keep = max_chars - len(marker)
     truncated = text[:keep]
     last_break = truncated.rfind("\n")

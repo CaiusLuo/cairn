@@ -39,7 +39,11 @@ def test_precedence_paths_and_budget_do_not_depend_on_cwd(
         '[logging]\nlevel = "invalid"',
         '[services]\nwechat = "yes"',
         '[review]\nenabled = "yes"',
+        '[review]\nweekly_enabled = "yes"',
         '[review]\ntime = "25:00"',
+        '[review]\nweekly_time = "20:99"',
+        '[review]\nweekly_enabled = true\nrecipient = "owner"\nweekly_time = "20:00"',
+        "[review]\nweekly_enabled = true",
         '[review]\ntimezone = "Bad/Zone"',
         "[review]\nenabled = true",
         '[review]\nenabled = true\nrecipient = "owner"\naccount_id = 42',
@@ -56,26 +60,37 @@ def test_invalid_config_is_rejected(tmp_path: Path, text: str) -> None:
 
 
 def test_review_schedule_is_disabled_until_explicitly_configured(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "config.toml"
     path.write_text("")
     default = load_server_config(path)
     assert not default.review.enabled
     assert default.review.time == "20:30"
+    assert not default.review.weekly_enabled
+    assert default.review.weekly_time == "20:40"
     assert default.review.timezone == "Asia/Shanghai"
     assert default.review.recipient == ""
 
     path.write_text(
         '[review]\nenabled = true\ntime = "21:15"\ntimezone = "UTC"\n'
         'account_id = "bot-a"\nrecipient = "owner"\n'
+        'weekly_enabled = true\nweekly_time = "21:30"\n'
     )
     configured = load_server_config(path)
     assert configured.review.enabled
     assert configured.review.time == "21:15"
+    assert configured.review.weekly_enabled
+    assert configured.review.weekly_time == "21:30"
     assert configured.review.timezone == "UTC"
     assert configured.review.account_id == "bot-a"
     assert configured.review.recipient == "owner"
+
+    monkeypatch.setenv("CAIRN_REVIEW_WEEKLY_ENABLED", "false")
+    monkeypatch.setenv("CAIRN_REVIEW_WEEKLY_TIME", "22:45")
+    overridden = load_server_config(path)
+    assert not overridden.review.weekly_enabled
+    assert overridden.review.weekly_time == "22:45"
 
 
 def test_env_data_root_wins_over_toml(

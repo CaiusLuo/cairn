@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -24,6 +24,7 @@ from cairn.review.models import (
     SourceManifestEntry,
     SourceSnapshot,
     SourceTrust,
+    WeeklyReview,
 )
 from cairn.review.store import (
     ReviewPeriodCompleted,
@@ -360,9 +361,9 @@ def test_completed_reviews_are_immutable_and_regeneration_versions(
 
     old = store.get(created.review_id)
     new = store.get(regenerated.review.review_id)
-    assert old is not None and old.summary is not None
+    assert old is not None and isinstance(old.summary, DailyReview)
     assert old.summary.completed_activities[0].text == "first report"
-    assert new is not None and new.summary is not None
+    assert new is not None and isinstance(new.summary, DailyReview)
     assert new.summary.completed_activities[0].text == "second report"
     assert len(store.list_reviews()) == 2
 
@@ -374,7 +375,7 @@ def test_completed_reviews_are_immutable_and_regeneration_versions(
     )
     store.fail(created.review_id, "overwrite attempt")
     unchanged = store.get(created.review_id)
-    assert unchanged is not None and unchanged.summary is not None
+    assert unchanged is not None and isinstance(unchanged.summary, DailyReview)
     assert unchanged.status is ReviewStatus.COMPLETED
     assert unchanged.summary.completed_activities[0].text == "first report"
     assert unchanged.error is None
@@ -752,3 +753,81 @@ def test_v4_delivery_ledger_upgrades_without_losing_rows(tmp_path: Path) -> None
         }
     assert version == 5
     assert "review_delivery_requests" in tables
+
+
+def _weekly_summary() -> WeeklyReview:
+    return WeeklyReview(
+        week_id="2026-W03",
+        period_start=datetime.fromisoformat("2026-01-11T20:30:00+08:00"),
+        period_end=datetime.fromisoformat("2026-01-18T20:30:00+08:00"),
+        overview="A week with one verified execution.",
+        progress=(
+            ReviewItem(text="Finished the release check.", source_refs=("run-1",)),
+        ),
+        source_refs=("run-1",),
+    )
+
+
+def test_weekly_summary_round_trips_and_old_daily_rows_stay_readable(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "knowledge"
+    store = ReviewStore(KnowledgeStore(root))
+    daily = _create(store, request_id="daily-before-weekly").review
+    _complete(store, daily.review_id, _summary())
+    weekly = _create(
+        store,
+        request_id="weekly-report",
+        review_type=ReviewType.WEEKLY,
+        day=date(2026, 1, 18),
+        start="2026-01-11T12:30:00+00:00",
+        end="2026-01-18T12:30:00+00:00",
+    ).review
+    store.mark_generating(weekly.review_id, "test-model")
+    store.complete(
+        weekly.review_id,
+        summary=_weekly_summary(),
+        summary_markdown="# 2026-W03 周报\n",
+        model_id="test-model",
+    )
+
+    reopened = ReviewStore(KnowledgeStore(root))
+    old_daily = reopened.get(daily.review_id)
+    assert old_daily is not None
+    assert isinstance(old_daily.summary, DailyReview)
+    loaded = reopened.get(weekly.review_id)
+    assert loaded is not None
+    assert isinstance(loaded.summary, WeeklyReview)
+    assert loaded.summary.week_id == "2026-W03"
+    assert loaded.summary.progress[0].source_refs == ("run-1",)
+
+
+def test_latest_completed_returns_the_newest_version_for_exact_period(
+    tmp_path: Path,
+) -> None:
+    store = ReviewStore(KnowledgeStore(tmp_path / "knowledge"))
+    first = _create(store, request_id="latest-v1").review
+    _complete(store, first.review_id, _summary())
+    second = _create(
+        store, request_id="latest-v2", fingerprint="c" * 64, regenerate=True
+    ).review
+    _complete(store, second.review_id, _summary(text="A newer version."))
+
+    latest = store.latest_completed(
+        review_type=ReviewType.DAILY,
+        period_start=START,
+        period_end=END,
+        timezone=TZ,
+    )
+    assert latest is not None
+    assert latest.review_id == second.review_id
+    assert latest.version == 2
+    assert (
+        store.latest_completed(
+            review_type=ReviewType.WEEKLY,
+            period_start=START,
+            period_end=END,
+            timezone=TZ,
+        )
+        is None
+    )

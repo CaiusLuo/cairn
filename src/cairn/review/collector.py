@@ -23,19 +23,26 @@ from cairn.knowledge.models import Clip
 from cairn.knowledge.store import KnowledgeStore
 from cairn.memory.store import PersonalMemoryStore
 from cairn.review.models import (
+    DailyReview,
     ReviewInput,
     ReviewType,
     SourceCollectionState,
     SourceCollectionStatus,
+    SourceManifestEntry,
     SourceSnapshot,
     SourceTrust,
+    StoredReview,
 )
+from cairn.review.store import ReviewStore
+from cairn.review.weekly import WeekPeriod
 from cairn.shared.redaction import redact_text
 
 MAX_INPUT_CHARS = 60_000
+MAX_WEEKLY_INPUT_CHARS = 100_000
 MAX_SOURCE_CHARS = 8_000
 CLIP_CONTENT_CHARS = 6_000
 MEMORY_ENTRY_CHARS = 4_000
+WEEKLY_WINDOW_DAYS = 7
 
 _MEMORY_HEADING = re.compile(r"^##\s+(\d{1,2}):(\d{2})\b")
 
@@ -596,8 +603,272 @@ class ReviewSourceCollector:
         return result
 
 
+class WeeklySourceCollector(ReviewSourceCollector):
+    """Collect seven daily windows without double-counting shared sources.
+
+    Completed daily reports are the primary summaries. Their persisted original
+    snapshots (and manifest-only identities for older reports) are included once
+    each so a weekly claim can cite the real Task/Clip/Run identity. When a
+    daily report is missing, the same unmodified daily collector gathers that
+    window's raw records and the gap is recorded explicitly.
+    """
+
+    def __init__(
+        self,
+        *,
+        reviews: ReviewStore,
+        knowledge: KnowledgeStore,
+        workspace: Path | str,
+        domain: DomainStore | None = None,
+        memory: PersonalMemoryStore | None = None,
+        memory_enabled: bool = True,
+        sensitive_values: tuple[str, ...] = (),
+        cutoff: time = time(20, 30),
+        max_chars: int = MAX_WEEKLY_INPUT_CHARS,
+    ) -> None:
+        super().__init__(
+            knowledge=knowledge,
+            workspace=workspace,
+            domain=domain,
+            memory=memory,
+            memory_enabled=memory_enabled,
+            sensitive_values=sensitive_values,
+            max_chars=max_chars,
+        )
+        self.reviews = reviews
+        self.cutoff = cutoff
+
+    def collect_weekly(self, period: WeekPeriod, timezone: str) -> ReviewInput:
+        if not isinstance(timezone, str) or not timezone.strip():
+            raise ValueError("timezone must not be blank")
+        try:
+            ZoneInfo(timezone.strip())
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError("unknown timezone") from None
+        if period.period_start.tzinfo is None or period.period_end.tzinfo is None:
+            raise ValueError("weekly period boundaries must be timezone-aware")
+        # Compare local dates, not absolute duration: a DST transition week is
+        # still seven local days even though it spans 167 or 169 hours.
+        start, end = period.period_start, period.period_end
+        same_cutoff = start.timetz().replace(tzinfo=None) == end.timetz().replace(
+            tzinfo=None
+        )
+        seven_days = end.date() == start.date() + timedelta(days=WEEKLY_WINDOW_DAYS)
+        if not seven_days or not same_cutoff:
+            raise ValueError("a weekly period must cover exactly seven days")
+
+        daily_sources: list[SourceSnapshot] = []
+        originals: dict[str, SourceSnapshot] = {}
+        raw_sources: list[SourceSnapshot] = []
+        missing_days: list[date] = []
+        duplicate_count = 0
+        seen: set[str] = set()
+
+        for offset in range(WEEKLY_WINDOW_DAYS):
+            start = period.period_start + timedelta(days=offset)
+            end = start + timedelta(days=1)
+            review = self.reviews.latest_completed(
+                review_type=ReviewType.DAILY,
+                period_start=start.isoformat(),
+                period_end=end.isoformat(),
+                timezone=timezone,
+            )
+            if review is None or review.summary is None:
+                missing_days.append(end.date())
+                continue
+            daily_sources.append(self._daily_review_source(review, end))
+            seen.add(review.review_id)
+            for source in review.source_snapshots:
+                if source.source_id in originals:
+                    duplicate_count += 1
+                    continue
+                originals[source.source_id] = source
+                seen.add(source.source_id)
+            snapshot_ids = {source.source_id for source in review.source_snapshots}
+            for entry in review.source_manifest:
+                if entry.source_id in snapshot_ids or entry.source_id in originals:
+                    continue
+                originals[entry.source_id] = self._identity_source(entry)
+                seen.add(entry.source_id)
+
+        for day in missing_days:
+            daily_input = self.collect_daily(day, timezone, cutoff=self.cutoff)
+            for source in daily_input.included_sources:
+                if source.source_id in seen or source.source_id in originals:
+                    duplicate_count += 1
+                    continue
+                raw_sources.append(source)
+                seen.add(source.source_id)
+
+        sources = daily_sources + list(originals.values()) + raw_sources
+        discovered = {
+            source_type: sum(1 for item in sources if item.source_type == source_type)
+            for source_type in (
+                "daily_review",
+                "development_task",
+                "development_run",
+                "knowledge_clip",
+                "personal_memory",
+            )
+        }
+        discovered["daily_review"] = WEEKLY_WINDOW_DAYS
+        sources = self._apply_weekly_budget(sources)
+
+        notes: dict[str, list[str]] = {source_type: [] for source_type in discovered}
+        if missing_days:
+            notes["daily_review"].append(
+                "缺少日报的日期: "
+                + ", ".join(day.isoformat() for day in missing_days)
+                + "; 这些日期使用原始记录补齐。"
+            )
+        else:
+            notes["daily_review"].append("七个日报周期均有已完成日报。")
+        if duplicate_count:
+            notes["daily_review"].append(
+                f"已去重 {duplicate_count} 个在多个日报中重复出现的原始来源。"
+            )
+        notes["daily_review"].append(
+            "日报是模型生成的二级总结, 不能扩大原始事实的证明范围。"
+        )
+
+        statuses: list[SourceCollectionStatus] = []
+        for source_type, total in discovered.items():
+            group = [item for item in sources if item.source_type == source_type]
+            included = sum(1 for item in group if item.included)
+            omitted = total - included
+            state = (
+                SourceCollectionState.PARTIAL
+                if omitted > 0
+                else SourceCollectionState.OK
+                if included > 0
+                else SourceCollectionState.EMPTY
+            )
+            statuses.append(
+                SourceCollectionStatus(
+                    source_type=source_type,
+                    status=state,
+                    discovered=total,
+                    included=included,
+                    omitted=omitted,
+                    notes=tuple(notes[source_type]),
+                )
+            )
+
+        return ReviewInput.build(
+            review_type=ReviewType.WEEKLY,
+            day=period.day,
+            timezone=timezone.strip(),
+            period_start=period.period_start,
+            period_end=period.period_end,
+            sources=tuple(sources),
+            collection_status=tuple(statuses),
+            budget_chars=self.max_chars,
+        )
+
+    def _daily_review_source(
+        self, review: StoredReview, window_end: datetime
+    ) -> SourceSnapshot:
+        summary = review.summary
+        if not isinstance(summary, DailyReview):
+            raise ValueError("a daily review source must be a completed daily report")
+        payload = {
+            "review_id": review.review_id,
+            "date": review.date.isoformat(),
+            "version": review.version,
+            "period_start": review.period_start,
+            "period_end": review.period_end,
+            "overview": summary.overview,
+            "completed_activities": [
+                item.model_dump(mode="json") for item in summary.completed_activities
+            ],
+            "knowledge_insights": [
+                item.model_dump(mode="json") for item in summary.knowledge_insights
+            ],
+            "problems": [item.model_dump(mode="json") for item in summary.problems],
+            "recommendations": [
+                item.model_dump(mode="json") for item in summary.recommendations
+            ],
+            "confidence_notes": list(summary.confidence_notes),
+            "source_manifest": [
+                entry.model_dump(mode="json") for entry in review.source_manifest
+            ],
+        }
+        full = _json(payload)
+        raw_hash = _sha256(full)
+        snapshot, truncated = _truncate(
+            redact_text(full, self.sensitive_values), MAX_SOURCE_CHARS
+        )
+        return SourceSnapshot(
+            source_type="daily_review",
+            source_id=review.review_id,
+            content_hash=raw_hash,
+            occurred_at=review.completed_at or window_end.isoformat(),
+            trust=SourceTrust.AGENT_INFERRED,
+            may_prove_completion=False,
+            verification="daily_review_summary",
+            snapshot=snapshot,
+            truncated=truncated,
+        )
+
+    @staticmethod
+    def _identity_source(entry: SourceManifestEntry) -> SourceSnapshot:
+        """Keep an older report's original identity even without its snapshot."""
+        payload = {
+            "source_id": entry.source_id,
+            "source_type": entry.source_type,
+            "occurred_at": entry.occurred_at,
+            "content_hash": entry.content_hash,
+            "trust": entry.trust.value,
+            "may_prove_completion": entry.may_prove_completion,
+            "verification": entry.verification,
+        }
+        return SourceSnapshot(
+            source_type=entry.source_type,
+            source_id=entry.source_id,
+            content_hash=entry.content_hash,
+            occurred_at=entry.occurred_at,
+            trust=entry.trust,
+            may_prove_completion=entry.may_prove_completion,
+            verification=entry.verification,
+            snapshot=_json(payload),
+        )
+
+    def _apply_weekly_budget(
+        self, sources: list[SourceSnapshot]
+    ) -> list[SourceSnapshot]:
+        priority = {
+            "daily_review": 0,
+            "development_task": 1,
+            "development_run": 2,
+            "knowledge_clip": 3,
+            "personal_memory": 4,
+        }
+        ordered = sorted(sources, key=lambda item: item.occurred_at, reverse=True)
+        ordered.sort(key=lambda item: priority.get(item.source_type, 9))
+        used = 0
+        result: list[SourceSnapshot] = []
+        for source in ordered:
+            cost = source.prompt_chars()
+            if used + cost <= self.max_chars:
+                result.append(source)
+                used += cost
+            else:
+                result.append(
+                    source.model_copy(
+                        update={
+                            "included": False,
+                            "omitted_reason": "input_budget_exhausted",
+                            "snapshot": "",
+                        }
+                    )
+                )
+        return result
+
+
 __all__ = [
     "MAX_INPUT_CHARS",
     "MAX_SOURCE_CHARS",
+    "MAX_WEEKLY_INPUT_CHARS",
     "ReviewSourceCollector",
+    "WeeklySourceCollector",
 ]
