@@ -18,6 +18,7 @@ from cairn.integrations.wechat.session import (
     WechatSessionController,
 )
 from cairn.review.models import (
+    DeliveryTarget,
     ReviewDeliveryStatus,
     StoredReview,
     StoredReviewDelivery,
@@ -104,13 +105,17 @@ class ReviewDeliveryCoordinator:
         *,
         store: ReviewStore,
         wechat: WechatSessionController,
+        target: DeliveryTarget,
         poll_interval: float = DEFAULT_POLL_SECONDS,
         max_parallel: int = DEFAULT_MAX_PARALLEL,
         message_chars: int = DEFAULT_MESSAGE_CHARS,
         retry_seconds: float = DEFAULT_RETRY_SECONDS,
     ) -> None:
+        if not target.recipient:
+            raise ValueError("review delivery requires an authorized recipient")
         self.store = store
         self.wechat = wechat
+        self.target = target
         self.poll_interval = max(0.05, poll_interval)
         self.max_parallel = max(1, max_parallel)
         self.message_chars = message_chars
@@ -166,11 +171,22 @@ class ReviewDeliveryCoordinator:
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self._wake.wait(), timeout=self.poll_interval)
 
+    def _authorized_account(self) -> str | None:
+        """The currently logged-in account, but only if the host allows it."""
+        account_id = self.wechat.account_id()
+        if account_id is None:
+            return None
+        if self.target.account_id and account_id != self.target.account_id:
+            return None
+        if self.wechat.recipient_id() != self.target.recipient:
+            # A different WeChat user is logged in; never redirect the report.
+            return None
+        return account_id
+
     async def _scan(self) -> None:
-        if self._stopped or self.wechat.account_id() is None:
+        if self._stopped or self._authorized_account() is None:
             return
-        recipient = self.wechat.recipient_id()
-        if recipient is None or not self.wechat.state.latest_context(recipient):
+        if not self.wechat.state.latest_context(self.target.recipient):
             return
         pending = await asyncio.to_thread(
             self.store.list_deliveries,
@@ -210,11 +226,14 @@ class ReviewDeliveryCoordinator:
         review = await asyncio.to_thread(self.store.get, review_id)
         if review is None or review.summary is None:
             return
-        account_id = self.wechat.account_id()
-        recipient = self.wechat.recipient_id()
-        if not account_id or not recipient:
+        if delivery.recipient != self.target.recipient:
+            # The host target changed (or this row predates authorization).
+            # Only an explicit operator rebind may redirect it.
             return
-        context = self.wechat.state.latest_context(recipient)
+        account_id = self._authorized_account()
+        if account_id is None:
+            return
+        context = self.wechat.state.latest_context(self.target.recipient)
         if not context:
             # The iLink protocol needs an inbound context token for this
             # proactive send. Stay pending until the account has one.
@@ -223,7 +242,7 @@ class ReviewDeliveryCoordinator:
             self.store.begin_delivery,
             review_id,
             account_id=account_id,
-            sender_id=recipient,
+            sender_id=self.target.recipient,
             context_token=context,
         )
         if not attempt.allowed:
@@ -231,7 +250,7 @@ class ReviewDeliveryCoordinator:
         try:
             body = format_review_message(review, max_chars=self.message_chars)
             outcome = await self.wechat.deliver_for_account_outcome(
-                recipient,
+                self.target.recipient,
                 body,
                 account_id,
                 context_token=context,

@@ -389,6 +389,14 @@ class StoredReviewDelivery(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
+class DeliveryTarget:
+    """Host-authorized proactive delivery identity for the WeChat channel."""
+
+    account_id: str = ""
+    recipient: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class DeliveryAttemptResult:
     delivery: StoredReviewDelivery
     allowed: bool
@@ -414,6 +422,7 @@ __all__ = [
     "REVIEW_TIMEZONE_MAX_LENGTH",
     "DailyReview",
     "DeliveryAttemptResult",
+    "DeliveryTarget",
     "ReviewCreateResult",
     "ReviewDeliveryStatus",
     "ReviewInput",

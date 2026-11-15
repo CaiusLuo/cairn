@@ -14,6 +14,7 @@ from cairn.review.delivery import (
 )
 from cairn.review.models import (
     DailyReview,
+    DeliveryTarget,
     ReviewDeliveryStatus,
     ReviewItem,
     ReviewStatus,
@@ -69,6 +70,7 @@ def _completed_review(store: ReviewStore, request_id: str = "review-1") -> Any:
         summary_markdown="# report\n",
         model_id="test-model",
         request_delivery=True,
+        delivery_target=DeliveryTarget(recipient="owner"),
     )
 
 
@@ -139,6 +141,7 @@ def _coordinator(
     return ReviewDeliveryCoordinator(
         store=store,
         wechat=wechat,  # type: ignore[arg-type]
+        target=DeliveryTarget(recipient="owner"),
         poll_interval=0.05,
         message_chars=message_chars,
         retry_seconds=retry_seconds,
@@ -223,6 +226,27 @@ def test_account_switch_is_refused_after_identity_is_bound(
         assert after_wechat.sent == []
 
     asyncio.run(second())
+
+
+def test_new_logged_in_user_never_receives_the_review(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    review = _completed_review(store)
+    wechat = FakeWechat(account="bot-b", recipient="intruder")
+    coordinator = _coordinator(store, wechat)
+
+    async def scenario() -> None:
+        await coordinator.start()
+        try:
+            await asyncio.sleep(0.05)
+            assert wechat.sent == []
+            delivery = store.get_delivery(review.review_id)
+            assert delivery is not None
+            assert delivery.status is ReviewDeliveryStatus.PENDING
+            assert delivery.attempts == 0
+        finally:
+            await coordinator.close()
+
+    asyncio.run(scenario())
 
 
 def test_failed_send_is_unknown_and_not_retried_automatically(

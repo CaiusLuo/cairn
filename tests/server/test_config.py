@@ -41,6 +41,8 @@ def test_precedence_paths_and_budget_do_not_depend_on_cwd(
         '[review]\nenabled = "yes"',
         '[review]\ntime = "25:00"',
         '[review]\ntimezone = "Bad/Zone"',
+        "[review]\nenabled = true",
+        '[review]\nenabled = true\nrecipient = "owner"\naccount_id = 42',
         "[budget]\nmax_steps = 0",
         '[server]\nhost = "0.0.0.0"',
         '[secrets]\nkey = "private"',
@@ -62,12 +64,18 @@ def test_review_schedule_is_disabled_until_explicitly_configured(
     assert not default.review.enabled
     assert default.review.time == "20:30"
     assert default.review.timezone == "Asia/Shanghai"
+    assert default.review.recipient == ""
 
-    path.write_text('[review]\nenabled = true\ntime = "21:15"\ntimezone = "UTC"\n')
+    path.write_text(
+        '[review]\nenabled = true\ntime = "21:15"\ntimezone = "UTC"\n'
+        'account_id = "bot-a"\nrecipient = "owner"\n'
+    )
     configured = load_server_config(path)
     assert configured.review.enabled
     assert configured.review.time == "21:15"
     assert configured.review.timezone == "UTC"
+    assert configured.review.account_id == "bot-a"
+    assert configured.review.recipient == "owner"
 
 
 def test_env_data_root_wins_over_toml(

@@ -38,6 +38,7 @@ from cairn.interfaces.web.reviews import review_routes
 from cairn.knowledge.store import KnowledgeStore
 from cairn.review.collector import ReviewSourceCollector
 from cairn.review.delivery import ReviewDeliveryCoordinator
+from cairn.review.models import DeliveryTarget
 from cairn.review.schedule import ReviewScheduleCoordinator
 from cairn.review.service import DailyReviewService
 from cairn.review.store import ReviewStore
@@ -163,6 +164,10 @@ def runtime_app(
     execution.protected_paths += protected_paths
     web.router.routes[0:0] = management_routes(controls, token)
     web.state.controls = controls
+    review_target = DeliveryTarget(
+        account_id=review.account_id,
+        recipient=review.recipient,
+    )
     try:
         reviews = DailyReviewService(
             store=ReviewStore(knowledge_store),
@@ -181,6 +186,7 @@ def runtime_app(
                 else provider_runtime.model_manager.current_model_id()
             ),
             sensitive_values=execution.sensitive_values,
+            delivery_target=review_target if review.recipient else None,
         )
     except BaseException:
         execution.close()
@@ -195,9 +201,14 @@ def runtime_app(
     )
     web.state.delivery = delivery
     controls.delivery = delivery
-    review_delivery = ReviewDeliveryCoordinator(
-        store=reviews.store,
-        wechat=controls.wechat,
+    review_delivery = (
+        ReviewDeliveryCoordinator(
+            store=reviews.store,
+            wechat=controls.wechat,
+            target=review_target,
+        )
+        if review.enabled
+        else None
     )
     web.state.review_delivery = review_delivery
     controls.review_delivery = review_delivery
@@ -205,7 +216,11 @@ def runtime_app(
         ReviewScheduleCoordinator(
             service=reviews,
             store=controls.schedules.store,
-            on_settled=lambda _review: review_delivery.rescan(),
+            on_settled=(
+                (lambda _review: review_delivery.rescan())
+                if review_delivery is not None
+                else None
+            ),
             timezone=review.timezone,
             cutoff=wall_time.fromisoformat(review.time),
         )

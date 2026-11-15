@@ -12,6 +12,7 @@ from cairn.agent.models.client import LLMClient
 from cairn.agent.models.messages import LLMResponse, Message
 from cairn.review.models import (
     DailyReview,
+    DeliveryTarget,
     ReviewInput,
     ReviewItem,
     ReviewStatus,
@@ -109,11 +110,13 @@ class DailyReviewService:
         model_id: str | None = None,
         timeout_seconds: float = TIMEOUT_SECONDS,
         sensitive_values: tuple[str, ...] = (),
+        delivery_target: DeliveryTarget | None = None,
     ) -> None:
         self.store = store
         self.collector = collector
         self.llm = llm
         self.model_id = model_id
+        self.delivery_target = delivery_target
         self.timeout_seconds = timeout_seconds
         self.sensitive_values = tuple(value for value in sensitive_values if value)
         self._tasks: dict[str, asyncio.Task[None]] = {}
@@ -163,6 +166,10 @@ class DailyReviewService:
         """
         if not self._started:
             await self.start()
+        if deliver and (
+            self.delivery_target is None or not self.delivery_target.recipient
+        ):
+            raise ValueError("scheduled delivery requires an authorized recipient")
         if cutoff is None:
             review_input = await asyncio.to_thread(
                 self.collector.collect_daily, day, timezone
@@ -202,7 +209,11 @@ class DailyReviewService:
                 request_delivery=deliver,
             )
         elif deliver and result.review.status is ReviewStatus.COMPLETED:
-            await asyncio.to_thread(self.store.ensure_delivery, result.review.review_id)
+            await asyncio.to_thread(
+                self.store.ensure_delivery,
+                result.review.review_id,
+                target=self.delivery_target,
+            )
         return result.review
 
     async def _finish_without_sources(
@@ -222,6 +233,7 @@ class DailyReviewService:
             summary_markdown=markdown,
             model_id=None,
             request_delivery=request_delivery,
+            delivery_target=self.delivery_target if request_delivery else None,
         )
 
     def _ensure_generation(
@@ -264,7 +276,11 @@ class DailyReviewService:
             )
             if claimed.status is not ReviewStatus.GENERATING:
                 if request_delivery and claimed.status is ReviewStatus.COMPLETED:
-                    await asyncio.to_thread(self.store.ensure_delivery, review_id)
+                    await asyncio.to_thread(
+                        self.store.ensure_delivery,
+                        review_id,
+                        target=self.delivery_target,
+                    )
                 return
             if self.llm is None:
                 raise ReviewGenerationError("provider_unavailable")
@@ -285,6 +301,7 @@ class DailyReviewService:
                 summary_markdown=markdown,
                 model_id=self.model_id,
                 request_delivery=request_delivery,
+                delivery_target=(self.delivery_target if request_delivery else None),
             )
         except asyncio.CancelledError:
             await asyncio.to_thread(self.store.fail, review_id, "generation_cancelled")

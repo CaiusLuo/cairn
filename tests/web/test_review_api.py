@@ -9,6 +9,7 @@ import threading
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -20,6 +21,7 @@ from cairn.interfaces.web.app import create_app
 from cairn.interfaces.web.config import WebConfig
 from cairn.knowledge.store import KnowledgeStore
 from cairn.review.models import (
+    DeliveryTarget,
     ReviewInput,
     ReviewType,
     SourceCollectionState,
@@ -141,12 +143,17 @@ def _app(
         collector=FakeCollector(_review_input()),
         llm=llm,
         model_id="test-model",
+        delivery_target=DeliveryTarget(account_id="bot-a", recipient="owner"),
     )
     web = create_app(
         _config(tmp_path, auth=auth),
         runtime_token="host-token" if auth else None,
         knowledge_store=store,
         reviews=service,
+    )
+    web.state.review_delivery = SimpleNamespace(
+        target=DeliveryTarget(account_id="bot-a", recipient="owner"),
+        rescan=lambda **_kwargs: None,
     )
     return web, service, store
 

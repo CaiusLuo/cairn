@@ -32,6 +32,11 @@ class ReviewConfig:
     enabled: bool = False
     time: str = "20:30"
     timezone: str = "Asia/Shanghai"
+    # Host authorization for proactive WeChat delivery. ``recipient`` is the
+    # WeChat user ID that may receive scheduled reviews; it is never inferred
+    # from whichever account happens to be logged in at send time.
+    account_id: str = ""
+    recipient: str = ""
 
 
 DEFAULT_REVIEW = ReviewConfig()
@@ -294,10 +299,27 @@ def parse_server_config(
         ZoneInfo(review_timezone.strip())
     except (ZoneInfoNotFoundError, ValueError):
         raise ValueError("review.timezone is unknown") from None
+    review_account = review_group.get("account_id", "")
+    review_recipient = review_group.get("recipient", "")
+    for name, value in (
+        ("account_id", review_account),
+        ("recipient", review_recipient),
+    ):
+        if not isinstance(value, str):
+            raise ValueError(f"review.{name} must be a string")
+        if len(value.strip()) > 200:
+            raise ValueError(f"review.{name} is too long")
+    review_account = review_account.strip()
+    review_recipient = review_recipient.strip()
+    enabled = review_group.get("enabled", False)
+    if enabled and not review_recipient:
+        raise ValueError("review.recipient is required when review is enabled")
     review = ReviewConfig(
-        enabled=review_group.get("enabled", False),
+        enabled=enabled,
         time=daily_time,
         timezone=review_timezone.strip(),
+        account_id=review_account,
+        recipient=review_recipient,
     )
     return ServerConfig(
         config_file=chosen,

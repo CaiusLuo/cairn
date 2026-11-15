@@ -17,6 +17,7 @@ from cairn.agent.models.messages import LLMResponse, Message, ToolCall
 from cairn.knowledge.store import KnowledgeStore
 from cairn.review.collector import ReviewSourceCollector
 from cairn.review.models import (
+    DeliveryTarget,
     ReviewInput,
     ReviewStatus,
     ReviewType,
@@ -164,6 +165,7 @@ def _service(
         model_id=MODEL_ID,
         timeout_seconds=timeout_seconds,
         sensitive_values=sensitive_values,
+        delivery_target=DeliveryTarget(account_id="bot-a", recipient="owner"),
     )
 
 

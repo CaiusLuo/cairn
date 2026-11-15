@@ -13,6 +13,7 @@ from cairn.knowledge.models import content_hash
 from cairn.knowledge.store import KnowledgeStore
 from cairn.review.models import (
     DailyReview,
+    DeliveryTarget,
     ReviewCreateResult,
     ReviewDeliveryStatus,
     ReviewItem,
@@ -445,7 +446,11 @@ def test_list_filters_type_and_pages(tmp_path: Path) -> None:
         store.list_reviews(offset=-1)
 
 
-def _complete_with_delivery(store: ReviewStore, review_id: str) -> None:
+def _complete_with_delivery(
+    store: ReviewStore,
+    review_id: str,
+    target: DeliveryTarget | None = None,
+) -> None:
     store.mark_generating(review_id, "test-model")
     store.complete(
         review_id,
@@ -453,6 +458,7 @@ def _complete_with_delivery(store: ReviewStore, review_id: str) -> None:
         summary_markdown="# report\n",
         model_id="test-model",
         request_delivery=True,
+        delivery_target=target or DeliveryTarget(recipient="owner"),
     )
 
 
@@ -468,6 +474,8 @@ def test_completed_review_creates_one_pending_delivery(tmp_path: Path) -> None:
     assert len(delivery.delivery_id) == 64
     assert delivery.review_version == 1
     assert delivery.channel == "wechat"
+    assert delivery.recipient == "owner"
+    assert delivery.account_id == ""
 
     again = store.ensure_delivery(created.review_id)
     assert again.delivery_id == delivery.delivery_id
@@ -521,7 +529,10 @@ def test_requeue_with_rebind_is_the_only_way_to_change_delivery_identity(
         created.review_id, account_id="bot-a", sender_id="owner"
     ).delivery.attempt_id
     store.mark_delivery_unknown(created.review_id)
-    store.requeue_delivery(created.review_id, rebind=True)
+    store.requeue_delivery(
+        created.review_id,
+        target=DeliveryTarget(account_id="bot-b", recipient="new-owner"),
+    )
 
     rebound = store.begin_delivery(
         created.review_id, account_id="bot-b", sender_id="new-owner"
@@ -530,6 +541,51 @@ def test_requeue_with_rebind_is_the_only_way_to_change_delivery_identity(
     assert rebound.delivery.attempts == 2
     assert rebound.delivery.status is ReviewDeliveryStatus.SENDING
     assert rebound.delivery.attempt_id != first_attempt
+
+
+def test_delivery_requires_an_authorized_recipient_at_creation(
+    tmp_path: Path,
+) -> None:
+    store = ReviewStore(tmp_path / "knowledge")
+    created = _create(store, request_id="delivery-unbound").review
+    store.mark_generating(created.review_id, "test-model")
+    with pytest.raises(ValueError, match="authorized recipient"):
+        store.complete(
+            created.review_id,
+            summary=_summary(),
+            summary_markdown="# report\n",
+            model_id="test-model",
+            request_delivery=True,
+        )
+
+
+def test_different_logged_in_user_is_not_an_identity_change(
+    tmp_path: Path,
+) -> None:
+    store = ReviewStore(tmp_path / "knowledge")
+    created = _create(store, request_id="delivery-other-user").review
+    _complete_with_delivery(store, created.review_id)
+
+    refused = store.begin_delivery(
+        created.review_id, account_id="bot-b", sender_id="intruder"
+    )
+    assert refused.allowed is False
+    assert refused.reason == "recipient_not_authorized"
+    assert refused.delivery.status is ReviewDeliveryStatus.PENDING
+
+    # The operator may rebind a still-pending row to the new host target.
+    rebound = store.requeue_delivery(
+        created.review_id,
+        target=DeliveryTarget(account_id="bot-b", recipient="intruder"),
+    )
+    assert rebound.status is ReviewDeliveryStatus.PENDING
+    assert rebound.recipient == "intruder"
+    assert (
+        store.begin_delivery(
+            created.review_id, account_id="bot-b", sender_id="intruder"
+        ).allowed
+        is True
+    )
 
 
 def test_sending_delivery_recovers_as_unknown_without_resend(

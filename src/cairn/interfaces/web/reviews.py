@@ -229,9 +229,13 @@ def review_routes(
             if not isinstance(payload, dict) or set(payload) - {"rebind"}:
                 return _error(422, "invalid_review_request")
             rebind = payload.get("rebind", False) is True
+        coordinator = getattr(request.app.state, "review_delivery", None)
+        target = getattr(coordinator, "target", None) if rebind else None
+        if rebind and target is None:
+            return _error(409, "review_delivery_target_unavailable")
         try:
             delivery = await asyncio.to_thread(
-                service.store.requeue_delivery, review_id, rebind=rebind
+                service.store.requeue_delivery, review_id, target=target
             )
         except KeyError:
             return _error(404, "review_delivery_not_found")
@@ -239,7 +243,6 @@ def review_routes(
             return _error(409, "review_delivery_not_retryable")
         except (OSError, sqlite3.Error):
             return _error(503, "review_store_unavailable")
-        coordinator = getattr(request.app.state, "review_delivery", None)
         if coordinator is not None:
             coordinator.rescan(force=True)
         return JSONResponse(

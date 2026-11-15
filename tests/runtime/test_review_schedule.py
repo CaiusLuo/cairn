@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from cairn.knowledge.store import KnowledgeStore
 from cairn.review.models import (
+    DeliveryTarget,
     ReviewDeliveryStatus,
     ReviewInput,
     ReviewStatus,
@@ -170,6 +171,7 @@ def test_scheduled_review_completes_without_wechat_login(tmp_path: Path) -> None
         store=reviews,
         collector=EmptyCollector(),
         llm=None,
+        delivery_target=DeliveryTarget(recipient="owner"),
     )
     coordinator = ReviewScheduleCoordinator(
         service=service,

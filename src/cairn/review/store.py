@@ -24,6 +24,7 @@ from cairn.review.models import (
     REVIEW_REQUEST_ID_MAX_LENGTH,
     DailyReview,
     DeliveryAttemptResult,
+    DeliveryTarget,
     ReviewCreateResult,
     ReviewDeliveryStatus,
     ReviewStatus,
@@ -421,12 +422,15 @@ class ReviewStore:
         summary_markdown: str,
         model_id: str | None,
         request_delivery: bool = False,
+        delivery_target: DeliveryTarget | None = None,
     ) -> StoredReview:
         """Persist one completed report; a completed row is never overwritten.
 
         ``request_delivery`` inserts the pending delivery outbox row in the same
         transaction as completion. A crash after the commit therefore cannot
-        lose the intent to send the report.
+        lose the intent to send the report. The row records the host-authorized
+        ``delivery_target`` immediately; it never waits to discover a recipient
+        from whichever WeChat account is logged in later.
         """
         now = utc_now()
         with self._connect() as connection:
@@ -439,7 +443,9 @@ class ReviewStore:
             current = self._review(row)
             if current.status is not ReviewStatus.GENERATING:
                 if request_delivery and current.status is ReviewStatus.COMPLETED:
-                    self._ensure_delivery_unlocked(connection, review_id, now)
+                    self._ensure_delivery_unlocked(
+                        connection, review_id, now, delivery_target
+                    )
                 return current
             connection.execute(
                 "UPDATE reviews SET status = ?, summary_json = ?, "
@@ -462,11 +468,17 @@ class ReviewStore:
             if row is None:
                 raise ValueError("completed review could not be read back")
             if request_delivery:
-                self._ensure_delivery_unlocked(connection, review_id, now)
+                self._ensure_delivery_unlocked(
+                    connection, review_id, now, delivery_target
+                )
             return self._review(row)
 
     def _ensure_delivery_unlocked(
-        self, connection: sqlite3.Connection, review_id: str, now: str
+        self,
+        connection: sqlite3.Connection,
+        review_id: str,
+        now: str,
+        target: DeliveryTarget | None,
     ) -> StoredReviewDelivery:
         review = connection.execute(
             "SELECT status, version FROM reviews WHERE review_id = ?", (review_id,)
@@ -480,6 +492,8 @@ class ReviewStore:
         ).fetchone()
         if existing is not None:
             return self._delivery(existing)
+        if target is None or not target.recipient:
+            raise ValueError("review delivery requires an authorized recipient")
         delivery_id = hashlib.sha256(
             f"review-delivery:{review_id}".encode()
         ).hexdigest()
@@ -487,12 +501,14 @@ class ReviewStore:
             "INSERT INTO review_deliveries(delivery_id, review_id, "
             "review_version, channel, account_id, recipient, status, attempt_id, "
             "attempts, context_token, last_error, created_at, attempted_at, "
-            "completed_at, updated_at) VALUES (?, ?, ?, 'wechat', '', '', ?, '', "
+            "completed_at, updated_at) VALUES (?, ?, ?, 'wechat', ?, ?, ?, '', "
             "0, '', NULL, ?, NULL, NULL, ?)",
             (
                 delivery_id,
                 review_id,
                 int(review["version"]),
+                target.account_id[:200],
+                target.recipient[:200],
                 ReviewDeliveryStatus.PENDING.value,
                 now,
                 now,
@@ -505,12 +521,17 @@ class ReviewStore:
             raise ValueError("review delivery could not be read back")
         return self._delivery(row)
 
-    def ensure_delivery(self, review_id: str) -> StoredReviewDelivery:
+    def ensure_delivery(
+        self,
+        review_id: str,
+        *,
+        target: DeliveryTarget | None = None,
+    ) -> StoredReviewDelivery:
         """Create the pending delivery row if it is missing; never reset state."""
         now = utc_now()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            return self._ensure_delivery_unlocked(connection, review_id, now)
+            return self._ensure_delivery_unlocked(connection, review_id, now, target)
 
     def get_delivery(self, review_id: str) -> StoredReviewDelivery | None:
         with self._connect() as connection:
@@ -562,9 +583,23 @@ class ReviewStore:
                     allowed=False,
                     reason=current.status.value,
                 )
-            if current.account_id and (
-                current.account_id != account_id or current.recipient != sender_id
-            ):
+            if not current.recipient:
+                # Legacy rows created before host authorization existed have no
+                # owner; only an explicit operator rebind may give them one.
+                return DeliveryAttemptResult(
+                    delivery=current,
+                    allowed=False,
+                    reason="recipient_unbound",
+                )
+            if current.recipient != sender_id:
+                # A different logged-in user is not an identity change of this
+                # delivery; leave it pending for the authorized recipient.
+                return DeliveryAttemptResult(
+                    delivery=current,
+                    allowed=False,
+                    reason="recipient_not_authorized",
+                )
+            if current.account_id and current.account_id != account_id:
                 connection.execute(
                     "UPDATE review_deliveries SET status = ?, last_error = ?, "
                     "completed_at = ?, updated_at = ? WHERE review_id = ?",
@@ -706,10 +741,15 @@ class ReviewStore:
             return self._delivery(row)
 
     def requeue_delivery(
-        self, review_id: str, *, rebind: bool = False
+        self,
+        review_id: str,
+        *,
+        target: DeliveryTarget | None = None,
     ) -> StoredReviewDelivery:
-        """Explicit operator retry after a failed or unknown delivery result."""
+        """Explicit operator retry; a target rebinds the authorized recipient."""
         now = utc_now()
+        if target is not None and not target.recipient:
+            raise ValueError("a rebound delivery requires an authorized recipient")
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -718,10 +758,13 @@ class ReviewStore:
             if row is None:
                 raise KeyError(review_id)
             current = self._delivery(row)
-            if current.status not in (
+            retryable = (
                 ReviewDeliveryStatus.DELIVERY_UNKNOWN,
                 ReviewDeliveryStatus.FAILED_PERMANENT,
                 ReviewDeliveryStatus.BLOCKED_OFFLINE,
+            )
+            if current.status not in retryable and not (
+                target is not None and current.status is ReviewDeliveryStatus.PENDING
             ):
                 raise ValueError(
                     "only a blocked, unknown or permanently failed delivery can retry"
@@ -733,9 +776,9 @@ class ReviewStore:
                 "WHERE review_id = ?",
                 (
                     ReviewDeliveryStatus.PENDING.value,
-                    "" if rebind else current.account_id,
-                    "" if rebind else current.recipient,
-                    "" if rebind else current.context_token,
+                    current.account_id if target is None else target.account_id[:200],
+                    current.recipient if target is None else target.recipient[:200],
+                    current.context_token if target is None else "",
                     now,
                     review_id,
                 ),
