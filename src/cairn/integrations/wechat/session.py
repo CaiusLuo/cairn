@@ -16,12 +16,14 @@ import signal
 import socket
 import time
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import replace
 from inspect import isawaitable
 from pathlib import Path
 from typing import Any
 
 from cairn.integrations.wechat.ilink import (
     ILinkClient,
+    ILinkRequestNotSent,
     ILinkSendRejected,
     QRCode,
 )
@@ -44,6 +46,11 @@ from cairn.shared.action import Action, correction, note
 from cairn.shared.delivery import ProactiveSendOutcome as ProactiveSendOutcome
 from cairn.shared.delivery import ProactiveSendResult
 from cairn.shared.lifecycle import await_owned
+
+# Three opportunities in one occurrence. A rejected context is never reused.
+_REMINDER_RETRY_DELAYS = (5.0, 15.0)
+# iLink uses -2 for a stale send context; retrying is only safe after refresh.
+_ILINK_STALE_CONTEXT_RET = -2
 
 
 class WechatSessionController:
@@ -660,19 +667,62 @@ class WechatSessionController:
         )
         try:
             await client.send_text(to_user_id=sender, text=text, context_token=context)
-            return ProactiveSendResult(ProactiveSendOutcome.SENT)
+            return ProactiveSendResult(ProactiveSendOutcome.SENT, attempts=1)
+        except ILinkRequestNotSent as exc:
+            return ProactiveSendResult(
+                ProactiveSendOutcome.UNAVAILABLE,
+                f"delivery_not_sent: {exc}",
+                retryable=True,
+                attempts=1,
+            )
         except ILinkSendRejected as exc:
             return ProactiveSendResult(
-                ProactiveSendOutcome.REJECTED, f"delivery_rejected: ilink_ret={exc.ret}"
+                ProactiveSendOutcome.REJECTED,
+                f"delivery_rejected: ilink_ret={exc.ret}",
+                # iLink may return -2 for a stale context. Retry only with
+                # another context, even when the exact reason is unknown.
+                retryable=exc.ret == _ILINK_STALE_CONTEXT_RET,
+                attempts=1,
             )
         except Exception:
             # A send may have reached iLink even if no valid response came back.
             return ProactiveSendResult(
-                ProactiveSendOutcome.UNKNOWN, "delivery_unconfirmed"
+                ProactiveSendOutcome.UNKNOWN, "delivery_unconfirmed", attempts=1
             )
         finally:
             with contextlib.suppress(Exception):
                 await client.close()
+
+    async def deliver_reminder_for_account(
+        self,
+        sender: str,
+        text: str,
+        account_id: str,
+        can_retry: Callable[[], bool],
+    ) -> ProactiveSendResult:
+        context = self._latest_context(sender)
+        result = await self.deliver_for_account_result(
+            sender, text, account_id, context_token=context
+        )
+        attempts = result.attempts or 0
+        rejected_contexts: set[str] = set()
+        for delay in _REMINDER_RETRY_DELAYS:
+            if not result.retryable:
+                break
+            if result.outcome is ProactiveSendOutcome.REJECTED and context:
+                rejected_contexts.add(context)
+            await asyncio.sleep(delay)
+            if not can_retry():
+                break
+            current = self._latest_context(sender)
+            if not current or current in rejected_contexts:
+                continue
+            context = current
+            result = await self.deliver_for_account_result(
+                sender, text, account_id, context_token=context
+            )
+            attempts += result.attempts or 0
+        return replace(result, attempts=attempts)
 
     async def deliver_for_account_outcome(
         self,

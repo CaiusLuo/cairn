@@ -152,6 +152,7 @@ class ServerControls:
             executor=self._scheduled,
             deliver=self.wechat.deliver,
             deliver_for_account=self.wechat.deliver_for_account_result,
+            deliver_reminder=self.wechat.deliver_reminder_for_account,
             recipient=self.wechat.recipient_id,
             account_id=self.wechat.account_id,
             emit=self._notice,
