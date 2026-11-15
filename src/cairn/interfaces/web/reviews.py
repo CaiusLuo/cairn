@@ -57,6 +57,12 @@ async def _body(request: Request) -> object:
     return json.loads(await _read_limited(request))
 
 
+class ScheduleRetryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    day: date
+
+
 class DailyReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -212,6 +218,33 @@ def review_routes(
             return _error(404, "review_not_found")
         return JSONResponse(_detail_payload(record, delivery), headers=_json_headers())
 
+    async def retry_schedule(request: Request) -> JSONResponse:
+        if not operator_request(request, runtime_token):
+            return _error(403, "invalid_origin")
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+        if content_type != "application/json":
+            return _error(415, "unsupported_media_type")
+        try:
+            payload = ScheduleRetryRequest.model_validate(await _body(request))
+        except json.JSONDecodeError:
+            return _error(400, "invalid_json")
+        except ValidationError:
+            return _error(422, "invalid_review_request")
+        coordinator = getattr(request.app.state, "review_schedule", None)
+        if coordinator is None:
+            return _error(503, "review_schedule_disabled")
+        try:
+            record = await coordinator.retry_failed(payload.day)
+        except RuntimeError:
+            return _error(503, "review_schedule_busy")
+        except (OSError, sqlite3.Error):
+            return _error(503, "review_store_unavailable")
+        if record is None:
+            return _error(409, "review_day_not_failed")
+        return JSONResponse(
+            _summary_payload(record), status_code=202, headers=_json_headers()
+        )
+
     async def resend(request: Request) -> JSONResponse:
         if not operator_request(request, runtime_token):
             return _error(403, "invalid_origin")
@@ -258,6 +291,11 @@ def review_routes(
             methods=["POST"],
         ),
         Route("/api/knowledge/reviews", listing, methods=["GET"]),
+        Route(
+            "/api/knowledge/reviews/schedule/retry",
+            retry_schedule,
+            methods=["POST"],
+        ),
         Route(
             "/api/knowledge/reviews/{review_id}",
             detail,

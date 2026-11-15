@@ -439,3 +439,61 @@ def test_delivery_status_is_visible_and_manual_resend_is_authenticated(
             json={},
             headers={"Origin": ORIGIN},
         ).status_code in {401, 403}
+
+
+def test_scheduled_failed_period_retry_is_explicit(tmp_path: Path) -> None:
+    gate = threading.Event()
+    gate.set()
+    web, service, _store = _app(
+        tmp_path, llm=BlockingLLM(gate, [_payload("Retried report.")])
+    )
+    created = asyncio.run(service.generate_daily_review(DAY, "retry-source"))
+    asyncio.run(service.wait_for_review(created.review_id))
+
+    with TestClient(web, base_url=ORIGIN) as client:
+        _login(client)
+        body = {"day": DAY.isoformat()}
+        disabled = client.post(
+            "/api/knowledge/reviews/schedule/retry",
+            json=body,
+            headers={"Origin": ORIGIN},
+        )
+        assert disabled.status_code == 503
+        assert disabled.json() == {"error": "review_schedule_disabled"}
+
+        calls: list[date] = []
+
+        class FakeSchedule:
+            async def retry_failed(self, day: date) -> Any:
+                calls.append(day)
+                return service.store.get(created.review_id)
+
+        web.state.review_schedule = FakeSchedule()
+        accepted = client.post(
+            "/api/knowledge/reviews/schedule/retry",
+            json=body,
+            headers={"Origin": ORIGIN},
+        )
+        assert accepted.status_code == 202
+        assert accepted.json()["review_id"] == created.review_id
+        assert calls == [DAY]
+
+        class NothingFailed(FakeSchedule):
+            async def retry_failed(self, day: date) -> Any:
+                return None
+
+        web.state.review_schedule = NothingFailed()
+        missing = client.post(
+            "/api/knowledge/reviews/schedule/retry",
+            json=body,
+            headers={"Origin": ORIGIN},
+        )
+        assert missing.status_code == 409
+        assert missing.json() == {"error": "review_day_not_failed"}
+
+    with TestClient(web, base_url=ORIGIN) as anonymous:
+        assert anonymous.post(
+            "/api/knowledge/reviews/schedule/retry",
+            json={"day": DAY.isoformat()},
+            headers={"Origin": ORIGIN},
+        ).status_code in {401, 403}
