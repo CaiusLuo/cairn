@@ -50,6 +50,14 @@ def save_account(root: Path, url: str = "https://example.invalid") -> None:
     )
 
 
+def mock_ilink_client(
+    send: Callable[[httpx2.Request], Any],
+) -> Callable[..., ILinkClient]:
+    """Build an ILinkClient factory around an in-memory transport."""
+    transport = httpx2.MockTransport(send)
+    return lambda **kwargs: ILinkClient(**kwargs, transport=transport)
+
+
 def test_cli_commands_web_memory_and_restart_share_state(
     tmp_path: Path, capsys: Any
 ) -> None:
@@ -462,6 +470,7 @@ def test_daily_reminder_records_ilink_rejection_and_uses_new_inbound_context(
         ([-2, 0], "context", "completed", ["old", "new"]),
         ([7], "context", "delivery_failed", ["old"]),
         (["connect"], "pause", "delivery_failed", ["old"]),
+        (["connect"], "remove", "delivery_failed", ["old"]),
         (["connect"], "account", "delivery_failed", ["old"]),
     ],
 )
@@ -499,6 +508,11 @@ def test_reminder_retry_uses_only_safe_attempts(
                     assert (await command(api, "/schedule", f"pause {job.job_id}"))[
                         "ok"
                     ]
+                elif change == "remove":
+                    (job,) = runner.store.load_jobs()
+                    assert (await command(api, "/schedule", f"remove {job.job_id}"))[
+                        "ok"
+                    ]
                 elif change == "account":
                     state.save_account(
                         WechatAccount(
@@ -514,10 +528,7 @@ def test_reminder_retry_uses_only_safe_attempts(
                 raise httpx2.ReadTimeout("private transport detail", request=request)
             return httpx2.Response(200, json={"ret": reply})
 
-        def client(**kwargs: Any) -> ILinkClient:
-            return ILinkClient(**kwargs, transport=httpx2.MockTransport(send))
-
-        monkeypatch.setattr(wechat_session, "ILinkClient", client)
+        monkeypatch.setattr(wechat_session, "ILinkClient", mock_ilink_client(send))
         async with app.router.lifespan_context(app):
             assert (await command(api, "/schedule", "remind daily 08:00 gym"))["ok"]
             (job,) = runner.store.load_jobs()
@@ -532,7 +543,7 @@ def test_reminder_retry_uses_only_safe_attempts(
             assert latest["delivery_attempts"] == len(expected_contexts)
             assert "private transport detail" not in str(latest["error"])
             assert contexts == expected_contexts
-            if change != "account":
+            if change not in {"account", "remove"}:
                 history = await command(api, "/schedule", f"history {job.job_id}")
                 assert f"attempts={len(expected_contexts)}" in history["message"]
 
@@ -559,10 +570,7 @@ def test_shutdown_during_reminder_backoff_does_not_replay_after_restart(
             sent.set()
             raise httpx2.ConnectTimeout("fixture timeout", request=request)
 
-        def client(**kwargs: Any) -> ILinkClient:
-            return ILinkClient(**kwargs, transport=httpx2.MockTransport(send))
-
-        monkeypatch.setattr(wechat_session, "ILinkClient", client)
+        monkeypatch.setattr(wechat_session, "ILinkClient", mock_ilink_client(send))
         monkeypatch.setattr(wechat_session, "_REMINDER_RETRY_DELAYS", (60, 60))
         async with app.router.lifespan_context(app):
             assert (await command(api, "/schedule", "remind daily 08:00 gym"))["ok"]

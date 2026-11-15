@@ -49,6 +49,8 @@ from cairn.shared.lifecycle import await_owned
 
 # Three opportunities in one occurrence. A rejected context is never reused.
 _REMINDER_RETRY_DELAYS = (5.0, 15.0)
+# iLink uses -2 for a stale send context; retrying is only safe after refresh.
+_ILINK_STALE_CONTEXT_RET = -2
 
 
 class WechatSessionController:
@@ -679,7 +681,7 @@ class WechatSessionController:
                 f"delivery_rejected: ilink_ret={exc.ret}",
                 # iLink may return -2 for a stale context. Retry only with
                 # another context, even when the exact reason is unknown.
-                retryable=exc.ret == -2,
+                retryable=exc.ret == _ILINK_STALE_CONTEXT_RET,
                 attempts=1,
             )
         except Exception:

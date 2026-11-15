@@ -150,9 +150,12 @@ class ScheduleRunner:
                 await settle_owned(execution_task)
         return self.report
 
+    def _current_account(self) -> str | None:
+        return self.account_id() if callable(self.account_id) else self.account_id
+
     async def _owner(self) -> tuple[str, str | None] | None:
         owner = self.recipient()
-        account = self.account_id() if callable(self.account_id) else self.account_id
+        account = self._current_account()
         if not owner or (self.account_id is not None and not account):
             return None
         return owner, account
@@ -306,10 +309,7 @@ class ScheduleRunner:
         return ProactiveSendResult(ProactiveSendOutcome.UNKNOWN, "delivery_unconfirmed")
 
     def _can_retry_reminder(self, job: ScheduleJob, owner: str, account: str) -> bool:
-        current_account = (
-            self.account_id() if callable(self.account_id) else self.account_id
-        )
-        if self.recipient() != owner or current_account != account:
+        if self.recipient() != owner or self._current_account() != account:
             return False
         try:
             return any(
@@ -342,9 +342,7 @@ class ScheduleRunner:
             if self.result_redactor is not None:
                 payload = self.result_redactor(payload)
             try:
-                current_account = (
-                    self.account_id() if callable(self.account_id) else self.account_id
-                )
+                current_account = self._current_account()
                 recipient = self.recipient()
                 if (
                     self.account_id is not None and current_account != account
@@ -414,9 +412,7 @@ class ScheduleRunner:
             error = f"{type(exc).__name__}: {exc}"
         delivered = False
         if result is not None:
-            current_account = (
-                self.account_id() if callable(self.account_id) else self.account_id
-            )
+            current_account = self._current_account()
             if self.account_id is not None and current_account != account:
                 # Never send a completed result through a newly selected identity.
                 error = "delivery_owner_changed: execution result stored, delivery not attempted"
