@@ -310,10 +310,20 @@ class WeeklyReviewScheduleCoordinator:
                 )
                 return None
             except Exception as exc:
+                # A non-database failure must not silently consume the week:
+                # the cursor advances, but the period stays in failed_weeks so
+                # an operator retry can still generate it.
+                failed = dict(self.state.get("failed_weeks") or {})
+                failed[period.week_id] = {
+                    "review_id": "",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "at": now.isoformat(),
+                }
                 self._save(
                     last_attempt_week=period.week_id,
                     last_status="error",
                     last_error=f"{type(exc).__name__}: {exc}",
+                    failed_weeks=failed,
                     next_retry_at=None,
                 )
                 return None
@@ -365,6 +375,13 @@ class WeeklyReviewScheduleCoordinator:
             )
             if review is None:
                 raise ValueError("retry receipt points at a missing review")
+            if review.status in {ReviewStatus.PENDING, ReviewStatus.GENERATING}:
+                try:
+                    review = await self.service.wait_for_review(
+                        review.review_id, timeout=self.settle_timeout
+                    )
+                except TimeoutError:
+                    return review
             if (
                 review.status is ReviewStatus.COMPLETED
                 and week_id == self.latest_due_week(now).week_id
@@ -388,14 +405,6 @@ class WeeklyReviewScheduleCoordinator:
                 period_end=period.period_end,
                 deliver=deliver,
             )
-            receipts[key] = {
-                "week_id": week_id,
-                "review_id": review.review_id,
-                "at": self.clock().isoformat(),
-            }
-            self._save(
-                retry_requests=dict(list(receipts.items())[-MAX_RETRY_RECEIPTS:])
-            )
         finally:
             lease.release()
         try:
@@ -403,8 +412,17 @@ class WeeklyReviewScheduleCoordinator:
                 review.review_id, timeout=self.settle_timeout
             )
         except TimeoutError:
+            # No receipt until the attempt is terminal. A replay with the same
+            # operator request_id re-enters the deterministic store request and
+            # observes this same review instead of creating a second version.
             self._save(last_status="generating")
             return review
+        receipts[key] = {
+            "week_id": week_id,
+            "review_id": settled.review_id,
+            "at": self.clock().isoformat(),
+        }
+        self._save(retry_requests=dict(list(receipts.items())[-MAX_RETRY_RECEIPTS:]))
         if settled.status is ReviewStatus.COMPLETED:
             failed.pop(week_id, None)
             retried = dict(self.state.get("retried_weeks") or {})

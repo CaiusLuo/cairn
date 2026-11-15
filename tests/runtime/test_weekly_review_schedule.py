@@ -249,6 +249,75 @@ def test_failed_week_is_manual_to_retry_and_a_retry_is_new_version(
     asyncio.run(scenario())
 
 
+class FlakyWeeklyService(FakeWeeklyService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.broken = True
+
+    async def generate_weekly_review(self, *args: Any, **kwargs: Any) -> Any:
+        if self.broken:
+            raise RuntimeError("corrupt daily review row")
+        return await super().generate_weekly_review(*args, **kwargs)
+
+
+class TimeoutRetryService(FakeWeeklyService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.timeout_next = False
+
+    async def wait_for_review(self, review_id: str, *, timeout: float) -> Any:
+        if self.timeout_next:
+            self.timeout_next = False
+            raise TimeoutError("generation did not settle")
+        return await super().wait_for_review(review_id, timeout=timeout)
+
+
+def test_unexpected_tick_failure_keeps_the_week_recoverable(tmp_path: Path) -> None:
+    service = FlakyWeeklyService()
+    coordinator, _ = _coordinator(tmp_path, service)
+
+    async def scenario() -> None:
+        assert await coordinator.tick() is None
+        failed = coordinator.state["failed_weeks"]["2026-W03"]
+        assert "corrupt daily review row" in failed["error"]
+        assert coordinator.state["last_attempt_week"] == "2026-W03"
+
+        service.broken = False
+        retried = await coordinator.retry_failed("2026-W03", "operator-recover-1")
+        assert retried is not None
+        assert "2026-W03" not in coordinator.state["failed_weeks"]
+
+    asyncio.run(scenario())
+
+
+def test_retry_timeout_does_not_persist_a_receipt(tmp_path: Path) -> None:
+    service = TimeoutRetryService()
+    service.status = ReviewStatus.FAILED
+    service.error = "model_timeout"
+    coordinator, _ = _coordinator(tmp_path, service)
+
+    async def scenario() -> None:
+        await coordinator.tick()
+        assert "2026-W03" in coordinator.state["failed_weeks"]
+
+        service.status = ReviewStatus.COMPLETED
+        service.timeout_next = True
+        first = await coordinator.retry_failed("2026-W03", "operator-timeout-1")
+        assert first is not None
+        assert first.status is ReviewStatus.PENDING
+        assert not coordinator.state.get("retry_requests")
+        assert "2026-W03" in coordinator.state["failed_weeks"]
+
+        second = await coordinator.retry_failed("2026-W03", "operator-timeout-1")
+        assert second is not None
+        assert second.status is ReviewStatus.COMPLETED
+        assert service.calls[-1]["request_id"] == service.calls[-2]["request_id"]
+        assert "2026-W03" not in coordinator.state["failed_weeks"]
+        assert coordinator.state["retry_requests"]["operator-timeout-1"]["review_id"]
+
+    asyncio.run(scenario())
+
+
 def test_weekly_schedule_state_is_separate_from_the_daily_schedule(
     tmp_path: Path,
 ) -> None:
