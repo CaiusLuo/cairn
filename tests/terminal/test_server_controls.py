@@ -2,13 +2,16 @@
 
 import asyncio
 import json
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import httpx
+import httpx2
 import pytest
 
+from cairn.integrations.wechat import session as wechat_session
 from cairn.integrations.wechat.ilink import ILinkClient
 from cairn.integrations.wechat.runtime import (
     WechatConversationAdapter,
@@ -355,8 +358,10 @@ def test_wechat_login_and_runtime_final_reply_survive_client_detach(
 
 
 def test_daily_reminder_records_ilink_rejection_and_uses_new_inbound_context(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(wechat_session, "_REMINDER_RETRY_DELAYS", (0, 0))
+
     class ReminderILink(FakeILink):
         malformed = False
 
@@ -447,6 +452,143 @@ def test_daily_reminder_records_ilink_rejection_and_uses_new_inbound_context(
         asyncio.run(scenario(fake))
 
 
+@pytest.mark.parametrize(
+    ("replies", "change", "expected_status", "expected_contexts"),
+    [
+        (["connect", "connect", "connect"], None, "delivery_failed", ["old"] * 3),
+        (["connect", "connect", 0], None, "completed", ["old"] * 3),
+        (["connect", "read_timeout"], None, "delivery_unknown", ["old"] * 2),
+        ([-2], None, "delivery_failed", ["old"]),
+        ([-2, 0], "context", "completed", ["old", "new"]),
+        ([7], "context", "delivery_failed", ["old"]),
+        (["connect"], "pause", "delivery_failed", ["old"]),
+        (["connect"], "account", "delivery_failed", ["old"]),
+    ],
+)
+def test_reminder_retry_uses_only_safe_attempts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replies: list[int | str],
+    change: str | None,
+    expected_status: str,
+    expected_contexts: list[str],
+) -> None:
+    async def scenario() -> None:
+        app, api = control_runtime(tmp_path)
+        save_account(tmp_path)
+        controls = app.state.controls
+        runner = controls.schedules.runner
+        state = controls.wechat.state
+        state.record_received("old", sender="owner", context_token="old", text="hi")
+        contexts: list[str] = []
+        monkeypatch.setattr(wechat_session, "_REMINDER_RETRY_DELAYS", (0, 0))
+
+        async def send(request: httpx2.Request) -> httpx2.Response:
+            assert request.url.path == "/ilink/bot/sendmessage"
+            reply = replies[len(contexts)]
+            msg = json.loads(await request.aread())["msg"]
+            assert msg["to_user_id"] == "owner"
+            contexts.append(msg["context_token"])
+            if len(contexts) == 1:
+                if change == "context":
+                    state.record_received(
+                        "new", sender="owner", context_token="new", text="hi again"
+                    )
+                elif change == "pause":
+                    (job,) = runner.store.load_jobs()
+                    assert (await command(api, "/schedule", f"pause {job.job_id}"))[
+                        "ok"
+                    ]
+                elif change == "account":
+                    state.save_account(
+                        WechatAccount(
+                            "private-new-token",
+                            "other-bot",
+                            "https://example.invalid",
+                            "owner",
+                        )
+                    )
+            if reply == "connect":
+                raise httpx2.ConnectError("private transport detail", request=request)
+            if reply == "read_timeout":
+                raise httpx2.ReadTimeout("private transport detail", request=request)
+            return httpx2.Response(200, json={"ret": reply})
+
+        def client(**kwargs: Any) -> ILinkClient:
+            return ILinkClient(**kwargs, transport=httpx2.MockTransport(send))
+
+        monkeypatch.setattr(wechat_session, "ILinkClient", client)
+        async with app.router.lifespan_context(app):
+            assert (await command(api, "/schedule", "remind daily 08:00 gym"))["ok"]
+            (job,) = runner.store.load_jobs()
+            when = job.next_run_at
+            assert when is not None
+            await runner.run_reminders(when)
+            # The retry loop must not make another occurrence or replay this one.
+            await runner.run_reminders(when)
+            latest, started = runner.store.load_runs()
+            assert latest["run_key"] == started["run_key"]
+            assert latest["status"] == expected_status
+            assert latest["delivery_attempts"] == len(expected_contexts)
+            assert "private transport detail" not in str(latest["error"])
+            assert contexts == expected_contexts
+            if change != "account":
+                history = await command(api, "/schedule", f"history {job.job_id}")
+                assert f"attempts={len(expected_contexts)}" in history["message"]
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_during_reminder_backoff_does_not_replay_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario() -> None:
+        app, api = control_runtime(tmp_path)
+        save_account(tmp_path)
+        controls = app.state.controls
+        controls.wechat.state.record_received(
+            "message", sender="owner", context_token="context", text="hi"
+        )
+        runner = controls.schedules.runner
+        sent = asyncio.Event()
+        attempts = 0
+
+        async def send(request: httpx2.Request) -> httpx2.Response:
+            nonlocal attempts
+            attempts += 1
+            sent.set()
+            raise httpx2.ConnectTimeout("fixture timeout", request=request)
+
+        def client(**kwargs: Any) -> ILinkClient:
+            return ILinkClient(**kwargs, transport=httpx2.MockTransport(send))
+
+        monkeypatch.setattr(wechat_session, "ILinkClient", client)
+        monkeypatch.setattr(wechat_session, "_REMINDER_RETRY_DELAYS", (60, 60))
+        async with app.router.lifespan_context(app):
+            assert (await command(api, "/schedule", "remind daily 08:00 gym"))["ok"]
+            (job,) = runner.store.load_jobs()
+            due = job.next_run_at
+            assert due is not None
+            task = asyncio.create_task(runner.run_reminders(due))
+            try:
+                await asyncio.wait_for(sent.wait(), timeout=2)
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+        app, _ = control_runtime(tmp_path)
+        runner = app.state.controls.schedules.runner
+        async with app.router.lifespan_context(app):
+            await runner.run_due(due)
+            assert attempts == 1
+            finished, started = runner.store.load_runs()
+            assert finished["run_key"] == started["run_key"]
+            assert finished["status"] == "cancelled"
+
+    asyncio.run(scenario())
+
+
 def test_schedule_commands_use_the_same_runtime_and_reminders_do_not_call_models(
     tmp_path: Path,
 ) -> None:
@@ -464,7 +606,14 @@ def test_schedule_commands_use_the_same_runtime_and_reminders_do_not_call_models
 
         async with app.router.lifespan_context(app):
             runner = app.state.controls.schedules.runner
+
+            async def deliver_reminder(
+                recipient: str, text: str, account: str, _can_retry: Callable[[], bool]
+            ) -> ProactiveSendResult:
+                return await deliver(recipient, text, account)
+
             runner.deliver_for_account = deliver
+            runner.deliver_reminder = deliver_reminder
             when = (current_time() + timedelta(minutes=2)).isoformat()
             assert (await command(api, "/schedule", f"remind once {when} drink water"))[
                 "ok"

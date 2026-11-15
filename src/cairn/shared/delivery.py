@@ -15,6 +15,8 @@ class ProactiveSendOutcome(StrEnum):
 class ProactiveSendResult:
     outcome: ProactiveSendOutcome
     error: str | None = None
+    retryable: bool = False
+    attempts: int | None = None
 
     @property
     def sent(self) -> bool:

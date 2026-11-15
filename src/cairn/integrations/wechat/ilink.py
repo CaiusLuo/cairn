@@ -26,6 +26,10 @@ class ILinkError(RuntimeError):
     """A protocol or transport failure. Messages never include the token."""
 
 
+class ILinkRequestNotSent(ILinkError):
+    """The connection failed before a request could be written."""
+
+
 class ILinkSendRejected(ILinkError):
     """The server answered sendMessage with an explicit non-zero ret.
 
@@ -156,6 +160,8 @@ class ILinkClient:
                 headers=self._json_headers(auth=auth),
                 params=params,
             )
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+            raise ILinkRequestNotSent(type(exc).__name__) from None
         except httpx.HTTPError as exc:
             raise ILinkError(f"HTTP request failed: {type(exc).__name__}") from None
         if response.status_code >= 400:
