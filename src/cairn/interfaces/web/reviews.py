@@ -21,6 +21,7 @@ from cairn.review.models import (
     ReviewType,
     StoredReview,
     StoredReviewDelivery,
+    WeeklyReview,
 )
 from cairn.review.service import DailyReviewService
 from cairn.review.store import (
@@ -28,6 +29,12 @@ from cairn.review.store import (
     MAX_LIST_LIMIT,
     ReviewPeriodCompleted,
     ReviewRequestConflict,
+)
+from cairn.review.weekly import (
+    ReviewPeriodNotEnded,
+    WeeklyReviewService,
+    iso_week_id,
+    week_period,
 )
 
 MAX_BODY_BYTES = 16 * 1024
@@ -76,6 +83,74 @@ class ScheduleRetryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     day: date
+
+
+class WeeklyScheduleRetryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    week_id: str = Field(min_length=1, max_length=10)
+    request_id: str = Field(min_length=1, max_length=REVIEW_REQUEST_ID_MAX_LENGTH)
+
+    @field_validator("week_id")
+    @classmethod
+    def _week_id_is_valid(cls, value: str) -> str:
+        stripped = value.strip()
+        try:
+            week_period(stripped, timezone="UTC")
+        except ValueError:
+            raise ValueError("week_id must be a valid ISO week (YYYY-Www)") from None
+        return stripped
+
+    @field_validator("request_id")
+    @classmethod
+    def _request_id_has_content(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("request_id must not be blank")
+        return stripped
+
+
+class WeeklyReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    week_id: str = Field(min_length=1, max_length=10)
+    timezone: str = Field(
+        default="Asia/Shanghai",
+        min_length=1,
+        max_length=REVIEW_TIMEZONE_MAX_LENGTH,
+    )
+    request_id: str = Field(min_length=1, max_length=REVIEW_REQUEST_ID_MAX_LENGTH)
+    regenerate: bool = False
+
+    @field_validator("week_id")
+    @classmethod
+    def _week_id_is_valid(cls, value: str) -> str:
+        stripped = value.strip()
+        try:
+            week_period(stripped, timezone="UTC")
+        except ValueError:
+            raise ValueError("week_id must be a valid ISO week (YYYY-Www)") from None
+        return stripped
+
+    @field_validator("timezone")
+    @classmethod
+    def _timezone_exists(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("timezone must not be blank")
+        try:
+            ZoneInfo(stripped)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError("unknown timezone") from None
+        return stripped
+
+    @field_validator("request_id")
+    @classmethod
+    def _request_id_has_content(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("request_id must not be blank")
+        return stripped
 
 
 class DailyReviewRequest(BaseModel):
@@ -130,6 +205,12 @@ def _summary_payload(record: StoredReview) -> dict[str, object]:
         "completed_at": record.completed_at,
         "error": record.error,
     }
+    if record.review_type is ReviewType.WEEKLY:
+        payload["week_id"] = (
+            record.summary.week_id
+            if isinstance(record.summary, WeeklyReview)
+            else iso_week_id(record.date)
+        )
     if record.summary is not None:
         payload["overview"] = record.summary.overview
     return payload
@@ -172,7 +253,9 @@ def _integer(request: Request, name: str, default: int, low: int, high: int) -> 
 
 
 def review_routes(
-    service: DailyReviewService, runtime_token: str | None = None
+    service: DailyReviewService,
+    runtime_token: str | None = None,
+    weekly: WeeklyReviewService | None = None,
 ) -> list[BaseRoute]:
     async def create_daily(request: Request) -> JSONResponse:
         if not operator_request(request, runtime_token):
@@ -194,6 +277,40 @@ def review_routes(
             return _error(422, "invalid_review_request")
         except ReviewRequestConflict:
             return _error(409, "request_id_conflict")
+        except ReviewPeriodCompleted:
+            return _error(409, "review_period_completed")
+        except ValueError:
+            return _error(422, "invalid_review_request")
+        except (OSError, sqlite3.Error):
+            return _error(503, "review_store_unavailable")
+        return JSONResponse(
+            _summary_payload(record), status_code=202, headers=_json_headers()
+        )
+
+    async def create_weekly(request: Request) -> JSONResponse:
+        if not operator_request(request, runtime_token):
+            return _error(403, "invalid_origin")
+        if weekly is None:
+            return _error(503, "weekly_review_unavailable")
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+        if content_type != "application/json":
+            return _error(415, "unsupported_media_type")
+        try:
+            payload = WeeklyReviewRequest.model_validate(await _body(request))
+            record = await weekly.generate_weekly_review(
+                payload.week_id,
+                payload.request_id,
+                timezone=payload.timezone,
+                regenerate=payload.regenerate,
+            )
+        except json.JSONDecodeError:
+            return _error(400, "invalid_json")
+        except ValidationError:
+            return _error(422, "invalid_review_request")
+        except ReviewRequestConflict:
+            return _error(409, "request_id_conflict")
+        except ReviewPeriodNotEnded:
+            return _error(409, "review_period_not_ended")
         except ReviewPeriodCompleted:
             return _error(409, "review_period_completed")
         except ValueError:
@@ -260,6 +377,37 @@ def review_routes(
             _summary_payload(record), status_code=202, headers=_json_headers()
         )
 
+    async def retry_weekly_schedule(request: Request) -> JSONResponse:
+        if not operator_request(request, runtime_token):
+            return _error(403, "invalid_origin")
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+        if content_type != "application/json":
+            return _error(415, "unsupported_media_type")
+        try:
+            payload = WeeklyScheduleRetryRequest.model_validate(await _body(request))
+        except json.JSONDecodeError:
+            return _error(400, "invalid_json")
+        except ValidationError:
+            return _error(422, "invalid_review_request")
+        coordinator = getattr(request.app.state, "weekly_review_schedule", None)
+        if coordinator is None:
+            return _error(503, "weekly_review_schedule_disabled")
+        try:
+            record = await coordinator.retry_failed(
+                payload.week_id.strip(), payload.request_id
+            )
+        except RuntimeError:
+            return _error(503, "review_schedule_busy")
+        except ValueError:
+            return _error(409, "retry_request_conflict")
+        except (OSError, sqlite3.Error):
+            return _error(503, "review_store_unavailable")
+        if record is None:
+            return _error(409, "review_week_not_failed")
+        return JSONResponse(
+            _summary_payload(record), status_code=202, headers=_json_headers()
+        )
+
     async def resend(request: Request) -> JSONResponse:
         if not operator_request(request, runtime_token):
             return _error(403, "invalid_origin")
@@ -314,10 +462,20 @@ def review_routes(
             create_daily,
             methods=["POST"],
         ),
+        Route(
+            "/api/knowledge/reviews/weekly",
+            create_weekly,
+            methods=["POST"],
+        ),
         Route("/api/knowledge/reviews", listing, methods=["GET"]),
         Route(
             "/api/knowledge/reviews/schedule/retry",
             retry_schedule,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/knowledge/reviews/schedule/weekly/retry",
+            retry_weekly_schedule,
             methods=["POST"],
         ),
         Route(

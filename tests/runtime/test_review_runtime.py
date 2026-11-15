@@ -32,6 +32,7 @@ def test_runtime_bootstrap_exposes_reviews_and_finishes_empty_days(
         token="review-runtime-token",
     )
     assert app.state.reviews is not None
+    assert app.state.weekly_reviews is not None
     headers = {
         "Authorization": "Bearer review-runtime-token",
         "host": "127.0.0.1:8777",
@@ -55,3 +56,16 @@ def test_runtime_bootstrap_exposes_reviews_and_finishes_empty_days(
         assert detail.status_code == 200
         assert detail.json()["summary_markdown"]
         assert body["overview"] in detail.json()["summary_markdown"]
+
+        weekly = client.post(
+            "/api/knowledge/reviews/weekly",
+            json={"week_id": "2026-W03", "request_id": "runtime-empty-week"},
+            headers={"Origin": "http://127.0.0.1:8777"},
+        )
+        assert weekly.status_code == 202
+        weekly_body = weekly.json()
+        assert weekly_body["status"] == "completed"
+        assert weekly_body["week_id"] == "2026-W03"
+        weekly_detail = client.get(f"/api/knowledge/reviews/{weekly_body['review_id']}")
+        assert weekly_detail.status_code == 200
+        assert weekly_detail.json()["summary"]["week_id"] == "2026-W03"

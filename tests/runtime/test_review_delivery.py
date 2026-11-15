@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from cairn.integrations.wechat.session import ProactiveSendOutcome
 from cairn.review.delivery import (
@@ -21,6 +22,7 @@ from cairn.review.models import (
     ReviewType,
     SourceCollectionState,
     SourceCollectionStatus,
+    WeeklyReview,
 )
 from cairn.review.store import ReviewStore
 
@@ -454,3 +456,103 @@ def test_message_is_plain_text_mobile_sized_and_truncated(
     short = format_review_message(review, max_chars=150)
     assert len(short) <= 150
     assert "内容过长" in short
+
+
+def _completed_weekly_review(
+    store: ReviewStore, request_id: str = "weekly-delivery"
+) -> Any:
+    start = datetime(2026, 1, 11, 20, 30, tzinfo=ZoneInfo(TZ))
+    end = datetime(2026, 1, 18, 20, 30, tzinfo=ZoneInfo(TZ))
+    created = store.create_or_get(
+        request_id=request_id,
+        review_type=ReviewType.WEEKLY,
+        day=end.date(),
+        period_start=start.isoformat(),
+        period_end=end.isoformat(),
+        timezone=TZ,
+        input_fingerprint="b" * 64,
+        source_manifest=(),
+        collection_status=(
+            SourceCollectionStatus(
+                source_type="daily_review",
+                status=SourceCollectionState.OK,
+                discovered=7,
+                included=7,
+            ),
+        ),
+    ).review
+    store.mark_generating(created.review_id, "test-model")
+    summary = WeeklyReview(
+        week_id="2026-W03",
+        period_start=start,
+        period_end=end,
+        overview="这一周完成了可验证的周报链路。",
+        major_events=(
+            ReviewItem(text="完成了周报生成与投递解耦", source_refs=("task-1",)),
+        ),
+        progress=(ReviewItem(text="周报进入投递出箱", source_refs=("task-1",)),),
+        knowledge_insights=(
+            ReviewItem(text="日报只能作为二级总结", source_refs=("review-d1",)),
+        ),
+        recurring_problems=(
+            ReviewItem(text="缺失日报需要原始记录补齐", source_refs=("review-d2",)),
+        ),
+        next_week_priorities=(ReviewItem(text="观察一周的调度游标"),),
+        confidence_notes=("依据七个日报周期。",),
+    )
+    return store.complete(
+        created.review_id,
+        summary=summary,
+        summary_markdown="# 2026-W03 周报\n",
+        model_id="test-model",
+        request_delivery=True,
+        delivery_target=DeliveryTarget(recipient="owner"),
+    )
+
+
+def test_weekly_message_is_plain_mobile_text_with_the_actual_period(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    review = _completed_weekly_review(store)
+    text = format_review_message(review)
+    assert "##" not in text and "**" not in text and "`" not in text
+    assert text.startswith("Cairn · 每周复盘")
+    assert "周次: 2026-W03" in text
+    assert "覆盖: 01-11 20:30 → 01-18 20:30" in text
+    assert "重要事件" in text
+    assert "本周进展" in text
+    assert "下周优先事项" in text
+    assert "来源: daily_review 7" in text
+    assert len(text) <= 3_500
+
+    short = format_review_message(review, max_chars=150)
+    assert len(short) <= 150
+    assert "完整周报见 Web" in short
+
+
+def test_weekly_delivery_uses_the_same_outbox_and_identity(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    review = _completed_weekly_review(store)
+    wechat = FakeWechat()
+    coordinator = _coordinator(store, wechat)
+
+    async def scenario() -> None:
+        await coordinator.start()
+        try:
+            for _ in range(50):
+                delivery = store.get_delivery(review.review_id)
+                if (
+                    delivery is not None
+                    and delivery.status is ReviewDeliveryStatus.ACCEPTED
+                ):
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                raise AssertionError("weekly delivery did not settle")
+            assert len(wechat.sent) == 1
+            assert wechat.sent[0][1].startswith("Cairn · 每周复盘")
+        finally:
+            await coordinator.close()
+
+    asyncio.run(scenario())

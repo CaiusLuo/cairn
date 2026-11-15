@@ -35,6 +35,7 @@ from cairn.review.models import (
     SourceSnapshot,
     StoredReview,
     StoredReviewDelivery,
+    WeeklyReview,
     new_review_id,
 )
 
@@ -118,10 +119,16 @@ class ReviewStore:
                 )
             )
             summary_json = cast(str | None, row["summary_json"])
+            # Existing daily rows keep their original JSON shape; weekly rows
+            # are parsed from the same column by their immutable review_type.
             summary = (
                 None
                 if summary_json is None
-                else DailyReview.model_validate_json(summary_json)
+                else (
+                    DailyReview.model_validate_json(summary_json)
+                    if review_type is ReviewType.DAILY
+                    else WeeklyReview.model_validate_json(summary_json)
+                )
             )
             return StoredReview(
                 review_id=cast(str, row["review_id"]),
@@ -392,6 +399,25 @@ class ReviewStore:
             ).fetchall()
         return tuple(self._review(row) for row in rows)
 
+    def latest_completed(
+        self,
+        *,
+        review_type: ReviewType,
+        period_start: str,
+        period_end: str,
+        timezone: str,
+    ) -> StoredReview | None:
+        """The newest completed version for one exact period, if any."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM reviews WHERE review_type = ? "
+                "AND period_start = ? AND period_end = ? AND timezone = ? "
+                "AND status = 'completed' "
+                "ORDER BY version DESC, created_at DESC LIMIT 1",
+                (review_type.value, period_start, period_end, timezone),
+            ).fetchone()
+        return None if row is None else self._review(row)
+
     def mark_generating(self, review_id: str, model_id: str | None) -> StoredReview:
         """Claim a pending review; a second caller observes the same attempt."""
         now = utc_now()
@@ -427,7 +453,7 @@ class ReviewStore:
         self,
         review_id: str,
         *,
-        summary: DailyReview,
+        summary: DailyReview | WeeklyReview,
         summary_markdown: str,
         model_id: str | None,
         request_delivery: bool = False,

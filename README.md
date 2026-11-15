@@ -84,10 +84,15 @@ The Server can also schedule the daily review itself, disabled by default. Enabl
 [review]
 enabled = true
 time = "20:30"
+# Weekly reports are independent of the daily schedule; each has its own
+# durable cursor. Sunday 20:40 summarizes the seven daily windows ending at
+# Sunday's 20:30 cutoff.
+weekly_enabled = true
+weekly_time = "20:40"
 timezone = "Asia/Shanghai"
-# Required when enabled: the only WeChat user ID allowed to receive the
-# scheduled report. It is host authorization, not whichever account is
-# logged in when the report is due.
+# Required when either schedule is enabled: the only WeChat user ID allowed
+# to receive the scheduled report. It is host authorization, not whichever
+# account is logged in when the report is due.
 recipient = "wechat-user-id"
 # Optional additional pin for the bot account.
 # account_id = "ilink-bot-id"
@@ -108,6 +113,24 @@ a fallback. The ledger distinguishes `sending`, `accepted`, `delivery_unknown` a
 unknown result is never resent automatically. iLink may refuse a send with `ret=-2` once the last inbound
 reply context is no longer accepted; that is a definite non-send, so the delivery stays retryable and is sent
 after the next inbound WeChat message provides a fresh context.
+
+Weekly reports use the same store and delivery outbox. `POST /api/knowledge/reviews/weekly` with
+`{"week_id": "YYYY-Www", "request_id": ...}` generates one report for the seven daily cutoff windows
+ending at that ISO week's Sunday 20:30 boundary; `GET /api/knowledge/reviews?type=weekly` lists them.
+The request is refused with `review_period_not_ended` until that boundary has passed, so manual
+generation cannot open an unfinished week. Completed daily reports are secondary evidence and never
+widen what their original Task/Clip/Run sources can prove. A source omitted from a daily report stays
+omitted, and an identity-only manifest entry can never prove completion. When one Task or Clip changes
+during the week, the latest included version determines its state while every version hash remains in
+the snapshot for audit. Missing daily reports are marked and that day's raw records are collected instead.
+A week with no records still completes with an explicit no-record note. The schedule has its own
+persisted cursor and generates at most the most recent week after an outage. First enablement never
+backfills earlier weeks: it starts with the next Sunday boundary, or with the week that just ended if
+enabled on Sunday after `weekly_time`. Failures are left for
+`POST /api/knowledge/reviews/schedule/weekly/retry` with
+`{"week_id": "...", "request_id": "..."}`. Replaying a retry `request_id` returns the same review
+without a second model call or delivery intent; a new request ID is a new operator confirmation.
+Delivery stays idempotent per weekly version and only goes to the host-authorized recipient.
 
 `POST /api/knowledge/reviews/{id}/delivery/resend` requires a caller-supplied `request_id` and persists a
 receipt for the accepted or rejected operation. Replaying the same `request_id` returns that receipt without a

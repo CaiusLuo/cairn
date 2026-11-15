@@ -17,6 +17,7 @@ from cairn.agent.models.messages import LLMResponse, Message, ToolCall
 from cairn.knowledge.store import KnowledgeStore
 from cairn.review.collector import ReviewSourceCollector
 from cairn.review.models import (
+    DailyReview,
     DeliveryTarget,
     ReviewInput,
     ReviewStatus,
@@ -190,7 +191,7 @@ def test_valid_report_is_persisted_with_citations_and_no_tools(tmp_path: Path) -
             assert created.status in {ReviewStatus.PENDING, ReviewStatus.GENERATING}
             stored = await service.wait_for_review(created.review_id)
             assert stored.status is ReviewStatus.COMPLETED
-            assert stored.summary is not None
+            assert isinstance(stored.summary, DailyReview)
             assert stored.summary.completed_activities[0].source_refs == ("run-1",)
             assert stored.summary.source_refs == ("run-1",)
             assert stored.summary.overview == "A run completed with token [redacted]."
@@ -407,7 +408,7 @@ def test_budget_omitted_sources_are_not_reported_as_an_empty_day(
                 DAY, "budget-omitted", timezone=TZ
             )
             assert stored.status is ReviewStatus.COMPLETED
-            assert stored.summary is not None
+            assert isinstance(stored.summary, DailyReview)
             assert stored.summary.overview not in NO_SOURCE_MESSAGES
             assert "预算" in stored.summary.overview
             assert stored.summary.completed_activities == ()
@@ -425,7 +426,7 @@ def test_no_sources_finishes_without_calling_the_model(tmp_path: Path) -> None:
         try:
             stored = await service.generate_daily_review(DAY, "empty-day", timezone=TZ)
             assert stored.status is ReviewStatus.COMPLETED
-            assert stored.summary is not None
+            assert isinstance(stored.summary, DailyReview)
             assert stored.summary.overview in NO_SOURCE_MESSAGES
             assert stored.summary.completed_activities == ()
             assert stored.summary.knowledge_insights == ()

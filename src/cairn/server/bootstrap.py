@@ -40,12 +40,14 @@ from cairn.interfaces.web.config import WebConfig
 from cairn.interfaces.web.management import management_routes
 from cairn.interfaces.web.reviews import review_routes
 from cairn.knowledge.store import KnowledgeStore
-from cairn.review.collector import ReviewSourceCollector
+from cairn.review.collector import ReviewSourceCollector, WeeklySourceCollector
 from cairn.review.delivery import ReviewDeliveryCoordinator
 from cairn.review.models import DeliveryTarget
 from cairn.review.schedule import ReviewScheduleCoordinator
 from cairn.review.service import DailyReviewService
 from cairn.review.store import ReviewStore
+from cairn.review.weekly import WeeklyReviewService
+from cairn.review.weekly_schedule import WeeklyReviewScheduleCoordinator
 from cairn.server.client import read_runtime_token as read_token
 from cairn.server.config import (
     DEFAULT_REVIEW,
@@ -200,9 +202,16 @@ def runtime_app(
         account_id=review.account_id,
         recipient=review.recipient,
     )
+    review_store = ReviewStore(knowledge_store)
+    review_llm = None if provider_runtime is None else provider_runtime.llm
+    review_model_id = (
+        None
+        if provider_runtime is None
+        else provider_runtime.model_manager.current_model_id()
+    )
     try:
         reviews = DailyReviewService(
-            store=ReviewStore(knowledge_store),
+            store=review_store,
             collector=ReviewSourceCollector(
                 knowledge=knowledge_store,
                 workspace=workspace,
@@ -211,21 +220,36 @@ def runtime_app(
                 memory_enabled=controls.memory.enabled,
                 sensitive_values=execution.sensitive_values,
             ),
-            llm=None if provider_runtime is None else provider_runtime.llm,
-            model_id=(
-                None
-                if provider_runtime is None
-                else provider_runtime.model_manager.current_model_id()
-            ),
+            llm=review_llm,
+            model_id=review_model_id,
             sensitive_values=execution.sensitive_values,
             delivery_target=review_target if review.recipient else None,
+        )
+        weekly_reviews = WeeklyReviewService(
+            store=review_store,
+            collector=WeeklySourceCollector(
+                reviews=review_store,
+                knowledge=knowledge_store,
+                workspace=workspace,
+                domain=domain_store,
+                memory=controls.memory.store,
+                memory_enabled=controls.memory.enabled,
+                sensitive_values=execution.sensitive_values,
+                cutoff=wall_time.fromisoformat(review.time),
+            ),
+            llm=review_llm,
+            model_id=review_model_id,
+            sensitive_values=execution.sensitive_values,
+            delivery_target=review_target if review.recipient else None,
+            cutoff=wall_time.fromisoformat(review.time),
         )
     except BaseException:
         execution.close()
         catalogue.close()
         raise
-    web.router.routes[0:0] = review_routes(reviews, token)
+    web.router.routes[0:0] = review_routes(reviews, token, weekly_reviews)
     web.state.reviews = reviews
+    web.state.weekly_reviews = weekly_reviews
     delivery = WechatDeliveryCoordinator(
         conversations=conversations,
         wechat=controls.wechat,
@@ -239,7 +263,7 @@ def runtime_app(
             wechat=controls.wechat,
             target=review_target,
         )
-        if review.enabled
+        if (review.enabled or review.weekly_enabled) and review.recipient
         else None
     )
     web.state.review_delivery = review_delivery
@@ -260,6 +284,23 @@ def runtime_app(
         else None
     )
     web.state.review_schedule = review_schedule
+    weekly_review_schedule = (
+        WeeklyReviewScheduleCoordinator(
+            service=weekly_reviews,
+            store=controls.schedules.store,
+            on_settled=(
+                (lambda _review: review_delivery.rescan())
+                if review_delivery is not None
+                else None
+            ),
+            timezone=review.timezone,
+            cutoff=wall_time.fromisoformat(review.time),
+            scheduled_time=wall_time.fromisoformat(review.weekly_time),
+        )
+        if provider_runtime is not None and review.weekly_enabled
+        else None
+    )
+    web.state.weekly_review_schedule = weekly_review_schedule
 
     def lifespan(_app: Any) -> AbstractAsyncContextManager[None]:
         return running_runtime(
@@ -272,6 +313,8 @@ def runtime_app(
             review_delivery,
             review_schedule,
             channel_manager,
+            weekly_reviews,
+            weekly_review_schedule,
         )
 
     web.router.lifespan_context = lifespan
