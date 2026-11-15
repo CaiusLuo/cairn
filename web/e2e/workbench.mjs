@@ -431,6 +431,51 @@ try {
     await page.keyboard.press("Escape");
     await dailyDialog.waitFor({ state: "detached" });
 
+    // A -> B detail identity. The previous report must not remain visible
+    // while the next review_id loads, and a failed load must not fall back to
+    // the previous report either.
+    const detailPattern =
+      /\/api\/knowledge\/reviews\/(?!schedule(?:\/|$))[^/?]+$/;
+    await dailyCards.last().getByRole("button").first().click();
+    await dailyDialog.getByText("第一版日报", { exact: false }).first().waitFor();
+    await page.keyboard.press("Escape");
+    await dailyDialog.waitFor({ state: "detached" });
+
+    let releaseDetail;
+    const detailGate = new Promise(resolve => { releaseDetail = resolve; });
+    let detailStartedResolve;
+    const detailStarted = new Promise(resolve => { detailStartedResolve = resolve; });
+    await page.route(detailPattern, async route => {
+      if (route.request().method() !== "GET") return route.continue();
+      detailStartedResolve();
+      await detailGate;
+      await route.continue().catch(() => {});
+    });
+    await newestDaily.getByRole("button").first().click();
+    await detailStarted;
+    await dailyDialog.getByRole("status").filter({ hasText: "正在读取复盘详情" }).waitFor();
+    assert.equal(await dailyDialog.getByText("第一版日报", { exact: false }).count(), 0);
+    releaseDetail();
+    await dailyDialog.getByText("第二版日报", { exact: false }).first().waitFor();
+    await page.unroute(detailPattern);
+    await page.keyboard.press("Escape");
+    await dailyDialog.waitFor({ state: "detached" });
+
+    await page.route(detailPattern, async route => {
+      if (route.request().method() !== "GET") return route.continue();
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "review_store_unavailable" }),
+      });
+    });
+    await dailyCards.last().getByRole("button").first().click();
+    await dailyDialog.getByText("复盘存储暂时不可用", { exact: false }).waitFor();
+    assert.equal(await dailyDialog.getByText("第二版日报", { exact: false }).count(), 0);
+    await page.unroute(detailPattern);
+    await page.keyboard.press("Escape");
+    await dailyDialog.waitFor({ state: "detached" });
+
     await page.getByLabel("按日期筛选").fill("2026-01-15");
     await page.getByRole("button", { name: "筛选", exact: true }).click();
     assert.equal(new URL(page.url()).searchParams.get("day"), "2026-01-15");
@@ -485,13 +530,25 @@ try {
     await page.waitForFunction(() => document.querySelectorAll(".review-card").length === 3);
     await page.emulateMedia({ reducedMotion: "no-preference" });
 
-    // Manual generation runs on the Server. This fixture has no provider, so
-    // the honest outcome is a failed report with its real error reason.
+    // Manual generation runs on the Server. Pick the cutoff period that
+    // contains the current fixture traffic: today before 20:30 Asia/Shanghai,
+    // otherwise tomorrow. This fixture has no provider, so the honest outcome
+    // is a failed report with its real error reason.
     await page.getByRole("button", { name: "生成日报", exact: true }).click();
     await page.getByRole("heading", { name: "生成日报", exact: true }).waitFor();
-    const reviewDay = await page.evaluate(() =>
-      new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" }),
-    );
+    const reviewDay = await page.evaluate(async () => {
+      const policy = await (
+        await fetch("/api/runtime/management?section=review")
+      ).json();
+      const zone = policy.review?.timezone ?? "Asia/Shanghai";
+      const cutoff = policy.review?.daily?.time ?? "20:30";
+      const [datePart, timePart] = new Date()
+        .toLocaleString("sv-SE", { timeZone: zone })
+        .split(" ");
+      const day = new Date(datePart + "T00:00:00Z");
+      if (timePart >= cutoff) day.setUTCDate(day.getUTCDate() + 1);
+      return day.toISOString().slice(0, 10);
+    });
     await page.getByLabel("日期", { exact: true }).fill(reviewDay);
     await page.getByRole("button", { name: "开始生成", exact: true }).click();
     const generatedDialog = page.getByRole("dialog", { name: "日报详情" });
@@ -502,6 +559,69 @@ try {
     await page.keyboard.press("Escape");
     await generatedDialog.waitFor({ state: "detached" });
     console.log("Review console history, filters, versions, evidence and delivery passed.");
+
+    // Pagination race: seed enough daily reports to expose page 2, hold that
+    // response, switch to weekly, then release the stale daily page. Only the
+    // weekly records may remain.
+    await page.evaluate(async () => {
+      for (let index = 0; index < 22; index += 1) {
+        const day = new Date(Date.UTC(2024, 11, 1 + index))
+          .toISOString()
+          .slice(0, 10);
+        const response = await fetch("/api/knowledge/reviews/daily", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            date: day,
+            timezone: "Asia/Shanghai",
+            request_id: "e2e-page-" + index,
+          }),
+        });
+        if (!response.ok) throw new Error("daily seed failed: " + response.status);
+      }
+    });
+    await page.getByRole("tab", { name: "周报", exact: true }).click();
+    await page.getByRole("tab", { name: "日报", exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll(".review-card").length === 20);
+    const loadMore = page.getByRole("button", { name: "加载更多" });
+    await loadMore.waitFor();
+
+    const listPattern = /\/api\/knowledge\/reviews\?/;
+    let releaseNextPage;
+    const nextPageGate = new Promise(resolve => { releaseNextPage = resolve; });
+    let nextPageStartedResolve;
+    const nextPageStarted = new Promise(resolve => { nextPageStartedResolve = resolve; });
+    await page.route(listPattern, async route => {
+      const target = new URL(route.request().url());
+      if (
+        target.searchParams.get("type") === "daily" &&
+        target.searchParams.get("offset") === "20"
+      ) {
+        nextPageStartedResolve();
+        await nextPageGate;
+        await route.continue().catch(() => {});
+      } else {
+        await route.continue();
+      }
+    });
+    await loadMore.click();
+    await nextPageStarted;
+    await page.getByRole("tab", { name: "周报", exact: true }).click();
+    await page.locator(".review-card").filter({ hasText: "2026-W03" }).waitFor();
+    releaseNextPage();
+    await page.waitForTimeout(300);
+    assert.equal(await page.locator(".review-card").count(), 1);
+    assert.equal(
+      await page.locator(".review-card").filter({ hasText: "日报" }).count(),
+      0,
+    );
+    await page.unroute(listPattern);
+    await page.getByRole("tab", { name: "日报", exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll(".review-card").length === 20);
+    await loadMore.waitFor();
+    assert.equal(await loadMore.isEnabled(), true);
+    console.log("Review pagination race and detail identity passed.");
+
 
     let approvalUrl;
     const recoveryId = process.env.CAIRN_WEB_E2E_RECOVERY_TASK;

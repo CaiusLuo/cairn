@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from datetime import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -149,6 +150,8 @@ def create_app(
     session_file: Path | None = None,
     knowledge_store: KnowledgeStore | None = None,
     reviews: DailyReviewService | None = None,
+    review_cutoff: time | None = None,
+    review_timezone: str | None = None,
     channels: ChannelManager | None = None,
 ) -> Starlette:
     if runtime is not None and (not config.auth_passphrase or not runtime_token):
@@ -361,7 +364,14 @@ def create_app(
     if clip_store is not None:
         routes.extend(knowledge_routes(clip_store, runtime_token))
         if reviews is not None:
-            routes.extend(review_routes(reviews, runtime_token))
+            routes.extend(
+                review_routes(
+                    reviews,
+                    runtime_token,
+                    daily_cutoff=review_cutoff,
+                    host_timezone=review_timezone,
+                )
+            )
     if channels is not None:
         from cairn.interfaces.web.channels import channel_routes
 

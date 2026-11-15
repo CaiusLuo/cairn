@@ -4,14 +4,18 @@ import {
   createDailyReview,
   createWeeklyReview,
   getReview,
+  getScheduleFailures,
   listReviews,
   resendDelivery,
+  retryDailySchedule,
+  retryWeeklySchedule,
   type Delivery,
   type DeliveryStatus,
   type ReviewDetail,
   type ReviewStatus,
   type ReviewSummary,
   type ReviewType,
+  type ScheduleFailures,
 } from "../review-api";
 import { RuntimeError, runtimeApi } from "../runtime-api";
 import { dateLabel } from "./data";
@@ -25,6 +29,7 @@ const WEEK_PATTERN = /^\d{4}-W\d{2}$/;
 const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const PENDING_KEY = "cairn.web.pending.review-generation";
 const DELIVERY_KEY = "cairn.web.pending.review-delivery";
+const SCHEDULE_KEY = "cairn.web.pending.review-schedule-retry";
 
 const statusLabel: Record<ReviewStatus, string> = {
   pending: "待生成",
@@ -198,6 +203,40 @@ function shouldKeepRequestId(reason: unknown) {
   );
 }
 
+type FailedSchedule = {
+  type: ReviewType;
+  period: string;
+  reviewId: string;
+  error: string;
+  at: string;
+};
+
+function failedSchedulesOf(failures: ScheduleFailures | null): FailedSchedule[] {
+  if (!failures) return [];
+  const entries: FailedSchedule[] = [];
+  for (const item of failures.daily ?? []) {
+    if (!item.day) continue;
+    entries.push({
+      type: "daily",
+      period: item.day,
+      reviewId: item.review_id,
+      error: item.error,
+      at: item.at,
+    });
+  }
+  for (const item of failures.weekly ?? []) {
+    if (!item.week_id) continue;
+    entries.push({
+      type: "weekly",
+      period: item.week_id,
+      reviewId: item.review_id,
+      error: item.error,
+      at: item.at,
+    });
+  }
+  return entries.sort((left, right) => right.period.localeCompare(left.period));
+}
+
 function useListAnimation(
   ref: React.RefObject<HTMLDivElement | null>,
   animationKey: string,
@@ -288,7 +327,11 @@ function DeliveryPanel({
     const key = `${review.review_id}:${delivery.updated_at}`;
     const requestId = requestIdFor(DELIVERY_KEY, key);
     try {
-      await resendDelivery(review.review_id, { requestId, rebind: true });
+      await resendDelivery(review.review_id, {
+        requestId,
+        rebind: true,
+        confirmed: delivery.status === "delivery_unknown" && confirmed,
+      });
       clearRequestId(DELIVERY_KEY, requestId);
       setFeedback("已重新入队；微信可用后由 Server 发送，不会立即送达。");
       onChanged();
@@ -454,6 +497,8 @@ export function Reviews() {
   const [detailError, setDetailError] = useState("");
   const [revision, setRevision] = useState(0);
   const [timezone, setTimezone] = useState("Asia/Shanghai");
+  const [timezoneReady, setTimezoneReady] = useState(false);
+  const [timezoneError, setTimezoneError] = useState("");
   const [dayDraft, setDayDraft] = useState(route.day);
   const [weekDraft, setWeekDraft] = useState(route.week);
   const [filterError, setFilterError] = useState("");
@@ -465,16 +510,52 @@ export function Reviews() {
   const [submitting, setSubmitting] = useState(false);
   const [detailBusy, setDetailBusy] = useState(false);
   const [actionError, setActionError] = useState("");
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [scheduleFailures, setScheduleFailures] =
+    useState<ScheduleFailures | null>(null);
+  const [scheduleLoadError, setScheduleLoadError] = useState("");
+  const [scheduleError, setScheduleError] = useState("");
+  const [scheduleNotice, setScheduleNotice] = useState("");
+  const [scheduleBusy, setScheduleBusy] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
   const detailRef = useRef<HTMLDivElement>(null);
   const routeKey = `${route.type}|${route.day}|${route.week}`;
   const previousRouteKey = useRef(routeKey);
+  const paginationEpoch = useRef(0);
+  const loadMoreController = useRef<AbortController | null>(null);
+  const nextOffset = useRef(0);
+  const loadedDetailId = useRef<string | null>(null);
 
   useEffect(() => {
     const update = () => setRoute(readRoute());
     window.addEventListener("popstate", update);
     return () => window.removeEventListener("popstate", update);
   }, []);
+
+  useEffect(
+    () => () => {
+      paginationEpoch.current += 1;
+      loadMoreController.current?.abort();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getScheduleFailures(controller.signal)
+      .then(value => {
+        if (controller.signal.aborted) return;
+        setScheduleFailures(value);
+        setScheduleLoadError("");
+      })
+      .catch(reason => {
+        if (controller.signal.aborted) return;
+        setScheduleLoadError(
+          reason instanceof Error ? reason.message : String(reason),
+        );
+      });
+    return () => controller.abort();
+  }, [revision]);
 
   useEffect(() => {
     setDayDraft(route.day);
@@ -489,10 +570,23 @@ export function Reviews() {
       controller.signal,
     )
       .then(value => {
-        if (value.review?.timezone) setTimezone(value.review.timezone);
+        if (controller.signal.aborted) return;
+        const zone = value.review?.timezone;
+        if (!zone) {
+          setTimezoneReady(false);
+          setTimezoneError("Server 未返回宿主时区");
+          return;
+        }
+        setTimezone(zone);
+        setTimezoneReady(true);
+        setTimezoneError("");
       })
-      .catch(() => {
-        /* the default timezone still lets the operator pick a period */
+      .catch(reason => {
+        if (controller.signal.aborted) return;
+        setTimezoneReady(false);
+        setTimezoneError(
+          reason instanceof Error ? reason.message : String(reason),
+        );
       });
     return () => controller.abort();
   }, []);
@@ -503,6 +597,11 @@ export function Reviews() {
     const controller = new AbortController();
     let cancelled = false;
     if (changed) {
+      paginationEpoch.current += 1;
+      loadMoreController.current?.abort();
+      loadMoreController.current = null;
+      setLoadingMore(false);
+      nextOffset.current = 0;
       setItems([]);
       setHasMore(false);
       setListError("");
@@ -523,9 +622,11 @@ export function Reviews() {
         setItems(current =>
           changed ? data.reviews : mergeReviews(current, data.reviews),
         );
-        // A status poll only refreshes the first page. Do not resurrect the
-        // load-more control after the operator has already reached the end.
-        if (changed || items.length === 0) {
+        // A status poll only refreshes the first page. It must not reset the
+        // operator's pagination cursor or resurrect the load-more control
+        // after the operator has already reached the end.
+        if (changed || nextOffset.current === 0) {
+          nextOffset.current = data.reviews.length;
           setHasMore(data.reviews.length === PAGE_SIZE);
         }
       })
@@ -545,20 +646,35 @@ export function Reviews() {
 
   useEffect(() => {
     if (!route.review) {
+      loadedDetailId.current = null;
       setDetail(null);
       setDetailError("");
+      setDetailLoading(false);
       return;
+    }
+    const identityChanged = loadedDetailId.current !== route.review;
+    if (identityChanged) {
+      // Never show the previous report while a different review_id loads.
+      setDetail(null);
+      setDetailError("");
+      setDetailLoading(true);
     }
     const controller = new AbortController();
     let cancelled = false;
     getReview(route.review, controller.signal)
       .then(value => {
-        if (!cancelled) setDetail(value);
+        if (cancelled) return;
+        loadedDetailId.current = route.review;
+        setDetail(value);
+        setDetailError("");
       })
       .catch(reason => {
         if (!cancelled && !controller.signal.aborted) {
           setDetailError(reason instanceof Error ? reason.message : String(reason));
         }
+      })
+      .finally(() => {
+        if (!cancelled && identityChanged) setDetailLoading(false);
       });
     return () => {
       cancelled = true;
@@ -626,24 +742,84 @@ export function Reviews() {
     navigate({ ...route, review: "" }, "replace");
   }
 
+  function openFailedReport(entry: FailedSchedule) {
+    if (!entry.reviewId) return;
+    navigate(
+      { type: entry.type, day: "", week: "", review: entry.reviewId },
+      "push",
+    );
+  }
+
+  async function retryFailedSchedule(entry: FailedSchedule) {
+    if (scheduleBusy) return;
+    const key = `schedule-retry:${entry.type}:${entry.period}`;
+    const requestId = requestIdFor(SCHEDULE_KEY, key);
+    setScheduleBusy(key);
+    setScheduleError("");
+    setScheduleNotice("");
+    try {
+      const created =
+        entry.type === "daily"
+          ? await retryDailySchedule(entry.period, requestId)
+          : await retryWeeklySchedule(entry.period, requestId);
+      clearRequestId(SCHEDULE_KEY, requestId);
+      setScheduleNotice(
+        `已提交 ${entry.period} 的调度恢复，正在读取真实生成状态。`,
+      );
+      setRevision(value => value + 1);
+      navigate(
+        { type: entry.type, day: "", week: "", review: created.review_id },
+        "push",
+      );
+    } catch (reason) {
+      const resultUnknown = shouldKeepRequestId(reason);
+      if (!resultUnknown) clearRequestId(SCHEDULE_KEY, requestId);
+      setScheduleError(
+        resultUnknown
+          ? "恢复结果未知: Server 可能已经受理。先刷新并核对是否生成了新版本, 再决定是否重试; 重试会沿用同一请求编号, 不会重复生成。"
+          : reason instanceof Error
+            ? reason.message
+            : String(reason),
+      );
+      setRevision(value => value + 1);
+    } finally {
+      setScheduleBusy("");
+    }
+  }
+
   async function loadMore() {
     if (loading || loadingMore || !hasMore) return;
+    const epoch = paginationEpoch.current;
+    const controller = new AbortController();
+    loadMoreController.current?.abort();
+    loadMoreController.current = controller;
+    const offset = nextOffset.current;
     setLoadingMore(true);
     setListError("");
     try {
-      const data = await listReviews({
-        type: route.type,
-        day: route.day || undefined,
-        weekId: route.week || undefined,
-        limit: PAGE_SIZE,
-        offset: items.length,
-      });
+      const data = await listReviews(
+        {
+          type: route.type,
+          day: route.day || undefined,
+          weekId: route.week || undefined,
+          limit: PAGE_SIZE,
+          offset,
+        },
+        controller.signal,
+      );
+      if (controller.signal.aborted || epoch !== paginationEpoch.current) return;
       setItems(current => mergeReviews(current, data.reviews));
+      nextOffset.current = offset + data.reviews.length;
       setHasMore(data.reviews.length === PAGE_SIZE);
     } catch (reason) {
-      setListError(reason instanceof Error ? reason.message : String(reason));
+      if (!controller.signal.aborted && epoch === paginationEpoch.current) {
+        setListError(reason instanceof Error ? reason.message : String(reason));
+      }
     } finally {
-      setLoadingMore(false);
+      if (loadMoreController.current === controller) {
+        loadMoreController.current = null;
+      }
+      if (epoch === paginationEpoch.current) setLoadingMore(false);
     }
   }
 
@@ -668,6 +844,10 @@ export function Reviews() {
   async function submitGeneration(event: React.FormEvent) {
     event.preventDefault();
     if (submitting) return;
+    if (!timezoneReady) {
+      setFormError("宿主时区尚未读取，无法确定复盘周期窗口。");
+      return;
+    }
     const period =
       route.type === "daily" ? genDay : genWeek.trim().toUpperCase();
     if (route.type === "daily" && !DAY_PATTERN.test(period)) {
@@ -747,6 +927,14 @@ export function Reviews() {
 
   const filtered = Boolean(route.day || route.week);
   const typeName = route.type === "daily" ? "日报" : "周报";
+  const failedSchedules = failedSchedulesOf(scheduleFailures);
+  const displayedDetail =
+    detail !== null && detail.review_id === route.review ? detail : null;
+  const detailScheduleFailure = displayedDetail
+    ? failedSchedules.find(
+        entry => entry.reviewId === displayedDetail.review_id,
+      )
+    : undefined;
 
   return (
     <section className="reviews">
@@ -793,14 +981,89 @@ export function Reviews() {
             </button>
           )}
         </form>
-        <button className="primary" onClick={openForm}>
+        <button
+          className="primary"
+          disabled={!timezoneReady}
+          title={
+            timezoneReady
+              ? undefined
+              : "读取宿主时区后才能手动生成复盘"
+          }
+          onClick={openForm}
+        >
           <Icon name="plus" size={15} />
           生成{typeName}
         </button>
       </div>
       <ErrorText value={filterError} />
       <ErrorText value={listError} />
-      {detailError && <ErrorText value={detailError} />}
+      {timezoneError && (
+        <p className="wb-muted" role="status">
+          无法读取宿主时区: {timezoneError}。为避免写入错误周期，手动生成已暂停。
+        </p>
+      )}
+      {scheduleLoadError && (
+        <p className="wb-muted" role="status">
+          无法读取失败调度状态: {scheduleLoadError}
+        </p>
+      )}
+      {failedSchedules.length > 0 && (
+        <section className="wb-card review-recovery" aria-label="定时复盘失败恢复">
+          <h2>定时复盘失败待恢复</h2>
+          <p className="wb-muted">
+            这些周期由宿主调度生成失败。“恢复调度”会使用调度器的人工重试并复用同一请求编号；普通“重新生成”会另建版本，不清理失败记录。
+          </p>
+          <div className="review-recovery-list">
+            {failedSchedules.map(entry => {
+              const busy =
+                scheduleBusy ===
+                `schedule-retry:${entry.type}:${entry.period}`;
+              return (
+                <article
+                  className="review-recovery-item"
+                  key={`${entry.type}:${entry.period}`}
+                >
+                  <div>
+                    <strong>
+                      {entry.type === "daily" ? "日报" : "周报"} · {entry.period}
+                    </strong>
+                    <p className="wb-muted">{generationError(entry.error)}</p>
+                    {entry.at && (
+                      <small className="wb-muted">
+                        失败于 {dateLabel(entry.at)}
+                      </small>
+                    )}
+                  </div>
+                  <div className="review-recovery-actions">
+                    {entry.reviewId && (
+                      <button onClick={() => openFailedReport(entry)}>
+                        查看失败报告
+                      </button>
+                    )}
+                    <button
+                      className="primary"
+                      disabled={Boolean(scheduleBusy)}
+                      onClick={() => void retryFailedSchedule(entry)}
+                    >
+                      {busy ? "提交中…" : "恢复调度"}
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+          {scheduleError && (
+            <p className="wb-error" role="alert">
+              {scheduleError}
+            </p>
+          )}
+          {scheduleNotice && (
+            <p className="wb-muted" role="status">
+              {scheduleNotice}
+            </p>
+          )}
+        </section>
+      )}
       {formOpen && (
         <section className="wb-card review-generate">
           <h2>生成{typeName}</h2>
@@ -920,63 +1183,100 @@ export function Reviews() {
           text={filtered ? "该筛选下没有复盘报告。" : "还没有生成任何复盘报告。"}
         />
       ) : null}
-      {detail && (
+      {route.review && (
         <Drawer
-          title={`${detail.review_type === "weekly" ? "周报" : "日报"}详情`}
+          title={`${
+            (displayedDetail?.review_type ?? route.type) === "weekly"
+              ? "周报"
+              : "日报"
+          }详情`}
           close={closeReview}
         >
-          <div className="review-detail" ref={detailRef}>
-            <div className="review-detail-meta">
-              <span className="review-state" data-status={detail.status}>
-                {statusLabel[detail.status]}
-              </span>
-              <span>v{detail.version}</span>
-              <span>{periodLabel(detail)}</span>
-              <span>{detail.timezone}</span>
-              {detail.supersedes_review_id && (
-                <span>取代 {detail.supersedes_review_id.slice(0, 18)}…</span>
+          {displayedDetail ? (
+            <div className="review-detail" ref={detailRef}>
+              <div className="review-detail-meta">
+                <span
+                  className="review-state"
+                  data-status={displayedDetail.status}
+                >
+                  {statusLabel[displayedDetail.status]}
+                </span>
+                <span>v{displayedDetail.version}</span>
+                <span>{periodLabel(displayedDetail)}</span>
+                <span>{displayedDetail.timezone}</span>
+                {displayedDetail.supersedes_review_id && (
+                  <span>
+                    取代 {displayedDetail.supersedes_review_id.slice(0, 18)}…
+                  </span>
+                )}
+              </div>
+              {displayedDetail.error && (
+                <p role="alert" className="wb-error">
+                  {generationError(displayedDetail.error)}
+                </p>
               )}
+              {detailScheduleFailure && (
+                <p className="review-warning" role="note">
+                  该报告属于定时调度的失败周期。恢复该周期请使用列表上方的“恢复调度”；
+                  “重新生成”会另建版本，且不会清理调度失败记录。
+                </p>
+              )}
+              <ErrorText value={detailError} />
+              <ErrorText value={actionError} />
+              <div className="review-detail-actions">
+                <button
+                  disabled={detailBusy || isActive(displayedDetail.status)}
+                  onClick={() => void regenerateDetail()}
+                >
+                  {detailBusy ? "提交中…" : "重新生成"}
+                </button>
+                <small className="wb-muted">
+                  重新生成会创建新版本，旧版本保留；不会自动发送微信。
+                </small>
+              </div>
+              {displayedDetail.summary_markdown ? (
+                <Markdown text={displayedDetail.summary_markdown} />
+              ) : (
+                <p className="wb-muted">
+                  {isActive(displayedDetail.status)
+                    ? "报告仍在生成，完成后会显示全文。"
+                    : "这份报告没有可显示的正文。"}
+                </p>
+              )}
+              {displayedDetail.delivery ? (
+                displayedDetail.delivery.review_id ===
+                displayedDetail.review_id ? (
+                  <DeliveryPanel
+                    key={displayedDetail.review_id}
+                    review={displayedDetail}
+                    delivery={displayedDetail.delivery}
+                    onChanged={() => setRevision(value => value + 1)}
+                  />
+                ) : (
+                  <p className="review-warning" role="alert">
+                    投递记录与当前报告不一致，已禁止重新投递操作。
+                  </p>
+                )
+              ) : (
+                <p className="wb-muted">
+                  这条报告没有投递记录（手动生成的报告不会自动投递）。
+                </p>
+              )}
+              <SourceEvidence review={displayedDetail} />
             </div>
-            {detail.error && (
-              <p role="alert" className="wb-error">
-                {generationError(detail.error)}
-              </p>
-            )}
-            <ErrorText value={actionError} />
-            <div className="review-detail-actions">
-              <button
-                disabled={detailBusy || isActive(detail.status)}
-                onClick={() => void regenerateDetail()}
-              >
-                {detailBusy ? "提交中…" : "重新生成"}
-              </button>
-              <small className="wb-muted">
-                重新生成会创建新版本，旧版本保留；不会自动发送微信。
-              </small>
+          ) : detailLoading ? (
+            <p className="wb-muted" role="status">
+              正在读取复盘详情…
+            </p>
+          ) : detailError ? (
+            <div className="review-detail">
+              <ErrorText value={detailError} />
             </div>
-            {detail.summary_markdown ? (
-              <Markdown text={detail.summary_markdown} />
-            ) : (
-              <p className="wb-muted">
-                {isActive(detail.status)
-                  ? "报告仍在生成，完成后会显示全文。"
-                  : "这份报告没有可显示的正文。"}
-              </p>
-            )}
-            {detail.delivery ? (
-              <DeliveryPanel
-                key={detail.review_id}
-                review={detail}
-                delivery={detail.delivery}
-                onChanged={() => setRevision(value => value + 1)}
-              />
-            ) : (
-              <p className="wb-muted">
-                这条报告没有投递记录（手动生成的报告不会自动投递）。
-              </p>
-            )}
-            <SourceEvidence review={detail} />
-          </div>
+          ) : (
+            <p className="wb-muted" role="status">
+              正在读取复盘详情…
+            </p>
+          )}
         </Drawer>
       )}
     </section>

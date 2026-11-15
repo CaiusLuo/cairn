@@ -36,6 +36,7 @@ RETRY_SECONDS = 300.0
 # reports or sending multiple overdue WeChat messages.
 MAX_CATCH_UP_DAYS = 3
 MAX_SKIPPED_DAYS = 31
+MAX_RETRY_RECEIPTS = 200
 
 
 class ReviewScheduleCoordinator:
@@ -362,7 +363,8 @@ class ReviewScheduleCoordinator:
         period, using a fresh request id as the operator's new confirmation.
         When the caller supplies a request id, it is stable and hashed into the
         scheduled request identity so a lost HTTP response can be retried
-        without a second model call or version.
+        without a second model call or version. A terminal receipt keeps the
+        original outcome replayable even after the failed day is cleared.
         """
         key = None if request_id is None else request_id.strip()
         if key == "":
@@ -370,6 +372,27 @@ class ReviewScheduleCoordinator:
         now = self.clock()
         self._ensure_initialized(now)
         await self._reconcile_interrupted()
+        receipts = dict(self.state.get("retry_requests") or {})
+        receipt = receipts.get(key) if key is not None else None
+        if receipt is not None:
+            if receipt.get("day") != day.isoformat():
+                raise ValueError("retry request_id was used for another day")
+            review_id = receipt.get("review_id")
+            review = (
+                None
+                if not isinstance(review_id, str)
+                else await self.service.get_review(review_id)
+            )
+            if review is None:
+                raise ValueError("retry receipt points at a missing review")
+            if review.status in {ReviewStatus.PENDING, ReviewStatus.GENERATING}:
+                try:
+                    review = await self.service.wait_for_review(
+                        review.review_id, timeout=self.settle_timeout
+                    )
+                except TimeoutError:
+                    return review
+            return review
         failed = dict(self.state.get("failed_days") or {})
         if day.isoformat() not in failed:
             return None
@@ -399,6 +422,15 @@ class ReviewScheduleCoordinator:
         except TimeoutError:
             self._save(last_status="generating")
             return review
+        if key is not None:
+            receipts[key] = {
+                "day": day.isoformat(),
+                "review_id": settled.review_id,
+                "at": self.clock().isoformat(),
+            }
+            self._save(
+                retry_requests=dict(list(receipts.items())[-MAX_RETRY_RECEIPTS:])
+            )
         if settled.status is ReviewStatus.COMPLETED:
             failed.pop(day.isoformat(), None)
             retried = dict(self.state.get("retried_days") or {})

@@ -372,6 +372,17 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .review-generate .review-regenerate { display: flex; flex-direction: row; align-items: center; gap: 7px; padding-bottom: 6px; color: var(--hui-secondary); }
 .review-form-actions { display: flex; gap: 8px; }
 .review-generate p.wb-muted { flex-basis: 100%; font-size: 12px; margin: 2px 0 0; }
+.review-recovery { display: grid; gap: 9px; border-color: color-mix(in srgb, var(--hui-warn) 34%, var(--hui-border)); }
+.review-recovery h2 { margin: 0; font-size: 15px; }
+.review-recovery > p.wb-muted { margin: 0; font-size: 12px; }
+.review-recovery-list { display: grid; gap: 8px; }
+.review-recovery-item { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 9px; padding-top: 8px; border-top: 1px solid var(--hui-border); }
+.review-recovery-item:first-child { padding-top: 0; border-top: 0; }
+.review-recovery-item > div:first-child { display: grid; gap: 3px; min-width: 0; }
+.review-recovery-item strong { font-size: 13px; overflow-wrap: anywhere; }
+.review-recovery-item p { margin: 0; font-size: 12px; }
+.review-recovery-item small { font-size: 11px; }
+.review-recovery-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .review-list { display: grid; gap: 10px; }
 .review-card { border: 1px solid var(--hui-border); border-radius: 14px; background: var(--hui-surface); overflow: hidden; }
 .review-card-main { display: grid; gap: 7px; width: 100%; padding: 15px; border: 0; background: transparent; text-align: left; cursor: pointer; }

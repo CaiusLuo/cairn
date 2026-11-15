@@ -250,7 +250,13 @@ def runtime_app(
         execution.close()
         catalogue.close()
         raise
-    web.router.routes[0:0] = review_routes(reviews, token, weekly_reviews)
+    web.router.routes[0:0] = review_routes(
+        reviews,
+        token,
+        weekly_reviews,
+        daily_cutoff=wall_time.fromisoformat(review.time),
+        host_timezone=review.timezone,
+    )
     web.state.reviews = reviews
     web.state.weekly_reviews = weekly_reviews
     delivery = WechatDeliveryCoordinator(

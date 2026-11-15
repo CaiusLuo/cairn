@@ -122,6 +122,19 @@ export type ReviewDetail = ReviewSummary & {
 
 export type ReviewList = { reviews: ReviewSummary[] };
 
+export type ScheduleFailure = {
+  day?: string;
+  week_id?: string;
+  review_id: string;
+  error: string;
+  at: string;
+};
+
+export type ScheduleFailures = {
+  daily: ScheduleFailure[] | null;
+  weekly: ScheduleFailure[] | null;
+};
+
 const FAILURE_TEXT: Record<string, string> = {
   invalid_review_request: "请求参数不符合要求，请检查日期或周次。",
   invalid_json: "请求内容不是有效的 JSON。",
@@ -139,6 +152,7 @@ const FAILURE_TEXT: Record<string, string> = {
   retry_request_conflict: "该重试编号已用于其他周次。",
   review_delivery_not_found: "这条报告没有投递记录。",
   review_delivery_not_retryable: "当前投递状态不允许重新投递。",
+  review_delivery_confirmation_required: "投递结果不明，必须确认可能重复发送后才能重新投递。",
   review_delivery_target_unavailable: "服务器未配置可用的微信接收目标。",
   review_request_too_large: "请求内容过大。",
 };
@@ -217,6 +231,34 @@ export function getReview(reviewId: string, signal?: AbortSignal) {
   );
 }
 
+export function getScheduleFailures(signal?: AbortSignal) {
+  return reviewApi<ScheduleFailures>("/schedule", undefined, signal);
+}
+
+export function retryDailySchedule(
+  day: string,
+  requestId: string,
+  signal?: AbortSignal,
+) {
+  return reviewApi<ReviewSummary>(
+    "/schedule/retry",
+    { day, request_id: requestId },
+    signal,
+  );
+}
+
+export function retryWeeklySchedule(
+  weekId: string,
+  requestId: string,
+  signal?: AbortSignal,
+) {
+  return reviewApi<ReviewSummary>(
+    "/schedule/weekly/retry",
+    { week_id: weekId, request_id: requestId },
+    signal,
+  );
+}
+
 export function createDailyReview(input: {
   date: string;
   timezone: string;
@@ -247,7 +289,7 @@ export function createWeeklyReview(input: {
 
 export function resendDelivery(
   reviewId: string,
-  input: { requestId: string; rebind: boolean },
+  input: { requestId: string; rebind: boolean; confirmed: boolean },
 ) {
   return reviewApi<{
     delivery: Delivery;
@@ -256,5 +298,6 @@ export function resendDelivery(
   }>(`/${encodeURIComponent(reviewId)}/delivery/resend`, {
     request_id: input.requestId,
     rebind: input.rebind,
+    confirmed: input.confirmed,
   });
 }

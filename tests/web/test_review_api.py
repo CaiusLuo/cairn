@@ -8,6 +8,7 @@ import json
 import threading
 import time
 from datetime import date, datetime, timedelta
+from datetime import time as wall_time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -102,6 +103,34 @@ class FakeCollector:
         return self.review_input
 
 
+class CutoffCollector:
+    def __init__(self) -> None:
+        base = _review_input()
+        self.sources = base.sources
+        self.collection_status = base.collection_status
+
+    def collect_daily(
+        self, day: date, timezone: str, *, cutoff: Any = None
+    ) -> ReviewInput:
+        zone = ZoneInfo(timezone)
+        if cutoff is None:
+            start = datetime.combine(day, wall_time.min, tzinfo=zone)
+            end = start + timedelta(days=1)
+        else:
+            end = datetime.combine(day, cutoff, tzinfo=zone)
+            start = end - timedelta(days=1)
+        return ReviewInput.build(
+            review_type=ReviewType.DAILY,
+            day=day,
+            timezone=timezone,
+            period_start=start,
+            period_end=end,
+            sources=self.sources,
+            collection_status=self.collection_status,
+            budget_chars=60_000,
+        )
+
+
 class BlockingLLM:
     def __init__(self, gate: threading.Event, responses: list[str]) -> None:
         self.gate = gate
@@ -136,11 +165,14 @@ def _app(
     *,
     llm: BlockingLLM | None = None,
     auth: bool = True,
+    collector: Any | None = None,
+    cutoff: wall_time | None = None,
+    timezone: str | None = None,
 ) -> tuple[Starlette, DailyReviewService, KnowledgeStore]:
     store = KnowledgeStore(tmp_path / "knowledge")
     service = DailyReviewService(
         store=ReviewStore(store),
-        collector=FakeCollector(_review_input()),
+        collector=collector or FakeCollector(_review_input()),
         llm=llm,
         model_id="test-model",
         delivery_target=DeliveryTarget(account_id="bot-a", recipient="owner"),
@@ -150,6 +182,8 @@ def _app(
         runtime_token="host-token" if auth else None,
         knowledge_store=store,
         reviews=service,
+        review_cutoff=cutoff,
+        review_timezone=timezone,
     )
     web.state.review_delivery = SimpleNamespace(
         target=DeliveryTarget(account_id="bot-a", recipient="owner"),
@@ -417,9 +451,16 @@ def test_delivery_status_is_visible_and_manual_resend_is_authenticated(
             context_token="ctx-1",
         )
         service.store.mark_delivery_unknown(review_id, "send_unconfirmed")
+        unconfirmed = client.post(
+            f"/api/knowledge/reviews/{review_id}/delivery/resend",
+            json={"request_id": "resend-unconfirmed", "rebind": True},
+            headers={"Origin": ORIGIN},
+        )
+        assert unconfirmed.status_code == 409
+        assert unconfirmed.json() == {"error": "review_delivery_confirmation_required"}
         requeued = client.post(
             f"/api/knowledge/reviews/{review_id}/delivery/resend",
-            json={"request_id": "resend-1", "rebind": True},
+            json={"request_id": "resend-1", "rebind": True, "confirmed": True},
             headers={"Origin": ORIGIN},
         )
         assert requeued.status_code == 202
@@ -481,6 +522,55 @@ def test_delivery_status_is_visible_and_manual_resend_is_authenticated(
             json={"request_id": "resend-anonymous"},
             headers={"Origin": ORIGIN},
         ).status_code in {401, 403}
+
+
+def test_manual_generation_reuses_the_host_cutoff_window(tmp_path: Path) -> None:
+    gate = threading.Event()
+    gate.set()
+    llm = BlockingLLM(gate, [_payload("First report."), _payload("Second report.")])
+    web, _service, _store = _app(
+        tmp_path,
+        llm=llm,
+        collector=CutoffCollector(),
+        cutoff=wall_time(20, 30),
+        timezone=TZ,
+    )
+    with TestClient(web, base_url=ORIGIN) as client:
+        _login(client)
+        first = client.post(
+            "/api/knowledge/reviews/daily",
+            json={
+                "date": DAY.isoformat(),
+                "timezone": TZ,
+                "request_id": "manual-cutoff-1",
+            },
+            headers={"Origin": ORIGIN},
+        )
+        assert first.status_code == 202
+        first_id = first.json()["review_id"]
+        detail = _wait_completed(client, first_id)
+        assert detail["period_start"] == "2026-01-14T20:30:00+08:00"
+        assert detail["period_end"] == "2026-01-15T20:30:00+08:00"
+        assert detail["version"] == 1
+        assert detail["supersedes_review_id"] is None
+
+        second = client.post(
+            "/api/knowledge/reviews/daily",
+            json={
+                "date": DAY.isoformat(),
+                "timezone": TZ,
+                "request_id": "manual-cutoff-2",
+                "regenerate": True,
+            },
+            headers={"Origin": ORIGIN},
+        )
+        assert second.status_code == 202
+        second_id = second.json()["review_id"]
+        regenerated = _wait_completed(client, second_id)
+        assert regenerated["version"] == 2
+        assert regenerated["supersedes_review_id"] == first_id
+        assert regenerated["period_start"] == detail["period_start"]
+        assert regenerated["period_end"] == detail["period_end"]
 
 
 def test_scheduled_failed_period_retry_is_explicit(tmp_path: Path) -> None:
@@ -550,3 +640,92 @@ def test_scheduled_failed_period_retry_is_explicit(tmp_path: Path) -> None:
             json={"day": DAY.isoformat()},
             headers={"Origin": ORIGIN},
         ).status_code in {401, 403}
+
+
+def test_failed_schedule_status_is_read_only_and_scoped(tmp_path: Path) -> None:
+    web, _service, _store = _app(tmp_path)
+    with TestClient(web, base_url=ORIGIN) as client:
+        assert client.get("/api/knowledge/reviews/schedule").status_code == 401
+        _login(client)
+        assert client.get("/api/knowledge/reviews/schedule").json() == {
+            "daily": None,
+            "weekly": None,
+        }
+
+        web.state.review_schedule = SimpleNamespace(
+            state={
+                "failed_days": {
+                    "2026-01-15": {
+                        "review_id": "review-daily",
+                        "error": "provider_unavailable",
+                        "at": "2026-01-16T00:00:00+08:00",
+                    },
+                    "2026-01-14": {
+                        "review_id": "",
+                        "error": "",
+                    },
+                    "ignored": "not a detail",
+                }
+            }
+        )
+        web.state.weekly_review_schedule = SimpleNamespace(
+            state={
+                "failed_weeks": {
+                    "2026-W03": {
+                        "review_id": "review-weekly",
+                        "error": "model_timeout",
+                        "at": "2026-01-19T00:00:00+08:00",
+                    }
+                }
+            }
+        )
+        payload = client.get("/api/knowledge/reviews/schedule").json()
+        assert payload == {
+            "daily": [
+                {
+                    "day": "2026-01-15",
+                    "review_id": "review-daily",
+                    "error": "provider_unavailable",
+                    "at": "2026-01-16T00:00:00+08:00",
+                },
+                {
+                    "day": "2026-01-14",
+                    "review_id": "",
+                    "error": "generation_failed",
+                    "at": "",
+                },
+            ],
+            "weekly": [
+                {
+                    "week_id": "2026-W03",
+                    "review_id": "review-weekly",
+                    "error": "model_timeout",
+                    "at": "2026-01-19T00:00:00+08:00",
+                }
+            ],
+        }
+
+        class Unreadable:
+            @property
+            def state(self) -> object:
+                raise ValueError("review schedule state is not valid JSON")
+
+        web.state.review_schedule = Unreadable()
+        failed = client.get("/api/knowledge/reviews/schedule")
+        assert failed.status_code == 503
+        assert failed.json() == {"error": "review_store_unavailable"}
+
+        class Conflicting:
+            async def retry_failed(
+                self, day: date, request_id: str | None = None
+            ) -> Any:
+                raise ValueError("retry request_id was used for another day")
+
+        web.state.review_schedule = Conflicting()
+        conflict = client.post(
+            "/api/knowledge/reviews/schedule/retry",
+            json={"day": DAY.isoformat(), "request_id": "web-retry-1"},
+            headers={"Origin": ORIGIN},
+        )
+        assert conflict.status_code == 409
+        assert conflict.json() == {"error": "retry_request_conflict"}

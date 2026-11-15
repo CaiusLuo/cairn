@@ -40,6 +40,7 @@ class FakeService:
         self.fail = fail
         self.calls: list[dict[str, Any]] = []
         self.settled: list[Any] = []
+        self.reviews: dict[str, Any] = {}
         self._counter = 0
 
     async def generate_daily_review(
@@ -72,10 +73,15 @@ class FakeService:
         )
 
     async def wait_for_review(self, review_id: str, *, timeout: float) -> Any:
-        return SimpleNamespace(
+        review = SimpleNamespace(
             review_id=review_id,
             status=ReviewStatus.COMPLETED,
         )
+        self.reviews[review_id] = review
+        return review
+
+    async def get_review(self, review_id: str) -> Any:
+        return self.reviews.get(review_id)
 
 
 class EmptyCollector:
@@ -648,5 +654,55 @@ def test_operator_request_id_makes_retry_replay_stable(tmp_path: Path) -> None:
         assert len(ids[0]) <= REVIEW_REQUEST_ID_MAX_LENGTH
         with pytest.raises(ValueError, match="must not be blank"):
             await coordinator.retry_failed(date(2026, 1, 15), "  ")
+
+    asyncio.run(scenario())
+
+
+def test_retry_receipt_replays_the_terminal_result_after_restart(
+    tmp_path: Path,
+) -> None:
+    service = FakeService()
+    store = _seed_state(
+        tmp_path,
+        cursor="2026-01-15",
+        failed_days={
+            "2026-01-15": {
+                "review_id": "review-1",
+                "error": "model_error",
+                "at": AFTER_CUTOFF.isoformat(),
+            }
+        },
+    )
+    coordinator = ReviewScheduleCoordinator(
+        service=service,  # type: ignore[arg-type]
+        store=store,
+        clock=lambda: AFTER_CUTOFF,
+        settle_timeout=1.0,
+    )
+
+    async def scenario() -> None:
+        first = await coordinator.retry_failed(date(2026, 1, 15), "web-retry-1")
+        assert first is not None
+        assert "2026-01-15" not in coordinator.state["failed_days"]
+        assert coordinator.state["retry_requests"]["web-retry-1"]["review_id"] == (
+            first.review_id
+        )
+        calls = len(service.calls)
+
+        # A lost success response is replayed from the persisted receipt even
+        # though the failed-day entry is already gone.
+        restarted = ReviewScheduleCoordinator(
+            service=service,  # type: ignore[arg-type]
+            store=store,
+            clock=lambda: AFTER_CUTOFF,
+            settle_timeout=1.0,
+        )
+        replay = await restarted.retry_failed(date(2026, 1, 15), "web-retry-1")
+        assert replay is not None
+        assert replay.review_id == first.review_id
+        assert len(service.calls) == calls
+
+        with pytest.raises(ValueError, match="another day"):
+            await restarted.retry_failed(date(2026, 1, 16), "web-retry-1")
 
     asyncio.run(scenario())

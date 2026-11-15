@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from datetime import date
+from datetime import date, time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -18,6 +18,7 @@ from cairn.review.delivery import delivery_payload
 from cairn.review.models import (
     REVIEW_REQUEST_ID_MAX_LENGTH,
     REVIEW_TIMEZONE_MAX_LENGTH,
+    ReviewDeliveryStatus,
     ReviewType,
     StoredReview,
     StoredReviewDelivery,
@@ -69,6 +70,10 @@ class DeliveryResendRequest(BaseModel):
 
     request_id: str = Field(min_length=1, max_length=REVIEW_REQUEST_ID_MAX_LENGTH)
     rebind: bool = False
+    # A delivery_unknown send may already have reached the recipient. The
+    # operator must acknowledge that duplicate risk at the API boundary, not
+    # only in the browser control that happens to disable the button.
+    confirmed: bool = False
 
     @field_validator("request_id")
     @classmethod
@@ -268,10 +273,47 @@ def _integer(request: Request, name: str, default: int, low: int, high: int) -> 
     return value
 
 
+def _failed_schedule_entries(
+    coordinator: object | None, period_field: str
+) -> list[dict[str, object]] | None:
+    """Expose only the failed periods an operator may retry."""
+    if coordinator is None:
+        return None
+    state = getattr(coordinator, "state", None)
+    if not isinstance(state, dict):
+        raise ValueError("review schedule state is unavailable")
+    key = "failed_days" if period_field == "day" else "failed_weeks"
+    raw = state.get(key)
+    if not isinstance(raw, dict):
+        return []
+    entries: list[dict[str, object]] = []
+    for period, detail in raw.items():
+        if not isinstance(period, str) or not isinstance(detail, dict):
+            continue
+        review_id = detail.get("review_id")
+        error = detail.get("error")
+        at = detail.get("at")
+        entries.append(
+            {
+                period_field: period,
+                "review_id": review_id if isinstance(review_id, str) else "",
+                "error": (
+                    error if isinstance(error, str) and error else "generation_failed"
+                ),
+                "at": at if isinstance(at, str) else "",
+            }
+        )
+    entries.sort(key=lambda entry: str(entry[period_field]), reverse=True)
+    return entries[:100]
+
+
 def review_routes(
     service: DailyReviewService,
     runtime_token: str | None = None,
     weekly: WeeklyReviewService | None = None,
+    *,
+    daily_cutoff: time | None = None,
+    host_timezone: str | None = None,
 ) -> list[BaseRoute]:
     async def create_daily(request: Request) -> JSONResponse:
         if not operator_request(request, runtime_token):
@@ -281,11 +323,20 @@ def review_routes(
             return _error(415, "unsupported_media_type")
         try:
             payload = DailyReviewRequest.model_validate(await _body(request))
+            # The host schedule keys a period by its cutoff. Manual generation
+            # in the host timezone must use the same window or it would create
+            # a parallel version instead of superseding the scheduled report.
+            cutoff = (
+                daily_cutoff
+                if daily_cutoff is not None and payload.timezone == host_timezone
+                else None
+            )
             record = await service.generate_daily_review(
                 payload.date,
                 payload.request_id,
                 timezone=payload.timezone,
                 regenerate=payload.regenerate,
+                cutoff=cutoff,
             )
         except json.JSONDecodeError:
             return _error(400, "invalid_json")
@@ -377,6 +428,18 @@ def review_routes(
             return _error(404, "review_not_found")
         return JSONResponse(_detail_payload(record, delivery), headers=_json_headers())
 
+    async def schedule_status(request: Request) -> JSONResponse:
+        try:
+            daily = _failed_schedule_entries(
+                getattr(request.app.state, "review_schedule", None), "day"
+            )
+            weekly = _failed_schedule_entries(
+                getattr(request.app.state, "weekly_review_schedule", None), "week_id"
+            )
+        except (ValueError, OSError, sqlite3.Error):
+            return _error(503, "review_store_unavailable")
+        return JSONResponse({"daily": daily, "weekly": weekly}, headers=_json_headers())
+
     async def retry_schedule(request: Request) -> JSONResponse:
         if not operator_request(request, runtime_token):
             return _error(403, "invalid_origin")
@@ -396,6 +459,8 @@ def review_routes(
             record = await coordinator.retry_failed(payload.day, payload.request_id)
         except RuntimeError:
             return _error(503, "review_schedule_busy")
+        except ValueError:
+            return _error(409, "retry_request_conflict")
         except (OSError, sqlite3.Error):
             return _error(503, "review_store_unavailable")
         if record is None:
@@ -449,6 +514,16 @@ def review_routes(
             return _error(400, "invalid_json")
         except ValidationError:
             return _error(422, "invalid_review_request")
+        try:
+            current = await asyncio.to_thread(service.store.get_delivery, review_id)
+        except (OSError, sqlite3.Error):
+            return _error(503, "review_store_unavailable")
+        if (
+            current is not None
+            and current.status is ReviewDeliveryStatus.DELIVERY_UNKNOWN
+            and not payload.confirmed
+        ):
+            return _error(409, "review_delivery_confirmation_required")
         coordinator = getattr(request.app.state, "review_delivery", None)
         target = getattr(coordinator, "target", None) if payload.rebind else None
         if payload.rebind and target is None:
@@ -495,6 +570,11 @@ def review_routes(
             methods=["POST"],
         ),
         Route("/api/knowledge/reviews", listing, methods=["GET"]),
+        Route(
+            "/api/knowledge/reviews/schedule",
+            schedule_status,
+            methods=["GET"],
+        ),
         Route(
             "/api/knowledge/reviews/schedule/retry",
             retry_schedule,
