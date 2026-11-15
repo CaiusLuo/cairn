@@ -113,7 +113,12 @@ class NativeClient:
 
 class ServerProcess:
     def __init__(
-        self, source: Path, root: Path, *, extra_env: dict[str, str] | None = None
+        self,
+        source: Path,
+        root: Path,
+        *,
+        extra_env: dict[str, str] | None = None,
+        extra_config: str = "",
     ) -> None:
         self.source, self.root = source, root
         self.extra_env = dict(extra_env or {})
@@ -138,6 +143,7 @@ class ServerProcess:
             + "offline = true\nport = "
             + str(self.port)
             + "\n"
+            + (extra_config.rstrip() + "\n" if extra_config.strip() else "")
         )
         self.gates = root / "gates"
         self.gates.mkdir()

@@ -3,15 +3,16 @@ import { newRequestId } from "./ids";
 import { PageHeader } from "./workbench/execution";
 import { runtimeApi as api } from "./runtime-api";
 
-type Section = "wechat" | "schedule" | "memory";
+type Section = "wechat" | "schedule" | "review" | "memory";
 type Wx = { status: string; running: boolean; login_pending: boolean; verification_required: boolean; qr_image: string | null; account_saved: boolean; enabled: boolean; trusted_senders: string[] };
 type Job = { job_id: string; prompt: string; kind: string; next_run_at: string | null; enabled: boolean; reminder: boolean };
 type Memory = { enabled: boolean; agent_md: string; memory_md: string; daily_days: number; pending: { text: string; reason: string } | null; proposal_digest: string | null };
-type Snapshot = { workspace: string; notices: string[]; pending_operations: { id: string; command: string }[]; wechat?: Wx; schedule?: { jobs: Job[]; runs: Record<string, unknown>[]; owner_available: boolean }; memory?: Memory };
+type ReviewPolicy = { timezone: string; daily: { enabled: boolean; time: string; scheduler_active: boolean }; weekly: { enabled: boolean; time: string; scheduler_active: boolean }; delivery: { recipient_authorized: boolean; recipient: string; account_id: string }; config_file: string | null; hot_reload: boolean; restart_required_for_changes: boolean };
+type Snapshot = { workspace: string; notices: string[]; pending_operations: { id: string; command: string }[]; wechat?: Wx; schedule?: { jobs: Job[]; runs: Record<string, unknown>[]; owner_available: boolean }; review?: ReviewPolicy; memory?: Memory };
 export function SettingsPage() {
   const [section, setSection] = useState<Section>(() => {
     const requested = new URLSearchParams(location.search).get("section");
-    return requested === "memory" || requested === "schedule" ? requested : "wechat";
+    return requested === "memory" || requested === "schedule" || requested === "review" ? requested : "wechat";
   });
   const [data, setData] = useState<Snapshot | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [feedback, setFeedback] = useState("");
@@ -48,10 +49,10 @@ export function SettingsPage() {
     if (kind === "once") { const date = new Date(when); if (!Number.isFinite(date.getTime())) { setError("请选择有效的执行时间"); return; } time = date.toISOString(); }
     if (await command("/schedule", `${reminder ? "remind" : "add"} ${kind} ${time} ${goal}`)) setGoal("");
   }
-  const wx = data?.wechat, schedules = data?.schedule, memory = data?.memory;
+  const wx = data?.wechat, schedules = data?.schedule, review = data?.review, memory = data?.memory;
   return <div className="wb-page settings-main">
     <PageHeader icon="settings" title="设置" description="管理微信连接、定时任务与个人记忆" actions={<button disabled={busy} onClick={() => void refresh()}>刷新</button>}/>
-    <nav className="settings-tabs" aria-label="管理分类">{([ ["wechat", "微信"], ["schedule", "定时任务"], ["memory", "记忆"] ] as const).map(([key, label]) => <button key={key} aria-current={section === key ? "page" : undefined} disabled={busy} onClick={() => setSection(key)}>{label}</button>)}</nav>
+    <nav className="settings-tabs" aria-label="管理分类">{([ ["wechat", "微信"], ["schedule", "定时任务"], ["review", "复盘"], ["memory", "记忆"] ] as const).map(([key, label]) => <button key={key} aria-current={section === key ? "page" : undefined} disabled={busy} onClick={() => setSection(key)}>{label}</button>)}</nav>
     {error && <p role="alert" className="control-error">{error}。操作结果不明时先刷新核对, 重试会沿用原请求编号。</p>}
     {feedback && <pre className="control-feedback" role="status">{feedback}</pre>}
     {!data && !error && <p>正在读取 Server 状态…</p>}
@@ -66,6 +67,18 @@ export function SettingsPage() {
       <form onSubmit={event => { event.preventDefault(); void addSchedule(); }} className="schedule-form"><label>类型<select value={reminder ? "remind" : "execute"} onChange={event => setReminder(event.target.value === "remind")}><option value="remind">纯提醒</option><option value="execute">执行 Agent 任务后通知</option></select></label><label>频率<select value={kind} onChange={event => { setKind(event.target.value); setWhen(""); }}><option value="once">一次性</option><option value="daily">每天</option><option value="interval">间隔秒数</option></select></label><label>{kind === "daily" ? "Asia/Shanghai 时间" : kind === "interval" ? "间隔秒数" : "执行时间 (浏览器本地时间)"}<input required type={kind === "once" ? "datetime-local" : kind === "daily" ? "time" : "number"} value={when} min={kind === "interval" ? 60 : undefined} onChange={event => setWhen(event.target.value)}/></label><label className="full-width">{reminder ? "提醒内容" : "任务目标"}<textarea required value={goal} onChange={event => setGoal(event.target.value)} maxLength={12000} rows={3}/></label><button className="primary" disabled={busy || !schedules.owner_available || !goal.trim() || !when}>创建计划</button></form>
       <div className="schedule-list">{schedules.jobs.map(job => <article key={job.job_id}><div><h3>{job.prompt}</h3><p className="muted">{job.job_id} · {job.reminder ? "提醒" : "执行"} · {job.enabled ? "启用" : "暂停"} · {job.next_run_at ? new Date(job.next_run_at).toLocaleString() : "已结束"}</p></div><div className="control-row"><button disabled={busy} onClick={() => void command("/schedule", `${job.enabled ? "pause" : "resume"} ${job.job_id}`)}>{job.enabled ? "暂停" : "恢复"}</button><button disabled={busy} onClick={() => void command("/schedule", `remove ${job.job_id}`)}>移除</button></div></article>)}{!schedules.jobs.length && <p className="muted">暂无计划</p>}</div>
       <details><summary>最近执行记录</summary><pre>{JSON.stringify(schedules.runs, null, 2)}</pre></details>
+    </section>}
+    {review && <section className="settings-section">
+      <h2>复盘报告</h2>
+      <p className="muted">以下是 Server 启动时读取的复盘策略。Web 只能查看，不能在这里启用、停用或修改时间。</p>
+      <dl className="review-policy">
+        <div><dt>时区</dt><dd>{review.timezone}</dd></div>
+        <div><dt>日报</dt><dd>{review.daily.enabled ? `启用 · 每天 ${review.daily.time}` : "未启用"} · {review.daily.scheduler_active ? "调度运行中" : "调度未启动"}</dd></div>
+        <div><dt>周报</dt><dd>{review.weekly.enabled ? `启用 · 每周 ${review.weekly.time}` : "未启用"} · {review.weekly.scheduler_active ? "调度运行中" : "调度未启动"}</dd></div>
+        <div><dt>微信接收人</dt><dd>{review.delivery.recipient_authorized ? `已授权${review.delivery.account_id ? ` · 账号 ${review.delivery.account_id}` : ""}` : "未配置，复盘不会投递到微信"}</dd></div>
+        <div><dt>配置文件</dt><dd>{review.config_file ?? "未使用配置文件"}</dd></div>
+      </dl>
+      {review.restart_required_for_changes && <p className="review-restart" role="status">修改复盘设置需要编辑 Server 配置并重启 cairn.service 才会生效。当前进程不会热加载配置，Web 也不会把未生效的修改显示为已启用。</p>}
     </section>}
     {memory && <section className="settings-section"><h2>个人记忆</h2><p className="muted">{memory.enabled ? "已启用" : "宿主已禁用"} · 已记录 {memory.daily_days} 天。任务结果自动记录, 行为规则需确认后生效。</p><form onSubmit={event => { event.preventDefault(); void command("/memory", `note ${note}`).then(ok => { if (ok) setNote(""); }); }}><label>记录偏好或经验<textarea value={note} onChange={event => setNote(event.target.value)} maxLength={12000} rows={3}/></label><button disabled={busy || !note.trim()}>保存记忆</button></form><div className="control-row"><button disabled={busy} onClick={() => void command("/memory", "distill")}>提炼近期经验</button><button disabled={busy} onClick={() => void command("/memory", "propose-auto")}>根据经验生成规则候选</button></div>
       <details><summary>当前 AGENT.md</summary><pre>{memory.agent_md}</pre></details><details><summary>长期记忆 MEMORY.md</summary><pre>{memory.memory_md}</pre></details>

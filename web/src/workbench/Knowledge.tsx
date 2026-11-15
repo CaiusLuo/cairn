@@ -6,6 +6,7 @@ import { dateLabel, sourceLabel } from "./data";
 import { Drawer, Markdown } from "./evidence";
 import { Empty, ErrorText, PageHeader } from "./execution";
 import { Icon } from "./Icon";
+import { Reviews } from "./Reviews";
 
 const CLIP_LIMIT = 100_000;
 const PAGE_SIZE = 50;
@@ -91,7 +92,47 @@ function pagePath(query: string, showArchived: boolean, offset: number) {
   return `clips?${params}`;
 }
 
+type Pane = "clips" | "reviews";
+
+function readPane(): Pane {
+  return new URLSearchParams(location.search).get("pane") === "reviews"
+    ? "reviews"
+    : "clips";
+}
+
+function writePane(pane: Pane) {
+  const params = new URLSearchParams(location.search);
+  if (pane === "reviews") params.set("pane", "reviews");
+  else params.delete("pane");
+  const query = params.toString();
+  history.pushState({}, "", location.pathname + (query ? `?${query}` : ""));
+}
+
 export function Knowledge() {
+  const [pane, setPane] = useState<Pane>(readPane);
+  useEffect(() => {
+    const update = () => setPane(readPane());
+    window.addEventListener("popstate", update);
+    return () => window.removeEventListener("popstate", update);
+  }, []);
+
+  function switchPane(next: Pane) {
+    if (pane === next) return;
+    writePane(next);
+    setPane(next);
+  }
+
+  return <div className="wb-page">
+    <PageHeader icon="doc" title="知识" description="私有片段与 Daily / Weekly 复盘报告"/>
+    <nav className="settings-tabs knowledge-tabs" aria-label="知识类别">
+      <button aria-current={pane === "clips" ? "page" : undefined} onClick={() => switchPane("clips")}>片段</button>
+      <button aria-current={pane === "reviews" ? "page" : undefined} onClick={() => switchPane("reviews")}>复盘</button>
+    </nav>
+    {pane === "reviews" ? <Reviews/> : <ClipLibrary/>}
+  </div>;
+}
+
+function ClipLibrary() {
   const [clips, setClips] = useState<Clip[]>([]);
   const [query, setQuery] = useState("");
   const [showArchived, setShowArchived] = useState(false);
@@ -293,8 +334,7 @@ export function Knowledge() {
 
   const saveLabel = saving ? "保存中…" : retrying ? "恢复中…" : pendingMatchesDraft ? "重试上次保存" : "保存片段";
 
-  return <div className="wb-page">
-    <PageHeader icon="doc" title="知识" description="粘贴原文或 Markdown，保留可搜索的私有片段"/>
+  return <>
     {pending && <section className="wb-card knowledge-pending" role="status">
       <div>
         <strong>上次保存尚未确认</strong>
@@ -372,5 +412,5 @@ export function Knowledge() {
         </>}
       </div>
     </Drawer>}
-  </div>;
+  </>;
 }

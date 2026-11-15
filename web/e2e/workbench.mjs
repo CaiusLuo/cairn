@@ -390,6 +390,111 @@ try {
     await page.getByRole("button", { name: "加载更多" }).waitFor();
     console.log("Knowledge pagination, search reset and archive reset passed with 120 clips.");
 
+    await page.getByRole("button", { name: "复盘", exact: true }).click();
+    await page.getByRole("tab", { name: "日报", exact: true }).waitFor();
+    assert.equal(new URL(page.url()).searchParams.get("pane"), "reviews");
+    await page.getByRole("heading", { name: "2026-01-15 日报", exact: true }).first().waitFor();
+    const dailyCards = page.locator(".review-card").filter({ hasText: "2026-01-15" });
+    await page.waitForFunction(() => document.querySelectorAll(".review-card").length === 3);
+    assert.equal(await dailyCards.count(), 2);
+    const newestDaily = dailyCards.first();
+    assert.match((await newestDaily.textContent()) ?? "", /v2/);
+    assert.match((await dailyCards.last().textContent()) ?? "", /v1/);
+
+    await newestDaily.getByRole("button").first().click();
+    const dailyDialog = page.getByRole("dialog", { name: "日报详情" });
+    await dailyDialog.waitFor();
+    await dailyDialog.getByText("第二版日报: 补充了复盘投递的状态核对。", { exact: false }).first().waitFor();
+    await dailyDialog.getByText("已接收", { exact: true }).waitFor();
+    await dailyDialog.getByText("取代", { exact: false }).waitFor();
+    await dailyDialog.locator("details.review-snapshot").filter({ hasText: "clip-review-source" }).locator("summary").click();
+    await dailyDialog.getByText("保留了可核对的知识片段。", { exact: false }).waitFor();
+    await shot("Cairn-workbench-review-detail");
+    await page.keyboard.press("Escape");
+    await dailyDialog.waitFor({ state: "detached" });
+
+    // Browser history reopens the detail it pushed.
+    await newestDaily.getByRole("button").first().click();
+    await dailyDialog.waitFor();
+    await page.goBack();
+    await dailyDialog.waitFor({ state: "detached" });
+    await page.goForward();
+    await dailyDialog.waitFor();
+    await page.keyboard.press("Escape");
+    await dailyDialog.waitFor({ state: "detached" });
+
+    await page.getByLabel("按日期筛选").fill("2026-01-15");
+    await page.getByRole("button", { name: "筛选", exact: true }).click();
+    assert.equal(new URL(page.url()).searchParams.get("day"), "2026-01-15");
+    await page.waitForFunction(() => document.querySelectorAll(".review-card").length === 2);
+    await page.getByLabel("按日期筛选").fill("2026-01-17");
+    await page.getByRole("button", { name: "筛选", exact: true }).click();
+    await page.getByText("该筛选下没有复盘报告。").waitFor();
+    await page.getByRole("button", { name: "清除", exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll(".review-card").length === 3);
+
+    await page.getByLabel("按日期筛选").fill("2026-01-16");
+    await page.getByRole("button", { name: "筛选", exact: true }).click();
+    const failedCard = page.locator(".review-card").filter({ hasText: "2026-01-16" });
+    await failedCard.getByText("生成失败", { exact: true }).waitFor();
+    await failedCard.getByText("Server 未配置模型 Provider", { exact: false }).waitFor();
+    await page.getByRole("button", { name: "清除", exact: true }).click();
+
+    await page.getByRole("tab", { name: "周报", exact: true }).click();
+    const weeklyCard = page.locator(".review-card").filter({ hasText: "2026-W03" });
+    await weeklyCard.getByText("2026-W03 周报", { exact: true }).waitFor();
+    await page.getByLabel("按 ISO 周次筛选").fill("2026-W03");
+    await page.getByRole("button", { name: "筛选", exact: true }).click();
+    assert.equal(new URL(page.url()).searchParams.get("week"), "2026-W03");
+    await weeklyCard.waitFor();
+    await page.getByLabel("按 ISO 周次筛选").fill("2026-W04");
+    await page.getByRole("button", { name: "筛选", exact: true }).click();
+    await page.getByText("该筛选下没有复盘报告。").waitFor();
+    await page.getByRole("button", { name: "清除", exact: true }).click();
+    await weeklyCard.getByRole("button").first().click();
+    const weeklyDialog = page.getByRole("dialog", { name: "周报详情" });
+    await weeklyDialog.waitFor();
+    await weeklyDialog.getByText("投递结果不明", { exact: true }).waitFor();
+    await weeklyDialog.getByText("消息可能已经送达", { exact: false }).waitFor();
+    const resend = weeklyDialog.getByRole("button", { name: "重新投递", exact: true });
+    assert.equal(await resend.isDisabled(), true);
+    await weeklyDialog.getByRole("checkbox", { name: "我已确认可能重复发送" }).check();
+    assert.equal(await resend.isEnabled(), true);
+    await resend.click();
+    await weeklyDialog.getByRole("status").filter({ hasText: "已重新入队" }).waitFor();
+    await page.keyboard.press("Escape");
+    await weeklyDialog.waitFor({ state: "detached" });
+    await shot("Cairn-workbench-reviews");
+
+    // Reduced Motion must leave the list visible, and a reload must restore
+    // the pane, type and detail route from the URL.
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.getByRole("tab", { name: "日报", exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll(".review-card").length === 3);
+    await page.reload();
+    await page.getByRole("heading", { name: "知识", exact: true }).waitFor();
+    assert.equal(new URL(page.url()).searchParams.get("pane"), "reviews");
+    await page.waitForFunction(() => document.querySelectorAll(".review-card").length === 3);
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+
+    // Manual generation runs on the Server. This fixture has no provider, so
+    // the honest outcome is a failed report with its real error reason.
+    await page.getByRole("button", { name: "生成日报", exact: true }).click();
+    await page.getByRole("heading", { name: "生成日报", exact: true }).waitFor();
+    const reviewDay = await page.evaluate(() =>
+      new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" }),
+    );
+    await page.getByLabel("日期", { exact: true }).fill(reviewDay);
+    await page.getByRole("button", { name: "开始生成", exact: true }).click();
+    const generatedDialog = page.getByRole("dialog", { name: "日报详情" });
+    await generatedDialog.waitFor();
+    await generatedDialog.locator('.review-state[data-status="failed"]').waitFor({ timeout: 15000 });
+    await generatedDialog.getByText("Server 未配置模型 Provider", { exact: false }).waitFor();
+    assert(new URL(page.url()).searchParams.get("review"));
+    await page.keyboard.press("Escape");
+    await generatedDialog.waitFor({ state: "detached" });
+    console.log("Review console history, filters, versions, evidence and delivery passed.");
+
     let approvalUrl;
     const recoveryId = process.env.CAIRN_WEB_E2E_RECOVERY_TASK;
     if (recoveryId) {
@@ -457,9 +562,23 @@ try {
         await page.keyboard.press("Escape");
       }
     }
+    await page.goto(new URL("/knowledge.html?pane=reviews", url).href);
+    await page.getByRole("heading", { name: "知识", exact: true }).waitFor();
+    await page.locator(".review-card").first().waitFor();
+    await assertNoOverflow();
+    await shot("Cairn-workbench-mobile-reviews");
     await page.getByRole("link", { name: "设置", exact: true }).click();
     await page.getByRole("heading", { name: "微信连接" }).waitFor();
     await assertNoOverflow();
+    await page.getByRole("button", { name: "复盘", exact: true }).click();
+    await page.getByRole("heading", { name: "复盘报告", exact: true }).waitFor();
+    await page.getByText("启用 · 每天 20:30 · 调度未启动", { exact: true }).waitFor();
+    await page.getByText("启用 · 每周 20:40 · 调度未启动", { exact: true }).waitFor();
+    await page.getByText(/已授权 · 账号 browser-fixture-bot/).waitFor();
+    await page.getByText("修改复盘设置需要编辑 Server 配置并重启 cairn.service 才会生效", { exact: false }).waitFor();
+    assert(!(await page.locator(".settings-main").innerText()).includes(token));
+    await assertNoOverflow();
+    await shot("Cairn-workbench-settings-review");
 
     // A plain-HTTP origin (no secure context) does not expose
     // crypto.randomUUID; sends must still produce their request.
