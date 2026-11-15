@@ -57,6 +57,21 @@ async def _body(request: Request) -> object:
     return json.loads(await _read_limited(request))
 
 
+class DeliveryResendRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1, max_length=REVIEW_REQUEST_ID_MAX_LENGTH)
+    rebind: bool = False
+
+    @field_validator("request_id")
+    @classmethod
+    def _request_id_has_content(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("request_id must not be blank")
+        return stripped
+
+
 class ScheduleRetryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -249,37 +264,46 @@ def review_routes(
         if not operator_request(request, runtime_token):
             return _error(403, "invalid_origin")
         review_id = request.path_params.get("review_id", "")
-        rebind = False
         try:
             raw = await _read_limited(request)
         except ValueError:
             return _error(413, "review_request_too_large")
-        if raw:
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError:
-                return _error(400, "invalid_json")
-            if not isinstance(payload, dict) or set(payload) - {"rebind"}:
-                return _error(422, "invalid_review_request")
-            rebind = payload.get("rebind", False) is True
+        try:
+            payload = DeliveryResendRequest.model_validate(json.loads(raw))
+        except json.JSONDecodeError:
+            return _error(400, "invalid_json")
+        except ValidationError:
+            return _error(422, "invalid_review_request")
         coordinator = getattr(request.app.state, "review_delivery", None)
-        target = getattr(coordinator, "target", None) if rebind else None
-        if rebind and target is None:
+        target = getattr(coordinator, "target", None) if payload.rebind else None
+        if payload.rebind and target is None:
             return _error(409, "review_delivery_target_unavailable")
         try:
-            delivery = await asyncio.to_thread(
-                service.store.requeue_delivery, review_id, target=target
+            result = await asyncio.to_thread(
+                service.store.resend_delivery,
+                review_id,
+                request_id=payload.request_id,
+                rebind=payload.rebind,
+                target=target,
             )
+        except ReviewRequestConflict:
+            return _error(409, "request_id_conflict")
         except KeyError:
             return _error(404, "review_delivery_not_found")
         except ValueError:
-            return _error(409, "review_delivery_not_retryable")
+            return _error(422, "invalid_review_request")
         except (OSError, sqlite3.Error):
             return _error(503, "review_store_unavailable")
+        if not result.accepted:
+            return _error(409, result.error or "review_delivery_not_retryable")
         if coordinator is not None:
             coordinator.rescan(force=True)
         return JSONResponse(
-            {"delivery": delivery_payload(delivery)},
+            {
+                "delivery": delivery_payload(result.delivery),
+                "request_id": result.request_id,
+                "replayed": result.replayed,
+            },
             status_code=202,
             headers=_json_headers(),
         )

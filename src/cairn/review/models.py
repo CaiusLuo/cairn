@@ -404,6 +404,17 @@ class DeliveryAttemptResult:
 
 
 @dataclass(frozen=True, slots=True)
+class DeliveryResendResult:
+    """One idempotent manual resend operation and its persisted receipt."""
+
+    delivery: StoredReviewDelivery
+    request_id: str
+    accepted: bool
+    replayed: bool = False
+    error: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ReviewCreateResult:
     review: StoredReview
     created: bool
@@ -422,6 +433,7 @@ __all__ = [
     "REVIEW_TIMEZONE_MAX_LENGTH",
     "DailyReview",
     "DeliveryAttemptResult",
+    "DeliveryResendResult",
     "DeliveryTarget",
     "ReviewCreateResult",
     "ReviewDeliveryStatus",

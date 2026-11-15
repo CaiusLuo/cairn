@@ -397,10 +397,11 @@ def test_delivery_status_is_visible_and_manual_resend_is_authenticated(
         # A pending delivery is not a manual-retry state.
         blocked = client.post(
             f"/api/knowledge/reviews/{review_id}/delivery/resend",
-            json={},
+            json={"request_id": "resend-blocked"},
             headers={"Origin": ORIGIN},
         )
         assert blocked.status_code == 409
+        assert blocked.json() == {"error": "review_delivery_not_retryable"}
 
         oversized = client.post(
             f"/api/knowledge/reviews/{review_id}/delivery/resend",
@@ -418,25 +419,66 @@ def test_delivery_status_is_visible_and_manual_resend_is_authenticated(
         service.store.mark_delivery_unknown(review_id, "send_unconfirmed")
         requeued = client.post(
             f"/api/knowledge/reviews/{review_id}/delivery/resend",
-            json={"rebind": True},
+            json={"request_id": "resend-1", "rebind": True},
             headers={"Origin": ORIGIN},
         )
         assert requeued.status_code == 202
         assert requeued.json()["delivery"]["status"] == "pending"
+        assert requeued.json()["request_id"] == "resend-1"
+        assert requeued.json()["replayed"] is False
+
+        # A lost HTTP response is retried with the same confirmation id; it
+        # returns the same receipt without a second state transition.
+        attempts = requeued.json()["delivery"]["attempts"]
+        replayed = client.post(
+            f"/api/knowledge/reviews/{review_id}/delivery/resend",
+            json={"request_id": "resend-1", "rebind": True},
+            headers={"Origin": ORIGIN},
+        )
+        assert replayed.status_code == 202
+        assert replayed.json()["replayed"] is True
+        assert replayed.json()["delivery"]["attempts"] == attempts
+        assert service.store.get_delivery(review_id).attempts == attempts  # type: ignore[union-attr]
+
+        # The same request id cannot silently change the operation.
+        conflict = client.post(
+            f"/api/knowledge/reviews/{review_id}/delivery/resend",
+            json={"request_id": "resend-1"},
+            headers={"Origin": ORIGIN},
+        )
+        assert conflict.status_code == 409
+        assert conflict.json() == {"error": "request_id_conflict"}
+
+        # A replayed rejection also stays a rejection.
+        rejected_replay = client.post(
+            f"/api/knowledge/reviews/{review_id}/delivery/resend",
+            json={"request_id": "resend-blocked"},
+            headers={"Origin": ORIGIN},
+        )
+        assert rejected_replay.status_code == 409
+        assert rejected_replay.json() == {"error": "review_delivery_not_retryable"}
 
         assert (
             client.post(
                 "/api/knowledge/reviews/missing/delivery/resend",
-                json={},
+                json={"request_id": "resend-missing"},
                 headers={"Origin": ORIGIN},
             ).status_code
             == 404
+        )
+        assert (
+            client.post(
+                f"/api/knowledge/reviews/{review_id}/delivery/resend",
+                json={},
+                headers={"Origin": ORIGIN},
+            ).status_code
+            == 422
         )
 
     with TestClient(web, base_url=ORIGIN) as anonymous:
         assert anonymous.post(
             f"/api/knowledge/reviews/{review_id}/delivery/resend",
-            json={},
+            json={"request_id": "resend-anonymous"},
             headers={"Origin": ORIGIN},
         ).status_code in {401, 403}
 

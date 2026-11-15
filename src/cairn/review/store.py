@@ -24,6 +24,7 @@ from cairn.review.models import (
     REVIEW_REQUEST_ID_MAX_LENGTH,
     DailyReview,
     DeliveryAttemptResult,
+    DeliveryResendResult,
     DeliveryTarget,
     ReviewCreateResult,
     ReviewDeliveryStatus,
@@ -39,6 +40,14 @@ from cairn.review.models import (
 
 MAX_LIST_LIMIT = 100
 DEFAULT_LIST_LIMIT = 20
+
+RETRYABLE_DELIVERY_STATUSES = frozenset(
+    {
+        ReviewDeliveryStatus.DELIVERY_UNKNOWN,
+        ReviewDeliveryStatus.FAILED_PERMANENT,
+        ReviewDeliveryStatus.BLOCKED_OFFLINE,
+    }
+)
 
 
 class ReviewRequestConflict(RuntimeError):
@@ -758,37 +767,201 @@ class ReviewStore:
             if row is None:
                 raise KeyError(review_id)
             current = self._delivery(row)
-            retryable = (
-                ReviewDeliveryStatus.DELIVERY_UNKNOWN,
-                ReviewDeliveryStatus.FAILED_PERMANENT,
-                ReviewDeliveryStatus.BLOCKED_OFFLINE,
-            )
-            if current.status not in retryable and not (
-                target is not None and current.status is ReviewDeliveryStatus.PENDING
-            ):
+            if not self._can_requeue(current, target):
                 raise ValueError(
                     "only a blocked, unknown or permanently failed delivery can retry"
                 )
-            connection.execute(
-                "UPDATE review_deliveries SET status = ?, account_id = ?, "
-                "recipient = ?, context_token = ?, attempt_id = '', "
-                "last_error = NULL, completed_at = NULL, updated_at = ? "
-                "WHERE review_id = ?",
-                (
-                    ReviewDeliveryStatus.PENDING.value,
-                    current.account_id if target is None else target.account_id[:200],
-                    current.recipient if target is None else target.recipient[:200],
-                    current.context_token if target is None else "",
-                    now,
-                    review_id,
-                ),
+            return self._requeue_unlocked(
+                connection, review_id, current, target=target, now=now
             )
+
+    @staticmethod
+    def _can_requeue(
+        current: StoredReviewDelivery, target: DeliveryTarget | None
+    ) -> bool:
+        if current.status in RETRYABLE_DELIVERY_STATUSES:
+            return True
+        # A host-authorized rebind may correct a still-pending row.
+        return target is not None and current.status is ReviewDeliveryStatus.PENDING
+
+    @staticmethod
+    def _requeue_unlocked(
+        connection: sqlite3.Connection,
+        review_id: str,
+        current: StoredReviewDelivery,
+        *,
+        target: DeliveryTarget | None,
+        now: str,
+    ) -> StoredReviewDelivery:
+        connection.execute(
+            "UPDATE review_deliveries SET status = ?, account_id = ?, "
+            "recipient = ?, context_token = ?, attempt_id = '', "
+            "last_error = NULL, completed_at = NULL, updated_at = ? "
+            "WHERE review_id = ?",
+            (
+                ReviewDeliveryStatus.PENDING.value,
+                current.account_id if target is None else target.account_id[:200],
+                current.recipient if target is None else target.recipient[:200],
+                current.context_token if target is None else "",
+                now,
+                review_id,
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("review delivery could not be read back")
+        return ReviewStore._delivery(row)
+
+    @staticmethod
+    def _record_delivery_request(
+        connection: sqlite3.Connection,
+        *,
+        request_id: str,
+        review_id: str,
+        delivery_id: str,
+        rebind: bool,
+        outcome: str,
+        error: str | None,
+        now: str,
+    ) -> None:
+        connection.execute(
+            "INSERT INTO review_delivery_requests(request_id, review_id, "
+            "delivery_id, action, rebind, outcome, error, created_at) "
+            "VALUES (?, ?, ?, 'resend', ?, ?, ?, ?)",
+            (
+                request_id,
+                review_id,
+                delivery_id,
+                int(rebind),
+                outcome,
+                error,
+                now,
+            ),
+        )
+
+    def resend_delivery(
+        self,
+        review_id: str,
+        *,
+        request_id: str,
+        rebind: bool = False,
+        target: DeliveryTarget | None = None,
+    ) -> DeliveryResendResult:
+        """Idempotent manual resend guarded by a persisted request receipt.
+
+        Replaying the same request id returns the original outcome without a
+        second state transition, so an HTTP response lost after the send can be
+        retried safely. A new operator confirmation must use a new request id.
+        """
+        request_key = request_id.strip()
+        if not request_key:
+            raise ValueError("request_id must not be blank")
+        if len(request_key) > REVIEW_REQUEST_ID_MAX_LENGTH:
+            raise ValueError("request_id is too long")
+        if rebind and (target is None or not target.recipient):
+            raise ValueError("a rebound delivery requires an authorized recipient")
+        now = utc_now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM review_delivery_requests WHERE request_id = ?",
+                (request_key,),
+            ).fetchone()
             row = connection.execute(
                 "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
             ).fetchone()
+            if existing is not None:
+                if (
+                    existing["review_id"] != review_id
+                    or bool(existing["rebind"]) != rebind
+                    or existing["action"] != "resend"
+                ):
+                    raise ReviewRequestConflict(
+                        "request_id was already used for a different resend"
+                    )
+                if row is None:
+                    raise KeyError(review_id)
+                delivery = self._delivery(row)
+                if existing["outcome"] == "rejected":
+                    return DeliveryResendResult(
+                        delivery=delivery,
+                        request_id=request_key,
+                        accepted=False,
+                        replayed=True,
+                        error=(
+                            cast(str | None, existing["error"])
+                            or "review_delivery_not_retryable"
+                        ),
+                    )
+                return DeliveryResendResult(
+                    delivery=delivery,
+                    request_id=request_key,
+                    accepted=True,
+                    replayed=True,
+                )
             if row is None:
-                raise ValueError("review delivery could not be read back")
-            return self._delivery(row)
+                raise KeyError(review_id)
+            current = self._delivery(row)
+            if not self._can_requeue(current, target if rebind else None):
+                error = "review_delivery_not_retryable"
+                self._record_delivery_request(
+                    connection,
+                    request_id=request_key,
+                    review_id=review_id,
+                    delivery_id=current.delivery_id,
+                    rebind=rebind,
+                    outcome="rejected",
+                    error=error,
+                    now=now,
+                )
+                return DeliveryResendResult(
+                    delivery=current,
+                    request_id=request_key,
+                    accepted=False,
+                    error=error,
+                )
+            if not rebind and not current.recipient:
+                error = "review_delivery_recipient_unbound"
+                self._record_delivery_request(
+                    connection,
+                    request_id=request_key,
+                    review_id=review_id,
+                    delivery_id=current.delivery_id,
+                    rebind=rebind,
+                    outcome="rejected",
+                    error=error,
+                    now=now,
+                )
+                return DeliveryResendResult(
+                    delivery=current,
+                    request_id=request_key,
+                    accepted=False,
+                    error=error,
+                )
+            delivery = self._requeue_unlocked(
+                connection,
+                review_id,
+                current,
+                target=target if rebind else None,
+                now=now,
+            )
+            self._record_delivery_request(
+                connection,
+                request_id=request_key,
+                review_id=review_id,
+                delivery_id=delivery.delivery_id,
+                rebind=rebind,
+                outcome="accepted",
+                error=None,
+                now=now,
+            )
+            return DeliveryResendResult(
+                delivery=delivery,
+                request_id=request_key,
+                accepted=True,
+            )
 
     def recover_sending_deliveries(self) -> int:
         """A sending row is in the unknown window; never resend it automatically."""

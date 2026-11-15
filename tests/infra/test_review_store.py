@@ -168,13 +168,14 @@ def test_k1_database_upgrades_without_losing_clips(tmp_path: Path) -> None:
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
-    assert version == 4
+    assert version == 5
     assert {
         "clips",
         "clip_requests",
         "reviews",
         "review_requests",
         "review_deliveries",
+        "review_delivery_requests",
     } <= tables
 
     reviews = ReviewStore(store)
@@ -248,7 +249,7 @@ def test_v2_reviews_upgrade_without_losing_existing_reports(tmp_path: Path) -> N
         columns = {
             row[1] for row in check.execute("PRAGMA table_info(reviews)").fetchall()
         }
-    assert version == 4
+    assert version == 5
     assert "source_snapshots_json" in columns
     assert _create(reviews, request_id="after-upgrade").created is True
 
@@ -645,3 +646,81 @@ def test_sent_delivery_cannot_be_requeued_or_unconfirmed(tmp_path: Path) -> None
         store.mark_delivery_unknown(created.review_id)
     with pytest.raises(ValueError):
         store.requeue_delivery(created.review_id)
+
+
+def test_manual_resend_receipt_is_durable_and_idempotent(tmp_path: Path) -> None:
+    store = ReviewStore(tmp_path / "knowledge")
+    created = _create(store, request_id="delivery-resend").review
+    _complete_with_delivery(store, created.review_id)
+    store.begin_delivery(created.review_id, account_id="bot-a", sender_id="owner")
+    store.mark_delivery_unknown(created.review_id, "send_unconfirmed")
+
+    first = store.resend_delivery(created.review_id, request_id="manual-1")
+    assert first.accepted is True
+    assert first.replayed is False
+    assert first.delivery.status is ReviewDeliveryStatus.PENDING
+    first_attempts = first.delivery.attempts
+
+    # A second send is attempted and its response is lost.
+    store.begin_delivery(created.review_id, account_id="bot-a", sender_id="owner")
+    store.mark_delivery_unknown(created.review_id, "send_unconfirmed")
+
+    # The HTTP client retries the same confirmation after losing the response.
+    replay = ReviewStore(KnowledgeStore(tmp_path / "knowledge")).resend_delivery(
+        created.review_id, request_id="manual-1"
+    )
+    assert replay.accepted is True
+    assert replay.replayed is True
+    assert replay.delivery.status is ReviewDeliveryStatus.DELIVERY_UNKNOWN
+    assert replay.delivery.attempts == first_attempts + 1
+
+    # A new operator confirmation is allowed and creates a new receipt.
+    second = store.resend_delivery(created.review_id, request_id="manual-2")
+    assert second.accepted is True
+    assert second.replayed is False
+    assert second.delivery.status is ReviewDeliveryStatus.PENDING
+    assert second.delivery.attempts == first_attempts + 1
+
+    # Reusing an id with a different operation is rejected.
+    with pytest.raises(ReviewRequestConflict):
+        store.resend_delivery(
+            created.review_id,
+            request_id="manual-1",
+            rebind=True,
+            target=DeliveryTarget(recipient="owner"),
+        )
+
+    # Rejections are persisted too, so a replay cannot start a new send.
+    rejected = store.resend_delivery(created.review_id, request_id="manual-3")
+    assert rejected.accepted is False
+    assert rejected.error == "review_delivery_not_retryable"
+    rejected_replay = store.resend_delivery(created.review_id, request_id="manual-3")
+    assert rejected_replay.replayed is True
+    assert rejected_replay.accepted is False
+
+
+def test_v4_delivery_ledger_upgrades_without_losing_rows(tmp_path: Path) -> None:
+    root = tmp_path / "knowledge"
+    store = ReviewStore(KnowledgeStore(root))
+    created = _create(store, request_id="delivery-v4").review
+    _complete_with_delivery(store, created.review_id)
+
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("DROP TABLE review_delivery_requests")
+        connection.execute("PRAGMA user_version=4")
+        connection.commit()
+
+    upgraded = ReviewStore(KnowledgeStore(root))
+    delivery = upgraded.get_delivery(created.review_id)
+    assert delivery is not None
+    assert delivery.recipient == "owner"
+    with sqlite3.connect(store.path) as check:
+        version = check.execute("PRAGMA user_version").fetchone()[0]
+        tables = {
+            row[0]
+            for row in check.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+    assert version == 5
+    assert "review_delivery_requests" in tables
