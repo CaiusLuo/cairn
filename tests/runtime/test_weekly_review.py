@@ -22,12 +22,14 @@ from cairn.review.models import (
     ReviewType,
     SourceCollectionState,
     SourceCollectionStatus,
+    SourceManifestEntry,
     SourceSnapshot,
     SourceTrust,
     WeeklyReview,
 )
-from cairn.review.store import ReviewStore
+from cairn.review.store import ReviewPeriodCompleted, ReviewStore
 from cairn.review.weekly import (
+    ReviewPeriodNotEnded,
     WeeklyReviewService,
     iso_week_id,
     week_period,
@@ -103,6 +105,73 @@ def _seed_daily(
         ),
         source_snapshots=sources,
         regenerate=version > 1,
+    )
+    store.mark_generating(result.review.review_id, MODEL_ID)
+    store.complete(
+        result.review.review_id,
+        summary=DailyReview(
+            date=day,
+            overview=f"Daily summary for {day.isoformat()}.",
+        ),
+        summary_markdown=f"# {day.isoformat()} 日报",
+        model_id=MODEL_ID,
+    )
+    return result.review.review_id
+
+
+def _task_version(
+    source_id: str,
+    status: str,
+    *,
+    may_prove_completion: bool,
+    occurred_at: str,
+) -> SourceSnapshot:
+    snapshot = _json({"task_id": source_id, "status": status})
+    return SourceSnapshot(
+        source_type="development_task",
+        source_id=source_id,
+        content_hash=_hash(snapshot),
+        occurred_at=occurred_at,
+        trust=SourceTrust.SYSTEM_RECEIPT,
+        may_prove_completion=may_prove_completion,
+        verification=f"business_status={status}",
+        snapshot=snapshot,
+    )
+
+
+def _seed_manifest_daily(
+    store: ReviewStore,
+    day: date,
+    entry: SourceManifestEntry,
+) -> str:
+    manifest = entry.model_copy(
+        update={
+            "included": False,
+            "omitted_reason": "input_budget_exhausted",
+        }
+    )
+    zone = ZoneInfo(TZ)
+    start = datetime.combine(day - timedelta(days=1), time(20, 30), tzinfo=zone)
+    end = datetime.combine(day, time(20, 30), tzinfo=zone)
+    result = store.create_or_get(
+        request_id=f"daily-manifest-{day.isoformat()}",
+        review_type=ReviewType.DAILY,
+        day=day,
+        period_start=start.isoformat(),
+        period_end=end.isoformat(),
+        timezone=TZ,
+        input_fingerprint=_hash(f"manifest-{day.isoformat()}"),
+        source_manifest=(manifest,),
+        collection_status=(
+            SourceCollectionStatus(
+                source_type=manifest.source_type,
+                status=SourceCollectionState.PARTIAL,
+                discovered=1,
+                included=0,
+                omitted=1,
+            ),
+        ),
+        source_snapshots=(),
     )
     store.mark_generating(result.review.review_id, MODEL_ID)
     store.complete(
@@ -245,6 +314,175 @@ def test_collector_counts_each_daily_once_and_dedupes_original_sources(
     assert any("去重" in note for note in status.notes)
 
 
+def test_budget_omitted_manifest_identity_is_not_completion_evidence(
+    tmp_path: Path,
+) -> None:
+    period = week_period(WEEK, timezone=TZ)
+    store = ReviewStore(tmp_path / "knowledge")
+    day = (period.period_start + timedelta(days=1)).date()
+    entry = _task_source("task-omitted").manifest_entry()
+    _seed_manifest_daily(store, day, entry)
+
+    review_input = _collector(tmp_path, store).collect_weekly(period, TZ)
+    source = next(
+        item for item in review_input.sources if item.source_id == "task-omitted"
+    )
+    assert source.included is False
+    assert source.may_prove_completion is False
+    assert source.omitted_reason == "input_budget_exhausted"
+    assert "identity_only" in source.verification
+    assert "task-omitted" not in review_input.completion_source_ids
+    assert "task-omitted" not in review_input.included_source_ids
+    daily_id = next(
+        item.source_id
+        for item in review_input.included_sources
+        if item.source_type == "daily_review"
+    )
+    status = next(
+        item
+        for item in review_input.collection_status
+        if item.source_type == "development_task"
+    )
+    assert (status.discovered, status.included, status.omitted) == (1, 0, 1)
+
+    payload = _payload(
+        period,
+        major_events=[{"text": "Completed it.", "source_refs": [daily_id]}],
+        progress=[{"text": "Finished it.", "source_refs": [daily_id]}],
+        source_refs=[daily_id],
+    )
+    service, _ = _service(tmp_path, review_input, llm=FakeLLM(payload))
+
+    async def scenario() -> Any:
+        created = await service.generate_weekly_review(
+            WEEK, "weekly-omitted", timezone=TZ
+        )
+        settled = await service.wait_for_review(created.review_id)
+        await service.close()
+        return settled
+
+    settled = asyncio.run(scenario())
+    assert settled.status is ReviewStatus.FAILED
+    assert settled.error == "fabricated_completion"
+
+
+def test_weekly_collector_keeps_the_latest_task_state_without_double_counting(
+    tmp_path: Path,
+) -> None:
+    period = week_period(WEEK, timezone=TZ)
+    store = ReviewStore(tmp_path / "knowledge")
+    end_days = [
+        (period.period_start + timedelta(days=offset + 1)).date() for offset in range(7)
+    ]
+    in_progress = _task_version(
+        "task-evolve",
+        "in_progress",
+        may_prove_completion=False,
+        occurred_at="2026-01-12T10:00:00+08:00",
+    )
+    testing = _task_version(
+        "task-evolve",
+        "testing",
+        may_prove_completion=False,
+        occurred_at="2026-01-14T10:00:00+08:00",
+    )
+    done = _task_version(
+        "task-evolve",
+        "done",
+        may_prove_completion=True,
+        occurred_at="2026-01-17T10:00:00+08:00",
+    )
+    _seed_daily(store, end_days[0], (in_progress,))
+    _seed_daily(store, end_days[2], (testing,))
+    _seed_daily(store, end_days[5], (done,))
+
+    review_input = _collector(tmp_path, store).collect_weekly(period, TZ)
+    tasks = [item for item in review_input.sources if item.source_id == "task-evolve"]
+    assert len(tasks) == 1
+    assert tasks[0].content_hash == done.content_hash
+    assert tasks[0].may_prove_completion is True
+    assert "task-evolve" in review_input.completion_source_ids
+    assert "task-evolve" in review_input.included_source_ids
+    history = json.loads(tasks[0].snapshot)["observed_versions"]
+    assert [item["content_hash"] for item in history] == [
+        in_progress.content_hash,
+        testing.content_hash,
+        done.content_hash,
+    ]
+    status = next(
+        item
+        for item in review_input.collection_status
+        if item.source_type == "development_task"
+    )
+    assert status.discovered == 1
+    assert any(
+        "变化" in note for item in review_input.collection_status for note in item.notes
+    )
+
+
+def test_weekly_collector_never_reuses_an_older_done_after_reopen(
+    tmp_path: Path,
+) -> None:
+    period = week_period(WEEK, timezone=TZ)
+    store = ReviewStore(tmp_path / "knowledge")
+    end_days = [
+        (period.period_start + timedelta(days=offset + 1)).date() for offset in range(7)
+    ]
+    done = _task_version(
+        "task-reopened",
+        "done",
+        may_prove_completion=True,
+        occurred_at="2026-01-12T10:00:00+08:00",
+    )
+    reopened = _task_version(
+        "task-reopened",
+        "in_progress",
+        may_prove_completion=False,
+        occurred_at="2026-01-14T10:00:00+08:00",
+    )
+    _seed_daily(store, end_days[0], (done,))
+    _seed_daily(store, end_days[2], (reopened,))
+
+    review_input = _collector(tmp_path, store).collect_weekly(period, TZ)
+    task = next(
+        item for item in review_input.sources if item.source_id == "task-reopened"
+    )
+    assert task.content_hash == reopened.content_hash
+    assert task.may_prove_completion is False
+    assert "task-reopened" not in review_input.completion_source_ids
+
+
+def test_weekly_collector_uses_the_last_occurrence_when_a_hash_repeats(
+    tmp_path: Path,
+) -> None:
+    period = week_period(WEEK, timezone=TZ)
+    store = ReviewStore(tmp_path / "knowledge")
+    end_days = [
+        (period.period_start + timedelta(days=offset + 1)).date() for offset in range(7)
+    ]
+    done = _task_version(
+        "task-aba",
+        "done",
+        may_prove_completion=True,
+        occurred_at="2026-01-12T10:00:00+08:00",
+    )
+    reopened = _task_version(
+        "task-aba",
+        "in_progress",
+        may_prove_completion=False,
+        occurred_at="2026-01-14T10:00:00+08:00",
+    )
+    _seed_daily(store, end_days[0], (done,))
+    _seed_daily(store, end_days[2], (reopened,))
+    _seed_daily(store, end_days[5], (done,))
+
+    review_input = _collector(tmp_path, store).collect_weekly(period, TZ)
+    task = next(item for item in review_input.sources if item.source_id == "task-aba")
+    assert task.content_hash == done.content_hash
+    assert task.may_prove_completion is True
+    assert "task-aba" in review_input.completion_source_ids
+
+
 class FakeWeeklyCollector:
     def __init__(self, review_input: ReviewInput) -> None:
         self.review_input = review_input
@@ -308,14 +546,19 @@ def _service(
     review_input: ReviewInput,
     *,
     llm: FakeLLM | None = None,
+    clock: Any = None,
 ) -> tuple[WeeklyReviewService, FakeWeeklyCollector]:
     collector = FakeWeeklyCollector(review_input)
+    kwargs: dict[str, Any] = {}
+    if clock is not None:
+        kwargs["clock"] = clock
     service = WeeklyReviewService(
         store=ReviewStore(tmp_path / "knowledge"),
         collector=collector,
         llm=llm or FakeLLM(_payload(week_period(WEEK, timezone=TZ))),
         model_id=MODEL_ID,
         timeout_seconds=5.0,
+        **kwargs,
     )
     return service, collector
 
@@ -420,6 +663,88 @@ def test_week_without_sources_completes_with_an_explicit_no_record_note(
     assert "没有收集到可复盘的" in created.summary.overview
     assert created.summary.confidence_notes
     assert llm.calls == []
+
+
+def test_weekly_review_rejects_a_period_before_its_cutoff(tmp_path: Path) -> None:
+    period = week_period(WEEK, timezone=TZ)
+    source = _task_source("task-1")
+    for index, moment in enumerate(
+        (
+            datetime(2026, 1, 14, 12, 0, tzinfo=ZoneInfo(TZ)),
+            period.period_end - timedelta(seconds=1),
+        )
+    ):
+        service, _ = _service(
+            tmp_path / str(index),
+            _weekly_input(period, (source,)),
+            clock=lambda moment=moment: moment,
+        )
+
+        async def scenario(
+            service: WeeklyReviewService = service, index: int = index
+        ) -> None:
+            with pytest.raises(ReviewPeriodNotEnded):
+                await service.generate_weekly_review(
+                    WEEK, f"weekly-early-{index}", timezone=TZ
+                )
+            await service.close()
+
+        asyncio.run(scenario())
+
+
+def test_weekly_review_accepts_the_cutoff_moment_and_later(tmp_path: Path) -> None:
+    period = week_period(WEEK, timezone=TZ)
+    for index, moment in enumerate(
+        (period.period_end, period.period_end + timedelta(days=3))
+    ):
+        service, _ = _service(
+            tmp_path / str(index),
+            _weekly_input(period, ()),
+            clock=lambda moment=moment: moment,
+        )
+
+        async def scenario(
+            service: WeeklyReviewService = service, index: int = index
+        ) -> Any:
+            created = await service.generate_weekly_review(
+                WEEK, f"weekly-ended-{index}", timezone=TZ
+            )
+            await service.close()
+            return created
+
+        assert asyncio.run(scenario()).status is ReviewStatus.COMPLETED
+
+
+def test_weekly_schedule_can_reuse_an_operator_completed_report(
+    tmp_path: Path,
+) -> None:
+    period = week_period(WEEK, timezone=TZ)
+    first = _task_source("task-1")
+    second = _task_source("task-2")
+    service, collector = _service(tmp_path, _weekly_input(period, (first,)))
+    llm = service.llm
+    assert isinstance(llm, FakeLLM)
+
+    async def scenario() -> tuple[Any, Any]:
+        created = await service.generate_weekly_review(
+            WEEK, "weekly-manual", timezone=TZ
+        )
+        await service.wait_for_review(created.review_id)
+        collector.review_input = _weekly_input(period, (second,))
+        with pytest.raises(ReviewPeriodCompleted):
+            await service.generate_weekly_review(WEEK, "weekly-scheduler", timezone=TZ)
+        reused = await service.generate_weekly_review(
+            WEEK,
+            "weekly-scheduler-reuse",
+            timezone=TZ,
+            reuse_completed=True,
+        )
+        await service.close()
+        return created, reused
+
+    created, reused = asyncio.run(scenario())
+    assert reused.review_id == created.review_id
+    assert len(llm.calls) == 1
 
 
 def test_regeneration_creates_a_new_version_and_bad_period_is_rejected(

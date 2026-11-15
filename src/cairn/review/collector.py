@@ -658,11 +658,11 @@ class WeeklySourceCollector(ReviewSourceCollector):
             raise ValueError("a weekly period must cover exactly seven days")
 
         daily_sources: list[SourceSnapshot] = []
-        originals: dict[str, SourceSnapshot] = {}
-        raw_sources: list[SourceSnapshot] = []
+        versions: dict[str, list[SourceSnapshot]] = {}
         missing_days: list[date] = []
-        duplicate_count = 0
-        seen: set[str] = set()
+
+        def observe(source: SourceSnapshot) -> None:
+            versions.setdefault(source.source_id, []).append(source)
 
         for offset in range(WEEKLY_WINDOW_DAYS):
             start = period.period_start + timedelta(days=offset)
@@ -675,32 +675,32 @@ class WeeklySourceCollector(ReviewSourceCollector):
             )
             if review is None or review.summary is None:
                 missing_days.append(end.date())
+                daily_input = self.collect_daily(
+                    end.date(), timezone, cutoff=self.cutoff
+                )
+                for source in daily_input.sources:
+                    observe(source)
                 continue
             daily_sources.append(self._daily_review_source(review, end))
-            seen.add(review.review_id)
-            for source in review.source_snapshots:
-                if source.source_id in originals:
-                    duplicate_count += 1
-                    continue
-                originals[source.source_id] = source
-                seen.add(source.source_id)
             snapshot_ids = {source.source_id for source in review.source_snapshots}
+            for source in review.source_snapshots:
+                observe(source)
             for entry in review.source_manifest:
-                if entry.source_id in snapshot_ids or entry.source_id in originals:
+                if entry.source_id in snapshot_ids:
                     continue
-                originals[entry.source_id] = self._identity_source(entry)
-                seen.add(entry.source_id)
+                observe(self._identity_source(entry))
 
-        for day in missing_days:
-            daily_input = self.collect_daily(day, timezone, cutoff=self.cutoff)
-            for source in daily_input.included_sources:
-                if source.source_id in seen or source.source_id in originals:
-                    duplicate_count += 1
-                    continue
-                raw_sources.append(source)
-                seen.add(source.source_id)
+        originals: dict[str, SourceSnapshot] = {}
+        duplicate_count = 0
+        versioned_count = 0
+        for source_id, occurrences in versions.items():
+            merged, duplicates = self._merge_versions(occurrences)
+            originals[source_id] = merged
+            duplicate_count += duplicates
+            if len({item.content_hash for item in occurrences}) > 1:
+                versioned_count += 1
 
-        sources = daily_sources + list(originals.values()) + raw_sources
+        sources = daily_sources + list(originals.values())
         discovered = {
             source_type: sum(1 for item in sources if item.source_type == source_type)
             for source_type in (
@@ -725,7 +725,12 @@ class WeeklySourceCollector(ReviewSourceCollector):
             notes["daily_review"].append("七个日报周期均有已完成日报。")
         if duplicate_count:
             notes["daily_review"].append(
-                f"已去重 {duplicate_count} 个在多个日报中重复出现的原始来源。"
+                f"已去重 {duplicate_count} 次内容相同的重复来源记录。"
+            )
+        if versioned_count:
+            notes["daily_review"].append(
+                f"{versioned_count} 个来源在本周内发生过内容或状态变化, "
+                "结果按最新纳入版本判断, 历史版本保留在快照中。"
             )
         notes["daily_review"].append(
             "日报是模型生成的二级总结, 不能扩大原始事实的证明范围。"
@@ -812,15 +817,23 @@ class WeeklySourceCollector(ReviewSourceCollector):
 
     @staticmethod
     def _identity_source(entry: SourceManifestEntry) -> SourceSnapshot:
-        """Keep an older report's original identity even without its snapshot."""
+        """Keep an older report's identity, but never let it prove completion."""
+        verification = entry.verification
+        if "identity_only" not in verification:
+            suffix = "; identity_only" if verification else "identity_only"
+            verification = verification[: 80 - len(suffix)] + suffix
         payload = {
             "source_id": entry.source_id,
             "source_type": entry.source_type,
             "occurred_at": entry.occurred_at,
             "content_hash": entry.content_hash,
             "trust": entry.trust.value,
-            "may_prove_completion": entry.may_prove_completion,
-            "verification": entry.verification,
+            "may_prove_completion": False,
+            "verification": verification,
+            "included": entry.included,
+            "omitted_reason": entry.omitted_reason,
+            "truncated": entry.truncated,
+            "evidence": "identity_only",
         }
         return SourceSnapshot(
             source_type=entry.source_type,
@@ -828,9 +841,96 @@ class WeeklySourceCollector(ReviewSourceCollector):
             content_hash=entry.content_hash,
             occurred_at=entry.occurred_at,
             trust=entry.trust,
-            may_prove_completion=entry.may_prove_completion,
-            verification=entry.verification,
+            may_prove_completion=False,
+            verification=verification,
             snapshot=_json(payload),
+            truncated=entry.truncated,
+            included=entry.included,
+            omitted_reason=entry.omitted_reason,
+        )
+
+    @staticmethod
+    def _merge_versions(
+        occurrences: list[SourceSnapshot],
+    ) -> tuple[SourceSnapshot, int]:
+        """One identity at its latest included state, with every version kept.
+
+        Repeating the same content hash is a duplicate, not a new version. A
+        later change replaces the effective state; an older DONE can never be
+        used once a newer included version says otherwise. A version omitted
+        from its daily report remains audit history and is not evidence.
+        """
+        unique: list[SourceSnapshot] = []
+        index_by_hash: dict[str, int] = {}
+        duplicates = 0
+        latest_included: SourceSnapshot | None = None
+        for occurrence in occurrences:
+            if occurrence.included:
+                latest_included = occurrence
+            index = index_by_hash.get(occurrence.content_hash)
+            if index is not None:
+                duplicates += 1
+                if occurrence.included and not unique[index].included:
+                    unique[index] = occurrence
+                continue
+            index_by_hash[occurrence.content_hash] = len(unique)
+            unique.append(occurrence)
+        latest = latest_included or occurrences[-1]
+        history = [
+            {
+                "content_hash": item.content_hash,
+                "occurred_at": item.occurred_at,
+                "trust": item.trust.value,
+                "may_prove_completion": item.may_prove_completion,
+                "verification": item.verification,
+                "included": item.included,
+                "omitted_reason": item.omitted_reason,
+                "truncated": item.truncated,
+            }
+            for item in unique
+        ]
+        trail = [
+            {
+                "content_hash": item.content_hash,
+                "occurred_at": item.occurred_at,
+                "included": item.included,
+            }
+            for item in occurrences
+        ]
+        try:
+            decoded = json.loads(latest.snapshot) if latest.snapshot else None
+        except (json.JSONDecodeError, TypeError):
+            decoded = None
+        if isinstance(decoded, dict):
+            decoded["observed_versions"] = history
+            decoded["evidence_trail"] = trail
+            merged = _json(decoded)
+        else:
+            merged = _json(
+                {
+                    "latest_snapshot": latest.snapshot,
+                    "observed_versions": history,
+                    "evidence_trail": trail,
+                }
+            )
+        snapshot, truncated = _truncate(merged, MAX_SOURCE_CHARS)
+        return (
+            latest.model_copy(
+                update={
+                    "snapshot": snapshot,
+                    "truncated": latest.truncated or truncated,
+                    "may_prove_completion": (
+                        latest.may_prove_completion if latest.included else False
+                    ),
+                    "included": latest.included,
+                    "omitted_reason": (
+                        None
+                        if latest.included
+                        else latest.omitted_reason or "omitted_from_daily_review"
+                    ),
+                }
+            ),
+            duplicates,
         )
 
     def _apply_weekly_budget(
@@ -848,6 +948,11 @@ class WeeklySourceCollector(ReviewSourceCollector):
         used = 0
         result: list[SourceSnapshot] = []
         for source in ordered:
+            if not source.included:
+                # A source omitted from its daily report stays omitted; the
+                # weekly budget must not silently promote it into evidence.
+                result.append(source.model_copy(update={"snapshot": ""}))
+                continue
             cost = source.prompt_chars()
             if used + cost <= self.max_chars:
                 result.append(source)

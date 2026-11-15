@@ -247,6 +247,21 @@ def test_weekly_review_create_list_detail_and_replay(tmp_path: Path) -> None:
         assert replay.json()["review_id"] == body["review_id"]
 
 
+def test_weekly_review_rejects_a_period_that_has_not_ended(tmp_path: Path) -> None:
+    gate = threading.Event()
+    gate.set()
+    web, _weekly, _store = _app(tmp_path, gate)
+    with TestClient(web, base_url=ORIGIN) as client:
+        _login(client)
+        response = client.post(
+            "/api/knowledge/reviews/weekly",
+            json={"week_id": "2099-W01", "request_id": "weekly-future"},
+            headers={"Origin": ORIGIN},
+        )
+        assert response.status_code == 409
+        assert response.json() == {"error": "review_period_not_ended"}
+
+
 def test_weekly_schedule_retry_entry_reports_disabled_and_not_failed(
     tmp_path: Path,
 ) -> None:
@@ -257,22 +272,41 @@ def test_weekly_schedule_retry_entry_reports_disabled_and_not_failed(
         _login(client)
         disabled = client.post(
             "/api/knowledge/reviews/schedule/weekly/retry",
-            json={"week_id": WEEK},
+            json={"week_id": WEEK, "request_id": "retry-disabled"},
             headers={"Origin": ORIGIN},
         )
         assert disabled.status_code == 503
         assert disabled.json() == {"error": "weekly_review_schedule_disabled"}
 
         web.state.weekly_review_schedule = SimpleNamespace(
-            retry_failed=lambda _week_id: _none()
+            retry_failed=lambda _week_id, _request_id: _none()
         )
         missing = client.post(
             "/api/knowledge/reviews/schedule/weekly/retry",
-            json={"week_id": WEEK},
+            json={"week_id": WEEK, "request_id": "retry-missing"},
             headers={"Origin": ORIGIN},
         )
         assert missing.status_code == 409
         assert missing.json() == {"error": "review_week_not_failed"}
+
+        without_id = client.post(
+            "/api/knowledge/reviews/schedule/weekly/retry",
+            json={"week_id": WEEK},
+            headers={"Origin": ORIGIN},
+        )
+        assert without_id.status_code == 422
+
+        async def conflict(_week_id: str, _request_id: str) -> None:
+            raise ValueError("retry request_id was used for another week")
+
+        web.state.weekly_review_schedule = SimpleNamespace(retry_failed=conflict)
+        reused_id = client.post(
+            "/api/knowledge/reviews/schedule/weekly/retry",
+            json={"week_id": WEEK, "request_id": "retry-reused"},
+            headers={"Origin": ORIGIN},
+        )
+        assert reused_id.status_code == 409
+        assert reused_id.json() == {"error": "retry_request_conflict"}
 
 
 async def _none() -> None:

@@ -10,6 +10,8 @@ from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from cairn.knowledge.store import KnowledgeStore
 from cairn.review.models import (
     DeliveryTarget,
@@ -38,7 +40,9 @@ class FakeWeeklyService:
         self.error: str | None = None
         self.calls: list[dict[str, Any]] = []
         self.settled: list[Any] = []
+        self.delivered: list[str] = []
         self._counter = 0
+        self._reviews: dict[str, Any] = {}
 
     async def generate_weekly_review(
         self,
@@ -49,6 +53,7 @@ class FakeWeeklyService:
         regenerate: bool = False,
         period_end: datetime | None = None,
         deliver: bool = False,
+        reuse_completed: bool = False,
     ) -> Any:
         self.calls.append(
             {
@@ -58,12 +63,15 @@ class FakeWeeklyService:
                 "regenerate": regenerate,
                 "period_end": period_end,
                 "deliver": deliver,
+                "reuse_completed": reuse_completed,
             }
         )
         self._counter += 1
-        return SimpleNamespace(
+        record = SimpleNamespace(
             review_id=f"review-{self._counter}", status=ReviewStatus.PENDING
         )
+        self._reviews[record.review_id] = record
+        return record
 
     async def wait_for_review(self, review_id: str, *, timeout: float) -> Any:
         record = SimpleNamespace(
@@ -71,11 +79,15 @@ class FakeWeeklyService:
             status=self.status,
             error=self.error,
         )
+        self._reviews[review_id] = record
         self.settled.append(record)
         return record
 
     async def get_review(self, review_id: str) -> Any:
-        return None
+        return self._reviews.get(review_id)
+
+    async def ensure_delivery(self, review_id: str) -> None:
+        self.delivered.append(review_id)
 
 
 def _coordinator(
@@ -170,9 +182,11 @@ def test_tick_generates_once_and_delivers_only_the_current_week(tmp_path: Path) 
                 "regenerate": False,
                 "period_end": week_period("2026-W03", timezone=TZ).period_end,
                 "deliver": True,
+                "reuse_completed": True,
             }
         ]
         assert [row.status for row in settled] == [ReviewStatus.COMPLETED]
+        assert service.delivered == ["review-1"]
         assert await coordinator.tick() is None
         assert len(service.calls) == 1
 
@@ -220,13 +234,17 @@ def test_failed_week_is_manual_to_retry_and_a_retry_is_new_version(
         assert await coordinator.tick() is None
 
         service.status = ReviewStatus.COMPLETED
-        retried = await coordinator.retry_failed("2026-W03")
+        retried = await coordinator.retry_failed("2026-W03", "operator-retry-1")
         assert retried is not None
         assert service.calls[-1]["regenerate"] is True
         assert "retry:" in service.calls[-1]["request_id"]
         assert "2026-W03" not in coordinator.state["failed_weeks"]
         assert "2026-W03" in coordinator.state["retried_weeks"]
-        assert await coordinator.retry_failed("2026-W03") is None
+        assert await coordinator.retry_failed("2026-W03", "operator-retry-1") is retried
+        assert len(service.calls) == 2
+        assert await coordinator.retry_failed("2026-W03", "operator-retry-2") is None
+        with pytest.raises(ValueError, match="another week"):
+            await coordinator.retry_failed("2026-W04", "operator-retry-1")
 
     asyncio.run(scenario())
 
@@ -293,6 +311,35 @@ def test_scheduled_weekly_review_completes_without_wechat_login(
     assert review is not None
     assert review.status is ReviewStatus.COMPLETED
     delivery = reviews.get_delivery(review.review_id)
+    assert delivery is not None
+    assert delivery.status is ReviewDeliveryStatus.PENDING
+
+
+def test_schedule_delivers_a_manual_report_created_before_the_tick(
+    tmp_path: Path,
+) -> None:
+    reviews = ReviewStore(KnowledgeStore(tmp_path / "knowledge"))
+    service = WeeklyReviewService(
+        store=reviews,
+        collector=EmptyWeeklyCollector(),
+        llm=None,
+        delivery_target=DeliveryTarget(recipient="owner"),
+    )
+    manual = asyncio.run(
+        service.generate_weekly_review("2026-W03", "manual-weekly", timezone=TZ)
+    )
+    assert reviews.get_delivery(manual.review_id) is None
+
+    coordinator = WeeklyReviewScheduleCoordinator(
+        service=service,
+        store=ScheduleStore(tmp_path / "schedules"),
+        clock=lambda: AFTER_BOUNDARY,
+        settle_timeout=1.0,
+    )
+    settled = asyncio.run(coordinator.tick())
+    assert settled is not None
+    assert settled.review_id == manual.review_id
+    delivery = reviews.get_delivery(manual.review_id)
     assert delivery is not None
     assert delivery.status is ReviewDeliveryStatus.PENDING
 

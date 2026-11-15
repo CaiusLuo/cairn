@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any, Protocol
@@ -32,10 +32,16 @@ from cairn.review.service import (
     ReviewGenerationError,
     ReviewServiceBase,
 )
+from cairn.review.store import ReviewPeriodCompleted
 from cairn.shared.redaction import redact_text
 
 DEFAULT_WEEKLY_CUTOFF = time(20, 30)
 _WEEK_ID = re.compile(r"^(\d{4})-W(\d{2})$")
+
+
+class ReviewPeriodNotEnded(ValueError):
+    """The weekly reporting window has not closed yet."""
+
 
 WEEKLY_SYSTEM_PROMPT = """You write Cairn's weekly review for one person.
 
@@ -166,9 +172,16 @@ class WeeklyCollector(Protocol):
 class WeeklyReviewService(ReviewServiceBase):
     """Generate one verifiable report for an ISO week."""
 
-    def __init__(self, *, cutoff: time = DEFAULT_WEEKLY_CUTOFF, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        cutoff: time = DEFAULT_WEEKLY_CUTOFF,
+        clock: Callable[[], datetime] | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self.cutoff = cutoff
+        self.clock = clock or (lambda: datetime.now().astimezone())
 
     async def generate_weekly_review(
         self,
@@ -179,14 +192,20 @@ class WeeklyReviewService(ReviewServiceBase):
         regenerate: bool = False,
         period_end: datetime | None = None,
         deliver: bool = False,
+        reuse_completed: bool = False,
     ) -> StoredReview:
         """Create/reuse a weekly report and schedule model work in background.
 
         ``period_end`` is host-schedule policy: it pins the report to the actual
         cutoff that was due instead of re-deriving a possibly different week.
+        ``reuse_completed`` lets the host schedule reuse an operator's completed
+        default report instead of failing on an already-completed period.
         """
         if not self._started:
             await self.start()
+        now = self.clock()
+        if now.tzinfo is None:
+            raise ValueError("clock must return a timezone-aware datetime")
         if deliver and (
             self.delivery_target is None or not self.delivery_target.recipient
         ):
@@ -199,25 +218,43 @@ class WeeklyReviewService(ReviewServiceBase):
             )
             if period.week_id != week_id.strip():
                 raise ValueError("week_id does not match the requested period")
+        if period.period_end > now:
+            raise ReviewPeriodNotEnded("the weekly review period has not ended")
         review_input = await asyncio.to_thread(
             self.collector.collect_weekly, period, timezone
         )
-        result = await asyncio.to_thread(
-            self.store.create_or_get,
-            request_id=request_id,
-            review_type=review_input.review_type,
-            day=period.day,
-            period_start=review_input.period_start.isoformat(),
-            period_end=review_input.period_end.isoformat(),
-            timezone=timezone,
-            input_fingerprint=review_input.input_fingerprint,
-            source_manifest=tuple(
+        create_args: dict[str, Any] = {
+            "request_id": request_id,
+            "review_type": review_input.review_type,
+            "day": period.day,
+            "period_start": review_input.period_start.isoformat(),
+            "period_end": review_input.period_end.isoformat(),
+            "timezone": timezone,
+            "input_fingerprint": review_input.input_fingerprint,
+            "source_manifest": tuple(
                 source.manifest_entry() for source in review_input.sources
             ),
-            collection_status=review_input.collection_status,
-            source_snapshots=self._persisted_sources(review_input),
-            regenerate=regenerate,
-        )
+            "collection_status": review_input.collection_status,
+            "source_snapshots": self._persisted_sources(review_input),
+            "regenerate": regenerate,
+        }
+        try:
+            result = await asyncio.to_thread(self.store.create_or_get, **create_args)
+        except ReviewPeriodCompleted:
+            if not reuse_completed:
+                raise
+            completed = await asyncio.to_thread(
+                self.store.latest_completed,
+                review_type=review_input.review_type,
+                period_start=review_input.period_start.isoformat(),
+                period_end=review_input.period_end.isoformat(),
+                timezone=timezone,
+            )
+            if completed is None:
+                raise
+            if deliver:
+                await self.ensure_delivery(completed.review_id)
+            return completed
         if result.created:
             if not review_input.included_sources:
                 return await self._finish_without_sources(
@@ -231,11 +268,7 @@ class WeeklyReviewService(ReviewServiceBase):
                 request_delivery=deliver,
             )
         elif deliver and result.review.status is ReviewStatus.COMPLETED:
-            await asyncio.to_thread(
-                self.store.ensure_delivery,
-                result.review.review_id,
-                target=self.delivery_target,
-            )
+            await self.ensure_delivery(result.review.review_id)
         return result.review
 
     def _messages(self, review_input: ReviewInput) -> list[Message]:
@@ -430,6 +463,7 @@ def render_weekly_markdown(summary: WeeklyReview, review_input: ReviewInput) -> 
 __all__ = [
     "DEFAULT_WEEKLY_CUTOFF",
     "WEEKLY_SYSTEM_PROMPT",
+    "ReviewPeriodNotEnded",
     "WeekPeriod",
     "WeeklyCollector",
     "WeeklyReviewService",

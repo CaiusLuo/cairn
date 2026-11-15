@@ -319,6 +319,14 @@ class ReviewServiceBase:
     async def get_review(self, review_id: str) -> StoredReview | None:
         return await asyncio.to_thread(self.store.get, review_id)
 
+    async def ensure_delivery(self, review_id: str) -> None:
+        """Idempotently record the host delivery intent for a completed review."""
+        if self.delivery_target is None or not self.delivery_target.recipient:
+            raise ValueError("scheduled delivery requires an authorized recipient")
+        await asyncio.to_thread(
+            self.store.ensure_delivery, review_id, target=self.delivery_target
+        )
+
     async def list_reviews(
         self,
         *,

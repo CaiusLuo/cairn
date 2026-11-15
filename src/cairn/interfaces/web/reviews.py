@@ -30,7 +30,12 @@ from cairn.review.store import (
     ReviewPeriodCompleted,
     ReviewRequestConflict,
 )
-from cairn.review.weekly import WeeklyReviewService, iso_week_id, week_period
+from cairn.review.weekly import (
+    ReviewPeriodNotEnded,
+    WeeklyReviewService,
+    iso_week_id,
+    week_period,
+)
 
 MAX_BODY_BYTES = 16 * 1024
 
@@ -84,6 +89,25 @@ class WeeklyScheduleRetryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     week_id: str = Field(min_length=1, max_length=10)
+    request_id: str = Field(min_length=1, max_length=REVIEW_REQUEST_ID_MAX_LENGTH)
+
+    @field_validator("week_id")
+    @classmethod
+    def _week_id_is_valid(cls, value: str) -> str:
+        stripped = value.strip()
+        try:
+            week_period(stripped, timezone="UTC")
+        except ValueError:
+            raise ValueError("week_id must be a valid ISO week (YYYY-Www)") from None
+        return stripped
+
+    @field_validator("request_id")
+    @classmethod
+    def _request_id_has_content(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("request_id must not be blank")
+        return stripped
 
 
 class WeeklyReviewRequest(BaseModel):
@@ -285,6 +309,8 @@ def review_routes(
             return _error(422, "invalid_review_request")
         except ReviewRequestConflict:
             return _error(409, "request_id_conflict")
+        except ReviewPeriodNotEnded:
+            return _error(409, "review_period_not_ended")
         except ReviewPeriodCompleted:
             return _error(409, "review_period_completed")
         except ValueError:
@@ -367,9 +393,13 @@ def review_routes(
         if coordinator is None:
             return _error(503, "weekly_review_schedule_disabled")
         try:
-            record = await coordinator.retry_failed(payload.week_id.strip())
+            record = await coordinator.retry_failed(
+                payload.week_id.strip(), payload.request_id
+            )
         except RuntimeError:
             return _error(503, "review_schedule_busy")
+        except ValueError:
+            return _error(409, "retry_request_conflict")
         except (OSError, sqlite3.Error):
             return _error(503, "review_store_unavailable")
         if record is None:

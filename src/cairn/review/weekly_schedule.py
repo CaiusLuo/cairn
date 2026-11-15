@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import sqlite3
-import uuid
 from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 from typing import Any
@@ -42,6 +42,7 @@ SUNDAY = 6
 # recorded as skipped instead of pushing a burst of stale weekly messages.
 MAX_CATCH_UP_WEEKS = 1
 MAX_SKIPPED_WEEKS = 52
+MAX_RETRY_RECEIPTS = 200
 
 
 class WeeklyReviewScheduleCoordinator:
@@ -300,6 +301,7 @@ class WeeklyReviewScheduleCoordinator:
                     timezone=self.timezone,
                     period_end=period.period_end,
                     deliver=deliver,
+                    reuse_completed=True,
                 )
             except (OSError, sqlite3.Error) as exc:
                 self._save(
@@ -333,32 +335,66 @@ class WeeklyReviewScheduleCoordinator:
             self._save(last_status="generating")
             return review
         self._record_settled(period, settled)
-        if settled.status is ReviewStatus.COMPLETED and self.on_settled is not None:
-            result = self.on_settled(settled)
-            if asyncio.iscoroutine(result):
-                await result
+        if settled.status is ReviewStatus.COMPLETED:
+            if deliver:
+                await self.service.ensure_delivery(settled.review_id)
+            if self.on_settled is not None:
+                result = self.on_settled(settled)
+                if asyncio.iscoroutine(result):
+                    await result
         return settled
 
-    async def retry_failed(self, week_id: str) -> StoredReview | None:
-        """Explicit operator retry for one auditable failed week."""
+    async def retry_failed(self, week_id: str, request_id: str) -> StoredReview | None:
+        """Explicit, idempotent operator retry for one auditable failed week."""
+        key = request_id.strip()
+        if not key:
+            raise ValueError("request_id must not be blank")
         now = self.clock()
         self._ensure_initialized(now)
         await self._reconcile_interrupted()
+        receipts = dict(self.state.get("retry_requests") or {})
+        receipt = receipts.get(key)
+        if receipt is not None:
+            if receipt.get("week_id") != week_id:
+                raise ValueError("retry request_id was used for another week")
+            review_id = receipt.get("review_id")
+            review = (
+                None
+                if not isinstance(review_id, str)
+                else await self.service.get_review(review_id)
+            )
+            if review is None:
+                raise ValueError("retry receipt points at a missing review")
+            if (
+                review.status is ReviewStatus.COMPLETED
+                and week_id == self.latest_due_week(now).week_id
+            ):
+                await self.service.ensure_delivery(review.review_id)
+            return review
         failed = dict(self.state.get("failed_weeks") or {})
         if week_id not in failed:
             return None
         period = week_period(week_id, timezone=self.timezone, cutoff=self.cutoff)
+        deliver = week_id == self.latest_due_week(now).week_id
         lease = self.store.try_execution_lock()
         if lease is None:
             raise RuntimeError("review schedule is busy")
         try:
             review = await self.service.generate_weekly_review(
                 week_id,
-                f"{self._request_id(period)}:retry:{uuid.uuid4().hex[:12]}",
+                self._retry_request_id(week_id, key),
                 timezone=self.timezone,
                 regenerate=True,
                 period_end=period.period_end,
-                deliver=week_id == self.latest_due_week(now).week_id,
+                deliver=deliver,
+            )
+            receipts[key] = {
+                "week_id": week_id,
+                "review_id": review.review_id,
+                "at": self.clock().isoformat(),
+            }
+            self._save(
+                retry_requests=dict(list(receipts.items())[-MAX_RETRY_RECEIPTS:])
             )
         finally:
             lease.release()
@@ -382,6 +418,8 @@ class WeeklyReviewScheduleCoordinator:
                 failed_weeks=failed,
                 retried_weeks=retried,
             )
+            if deliver:
+                await self.service.ensure_delivery(settled.review_id)
             if self.on_settled is not None:
                 result = self.on_settled(settled)
                 if asyncio.iscoroutine(result):
@@ -395,6 +433,11 @@ class WeeklyReviewScheduleCoordinator:
             f"{REVIEW_WEEKLY_REQUEST_PREFIX}:{period.week_id}:{self.timezone}:"
             f"{self.scheduled_time.strftime('%H:%M')}"
         )
+
+    @staticmethod
+    def _retry_request_id(week_id: str, request_id: str) -> str:
+        digest = hashlib.sha256(request_id.encode("utf-8")).hexdigest()[:32]
+        return f"{REVIEW_WEEKLY_REQUEST_PREFIX}:retry:{week_id}:{digest}"
 
 
 __all__ = [
