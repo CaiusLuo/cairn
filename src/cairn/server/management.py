@@ -41,7 +41,7 @@ from cairn.scheduling.tools import (
     ScheduleManageTool,
 )
 from cairn.server.client import RuntimeClient
-from cairn.server.config import DEFAULT_SERVICES, Services
+from cairn.server.config import DEFAULT_REVIEW, DEFAULT_SERVICES, ReviewConfig, Services
 from cairn.shared.atomic_json import atomic_write
 from cairn.shared.lifecycle import await_owned, settle_owned
 from cairn.shared.redaction import redact_value
@@ -79,9 +79,13 @@ class ServerControls:
         schedule_state: Path,
         channels_state: Path | None = None,
         services: Services = DEFAULT_SERVICES,
+        review: ReviewConfig = DEFAULT_REVIEW,
+        config_file: Path | None = None,
     ) -> None:
         self.service, self.execution = service, execution
         self.services = services
+        self.review = review
+        self.config_file = config_file
         self.workspace = workspace.resolve()
         private_paths = [wechat_state, agent_home, schedule_state]
         if channels_state is not None:
@@ -120,6 +124,8 @@ class ServerControls:
         self.delivery_tasks: set[asyncio.Task[None]] = set()
         self.delivery: Any | None = None
         self.review_delivery: Any | None = None
+        self.review_schedule: Any | None = None
+        self.weekly_review_schedule: Any | None = None
         self.closed = False
         api = RuntimeClient(
             f"http://127.0.0.1:{port}",
@@ -353,7 +359,7 @@ class ServerControls:
                 "development_shell": self.execution.allow_shell,
                 "development_network": self.execution.allow_network,
             }
-        if section not in {"summary", "wechat", "schedule", "memory"}:
+        if section not in {"summary", "wechat", "schedule", "memory", "review"}:
             raise ValueError("Unknown management section")
         result = await asyncio.to_thread(self._snapshot, section)
         # Async receiver/login state is observed on its owning event loop.
@@ -404,6 +410,33 @@ class ServerControls:
                 "jobs": jobs,
                 "runs": runs,
                 "owner_available": bool(owner and account),
+            }
+        if section == "review":
+            # Host policy, not a live setting: changing it means editing the
+            # Server configuration and restarting. The Web console must never
+            # claim a toggle took effect when the running process is unchanged.
+            result["review"] = {
+                "timezone": self.review.timezone,
+                "daily": {
+                    "enabled": self.review.enabled,
+                    "time": self.review.time,
+                    "scheduler_active": self.review_schedule is not None,
+                },
+                "weekly": {
+                    "enabled": self.review.weekly_enabled,
+                    "time": self.review.weekly_time,
+                    "scheduler_active": self.weekly_review_schedule is not None,
+                },
+                "delivery": {
+                    "recipient_authorized": bool(self.review.recipient),
+                    "recipient": self.review.recipient,
+                    "account_id": self.review.account_id,
+                },
+                "config_file": (
+                    None if self.config_file is None else str(self.config_file)
+                ),
+                "hot_reload": False,
+                "restart_required_for_changes": True,
             }
         return result
 

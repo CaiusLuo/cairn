@@ -380,6 +380,7 @@ class ReviewStore:
         self,
         *,
         review_type: ReviewType | None = None,
+        day: date | None = None,
         limit: int = DEFAULT_LIST_LIMIT,
         offset: int = 0,
     ) -> tuple[StoredReview, ...]:
@@ -387,8 +388,15 @@ class ReviewStore:
             raise ValueError(f"limit must be between 1 and {MAX_LIST_LIMIT}")
         if not 0 <= offset <= 1_000_000:
             raise ValueError("offset must be between 0 and 1000000")
-        where = "" if review_type is None else " WHERE review_type = ?"
-        params: list[object] = [] if review_type is None else [review_type.value]
+        clauses: list[str] = []
+        params: list[object] = []
+        if review_type is not None:
+            clauses.append("review_type = ?")
+            params.append(review_type.value)
+        if day is not None:
+            clauses.append("review_date = ?")
+            params.append(day.isoformat())
+        where = "" if not clauses else " WHERE " + " AND ".join(clauses)
         params.extend((limit, offset))
         with self._connect() as connection:
             rows = connection.execute(

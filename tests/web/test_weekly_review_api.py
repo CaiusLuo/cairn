@@ -247,6 +247,54 @@ def test_weekly_review_create_list_detail_and_replay(tmp_path: Path) -> None:
         assert replay.json()["review_id"] == body["review_id"]
 
 
+def test_review_history_filters_by_day_and_iso_week(tmp_path: Path) -> None:
+    gate = threading.Event()
+    web, _weekly, _store = _app(tmp_path, gate)
+    with TestClient(web, base_url=ORIGIN) as client:
+        _login(client)
+        created_daily = client.post(
+            "/api/knowledge/reviews/daily",
+            json={
+                "date": "2026-01-15",
+                "timezone": TZ,
+                "request_id": "filter-daily",
+            },
+            headers={"Origin": ORIGIN},
+        )
+        assert created_daily.status_code == 202
+        created_weekly = client.post(
+            "/api/knowledge/reviews/weekly",
+            json={"week_id": WEEK, "timezone": TZ, "request_id": "filter-weekly"},
+            headers={"Origin": ORIGIN},
+        )
+        assert created_weekly.status_code == 202
+        gate.set()
+        _wait_completed(client, created_weekly.json()["review_id"])
+
+        daily = client.get("/api/knowledge/reviews?type=daily&day=2026-01-15").json()[
+            "reviews"
+        ]
+        assert [item["review_id"] for item in daily] == [
+            created_daily.json()["review_id"]
+        ]
+        weekly = client.get(
+            f"/api/knowledge/reviews?type=weekly&week_id={WEEK}"
+        ).json()["reviews"]
+        assert [item["review_id"] for item in weekly] == [
+            created_weekly.json()["review_id"]
+        ]
+        assert client.get(
+            "/api/knowledge/reviews?type=weekly&week_id=2026-W04"
+        ).json() == {"reviews": []}
+        assert client.get("/api/knowledge/reviews?day=not-a-date").status_code == 422
+        assert (
+            client.get(
+                "/api/knowledge/reviews?day=2026-01-15&week_id=2026-W03"
+            ).status_code
+            == 422
+        )
+
+
 def test_weekly_review_rejects_a_period_that_has_not_ended(tmp_path: Path) -> None:
     gate = threading.Event()
     gate.set()

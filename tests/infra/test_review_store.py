@@ -448,6 +448,27 @@ def test_list_filters_type_and_pages(tmp_path: Path) -> None:
         store.list_reviews(offset=-1)
 
 
+def test_list_filters_one_exact_period_day(tmp_path: Path) -> None:
+    store = ReviewStore(tmp_path / "knowledge")
+    first = _create(store, request_id="day-1").review
+    _complete(store, first.review_id, _summary())
+    other_day = date(2026, 1, 16)
+    other = _create(
+        store,
+        request_id="day-2",
+        day=other_day,
+        start="2026-01-15T16:00:00+00:00",
+        end="2026-01-16T16:00:00+00:00",
+    ).review
+    _complete(store, other.review_id, _summary(other_day))
+
+    assert [item.review_id for item in store.list_reviews(day=DAY)] == [first.review_id]
+    assert [item.review_id for item in store.list_reviews(day=other_day)] == [
+        other.review_id
+    ]
+    assert store.list_reviews(day=date(2026, 1, 17)) == ()
+
+
 def _complete_with_delivery(
     store: ReviewStore,
     review_id: str,

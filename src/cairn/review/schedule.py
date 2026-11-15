@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import sqlite3
 import uuid
@@ -352,12 +353,20 @@ class ReviewScheduleCoordinator:
                 await result
         return settled
 
-    async def retry_failed(self, day: date) -> StoredReview | None:
+    async def retry_failed(
+        self, day: date, request_id: str | None = None
+    ) -> StoredReview | None:
         """Explicit operator retry for one auditable failed period.
 
         The cursor is not moved: this is a new review version for the same
         period, using a fresh request id as the operator's new confirmation.
+        When the caller supplies a request id, it is stable and hashed into the
+        scheduled request identity so a lost HTTP response can be retried
+        without a second model call or version.
         """
+        key = None if request_id is None else request_id.strip()
+        if key == "":
+            raise ValueError("request_id must not be blank")
         now = self.clock()
         self._ensure_initialized(now)
         await self._reconcile_interrupted()
@@ -370,7 +379,12 @@ class ReviewScheduleCoordinator:
         try:
             review = await self.service.generate_daily_review(
                 day,
-                f"{self._request_id(day)}:retry:{uuid.uuid4().hex[:12]}",
+                (
+                    f"{self._request_id(day)}:retry:"
+                    + hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+                    if key is not None
+                    else f"{self._request_id(day)}:retry:{uuid.uuid4().hex[:12]}"
+                ),
                 timezone=self.timezone,
                 regenerate=True,
                 cutoff=self.cutoff,

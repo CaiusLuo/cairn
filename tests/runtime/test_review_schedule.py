@@ -10,8 +10,11 @@ from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from cairn.knowledge.store import KnowledgeStore
 from cairn.review.models import (
+    REVIEW_REQUEST_ID_MAX_LENGTH,
     DeliveryTarget,
     ReviewDeliveryStatus,
     ReviewInput,
@@ -607,5 +610,43 @@ def test_explicit_retry_of_failed_day_uses_a_new_confirmation(
         # The same explicit retry cannot be replayed accidentally.
         assert await coordinator.retry_failed(date(2026, 1, 15)) is None
         assert len(service.calls) == 1
+
+    asyncio.run(scenario())
+
+
+def test_operator_request_id_makes_retry_replay_stable(tmp_path: Path) -> None:
+    def seeded(root: Path) -> tuple[FakeService, ReviewScheduleCoordinator]:
+        service = FakeService()
+        store = _seed_state(
+            root,
+            cursor="2026-01-15",
+            failed_days={
+                "2026-01-15": {
+                    "review_id": "review-1",
+                    "error": "model_error",
+                    "at": AFTER_CUTOFF.isoformat(),
+                }
+            },
+        )
+        return service, ReviewScheduleCoordinator(
+            service=service,  # type: ignore[arg-type]
+            store=store,
+            clock=lambda: AFTER_CUTOFF,
+            settle_timeout=1.0,
+        )
+
+    async def scenario() -> None:
+        ids: list[str] = []
+        for name in ("one", "two"):
+            service, coordinator = seeded(tmp_path / name)
+            assert (
+                await coordinator.retry_failed(date(2026, 1, 15), "web-retry-1")
+                is not None
+            )
+            ids.append(service.calls[0]["request_id"])
+        assert ids[0] == ids[1]
+        assert len(ids[0]) <= REVIEW_REQUEST_ID_MAX_LENGTH
+        with pytest.raises(ValueError, match="must not be blank"):
+            await coordinator.retry_failed(date(2026, 1, 15), "  ")
 
     asyncio.run(scenario())

@@ -494,7 +494,7 @@ def test_scheduled_failed_period_retry_is_explicit(tmp_path: Path) -> None:
 
     with TestClient(web, base_url=ORIGIN) as client:
         _login(client)
-        body = {"day": DAY.isoformat()}
+        body = {"day": DAY.isoformat(), "request_id": "web-retry-1"}
         disabled = client.post(
             "/api/knowledge/reviews/schedule/retry",
             json=body,
@@ -503,11 +503,13 @@ def test_scheduled_failed_period_retry_is_explicit(tmp_path: Path) -> None:
         assert disabled.status_code == 503
         assert disabled.json() == {"error": "review_schedule_disabled"}
 
-        calls: list[date] = []
+        calls: list[tuple[date, str | None]] = []
 
         class FakeSchedule:
-            async def retry_failed(self, day: date) -> Any:
-                calls.append(day)
+            async def retry_failed(
+                self, day: date, request_id: str | None = None
+            ) -> Any:
+                calls.append((day, request_id))
                 return service.store.get(created.review_id)
 
         web.state.review_schedule = FakeSchedule()
@@ -518,10 +520,19 @@ def test_scheduled_failed_period_retry_is_explicit(tmp_path: Path) -> None:
         )
         assert accepted.status_code == 202
         assert accepted.json()["review_id"] == created.review_id
-        assert calls == [DAY]
+        assert calls == [(DAY, "web-retry-1")]
+
+        blank = client.post(
+            "/api/knowledge/reviews/schedule/retry",
+            json={"day": DAY.isoformat(), "request_id": "  "},
+            headers={"Origin": ORIGIN},
+        )
+        assert blank.status_code == 422
 
         class NothingFailed(FakeSchedule):
-            async def retry_failed(self, day: date) -> Any:
+            async def retry_failed(
+                self, day: date, request_id: str | None = None
+            ) -> Any:
                 return None
 
         web.state.review_schedule = NothingFailed()

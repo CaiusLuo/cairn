@@ -240,3 +240,35 @@ def test_default_worktrees_under_data_root_remain_agent_writable(
         assert not (tree / "runtime").exists()
     finally:
         server.stop()
+
+
+def test_review_policy_is_visible_without_claiming_hot_reload(tmp_path: Path) -> None:
+    server = configured(tmp_path)
+    try:
+        server.start()
+        token = (server.state / "runtime.token").read_text().strip()
+        with httpx.Client(
+            base_url=server.url,
+            headers={"Authorization": "Bearer " + token},
+            trust_env=False,
+        ) as api:
+            review = (
+                api.get("/api/runtime/management?section=review")
+                .raise_for_status()
+                .json()["review"]
+            )
+        assert set(review) >= {
+            "timezone",
+            "daily",
+            "weekly",
+            "delivery",
+            "config_file",
+            "hot_reload",
+            "restart_required_for_changes",
+        }
+        assert review["hot_reload"] is False
+        assert review["restart_required_for_changes"] is True
+        assert review["config_file"].endswith("server.toml")
+        assert token not in json.dumps(review)
+    finally:
+        server.stop()

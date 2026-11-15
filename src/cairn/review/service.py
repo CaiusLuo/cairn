@@ -331,12 +331,14 @@ class ReviewServiceBase:
         self,
         *,
         review_type: ReviewType | None = None,
+        day: date | None = None,
         limit: int = 20,
         offset: int = 0,
     ) -> tuple[StoredReview, ...]:
         return await asyncio.to_thread(
             self.store.list_reviews,
             review_type=review_type,
+            day=day,
             limit=limit,
             offset=offset,
         )

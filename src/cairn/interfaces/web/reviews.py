@@ -83,6 +83,22 @@ class ScheduleRetryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     day: date
+    # Optional operator request identity. Host schedules that predate it keep
+    # their existing behaviour; the Web console sends one so a lost response
+    # can be retried without creating a second review version.
+    request_id: str | None = Field(
+        default=None, min_length=1, max_length=REVIEW_REQUEST_ID_MAX_LENGTH
+    )
+
+    @field_validator("request_id")
+    @classmethod
+    def _request_id_has_content(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("request_id must not be blank")
+        return stripped
 
 
 class WeeklyScheduleRetryRequest(BaseModel):
@@ -325,8 +341,19 @@ def review_routes(
         try:
             raw_type = request.query_params.get("type")
             review_type = None if not raw_type else ReviewType(raw_type)
+            raw_day = request.query_params.get("day")
+            raw_week = request.query_params.get("week_id")
+            if raw_day and raw_week:
+                raise ValueError("use either day or week_id, not both")
+            day = None
+            if raw_day:
+                day = date.fromisoformat(raw_day)
+            elif raw_week:
+                # Weekly records are keyed by the Sunday that ends the window.
+                day = week_period(raw_week.strip(), timezone="UTC").day
             records = await service.list_reviews(
                 review_type=review_type,
+                day=day,
                 limit=_integer(request, "limit", DEFAULT_LIST_LIMIT, 1, MAX_LIST_LIMIT),
                 offset=_integer(request, "offset", 0, 0, 1_000_000),
             )
@@ -366,7 +393,7 @@ def review_routes(
         if coordinator is None:
             return _error(503, "review_schedule_disabled")
         try:
-            record = await coordinator.retry_failed(payload.day)
+            record = await coordinator.retry_failed(payload.day, payload.request_id)
         except RuntimeError:
             return _error(503, "review_schedule_busy")
         except (OSError, sqlite3.Error):

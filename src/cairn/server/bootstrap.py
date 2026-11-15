@@ -87,6 +87,7 @@ def runtime_app(
     host: str = "127.0.0.1",
     services: Services = DEFAULT_SERVICES,
     review: ReviewConfig = DEFAULT_REVIEW,
+    config_file: Path | None = None,
     protected_paths: tuple[Path, ...] = (),
 ) -> Any:
     catalogue = RuntimeCatalogue(
@@ -181,6 +182,8 @@ def runtime_app(
             schedule_state=schedule_state or state / "schedules",
             channels_state=channel_root,
             services=services,
+            review=review,
+            config_file=config_file,
         )
     except BaseException:
         execution.close()
@@ -284,6 +287,7 @@ def runtime_app(
         else None
     )
     web.state.review_schedule = review_schedule
+    controls.review_schedule = review_schedule
     weekly_review_schedule = (
         WeeklyReviewScheduleCoordinator(
             service=weekly_reviews,
@@ -301,6 +305,7 @@ def runtime_app(
         else None
     )
     web.state.weekly_review_schedule = weekly_review_schedule
+    controls.weekly_review_schedule = weekly_review_schedule
 
     def lifespan(_app: Any) -> AbstractAsyncContextManager[None]:
         return running_runtime(
@@ -420,6 +425,7 @@ def run_server(config: ServerConfig) -> None:
             channels_state=paths.channels,
             services=config.services,
             review=config.review,
+            config_file=config.config_file,
             protected_paths=tuple(
                 p for p in (config.config_file, config.provider_approval) if p
             ),
