@@ -256,7 +256,7 @@ class WeeklyReviewService(ReviewServiceBase):
                 await self.ensure_delivery(completed.review_id)
             return completed
         if result.created:
-            if not review_input.included_sources:
+            if not self._has_substantive_evidence(review_input):
                 return await self._finish_without_sources(
                     result.review,
                     review_input,
@@ -394,13 +394,26 @@ class WeeklyReviewService(ReviewServiceBase):
             }
         )
 
+    @staticmethod
+    def _has_substantive_evidence(review_input: ReviewInput) -> bool:
+        """Identity/hash stubs alone cannot support a weekly narrative."""
+        return any(
+            source.included
+            and source.snapshot
+            and "identity_only" not in source.verification
+            for source in review_input.included_sources
+        )
+
     def _insufficient_summary(self, review_input: ReviewInput) -> WeeklyReview:
-        if review_input.sources:
+        if not review_input.sources:
+            overview = "本周没有收集到可复盘的日报或原始记录。"
+            note = "没有可用来源; 这表示没有记录, 不代表没有活动。"
+        elif not review_input.included_sources:
             overview = "本周有来源, 但都因输入预算限制未纳入, 无法生成周报。"
             note = "所有来源均被预算省略。"
         else:
-            overview = "本周没有收集到可复盘的日报或原始记录。"
-            note = "没有可用来源; 这表示没有记录, 不代表没有活动。"
+            overview = "本周只收集到来源身份记录, 缺少可验证正文, 无法生成周报。"
+            note = "仅有 identity/hash 的来源不构成活动或完成证据。"
         return WeeklyReview(
             week_id=iso_week_id(review_input.date),
             period_start=review_input.period_start,

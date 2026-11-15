@@ -483,6 +483,32 @@ def test_weekly_collector_uses_the_last_occurrence_when_a_hash_repeats(
     assert "task-aba" in review_input.completion_source_ids
 
 
+def test_identity_only_week_ends_with_an_explicit_insufficient_note(
+    tmp_path: Path,
+) -> None:
+    period = week_period(WEEK, timezone=TZ)
+    source = WeeklySourceCollector._identity_source(
+        _task_source("task-identity").manifest_entry()
+    )
+    llm = FakeLLM()
+    service, _ = _service(tmp_path, _weekly_input(period, (source,)), llm=llm)
+
+    async def scenario() -> Any:
+        created = await service.generate_weekly_review(
+            WEEK, "weekly-identity", timezone=TZ
+        )
+        await service.close()
+        return created
+
+    created = asyncio.run(scenario())
+    assert created.status is ReviewStatus.COMPLETED
+    assert isinstance(created.summary, WeeklyReview)
+    assert "身份记录" in created.summary.overview
+    assert created.summary.confidence_notes
+    assert created.summary.progress == ()
+    assert llm.calls == []
+
+
 class FakeWeeklyCollector:
     def __init__(self, review_input: ReviewInput) -> None:
         self.review_input = review_input
