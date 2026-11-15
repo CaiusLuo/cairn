@@ -304,9 +304,13 @@ class WechatState:
             if not isinstance(record, dict) or record.get("sender") != sender:
                 continue
             context = record.get("context_token")
-            updated = record.get("updated")
+            # Settling older work can update its record after a newer inbound
+            # message arrives. Prefer receipt time; older state lacks it.
+            received = record.get("received_at")
+            if not isinstance(received, (int, float)):
+                received = record.get("updated")
             if isinstance(context, str) and context:
-                stamp = float(updated) if isinstance(updated, (int, float)) else 0.0
+                stamp = float(received) if isinstance(received, (int, float)) else 0.0
                 if latest is None or stamp >= latest[0]:
                     latest = (stamp, context)
         return latest[1] if latest is not None else None

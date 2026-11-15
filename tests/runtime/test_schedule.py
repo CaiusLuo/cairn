@@ -17,6 +17,7 @@ from cairn.scheduling.models import (
 )
 from cairn.scheduling.runner import ScheduleRunner
 from cairn.scheduling.store import ScheduleStore
+from cairn.shared.delivery import ProactiveSendOutcome, ProactiveSendResult
 
 NOW = datetime(2026, 11, 1, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -347,9 +348,11 @@ def test_delivery_is_not_redirected_when_account_or_recipient_changes(
         state["recipient"] = "bob"
         return _result(task_id)
 
-    async def deliver_for_account(sender: str, text: str, account: str) -> bool:
+    async def deliver_for_account(
+        sender: str, text: str, account: str
+    ) -> ProactiveSendResult:
         sent.append((sender, text, account))
-        return True
+        return ProactiveSendResult(ProactiveSendOutcome.SENT)
 
     async def deliver(sender: str, text: str) -> bool:
         raise AssertionError("redirected delivery must not run")

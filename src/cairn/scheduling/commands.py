@@ -13,7 +13,12 @@ from cairn.scheduling.models import (
     ScheduleKind,
     initial_next_run,
 )
-from cairn.scheduling.runner import ScheduleRunner, TaskExecutor, current_time
+from cairn.scheduling.runner import (
+    DeliverForAccount,
+    ScheduleRunner,
+    TaskExecutor,
+    current_time,
+)
 from cairn.scheduling.store import ScheduleStore, ensure_outside_workspace
 from cairn.shared.action import Action, correction, note
 from cairn.shared.lifecycle import await_owned
@@ -31,7 +36,7 @@ class ScheduleController:
         executor: TaskExecutor,
         deliver: Deliver,
         recipient: Recipient,
-        deliver_for_account: Callable[[str, str, str], Awaitable[bool]] | None = None,
+        deliver_for_account: DeliverForAccount | None = None,
         emit: Callable[[str], object] | None = None,
         clock: Callable[[], datetime] = current_time,
         account_id: Callable[[], str | None] | None = None,

@@ -33,6 +33,10 @@ class ILinkSendRejected(ILinkError):
     cannot duplicate an accepted send.
     """
 
+    def __init__(self, ret: int) -> None:
+        self.ret = ret
+        super().__init__(f"sendMessage failed with ret={ret}")
+
 
 def validate_base_url(url: str, *, allow_insecure_local: bool = False) -> str:
     """Reject plaintext/credentialed targets before a token is sent to them.
@@ -252,8 +256,10 @@ class ILinkClient:
             msg["context_token"] = context_token
         data = await self._post("/ilink/bot/sendmessage", {"msg": msg})
         ret = data.get("ret")
-        if ret not in (None, 0):
-            raise ILinkSendRejected(f"sendMessage failed with ret={ret}")
+        if ret is not None and type(ret) is not int:
+            raise ILinkError("sendMessage returned an invalid ret")
+        if ret:
+            raise ILinkSendRejected(ret)
         return data
 
     async def notify_start(self) -> None:

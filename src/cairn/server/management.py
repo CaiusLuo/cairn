@@ -151,7 +151,7 @@ class ServerControls:
             store=ScheduleStore(schedule_state),
             executor=self._scheduled,
             deliver=self.wechat.deliver,
-            deliver_for_account=self.wechat.deliver_for_account,
+            deliver_for_account=self.wechat.deliver_for_account_result,
             recipient=self.wechat.recipient_id,
             account_id=self.wechat.account_id,
             emit=self._notice,

@@ -155,6 +155,13 @@ in-flight text. Offline migration is available through the `migrate-domain`
 command with backup and source snapshot checks. PostgreSQL and parallel workers
 remain outside this change.
 
+For ordinary WeChat reminders, use `/schedule history JOB_ID` to see the result of
+each occurrence. A missing inbound WeChat context or an explicit iLink rejection
+is recorded as a delivery failure, with an iLink return code when available.
+A send without a conclusive response is recorded as `delivery_unknown`. The
+scheduler will not replay that occurrence. Sending the bot a message refreshes
+the context for future reminders.
+
 ## Development
 
 Use current code and behavioral tests to guide changes. Architecture and storage
