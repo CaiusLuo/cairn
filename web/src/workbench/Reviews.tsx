@@ -523,7 +523,11 @@ export function Reviews() {
         setItems(current =>
           changed ? data.reviews : mergeReviews(current, data.reviews),
         );
-        setHasMore(data.reviews.length === PAGE_SIZE);
+        // A status poll only refreshes the first page. Do not resurrect the
+        // load-more control after the operator has already reached the end.
+        if (changed || items.length === 0) {
+          setHasMore(data.reviews.length === PAGE_SIZE);
+        }
       })
       .catch(reason => {
         if (!cancelled && !controller.signal.aborted) {

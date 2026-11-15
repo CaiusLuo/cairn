@@ -9,11 +9,12 @@ type Job = { job_id: string; prompt: string; kind: string; next_run_at: string |
 type Memory = { enabled: boolean; agent_md: string; memory_md: string; daily_days: number; pending: { text: string; reason: string } | null; proposal_digest: string | null };
 type ReviewPolicy = { timezone: string; daily: { enabled: boolean; time: string; scheduler_active: boolean }; weekly: { enabled: boolean; time: string; scheduler_active: boolean }; delivery: { recipient_authorized: boolean; recipient: string; account_id: string }; config_file: string | null; hot_reload: boolean; restart_required_for_changes: boolean };
 type Snapshot = { workspace: string; notices: string[]; pending_operations: { id: string; command: string }[]; wechat?: Wx; schedule?: { jobs: Job[]; runs: Record<string, unknown>[]; owner_available: boolean }; review?: ReviewPolicy; memory?: Memory };
+function readSection(): Section {
+  const requested = new URLSearchParams(location.search).get("section");
+  return requested === "memory" || requested === "schedule" || requested === "review" ? requested : "wechat";
+}
 export function SettingsPage() {
-  const [section, setSection] = useState<Section>(() => {
-    const requested = new URLSearchParams(location.search).get("section");
-    return requested === "memory" || requested === "schedule" || requested === "review" ? requested : "wechat";
-  });
+  const [section, setSection] = useState<Section>(readSection);
   const [data, setData] = useState<Snapshot | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [feedback, setFeedback] = useState("");
   const [code, setCode] = useState(""), [sender, setSender] = useState("");
@@ -32,6 +33,17 @@ export function SettingsPage() {
     if (section !== "wechat") return;
     const timer = setInterval(() => void refresh(), 2000); return () => clearInterval(timer);
   }, [section, refresh]);
+  useEffect(() => {
+    const update = () => setSection(readSection());
+    window.addEventListener("popstate", update);
+    return () => window.removeEventListener("popstate", update);
+  }, []);
+  function chooseSection(next: Section) {
+    const params = new URLSearchParams(location.search);
+    params.set("section", next);
+    history.pushState({}, "", location.pathname + `?${params}`);
+    setSection(next);
+  }
   const stamp = data?.memory?.proposal_digest;
   useEffect(() => setApproved(false), [stamp]);
   async function command(name: string, args: string, confirmed = false, expected: string | null = null) {
@@ -52,7 +64,7 @@ export function SettingsPage() {
   const wx = data?.wechat, schedules = data?.schedule, review = data?.review, memory = data?.memory;
   return <div className="wb-page settings-main">
     <PageHeader icon="settings" title="设置" description="管理微信连接、定时任务与个人记忆" actions={<button disabled={busy} onClick={() => void refresh()}>刷新</button>}/>
-    <nav className="settings-tabs" aria-label="管理分类">{([ ["wechat", "微信"], ["schedule", "定时任务"], ["review", "复盘"], ["memory", "记忆"] ] as const).map(([key, label]) => <button key={key} aria-current={section === key ? "page" : undefined} disabled={busy} onClick={() => setSection(key)}>{label}</button>)}</nav>
+    <nav className="settings-tabs" aria-label="管理分类">{([ ["wechat", "微信"], ["schedule", "定时任务"], ["review", "复盘"], ["memory", "记忆"] ] as const).map(([key, label]) => <button key={key} aria-current={section === key ? "page" : undefined} disabled={busy} onClick={() => chooseSection(key)}>{label}</button>)}</nav>
     {error && <p role="alert" className="control-error">{error}。操作结果不明时先刷新核对, 重试会沿用原请求编号。</p>}
     {feedback && <pre className="control-feedback" role="status">{feedback}</pre>}
     {!data && !error && <p>正在读取 Server 状态…</p>}

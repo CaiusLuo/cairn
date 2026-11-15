@@ -422,6 +422,14 @@ try {
     await dailyDialog.waitFor();
     await page.keyboard.press("Escape");
     await dailyDialog.waitFor({ state: "detached" });
+    await newestDaily.getByRole("button").first().click();
+    await dailyDialog.waitFor();
+    await page.reload();
+    await page.getByRole("heading", { name: "知识", exact: true }).waitFor();
+    await dailyDialog.waitFor();
+    assert(new URL(page.url()).searchParams.get("review"));
+    await page.keyboard.press("Escape");
+    await dailyDialog.waitFor({ state: "detached" });
 
     await page.getByLabel("按日期筛选").fill("2026-01-15");
     await page.getByRole("button", { name: "筛选", exact: true }).click();
