@@ -699,6 +699,34 @@ def test_manual_resend_receipt_is_durable_and_idempotent(tmp_path: Path) -> None
     assert rejected_replay.accepted is False
 
 
+def test_concurrent_duplicate_resend_requests_transition_once(
+    tmp_path: Path,
+) -> None:
+    store = ReviewStore(tmp_path / "knowledge")
+    created = _create(store, request_id="delivery-resend-race").review
+    _complete_with_delivery(store, created.review_id)
+    store.begin_delivery(created.review_id, account_id="bot-a", sender_id="owner")
+    store.mark_delivery_unknown(created.review_id, "send_unconfirmed")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(
+                lambda _: store.resend_delivery(
+                    created.review_id, request_id="duplicate"
+                ),
+                range(2),
+            )
+        )
+    assert all(result.accepted for result in results)
+    assert sum(not result.replayed for result in results) == 1
+    with sqlite3.connect(store.path) as connection:
+        receipts = connection.execute(
+            "SELECT COUNT(*) FROM review_delivery_requests "
+            "WHERE request_id = 'duplicate'"
+        ).fetchone()[0]
+    assert receipts == 1
+
+
 def test_v4_delivery_ledger_upgrades_without_losing_rows(tmp_path: Path) -> None:
     root = tmp_path / "knowledge"
     store = ReviewStore(KnowledgeStore(root))

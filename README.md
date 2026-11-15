@@ -85,16 +85,36 @@ The Server can also schedule the daily review itself, disabled by default. Enabl
 enabled = true
 time = "20:30"
 timezone = "Asia/Shanghai"
+# Required when enabled: the only WeChat user ID allowed to receive the
+# scheduled report. It is host authorization, not whichever account is
+# logged in when the report is due.
+recipient = "wechat-user-id"
+# Optional additional pin for the bot account.
+# account_id = "ilink-bot-id"
 ```
 
-It covers the contiguous window from the previous day's cutoff to the current one and catches up a missed
-cutoff after restart. A scheduled completed review gets a durable delivery record: it is pushed to WeChat as
-plain mobile-sized text once a logged-in account and recipient context are available, and stays pending or
-`blocked_offline` otherwise. iLink may refuse a send with `ret=-2` once the last inbound reply context is no longer
-accepted; that is a definite non-send, so the review stays pending and is sent after the next inbound WeChat
-message provides a fresh context. `POST /api/knowledge/reviews/{id}/delivery/resend` retries an `unconfirmed`
-or `manual_review` delivery after inspection; pass `{"rebind": true}` after switching accounts. Delivery never
-changes the review's completed state, and an attempt whose result is unknown is never resent automatically.
+It covers the contiguous window from the previous day's cutoff to the current one. Enabling the schedule for
+the first time before today's cutoff starts with the current period and never sends yesterday's report; a
+restart keeps its persisted cursor. After a longer shutdown it compensates at most three unclaimed cutoff
+days and delivers only the current period; older periods are recorded in `skipped_days` rather than generating
+a burst of stale WeChat messages. Failed or crash-interrupted generations are recorded per day in
+`failed_days` and are never retried automatically; `POST /api/knowledge/reviews/schedule/retry` with
+`{"day": "YYYY-MM-DD"}` is the explicit, auditable retry path.
+
+A scheduled completed review gets a durable delivery record bound to the configured recipient. It is pushed
+to WeChat as plain mobile-sized text only when that exact recipient is logged in and has a fresh inbound
+reply context; otherwise it stays `pending` or `blocked_offline`. A different logged-in user is never used as
+a fallback. The ledger distinguishes `sending`, `accepted`, `delivery_unknown` and `failed_permanent`; an
+unknown result is never resent automatically. iLink may refuse a send with `ret=-2` once the last inbound
+reply context is no longer accepted; that is a definite non-send, so the delivery stays retryable and is sent
+after the next inbound WeChat message provides a fresh context.
+
+`POST /api/knowledge/reviews/{id}/delivery/resend` requires a caller-supplied `request_id` and persists a
+receipt for the accepted or rejected operation. Replaying the same `request_id` returns that receipt without a
+second send, so a lost HTTP response is safe to retry; a new operator confirmation must use a new
+`request_id`. `{"rebind": true}` additionally re-points the delivery at the configured host target and is
+refused when review notifications have no configured recipient. Delivery never changes the review's
+completed state.
 
 Chat normally, or enter `/develop GOAL`. `/status`, `/history`, `/cancel`,
 `/new` and `/use CONVERSATION_ID` operate on the same server-owned Conversation;
