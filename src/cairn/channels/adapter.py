@@ -13,6 +13,7 @@ from cairn.channels.models import (
     ChannelActualState,
     ChannelAdapterError,
     ChannelAdapterHealth,
+    ChannelAdapterNotImplemented,
     ChannelConnection,
     ChannelCredentialError,
     ChannelInboundEvent,
@@ -26,6 +27,40 @@ InboundSink = Callable[[ChannelInboundEvent], Awaitable[object]]
 AdapterFactory = Callable[
     [ChannelConnection, "dict[str, str] | None", InboundSink], "ChannelAdapter"
 ]
+
+
+class ChannelAdapterRegistry:
+    """Platform-to-factory registry.
+
+    Production starts empty and reports ``adapter_not_implemented`` for every
+    stored connection. Only tests inject the fake adapter explicitly; C1-C4
+    register real adapters here.
+    """
+
+    def __init__(self) -> None:
+        self._factories: dict[ChannelPlatform, AdapterFactory] = {}
+
+    def register(
+        self, platform: ChannelPlatform, factory: AdapterFactory
+    ) -> ChannelAdapterRegistry:
+        self._factories[platform] = factory
+        return self
+
+    def supports(self, platform: ChannelPlatform) -> bool:
+        return platform in self._factories
+
+    def build(
+        self,
+        connection: ChannelConnection,
+        credentials: dict[str, str] | None,
+        inbound: InboundSink,
+    ) -> ChannelAdapter:
+        factory = self._factories.get(connection.platform)
+        if factory is None:
+            raise ChannelAdapterNotImplemented(
+                f"adapter_not_implemented: {connection.platform.value}"
+            )
+        return factory(connection, credentials, inbound)
 
 
 class ChannelAdapter(Protocol):
@@ -115,4 +150,10 @@ class FakeChannelAdapter:
         return await self._inbound(event)
 
 
-__all__ = ["AdapterFactory", "ChannelAdapter", "FakeChannelAdapter", "InboundSink"]
+__all__ = [
+    "AdapterFactory",
+    "ChannelAdapter",
+    "ChannelAdapterRegistry",
+    "FakeChannelAdapter",
+    "InboundSink",
+]

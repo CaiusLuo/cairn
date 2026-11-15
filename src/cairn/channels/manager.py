@@ -5,22 +5,21 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from cairn.channels.adapter import (
-    AdapterFactory,
     ChannelAdapter,
-    FakeChannelAdapter,
-    InboundSink,
+    ChannelAdapterRegistry,
 )
 from cairn.channels.models import (
     ALL_PLATFORMS,
     ChannelActualState,
     ChannelAdapterError,
     ChannelAdapterHealth,
+    ChannelAdapterNotImplemented,
     ChannelConfirmationRequired,
     ChannelConnection,
     ChannelDeliveryUncertain,
@@ -31,6 +30,7 @@ from cairn.channels.models import (
     ChannelInboundEvent,
     ChannelInboundRejected,
     ChannelInboundResult,
+    ChannelInboundUncertain,
     ChannelLegacyManaged,
     ChannelNotFound,
     ChannelPlatform,
@@ -75,6 +75,16 @@ class ChannelIntake(Protocol):
         model_id: str | None = None,
     ) -> Run: ...
 
+    def get_channel_conversation(
+        self,
+        platform: str,
+        connection_id: str,
+        sender_id: str,
+        conversation_binding: str,
+    ) -> Conversation | None: ...
+
+    def run_by_request(self, conversation_id: str, request_id: str) -> Run | None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class ChannelConnectionView:
@@ -94,16 +104,12 @@ class _Runtime:
     secrets: tuple[str, ...] = ()
 
 
-def _fake_adapter(
-    connection: ChannelConnection,
-    credentials: dict[str, str] | None,
-    inbound: InboundSink,
-) -> ChannelAdapter:
-    return FakeChannelAdapter(connection, inbound, credentials)
-
-
 def _future(seconds: float) -> str:
     return (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat()
+
+
+def _not_implemented(platform: ChannelPlatform) -> str:
+    return f"adapter_not_implemented: {platform.value}"
 
 
 class ChannelManager:
@@ -114,7 +120,7 @@ class ChannelManager:
         *,
         store: ChannelStore,
         conversations: ChannelIntake,
-        adapter_factory: AdapterFactory | None = None,
+        adapters: ChannelAdapterRegistry | None = None,
         retry_delays: tuple[float, ...] = (2, 4, 8, 16, 32, 60),
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         secret_sink: Callable[[tuple[str, ...]], None] | None = None,
@@ -123,7 +129,9 @@ class ChannelManager:
             raise ValueError("retry_delays must be non-negative")
         self.store = store
         self.conversations = conversations
-        self._factory: AdapterFactory = adapter_factory or _fake_adapter
+        # Production starts with an empty registry: the fake adapter is only
+        # ever injected by tests, and C1-C4 register real factories here.
+        self._adapters = adapters if adapters is not None else ChannelAdapterRegistry()
         self._retry_delays = retry_delays
         self._sleep = sleep
         self._secret_sink = secret_sink
@@ -319,6 +327,7 @@ class ChannelManager:
         metadata: dict[str, object],
         credentials: dict[str, str] | None,
         request_id: str,
+        allowed_senders: Sequence[str] = (),
     ) -> ChannelConnectionView:
         if platform is ChannelPlatform.WECHAT:
             raise ChannelLegacyManaged(
@@ -332,6 +341,7 @@ class ChannelManager:
             metadata=metadata,
             credentials=credentials,
             request_id=request_id,
+            allowed_senders=allowed_senders,
         )
         return self._stored_view(result.connection)
 
@@ -456,6 +466,10 @@ class ChannelManager:
             return self.get_connection_view(connection_id)
         if not view.connection.enabled:
             raise ChannelDisabled("channel connection is disabled")
+        if not self._adapters.supports(view.connection.platform):
+            raise ChannelAdapterNotImplemented(
+                _not_implemented(view.connection.platform)
+            )
         claim = self.store.claim_request(
             request_id,
             operation="start",
@@ -543,6 +557,10 @@ class ChannelManager:
             return self.get_connection_view(connection_id)
         if not view.connection.enabled:
             raise ChannelDisabled("channel connection is disabled")
+        if not self._adapters.supports(view.connection.platform):
+            raise ChannelAdapterNotImplemented(
+                _not_implemented(view.connection.platform)
+            )
         claim = self.store.claim_request(
             request_id,
             operation="reconnect",
@@ -625,11 +643,19 @@ class ChannelManager:
             raise ChannelInboundRejected("channel connection is disabled")
         if connection.platform is not event.platform:
             raise ChannelInboundConflict("inbound platform does not match connection")
+        # Authorization precedes every durable side effect. An owner or an
+        # explicitly allowed sender is required; an empty allowlist denies all
+        # non-owner identities.
+        if not self._sender_authorized(connection, event.sender_id):
+            raise ChannelInboundRejected("sender is not authorized")
+        if not self._adapter_running(connection):
+            raise ChannelInboundRejected("channel connection is not running")
         runtime = self._runtime(event.connection_id)
         # Serialize one connection's intake so a duplicate delivery cannot
         # race the first submission. A "claimed" row left by a process
         # interruption is retried with the same deterministic request ID,
-        # which ConversationService resolves to the original Run.
+        # which ConversationService resolves to the original Run. An "unknown"
+        # row is reconciled the same way instead of staying rejected forever.
         async with runtime.inbound_lock:
             claim = self.store.claim_inbound(event)
             if not claim.created:
@@ -637,7 +663,7 @@ class ChannelManager:
                     raise ChannelInboundConflict(
                         "external_message_id was reused for different content"
                     )
-                if claim.state != "claimed":
+                if claim.state in {"accepted", "rejected"}:
                     return ChannelInboundResult(
                         state=claim.state,
                         duplicate=True,
@@ -645,6 +671,7 @@ class ChannelManager:
                         run_id=claim.run_id,
                         error=claim.error,
                     )
+            request_id = self._inbound_request_id(event)
             try:
                 conversation = self.conversations.ensure_channel_conversation(
                     event.platform.value,
@@ -657,25 +684,59 @@ class ChannelManager:
                     conversation.conversation_id,
                     event.text,
                     ConversationSource.CHANNEL,
-                    self._inbound_request_id(event),
+                    request_id,
                 )
             except asyncio.CancelledError:
-                self.store.complete_inbound(
-                    event.connection_id,
-                    event.external_message_id,
-                    state="rejected",
-                    error="cancelled",
-                )
+                recovered = self._reconcile_inbound(event, request_id)
+                if recovered is not None:
+                    self.store.complete_inbound(
+                        event.connection_id,
+                        event.external_message_id,
+                        state="accepted",
+                        conversation_id=recovered[0],
+                        run_id=recovered[1],
+                    )
+                else:
+                    self.store.complete_inbound(
+                        event.connection_id,
+                        event.external_message_id,
+                        state="unknown",
+                        error="cancelled before admission completed",
+                    )
                 raise
             except Exception as exc:
                 error = self._safe_error(exc, runtime)
+                recovered = self._reconcile_inbound(event, request_id)
+                if recovered is not None:
+                    self.store.complete_inbound(
+                        event.connection_id,
+                        event.external_message_id,
+                        state="accepted",
+                        conversation_id=recovered[0],
+                        run_id=recovered[1],
+                    )
+                    return ChannelInboundResult(
+                        state="accepted",
+                        conversation_id=recovered[0],
+                        run_id=recovered[1],
+                    )
+                if isinstance(exc, ValueError):
+                    # Validation and admission-state errors happen before a Run
+                    # exists, so this is a definite rejection.
+                    self.store.complete_inbound(
+                        event.connection_id,
+                        event.external_message_id,
+                        state="rejected",
+                        error=error,
+                    )
+                    raise ChannelInboundRejected(error) from exc
                 self.store.complete_inbound(
                     event.connection_id,
                     event.external_message_id,
-                    state="rejected",
+                    state="unknown",
                     error=error,
                 )
-                raise ChannelInboundRejected(error) from exc
+                raise ChannelInboundUncertain(error) from exc
             self.store.complete_inbound(
                 event.connection_id,
                 event.external_message_id,
@@ -688,6 +749,49 @@ class ChannelManager:
                 conversation_id=conversation.conversation_id,
                 run_id=run.run_id,
             )
+
+    @staticmethod
+    def _sender_authorized(connection: ChannelConnection, sender_id: str) -> bool:
+        if (
+            connection.owner_identity is not None
+            and sender_id == connection.owner_identity
+        ):
+            return True
+        return sender_id in connection.allowed_senders
+
+    def _adapter_running(self, connection: ChannelConnection) -> bool:
+        if connection.desired_state is not ChannelDesiredState.RUNNING:
+            return False
+        runtime = self._runtime(connection.connection_id)
+        adapter = runtime.adapter
+        if adapter is None and connection.legacy:
+            adapter = self._legacy
+        return (
+            adapter is not None
+            and adapter.health().actual_state is ChannelActualState.RUNNING
+        )
+
+    def _reconcile_inbound(
+        self, event: ChannelInboundEvent, request_id: str
+    ) -> tuple[str, str] | None:
+        """Use the deterministic request ID to find work an attempt may have made."""
+        try:
+            conversation = self.conversations.get_channel_conversation(
+                event.platform.value,
+                event.connection_id,
+                event.sender_id,
+                event.conversation_binding,
+            )
+            if conversation is None:
+                return None
+            run = self.conversations.run_by_request(
+                conversation.conversation_id, request_id
+            )
+        except Exception:
+            return None
+        if run is None:
+            return None
+        return conversation.conversation_id, run.run_id
 
     async def wait_for_state(
         self,
@@ -748,7 +852,7 @@ class ChannelManager:
                 )
                 if self._secret_sink is not None:
                     self._secret_sink(runtime.secrets)
-            runtime.adapter = self._factory(
+            runtime.adapter = self._adapters.build(
                 connection, credentials, self.accept_inbound
             )
         return runtime.adapter
@@ -839,6 +943,13 @@ class ChannelManager:
         if self._is_stopping():
             return
         runtime = self._runtime(connection_id)
+        connection = self.store.get_connection(connection_id)
+        if connection is None:
+            return
+        if not self._adapters.supports(connection.platform):
+            runtime.last_error = _not_implemented(connection.platform)
+            runtime.next_retry_at = None
+            return
         if runtime.retry_task is not None and not runtime.retry_task.done():
             return
         runtime.retry_task = asyncio.create_task(

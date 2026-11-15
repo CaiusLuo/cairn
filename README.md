@@ -166,11 +166,13 @@ the context for future reminders.
 
 `src/cairn/channels` is the shared connection foundation for WeChat, QQ, Telegram
 and Discord. C0 implements configuration, private credential storage, lifecycle,
-health, inbound dedupe and outbound delivery audit. It deliberately ships a
-deterministic **Fake Adapter** for QQ, Telegram and Discord; full platform SDK
-adapters are C1-C4 and are not implemented yet. Creating a QQ/Telegram/Discord
-connection therefore records configuration only, and `start` runs the fake
-adapter.
+health, inbound dedupe and outbound delivery audit. Full platform SDK adapters are
+C1-C4 and are not implemented yet, so the production registry is empty: creating
+a QQ/Telegram/Discord connection records configuration only, and `start` or
+`reconnect` returns `adapter_not_implemented` (HTTP 501). Such a connection never
+reports `running`, its platform summary stays `silent`, and it remains editable
+and deletable. The deterministic Fake Adapter is injected only by tests; real
+adapters will register through `ChannelAdapterRegistry`.
 
 WeChat remains the existing single host-owned session. The channel API projects
 that same `WechatSessionController` (QR login, Conversation/Run, Scheduler and
@@ -212,6 +214,17 @@ left in `sending` by a process interruption becomes `unknown` after restart and
 is never resent automatically. Inbound messages are deduplicated by
 `(connection_id, external_message_id)` and bound to one Cairn Conversation per
 external conversation.
+
+Inbound work is authorized per connection before any Conversation or Run exists.
+The `owner_identity` is always allowed, `allowed_senders` adds explicit platform
+identities, and an empty list therefore behaves as owner-only. A stopped,
+disabled or non-running connection rejects inbound work, and an identity allowed
+on one connection or platform is not authorized on another. Inbound admission
+uses a durable claim. A claim interrupted by cancellation or an ambiguous error
+is stored as `unknown`; a redelivery reconciles the deterministic request ID
+against an existing Run instead of creating a second side effect or staying
+rejected forever. Configuration and credentials are still accepted without a
+registered adapter.
 
 The first connection remains the only WeChat protocol implementation; no
 automatic credential migration is performed.

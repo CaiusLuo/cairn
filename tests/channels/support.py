@@ -7,9 +7,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from cairn.channels.adapter import FakeChannelAdapter, InboundSink
+from cairn.channels.adapter import (
+    ChannelAdapterRegistry,
+    FakeChannelAdapter,
+    InboundSink,
+)
 from cairn.channels.manager import ChannelManager
 from cairn.channels.models import (
+    ALL_PLATFORMS,
     ChannelConnection,
     ChannelInboundEvent,
     ChannelPlatform,
@@ -24,6 +29,17 @@ class FakeIntake:
         default_factory=list
     )
     fail: bool = False
+    fail_after_submit: bool = False
+    conversations: dict[tuple[str, str, str, str], SimpleNamespace] = field(
+        default_factory=dict
+    )
+    runs: dict[tuple[str, str], SimpleNamespace] = field(default_factory=dict)
+
+    @staticmethod
+    def _key(
+        platform: str, connection_id: str, sender_id: str, conversation_binding: str
+    ) -> tuple[str, str, str, str]:
+        return (platform, connection_id, sender_id, conversation_binding)
 
     def ensure_channel_conversation(
         self,
@@ -32,10 +48,13 @@ class FakeIntake:
         sender_id: str,
         conversation_binding: str,
         initial_prompt: str,
-    ) -> SimpleNamespace:
-        return SimpleNamespace(
-            conversation_id=f"conv-{connection_id}-{sender_id}-{conversation_binding}"
-        )
+    ) -> Any:
+        key = self._key(platform, connection_id, sender_id, conversation_binding)
+        if key not in self.conversations:
+            self.conversations[key] = SimpleNamespace(
+                conversation_id=f"conv-{connection_id}-{sender_id}-{conversation_binding}"
+            )
+        return self.conversations[key]
 
     def submit(
         self,
@@ -45,11 +64,33 @@ class FakeIntake:
         request_id: str,
         *,
         model_id: str | None = None,
-    ) -> SimpleNamespace:
+    ) -> Any:
         if self.fail:
             raise RuntimeError("intake failed with secret-value")
+        key = (conversation_id, request_id)
+        if key in self.runs:
+            return self.runs[key]
         self.submissions.append((conversation_id, prompt, source, request_id))
-        return SimpleNamespace(run_id=f"run-{len(self.submissions)}")
+        run = SimpleNamespace(run_id=f"run-{len(self.submissions)}")
+        self.runs[key] = run
+        if self.fail_after_submit:
+            self.fail_after_submit = False
+            raise RuntimeError("intake lost its response")
+        return run
+
+    def get_channel_conversation(
+        self,
+        platform: str,
+        connection_id: str,
+        sender_id: str,
+        conversation_binding: str,
+    ) -> Any:
+        return self.conversations.get(
+            self._key(platform, connection_id, sender_id, conversation_binding)
+        )
+
+    def run_by_request(self, conversation_id: str, request_id: str) -> Any:
+        return self.runs.get((conversation_id, request_id))
 
 
 class CapturingFactory:
@@ -92,10 +133,13 @@ def make_manager(
     store = ChannelStore(root)
     intake = intake or FakeIntake()
     factory = factory or CapturingFactory()
+    registry = ChannelAdapterRegistry()
+    for platform in ALL_PLATFORMS:
+        registry.register(platform, factory)
     values: dict[str, Any] = {
         "store": store,
         "conversations": intake,
-        "adapter_factory": factory,
+        "adapters": registry,
         "retry_delays": retry_delays,
     }
     if sleep is not None:
@@ -107,13 +151,18 @@ def make_manager(
 
 
 def inbound(
-    connection_id: str, message_id: str, text: str = "hello"
+    connection_id: str,
+    message_id: str,
+    text: str = "hello",
+    *,
+    sender_id: str = "sender-1",
+    platform: ChannelPlatform = ChannelPlatform.TELEGRAM,
 ) -> ChannelInboundEvent:
     return ChannelInboundEvent(
-        platform=ChannelPlatform.TELEGRAM,
+        platform=platform,
         connection_id=connection_id,
         external_message_id=message_id,
-        sender_id="sender-1",
+        sender_id=sender_id,
         conversation_binding="chat-1",
         text=text,
     )

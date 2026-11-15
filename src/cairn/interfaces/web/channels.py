@@ -19,6 +19,7 @@ from starlette.routing import BaseRoute, Route
 from cairn.channels.manager import ChannelConnectionView, ChannelManager
 from cairn.channels.models import (
     ChannelAdapterError,
+    ChannelAdapterNotImplemented,
     ChannelConfirmationRequired,
     ChannelCredentialError,
     ChannelDeliveryUncertain,
@@ -92,6 +93,7 @@ class CreateChannelRequest(BaseModel):
     display_name: str = Field(min_length=1, max_length=120)
     enabled: bool = True
     owner_identity: str | None = Field(default=None, max_length=200)
+    allowed_senders: list[str] = Field(default_factory=list)
     metadata: dict[str, object] = Field(default_factory=dict)
     credentials: dict[str, str] | None = None
 
@@ -125,6 +127,7 @@ class UpdateChannelRequest(BaseModel):
     display_name: str | None = Field(default=None, max_length=120)
     enabled: bool | None = None
     owner_identity: str | None = Field(default=None, max_length=200)
+    allowed_senders: list[str] | None = None
     metadata: dict[str, object] | None = None
     credentials: dict[str, str] | None = None
     replace_credentials: bool = False
@@ -200,6 +203,8 @@ def _write_error(exc: Exception) -> JSONResponse:
         return _error(428, "confirmation_required")
     if isinstance(exc, ChannelCredentialError):
         return _error(409, "channel_credentials_invalid")
+    if isinstance(exc, ChannelAdapterNotImplemented):
+        return _error(501, "adapter_not_implemented")
     if isinstance(exc, ChannelAdapterError):
         return _error(502, "channel_adapter_error")
     if isinstance(exc, ValueError):
@@ -287,6 +292,7 @@ def channel_routes(
                 display_name=payload.display_name,
                 enabled=payload.enabled,
                 owner_identity=payload.owner_identity,
+                allowed_senders=payload.allowed_senders,
                 metadata=payload.metadata,
                 credentials=payload.credentials,
                 request_id=payload.request_id,
@@ -323,6 +329,8 @@ def channel_routes(
             changes["enabled"] = payload.enabled
         if "owner_identity" in fields:
             changes["owner_identity"] = payload.owner_identity
+        if "allowed_senders" in fields:
+            changes["allowed_senders"] = payload.allowed_senders or []
         if "metadata" in fields:
             changes["metadata"] = payload.metadata or {}
         try:

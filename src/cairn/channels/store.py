@@ -30,11 +30,12 @@ from cairn.channels.models import (
     ChannelSendStatus,
     new_connection_id,
     utc_now,
+    validate_allowed_senders,
     validate_credentials,
     validate_metadata,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_REQUESTS = 512
 
 
@@ -134,9 +135,20 @@ class ChannelStore:
             raise ValueError("Channel store cannot be a symlink")
         with self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in (0, SCHEMA_VERSION):
+            if version not in (0, 1, SCHEMA_VERSION):
                 raise ValueError("Unsupported channel store schema")
             self._create_schema(connection)
+            columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(channel_connections)"
+                ).fetchall()
+            }
+            if "allowed_senders_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE channel_connections ADD COLUMN "
+                    "allowed_senders_json TEXT NOT NULL DEFAULT '[]'"
+                )
             connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         with suppress(OSError):
             self.path.chmod(0o600)
@@ -167,6 +179,7 @@ class ChannelStore:
                 desired_state TEXT NOT NULL,
                 credential_ref TEXT,
                 owner_identity TEXT,
+                allowed_senders_json TEXT NOT NULL DEFAULT '[]',
                 metadata_json TEXT NOT NULL,
                 revision INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
@@ -233,6 +246,7 @@ class ChannelStore:
                 if row["owner_identity"] is not None
                 else None
             ),
+            allowed_senders=tuple(json.loads(str(row["allowed_senders_json"]))),
             metadata=json.loads(str(row["metadata_json"])),
             revision=int(row["revision"]),
             created_at=str(row["created_at"]),
@@ -349,6 +363,7 @@ class ChannelStore:
         metadata: dict[str, Any],
         credentials: dict[str, str] | None,
         request_id: str,
+        allowed_senders: object = (),
     ) -> CreateResult:
         if not request_id.strip():
             raise ValueError("request_id is required")
@@ -360,6 +375,7 @@ class ChannelStore:
         owner = None if owner_identity is None else owner_identity.strip()
         if owner is not None and (not owner or len(owner) > 200):
             raise ValueError("owner_identity must be 1-200 characters")
+        checked_senders = validate_allowed_senders(allowed_senders)
         checked_metadata = validate_metadata(metadata)
         checked_credentials = (
             None if credentials is None else validate_credentials(credentials)
@@ -372,6 +388,7 @@ class ChannelStore:
                 "display_name": name,
                 "enabled": enabled,
                 "owner_identity": owner,
+                "allowed_senders": checked_senders,
                 "metadata": checked_metadata,
                 "credentials": (
                     None
@@ -400,6 +417,7 @@ class ChannelStore:
                 desired_state=ChannelDesiredState.STOPPED,
                 credential_ref=credential_ref,
                 owner_identity=owner,
+                allowed_senders=checked_senders,
                 metadata=checked_metadata,
                 revision=1,
                 created_at=now,
@@ -415,8 +433,9 @@ class ChannelStore:
             connection.execute(
                 "INSERT INTO channel_connections "
                 "(connection_id, platform, display_name, enabled, desired_state, "
-                "credential_ref, owner_identity, metadata_json, revision, "
-                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "credential_ref, owner_identity, allowed_senders_json, metadata_json, "
+                "revision, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     record.connection_id,
                     record.platform.value,
@@ -425,6 +444,7 @@ class ChannelStore:
                     record.desired_state.value,
                     record.credential_ref,
                     record.owner_identity,
+                    _json(list(record.allowed_senders)),
                     _json(record.metadata),
                     record.revision,
                     record.created_at,
@@ -446,7 +466,13 @@ class ChannelStore:
         credentials: dict[str, str] | None = None,
         replace_credentials: bool = False,
     ) -> UpdateResult:
-        allowed = {"display_name", "enabled", "owner_identity", "metadata"}
+        allowed = {
+            "display_name",
+            "enabled",
+            "owner_identity",
+            "allowed_senders",
+            "metadata",
+        }
         if set(changes) - allowed or (not changes and not replace_credentials):
             raise ValueError("channel update has no valid changes")
         clean: dict[str, Any] = dict(changes)
@@ -468,6 +494,10 @@ class ChannelStore:
                     raise ValueError("owner_identity is too long")
         if "metadata" in clean:
             clean["metadata"] = validate_metadata(clean["metadata"])
+        if "allowed_senders" in clean:
+            clean["allowed_senders"] = list(
+                validate_allowed_senders(clean["allowed_senders"])
+            )
         checked_credentials = (
             validate_credentials(credentials) if replace_credentials else None
         )
@@ -536,8 +566,8 @@ class ChannelStore:
             connection.execute(
                 "UPDATE channel_connections SET platform = ?, display_name = ?, "
                 "enabled = ?, desired_state = ?, credential_ref = ?, "
-                "owner_identity = ?, metadata_json = ?, revision = ?, "
-                "updated_at = ? WHERE connection_id = ?",
+                "owner_identity = ?, allowed_senders_json = ?, metadata_json = ?, "
+                "revision = ?, updated_at = ? WHERE connection_id = ?",
                 (
                     record.platform.value,
                     record.display_name,
@@ -545,6 +575,7 @@ class ChannelStore:
                     record.desired_state.value,
                     record.credential_ref,
                     record.owner_identity,
+                    _json(list(record.allowed_senders)),
                     _json(record.metadata),
                     record.revision,
                     record.updated_at,

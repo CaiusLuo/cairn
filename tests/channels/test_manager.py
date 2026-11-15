@@ -7,9 +7,11 @@ from pathlib import Path
 
 import pytest
 
+from cairn.channels.adapter import ChannelAdapterRegistry
 from cairn.channels.manager import ChannelConnectionView, ChannelManager
 from cairn.channels.models import (
     ChannelActualState,
+    ChannelAdapterNotImplemented,
     ChannelConfirmationRequired,
     ChannelDeliveryUncertain,
     ChannelDesiredState,
@@ -17,15 +19,18 @@ from cairn.channels.models import (
     ChannelDisplayState,
     ChannelInboundConflict,
     ChannelInboundRejected,
+    ChannelInboundUncertain,
     ChannelNotFound,
     ChannelPlatform,
     ChannelPlatformSummary,
     ChannelRequestConflict,
     ChannelSendStatus,
 )
+from cairn.channels.store import ChannelStore
 from cairn.conversation.models import ConversationSource
 from tests.channels.support import (
     CapturingFactory,
+    FakeIntake,
     inbound,
     make_manager,
 )
@@ -46,7 +51,7 @@ async def _create(
     values: dict[str, object] = {
         "display_name": "Test",
         "enabled": True,
-        "owner_identity": None,
+        "owner_identity": "sender-1",
         "metadata": {},
         "credentials": None,
         "request_id": "create-1",
@@ -245,12 +250,16 @@ def test_inbound_dedupe_submits_once_and_rejects_changed_reuse(
             )
 
         intake.fail = True
-        with pytest.raises(ChannelInboundRejected):
+        with pytest.raises(ChannelInboundUncertain):
             await manager.accept_inbound(inbound(connection_id, "m-2"))
-        rejected = await manager.accept_inbound(inbound(connection_id, "m-2"))
-        assert rejected.duplicate is True
-        assert rejected.state == "rejected"
-        assert len(intake.submissions) == 1
+        assert manager.store.claim_inbound(inbound(connection_id, "m-2")).state == (
+            "unknown"
+        )
+        intake.fail = False
+        recovered = await manager.accept_inbound(inbound(connection_id, "m-2"))
+        assert recovered.state == "accepted"
+        assert recovered.run_id == "run-2"
+        assert len(intake.submissions) == 2
         await manager.close()
 
     asyncio.run(scenario())
@@ -505,6 +514,24 @@ def test_restart_marks_inflight_delivery_unknown_and_never_resends(
     asyncio.run(second(connection_id))
 
 
+def test_concurrent_duplicate_inbound_deliveries_submit_once(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager, _, intake, _ = make_manager(tmp_path / "channels")
+        connection = await _create(manager, request_id="race-create")
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "race-start")
+        event = inbound(connection_id, "racing-message")
+        results = await asyncio.gather(
+            *(manager.accept_inbound(event) for _ in range(8))
+        )
+        assert len(intake.submissions) == 1
+        assert {result.run_id for result in results} == {"run-1"}
+        assert sum(not result.duplicate for result in results) == 1
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
 def test_claimed_inbound_after_interruption_is_recovered(tmp_path: Path) -> None:
     async def scenario() -> None:
         manager, store, intake, _ = make_manager(tmp_path / "channels")
@@ -526,3 +553,181 @@ def test_claimed_inbound_after_interruption_is_recovered(tmp_path: Path) -> None
         await manager.close()
 
     asyncio.run(scenario())
+
+
+def test_inbound_requires_the_owner_or_an_explicit_sender(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager, _, intake, _ = make_manager(tmp_path / "channels")
+        connection = await _create(
+            manager,
+            request_id="auth-create",
+            allowed_senders=["guest"],
+        )
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "auth-start")
+
+        owner = await manager.accept_inbound(inbound(connection_id, "owner-1"))
+        assert owner.state == "accepted"
+        guest = await manager.accept_inbound(
+            inbound(connection_id, "guest-1", sender_id="guest")
+        )
+        assert guest.state == "accepted"
+        with pytest.raises(ChannelInboundRejected):
+            await manager.accept_inbound(
+                inbound(connection_id, "stranger-1", sender_id="stranger")
+            )
+        assert len(intake.submissions) == 2
+
+        # A stopped connection rejects new work even from its owner.
+        await manager.stop_connection(connection_id, "auth-stop")
+        with pytest.raises(ChannelInboundRejected):
+            await manager.accept_inbound(inbound(connection_id, "owner-2"))
+        assert len(intake.submissions) == 2
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_inbound_identity_is_isolated_by_connection_and_platform(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        manager, _, intake, _ = make_manager(tmp_path / "channels")
+        telegram = await _create(
+            manager,
+            ChannelPlatform.TELEGRAM,
+            request_id="iso-telegram",
+            owner_identity="same-name",
+        )
+        discord = await _create(
+            manager,
+            ChannelPlatform.DISCORD,
+            request_id="iso-discord",
+            owner_identity="someone-else",
+        )
+        telegram_id = telegram.connection.connection_id
+        discord_id = discord.connection.connection_id
+        await manager.start_connection(telegram_id, "iso-start-telegram")
+        await manager.start_connection(discord_id, "iso-start-discord")
+
+        accepted = await manager.accept_inbound(
+            inbound(
+                telegram_id,
+                "same-name-message",
+                sender_id="same-name",
+                platform=ChannelPlatform.TELEGRAM,
+            )
+        )
+        assert accepted.state == "accepted"
+        with pytest.raises(ChannelInboundRejected):
+            await manager.accept_inbound(
+                inbound(
+                    discord_id,
+                    "cross-platform-message",
+                    sender_id="same-name",
+                    platform=ChannelPlatform.DISCORD,
+                )
+            )
+        assert len(intake.submissions) == 1
+        assert len({submission[0] for submission in intake.submissions}) == 1
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_inbound_reconciles_a_run_created_before_an_error(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager, _, intake, _ = make_manager(tmp_path / "channels")
+        connection = await _create(manager, request_id="reconcile-create")
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "reconcile-start")
+
+        intake.fail_after_submit = True
+        recovered = await manager.accept_inbound(
+            inbound(connection_id, "lost-response")
+        )
+        assert recovered.state == "accepted"
+        assert recovered.run_id == "run-1"
+        assert len(intake.submissions) == 1
+
+        duplicate = await manager.accept_inbound(
+            inbound(connection_id, "lost-response")
+        )
+        assert duplicate.duplicate is True
+        assert duplicate.run_id == "run-1"
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_production_without_an_adapter_stays_silent_and_keeps_configuration(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        store = ChannelStore(tmp_path / "channels")
+        manager = ChannelManager(
+            store=store,
+            conversations=FakeIntake(),
+            adapters=ChannelAdapterRegistry(),
+        )
+        connection = await _create(manager, request_id="no-adapter-create")
+        connection_id = connection.connection.connection_id
+        assert (
+            _summary(
+                manager.platform_summaries(), ChannelPlatform.TELEGRAM
+            ).display_state
+            is ChannelDisplayState.SILENT
+        )
+        with pytest.raises(ChannelAdapterNotImplemented) as excinfo:
+            await manager.start_connection(connection_id, "no-adapter-start")
+        assert "adapter_not_implemented" in str(excinfo.value)
+        view = manager.get_connection_view(connection_id)
+        assert view.runtime.actual_state is not ChannelActualState.RUNNING
+        assert view.runtime.last_error is None
+
+        renamed = await manager.update_connection(
+            connection_id,
+            expected_revision=view.connection.revision,
+            request_id="no-adapter-rename",
+            changes={"display_name": "Renamed"},
+        )
+        assert renamed.connection.display_name == "Renamed"
+        await manager.delete_connection(
+            connection_id,
+            expected_revision=renamed.connection.revision,
+            request_id="no-adapter-delete",
+            confirmed=True,
+        )
+        assert manager.list_connections() == ()
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_restart_without_an_adapter_never_reports_running(tmp_path: Path) -> None:
+    root = tmp_path / "channels"
+
+    async def first() -> str:
+        manager, _, _, _ = make_manager(root)
+        connection = await _create(manager, request_id="pending-create")
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "pending-start")
+        await manager.close()
+        return connection_id
+
+    async def second(connection_id: str) -> None:
+        manager = ChannelManager(
+            store=ChannelStore(root),
+            conversations=FakeIntake(),
+            adapters=ChannelAdapterRegistry(),
+        )
+        await manager.start()
+        runtime = manager._runtime(connection_id)
+        assert runtime.retry_task is None
+        status = manager.get_runtime_status(connection_id)
+        assert status.actual_state is not ChannelActualState.RUNNING
+        assert "adapter_not_implemented" in (status.last_error or "")
+        await manager.close()
+
+    connection_id = asyncio.run(first())
+    asyncio.run(second(connection_id))

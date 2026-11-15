@@ -13,7 +13,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ChannelPlatform(StrEnum):
@@ -70,6 +70,9 @@ class ChannelConnection(BaseModel):
     desired_state: ChannelDesiredState
     credential_ref: str | None = Field(default=None, max_length=100)
     owner_identity: str | None = Field(default=None, max_length=200)
+    # Additional platform identities allowed to submit inbound work. The owner
+    # is always authorized; an empty set therefore means owner-only.
+    allowed_senders: tuple[str, ...] = ()
     metadata: dict[str, Any] = Field(default_factory=dict)
     revision: int = Field(default=1, ge=1)
     created_at: str = Field(default_factory=utc_now)
@@ -77,6 +80,11 @@ class ChannelConnection(BaseModel):
     # A legacy connection is projected from an existing host-owned service
     # (currently WeChat); it is never persisted by the channel store.
     legacy: bool = False
+
+    @field_validator("allowed_senders")
+    @classmethod
+    def _clean_allowed_senders(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return validate_allowed_senders(value)
 
 
 class ChannelRuntimeStatus(BaseModel):
@@ -177,6 +185,10 @@ class ChannelInboundRejected(ChannelError):
     pass
 
 
+class ChannelInboundUncertain(ChannelError):
+    """The inbound request may have been accepted; reconcile before retrying."""
+
+
 class ChannelDeliveryUncertain(ChannelError):
     pass
 
@@ -195,6 +207,10 @@ class ChannelUnsupportedPlatform(ChannelError):
 
 class ChannelAdapterError(ChannelError):
     pass
+
+
+class ChannelAdapterNotImplemented(ChannelAdapterError):
+    """No real adapter is registered for this platform yet."""
 
 
 class ChannelCredentialError(ChannelAdapterError):
@@ -245,6 +261,26 @@ def validate_credentials(value: object) -> dict[str, str]:
     return result
 
 
+def validate_allowed_senders(value: object) -> tuple[str, ...]:
+    """Normalize an explicit sender allowlist; empty means owner-only."""
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("allowed_senders must be a list of strings")
+    if len(value) > 32:
+        raise ValueError("allowed_senders has too many entries")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError("allowed_senders must be strings")
+        sender = item.strip()
+        if not sender or len(sender) > 200:
+            raise ValueError("allowed_senders entries must be 1-200 characters")
+        if sender not in result:
+            result.append(sender)
+    return tuple(result)
+
+
 def validate_metadata(value: object) -> dict[str, Any]:
     """Bound host-visible metadata and keep obvious secrets out of it."""
     if value is None:
@@ -287,6 +323,7 @@ __all__ = [
     "ChannelActualState",
     "ChannelAdapterError",
     "ChannelAdapterHealth",
+    "ChannelAdapterNotImplemented",
     "ChannelConfirmationRequired",
     "ChannelConnection",
     "ChannelCredentialError",
@@ -299,6 +336,7 @@ __all__ = [
     "ChannelInboundEvent",
     "ChannelInboundRejected",
     "ChannelInboundResult",
+    "ChannelInboundUncertain",
     "ChannelLegacyManaged",
     "ChannelNotFound",
     "ChannelOperationUncertain",
@@ -312,6 +350,7 @@ __all__ = [
     "ChannelUnsupportedPlatform",
     "new_connection_id",
     "utc_now",
+    "validate_allowed_senders",
     "validate_credentials",
     "validate_metadata",
 ]

@@ -8,12 +8,18 @@ from typing import Any
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
+from cairn.channels.adapter import ChannelAdapterRegistry
 from cairn.channels.manager import ChannelManager
+from cairn.channels.store import ChannelStore
 from cairn.channels.wechat import LEGACY_WECHAT_ID, wechat_legacy_adapter
 from cairn.interfaces.web.app import create_app
 from cairn.interfaces.web.config import WebConfig
 from cairn.shared.action import Action
-from tests.channels.support import CapturingFactory, make_manager
+from tests.channels.support import (
+    CapturingFactory,
+    FakeIntake,
+    make_manager,
+)
 
 PASSPHRASE = "channel-passphrase"
 ORIGIN = "http://127.0.0.1"
@@ -147,6 +153,7 @@ def test_create_never_returns_the_secret_and_start_stop_reconnect_work(
                 "display_name": "Secret Holder",
                 "enabled": True,
                 "owner_identity": "owner",
+                "allowed_senders": ["guest"],
                 "metadata": {"label": "home"},
                 "credentials": {"token": TEST_SECRET},
             },
@@ -157,6 +164,7 @@ def test_create_never_returns_the_secret_and_start_stop_reconnect_work(
         body = response.json()
         connection = body["connection"]
         assert connection["credential_ref"] is not None
+        assert connection["allowed_senders"] == ["guest"]
         assert body["runtime"]["actual_state"] == "stopped"
         connection_id = connection["connection_id"]
 
@@ -532,3 +540,58 @@ def test_unknown_platform_and_cross_platform_filters(tmp_path: Path) -> None:
         assert len(discord["connections"]) == 1
         assert [row["platform"] for row in discord["platforms"]] == ["discord"]
         assert discord["platforms"][0]["display_state"] == "silent"
+
+
+def test_missing_production_adapter_is_explicit_and_config_stays_editable(
+    tmp_path: Path,
+) -> None:
+    manager = ChannelManager(
+        store=ChannelStore(tmp_path / "channels"),
+        conversations=FakeIntake(),
+        adapters=ChannelAdapterRegistry(),
+    )
+    web = create_app(
+        _config(tmp_path),
+        runtime_token=TOKEN,
+        channels=manager,
+    )
+    with TestClient(web, base_url=ORIGIN) as client:
+        _login(client)
+        created = _create(client, request_id="no-adapter-create")
+        connection_id = created["connection"]["connection_id"]
+        started = client.post(
+            f"/api/channels/connections/{connection_id}/start",
+            json={"request_id": "no-adapter-start"},
+            headers={"Origin": ORIGIN},
+        )
+        assert started.status_code == 501
+        assert started.json() == {"error": "adapter_not_implemented"}
+
+        overview = client.get("/api/channels").json()
+        telegram = next(
+            row for row in overview["platforms"] if row["platform"] == "telegram"
+        )
+        assert telegram["display_state"] == "silent"
+        assert overview["connections"][0]["runtime"]["actual_state"] != "running"
+
+        renamed = client.patch(
+            f"/api/channels/connections/{connection_id}",
+            json={
+                "expected_revision": 1,
+                "request_id": "no-adapter-rename",
+                "display_name": "Renamed",
+            },
+            headers={"Origin": ORIGIN},
+        )
+        assert renamed.status_code == 200
+        deleted = client.request(
+            "DELETE",
+            f"/api/channels/connections/{connection_id}",
+            json={
+                "expected_revision": 2,
+                "request_id": "no-adapter-delete",
+                "confirm": True,
+            },
+            headers={"Origin": ORIGIN},
+        )
+        assert deleted.status_code == 200

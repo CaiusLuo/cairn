@@ -22,6 +22,7 @@ from cairn.agent.models.config.admission import ProviderApproval, load_approved_
 from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.agent.models.runtime import ProviderRuntime, build_provider_runtime
 from cairn.agent.workspace.lease import WorkspaceLease
+from cairn.channels.adapter import ChannelAdapterRegistry
 from cairn.channels.manager import ChannelManager
 from cairn.channels.store import ChannelStore
 from cairn.channels.wechat import wechat_legacy_adapter
@@ -139,6 +140,7 @@ def runtime_app(
         channel_manager = ChannelManager(
             store=ChannelStore(channel_root),
             conversations=conversations,
+            adapters=ChannelAdapterRegistry(),
         )
         web = create_app(
             WebConfig(

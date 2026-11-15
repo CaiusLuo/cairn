@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -307,3 +308,61 @@ def test_channel_binding_reuses_one_conversation_and_survives_delete(
         )
         is None
     )
+
+
+def test_allowed_senders_round_trip_and_are_validated(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    result = store.create_connection(
+        platform=ChannelPlatform.TELEGRAM,
+        display_name="Home",
+        enabled=True,
+        owner_identity="owner",
+        metadata={},
+        credentials=None,
+        request_id="senders-create",
+        allowed_senders=[" guest ", "guest", "second"],
+    )
+    assert result.connection.allowed_senders == ("guest", "second")
+    updated = store.update_connection(
+        result.connection.connection_id,
+        expected_revision=1,
+        request_id="senders-update",
+        changes={"allowed_senders": ["third"]},
+    )
+    assert updated.connection.allowed_senders == ("third",)
+    with pytest.raises(ValueError):
+        store.update_connection(
+            result.connection.connection_id,
+            expected_revision=updated.connection.revision,
+            request_id="senders-invalid",
+            changes={"allowed_senders": [1]},
+        )
+
+
+def test_schema_v1_store_migrates_the_allowed_senders_column(tmp_path: Path) -> None:
+    root = tmp_path / "channels"
+    root.mkdir()
+    with sqlite3.connect(root / "channels.sqlite3") as database:
+        database.executescript(
+            """
+            CREATE TABLE channel_connections (
+                connection_id TEXT PRIMARY KEY,
+                platform TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                desired_state TEXT NOT NULL,
+                credential_ref TEXT,
+                owner_identity TEXT,
+                metadata_json TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            PRAGMA user_version=1;
+            """
+        )
+    store = ChannelStore(root)
+    connection_id = _create(store, request_id="migrate-create")
+    connection = store.get_connection(connection_id)
+    assert connection is not None
+    assert connection.allowed_senders == ()
