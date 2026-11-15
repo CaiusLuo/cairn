@@ -34,6 +34,9 @@ class TaskOutcome(Protocol):
 TaskExecutor = Callable[[str, asyncio.Event, str], Awaitable[TaskOutcome]]
 Deliver = Callable[[str, str], Awaitable[bool]]
 DeliverForAccount = Callable[[str, str, str], Awaitable[ProactiveSendResult]]
+DeliverReminder = Callable[
+    [str, str, str, Callable[[], bool]], Awaitable[ProactiveSendResult]
+]
 Recipient = Callable[[], str | None]
 Clock = Callable[[], datetime]
 
@@ -89,6 +92,7 @@ class ScheduleRunner:
         deliver: Deliver,
         recipient: Recipient,
         deliver_for_account: DeliverForAccount | None = None,
+        deliver_reminder: DeliverReminder | None = None,
         clock: Clock = current_time,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         poll_interval: float = 5.0,
@@ -102,6 +106,7 @@ class ScheduleRunner:
         self.executor = executor
         self.deliver = deliver
         self.deliver_for_account = deliver_for_account
+        self.deliver_reminder = deliver_reminder
         self.recipient = recipient
         self.workspace = workspace
         self.account_id = account_id
@@ -145,9 +150,12 @@ class ScheduleRunner:
                 await settle_owned(execution_task)
         return self.report
 
+    def _current_account(self) -> str | None:
+        return self.account_id() if callable(self.account_id) else self.account_id
+
     async def _owner(self) -> tuple[str, str | None] | None:
         owner = self.recipient()
-        account = self.account_id() if callable(self.account_id) else self.account_id
+        account = self._current_account()
         if not owner or (self.account_id is not None and not account):
             return None
         return owner, account
@@ -225,6 +233,7 @@ class ScheduleRunner:
         error: str | None,
         result: TaskOutcome | None,
         delivered: bool,
+        delivery_attempts: int | None = None,
     ) -> None:
         result_text = (
             format_schedule_result(result)[:4000] if result is not None else ""
@@ -248,6 +257,11 @@ class ScheduleRunner:
                 "task_id": result.task_id if result is not None else None,
                 "trace_id": result.trace_id if result is not None else None,
                 "delivered": delivered,
+                **(
+                    {"delivery_attempts": delivery_attempts}
+                    if delivery_attempts is not None
+                    else {}
+                ),
                 "error": error,
                 "result": result_text,
             },
@@ -270,9 +284,21 @@ class ScheduleRunner:
         self._say(f"定时任务 {job.job_id}: {status}; {delivery_label}")
 
     async def _send(
-        self, recipient: str, payload: str, account: str | None
+        self,
+        recipient: str,
+        payload: str,
+        account: str | None,
+        *,
+        reminder: ScheduleJob | None = None,
     ) -> ProactiveSendResult:
         try:
+            if self.deliver_reminder is not None and account is not None and reminder:
+                return await self.deliver_reminder(
+                    recipient,
+                    payload,
+                    account,
+                    lambda: self._can_retry_reminder(reminder, recipient, account),
+                )
             if self.deliver_for_account is not None and account is not None:
                 return await self.deliver_for_account(recipient, payload, account)
             if await self.deliver(recipient, payload):
@@ -281,6 +307,20 @@ class ScheduleRunner:
             # Unclassified adapter failures cannot prove that the send failed.
             pass
         return ProactiveSendResult(ProactiveSendOutcome.UNKNOWN, "delivery_unconfirmed")
+
+    def _can_retry_reminder(self, job: ScheduleJob, owner: str, account: str) -> bool:
+        if self.recipient() != owner or self._current_account() != account:
+            return False
+        try:
+            return any(
+                current.job_id == job.job_id
+                and current.enabled
+                and current.last_status == "running"
+                and current.last_run_at == job.last_run_at
+                for current in self.store.load_jobs()
+            )
+        except ValueError:
+            return False
 
     async def _run_job(
         self,
@@ -302,16 +342,16 @@ class ScheduleRunner:
             if self.result_redactor is not None:
                 payload = self.result_redactor(payload)
             try:
-                current_account = (
-                    self.account_id() if callable(self.account_id) else self.account_id
-                )
+                current_account = self._current_account()
                 recipient = self.recipient()
                 if (
                     self.account_id is not None and current_account != account
                 ) or recipient != owner:
                     error = "delivery_owner_changed: reminder retained, not delivered"
                 elif recipient:
-                    delivery = await self._send(recipient, payload, account)
+                    delivery = await self._send(
+                        recipient, payload, account, reminder=job
+                    )
             except asyncio.CancelledError:
                 self._record_finish(
                     job=job,
@@ -334,6 +374,7 @@ class ScheduleRunner:
                 error=error or delivery.error,
                 result=None,
                 delivered=delivery.sent,
+                delivery_attempts=delivery.attempts,
             )
             return
         try:
@@ -371,9 +412,7 @@ class ScheduleRunner:
             error = f"{type(exc).__name__}: {exc}"
         delivered = False
         if result is not None:
-            current_account = (
-                self.account_id() if callable(self.account_id) else self.account_id
-            )
+            current_account = self._current_account()
             if self.account_id is not None and current_account != account:
                 # Never send a completed result through a newly selected identity.
                 error = "delivery_owner_changed: execution result stored, delivery not attempted"

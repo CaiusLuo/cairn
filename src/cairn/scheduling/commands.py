@@ -15,6 +15,7 @@ from cairn.scheduling.models import (
 )
 from cairn.scheduling.runner import (
     DeliverForAccount,
+    DeliverReminder,
     ScheduleRunner,
     TaskExecutor,
     current_time,
@@ -37,6 +38,7 @@ class ScheduleController:
         deliver: Deliver,
         recipient: Recipient,
         deliver_for_account: DeliverForAccount | None = None,
+        deliver_reminder: DeliverReminder | None = None,
         emit: Callable[[str], object] | None = None,
         clock: Callable[[], datetime] = current_time,
         account_id: Callable[[], str | None] | None = None,
@@ -55,6 +57,7 @@ class ScheduleController:
             executor=executor,
             deliver=deliver,
             deliver_for_account=deliver_for_account,
+            deliver_reminder=deliver_reminder,
             recipient=recipient,
             clock=clock,
             emit=emit,
@@ -185,6 +188,11 @@ class ScheduleController:
                 f"at={row.get('finished_at') or row.get('started_at')} "
                 f"delivered={row.get('delivered', '-')} "
                 f"task={row.get('task_id') or '-'}"
+                + (
+                    f" attempts={row['delivery_attempts']}"
+                    if "delivery_attempts" in row
+                    else ""
+                )
                 + (f" error={row.get('error')}" if row.get("error") else "")
             )
             if row.get("result"):

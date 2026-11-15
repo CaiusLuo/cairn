@@ -158,9 +158,12 @@ remain outside this change.
 For ordinary WeChat reminders, use `/schedule history JOB_ID` to see the result of
 each occurrence. A missing inbound WeChat context or an explicit iLink rejection
 is recorded as a delivery failure, with an iLink return code when available.
-A send without a conclusive response is recorded as `delivery_unknown`. The
-scheduler will not replay that occurrence. Sending the bot a message refreshes
-the context for future reminders.
+Each reminder has at most three send attempts. Cairn checks again after 5 seconds
+and then 15 more seconds when it can confirm the request did not go out. If iLink
+explicitly refuses with `ret=-2`, it only tries again if a new inbound context
+is available by one of those checks. The history includes the number of attempts.
+A send with an unknown outcome is recorded as `delivery_unknown` and is never
+retried automatically.
 
 ## Development
 
