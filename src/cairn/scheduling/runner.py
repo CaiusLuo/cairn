@@ -18,6 +18,7 @@ from typing import Any, Protocol
 
 from cairn.scheduling.models import ScheduleJob
 from cairn.scheduling.store import ScheduleStore
+from cairn.shared.delivery import ProactiveSendOutcome, ProactiveSendResult
 from cairn.shared.lifecycle import settle_owned
 
 
@@ -32,7 +33,7 @@ class TaskOutcome(Protocol):
 
 TaskExecutor = Callable[[str, asyncio.Event, str], Awaitable[TaskOutcome]]
 Deliver = Callable[[str, str], Awaitable[bool]]
-DeliverForAccount = Callable[[str, str, str], Awaitable[bool]]
+DeliverForAccount = Callable[[str, str, str], Awaitable[ProactiveSendResult]]
 Recipient = Callable[[], str | None]
 Clock = Callable[[], datetime]
 
@@ -259,13 +260,27 @@ class ScheduleRunner:
             self.report.failed += 1
         self.report.jobs_run += 1
         if error is not None and (
-            error.startswith("delivery_cancelled")
-            or error.startswith("delivery_owner_changed")
+            error.startswith(
+                ("delivery_cancelled", "delivery_unconfirmed", "delivery_owner_changed")
+            )
         ):
             delivery_label = "投递未确认"
         else:
             delivery_label = "已推送" if delivered else "未推送"
         self._say(f"定时任务 {job.job_id}: {status}; {delivery_label}")
+
+    async def _send(
+        self, recipient: str, payload: str, account: str | None
+    ) -> ProactiveSendResult:
+        try:
+            if self.deliver_for_account is not None and account is not None:
+                return await self.deliver_for_account(recipient, payload, account)
+            if await self.deliver(recipient, payload):
+                return ProactiveSendResult(ProactiveSendOutcome.SENT)
+        except Exception:
+            # Unclassified adapter failures cannot prove that the send failed.
+            pass
+        return ProactiveSendResult(ProactiveSendOutcome.UNKNOWN, "delivery_unconfirmed")
 
     async def _run_job(
         self,
@@ -282,7 +297,7 @@ class ScheduleRunner:
             # Persist the send attempt before network I/O: a crash after this
             # point is delivery-unknown, never a fresh "unstarted" reminder.
             self.store.mark_execution_started(job.job_id)
-            delivered = False
+            delivery = ProactiveSendResult(ProactiveSendOutcome.UNAVAILABLE)
             payload = job.prompt
             if self.result_redactor is not None:
                 payload = self.result_redactor(payload)
@@ -296,12 +311,7 @@ class ScheduleRunner:
                 ) or recipient != owner:
                     error = "delivery_owner_changed: reminder retained, not delivered"
                 elif recipient:
-                    if self.deliver_for_account is not None and account is not None:
-                        delivered = await self.deliver_for_account(
-                            recipient, payload, account
-                        )
-                    else:
-                        delivered = await self.deliver(recipient, payload)
+                    delivery = await self._send(recipient, payload, account)
             except asyncio.CancelledError:
                 self._record_finish(
                     job=job,
@@ -312,15 +322,18 @@ class ScheduleRunner:
                     delivered=False,
                 )
                 raise
-            except Exception as exc:
-                error = f"delivery: {type(exc).__name__}: {exc}"
+            status = "delivery_failed"
+            if delivery.sent:
+                status = "completed"
+            elif delivery.outcome is ProactiveSendOutcome.UNKNOWN:
+                status = "delivery_unknown"
             self._record_finish(
                 job=job,
                 run_key=run_key,
-                status="completed" if delivered else "delivery_failed",
-                error=error,
+                status=status,
+                error=error or delivery.error,
                 result=None,
-                delivered=delivered,
+                delivered=delivery.sent,
             )
             return
         try:
@@ -374,12 +387,9 @@ class ScheduleRunner:
                         payload = format_schedule_result(result)
                         if self.result_redactor is not None:
                             payload = self.result_redactor(payload)
-                        if self.deliver_for_account is not None and account is not None:
-                            delivered = await self.deliver_for_account(
-                                recipient, payload, account
-                            )
-                        else:
-                            delivered = await self.deliver(recipient, payload)
+                        delivery = await self._send(recipient, payload, account)
+                        delivered = delivery.sent
+                        error = delivery.error
                     except asyncio.CancelledError:
                         # The task result is known and must be preserved, but the push
                         # is not confirmed. Never claim delivery or replay the task.

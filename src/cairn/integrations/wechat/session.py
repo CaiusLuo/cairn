@@ -16,7 +16,6 @@ import signal
 import socket
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from enum import StrEnum
 from inspect import isawaitable
 from pathlib import Path
 from typing import Any
@@ -42,16 +41,9 @@ from cairn.integrations.wechat.state import (
 )
 from cairn.server.client import RuntimeClient
 from cairn.shared.action import Action, correction, note
+from cairn.shared.delivery import ProactiveSendOutcome as ProactiveSendOutcome
+from cairn.shared.delivery import ProactiveSendResult
 from cairn.shared.lifecycle import await_owned
-
-
-class ProactiveSendOutcome(StrEnum):
-    """Whether a proactive send reached the remote, was refused, or is unknown."""
-
-    SENT = "sent"
-    REJECTED = "rejected"
-    UNKNOWN = "unknown"
-    UNAVAILABLE = "unavailable"
 
 
 class WechatSessionController:
@@ -613,20 +605,74 @@ class WechatSessionController:
 
     def _latest_context(self, sender: str) -> str | None:
         try:
-            messages = self._state.load().get("messages", {})
+            return self._state.latest_context(sender)
         except ValueError:
             return None
-        latest: tuple[float, str] | None = None
-        for record in messages.values():
-            if not isinstance(record, dict) or record.get("sender") != sender:
-                continue
-            context = record.get("context_token")
-            updated = record.get("updated")
-            if isinstance(context, str) and context:
-                stamp = float(updated) if isinstance(updated, (int, float)) else 0.0
-                if latest is None or stamp >= latest[0]:
-                    latest = (stamp, context)
-        return latest[1] if latest is not None else None
+
+    async def deliver_for_account_result(
+        self,
+        sender: str,
+        text: str,
+        account_id: str,
+        *,
+        context_token: str | None = None,
+    ) -> ProactiveSendResult:
+        """Send using the pinned account and retain only safe diagnostics."""
+        try:
+            account = self._state.load_account()
+        except ValueError:
+            return ProactiveSendResult(
+                ProactiveSendOutcome.UNAVAILABLE,
+                "delivery_unavailable: account_unreadable",
+            )
+        if account is None or account.ilink_bot_id != account_id:
+            return ProactiveSendResult(
+                ProactiveSendOutcome.UNAVAILABLE,
+                "delivery_unavailable: account_changed",
+            )
+        if not sender or (
+            sender != account.ilink_user_id and sender not in self._allowed_senders
+        ):
+            return ProactiveSendResult(
+                ProactiveSendOutcome.UNAVAILABLE,
+                "delivery_unavailable: recipient_not_allowed",
+            )
+        if not text:
+            return ProactiveSendResult(
+                ProactiveSendOutcome.UNAVAILABLE, "delivery_unavailable: empty_message"
+            )
+        try:
+            context = context_token or self._state.latest_context(sender)
+        except ValueError:
+            return ProactiveSendResult(
+                ProactiveSendOutcome.UNAVAILABLE,
+                "delivery_unavailable: context_unreadable",
+            )
+        if not context:
+            return ProactiveSendResult(
+                ProactiveSendOutcome.UNAVAILABLE,
+                "delivery_unavailable: no_context_token",
+            )
+        client = ILinkClient(
+            base_url=account.base_url,
+            bot_token=account.bot_token,
+            allow_insecure_local=self.allow_insecure_local_http,
+        )
+        try:
+            await client.send_text(to_user_id=sender, text=text, context_token=context)
+            return ProactiveSendResult(ProactiveSendOutcome.SENT)
+        except ILinkSendRejected as exc:
+            return ProactiveSendResult(
+                ProactiveSendOutcome.REJECTED, f"delivery_rejected: ilink_ret={exc.ret}"
+            )
+        except Exception:
+            # A send may have reached iLink even if no valid response came back.
+            return ProactiveSendResult(
+                ProactiveSendOutcome.UNKNOWN, "delivery_unconfirmed"
+            )
+        finally:
+            with contextlib.suppress(Exception):
+                await client.close()
 
     async def deliver_for_account_outcome(
         self,
@@ -636,46 +682,10 @@ class WechatSessionController:
         *,
         context_token: str | None = None,
     ) -> ProactiveSendOutcome:
-        """Send through the exact account and report whether a retry is safe.
-
-        A non-zero sendMessage ret is an explicit refusal: the remote did not
-        accept the message, so a later attempt with a fresh context token
-        cannot duplicate it. Transport failures remain ``UNKNOWN`` and must
-        never be replayed automatically.
-        """
-        try:
-            account = self._state.load_account()
-        except ValueError:
-            return ProactiveSendOutcome.UNAVAILABLE
-        if (
-            account is None
-            or account.ilink_bot_id != account_id
-            or not sender
-            or not text
-        ):
-            return ProactiveSendOutcome.UNAVAILABLE
-        # Receiver admission and delivery must use the same trusted-sender
-        # set.  The account owner is always allowed; /wx allow extends it.
-        if sender != account.ilink_user_id and sender not in self._allowed_senders:
-            return ProactiveSendOutcome.UNAVAILABLE
-        context = context_token or self._latest_context(sender)
-        if not context:
-            return ProactiveSendOutcome.UNAVAILABLE
-        client = ILinkClient(
-            base_url=account.base_url,
-            bot_token=account.bot_token,
-            allow_insecure_local=self.allow_insecure_local_http,
+        result = await self.deliver_for_account_result(
+            sender, text, account_id, context_token=context_token
         )
-        try:
-            await client.send_text(to_user_id=sender, text=text, context_token=context)
-            return ProactiveSendOutcome.SENT
-        except ILinkSendRejected:
-            return ProactiveSendOutcome.REJECTED
-        except Exception:
-            return ProactiveSendOutcome.UNKNOWN
-        finally:
-            with contextlib.suppress(Exception):
-                await client.close()
+        return result.outcome
 
     async def deliver_for_account(
         self,
@@ -686,10 +696,10 @@ class WechatSessionController:
         context_token: str | None = None,
     ) -> bool:
         """Send only through the exact account that claimed the task."""
-        outcome = await self.deliver_for_account_outcome(
+        result = await self.deliver_for_account_result(
             sender, text, account_id, context_token=context_token
         )
-        return outcome is ProactiveSendOutcome.SENT
+        return result.sent
 
     async def deliver(self, sender: str, text: str) -> bool:
         """Best-effort push through the currently selected account only."""

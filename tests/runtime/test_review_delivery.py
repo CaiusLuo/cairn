@@ -421,14 +421,16 @@ def test_polling_delivers_pending_review_when_readiness_returns(
             wechat.context = "ctx-late"
             coordinator.rescan()
             for _ in range(50):
-                if wechat.sent:
+                delivery = store.get_delivery(review.review_id)
+                if (
+                    delivery is not None
+                    and delivery.status is ReviewDeliveryStatus.ACCEPTED
+                ):
                     break
                 await asyncio.sleep(0.01)
+            else:
+                raise AssertionError("Review delivery did not settle")
             assert len(wechat.sent) == 1
-            assert (
-                store.get_delivery(review.review_id).status  # type: ignore[union-attr]
-                is ReviewDeliveryStatus.ACCEPTED
-            )
         finally:
             await coordinator.close()
 

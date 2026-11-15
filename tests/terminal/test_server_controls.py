@@ -19,6 +19,7 @@ from cairn.interfaces.cli.input import CliInput
 from cairn.interfaces.cli.runtime_chat import main as shared_main
 from cairn.interfaces.cli.server_commands import ServerCommands
 from cairn.scheduling.runner import current_time
+from cairn.shared.delivery import ProactiveSendOutcome, ProactiveSendResult
 from tests.support.control_runtime import control_runtime
 from tests.support.fake_ilink import FakeILink
 from tests.support.wechat_service import _msg
@@ -353,6 +354,99 @@ def test_wechat_login_and_runtime_final_reply_survive_client_detach(
         asyncio.run(scenario(fake))
 
 
+def test_daily_reminder_records_ilink_rejection_and_uses_new_inbound_context(
+    tmp_path: Path,
+) -> None:
+    class ReminderILink(FakeILink):
+        malformed = False
+
+        def handle(
+            self, method: str, path: str, headers: Any, body: bytes
+        ) -> dict[str, Any]:
+            result = super().handle(method, path, headers, body)
+            if self.malformed and path == "/ilink/bot/sendmessage":
+                return {"ret": "private-upstream-data"}
+            return result
+
+    async def scenario(fake: ReminderILink) -> None:
+        app, api = control_runtime(tmp_path)
+        save_account(tmp_path, fake.url)
+        controls = app.state.controls
+        controls.wechat.allow_insecure_local_http = True
+        runner = controls.schedules.runner
+        state = controls.wechat.state
+
+        async def run_next() -> tuple[str, str | None]:
+            (job,) = runner.store.load_jobs()
+            when = job.next_run_at
+            assert when is not None
+            runner.clock = lambda: when
+            await runner.run_reminders(when)
+            snapshot = (await api.request("GET", "management?section=schedule"))[
+                "schedule"
+            ]
+            run = snapshot["runs"][0]
+            assert run["run_key"] == f"{job.job_id}:{when.isoformat()}"
+            (persisted,) = snapshot["jobs"]
+            assert persisted["next_run_at"] == (when + timedelta(days=1)).isoformat()
+            assert persisted["last_status"] == run["status"]
+            assert persisted["last_error"] == run["error"]
+            return str(run["status"]), run["error"]
+
+        async with app.router.lifespan_context(app):
+            assert (await command(api, "/schedule", "remind daily 08:00 gym"))["ok"]
+            assert await run_next() == (
+                "delivery_failed",
+                "delivery_unavailable: no_context_token",
+            )
+            assert fake.sent == []
+
+            state.record_received(
+                "old", sender="owner", context_token="private-old-context", text="hi"
+            )
+            fake.send_ret = -2
+            assert await run_next() == (
+                "delivery_failed",
+                "delivery_rejected: ilink_ret=-2",
+            )
+            assert len(fake.sent) == 1
+            (job,) = runner.store.load_jobs()
+            history = await command(api, "/schedule", f"history {job.job_id}")
+            assert "ilink_ret=-2" in history["message"]
+            assert "private-old-context" not in history["message"]
+
+            state.record_received(
+                "new", sender="owner", context_token="private-new-context", text="hi"
+            )
+            state.mark("old", "completed")  # Old work settles after the new inbound.
+            fake.malformed = True
+            assert await run_next() == ("delivery_unknown", "delivery_unconfirmed")
+            assert len(fake.sent) == 2
+            assert fake.sent[-1]["context_token"] == "private-new-context"
+
+        app, api = control_runtime(tmp_path)
+        controls = app.state.controls
+        controls.wechat.allow_insecure_local_http = True
+        runner = controls.schedules.runner
+        fake.malformed = False
+        fake.send_ret = 0
+        async with app.router.lifespan_context(app):
+            unknown = runner.store.load_runs()[0]
+            assert unknown["status"] == "delivery_unknown"
+            assert unknown["delivered"] is False
+            (job,) = runner.store.load_jobs()
+            assert job.next_run_at is not None
+            await runner.run_reminders(job.next_run_at - timedelta(seconds=1))
+            assert len(fake.sent) == 2
+            assert await run_next() == ("completed", None)
+            assert len(fake.sent) == 3
+            assert fake.sent[-1]["context_token"] == "private-new-context"
+
+    fake = ReminderILink()
+    with fake:
+        asyncio.run(scenario(fake))
+
+
 def test_schedule_commands_use_the_same_runtime_and_reminders_do_not_call_models(
     tmp_path: Path,
 ) -> None:
@@ -361,10 +455,12 @@ def test_schedule_commands_use_the_same_runtime_and_reminders_do_not_call_models
         save_account(tmp_path)
         deliveries: list[str] = []
 
-        async def deliver(recipient: str, text: str, account: str) -> bool:
+        async def deliver(
+            recipient: str, text: str, account: str
+        ) -> ProactiveSendResult:
             assert (recipient, account) == ("owner", "bot-1")
             deliveries.append(text)
-            return True
+            return ProactiveSendResult(ProactiveSendOutcome.SENT)
 
         async with app.router.lifespan_context(app):
             runner = app.state.controls.schedules.runner
