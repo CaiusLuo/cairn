@@ -22,6 +22,9 @@ from cairn.agent.models.config.admission import ProviderApproval, load_approved_
 from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.agent.models.runtime import ProviderRuntime, build_provider_runtime
 from cairn.agent.workspace.lease import WorkspaceLease
+from cairn.channels.manager import ChannelManager
+from cairn.channels.store import ChannelStore
+from cairn.channels.wechat import wechat_legacy_adapter
 from cairn.conversation.service import ConversationService
 from cairn.conversation.store import DomainStore
 from cairn.development.board.service import TaskBoardService
@@ -77,6 +80,7 @@ def runtime_app(
     wechat_state: Path | None = None,
     agent_home: Path | None = None,
     schedule_state: Path | None = None,
+    channels_state: Path | None = None,
     host: str = "127.0.0.1",
     services: Services = DEFAULT_SERVICES,
     review: ReviewConfig = DEFAULT_REVIEW,
@@ -121,6 +125,21 @@ def runtime_app(
     service.reconciler = execution.reconcile
     try:
         knowledge_store = KnowledgeStore(state / "knowledge")
+        channel_root = (channels_state or state / "channels").expanduser()
+        channel_resolved = channel_root.resolve()
+        for writable in (workspace.resolve(), worktrees.resolve()):
+            if (
+                channel_resolved == writable
+                or channel_resolved.is_relative_to(writable)
+                or writable.is_relative_to(channel_resolved)
+            ):
+                raise ValueError(
+                    "Channel state must be private and outside writable roots"
+                )
+        channel_manager = ChannelManager(
+            store=ChannelStore(channel_root),
+            conversations=conversations,
+        )
         web = create_app(
             WebConfig(
                 workspace=workspace,
@@ -137,6 +156,7 @@ def runtime_app(
             runtime_token=token,
             session_file=state / "web-sessions.json",
             knowledge_store=knowledge_store,
+            channels=channel_manager,
         )
     except BaseException:
         execution.close()
@@ -155,12 +175,22 @@ def runtime_app(
             wechat_state=wechat_state or state / "wechat",
             agent_home=agent_home or state / "agent",
             schedule_state=schedule_state or state / "schedules",
+            channels_state=channel_root,
             services=services,
         )
     except BaseException:
         execution.close()
         catalogue.close()
         raise
+    channel_manager.attach_legacy(
+        wechat_legacy_adapter(
+            controls.wechat,
+            is_enabled=lambda: controls.state.wechat_enabled,
+            set_enabled=controls.set_wechat_enabled,
+        )
+    )
+    channel_manager.set_secret_sink(controls.protect_channel_secrets)
+    web.state.channels = channel_manager
     execution.protected_paths += protected_paths
     web.router.routes[0:0] = management_routes(controls, token)
     web.state.controls = controls
@@ -239,6 +269,7 @@ def runtime_app(
             reviews,
             review_delivery,
             review_schedule,
+            channel_manager,
         )
 
     web.router.lifespan_context = lifespan
@@ -341,6 +372,7 @@ def run_server(config: ServerConfig) -> None:
             wechat_state=paths.wechat,
             agent_home=paths.agent,
             schedule_state=paths.schedules,
+            channels_state=paths.channels,
             services=config.services,
             review=config.review,
             protected_paths=tuple(

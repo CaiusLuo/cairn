@@ -13,7 +13,7 @@ from cairn.agent.workspace.lease import WorkspaceLease
 from cairn.shared.atomic_json import atomic_write
 from cairn.shared.redaction import redact_text, redact_value
 
-RuntimeSource = Literal["cli", "web", "wechat", "schedule"]
+RuntimeSource = Literal["cli", "web", "wechat", "channel", "schedule"]
 RuntimeStatus = Literal[
     "queued",
     "running",

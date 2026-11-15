@@ -47,6 +47,14 @@ def _loads(value: str | None, default: Any) -> Any:
     return default if not value else json.loads(value)
 
 
+def channel_binding_digest(
+    platform: str, connection_id: str, sender_id: str, conversation_binding: str
+) -> str:
+    """Stable identity for one external channel conversation."""
+    raw = f"channel-binding:{platform}:{connection_id}:{sender_id}\0{conversation_binding}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
 class DomainStore:
     """The only mutating owner of the Conversation/Task/Run tables."""
 
@@ -104,6 +112,16 @@ class DomainStore:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (workspace_id, account_digest, sender_digest)
+            );
+            CREATE TABLE IF NOT EXISTS channel_bindings (
+                workspace_id TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                binding_digest TEXT NOT NULL,
+                conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (workspace_id, connection_id, binding_digest)
             );
             CREATE TABLE IF NOT EXISTS tasks (
                 task_id TEXT PRIMARY KEY,
@@ -407,6 +425,122 @@ class DomainStore:
                 return self._conversation(row)
         return conversation
 
+    def get_channel_conversation(
+        self,
+        *,
+        workspace: Path | str,
+        platform: str,
+        connection_id: str,
+        sender_id: str,
+        conversation_binding: str,
+    ) -> Conversation | None:
+        if not all((platform, connection_id, sender_id, conversation_binding)):
+            return None
+        workspace_id = workspace_id_for(workspace)
+        digest = channel_binding_digest(
+            platform, connection_id, sender_id, conversation_binding
+        )
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT conversations.* FROM channel_bindings "
+                "JOIN conversations USING(conversation_id) "
+                "WHERE channel_bindings.workspace_id = ? "
+                "AND channel_bindings.connection_id = ? "
+                "AND channel_bindings.binding_digest = ?",
+                (workspace_id, connection_id, digest),
+            ).fetchone()
+        return self._conversation(row) if row is not None else None
+
+    def get_or_create_channel_conversation(
+        self,
+        *,
+        workspace: Path | str,
+        platform: str,
+        connection_id: str,
+        sender_id: str,
+        conversation_binding: str,
+        initial_prompt: str,
+    ) -> Conversation:
+        """Bind one external channel conversation to one Cairn Conversation."""
+        if not all((platform, connection_id, sender_id, conversation_binding)):
+            raise ValueError("Channel binding requires platform and identities")
+        if not initial_prompt.strip():
+            raise ValueError("Channel binding requires an initial prompt")
+        workspace_id = workspace_id_for(workspace)
+        digest = channel_binding_digest(
+            platform, connection_id, sender_id, conversation_binding
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT conversations.* FROM channel_bindings "
+                "JOIN conversations USING(conversation_id) "
+                "WHERE channel_bindings.workspace_id = ? "
+                "AND channel_bindings.connection_id = ? "
+                "AND channel_bindings.binding_digest = ?",
+                (workspace_id, connection_id, digest),
+            ).fetchone()
+            if row is not None:
+                return self._conversation(row)
+            conversation = Conversation(
+                conversation_id=new_conversation_id(),
+                workspace_id=workspace_id,
+                source=ConversationSource.CHANNEL,
+                initial_prompt=initial_prompt,
+                metadata={
+                    "channel_binding": True,
+                    "platform": platform,
+                    "connection_id": connection_id,
+                },
+            )
+            connection.execute(
+                "INSERT INTO conversations "
+                "(conversation_id, workspace_id, source, initial_prompt, "
+                "created_at, updated_at, metadata_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    conversation.conversation_id,
+                    conversation.workspace_id,
+                    conversation.source.value,
+                    conversation.initial_prompt,
+                    conversation.created_at,
+                    conversation.updated_at,
+                    _json(conversation.metadata),
+                ),
+            )
+            inserted = connection.execute(
+                "INSERT OR IGNORE INTO channel_bindings "
+                "(workspace_id, connection_id, platform, binding_digest, "
+                "conversation_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    workspace_id,
+                    connection_id,
+                    platform,
+                    digest,
+                    conversation.conversation_id,
+                    conversation.created_at,
+                    conversation.updated_at,
+                ),
+            )
+            if inserted.rowcount == 0:
+                connection.execute(
+                    "DELETE FROM conversations WHERE conversation_id = ?",
+                    (conversation.conversation_id,),
+                )
+                row = connection.execute(
+                    "SELECT conversations.* FROM channel_bindings "
+                    "JOIN conversations USING(conversation_id) "
+                    "WHERE channel_bindings.workspace_id = ? "
+                    "AND channel_bindings.connection_id = ? "
+                    "AND channel_bindings.binding_digest = ?",
+                    (workspace_id, connection_id, digest),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("Channel binding race lost its winner")
+                return self._conversation(row)
+        return conversation
+
     def set_conversation_archived(
         self, conversation_id: str, *, archived: bool
     ) -> Conversation:
@@ -490,6 +624,10 @@ class DomainStore:
             )
             connection.execute(
                 "DELETE FROM wechat_bindings WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            connection.execute(
+                "DELETE FROM channel_bindings WHERE conversation_id = ?",
                 (conversation_id,),
             )
             connection.execute(

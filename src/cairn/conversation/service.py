@@ -394,6 +394,44 @@ class ConversationService:
             return None
         return conversation
 
+    def ensure_channel_conversation(
+        self,
+        platform: str,
+        connection_id: str,
+        sender_id: str,
+        conversation_binding: str,
+        initial_prompt: str,
+    ) -> Conversation:
+        conversation = self.store.get_or_create_channel_conversation(
+            workspace=self.workspace,
+            platform=platform,
+            connection_id=connection_id,
+            sender_id=sender_id,
+            conversation_binding=conversation_binding,
+            initial_prompt=initial_prompt,
+        )
+        if conversation.workspace_id != self.workspace_id:
+            raise ValueError("Channel conversation belongs to another workspace")
+        return conversation
+
+    def get_channel_conversation(
+        self,
+        platform: str,
+        connection_id: str,
+        sender_id: str,
+        conversation_binding: str,
+    ) -> Conversation | None:
+        conversation = self.store.get_channel_conversation(
+            workspace=self.workspace,
+            platform=platform,
+            connection_id=connection_id,
+            sender_id=sender_id,
+            conversation_binding=conversation_binding,
+        )
+        if conversation is not None and conversation.workspace_id != self.workspace_id:
+            return None
+        return conversation
+
     def get_conversation(self, conversation_id: str) -> Conversation | None:
         conversation = self.store.get_conversation(conversation_id)
         if conversation is not None and conversation.workspace_id != self.workspace_id:

@@ -31,7 +31,7 @@ export type Conversation = {
 };
 
 export const isActive = (status: string) => status === "queued" || status === "running";
-export const sourceLabel = (source?: string) => ({ cli: "CLI", web: "Web", wechat: "微信", schedule: "定时任务" }[source ?? ""] ?? source ?? "");
+export const sourceLabel = (source?: string) => ({ cli: "CLI", web: "Web", wechat: "微信", channel: "频道", schedule: "定时任务" }[source ?? ""] ?? source ?? "");
 const sourceIcons: Record<string, IconName> = { cli: "terminal", web: "monitor", schedule: "clock" };
 // WeChat and future IM bridges (Telegram, Discord, QQ, ...) share one chat glyph.
 export const sourceIcon = (source?: string): IconName => sourceIcons[source ?? ""] ?? "chat";

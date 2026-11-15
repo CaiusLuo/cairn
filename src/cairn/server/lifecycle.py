@@ -5,6 +5,7 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from cairn.channels.manager import ChannelManager
 from cairn.conversation.service import ConversationService
 from cairn.development.execution.runtime import ServiceExecution
 from cairn.development.service import TaskService
@@ -26,12 +27,15 @@ async def running_runtime(
     reviews: DailyReviewService | None = None,
     review_delivery: ReviewDeliveryCoordinator | None = None,
     review_schedule: ReviewScheduleCoordinator | None = None,
+    channels: ChannelManager | None = None,
 ) -> AsyncIterator[None]:
     try:
         _ = execution.store
         await service.start()
         await conversations.start()
         await controls.start()
+        if channels is not None:
+            await channels.start()
         if reviews is not None:
             await reviews.start()
         if review_delivery is not None:
@@ -60,15 +64,19 @@ async def running_runtime(
                                 await reviews.close()
                         finally:
                             try:
-                                await controls.close()
+                                if channels is not None:
+                                    await channels.close()
                             finally:
                                 try:
-                                    await conversations.close()
+                                    await controls.close()
                                 finally:
                                     try:
-                                        await service.close()
+                                        await conversations.close()
                                     finally:
-                                        execution.close()
+                                        try:
+                                            await service.close()
+                                        finally:
+                                            execution.close()
 
         owned = asyncio.create_task(cleanup())
         late = await await_owned(owned)

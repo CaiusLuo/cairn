@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from starlette.applications import Starlette
@@ -46,6 +46,9 @@ from cairn.interfaces.web.reader import SnapshotReader
 from cairn.interfaces.web.reviews import review_routes
 from cairn.knowledge.store import KnowledgeStore
 from cairn.review.service import DailyReviewService
+
+if TYPE_CHECKING:
+    from cairn.channels.manager import ChannelManager
 
 _ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -146,9 +149,12 @@ def create_app(
     session_file: Path | None = None,
     knowledge_store: KnowledgeStore | None = None,
     reviews: DailyReviewService | None = None,
+    channels: ChannelManager | None = None,
 ) -> Starlette:
     if runtime is not None and (not config.auth_passphrase or not runtime_token):
         raise ValueError("Runtime routes require authenticated host configuration")
+    if channels is not None and (not config.auth_passphrase or not runtime_token):
+        raise ValueError("Channel routes require authenticated host configuration")
     reader = reader or SnapshotReader(
         workspace=config.workspace,
         sessions_dir=config.sessions_dir,
@@ -356,6 +362,10 @@ def create_app(
         routes.extend(knowledge_routes(clip_store, runtime_token))
         if reviews is not None:
             routes.extend(review_routes(reviews, runtime_token))
+    if channels is not None:
+        from cairn.interfaces.web.channels import channel_routes
+
+        routes.extend(channel_routes(channels, runtime_token))
     if runtime is not None:
         from cairn.interfaces.web.runtime import task_routes
 

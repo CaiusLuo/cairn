@@ -35,6 +35,7 @@ class ConversationSource(StrEnum):
     CLI = "cli"
     WEB = "web"
     WECHAT = "wechat"
+    CHANNEL = "channel"
     SCHEDULE = "schedule"
 
 

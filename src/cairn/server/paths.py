@@ -68,6 +68,10 @@ class ServerPaths:
         return self.data_root / "agent"
 
     @property
+    def channels(self) -> Path:
+        return self.data_root / "channels"
+
+    @property
     def domain(self) -> Path:
         """Authoritative Conversation/Task/Run store for P0-B2/B3."""
         return self.runtime / "domain.sqlite3"
@@ -78,7 +82,13 @@ class ServerPaths:
 
     @property
     def private_roots(self) -> tuple[Path, ...]:
-        return (self.runtime, self.wechat, self.schedules, self.agent)
+        return (
+            self.runtime,
+            self.wechat,
+            self.schedules,
+            self.agent,
+            self.channels,
+        )
 
     def protect_policy(self, path: Path) -> None:
         if path.is_symlink() or any(

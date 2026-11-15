@@ -162,6 +162,60 @@ A send without a conclusive response is recorded as `delivery_unknown`. The
 scheduler will not replay that occurrence. Sending the bot a message refreshes
 the context for future reminders.
 
+## Channels (C0 connection core)
+
+`src/cairn/channels` is the shared connection foundation for WeChat, QQ, Telegram
+and Discord. C0 implements configuration, private credential storage, lifecycle,
+health, inbound dedupe and outbound delivery audit. It deliberately ships a
+deterministic **Fake Adapter** for QQ, Telegram and Discord; full platform SDK
+adapters are C1-C4 and are not implemented yet. Creating a QQ/Telegram/Discord
+connection therefore records configuration only, and `start` runs the fake
+adapter.
+
+WeChat remains the existing single host-owned session. The channel API projects
+that same `WechatSessionController` (QR login, Conversation/Run, Scheduler and
+daily-review delivery are unchanged) and forwards start/stop/reconnect to it.
+Do not create a second WeChat client for the same account: one Server owns one
+WeChat session, and the channel layer never persists or replaces its login state.
+The legacy connection is read-only through the channel API; use `/wx` or Web
+Settings to log in or change the account.
+
+The private database lives at `data_root/channels/channels.sqlite3` with a `0700`
+directory and `0600` files. Credential values are write-only: no API response,
+log, trace or Agent context includes them. A connection exposes only an opaque
+`credential_ref`. Editing without `credentials` keeps the old secret; sending a
+new secret requires `replace_credentials: true`. Metadata rejects token/secret
+fields, and C0 rejects URL-shaped credentials to avoid SSRF. Deleting a
+connection requires explicit confirmation and removes configuration and
+credentials, while delivery and inbound audit rows are retained.
+
+API (same Web authentication as the rest of the Server; writes additionally
+require the exact Origin or host bearer token):
+
+```text
+GET    /api/channels
+GET    /api/channels/{platform}/connections
+POST   /api/channels/{platform}/connections
+PATCH  /api/channels/connections/{id}
+DELETE /api/channels/connections/{id}
+POST   /api/channels/connections/{id}/start|stop|reconnect
+GET    /api/channels/connections/{id}/status
+```
+
+Create replies use `request_id` idempotency; PATCH/DELETE use
+`expected_revision` plus `request_id`; DELETE also needs `confirm: true`. Reusing
+a request ID with different input is a conflict, not a replay. Desired state is
+persisted and restored after a Server restart with bounded exponential backoff
+(no tight reconnect loop on bad credentials). Runtime state always comes from the
+adapter's health report; configuration alone displays as `silent`. A delivery
+left in `sending` by a process interruption becomes `unknown` after restart and
+is never resent automatically. Inbound messages are deduplicated by
+`(connection_id, external_message_id)` and bound to one Cairn Conversation per
+external conversation.
+
+The first connection remains the only WeChat protocol implementation; no
+automatic credential migration is performed.
+
 ## Development
 
 Use current code and behavioral tests to guide changes. Architecture and storage

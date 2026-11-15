@@ -77,12 +77,16 @@ class ServerControls:
         wechat_state: Path,
         agent_home: Path,
         schedule_state: Path,
+        channels_state: Path | None = None,
         services: Services = DEFAULT_SERVICES,
     ) -> None:
         self.service, self.execution = service, execution
         self.services = services
         self.workspace = workspace.resolve()
-        for private in (wechat_state, agent_home, schedule_state):
+        private_paths = [wechat_state, agent_home, schedule_state]
+        if channels_state is not None:
+            private_paths.append(channels_state)
+        for private in private_paths:
             if private.is_symlink() or any(
                 private.resolve() == root.resolve()
                 or private.resolve().is_relative_to(root.resolve())
@@ -106,11 +110,7 @@ class ServerControls:
             enabled=services.memory,
         )
         self.memory_controller = MemoryController(self.memory)
-        self.execution.protected_paths = (
-            wechat_state.resolve(),
-            agent_home.resolve(),
-            schedule_state.resolve(),
-        )
+        self.execution.protected_paths = tuple(path.resolve() for path in private_paths)
         self.service.default_model_id = self.state.selected_model
         self.notices: deque[str] = deque(maxlen=20)
         self.qr_image: str | None = None
@@ -166,10 +166,18 @@ class ServerControls:
         self.notices.append(self.memory.redact(text))
 
     def _refresh_secrets(self) -> None:
-        secrets = self.wechat.secret_values()
+        self.protect_channel_secrets(self.wechat.secret_values())
+
+    def protect_channel_secrets(self, secrets: tuple[str, ...]) -> None:
+        """Keep channel credentials out of logs, traces and model context."""
+        if not secrets:
+            return
         self.memory.add_secret_values(secrets)
         self.execution.protect_secrets(secrets)
         self.service.catalogue.sensitive_values = self.execution.sensitive_values
+
+    def set_wechat_enabled(self, enabled: bool) -> None:
+        self._save(wechat_enabled=enabled)
 
     def _account_changed(self) -> None:
         self._refresh_secrets()
