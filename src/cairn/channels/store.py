@@ -15,6 +15,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +37,7 @@ from cairn.channels.models import (
 )
 
 SCHEMA_VERSION = 2
-MAX_REQUESTS = 512
+REQUEST_RETENTION_DAYS = 30
 
 
 def _json(value: object) -> str:
@@ -51,11 +52,11 @@ def _payload_digest(target: str, message: str) -> str:
     return hashlib.sha256(f"{target}\0{message}".encode()).hexdigest()
 
 
-def _receipt_result(value: object) -> dict[str, Any] | None:
+def _receipt_result(value: str | None) -> dict[str, Any] | None:
     if value is None:
         return None
     try:
-        result = json.loads(str(value))
+        result = json.loads(value)
     except ValueError:
         raise RuntimeError("channel request receipt is corrupt") from None
     if not isinstance(result, dict):
@@ -360,16 +361,13 @@ class ChannelStore:
             "updated_at = ? WHERE request_id = ?",
             (_json(result), now, request_id),
         )
-        count = int(
-            connection.execute("SELECT COUNT(*) FROM channel_requests").fetchone()[0]
+        cutoff = (
+            datetime.now(UTC) - timedelta(days=REQUEST_RETENTION_DAYS)
+        ).isoformat()
+        connection.execute(
+            "DELETE FROM channel_requests WHERE state = 'completed' AND updated_at < ?",
+            (cutoff,),
         )
-        if count > MAX_REQUESTS:
-            connection.execute(
-                "DELETE FROM channel_requests WHERE request_id IN "
-                "(SELECT request_id FROM channel_requests "
-                "WHERE state = 'completed' ORDER BY updated_at LIMIT ?)",
-                (count - MAX_REQUESTS,),
-            )
 
     def create_connection(
         self,

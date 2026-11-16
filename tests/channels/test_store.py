@@ -130,6 +130,40 @@ def test_request_receipt_survives_reopen_and_exposes_pending_state(
     assert completed.result == {"connection": {"revision": 7}}
 
 
+def test_request_receipt_rejects_corrupt_results(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    with sqlite3.connect(store.path) as database:
+        database.executemany(
+            "INSERT INTO channel_requests "
+            "(request_id, operation, digest, state, result_json, created_at, updated_at) "
+            "VALUES (?, 'update', 'digest', 'completed', ?, '', '')",
+            [("corrupt-json", "{not-json"), ("corrupt-shape", "[]")],
+        )
+    with pytest.raises(RuntimeError):
+        store.request_receipt("corrupt-json")
+    with pytest.raises(RuntimeError):
+        store.request_receipt("corrupt-shape")
+
+
+def test_completed_request_receipts_are_pruned_only_after_retention(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    store.claim_request("retained", operation="update", digest_value={"probe": 1})
+    store.complete_request("retained", {"connection": {"revision": 1}})
+    with sqlite3.connect(store.path) as database:
+        database.execute(
+            "UPDATE channel_requests SET updated_at = ? WHERE request_id = ?",
+            ("2000-01-01T00:00:00+00:00", "retained"),
+        )
+    store.claim_request("fresh", operation="update", digest_value={"probe": 2})
+    store.complete_request("fresh", {"connection": {"revision": 2}})
+    assert store.request_receipt("retained") is None
+    fresh = store.request_receipt("fresh")
+    assert fresh is not None
+    assert fresh.state == "completed"
+
+
 def test_update_without_secret_keeps_credentials_and_replacement_is_explicit(
     tmp_path: Path,
 ) -> None:

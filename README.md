@@ -244,11 +244,14 @@ GET    /api/channels/connections/{id}/status
 Create replies use `request_id` idempotency; PATCH/DELETE use
 `expected_revision` plus `request_id`; DELETE also needs `confirm: true`. Reusing
 a request ID with different input is a conflict, not a replay. The console keeps
-the original form intent after a lost response: retrying the same input reuses
-its request ID, while changed input first reconciles the old receipt through
-`GET /api/channels/requests/{request_id}` and only then receives a new identity.
-Desired state is
-persisted and restored after a Server restart with bounded exponential backoff
+the original submission identity after a lost response: retrying the same input
+reuses its request ID, while changed input first reconciles the old receipt
+through `GET /api/channels/requests/{request_id}` and only then receives a new
+identity. Only the intent fingerprint and revision are stored; credentials are
+never persisted in the browser, so a cross-reload retry requires re-entering the
+same values. A completed create receipt opens the connection the Server already
+created instead of creating a second one. Desired state is persisted and
+restored after a Server restart with bounded exponential backoff
 (no tight reconnect loop on bad credentials). Runtime state always comes from the
 adapter's health report; configuration alone displays as `silent`. A delivery
 left in `sending` by a process interruption becomes `unknown` after restart and

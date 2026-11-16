@@ -251,7 +251,8 @@ async function requestIdFor(
       reason.status === 404 &&
       reason.code === "channel_request_not_found"
     ) {
-      // No durable receipt means the old intent never reached the Server.
+      // The receipt is gone: never claimed, aged out, or lost with a restored
+      // database. There is no durable outcome to reconcile, so use a new ID.
       delete pending[scope];
       writePending(pending);
       return rememberRequestId(scope, identity, revision);
@@ -273,15 +274,19 @@ async function requestIdFor(
       false,
     );
   }
+  const creating = scope.startsWith("create:");
+  const createdConnectionId = creating ? receiptConnectionId(receipt) : null;
   delete pending[scope];
   writePending(pending);
   throw new StaleChannelIntentError(
-    scope.startsWith("create:")
+    createdConnectionId
       ? "上一次创建已完成；正在打开已创建的连接。"
-      : "上一次提交已完成；连接状态正在刷新，请核对后重新提交本次修改。",
+      : creating
+        ? "上一次创建已完成；连接状态正在刷新，请核对后重新提交。"
+        : "上一次提交已完成；连接状态正在刷新，请核对后重新提交本次修改。",
     true,
     receiptRevision(receipt),
-    scope.startsWith("create:") ? receiptConnectionId(receipt) : null,
+    createdConnectionId,
   );
 }
 
@@ -381,7 +386,11 @@ function useVisiblePoll<T>(
       controller = current;
       // A request that never settles must not hold the single-flight slot
       // forever; abort it and let the next visible tick try again.
-      const timeout = window.setTimeout(() => current.abort(), POLL_TIMEOUT_MS);
+      let timedOut = false;
+      const timeout = window.setTimeout(() => {
+        timedOut = true;
+        current.abort();
+      }, POLL_TIMEOUT_MS);
       try {
         const value = await callbacks.current.load(current.signal);
         if (
@@ -393,11 +402,10 @@ function useVisiblePoll<T>(
         }
         callbacks.current.onValue(value);
       } catch (reason) {
-        if (
-          !stopped &&
-          !current.signal.aborted &&
-          epoch.current === requestEpoch
-        ) {
+        if (stopped || epoch.current !== requestEpoch) return;
+        if (timedOut) {
+          callbacks.current.onError(new Error("连接状态读取超时，正在重试。"));
+        } else if (!current.signal.aborted) {
           callbacks.current.onError(reason);
         }
       } finally {
@@ -551,7 +559,7 @@ function ConnectionForm({
   onSaved,
   onDirty,
   onReconciled,
-  onExisting,
+  onCreatedConnection,
 }: {
   platform: ChannelPlatform;
   capability: ChannelCapabilities;
@@ -560,7 +568,7 @@ function ConnectionForm({
   onSaved: (view: ChannelView, created: boolean) => void;
   onDirty: () => void;
   onReconciled: () => void;
-  onExisting: (connectionId: string) => void;
+  onCreatedConnection: (connectionId: string) => void;
 }) {
   const editing = initial !== null;
   const [displayName, setDisplayName] = useState(initial?.display_name ?? "");
@@ -570,10 +578,10 @@ function ConnectionForm({
     (initial?.allowed_senders ?? []).join("\n"),
   );
   const [credentials, setCredentials] = useState<Record<string, string>>({});
-  const [error, setError] = useState("");
-  const [errorKind, setErrorKind] = useState<
-    "validation" | "transport" | "stale-intent" | ""
-  >("");
+  const [error, setError] = useState<{
+    text: string;
+    kind: "validation" | "transport" | "stale-intent";
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [reconciledRevision, setReconciledRevision] = useState(0);
 
@@ -590,8 +598,7 @@ function ConnectionForm({
     if (busy) return;
     const name = displayName.trim();
     if (!name) {
-      setError("请填写连接名称。");
-      setErrorKind("validation");
+      setError({ text: "请填写连接名称。", kind: "validation" });
       return;
     }
     if (replacing) {
@@ -599,15 +606,19 @@ function ConnectionForm({
         field => field.required && !filled[field.key],
       );
       if (missing.length) {
-        setError(`替换凭据需要填写：${missing.map(field => field.label).join("、")}`);
-        setErrorKind("validation");
+        setError({
+          text: `替换凭据需要填写：${missing.map(field => field.label).join("、")}`,
+          kind: "validation",
+        });
         return;
       }
     } else if (!editing) {
       const missing = fields.filter(field => field.required);
       if (missing.length) {
-        setError(`请填写凭据：${missing.map(field => field.label).join("、")}`);
-        setErrorKind("validation");
+        setError({
+          text: `请填写凭据：${missing.map(field => field.label).join("、")}`,
+          kind: "validation",
+        });
         return;
       }
     }
@@ -639,8 +650,7 @@ function ConnectionForm({
       ? Math.max(initial.revision, reconciledRevision)
       : null;
     setBusy(true);
-    setError("");
-    setErrorKind("");
+    setError(null);
     let requestId = "";
     try {
       const claim = await requestIdFor(scope, fingerprint, baseRevision);
@@ -665,11 +675,10 @@ function ConnectionForm({
     } catch (reason) {
       if (reason instanceof StaleChannelIntentError) {
         if (reason.createdConnectionId) {
-          onExisting(reason.createdConnectionId);
+          onCreatedConnection(reason.createdConnectionId);
           return;
         }
-        setError(reason.message);
-        setErrorKind("stale-intent");
+        setError({ text: reason.message, kind: "stale-intent" });
         if (reason.reconciled) {
           setReconciledRevision(current =>
             Math.max(current, reason.revision ?? 0),
@@ -681,8 +690,7 @@ function ConnectionForm({
       if (!shouldKeepRequestId(reason) && requestId) {
         clearRequestId(scope, requestId);
       }
-      setError(messageOf(reason));
-      setErrorKind("transport");
+      setError({ text: messageOf(reason), kind: "transport" });
     } finally {
       setBusy(false);
     }
@@ -781,9 +789,9 @@ function ConnectionForm({
         <p
           className="channels-error"
           role="alert"
-          data-channel-error={errorKind || undefined}
+          data-channel-error={error.kind}
         >
-          {error}
+          {error.text}
         </p>
       )}
       <div className="channels-form-actions">
@@ -930,11 +938,14 @@ export function Channels() {
 
   useChannelAnimation(pageRef, animationKey);
 
-  function handleStaleIntent(reason: StaleChannelIntentError) {
-    setActionError(reason.message);
-    if (!reason.reconciled) return;
+  function refreshChannels() {
     pollEpoch.current += 1;
     setRevision(value => value + 1);
+  }
+
+  function handleStaleIntent(reason: StaleChannelIntentError) {
+    setActionError(reason.message);
+    if (reason.reconciled) refreshChannels();
   }
 
   async function runAction(action: "start" | "stop" | "reconnect") {
@@ -998,8 +1009,7 @@ export function Channels() {
       });
       clearRequestId(key, requestId);
       setConfirmDelete(false);
-      pollEpoch.current += 1;
-      setRevision(value => value + 1);
+      refreshChannels();
       navigate(
         { platform: current.connection.platform, connectionId: "", mode: "" },
         "replace",
@@ -1261,22 +1271,14 @@ export function Channels() {
                 setActionError("");
                 setActionNotice("");
               }}
-              onReconciled={() => {
-                pollEpoch.current += 1;
-                setRevision(value => value + 1);
-              }}
-              onExisting={connectionId => {
-                pollEpoch.current += 1;
-                setRevision(value => value + 1);
-                navigate(
-                  { platform, connectionId, mode: "" },
-                  "replace",
-                );
+              onReconciled={refreshChannels}
+              onCreatedConnection={connectionId => {
+                refreshChannels();
+                navigate({ platform, connectionId, mode: "" }, "replace");
                 setActionNotice("连接已保存。");
               }}
               onSaved={(view, created) => {
-                pollEpoch.current += 1;
-                setRevision(value => value + 1);
+                refreshChannels();
                 navigate(
                   {
                     platform: view.connection.platform,

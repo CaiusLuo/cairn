@@ -900,6 +900,10 @@ try {
     assert.equal(reconciledConnections.length, 1);
     assert.equal(reconciledConnections[0].connection.connection_id, reconciledCreateId);
     assert(!(await page.locator("body").innerText()).includes(lostCreateSecret));
+    const visibleInputValues = await page
+      .locator("input")
+      .evaluateAll(nodes => nodes.map(node => node.value));
+    assert(!visibleInputValues.some(value => value.includes(lostCreateSecret)));
     await page.unroute(createPattern);
     await api.delete(`/api/channels/connections/${reconciledCreateId}`, {
       data: {
@@ -1018,6 +1022,56 @@ try {
     await page.unroute(reconnectPattern);
     console.log("Channel lifecycle failure and reconnect states passed.");
 
+    // A poll that never settles is aborted, surfaces an error and releases the
+    // single-flight slot so the next visible tick can retry.
+    let releaseHungPoll;
+    const hungPoll = new Promise(resolve => {
+      releaseHungPoll = resolve;
+    });
+    let markHungPollStarted;
+    const hungPollStarted = new Promise(resolve => {
+      markHungPollStarted = resolve;
+    });
+    let markRetryPollStarted;
+    const retryPollStarted = new Promise(resolve => {
+      markRetryPollStarted = resolve;
+    });
+    let releaseRetryPoll;
+    const retryPoll = new Promise(resolve => {
+      releaseRetryPoll = resolve;
+    });
+    let timeoutPollCount = 0;
+    await page.route(overviewPattern, async route => {
+      if (route.request().method() !== "GET") return route.continue();
+      timeoutPollCount += 1;
+      if (timeoutPollCount === 1) {
+        markHungPollStarted();
+        await hungPoll;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(baseOverview),
+        }).catch(() => {});
+        return;
+      }
+      markRetryPollStarted();
+      await retryPoll;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(baseOverview),
+      }).catch(() => {});
+    });
+    await page.goto(new URL("/channels.html", url).href);
+    await hungPollStarted;
+    await page.locator(".channels-error").waitFor({ timeout: 20000 });
+    await retryPollStarted;
+    assert(timeoutPollCount >= 2, "A timed-out poll must release the slot");
+    releaseHungPoll();
+    releaseRetryPoll();
+    await page.unroute(overviewPattern);
+    console.log("Channel poll timeout surfaces and retries.");
+
     // Polling is single-flight: a slow response makes the next visible tick
     // wait instead of stacking another request. It still keeps polling.
     const pollGate = { active: 0, max: 0, count: 0 };
@@ -1121,6 +1175,7 @@ try {
     // The real console reads the nested wechat object from the Server's
     // management snapshot; the QR and verification prompt follow that shape.
     const managementPattern = /\/api\/runtime\/management\?section=wechat$/;
+    const mockedWechatStatus = "微信登录: 等待扫码\n微信服务: 未运行";
     await page.route(managementPattern, async route => {
       await route.fulfill({
         status: 200,
@@ -1130,7 +1185,7 @@ try {
           notices: [],
           pending_operations: [],
           wechat: {
-            status: "微信登录: 等待扫码\n微信服务: 未运行",
+            status: mockedWechatStatus,
             running: false,
             login_pending: true,
             verification_required: true,
@@ -1146,7 +1201,10 @@ try {
     await page.getByRole("heading", { name: "宿主托管的微信", exact: true }).waitFor();
     await page.getByRole("img", { name: "微信登录二维码" }).waitFor();
     await page.locator('[data-wechat-notice="verification"]').waitFor();
-    assert((await page.locator(".channels-legacy-status").innerText()).trim().length > 0);
+    assert.equal(
+      await page.locator(".channels-legacy-status").getAttribute("data-wechat-status"),
+      mockedWechatStatus,
+    );
     await page.unroute(managementPattern);
     await page.unroute(overviewPattern);
     console.log("Legacy WeChat compatibility panel passed.");
