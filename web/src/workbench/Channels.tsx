@@ -530,7 +530,12 @@ export function Channels() {
   }, []);
 
   useEffect(() => {
-    const update = () => setRoute(readRoute());
+    const update = () => {
+      setRoute(readRoute());
+      setActionError("");
+      setActionNotice("");
+      setConfirmDelete(false);
+    };
     window.addEventListener("popstate", update);
     return () => window.removeEventListener("popstate", update);
   }, []);
