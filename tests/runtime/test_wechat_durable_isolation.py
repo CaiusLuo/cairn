@@ -97,7 +97,7 @@ def configured(
         state_dir=tmp_path / "state",
         account=WechatAccount(
             bot_token="fake-bot-token",
-            ilink_bot_id="bot",
+            ilink_bot_id="test-bot-" + uuid.uuid4().hex,
             base_url="https://example.test",
         ),
         approval=approval,

@@ -1,7 +1,9 @@
 """Offline WeChat iLink closed-loop regressions: no real WeChat or paid model."""
 
 import asyncio
+import sys
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -820,7 +822,9 @@ def test_queued_work_starts_while_poll_is_blocked(tmp_path: Path) -> None:
             workspace=workspace,
             state_dir=state.root,
             account=WechatAccount(
-                bot_token=TOKEN, ilink_bot_id="bot", base_url="http://127.0.0.1:1"
+                bot_token=TOKEN,
+                ilink_bot_id="test-bot-" + uuid4().hex,
+                base_url="http://127.0.0.1:1",
             ),
             approval=None,
             allowed_senders=frozenset({"u1"}),
@@ -1203,3 +1207,27 @@ def test_poll_updates_cancels_owned_poll_and_stop_waiter(tmp_path: Path) -> None
         assert client.finished.is_set()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux host-wide account ownership")
+def test_fake_accounts_are_independent_but_same_account_still_has_one_owner(
+    tmp_path: Path,
+) -> None:
+    """Parallel fixtures must not fight over a shared host-wide bot identity."""
+    with FakeILink() as first, FakeILink() as second:
+        account = _account(first)
+        assert _account(first).ilink_bot_id == account.ilink_bot_id
+        one = WechatServeLock(tmp_path / "one")
+        two = WechatServeLock(tmp_path / "two")
+        duplicate = WechatServeLock(tmp_path / "duplicate")
+        try:
+            one.acquire(description="first", account_id=account.ilink_bot_id)
+            two.acquire(description="second", account_id=_account(second).ilink_bot_id)
+            with pytest.raises(WechatLockError, match="account"):
+                duplicate.acquire(
+                    description="duplicate", account_id=account.ilink_bot_id
+                )
+        finally:
+            duplicate.release()
+            two.release()
+            one.release()

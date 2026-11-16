@@ -15,6 +15,7 @@ venv/
 .coverage
 .coverage.*
 coverage.xml
+test-results.xml
 htmlcov/
 
 # Ignore build and distribution directories

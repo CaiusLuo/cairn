@@ -20,7 +20,7 @@ async def _task_only_classifier(_text: str) -> ConversationDecision:
 def _account(fake: FakeILink) -> WechatAccount:
     return WechatAccount(
         bot_token=TOKEN,
-        ilink_bot_id="bot-1",
+        ilink_bot_id=fake.account_id,
         base_url=fake.url,
         ilink_user_id="owner",
     )

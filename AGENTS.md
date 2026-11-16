@@ -8,6 +8,7 @@ Cairn is a personal Agent for a Debian server, with one shared execution service
 - Implement the requested feature in the smallest useful end-to-end slice. Prefer maintained libraries, reuse existing components and remove obsolete abstractions instead of preserving old designs by default.
 - Significant refactors, file moves and replacements are welcome when they improve the actual product. Keep an active compatibility path only when a real caller or migration needs it.
 - Follow the branch requested for the task. Main is the default development line when the user authorizes it. Never silently reset, force-push, destroy data, deploy, or restart live services.
+- Choose tests by the changed behavior and its real callers; reuse still-valid results instead of rerunning full acceptance after every edit. Before removing a test, identify the concrete failure and the surviving protection. Do not hide regressions with retries or broad skips.
 - Run focused tests and appropriate Ruff/format/Mypy checks. Broaden verification for changes that cross persistence, permissions, cancellation or client boundaries. Report what ran, what passed and what remains untested.
 
 ## Behaviors that must stay correct

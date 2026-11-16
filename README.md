@@ -310,10 +310,11 @@ can evolve with the product; this documentation describes the implementation.
 ```sh
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy src tests
+uv run mypy src tests scripts/ci
 ```
 
 Run the regression tests for the code you change; the full offline suite is
-`uv run pytest`. [Tests](tests/README.md) and
-[operational scripts](scripts/README.md) have their own short indexes.
+`uv run pytest`. For parallel full acceptance with coverage and CI trigger
+behavior, see [Tests](tests/README.md#feedback-cost).
+[Operational scripts](scripts/README.md) have their own short index.
 [Documentation](docs/README.md) covers configuration, running and recovery.

@@ -2,55 +2,119 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# A new revision supersedes old acceptance work on this PR or branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  quality:
+  scope:
     runs-on: ubuntu-22.04
-
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.scope.outputs.docs_only }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: scope
+        name: Select acceptance scope
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 scripts/ci/scope.py
 
-      - name: Install uv and Python
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+  checks:
+    needs: scope
+    if: needs.scope.outputs.docs_only == 'false'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           python-version: "3.12"
           enable-cache: true
+      - run: uv sync --locked --all-groups
+      - name: Lint
+        run: uv run --no-sync ruff check .
+      - name: Check formatting
+        run: uv run --no-sync ruff format --check .
+      - name: Type check
+        run: uv run --no-sync mypy src tests scripts/ci
 
-      - name: Install dependencies
-        run: uv sync --locked --all-groups
-
+  acceptance:
+    needs: scope
+    if: needs.scope.outputs.docs_only == 'false'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked --all-groups
       - name: Install Linux sandbox
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
-
-      - name: Install Node
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
-
       - name: Build packaged Web assets
         run: |
           npm install --global pnpm@11.4.0
           pnpm --dir web install --frozen-lockfile
           pnpm --dir web build
-
-      - name: Lint
-        run: uv run ruff check .
-
-      - name: Check formatting
-        run: uv run ruff format --check .
-
-      - name: Type check
-        run: uv run mypy src tests
-
-      - name: Test with coverage
-        run: uv run pytest --cov=cairn --cov-report=term-missing
-
+      - name: Full suite with coverage
+        run: >-
+          uv run --no-sync pytest -n 2 --dist loadfile --max-worker-restart=0 --maxfail=1
+          --cov=cairn --cov-report=term-missing --cov-report=xml
+          --durations=30 --junitxml=test-results.xml
       - name: Verify installed Server wheel
         run: |
           uv build --wheel
-          uv run python scripts/ci/check_server_wheel.py dist/cairn-*.whl
+          uv run --no-sync python scripts/ci/check_server_wheel.py dist/cairn-*.whl
+      - name: Save test timings and coverage
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: test-results
+          path: |
+            test-results.xml
+            coverage.xml
+          retention-days: 7
+
+  # Preserve the existing required check name. Failed, cancelled or unexpectedly
+  # skipped dependencies must never turn the merge gate green.
+  quality:
+    if: always()
+    needs: [scope, checks, acceptance]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 2
+    steps:
+      - name: Require the selected checks
+        env:
+          SCOPE: ${{ needs.scope.result }}
+          DOCS_ONLY: ${{ needs.scope.outputs.docs_only }}
+          CHECKS: ${{ needs.checks.result }}
+          ACCEPTANCE: ${{ needs.acceptance.result }}
+        run: |
+          echo "scope=$SCOPE docs_only=$DOCS_ONLY checks=$CHECKS acceptance=$ACCEPTANCE"
+          test "$SCOPE" = success
+          if [ "$DOCS_ONLY" = true ]; then
+            test "$CHECKS" = skipped
+            test "$ACCEPTANCE" = skipped
+            echo "Documentation-only diff; executable acceptance intentionally skipped."
+          else
+            test "$DOCS_ONLY" = false
+            test "$CHECKS" = success
+            test "$ACCEPTANCE" = success
+          fi
