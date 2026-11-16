@@ -193,12 +193,21 @@ retried automatically.
 `src/cairn/channels` is the shared connection foundation for WeChat, QQ, Telegram
 and Discord. C0 implements configuration, private credential storage, lifecycle,
 health, inbound dedupe and outbound delivery audit. Full platform SDK adapters are
-C1-C4 and are not implemented yet, so the production registry is empty: creating
+not implemented yet, so the production registry is empty: creating
 a QQ/Telegram/Discord connection records configuration only, and `start` or
 `reconnect` returns `adapter_not_implemented` (HTTP 501). Such a connection never
 reports `running`, its platform summary stays `silent`, and it remains editable
 and deletable. The deterministic Fake Adapter is injected only by tests; real
 adapters will register through `ChannelAdapterRegistry`.
+
+The independent Web connection console at `/channels.html` shows the four fixed
+platforms, then platform and connection detail. Forms come from the
+Server-authored `GET /api/channels/capabilities` schema; a platform without a
+registered adapter can save configuration but cannot start, and the console never
+invents a running state. `platform`, `connection_id` and `mode` are URL
+parameters, so direct entry, refresh and browser history keep the same view.
+Credentials remain write-only, and every mutation uses the same request IDs and
+revisions as the API.
 
 WeChat remains the existing single host-owned session. The channel API projects
 that same `WechatSessionController` (QR login, Conversation/Run, Scheduler and
@@ -222,6 +231,7 @@ require the exact Origin or host bearer token):
 
 ```text
 GET    /api/channels
+GET    /api/channels/capabilities
 GET    /api/channels/{platform}/connections
 POST   /api/channels/{platform}/connections
 PATCH  /api/channels/connections/{id}
