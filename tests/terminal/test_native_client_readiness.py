@@ -11,11 +11,10 @@ import pytest
 from tests.support.server_process import NativeClient, wait_for
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux PTY acceptance")
 def test_send_waits_for_terminal_input_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    if sys.platform != "linux":
-        pytest.skip("Linux PTY acceptance")
     executable = tmp_path / "cairn-cli"
     gate = tmp_path / "enable-input"
     received = tmp_path / "received"
