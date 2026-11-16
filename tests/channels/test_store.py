@@ -535,6 +535,62 @@ def test_unreplied_inbound_lists_only_accepted_runs_without_an_intent(
     assert store.unreplied_inbound() == ()
 
 
+def test_schema_v2_rows_gain_empty_identity_columns(tmp_path: Path) -> None:
+    root = tmp_path / "channels"
+    root.mkdir()
+    with sqlite3.connect(root / "channels.sqlite3") as database:
+        database.executescript(
+            """
+            CREATE TABLE channel_inbound (
+                platform TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                external_message_id TEXT NOT NULL,
+                event_digest TEXT NOT NULL,
+                state TEXT NOT NULL,
+                conversation_id TEXT,
+                run_id TEXT,
+                conversation_binding TEXT NOT NULL DEFAULT '',
+                error TEXT,
+                received_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (connection_id, external_message_id)
+            );
+            CREATE TABLE channel_replies (
+                reply_id TEXT PRIMARY KEY,
+                connection_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                run_id TEXT NOT NULL UNIQUE,
+                target TEXT NOT NULL,
+                external_message_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO channel_replies VALUES (
+                'reply-old', 'ch-1', 'conv-old', 'run-old', 'chat', 'm-old',
+                'pending', 0, NULL, '', ''
+            );
+            INSERT INTO channel_inbound VALUES (
+                'telegram', 'ch-1', 'm-new', 'digest', 'accepted', 'conv-new',
+                'run-new', 'chat', NULL, '', ''
+            );
+            PRAGMA user_version=2;
+            """
+        )
+    store = ChannelStore(root)
+    old = store.reply_for_run("run-old")
+    assert old is not None
+    assert (old.sender_id, old.sender_role, old.adapter_identity) == ("", "", "")
+    pending = store.unreplied_inbound()
+    assert len(pending) == 1
+    assert (pending[0].sender_id, pending[0].sender_role) == ("", "")
+    assert pending[0].adapter_identity == ""
+    with sqlite3.connect(store.path) as database:
+        assert database.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
 def test_adapter_state_roundtrips_and_ignores_corrupt_json(tmp_path: Path) -> None:
     store = _store(tmp_path)
     connection_id = _create(store)

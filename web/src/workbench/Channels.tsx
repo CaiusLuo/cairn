@@ -40,7 +40,7 @@ const platformName: Record<ChannelPlatform, string> = {
 const platformBlurb: Record<ChannelPlatform, string> = {
   wechat: "复用宿主登录会话，在私聊与群聊中收发消息。",
   qq: "配置 QQ 机器人连接，集中管理运行状态。",
-  telegram: "用 Bot Token 接入 Telegram，接收私聊与群组消息。",
+  telegram: "用 Bot Token 接入 Telegram，接收私聊消息。",
   discord: "配置 Discord 机器人连接，集中管理运行状态。",
 };
 const displayLabel: Record<ChannelDisplayState, string> = {

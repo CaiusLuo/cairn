@@ -166,6 +166,7 @@ def inbound(
     *,
     sender_id: str = "sender-1",
     platform: ChannelPlatform = ChannelPlatform.TELEGRAM,
+    adapter_identity: str | None = "fake-bot",
 ) -> ChannelInboundEvent:
     return ChannelInboundEvent(
         platform=platform,
@@ -174,4 +175,5 @@ def inbound(
         sender_id=sender_id,
         conversation_binding="chat-1",
         text=text,
+        adapter_identity=adapter_identity,
     )

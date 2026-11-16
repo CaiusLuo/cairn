@@ -22,6 +22,7 @@ from cairn.channels.models import (
     ChannelDesiredState,
     ChannelDisabled,
     ChannelNotFound,
+    ChannelReplyRejected,
     ChannelSendStatus,
 )
 from cairn.channels.store import ChannelStore, ReplyRecord
@@ -95,6 +96,9 @@ class ChannelReplyCoordinator:
                 run_id=inbound.run_id,
                 target=inbound.target,
                 external_message_id=inbound.external_message_id,
+                sender_id=inbound.sender_id,
+                sender_role=inbound.sender_role,
+                adapter_identity=inbound.adapter_identity,
             )
         await self._reconcile_pending()
         self._recovery_task = asyncio.create_task(self._recover_loop())
@@ -119,6 +123,12 @@ class ChannelReplyCoordinator:
 
     async def _reconcile_pending(self) -> None:
         for reply in self.store.list_replies("pending"):
+            identity_error = self._identity_error(reply)
+            if identity_error is not None:
+                # A legacy or corrupted intent cannot prove which sender and
+                # Bot it belongs to. Fail closed instead of guessing.
+                self.store.complete_reply(reply.reply_id, "failed", identity_error)
+                continue
             run = self.runs.get_run(reply.run_id)
             if run is None:
                 # The Run is gone, so this intent can never become confirmable.
@@ -137,6 +147,10 @@ class ChannelReplyCoordinator:
 
     async def _deliver(self, reply: ReplyRecord, run: Run) -> None:
         if reply.state != "pending" or run.status not in TERMINAL:
+            return
+        identity_error = self._identity_error(reply)
+        if identity_error is not None:
+            self.store.complete_reply(reply.reply_id, "failed", identity_error)
             return
         try:
             view = self.manager.get_connection_view(reply.connection_id)
@@ -160,15 +174,14 @@ class ChannelReplyCoordinator:
             return
         body = self._body(run)
         try:
-            result = await self.manager.send(
-                reply.connection_id,
-                reply.target,
+            result = await self.manager.send_reply(
+                reply,
                 body,
                 f"channel-reply:{reply.run_id}",
             )
         except ChannelDeliveryUncertain as exc:
             self.store.complete_reply(reply.reply_id, "unknown", _safe_error(exc))
-        except (ChannelDisabled, ChannelNotFound) as exc:
+        except (ChannelReplyRejected, ChannelDisabled, ChannelNotFound) as exc:
             self.store.complete_reply(reply.reply_id, "failed", _safe_error(exc))
         except ChannelAdapterError as exc:
             # The adapter may still be starting or reconnecting. Keep the intent
@@ -183,6 +196,14 @@ class ChannelReplyCoordinator:
                 self.store.complete_reply(reply.reply_id, "failed", result.error)
             else:
                 self.store.complete_reply(reply.reply_id, "unknown", result.error)
+
+    @staticmethod
+    def _identity_error(reply: ReplyRecord) -> str | None:
+        if not reply.sender_id or not reply.sender_role or not reply.adapter_identity:
+            return "reply_identity_missing"
+        if reply.sender_role not in {"owner", "allowed"}:
+            return "reply_identity_invalid"
+        return None
 
     @staticmethod
     def _body(run: Run) -> str:

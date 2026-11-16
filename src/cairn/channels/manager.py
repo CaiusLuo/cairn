@@ -37,6 +37,7 @@ from cairn.channels.models import (
     ChannelPlatform,
     ChannelPlatformCapabilities,
     ChannelPlatformSummary,
+    ChannelReplyRejected,
     ChannelRevisionConflict,
     ChannelRuntimeStatus,
     ChannelSendResult,
@@ -398,43 +399,48 @@ class ChannelManager:
         replace_credentials: bool = False,
     ) -> ChannelConnectionView:
         self._require_stored(connection_id)
-        result: UpdateResult = self.store.update_connection(
-            connection_id,
-            expected_revision=expected_revision,
-            request_id=request_id,
-            changes=changes,
-            credentials=credentials,
-            replace_credentials=replace_credentials,
-        )
-        if result.replayed:
-            return self._stored_view(result.connection)
         runtime = self._runtime(connection_id)
-        if not result.connection.enabled:
-            await self._cancel_retry(connection_id)
-            try:
-                await self._stop_locked(runtime)
-            except Exception as exc:
-                runtime.last_error = self._safe_error(exc, runtime)
-            else:
+        # Hold the same lock as send_reply: a revocation or token replacement
+        # either commits before a reply is checked or waits until that send has
+        # finished. An in-flight reply is never delivered with a new identity.
+        async with runtime.lock:
+            result: UpdateResult = self.store.update_connection(
+                connection_id,
+                expected_revision=expected_revision,
+                request_id=request_id,
+                changes=changes,
+                credentials=credentials,
+                replace_credentials=replace_credentials,
+            )
+            if result.replayed:
+                return self._stored_view(result.connection)
+            if not result.connection.enabled:
+                await self._cancel_retry(connection_id)
+                try:
+                    await self._stop_adapter(runtime)
+                except Exception as exc:
+                    runtime.last_error = self._safe_error(exc, runtime)
+                else:
+                    runtime.last_error = None
+                    self._drop_adapter(connection_id)
+            elif result.credentials_replaced:
+                await self._cancel_retry(connection_id)
+                try:
+                    await self._stop_adapter(runtime)
+                except Exception as exc:
+                    # Keep the old adapter referenced rather than starting a
+                    # second instance that could open another session for the
+                    # same account.
+                    runtime.last_error = self._safe_error(exc, runtime)
+                    return self._stored_view(result.connection)
                 runtime.last_error = None
                 self._drop_adapter(connection_id)
-        elif result.credentials_replaced:
-            await self._cancel_retry(connection_id)
-            try:
-                await self._stop_locked(runtime)
-            except Exception as exc:
-                # Keep the old adapter referenced rather than starting a second
-                # instance that could open another session for the same account.
-                runtime.last_error = self._safe_error(exc, runtime)
-                return self._stored_view(result.connection)
-            runtime.last_error = None
-            self._drop_adapter(connection_id)
-            if result.connection.desired_state is ChannelDesiredState.RUNNING:
-                view = await self._try_start(result.connection)
-                if view.runtime.actual_state is not ChannelActualState.RUNNING:
-                    self._schedule_retry(connection_id)
-                return view
-        return self._stored_view(result.connection)
+                if result.connection.desired_state is ChannelDesiredState.RUNNING:
+                    view = await self._try_start_locked(result.connection)
+                    if view.runtime.actual_state is not ChannelActualState.RUNNING:
+                        self._schedule_retry(connection_id)
+                    return view
+            return self._stored_view(result.connection)
 
     async def delete_connection(
         self,
@@ -462,24 +468,26 @@ class ChannelManager:
         if current.revision != expected_revision:
             raise ChannelRevisionConflict(current.revision)
         runtime = self._runtime(connection_id)
-        await self._cancel_retry(connection_id)
-        try:
-            await self._stop_locked(runtime)
-        except Exception:
-            # Deleting the config while its adapter may still run would orphan
-            # network work; leave the connection intact so the host can retry.
-            raise ChannelAdapterError(
-                "channel adapter could not be stopped; connection was not deleted"
-            ) from None
-        self._drop_adapter(connection_id)
-        result = self.store.delete_connection(
-            connection_id,
-            expected_revision=expected_revision,
-            request_id=request_id,
-            confirmed=confirmed,
-        )
-        self._runtimes.pop(connection_id, None)
-        return result
+        async with runtime.lock:
+            await self._cancel_retry(connection_id)
+            try:
+                await self._stop_adapter(runtime)
+            except Exception:
+                # Deleting the config while its adapter may still run would
+                # orphan network work; leave the connection intact so the host
+                # can retry.
+                raise ChannelAdapterError(
+                    "channel adapter could not be stopped; connection was not deleted"
+                ) from None
+            self._drop_adapter(connection_id)
+            result = self.store.delete_connection(
+                connection_id,
+                expected_revision=expected_revision,
+                request_id=request_id,
+                confirmed=confirmed,
+            )
+            self._runtimes.pop(connection_id, None)
+            return result
 
     async def start_connection(
         self, connection_id: str, request_id: str
@@ -559,20 +567,23 @@ class ChannelManager:
         )
         if claim.replayed:
             return self._view_from_receipt(claim, connection_id)
-        current = self.store.set_desired_state(
-            connection_id, ChannelDesiredState.STOPPED
-        )
-        await self._cancel_retry(connection_id)
         runtime = self._runtime(connection_id)
-        try:
-            await self._stop_locked(runtime)
-        except Exception as exc:
-            runtime.last_error = self._safe_error(exc, runtime)
-        else:
-            runtime.last_error = None
-        view = self._stored_view(current)
-        self.store.complete_request(request_id, self._view_payload(view))
-        return view
+        # Commit the stopped intent under the send lock so no reply can start
+        # after this stop and before the adapter is actually stopped.
+        async with runtime.lock:
+            current = self.store.set_desired_state(
+                connection_id, ChannelDesiredState.STOPPED
+            )
+            await self._cancel_retry(connection_id)
+            try:
+                await self._stop_adapter(runtime)
+            except Exception as exc:
+                runtime.last_error = self._safe_error(exc, runtime)
+            else:
+                runtime.last_error = None
+            view = self._stored_view(current)
+            self.store.complete_request(request_id, self._view_payload(view))
+            return view
 
     async def reconnect_connection(
         self, connection_id: str, request_id: str
@@ -637,7 +648,60 @@ class ChannelManager:
         message: str,
         idempotency_key: str,
     ) -> ChannelSendResult:
-        view = self.get_connection_view(connection_id)
+        runtime = self._runtime(connection_id)
+        async with runtime.lock:
+            view = self.get_connection_view(connection_id)
+            return await self._send_locked(view, target, message, idempotency_key)
+
+    async def send_reply(
+        self,
+        reply: ReplyRecord,
+        message: str,
+        idempotency_key: str,
+    ) -> ChannelSendResult:
+        """Send a durable reply only while its captured identity is still safe.
+
+        Authorization, Bot identity and the delivery claim share the same
+        per-connection lock as stop and token replacement. A reply therefore
+        cannot pass the check and then be delivered by another Bot, and a
+        revocation cannot commit while an already-authorized send is in flight.
+        """
+        runtime = self._runtime(reply.connection_id)
+        async with runtime.lock:
+            view = self.get_connection_view(reply.connection_id)
+            if not view.connection.enabled:
+                raise ChannelDisabled("channel connection is disabled")
+            if view.connection.desired_state is not ChannelDesiredState.RUNNING:
+                raise ChannelDisabled("channel connection is not running")
+            if not reply.sender_id or not reply.sender_role:
+                raise ChannelReplyRejected("reply_identity_missing")
+            if reply.sender_role not in {"owner", "allowed"}:
+                raise ChannelReplyRejected("reply_identity_invalid")
+            role = self._sender_role(view.connection, reply.sender_id)
+            if role is None:
+                raise ChannelReplyRejected("sender_not_authorized")
+            if reply.sender_role == "owner" and role != "owner":
+                raise ChannelReplyRejected("sender_role_revoked")
+            adapter = self._adapter_for_view(view)
+            if adapter.health().actual_state is not ChannelActualState.RUNNING:
+                raise ChannelAdapterError("channel adapter is not running")
+            if not reply.adapter_identity:
+                raise ChannelReplyRejected("reply_identity_missing")
+            identity = adapter.identity()
+            if identity is None:
+                raise ChannelReplyRejected("reply_bot_identity_unavailable")
+            if identity != reply.adapter_identity:
+                raise ChannelReplyRejected("reply_bot_mismatch")
+            return await self._send_locked(view, reply.target, message, idempotency_key)
+
+    async def _send_locked(
+        self,
+        view: ChannelConnectionView,
+        target: str,
+        message: str,
+        idempotency_key: str,
+    ) -> ChannelSendResult:
+        connection_id = view.connection.connection_id
         if not view.connection.enabled:
             raise ChannelDisabled("channel connection is disabled")
         if not target.strip() or not message.strip():
@@ -701,7 +765,7 @@ class ChannelManager:
         # which ConversationService resolves to the original Run. An "unknown"
         # row is reconciled the same way instead of staying rejected forever.
         async with runtime.inbound_lock:
-            claim = self.store.claim_inbound(event)
+            claim = self.store.claim_inbound(event, sender_role=role)
             if not claim.created:
                 if claim.event_digest != inbound_digest(event):
                     raise ChannelInboundConflict(
@@ -714,9 +778,18 @@ class ChannelManager:
                         and claim.run_id is not None
                     ):
                         # A previous attempt may have accepted the Run and then
-                        # stopped before writing the reply intent.
+                        # stopped before writing the reply intent. Use the
+                        # identities recorded at admission; a legacy row without
+                        # them stays unverifiable and will not be delivered.
                         self._claim_reply_intent(
-                            event, claim.conversation_id, claim.run_id
+                            connection_id=event.connection_id,
+                            conversation_id=claim.conversation_id,
+                            run_id=claim.run_id,
+                            target=event.conversation_binding,
+                            external_message_id=event.external_message_id,
+                            sender_id=claim.sender_id,
+                            sender_role=claim.sender_role,
+                            adapter_identity=claim.adapter_identity,
                         )
                     return ChannelInboundResult(
                         state=claim.state,
@@ -759,7 +832,16 @@ class ChannelManager:
                         conversation_id=recovered[0],
                         run_id=recovered[1],
                     )
-                    self._claim_reply_intent(event, recovered[0], recovered[1])
+                    self._claim_reply_intent(
+                        connection_id=event.connection_id,
+                        conversation_id=recovered[0],
+                        run_id=recovered[1],
+                        target=event.conversation_binding,
+                        external_message_id=event.external_message_id,
+                        sender_id=event.sender_id,
+                        sender_role=role,
+                        adapter_identity=event.adapter_identity or "",
+                    )
                 else:
                     self.store.complete_inbound(
                         event.connection_id,
@@ -779,7 +861,16 @@ class ChannelManager:
                         conversation_id=recovered[0],
                         run_id=recovered[1],
                     )
-                    self._claim_reply_intent(event, recovered[0], recovered[1])
+                    self._claim_reply_intent(
+                        connection_id=event.connection_id,
+                        conversation_id=recovered[0],
+                        run_id=recovered[1],
+                        target=event.conversation_binding,
+                        external_message_id=event.external_message_id,
+                        sender_id=event.sender_id,
+                        sender_role=role,
+                        adapter_identity=event.adapter_identity or "",
+                    )
                     return ChannelInboundResult(
                         state="accepted",
                         conversation_id=recovered[0],
@@ -809,7 +900,16 @@ class ChannelManager:
                 conversation_id=conversation.conversation_id,
                 run_id=run.run_id,
             )
-            self._claim_reply_intent(event, conversation.conversation_id, run.run_id)
+            self._claim_reply_intent(
+                connection_id=event.connection_id,
+                conversation_id=conversation.conversation_id,
+                run_id=run.run_id,
+                target=event.conversation_binding,
+                external_message_id=event.external_message_id,
+                sender_id=event.sender_id,
+                sender_role=role,
+                adapter_identity=event.adapter_identity or "",
+            )
             return ChannelInboundResult(
                 state="accepted",
                 conversation_id=conversation.conversation_id,
@@ -818,16 +918,25 @@ class ChannelManager:
 
     def _claim_reply_intent(
         self,
-        event: ChannelInboundEvent,
+        *,
+        connection_id: str,
         conversation_id: str,
         run_id: str,
+        target: str,
+        external_message_id: str,
+        sender_id: str,
+        sender_role: str,
+        adapter_identity: str,
     ) -> None:
         self.store.claim_reply(
-            connection_id=event.connection_id,
+            connection_id=connection_id,
             conversation_id=conversation_id,
             run_id=run_id,
-            target=event.conversation_binding,
-            external_message_id=event.external_message_id,
+            target=target,
+            external_message_id=external_message_id,
+            sender_id=sender_id,
+            sender_role=sender_role,
+            adapter_identity=adapter_identity,
         )
 
     @staticmethod
@@ -962,61 +1071,67 @@ class ChannelManager:
     async def _try_start(self, connection: ChannelConnection) -> ChannelConnectionView:
         runtime = self._runtime(connection.connection_id)
         async with runtime.lock:
-            current = self.store.get_connection(connection.connection_id)
-            if current is None:
-                raise ChannelNotFound(connection.connection_id)
-            if (
-                not current.enabled
-                or current.desired_state is not ChannelDesiredState.RUNNING
-            ):
-                return self._stored_view(current)
-            try:
-                adapter = self._adapter_for(current)
-                health = adapter.health()
-                if health.actual_state is ChannelActualState.RUNNING:
-                    # A repeated start must not open a second transport or
-                    # session for a connection that is already up.
-                    runtime.attempts = 0
-                    runtime.last_error = None
-                    runtime.next_retry_at = None
-                    return self._stored_view(current)
-                if health.actual_state is ChannelActualState.CONNECTING:
-                    # Do not call start again while the adapter is connecting;
-                    # count the wait so recovery stays bounded.
-                    runtime.attempts += 1
-                    runtime.next_retry_at = None
-                    return self._stored_view(current)
-                await adapter.start()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                runtime.attempts += 1
-                runtime.last_error = self._safe_error(exc, runtime)
-                runtime.next_retry_at = None
-                health = (
-                    runtime.adapter.health()
-                    if runtime.adapter is not None
-                    else ChannelAdapterHealth(
-                        actual_state=ChannelActualState.ERROR,
-                        last_error=runtime.last_error,
-                    )
-                )
-                return ChannelConnectionView(
-                    connection=current,
-                    runtime=ChannelRuntimeStatus(
-                        connection_id=current.connection_id,
-                        # A failed start is an error even if the adapter has not
-                        # updated its own health yet.
-                        actual_state=ChannelActualState.ERROR,
-                        last_connected_at=health.last_connected_at,
-                        last_heartbeat_at=health.last_heartbeat_at,
-                        last_error=runtime.last_error,
-                    ),
-                )
-            runtime.attempts = 0
-            runtime.last_error = None
-            runtime.next_retry_at = None
+            return await self._try_start_locked(connection)
+
+    async def _try_start_locked(
+        self, connection: ChannelConnection
+    ) -> ChannelConnectionView:
+        runtime = self._runtime(connection.connection_id)
+        current = self.store.get_connection(connection.connection_id)
+        if current is None:
+            raise ChannelNotFound(connection.connection_id)
+        if (
+            not current.enabled
+            or current.desired_state is not ChannelDesiredState.RUNNING
+        ):
             return self._stored_view(current)
+        try:
+            adapter = self._adapter_for(current)
+            health = adapter.health()
+            if health.actual_state is ChannelActualState.RUNNING:
+                # A repeated start must not open a second transport or
+                # session for a connection that is already up.
+                runtime.attempts = 0
+                runtime.last_error = None
+                runtime.next_retry_at = None
+                return self._stored_view(current)
+            if health.actual_state is ChannelActualState.CONNECTING:
+                # Do not call start again while the adapter is connecting;
+                # count the wait so recovery stays bounded.
+                runtime.attempts += 1
+                runtime.next_retry_at = None
+                return self._stored_view(current)
+            await adapter.start()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            runtime.attempts += 1
+            runtime.last_error = self._safe_error(exc, runtime)
+            runtime.next_retry_at = None
+            health = (
+                runtime.adapter.health()
+                if runtime.adapter is not None
+                else ChannelAdapterHealth(
+                    actual_state=ChannelActualState.ERROR,
+                    last_error=runtime.last_error,
+                )
+            )
+            return ChannelConnectionView(
+                connection=current,
+                runtime=ChannelRuntimeStatus(
+                    connection_id=current.connection_id,
+                    # A failed start is an error even if the adapter has not
+                    # updated its own health yet.
+                    actual_state=ChannelActualState.ERROR,
+                    last_connected_at=health.last_connected_at,
+                    last_heartbeat_at=health.last_heartbeat_at,
+                    last_error=runtime.last_error,
+                ),
+            )
+        runtime.attempts = 0
+        runtime.last_error = None
+        runtime.next_retry_at = None
+        return self._stored_view(current)
 
     def _is_stopping(self) -> bool:
         return self._stopping
@@ -1086,10 +1201,6 @@ class ChannelManager:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
-
-    async def _stop_locked(self, runtime: _Runtime) -> None:
-        async with runtime.lock:
-            await self._stop_adapter(runtime)
 
     async def _stop_adapter(self, runtime: _Runtime) -> None:
         if runtime.adapter is not None and not runtime.adapter.externally_managed:

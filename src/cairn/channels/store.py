@@ -36,7 +36,7 @@ from cairn.channels.models import (
     validate_metadata,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 REQUEST_RETENTION_DAYS = 30
 
 
@@ -122,6 +122,9 @@ class InboundClaim:
     conversation_id: str | None
     run_id: str | None
     error: str | None
+    sender_id: str
+    sender_role: str
+    adapter_identity: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +148,12 @@ class ReplyRecord:
     run_id: str
     target: str
     external_message_id: str
+    # Trusted identities captured when the inbound message was admitted. A
+    # reply with an empty identity predates the identity binding and is never
+    # delivered.
+    sender_id: str
+    sender_role: str
+    adapter_identity: str
     state: str
     attempts: int
     error: str | None
@@ -159,6 +168,9 @@ class UnrepliedInbound:
     run_id: str
     target: str
     external_message_id: str
+    sender_id: str
+    sender_role: str
+    adapter_identity: str
 
 
 class ChannelStore:
@@ -179,7 +191,7 @@ class ChannelStore:
             raise ValueError("Channel store cannot be a symlink")
         with self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in (0, 1, SCHEMA_VERSION):
+            if version not in (0, 1, 2, SCHEMA_VERSION):
                 raise ValueError("Unsupported channel store schema")
             self._create_schema(connection)
             columns = {
@@ -204,6 +216,24 @@ class ChannelStore:
                     "ALTER TABLE channel_inbound ADD COLUMN "
                     "conversation_binding TEXT NOT NULL DEFAULT ''"
                 )
+            for column in ("sender_id", "sender_role", "adapter_identity"):
+                if column not in inbound_columns:
+                    connection.execute(
+                        f"ALTER TABLE channel_inbound ADD COLUMN "
+                        f"{column} TEXT NOT NULL DEFAULT ''"
+                    )
+            reply_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(channel_replies)"
+                ).fetchall()
+            }
+            for column in ("sender_id", "sender_role", "adapter_identity"):
+                if column not in reply_columns:
+                    connection.execute(
+                        f"ALTER TABLE channel_replies ADD COLUMN "
+                        f"{column} TEXT NOT NULL DEFAULT ''"
+                    )
             connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         with suppress(OSError):
             self.path.chmod(0o600)
@@ -264,6 +294,9 @@ class ChannelStore:
                 conversation_id TEXT,
                 run_id TEXT,
                 conversation_binding TEXT NOT NULL DEFAULT '',
+                sender_id TEXT NOT NULL DEFAULT '',
+                sender_role TEXT NOT NULL DEFAULT '',
+                adapter_identity TEXT NOT NULL DEFAULT '',
                 error TEXT,
                 received_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -288,6 +321,9 @@ class ChannelStore:
                 run_id TEXT NOT NULL UNIQUE,
                 target TEXT NOT NULL,
                 external_message_id TEXT NOT NULL,
+                sender_id TEXT NOT NULL DEFAULT '',
+                sender_role TEXT NOT NULL DEFAULT '',
+                adapter_identity TEXT NOT NULL DEFAULT '',
                 state TEXT NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 error TEXT,
@@ -338,6 +374,9 @@ class ChannelStore:
             run_id=str(row["run_id"]),
             target=str(row["target"]),
             external_message_id=str(row["external_message_id"]),
+            sender_id=str(row["sender_id"]),
+            sender_role=str(row["sender_role"]),
+            adapter_identity=str(row["adapter_identity"]),
             state=str(row["state"]),
             attempts=int(row["attempts"]),
             error=str(row["error"]) if row["error"] is not None else None,
@@ -813,21 +852,27 @@ class ChannelStore:
                 )
             self._finish_request(connection, request_id, result, now)
 
-    def claim_inbound(self, event: ChannelInboundEvent) -> InboundClaim:
+    def claim_inbound(
+        self, event: ChannelInboundEvent, *, sender_role: str = ""
+    ) -> InboundClaim:
         digest = inbound_digest(event)
         now = utc_now()
         with self._connect() as connection:
             inserted = connection.execute(
                 "INSERT OR IGNORE INTO channel_inbound "
                 "(platform, connection_id, external_message_id, event_digest, "
-                "state, conversation_binding, received_at, updated_at) "
-                "VALUES (?, ?, ?, ?, 'claimed', ?, ?, ?)",
+                "state, conversation_binding, sender_id, sender_role, "
+                "adapter_identity, received_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 'claimed', ?, ?, ?, ?, ?, ?)",
                 (
                     event.platform.value,
                     event.connection_id,
                     event.external_message_id,
                     digest,
                     event.conversation_binding,
+                    event.sender_id,
+                    sender_role,
+                    event.adapter_identity or "",
                     event.received_at,
                     now,
                 ),
@@ -850,6 +895,9 @@ class ChannelStore:
                 ),
                 run_id=str(row["run_id"]) if row["run_id"] is not None else None,
                 error=str(row["error"]) if row["error"] is not None else None,
+                sender_id=str(row["sender_id"]),
+                sender_role=str(row["sender_role"]),
+                adapter_identity=str(row["adapter_identity"]),
             )
 
     def complete_inbound(
@@ -977,6 +1025,9 @@ class ChannelStore:
         run_id: str,
         target: str,
         external_message_id: str,
+        sender_id: str = "",
+        sender_role: str = "",
+        adapter_identity: str = "",
     ) -> ReplyRecord:
         """Persist one reply intent per accepted Run, idempotently."""
         raw = f"channel-reply:{connection_id}:{external_message_id}"
@@ -986,8 +1037,9 @@ class ChannelStore:
             connection.execute(
                 "INSERT OR IGNORE INTO channel_replies "
                 "(reply_id, connection_id, conversation_id, run_id, target, "
-                "external_message_id, state, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                "external_message_id, sender_id, sender_role, adapter_identity, "
+                "state, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
                 (
                     reply_id,
                     connection_id,
@@ -995,6 +1047,9 @@ class ChannelStore:
                     run_id,
                     target,
                     external_message_id,
+                    sender_id,
+                    sender_role,
+                    adapter_identity,
                     now,
                     now,
                 ),
@@ -1074,7 +1129,8 @@ class ChannelStore:
             rows = connection.execute(
                 "SELECT inbound.connection_id, inbound.conversation_id, "
                 "inbound.run_id, inbound.conversation_binding, "
-                "inbound.external_message_id "
+                "inbound.external_message_id, inbound.sender_id, "
+                "inbound.sender_role, inbound.adapter_identity "
                 "FROM channel_inbound AS inbound "
                 "LEFT JOIN channel_replies AS reply ON reply.run_id = inbound.run_id "
                 "WHERE inbound.state = 'accepted' AND inbound.run_id IS NOT NULL "
@@ -1088,6 +1144,9 @@ class ChannelStore:
                 run_id=str(row["run_id"]),
                 target=str(row["conversation_binding"]),
                 external_message_id=str(row["external_message_id"]),
+                sender_id=str(row["sender_id"]),
+                sender_role=str(row["sender_role"]),
+                adapter_identity=str(row["adapter_identity"]),
             )
             for row in rows
         )
