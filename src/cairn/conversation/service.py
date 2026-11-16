@@ -26,7 +26,7 @@ from cairn.conversation.models import (
     workspace_id_for,
 )
 from cairn.conversation.store import DomainStore
-from cairn.development.catalogue import RuntimeTask
+from cairn.development.catalogue import ChannelPrincipal, RuntimeTask
 from cairn.development.execution.runtime import ServiceExecution
 from cairn.development.handoff import DevelopmentHandoff
 from cairn.development.models import HandoffStatus
@@ -73,6 +73,11 @@ class RunLedger:
     ) -> None:
         self.store = store
         self.run_id = run.run_id
+        channel_principal = None
+        if "channel_principal" in run.metadata:
+            channel_principal = ChannelPrincipal.model_validate(
+                run.metadata["channel_principal"]
+            )
         self.task = RuntimeTask(
             task_id=run.run_id,
             prompt=run.prompt or "message",
@@ -81,6 +86,7 @@ class RunLedger:
             conversation_key=run.conversation_id,
             input_prompt=run.prompt or None,
             model_id=run.metadata.get("model_id"),
+            channel_principal=channel_principal,
             session_id=session_id,
             history_origins=history_origins,
             historical_context=historical_context,
@@ -509,6 +515,7 @@ class ConversationService:
         request_id: str,
         *,
         model_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Run:
         if self.stopping or self.worker is None or self.worker.done():
             raise RuntimeError("Conversation runtime is not accepting runs")
@@ -540,6 +547,7 @@ class ConversationService:
                 source=source,
                 request_id=request_id,
                 model_id=model_id,
+                metadata=metadata,
             )
         except ValueError as exc:
             message = str(exc)

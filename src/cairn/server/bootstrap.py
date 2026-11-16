@@ -24,7 +24,10 @@ from cairn.agent.models.runtime import ProviderRuntime, build_provider_runtime
 from cairn.agent.workspace.lease import WorkspaceLease
 from cairn.channels.adapter import ChannelAdapterRegistry
 from cairn.channels.manager import ChannelManager
+from cairn.channels.models import ChannelPlatform
+from cairn.channels.replies import ChannelReplyCoordinator
 from cairn.channels.store import ChannelStore
+from cairn.channels.telegram import telegram_adapter_factory
 from cairn.channels.wechat import wechat_legacy_adapter
 from cairn.conversation.service import ConversationService
 from cairn.conversation.store import DomainStore
@@ -140,11 +143,21 @@ def runtime_app(
                 raise ValueError(
                     "Channel state must be private and outside writable roots"
                 )
-        channel_manager = ChannelManager(
-            store=ChannelStore(channel_root),
-            conversations=conversations,
-            adapters=ChannelAdapterRegistry(),
+        channel_store = ChannelStore(channel_root)
+        channel_adapters = ChannelAdapterRegistry()
+        channel_adapters.register(
+            ChannelPlatform.TELEGRAM, telegram_adapter_factory(channel_store)
         )
+        channel_manager = ChannelManager(
+            store=channel_store,
+            conversations=conversations,
+            adapters=channel_adapters,
+        )
+        channel_replies = ChannelReplyCoordinator(
+            manager=channel_manager,
+            runs=conversations,
+        )
+        conversations.add_run_settled_listener(channel_replies.on_run_settled)
         web = create_app(
             WebConfig(
                 workspace=workspace,
@@ -324,6 +337,7 @@ def runtime_app(
             review_delivery,
             review_schedule,
             channel_manager,
+            channel_replies,
             weekly_reviews,
             weekly_review_schedule,
         )

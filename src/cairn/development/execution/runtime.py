@@ -51,6 +51,19 @@ from cairn.shared.credential_paths import protect_host_paths
 from cairn.shared.redaction import StreamRedactor, redact_text, redact_value
 
 
+def apply_channel_tool_scope(agent: Agent, task: RuntimeTask) -> None:
+    """Give a non-owner Channel sender an explicit, empty capability set.
+
+    Authorization happens before this Agent is built; this is the second gate
+    that keeps host tools out of a Channel turn.
+    """
+    principal = task.channel_principal
+    if principal is None or principal.role == "owner":
+        return
+    for schema in agent.tools.schemas():
+        agent.tools.unregister_tool(schema["function"]["name"])
+
+
 class ServiceExecution:
     def __init__(
         self,
@@ -255,6 +268,11 @@ class ServiceExecution:
                 agent.after_tools = development.after_tools
             elif not self.allow_shell:
                 agent.tools.unregister_tool("bash")
+            if (
+                task.channel_principal is not None
+                and task.channel_principal.role != "owner"
+            ):
+                apply_channel_tool_scope(agent, task)
 
             def binding() -> SessionBinding:
                 return SessionBinding(

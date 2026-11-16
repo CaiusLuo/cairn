@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from cairn.channels.manager import ChannelManager
+from cairn.channels.replies import ChannelReplyCoordinator
 from cairn.conversation.service import ConversationService
 from cairn.development.execution.runtime import ServiceExecution
 from cairn.development.service import TaskService
@@ -30,6 +31,7 @@ async def running_runtime(
     review_delivery: ReviewDeliveryCoordinator | None = None,
     review_schedule: ReviewScheduleCoordinator | None = None,
     channels: ChannelManager | None = None,
+    channel_replies: ChannelReplyCoordinator | None = None,
     weekly_reviews: WeeklyReviewService | None = None,
     weekly_review_schedule: WeeklyReviewScheduleCoordinator | None = None,
 ) -> AsyncIterator[None]:
@@ -40,6 +42,8 @@ async def running_runtime(
         await controls.start()
         if channels is not None:
             await channels.start()
+        if channel_replies is not None:
+            await channel_replies.start()
         if reviews is not None:
             await reviews.start()
         if weekly_reviews is not None:
@@ -80,19 +84,23 @@ async def running_runtime(
                                         await reviews.close()
                                 finally:
                                     try:
-                                        if channels is not None:
-                                            await channels.close()
+                                        if channel_replies is not None:
+                                            await channel_replies.close()
                                     finally:
                                         try:
-                                            await controls.close()
+                                            if channels is not None:
+                                                await channels.close()
                                         finally:
                                             try:
-                                                await conversations.close()
+                                                await controls.close()
                                             finally:
                                                 try:
-                                                    await service.close()
+                                                    await conversations.close()
                                                 finally:
-                                                    execution.close()
+                                                    try:
+                                                        await service.close()
+                                                    finally:
+                                                        execution.close()
 
         owned = asyncio.create_task(cleanup())
         late = await await_owned(owned)

@@ -1067,14 +1067,17 @@ class DomainStore:
         task_id: str | None = None,
         model_id: str | None = None,
         status: RunStatus = RunStatus.QUEUED,
+        metadata: dict[str, Any] | None = None,
     ) -> Run:
         """Atomically accept one request and create its Run, or return the original."""
         import hashlib
         import json as _json_module
 
-        request_facts = [prompt, source.value, mode, task_id]
+        request_facts: list[object] = [prompt, source.value, mode, task_id]
         if model_id is not None:
             request_facts.append(model_id)
+        if metadata is not None:
+            request_facts.append(metadata)
         fingerprint = hashlib.sha256(
             _json_module.dumps(request_facts, ensure_ascii=False).encode()
         ).hexdigest()
@@ -1124,6 +1127,7 @@ class DomainStore:
                 source=source,
                 mode=cast(Any, mode),
                 metadata={
+                    **(metadata or {}),
                     "prompt": prompt,
                     "request_id": request_id,
                     "source": source.value,

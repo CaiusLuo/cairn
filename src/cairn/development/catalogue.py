@@ -61,6 +61,22 @@ class TaskInput(BaseModel):
     worktree: str | None = None
 
 
+class ChannelPrincipal(BaseModel):
+    """Trusted inbound identity attached to one channel Run.
+
+    The adapter derives ``sender_id`` from the platform update, and the host
+    records the role from the connection's owner/allowlist. Message text never
+    contributes to this model.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    connection_id: str = Field(min_length=1, max_length=100)
+    platform: str = Field(min_length=1, max_length=20)
+    sender_id: str = Field(min_length=1, max_length=200)
+    role: Literal["owner", "allowed"]
+    conversation_binding: str = Field(min_length=1, max_length=200)
+
+
 class RuntimeTask(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     task_id: str = Field(default_factory=lambda: "task-" + uuid4().hex)
@@ -69,6 +85,7 @@ class RuntimeTask(BaseModel):
     model_id: str | None = None
     delivery_recipient: str | None = Field(default=None, max_length=256)
     delivery_account: str | None = Field(default=None, max_length=256)
+    channel_principal: ChannelPrincipal | None = None
     mode: Literal["conversation", "development"] = "development"
     conversation_key: str | None = Field(default=None, max_length=200)
     development_prompt: str | None = Field(default=None, min_length=1, max_length=32000)

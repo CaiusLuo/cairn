@@ -28,6 +28,7 @@ class FakeIntake:
     submissions: list[tuple[str, str, ConversationSource, str]] = field(
         default_factory=list
     )
+    metadata: list[dict[str, object] | None] = field(default_factory=list)
     fail: bool = False
     fail_after_submit: bool = False
     conversations: dict[tuple[str, str, str, str], SimpleNamespace] = field(
@@ -64,6 +65,7 @@ class FakeIntake:
         request_id: str,
         *,
         model_id: str | None = None,
+        metadata: dict[str, object] | None = None,
     ) -> Any:
         if self.fail:
             raise RuntimeError("intake failed with secret-value")
@@ -71,12 +73,19 @@ class FakeIntake:
         if key in self.runs:
             return self.runs[key]
         self.submissions.append((conversation_id, prompt, source, request_id))
+        self.metadata.append(metadata)
         run = SimpleNamespace(run_id=f"run-{len(self.submissions)}")
         self.runs[key] = run
         if self.fail_after_submit:
             self.fail_after_submit = False
             raise RuntimeError("intake lost its response")
         return run
+
+    def get_run(self, run_id: str) -> Any:
+        return next(
+            (run for run in self.runs.values() if run.run_id == run_id),
+            None,
+        )
 
     def get_channel_conversation(
         self,

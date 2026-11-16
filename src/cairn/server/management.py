@@ -862,10 +862,17 @@ class ServerControls:
             raise ValueError("Task delivery identity is not authorized")
 
     def configure_agent(self, agent: Agent, task: RuntimeTask) -> None:
-        # An extra trusted project sender is not the personal-memory owner.
+        # A channel sender's role comes from the stored connection. Only the
+        # owner gets personal memory and host tools; an allowed guest gets no
+        # personal capability, and an unknown sender never reaches execution.
+        channel = task.channel_principal
         personal = (
-            task.delivery_recipient is None
-            or task.delivery_recipient == self.wechat.recipient_id()
+            channel.role == "owner"
+            if channel is not None
+            else (
+                task.delivery_recipient is None
+                or task.delivery_recipient == self.wechat.recipient_id()
+            )
         )
         if personal and self.services.memory:
             agent.personal_context = "\n\n".join(
@@ -885,12 +892,13 @@ class ServerControls:
                         require_trusted_message=True,
                     )
                 )
-        library = layered_skills(
-            Path(task.worktree) if task.worktree else self.workspace
-        )
-        agent.skill_library = library
-        agent.tools.register_tool(ReadSkillTool(library))
-        agent.tools.register_tool(ReadSkillResourceTool(library))
+        if channel is None or channel.role == "owner":
+            library = layered_skills(
+                Path(task.worktree) if task.worktree else self.workspace
+            )
+            agent.skill_library = library
+            agent.tools.register_tool(ReadSkillTool(library))
+            agent.tools.register_tool(ReadSkillResourceTool(library))
 
     async def _scheduled(
         self, prompt: str, cancel: asyncio.Event, ident: str, *, run_key: str = ""

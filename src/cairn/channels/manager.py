@@ -76,7 +76,10 @@ class ChannelIntake(Protocol):
         request_id: str,
         *,
         model_id: str | None = None,
+        metadata: dict[str, object] | None = None,
     ) -> Run: ...
+
+    def get_run(self, run_id: str) -> Run | None: ...
 
     def get_channel_conversation(
         self,
@@ -679,8 +682,10 @@ class ChannelManager:
             raise ChannelInboundConflict("inbound platform does not match connection")
         # Authorization precedes every durable side effect. An owner or an
         # explicitly allowed sender is required; an empty allowlist denies all
-        # non-owner identities.
-        if not self._sender_authorized(connection, event.sender_id):
+        # non-owner identities. The role comes from the stored connection, not
+        # from message text.
+        role = self._sender_role(connection, event.sender_id)
+        if role is None:
             raise ChannelInboundRejected("sender is not authorized")
         if not self._adapter_running(connection):
             raise ChannelInboundRejected("channel connection is not running")
@@ -698,6 +703,16 @@ class ChannelManager:
                         "external_message_id was reused for different content"
                     )
                 if claim.state in {"accepted", "rejected"}:
+                    if (
+                        claim.state == "accepted"
+                        and claim.conversation_id is not None
+                        and claim.run_id is not None
+                    ):
+                        # A previous attempt may have accepted the Run and then
+                        # stopped before writing the reply intent.
+                        self._claim_reply_intent(
+                            event, claim.conversation_id, claim.run_id
+                        )
                     return ChannelInboundResult(
                         state=claim.state,
                         duplicate=True,
@@ -719,6 +734,15 @@ class ChannelManager:
                     event.text,
                     ConversationSource.CHANNEL,
                     request_id,
+                    metadata={
+                        "channel_principal": {
+                            "connection_id": event.connection_id,
+                            "platform": event.platform.value,
+                            "sender_id": event.sender_id,
+                            "role": role,
+                            "conversation_binding": event.conversation_binding,
+                        }
+                    },
                 )
             except asyncio.CancelledError:
                 recovered = self._reconcile_inbound(event, request_id)
@@ -730,6 +754,7 @@ class ChannelManager:
                         conversation_id=recovered[0],
                         run_id=recovered[1],
                     )
+                    self._claim_reply_intent(event, recovered[0], recovered[1])
                 else:
                     self.store.complete_inbound(
                         event.connection_id,
@@ -749,6 +774,7 @@ class ChannelManager:
                         conversation_id=recovered[0],
                         run_id=recovered[1],
                     )
+                    self._claim_reply_intent(event, recovered[0], recovered[1])
                     return ChannelInboundResult(
                         state="accepted",
                         conversation_id=recovered[0],
@@ -778,20 +804,37 @@ class ChannelManager:
                 conversation_id=conversation.conversation_id,
                 run_id=run.run_id,
             )
+            self._claim_reply_intent(event, conversation.conversation_id, run.run_id)
             return ChannelInboundResult(
                 state="accepted",
                 conversation_id=conversation.conversation_id,
                 run_id=run.run_id,
             )
 
+    def _claim_reply_intent(
+        self,
+        event: ChannelInboundEvent,
+        conversation_id: str,
+        run_id: str,
+    ) -> None:
+        self.store.claim_reply(
+            connection_id=event.connection_id,
+            conversation_id=conversation_id,
+            run_id=run_id,
+            target=event.conversation_binding,
+            external_message_id=event.external_message_id,
+        )
+
     @staticmethod
-    def _sender_authorized(connection: ChannelConnection, sender_id: str) -> bool:
+    def _sender_role(connection: ChannelConnection, sender_id: str) -> str | None:
         if (
             connection.owner_identity is not None
             and sender_id == connection.owner_identity
         ):
-            return True
-        return sender_id in connection.allowed_senders
+            return "owner"
+        if sender_id in connection.allowed_senders:
+            return "allowed"
+        return None
 
     def _adapter_running(self, connection: ChannelConnection) -> bool:
         if connection.desired_state is not ChannelDesiredState.RUNNING:

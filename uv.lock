@@ -8,6 +8,32 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "aiofiles"
+version = "25.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/41/c3/534eac40372d8ee36ef40df62ec129bee4fdb5ad9706e58a29be53b2c970/aiofiles-25.1.0.tar.gz", hash = "sha256:a8d728f0a29de45dc521f18f07297428d56992a742f0cd2701ba86e44d23d5b2", size = 46354, upload-time = "2025-10-09T20:51:04.358Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bc/8a/340a1555ae33d7354dbca4faa54948d76d89a27ceef032c8c3bc661d003e/aiofiles-25.1.0-py3-none-any.whl", hash = "sha256:abe311e527c862958650f9438e859c1fa7568a141b22abcd015e120e86a85695", size = 14668, upload-time = "2025-10-09T20:51:03.174Z" },
+]
+
+[[package]]
+name = "aiogram"
+version = "3.32.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiofiles" },
+    { name = "aiohttp" },
+    { name = "certifi" },
+    { name = "magic-filter" },
+    { name = "pydantic" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9b/c5/9406929b7d1a7337bf6b17a1435b54058e6edc4bb35e016386b0b29caef2/aiogram-3.32.0.tar.gz", hash = "sha256:018bc984a6e5cb09f438ecf5e389960d28bfeed5cddb67d69c6bdcc60ab96e37", size = 2142055, upload-time = "2026-11-15T16:42:06.492Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0e/cc/d0d45dc2879e65e8429827100dde1674bef6a11c5af78d687765979c5699/aiogram-3.32.0-py3-none-any.whl", hash = "sha256:5cd85dc111f83c303b5716e1740d2add39bf35fbf5292e821528b27b150d6dc0", size = 901448, upload-time = "2026-11-15T16:42:04.755Z" },
+]
+
+[[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -266,6 +292,7 @@ name = "cairn"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiogram" },
     { name = "httpx2" },
     { name = "jsonschema" },
     { name = "langgraph" },
@@ -297,6 +324,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiogram", specifier = ">=3.13,<4" },
     { name = "httpx2", specifier = ">=2.10,<3" },
     { name = "jsonschema", specifier = ">=4.20" },
     { name = "langgraph", specifier = "==1.2.20" },
@@ -1449,6 +1477,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f1/df/d640eb6cf4a304be4ec289b72c1b1d9bd66c73e90167211d3a09ac37b2d8/litellm-1.101.0-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:ad013161074676fc91b91d828f696300132cf3936d3f386c4701a41710d70aa3", size = 23643397, upload-time = "2026-09-14T23:15:28.664Z" },
     { url = "https://files.pythonhosted.org/packages/ba/b6/9d69e95de9465cd23651c6623518d5e711d8776a0e58e6ea62066c9d9470/litellm-1.101.0-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:85d88053148c5c6e016e495273eeaf8f3a29779b60d18977ec42e2a6bbd2d8eb", size = 24042718, upload-time = "2026-09-14T23:15:31.044Z" },
     { url = "https://files.pythonhosted.org/packages/c7/b5/0a54001992c9a8d991f6ddd7532e3c4cb7dbdcc94220a37586513aab6f89/litellm-1.101.0-cp310-abi3-win_amd64.whl", hash = "sha256:e5601ae404b0f1e38ce1e65c75f880254485942d9c824453e3926f2323457fd5", size = 23844988, upload-time = "2026-09-14T23:15:33.632Z" },
+]
+
+[[package]]
+name = "magic-filter"
+version = "1.0.12"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e6/08/da7c2cc7398cc0376e8da599d6330a437c01d3eace2f2365f300e0f3f758/magic_filter-1.0.12.tar.gz", hash = "sha256:4751d0b579a5045d1dc250625c4c508c18c3def5ea6afaf3957cb4530d03f7f9", size = 11071, upload-time = "2023-10-01T12:33:19.006Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cc/75/f620449f0056eff0ec7c1b1e088f71068eb4e47a46eb54f6c065c6ad7675/magic_filter-1.0.12-py3-none-any.whl", hash = "sha256:e5929e544f310c2b1f154318db8c5cdf544dd658efa998172acd2e4ba0f6c6a6", size = 11335, upload-time = "2023-10-01T12:33:17.711Z" },
 ]
 
 [[package]]

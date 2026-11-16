@@ -137,6 +137,30 @@ class DeliveryRecord:
     updated_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class ReplyRecord:
+    reply_id: str
+    connection_id: str
+    conversation_id: str
+    run_id: str
+    target: str
+    external_message_id: str
+    state: str
+    attempts: int
+    error: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class UnrepliedInbound:
+    connection_id: str
+    conversation_id: str
+    run_id: str
+    target: str
+    external_message_id: str
+
+
 class ChannelStore:
     """One private database; every mutation is a local transaction."""
 
@@ -168,6 +192,17 @@ class ChannelStore:
                 connection.execute(
                     "ALTER TABLE channel_connections ADD COLUMN "
                     "allowed_senders_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            inbound_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(channel_inbound)"
+                ).fetchall()
+            }
+            if "conversation_binding" not in inbound_columns:
+                connection.execute(
+                    "ALTER TABLE channel_inbound ADD COLUMN "
+                    "conversation_binding TEXT NOT NULL DEFAULT ''"
                 )
             connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         with suppress(OSError):
@@ -228,6 +263,7 @@ class ChannelStore:
                 state TEXT NOT NULL,
                 conversation_id TEXT,
                 run_id TEXT,
+                conversation_binding TEXT NOT NULL DEFAULT '',
                 error TEXT,
                 received_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -244,6 +280,26 @@ class ChannelStore:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE (connection_id, idempotency_key)
+            );
+            CREATE TABLE IF NOT EXISTS channel_replies (
+                reply_id TEXT PRIMARY KEY,
+                connection_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                run_id TEXT NOT NULL UNIQUE,
+                target TEXT NOT NULL,
+                external_message_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS channel_adapter_state (
+                connection_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (connection_id, key)
             );
             """
         )
@@ -269,6 +325,22 @@ class ChannelStore:
             allowed_senders=tuple(json.loads(str(row["allowed_senders_json"]))),
             metadata=json.loads(str(row["metadata_json"])),
             revision=int(row["revision"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _reply(row: sqlite3.Row) -> ReplyRecord:
+        return ReplyRecord(
+            reply_id=str(row["reply_id"]),
+            connection_id=str(row["connection_id"]),
+            conversation_id=str(row["conversation_id"]),
+            run_id=str(row["run_id"]),
+            target=str(row["target"]),
+            external_message_id=str(row["external_message_id"]),
+            state=str(row["state"]),
+            attempts=int(row["attempts"]),
+            error=str(row["error"]) if row["error"] is not None else None,
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
         )
@@ -748,13 +820,14 @@ class ChannelStore:
             inserted = connection.execute(
                 "INSERT OR IGNORE INTO channel_inbound "
                 "(platform, connection_id, external_message_id, event_digest, "
-                "state, received_at, updated_at) "
-                "VALUES (?, ?, ?, ?, 'claimed', ?, ?)",
+                "state, conversation_binding, received_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 'claimed', ?, ?, ?)",
                 (
                     event.platform.value,
                     event.connection_id,
                     event.external_message_id,
                     digest,
+                    event.conversation_binding,
                     event.received_at,
                     now,
                 ),
@@ -896,6 +969,157 @@ class ChannelStore:
                 ).fetchall()
         return tuple(self._delivery(row) for row in rows)
 
+    def claim_reply(
+        self,
+        *,
+        connection_id: str,
+        conversation_id: str,
+        run_id: str,
+        target: str,
+        external_message_id: str,
+    ) -> ReplyRecord:
+        """Persist one reply intent per accepted Run, idempotently."""
+        raw = f"channel-reply:{connection_id}:{external_message_id}"
+        reply_id = "reply-" + hashlib.sha256(raw.encode()).hexdigest()[:32]
+        now = utc_now()
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO channel_replies "
+                "(reply_id, connection_id, conversation_id, run_id, target, "
+                "external_message_id, state, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                (
+                    reply_id,
+                    connection_id,
+                    conversation_id,
+                    run_id,
+                    target,
+                    external_message_id,
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM channel_replies WHERE reply_id = ?", (reply_id,)
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("channel reply intent disappeared")
+            record = self._reply(row)
+            if record.run_id != run_id:
+                raise ChannelRequestConflict("reply intent belongs to a different Run")
+            return record
+
+    def reply_for_run(self, run_id: str) -> ReplyRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM channel_replies WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return None if row is None else self._reply(row)
+
+    def list_replies(self, *states: str) -> tuple[ReplyRecord, ...]:
+        if not states:
+            return ()
+        placeholders = ", ".join("?" for _ in states)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM channel_replies WHERE state IN ({placeholders}) "
+                "ORDER BY created_at, reply_id",
+                states,
+            ).fetchall()
+        return tuple(self._reply(row) for row in rows)
+
+    def mark_reply_sending(self, reply_id: str) -> bool:
+        with self._connect() as connection:
+            updated = connection.execute(
+                "UPDATE channel_replies SET state = 'sending', "
+                "attempts = attempts + 1, updated_at = ? "
+                "WHERE reply_id = ? AND state = 'pending'",
+                (utc_now(), reply_id),
+            )
+            return updated.rowcount == 1
+
+    def defer_reply(self, reply_id: str, error: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE channel_replies SET state = 'pending', error = ?, "
+                "updated_at = ? WHERE reply_id = ? "
+                "AND state IN ('pending', 'sending')",
+                (error, utc_now(), reply_id),
+            )
+
+    def complete_reply(
+        self, reply_id: str, state: str, error: str | None = None
+    ) -> None:
+        with self._connect() as connection:
+            updated = connection.execute(
+                "UPDATE channel_replies SET state = ?, error = ?, updated_at = ? "
+                "WHERE reply_id = ?",
+                (state, error, utc_now(), reply_id),
+            )
+            if updated.rowcount != 1:
+                raise ChannelNotFound(reply_id)
+
+    def mark_inflight_replies_unknown(self) -> int:
+        with self._connect() as connection:
+            updated = connection.execute(
+                "UPDATE channel_replies SET state = 'unknown', "
+                "error = 'process_interrupted', updated_at = ? "
+                "WHERE state = 'sending'",
+                (utc_now(),),
+            )
+            return int(updated.rowcount)
+
+    def unreplied_inbound(self) -> tuple[UnrepliedInbound, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT inbound.connection_id, inbound.conversation_id, "
+                "inbound.run_id, inbound.conversation_binding, "
+                "inbound.external_message_id "
+                "FROM channel_inbound AS inbound "
+                "LEFT JOIN channel_replies AS reply ON reply.run_id = inbound.run_id "
+                "WHERE inbound.state = 'accepted' AND inbound.run_id IS NOT NULL "
+                "AND inbound.conversation_binding != '' AND reply.reply_id IS NULL "
+                "ORDER BY inbound.received_at, inbound.external_message_id"
+            ).fetchall()
+        return tuple(
+            UnrepliedInbound(
+                connection_id=str(row["connection_id"]),
+                conversation_id=str(row["conversation_id"]),
+                run_id=str(row["run_id"]),
+                target=str(row["conversation_binding"]),
+                external_message_id=str(row["external_message_id"]),
+            )
+            for row in rows
+        )
+
+    def load_adapter_state(self, connection_id: str, key: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT value_json FROM channel_adapter_state "
+                "WHERE connection_id = ? AND key = ?",
+                (connection_id, key),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            value = json.loads(str(row["value_json"]))
+        except ValueError:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def save_adapter_state(
+        self, connection_id: str, key: str, value: dict[str, Any]
+    ) -> None:
+        now = utc_now()
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO channel_adapter_state "
+                "(connection_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(connection_id, key) DO UPDATE SET "
+                "value_json = excluded.value_json, updated_at = excluded.updated_at",
+                (connection_id, key, _json(value), now),
+            )
+
     def load_credentials(self, credential_ref: str | None) -> dict[str, str] | None:
         if credential_ref is None:
             return None
@@ -925,7 +1149,9 @@ __all__ = [
     "DeleteResult",
     "DeliveryRecord",
     "InboundClaim",
+    "ReplyRecord",
     "RequestClaim",
     "RequestReceipt",
+    "UnrepliedInbound",
     "UpdateResult",
 ]

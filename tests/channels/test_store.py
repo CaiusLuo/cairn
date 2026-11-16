@@ -422,3 +422,132 @@ def test_schema_v1_store_migrates_the_allowed_senders_column(tmp_path: Path) -> 
     connection = store.get_connection(connection_id)
     assert connection is not None
     assert connection.allowed_senders == ()
+
+
+def test_reply_intents_are_idempotent_and_conflict_by_run(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    connection_id = _create(store)
+    first = store.claim_reply(
+        connection_id=connection_id,
+        conversation_id="conv-1",
+        run_id="run-1",
+        target="chat",
+        external_message_id="m-1",
+    )
+    again = store.claim_reply(
+        connection_id=connection_id,
+        conversation_id="conv-1",
+        run_id="run-1",
+        target="chat",
+        external_message_id="m-1",
+    )
+    assert first == again
+    assert store.reply_for_run("run-1") == first
+    with pytest.raises(ChannelRequestConflict):
+        store.claim_reply(
+            connection_id=connection_id,
+            conversation_id="conv-1",
+            run_id="run-2",
+            target="chat",
+            external_message_id="m-1",
+        )
+
+
+def test_reply_send_claims_are_atomic_and_interruptions_are_unknown(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    connection_id = _create(store)
+    record = store.claim_reply(
+        connection_id=connection_id,
+        conversation_id="conv-1",
+        run_id="run-1",
+        target="chat",
+        external_message_id="m-1",
+    )
+    assert store.mark_reply_sending(record.reply_id) is True
+    assert store.mark_reply_sending(record.reply_id) is False
+    in_flight = store.reply_for_run("run-1")
+    assert in_flight is not None and in_flight.state == "sending"
+    assert in_flight.attempts == 1
+
+    assert store.mark_inflight_replies_unknown() == 1
+    interrupted = store.reply_for_run("run-1")
+    assert interrupted is not None and interrupted.state == "unknown"
+    assert interrupted.error == "process_interrupted"
+    assert store.list_replies("pending") == ()
+
+
+def test_deferred_reply_stays_pending_with_an_error(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    connection_id = _create(store)
+    record = store.claim_reply(
+        connection_id=connection_id,
+        conversation_id="conv-1",
+        run_id="run-1",
+        target="chat",
+        external_message_id="m-1",
+    )
+    store.mark_reply_sending(record.reply_id)
+    store.defer_reply(record.reply_id, "adapter is not running")
+    deferred = store.reply_for_run("run-1")
+    assert deferred is not None and deferred.state == "pending"
+    assert deferred.error == "adapter is not running"
+    assert store.list_replies("pending") == (deferred,)
+
+    store.complete_reply(record.reply_id, "sent")
+    sent = store.reply_for_run("run-1")
+    assert sent is not None and sent.state == "sent"
+
+
+def test_unreplied_inbound_lists_only_accepted_runs_without_an_intent(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    connection_id = _create(store)
+    claimed = store.claim_inbound(_event(connection_id, "m-1"))
+    assert claimed.created
+    store.complete_inbound(
+        connection_id,
+        "m-1",
+        state="accepted",
+        conversation_id="conv-1",
+        run_id="run-1",
+    )
+    rejected = store.claim_inbound(_event(connection_id, "m-2"))
+    assert rejected.created
+    store.complete_inbound(connection_id, "m-2", state="rejected", error="no")
+
+    rows = store.unreplied_inbound()
+    assert len(rows) == 1
+    assert rows[0].connection_id == connection_id
+    assert rows[0].run_id == "run-1"
+    assert rows[0].target == "chat"
+    assert rows[0].external_message_id == "m-1"
+
+    store.claim_reply(
+        connection_id=connection_id,
+        conversation_id="conv-1",
+        run_id="run-1",
+        target="chat",
+        external_message_id="m-1",
+    )
+    assert store.unreplied_inbound() == ()
+
+
+def test_adapter_state_roundtrips_and_ignores_corrupt_json(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    connection_id = _create(store)
+    assert store.load_adapter_state(connection_id, "telegram") is None
+    store.save_adapter_state(connection_id, "telegram", {"offset": 42})
+    assert store.load_adapter_state(connection_id, "telegram") == {"offset": 42}
+    store.save_adapter_state(connection_id, "telegram", {"offset": 43})
+    assert store.load_adapter_state(connection_id, "telegram") == {"offset": 43}
+
+    with sqlite3.connect(store.path) as database:
+        database.execute(
+            "UPDATE channel_adapter_state SET value_json = 'not json' "
+            "WHERE connection_id = ?",
+            (connection_id,),
+        )
+    assert store.load_adapter_state(connection_id, "telegram") is None

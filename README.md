@@ -191,14 +191,13 @@ retried automatically.
 ## Channels (C0 connection core)
 
 `src/cairn/channels` is the shared connection foundation for WeChat, QQ, Telegram
-and Discord. C0 implements configuration, private credential storage, lifecycle,
-health, inbound dedupe and outbound delivery audit. Full platform SDK adapters are
-not implemented yet, so the production registry is empty: creating
-a QQ/Telegram/Discord connection records configuration only, and `start` or
-`reconnect` returns `adapter_not_implemented` (HTTP 501). Such a connection never
-reports `running`, its platform summary stays `silent`, and it remains editable
-and deletable. The deterministic Fake Adapter is injected only by tests; real
-adapters will register through `ChannelAdapterRegistry`.
+and Discord. It implements configuration, private credential storage, lifecycle,
+health, inbound dedupe, outbound delivery audit and durable source replies.
+Telegram has a real aiogram long-polling adapter; QQ and Discord are
+configuration-only for now, so `start` or `reconnect` for them returns
+`adapter_not_implemented` (HTTP 501). Such a connection never reports `running`,
+its platform summary stays `silent`, and it remains editable and deletable. The
+deterministic Fake Adapter is injected only by tests.
 
 The independent Web connection console at `/channels.html` shows the four fixed
 platforms, then platform and connection detail. Forms come from the
@@ -269,6 +268,33 @@ is stored as `unknown`; a redelivery reconciles the deterministic request ID
 against an existing Run instead of creating a second side effect or staying
 rejected forever. Configuration and credentials are still accepted without a
 registered adapter.
+
+The trusted connection record, never message text, decides the Run's Channel
+principal. Only the owner receives personal memory, schedules and host tools; an
+explicitly allowed sender reaches the same agent with an empty tool set and no
+personal context, and an unknown sender is rejected before a Run exists.
+
+### Telegram
+
+A Telegram connection uses a Bot Token collected by the Web console and validated
+with `getMe` before long polling starts. Only private text messages are accepted;
+bot authors, the bot itself, groups and other update types are acknowledged and
+ignored. The update offset is persisted only after local inbound admission, so a
+crash between Telegram acknowledgement and the local write causes redelivery
+that the deterministic inbound claim resolves to the same Run. A token can back
+only one running connection in the process; a second one fails with
+`telegram_token_in_use` instead of stealing updates. Network loss reconnects with
+bounded backoff, a 409 marks the connection `error`, and 429 replies are retried
+with the advertised delay. Replies are split below Telegram's 4096 UTF-16 limit,
+sent as Markdown, and fall back to plain text when Telegram rejects the entities.
+
+Every terminal Channel Run has a durable reply intent tied to its original
+connection and external conversation. The coordinator sends through the normal
+`ChannelManager.send` delivery audit, so a duplicate Run Settled event cannot
+send twice. After restart, pending intents are delivered when the connection is
+available and an interrupted in-flight send becomes `unknown`, never resent
+automatically. A stopped or deleted connection records an explicit failure
+reason instead of silently dropping the reply.
 
 The first connection remains the only WeChat protocol implementation; no
 automatic credential migration is performed.

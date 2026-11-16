@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -731,3 +732,31 @@ def test_restart_without_an_adapter_never_reports_running(tmp_path: Path) -> Non
 
     connection_id = asyncio.run(first())
     asyncio.run(second(connection_id))
+
+
+def test_duplicate_delivery_recreates_a_missing_reply_intent(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager, store, _, _ = make_manager(tmp_path / "channels")
+        connection = await _create(manager, request_id="reply-create")
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "reply-start")
+        first = await manager.accept_inbound(inbound(connection_id, "reply-message"))
+        assert first.state == "accepted"
+        assert first.run_id is not None
+        assert store.reply_for_run(first.run_id) is not None
+
+        with sqlite3.connect(store.path) as database:
+            database.execute("DELETE FROM channel_replies")
+        assert store.reply_for_run(first.run_id) is None
+
+        duplicate = await manager.accept_inbound(
+            inbound(connection_id, "reply-message")
+        )
+        assert duplicate.duplicate is True
+        assert duplicate.run_id == first.run_id
+        record = store.reply_for_run(first.run_id)
+        assert record is not None
+        assert record.target == "chat-1"
+        await manager.close()
+
+    asyncio.run(scenario())
