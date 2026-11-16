@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import Protocol
+from collections.abc import Coroutine
+from typing import Any, Protocol
 
 from cairn.channels.manager import ChannelManager
 from cairn.channels.models import (
@@ -69,7 +70,10 @@ class ChannelReplyCoordinator:
         if self._closed or run.source is not ConversationSource.CHANNEL:
             return
         self._wake.set()
-        task = asyncio.create_task(self._deliver_run(run.run_id))
+        self._spawn(self._deliver_run(run.run_id))
+
+    def _spawn(self, coroutine: Coroutine[Any, Any, None]) -> None:
+        task = asyncio.create_task(coroutine)
         self._tasks.add(task)
         task.add_done_callback(self._finished)
 
@@ -118,7 +122,7 @@ class ChannelReplyCoordinator:
             run = self.runs.get_run(reply.run_id)
             if run is None or run.status not in TERMINAL:
                 continue
-            await self._deliver(reply, run)
+            self._spawn(self._deliver(reply, run))
 
     async def _deliver_run(self, run_id: str) -> None:
         reply = self.store.reply_for_run(run_id)

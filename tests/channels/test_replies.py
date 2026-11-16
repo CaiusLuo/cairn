@@ -234,6 +234,7 @@ def test_adapter_starting_keeps_the_intent_pending_for_retry(
         assert record.error is not None and "adapter is not running" in record.error
 
         await replies._reconcile_pending()
+        await settle(replies._tasks)
         record = store.reply_for_run("run-1")
         assert record is not None and record.state == "sent"
         assert len(manager.sent) == 2
