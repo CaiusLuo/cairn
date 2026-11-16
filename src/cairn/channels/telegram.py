@@ -400,7 +400,7 @@ class TelegramAdapter:
                 raise
             # Model output often contains unmatched Markdown. Deliver the same
             # text as plain text instead of losing the reply to formatting.
-            return await bot.send_message(chat_id, chunk)
+            return await bot.send_message(chat_id, chunk, parse_mode=None)
 
     def _send_failure(self, exc: BaseException) -> ChannelSendResult:
         error = self._safe_error(exc)
