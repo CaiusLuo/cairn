@@ -758,14 +758,26 @@ class ChannelManager:
             raise ChannelInboundRejected("sender is not authorized")
         if not self._adapter_running(connection):
             raise ChannelInboundRejected("channel connection is not running")
+        # The adapter is the only trusted source of the receiving identity. A
+        # message is deduplicated inside that identity's namespace, so an
+        # unverifiable identity must not enter the durable claim.
+        if not event.adapter_identity:
+            raise ChannelInboundRejected("channel adapter identity is unavailable")
+        if self._adapter_for(connection).identity() != event.adapter_identity:
+            raise ChannelInboundRejected(
+                "channel adapter identity does not match the running adapter"
+            )
         runtime = self._runtime(event.connection_id)
         # Serialize one connection's intake so a duplicate delivery cannot
         # race the first submission. A "claimed" row left by a process
         # interruption is retried with the same deterministic request ID,
         # which ConversationService resolves to the original Run. An "unknown"
         # row is reconciled the same way instead of staying rejected forever.
+        request_id = self._inbound_request_id(event)
         async with runtime.inbound_lock:
-            claim = self.store.claim_inbound(event, sender_role=role)
+            claim = self.store.claim_inbound(
+                event, sender_role=role, request_id=request_id
+            )
             if not claim.created:
                 if claim.event_digest != inbound_digest(event):
                     raise ChannelInboundConflict(
@@ -798,7 +810,10 @@ class ChannelManager:
                         run_id=claim.run_id,
                         error=claim.error,
                     )
-            request_id = self._inbound_request_id(event)
+            # A row written before identity-scoped dedupe has no stored request
+            # ID; retry it with the exact formula its first attempt used so a
+            # Run created just before an upgrade is still found once.
+            request_id = claim.request_id or self._legacy_inbound_request_id(event)
             try:
                 conversation = self.conversations.ensure_channel_conversation(
                     event.platform.value,
@@ -828,6 +843,7 @@ class ChannelManager:
                     self.store.complete_inbound(
                         event.connection_id,
                         event.external_message_id,
+                        adapter_identity=claim.adapter_identity,
                         state="accepted",
                         conversation_id=recovered[0],
                         run_id=recovered[1],
@@ -838,14 +854,15 @@ class ChannelManager:
                         run_id=recovered[1],
                         target=event.conversation_binding,
                         external_message_id=event.external_message_id,
-                        sender_id=event.sender_id,
-                        sender_role=role,
-                        adapter_identity=event.adapter_identity or "",
+                        sender_id=claim.sender_id,
+                        sender_role=claim.sender_role,
+                        adapter_identity=claim.adapter_identity,
                     )
                 else:
                     self.store.complete_inbound(
                         event.connection_id,
                         event.external_message_id,
+                        adapter_identity=claim.adapter_identity,
                         state="unknown",
                         error="cancelled before admission completed",
                     )
@@ -857,6 +874,7 @@ class ChannelManager:
                     self.store.complete_inbound(
                         event.connection_id,
                         event.external_message_id,
+                        adapter_identity=claim.adapter_identity,
                         state="accepted",
                         conversation_id=recovered[0],
                         run_id=recovered[1],
@@ -867,9 +885,9 @@ class ChannelManager:
                         run_id=recovered[1],
                         target=event.conversation_binding,
                         external_message_id=event.external_message_id,
-                        sender_id=event.sender_id,
-                        sender_role=role,
-                        adapter_identity=event.adapter_identity or "",
+                        sender_id=claim.sender_id,
+                        sender_role=claim.sender_role,
+                        adapter_identity=claim.adapter_identity,
                     )
                     return ChannelInboundResult(
                         state="accepted",
@@ -882,6 +900,7 @@ class ChannelManager:
                     self.store.complete_inbound(
                         event.connection_id,
                         event.external_message_id,
+                        adapter_identity=claim.adapter_identity,
                         state="rejected",
                         error=error,
                     )
@@ -889,6 +908,7 @@ class ChannelManager:
                 self.store.complete_inbound(
                     event.connection_id,
                     event.external_message_id,
+                    adapter_identity=claim.adapter_identity,
                     state="unknown",
                     error=error,
                 )
@@ -896,6 +916,7 @@ class ChannelManager:
             self.store.complete_inbound(
                 event.connection_id,
                 event.external_message_id,
+                adapter_identity=claim.adapter_identity,
                 state="accepted",
                 conversation_id=conversation.conversation_id,
                 run_id=run.run_id,
@@ -906,9 +927,9 @@ class ChannelManager:
                 run_id=run.run_id,
                 target=event.conversation_binding,
                 external_message_id=event.external_message_id,
-                sender_id=event.sender_id,
-                sender_role=role,
-                adapter_identity=event.adapter_identity or "",
+                sender_id=claim.sender_id,
+                sender_role=claim.sender_role,
+                adapter_identity=claim.adapter_identity,
             )
             return ChannelInboundResult(
                 state="accepted",
@@ -1214,6 +1235,15 @@ class ChannelManager:
 
     @staticmethod
     def _inbound_request_id(event: ChannelInboundEvent) -> str:
+        raw = (
+            f"channel-inbound:{event.connection_id}\0"
+            f"{event.adapter_identity or ''}\0{event.external_message_id}"
+        )
+        return "channel:" + hashlib.sha256(raw.encode()).hexdigest()[:48]
+
+    @staticmethod
+    def _legacy_inbound_request_id(event: ChannelInboundEvent) -> str:
+        """The pre-identity formula, used only to resume older claims."""
         raw = f"channel-inbound:{event.connection_id}:{event.external_message_id}"
         return "channel:" + hashlib.sha256(raw.encode()).hexdigest()[:48]
 

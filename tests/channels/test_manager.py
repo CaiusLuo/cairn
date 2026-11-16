@@ -268,6 +268,177 @@ def test_inbound_dedupe_submits_once_and_rejects_changed_reuse(
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("second_text", ["world", "hello"])
+def test_inbound_dedupe_is_scoped_to_the_bot_identity(
+    tmp_path: Path, second_text: str
+) -> None:
+    async def scenario() -> None:
+        manager, _, intake, factory = make_manager(tmp_path / "channels")
+        connection = await _create(manager, request_id="bot-scope-create")
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "bot-scope-start")
+        adapter = factory.adapters[connection_id]
+        adapter.adapter_identity = "bot-a"
+
+        first = await manager.accept_inbound(
+            inbound(connection_id, "7:42", "hello", adapter_identity="bot-a")
+        )
+        assert first.state == "accepted"
+        assert first.run_id == "run-1"
+        duplicate = await manager.accept_inbound(
+            inbound(connection_id, "7:42", "hello", adapter_identity="bot-a")
+        )
+        assert duplicate.duplicate is True
+        assert duplicate.run_id == "run-1"
+
+        adapter.adapter_identity = "bot-b"
+        second = await manager.accept_inbound(
+            inbound(connection_id, "7:42", second_text, adapter_identity="bot-b")
+        )
+        assert second.state == "accepted"
+        assert second.duplicate is False
+        assert second.run_id == "run-2"
+        assert len(intake.submissions) == 2
+        assert intake.submissions[0][3] != intake.submissions[1][3]
+
+        repeated = await manager.accept_inbound(
+            inbound(connection_id, "7:42", second_text, adapter_identity="bot-b")
+        )
+        assert repeated.duplicate is True
+        assert repeated.run_id == "run-2"
+        assert len(intake.submissions) == 2
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_bot_scoped_inbound_redelivery_after_restart_returns_the_same_run(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "channels"
+
+    async def first() -> tuple[str, str]:
+        manager, _, _, factory = make_manager(root)
+        connection = await _create(manager, request_id="restart-bot-create")
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "restart-bot-start")
+        factory.adapters[connection_id].adapter_identity = "bot-a"
+        accepted = await manager.accept_inbound(
+            inbound(connection_id, "7:42", "hello", adapter_identity="bot-a")
+        )
+        await manager.close()
+        return connection_id, accepted.run_id or ""
+
+    connection_id, run_id = asyncio.run(first())
+
+    async def second() -> None:
+        manager, _, intake, factory = make_manager(root)
+        await manager.start()
+        await manager.wait_for_state(connection_id, ChannelActualState.RUNNING)
+        factory.adapters[connection_id].adapter_identity = "bot-a"
+        duplicate = await manager.accept_inbound(
+            inbound(connection_id, "7:42", "hello", adapter_identity="bot-a")
+        )
+        assert duplicate.duplicate is True
+        assert duplicate.run_id == run_id
+        assert intake.submissions == []
+        await manager.close()
+
+    asyncio.run(second())
+
+
+def test_inbound_rejects_an_identity_the_adapter_did_not_report(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        manager, _, intake, _ = make_manager(tmp_path / "channels")
+        connection = await _create(manager, request_id="identity-create")
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "identity-start")
+
+        with pytest.raises(ChannelInboundRejected):
+            await manager.accept_inbound(
+                inbound(connection_id, "m-1", adapter_identity="other-bot")
+            )
+        with pytest.raises(ChannelInboundRejected):
+            await manager.accept_inbound(
+                inbound(connection_id, "m-2", adapter_identity=None)
+            )
+        assert intake.submissions == []
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_legacy_inbound_retry_reuses_the_run_created_before_upgrade(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        manager, store, intake, _ = make_manager(tmp_path / "channels")
+        connection = await _create(manager, request_id="legacy-retry-create")
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "legacy-retry-start")
+        event = inbound(connection_id, "7:42", "hello")
+
+        # Simulate a Run submitted just before the identity-scoped request ID
+        # existed, with the durable claim left behind by a crash.
+        conversation = intake.ensure_channel_conversation(
+            "telegram", connection_id, "sender-1", "chat-1", "hello"
+        )
+        legacy_request_id = manager._legacy_inbound_request_id(event)
+        existing = intake.submit(
+            conversation.conversation_id,
+            "hello",
+            ConversationSource.CHANNEL,
+            legacy_request_id,
+        )
+        assert store.claim_inbound(event).created is True
+
+        recovered = await manager.accept_inbound(event)
+        assert recovered.state == "accepted"
+        assert recovered.run_id == existing.run_id
+        assert len(intake.submissions) == 1
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_upgraded_legacy_message_stays_idempotent_for_the_adopted_bot(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        manager, store, intake, factory = make_manager(tmp_path / "channels")
+        connection = await _create(
+            manager,
+            request_id="legacy-adopt-create",
+            credentials={"bot_token": "123456:" + "a" * 35},
+        )
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "legacy-adopt-start")
+        factory.adapters[connection_id].adapter_identity = "bot-a"
+
+        legacy = inbound(connection_id, "7:42", "hello", adapter_identity=None)
+        assert store.claim_inbound(legacy, sender_role="owner").created is True
+        store.complete_inbound(
+            connection_id,
+            "7:42",
+            state="accepted",
+            run_id="run-legacy",
+        )
+        assert store.adopt_unidentified_inbound(connection_id, "bot-a") == 1
+
+        duplicate = await manager.accept_inbound(
+            inbound(connection_id, "7:42", "hello", adapter_identity="bot-a")
+        )
+        assert duplicate.state == "accepted"
+        assert duplicate.duplicate is True
+        assert duplicate.run_id == "run-legacy"
+        assert intake.submissions == []
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
 def test_send_replays_accepted_and_never_resends_unknown(tmp_path: Path) -> None:
     async def scenario() -> None:
         manager, _, _, factory = make_manager(tmp_path / "channels")

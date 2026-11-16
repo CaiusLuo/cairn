@@ -373,6 +373,7 @@ def test_startup_recreates_a_missing_intent_from_accepted_inbound(
         store.complete_inbound(
             connection_id,
             "7:1",
+            adapter_identity="bot-1",
             state="accepted",
             conversation_id="conv-1",
             run_id="run-1",

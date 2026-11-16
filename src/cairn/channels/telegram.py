@@ -73,6 +73,10 @@ class AdapterStateStore(Protocol):
         self, connection_id: str, key: str, value: dict[str, object]
     ) -> None: ...
 
+    def adopt_unidentified_inbound(
+        self, connection_id: str, adapter_identity: str
+    ) -> int: ...
+
 
 BotFactory = Callable[[str], Bot]
 
@@ -245,6 +249,10 @@ class TelegramAdapter:
         self._stored_bot_id = current_bot_id
         try:
             self._save_state()
+            # Legacy inbound rows have no recorded Bot identity. Bind the ones
+            # that this token provably produced before polling, so a redelivered
+            # old update still resolves to its original Run.
+            self._store.adopt_unidentified_inbound(self.connection_id, current_bot_id)
         except Exception as exc:
             await self._close_bot(bot)
             self._bot = None

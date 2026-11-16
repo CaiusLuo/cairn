@@ -131,6 +131,11 @@ class RecordingStore:
         self.events.append("offset")
         self.store.save_adapter_state(connection_id, key, value)
 
+    def adopt_unidentified_inbound(
+        self, connection_id: str, adapter_identity: str
+    ) -> int:
+        return self.store.adopt_unidentified_inbound(connection_id, adapter_identity)
+
 
 def connection(connection_id: str = "ch-telegram") -> ChannelConnection:
     return ChannelConnection(
@@ -424,6 +429,71 @@ def test_legacy_state_without_a_bot_id_discards_the_offset(tmp_path: Path) -> No
             "bot_id": str(BOT_ID),
             "offset": None,
         }
+        await adapter.stop()
+
+    asyncio.run(scenario())
+
+
+def test_start_binds_provably_legacy_inbound_rows_to_the_current_bot(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        store = ChannelStore(tmp_path / "channels")
+        created = store.create_connection(
+            platform=ChannelPlatform.TELEGRAM,
+            display_name="Telegram",
+            enabled=True,
+            owner_identity="7",
+            metadata={},
+            credentials={"bot_token": TOKEN},
+            request_id="create-legacy-inbound",
+        )
+        connection_id = created.connection.connection_id
+        legacy = ChannelInboundEvent(
+            platform=ChannelPlatform.TELEGRAM,
+            connection_id=connection_id,
+            external_message_id="7:42",
+            sender_id="7",
+            conversation_binding="7",
+            text="hello",
+            adapter_identity=None,
+        )
+        assert store.claim_inbound(legacy, sender_role="owner").created is True
+        store.complete_inbound(
+            connection_id, "7:42", state="accepted", run_id="run-legacy"
+        )
+        store.claim_reply(
+            connection_id=connection_id,
+            conversation_id="conv-legacy",
+            run_id="run-legacy",
+            target="7",
+            external_message_id="7:42",
+            sender_id="7",
+            sender_role="owner",
+        )
+
+        session = FakeSession()
+        adapter = adapter_with(session, store, ignore, connection_id=connection_id)
+        await adapter.start()
+        await wait_until(
+            lambda: adapter.health().actual_state is ChannelActualState.RUNNING
+        )
+        adopted = store.claim_inbound(
+            ChannelInboundEvent(
+                platform=ChannelPlatform.TELEGRAM,
+                connection_id=connection_id,
+                external_message_id="7:42",
+                sender_id="7",
+                conversation_binding="7",
+                text="hello",
+                adapter_identity=str(BOT_ID),
+            )
+        )
+        assert adopted.created is False
+        assert adopted.run_id == "run-legacy"
+        reply = store.reply_for_run("run-legacy")
+        assert reply is not None
+        assert reply.adapter_identity == str(BOT_ID)
         await adapter.stop()
 
     asyncio.run(scenario())

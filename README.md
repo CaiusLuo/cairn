@@ -254,8 +254,13 @@ restored after a Server restart with bounded exponential backoff
 adapter's health report; configuration alone displays as `silent`. A delivery
 left in `sending` by a process interruption becomes `unknown` after restart and
 is never resent automatically. Inbound messages are deduplicated by
-`(connection_id, external_message_id)` and bound to one Cairn Conversation per
-external conversation.
+`(connection_id, adapter_identity, external_message_id)` and bound to one Cairn
+Conversation per external conversation. The receiving identity must match the
+running adapter and is never inferred from message text, so two Bots that reuse
+the same platform message ID keep separate claims and Runs. The deterministic
+Conversation request ID is scoped by the same identity, and a claim records the
+request ID it used so an interrupted admission can be retried after an upgrade
+without creating a second Run.
 
 Inbound work is authorized per connection before any Conversation or Run exists.
 The `owner_identity` is always allowed, `allowed_senders` adds explicit platform
@@ -267,6 +272,15 @@ is stored as `unknown`; a redelivery reconciles the deterministic request ID
 against an existing Run instead of creating a second side effect or staying
 rejected forever. Configuration and credentials are still accepted without a
 registered adapter.
+
+Rows written before identity-scoped dedupe carry an empty adapter identity.
+When Telegram reports its Bot ID, rows received at or after the current
+credential was installed are bound to that Bot; older rows stay unscoped because
+their Bot cannot be proven. Adopted rows keep their original Runs and their
+pending replies gain the same identity, while unprovable rows are never matched
+against a new Bot's colliding update IDs and their replies stay failed closed.
+Replacing the token with the same Bot is therefore treated conservatively:
+history from before the replacement remains unscoped.
 
 The trusted connection record, never message text, decides the Run's Channel
 principal. Only the owner receives personal memory, schedules and host tools; an
