@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,7 +11,9 @@ from typing import Any, cast
 
 import pytest
 from aiogram import Bot
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.session.base import BaseSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.exceptions import (
     TelegramBadRequest,
     TelegramConflictError,
@@ -22,6 +25,7 @@ from aiogram.exceptions import (
 from aiogram.methods import GetMe, GetUpdates, SendMessage
 from aiogram.methods.base import TelegramMethod, TelegramType
 from aiogram.types import Chat, Message, Update, User
+from aiohttp import web
 
 from cairn.channels.adapter import ChannelAdapterRegistry
 from cairn.channels.manager import ChannelManager
@@ -521,6 +525,126 @@ def test_network_loss_reconnects_without_stopping_the_adapter(
         )
         assert adapter.health().actual_state is ChannelActualState.RUNNING
         await adapter.stop()
+
+    asyncio.run(scenario())
+
+
+def test_aiogram_http_boundary_round_trip(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        state = {"sent_update": False}
+        gate = asyncio.Event()
+        calls: list[tuple[str, str]] = []
+
+        async def handler(request: web.Request) -> web.Response:
+            method = request.match_info["method"]
+            calls.append((request.match_info["token"], method))
+            if method == "getMe":
+                return web.json_response(
+                    {
+                        "ok": True,
+                        "result": {
+                            "id": BOT_ID,
+                            "is_bot": True,
+                            "first_name": "Cairn",
+                            "username": "cairn_bot",
+                        },
+                    }
+                )
+            if method == "getUpdates":
+                if not state["sent_update"]:
+                    state["sent_update"] = True
+                    return web.json_response(
+                        {
+                            "ok": True,
+                            "result": [
+                                {
+                                    "update_id": 70,
+                                    "message": {
+                                        "message_id": 70,
+                                        "date": 1,
+                                        "chat": {"id": 7, "type": "private"},
+                                        "from": {
+                                            "id": 7,
+                                            "is_bot": False,
+                                            "first_name": "Owner",
+                                        },
+                                        "text": "hello over http",
+                                    },
+                                }
+                            ],
+                        }
+                    )
+                await gate.wait()
+                return web.json_response({"ok": True, "result": []})
+            if method == "sendMessage":
+                body = await request.post()
+                return web.json_response(
+                    {
+                        "ok": True,
+                        "result": {
+                            "message_id": 1,
+                            "date": 1,
+                            "chat": {"id": body["chat_id"], "type": "private"},
+                            "text": body["text"],
+                        },
+                    }
+                )
+            return web.json_response(
+                {"ok": False, "error_code": 404, "description": "Not Found"},
+                status=404,
+            )
+
+        app = web.Application()
+        app.router.add_post("/bot{token}/{method}", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        session: AiohttpSession | None = None
+        try:
+            assert site._server is not None
+            server = cast(Any, site._server)
+            port = server.sockets[0].getsockname()[1]
+            api = TelegramAPIServer.from_base(f"http://127.0.0.1:{port}")
+            session = AiohttpSession(api=api)
+            store = ChannelStore(tmp_path / "channels")
+            seen: list[ChannelInboundEvent] = []
+
+            async def sink(event: ChannelInboundEvent) -> None:
+                seen.append(event)
+
+            adapter = TelegramAdapter(
+                connection(),
+                {"bot_token": TOKEN},
+                sink,
+                store=store,
+                bot_factory=lambda token: Bot(token=token, session=session),
+                sleep=yield_sleep,
+            )
+            await adapter.start()
+            await wait_until(
+                lambda: (
+                    store.load_adapter_state("ch-telegram", "telegram")
+                    == {"offset": 71}
+                )
+            )
+            assert seen[0].text == "hello over http"
+            result = await adapter.send("7", "reply over http", "key-http")
+            assert result.status is ChannelSendStatus.ACCEPTED
+            assert [method for _, method in calls] == [
+                "getMe",
+                "getUpdates",
+                "getUpdates",
+                "sendMessage",
+            ]
+            assert all(token == TOKEN for token, _ in calls)
+            await adapter.stop()
+        finally:
+            gate.set()
+            if session is not None:
+                with contextlib.suppress(Exception):
+                    await session.close()
+            await runner.cleanup()
 
     asyncio.run(scenario())
 
