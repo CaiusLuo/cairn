@@ -51,6 +51,18 @@ def _payload_digest(target: str, message: str) -> str:
     return hashlib.sha256(f"{target}\0{message}".encode()).hexdigest()
 
 
+def _receipt_result(value: object) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    try:
+        result = json.loads(str(value))
+    except ValueError:
+        raise RuntimeError("channel request receipt is corrupt") from None
+    if not isinstance(result, dict):
+        raise RuntimeError("channel request receipt is corrupt")
+    return result
+
+
 def inbound_digest(event: ChannelInboundEvent) -> str:
     """Stable content digest used to detect an external message ID collision.
 
@@ -317,10 +329,9 @@ class ChannelStore:
             raise ChannelOperationUncertain(
                 "previous channel operation has an unknown outcome"
             )
-        result = json.loads(str(row["result_json"])) if row["result_json"] else {}
-        if not isinstance(result, dict):
-            raise RuntimeError("channel request receipt is corrupt")
-        return RequestClaim(replayed=True, result=result)
+        return RequestClaim(
+            replayed=True, result=_receipt_result(row["result_json"]) or {}
+        )
 
     @staticmethod
     def _start_request(
@@ -700,13 +711,11 @@ class ChannelStore:
             ).fetchone()
         if row is None:
             return None
-        try:
-            result = json.loads(str(row["result_json"])) if row["result_json"] else None
-        except ValueError:
-            raise RuntimeError("channel request receipt is corrupt") from None
-        if result is not None and not isinstance(result, dict):
-            raise RuntimeError("channel request receipt is corrupt")
-        return RequestReceipt(str(request_id), str(row["state"]), result)
+        return RequestReceipt(
+            str(request_id),
+            str(row["state"]),
+            _receipt_result(row["result_json"]),
+        )
 
     def claim_request(
         self, request_id: str, *, operation: str, digest_value: object

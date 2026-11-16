@@ -108,6 +108,28 @@ def test_create_replay_and_request_id_conflict(tmp_path: Path) -> None:
         )
 
 
+def test_request_receipt_survives_reopen_and_exposes_pending_state(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    store.claim_request(
+        "restart-pending",
+        operation="update",
+        digest_value={"probe": True},
+    )
+    reopened = _store(tmp_path)
+    pending = reopened.request_receipt("restart-pending")
+    assert pending is not None
+    assert (pending.state, pending.result) == ("pending", None)
+    assert reopened.request_receipt("restart-missing") is None
+
+    reopened.complete_request("restart-pending", {"connection": {"revision": 7}})
+    completed = _store(tmp_path).request_receipt("restart-pending")
+    assert completed is not None
+    assert completed.state == "completed"
+    assert completed.result == {"connection": {"revision": 7}}
+
+
 def test_update_without_secret_keeps_credentials_and_replacement_is_explicit(
     tmp_path: Path,
 ) -> None:

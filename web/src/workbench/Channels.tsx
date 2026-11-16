@@ -67,7 +67,7 @@ type WechatStatus = {
 
 type PendingEntry = {
   request_id: string;
-  intent: string;
+  identity: string;
   revision?: number;
   at: string;
 };
@@ -137,7 +137,8 @@ function readPending(): Record<string, PendingEntry> {
             scope,
             {
               request_id: entry.request_id,
-              intent: typeof entry.intent === "string" ? entry.intent : "",
+              identity:
+                typeof entry.identity === "string" ? entry.identity : "",
               ...(typeof entry.revision === "number"
                 ? { revision: entry.revision }
                 : {}),
@@ -194,7 +195,7 @@ async function intentFingerprint(intent: Record<string, unknown>) {
 
 function rememberRequestId(
   scope: string,
-  intent: string,
+  identity: string,
   revision: number | null,
 ) {
   const pending = readPending();
@@ -202,7 +203,7 @@ function rememberRequestId(
   delete pending[scope];
   pending[scope] = {
     request_id: requestId,
-    intent,
+    identity,
     ...(revision === null ? {} : { revision }),
     at: new Date().toISOString(),
   };
@@ -221,13 +222,13 @@ function receiptRevision(receipt: ChannelRequestReceipt) {
 
 async function requestIdFor(
   scope: string,
-  intent: string,
+  identity: string,
   revision: number | null,
 ): Promise<{ requestId: string; expectedRevision: number | null }> {
   const pending = readPending();
   const current = pending[scope];
-  if (!current) return rememberRequestId(scope, intent, revision);
-  if (current.intent && current.intent === intent) {
+  if (!current) return rememberRequestId(scope, identity, revision);
+  if (current.identity && current.identity === identity) {
     // Rebuild the original payload, including its original revision, so the
     // Server sees exactly the same request instead of rejecting a new intent.
     return {
@@ -247,7 +248,7 @@ async function requestIdFor(
       // No durable receipt means the old intent never reached the Server.
       delete pending[scope];
       writePending(pending);
-      return rememberRequestId(scope, intent, revision);
+      return rememberRequestId(scope, identity, revision);
     }
     throw new StaleChannelIntentError(
       "上一次提交的结果仍未知，请稍后重试，或先刷新核对连接状态。",
@@ -481,14 +482,24 @@ function WechatLegacyPanel({
             {status.account_saved ? "已保存登录账号" : "尚未保存登录账号"}
           </p>
           {status.login_pending ? (
-            <p className="channels-note" role="status">
+            <p
+              className="channels-note"
+              role="status"
+              data-wechat-notice={
+                status.verification_required ? "verification" : "scan"
+              }
+            >
               {status.verification_required
                 ? "微信要求输入登录验证码；请在设置 → 微信提交验证码。"
                 : "等待扫码登录；请使用上方二维码，或前往设置 → 微信继续。"}
             </p>
           ) : (
             status.verification_required && (
-              <p className="channels-note" role="alert">
+              <p
+                className="channels-note"
+                role="alert"
+                data-wechat-notice="verification"
+              >
                 微信要求输入登录验证码；请在设置 → 微信完成验证。
               </p>
             )
@@ -539,6 +550,9 @@ function ConnectionForm({
   );
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
+  const [errorKind, setErrorKind] = useState<
+    "validation" | "transport" | "stale-intent" | ""
+  >("");
   const [busy, setBusy] = useState(false);
   const [reconciledRevision, setReconciledRevision] = useState(0);
 
@@ -556,6 +570,7 @@ function ConnectionForm({
     const name = displayName.trim();
     if (!name) {
       setError("请填写连接名称。");
+      setErrorKind("validation");
       return;
     }
     if (replacing) {
@@ -564,12 +579,14 @@ function ConnectionForm({
       );
       if (missing.length) {
         setError(`替换凭据需要填写：${missing.map(field => field.label).join("、")}`);
+        setErrorKind("validation");
         return;
       }
     } else if (!editing) {
       const missing = fields.filter(field => field.required);
       if (missing.length) {
         setError(`请填写凭据：${missing.map(field => field.label).join("、")}`);
+        setErrorKind("validation");
         return;
       }
     }
@@ -602,6 +619,7 @@ function ConnectionForm({
       : null;
     setBusy(true);
     setError("");
+    setErrorKind("");
     let requestId = "";
     try {
       const claim = await requestIdFor(scope, fingerprint, baseRevision);
@@ -626,6 +644,7 @@ function ConnectionForm({
     } catch (reason) {
       if (reason instanceof StaleChannelIntentError) {
         setError(reason.message);
+        setErrorKind("stale-intent");
         if (reason.reconciled) {
           setReconciledRevision(current =>
             Math.max(current, reason.revision ?? 0),
@@ -638,6 +657,7 @@ function ConnectionForm({
         clearRequestId(scope, requestId);
       }
       setError(messageOf(reason));
+      setErrorKind("transport");
     } finally {
       setBusy(false);
     }
@@ -733,7 +753,11 @@ function ConnectionForm({
         </p>
       )}
       {error && (
-        <p className="channels-error" role="alert">
+        <p
+          className="channels-error"
+          role="alert"
+          data-channel-error={errorKind || undefined}
+        >
           {error}
         </p>
       )}
@@ -881,17 +905,24 @@ export function Channels() {
 
   useChannelAnimation(pageRef, animationKey);
 
+  function handleStaleIntent(reason: StaleChannelIntentError) {
+    setActionError(reason.message);
+    if (!reason.reconciled) return;
+    pollEpoch.current += 1;
+    setRevision(value => value + 1);
+  }
+
   async function runAction(action: "start" | "stop" | "reconnect") {
     if (!current || busy) return;
     const connectionId = current.connection.connection_id;
     const key = `action:${action}:${connectionId}`;
-    const intent = `action:${action}:${connectionId}`;
+    const identity = `action:${action}:${connectionId}`;
     setBusy(action);
     setActionError("");
     setActionNotice("");
     let requestId = "";
     try {
-      requestId = (await requestIdFor(key, intent, null)).requestId;
+      requestId = (await requestIdFor(key, identity, null)).requestId;
       const view = await channelAction(connectionId, action, requestId);
       clearRequestId(key, requestId);
       pollEpoch.current += 1;
@@ -912,11 +943,7 @@ export function Channels() {
       );
     } catch (reason) {
       if (reason instanceof StaleChannelIntentError) {
-        setActionError(reason.message);
-        if (reason.reconciled) {
-          pollEpoch.current += 1;
-          setRevision(value => value + 1);
-        }
+        handleStaleIntent(reason);
         return;
       }
       if (!shouldKeepRequestId(reason) && requestId) {
@@ -933,12 +960,12 @@ export function Channels() {
     const connectionId = current.connection.connection_id;
     const revision = current.connection.revision;
     const key = `delete:${connectionId}:${revision}`;
-    const intent = `delete:${connectionId}:${revision}`;
+    const identity = `delete:${connectionId}:${revision}`;
     setBusy("delete");
     setActionError("");
     let requestId = "";
     try {
-      requestId = (await requestIdFor(key, intent, null)).requestId;
+      requestId = (await requestIdFor(key, identity, null)).requestId;
       await deleteChannelConnection(connectionId, {
         expected_revision: revision,
         request_id: requestId,
@@ -954,11 +981,7 @@ export function Channels() {
       );
     } catch (reason) {
       if (reason instanceof StaleChannelIntentError) {
-        setActionError(reason.message);
-        if (reason.reconciled) {
-          pollEpoch.current += 1;
-          setRevision(value => value + 1);
-        }
+        handleStaleIntent(reason);
         return;
       }
       if (!shouldKeepRequestId(reason) && requestId) {
