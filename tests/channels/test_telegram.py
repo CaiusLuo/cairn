@@ -255,6 +255,7 @@ def test_duplicate_token_cannot_open_a_second_poller(tmp_path: Path) -> None:
         with pytest.raises(ChannelCredentialError) as excinfo:
             await second.start()
         assert str(excinfo.value) == "telegram_token_in_use"
+        assert second.health().actual_state is ChannelActualState.ERROR
         await first.stop()
         await second.start()
         assert second.health().actual_state is ChannelActualState.RUNNING

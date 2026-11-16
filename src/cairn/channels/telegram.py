@@ -199,7 +199,12 @@ class TelegramAdapter:
             self._state = ChannelActualState.ERROR
             self._last_error = str(exc)
             raise
-        self._reserve_token(token)
+        try:
+            self._reserve_token(token)
+        except ChannelCredentialError as exc:
+            self._state = ChannelActualState.ERROR
+            self._last_error = str(exc)
+            raise
         self._state = ChannelActualState.CONNECTING
         self._last_error = None
         bot: Bot | None = None
