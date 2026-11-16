@@ -408,6 +408,8 @@ class FeishuAdapter:
         return True
 
     def _normalise(self, inbound: object) -> ChannelInboundEvent | None:
+        if self._closing:
+            return None
         if self._state not in {
             ChannelActualState.RUNNING,
             ChannelActualState.CONNECTING,
