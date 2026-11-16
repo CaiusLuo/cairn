@@ -30,18 +30,45 @@ import {
 import { PageHeader } from "./execution";
 import { Icon } from "./Icon";
 
-const PLATFORMS: ChannelPlatform[] = ["wechat", "qq", "telegram", "discord"];
+const PLATFORMS: ChannelPlatform[] = [
+  "wechat",
+  "feishu",
+  "wecom",
+  "qq",
+  "telegram",
+  "discord",
+];
 const platformName: Record<ChannelPlatform, string> = {
   wechat: "微信",
+  feishu: "飞书",
+  wecom: "企业微信",
   qq: "QQ",
   telegram: "Telegram",
   discord: "Discord",
 };
 const platformBlurb: Record<ChannelPlatform, string> = {
   wechat: "复用宿主登录会话，在私聊与群聊中收发消息。",
+  feishu: "用企业自建应用接入飞书，通过长连接接收私聊消息。",
+  wecom: "企业微信接入尚未集成，暂时只展示连接配置。",
   qq: "配置 QQ 机器人连接，集中管理运行状态。",
   telegram: "用 Bot Token 接入 Telegram，接收私聊消息。",
   discord: "配置 Discord 机器人连接，集中管理运行状态。",
+};
+const ownerPlaceholder: Record<ChannelPlatform, string> = {
+  wechat: "平台侧的用户身份",
+  feishu: "飞书用户 open_id（ou_…）",
+  wecom: "企业微信用户身份",
+  qq: "QQ 机器人身份",
+  telegram: "Telegram 用户或机器人身份",
+  discord: "Discord 用户或机器人身份",
+};
+const sendersPlaceholder: Record<ChannelPlatform, string> = {
+  wechat: "留空表示仅宿主所有者",
+  feishu: "每行一个飞书 open_id；留空表示仅宿主所有者",
+  wecom: "留空表示仅宿主所有者",
+  qq: "留空表示仅宿主所有者",
+  telegram: "留空表示仅宿主所有者",
+  discord: "留空表示仅宿主所有者",
 };
 const displayLabel: Record<ChannelDisplayState, string> = {
   unconfigured: "未连接",
@@ -427,6 +454,18 @@ function PlatformMark({ platform }: { platform: ChannelPlatform }) {
           <path d="M9.5 4.5c3 0 5.5 1.9 5.5 4.3s-2.5 4.3-5.5 4.3c-.6 0-1.2-.1-1.8-.2L5.5 14l.7-2.2c-1.3-.8-2.2-1.8-2.2-3C4 6.4 6.5 4.5 9.5 4.5Z" />
           <path d="M15 10.5c2.6 0 4.8 1.6 4.8 3.8 0 1-.6 1.9-1.6 2.6l.5 1.8-2.1-1c-.5.1-1 .2-1.6.2-2.6 0-4.8-1.6-4.8-3.8" />
         </svg>
+      ) : platform === "feishu" ? (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+          <path d="M6.2 4.8h11.6c1.6 0 2.9 1.3 2.9 2.9v7.1c0 1.6-1.3 2.9-2.9 2.9h-5.1l-4.2 2.7v-2.7H6.2c-1.6 0-2.9-1.3-2.9-2.9V7.7c0-1.6 1.3-2.9 2.9-2.9Z" />
+          <path d="m8.2 9.3 7.1 2.4-3.2 1.2-1.1 3.2-2.8-6.8Z" />
+        </svg>
+      ) : platform === "wecom" ? (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+          <path d="M4.2 19.4V7.1c0-1.2 1-2.2 2.2-2.2h7.2c1 0 1.8.8 1.8 1.8v12.7" />
+          <path d="M15.4 10.4h2.6c1.1 0 1.9.9 1.9 1.9v7.1" />
+          <path d="M3 19.4h18" />
+          <path d="M7.6 9h4.4M7.6 12.8h4.4" />
+        </svg>
       ) : platform === "qq" ? (
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
           <path d="M12 3.5c2.5 0 4.2 1.8 4.2 4.3 0 1-.2 1.7-.5 2.4 1.5 1.2 2.6 3.3 2.6 5.4 0 2.5-2.8 4.4-6.3 4.4s-6.3-1.9-6.3-4.4c0-2.1 1.1-4.2 2.6-5.4-.3-.7-.5-1.4-.5-2.4 0-2.5 1.7-4.3 4.2-4.3Z" />
@@ -756,7 +795,7 @@ function ConnectionForm({
             setOwner(event.target.value);
             onDirty();
           }}
-          placeholder="平台侧的用户或机器人身份"
+          placeholder={ownerPlaceholder[platform]}
         />
       </label>
       <label>
@@ -768,7 +807,7 @@ function ConnectionForm({
             setSenders(event.target.value);
             onDirty();
           }}
-          placeholder="留空表示仅宿主所有者"
+          placeholder={sendersPlaceholder[platform]}
         />
       </label>
       {fields.length > 0 && (
@@ -1156,7 +1195,7 @@ export function Channels() {
           <PageHeader
             icon="server"
             title="连接"
-            description="管理微信、QQ、Telegram 与 Discord 的连接和运行状态"
+            description="管理微信、飞书、企业微信、QQ、Telegram 与 Discord 的连接和运行状态"
             actions={headerActions}
           />
           {overviewError && (
@@ -1206,7 +1245,7 @@ export function Channels() {
             </div>
           )}
           <p className="wb-muted channels-footnote">
-            四个平台固定展示；状态、配置数和运行数均取自 Server 的真实连接状态。
+            六个平台固定展示；状态、配置数和运行数均取自 Server 的真实连接状态。
           </p>
         </>
       )}

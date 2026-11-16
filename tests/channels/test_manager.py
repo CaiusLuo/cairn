@@ -40,6 +40,8 @@ from tests.channels.support import (
 
 PLATFORMS = {
     ChannelPlatform.WECHAT,
+    ChannelPlatform.FEISHU,
+    ChannelPlatform.WECOM,
     ChannelPlatform.QQ,
     ChannelPlatform.TELEGRAM,
     ChannelPlatform.DISCORD,

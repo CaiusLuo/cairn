@@ -622,7 +622,7 @@ try {
     assert.equal(await loadMore.isEnabled(), true);
     console.log("Review pagination race and detail identity passed.");
 
-    // Channels: four fixed platforms, real CRUD against the isolated Server,
+    // Channels: six fixed platforms, real CRUD against the isolated Server,
     // with capability and lifecycle route mocks only where no real adapter exists.
     const channelSecret = ["e2e", "channel", "secret", Date.now().toString(36)].join("-");
     async function createChannel(platform, name, credentials, requestId) {
@@ -668,13 +668,17 @@ try {
 
     await page.getByRole("link", { name: "连接", exact: true }).click();
     await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
-    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 6);
     const telegramCard = page.locator('.channels-platform[data-platform="telegram"]');
     const discordCard = page.locator('.channels-platform[data-platform="discord"]');
     const qqCard = page.locator('.channels-platform[data-platform="qq"]');
+    const feishuCard = page.locator('.channels-platform[data-platform="feishu"]');
+    const wecomCard = page.locator('.channels-platform[data-platform="wecom"]');
     assert.match(await telegramCard.textContent(), /已配置 1 · 运行中 0/);
     assert.match(await discordCard.textContent(), /已配置 3 · 运行中 0/);
     assert.match(await qqCard.textContent(), /未连接/);
+    assert.match(await feishuCard.textContent(), /未连接/);
+    assert.match(await wecomCard.textContent(), /未连接/);
     await shot("Cairn-workbench-channels");
 
     // Exercise all three overview states without inventing a real adapter:
@@ -683,6 +687,8 @@ try {
     const mockedOverview = {
       platforms: [
         { platform: "wechat", display_state: "unconfigured", connections: 0, running: 0 },
+        { platform: "feishu", display_state: "silent", connections: 1, running: 0 },
+        { platform: "wecom", display_state: "unconfigured", connections: 0, running: 0 },
         { platform: "qq", display_state: "running", connections: 1, running: 1 },
         { platform: "telegram", display_state: "silent", connections: 1, running: 0 },
         { platform: "discord", display_state: "unconfigured", connections: 0, running: 0 },
@@ -694,13 +700,15 @@ try {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(mockedOverview) });
     });
     await page.reload();
-    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 6);
     assert.equal(await page.locator('.channels-platform[data-platform="wechat"] .channel-state').textContent(), "未连接");
+    assert.equal(await page.locator('.channels-platform[data-platform="feishu"] .channel-state').textContent(), "沉默中");
+    assert.equal(await page.locator('.channels-platform[data-platform="wecom"] .channel-state').textContent(), "未连接");
     assert.equal(await page.locator('.channels-platform[data-platform="qq"] .channel-state').textContent(), "运行中");
     assert.equal(await page.locator('.channels-platform[data-platform="telegram"] .channel-state').textContent(), "沉默中");
     await page.unroute(overviewPattern);
     await page.reload();
-    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 6);
 
     // 0 / 1 / N configured connections stay on the same second-level page.
     await discordCard.click();
@@ -716,6 +724,29 @@ try {
     await telegramCard.click();
     await page.getByRole("heading", { name: "Telegram 连接", exact: true }).waitFor();
     await page.waitForFunction(() => document.querySelectorAll(".channels-connection").length === 1);
+
+    // Feishu is a first-class platform; its App Secret is write-only.
+    await page.getByRole("button", { name: /返回总览/ }).click();
+    await feishuCard.click();
+    await page.getByRole("heading", { name: "飞书 连接", exact: true }).waitFor();
+    await page.getByRole("button", { name: "新建连接", exact: true }).click();
+    const feishuDialog = page.getByRole("dialog", { name: "新建 飞书 连接" });
+    await feishuDialog.waitFor();
+    const feishuSecret = channelSecret + "-feishu";
+    await feishuDialog.getByLabel("连接名称").fill("E2E Feishu");
+    await feishuDialog.getByLabel("App ID").fill("cli_e2efixture0001");
+    await feishuDialog.getByLabel("App Secret").fill(feishuSecret);
+    await feishuDialog.getByLabel(/宿主所有者/).fill("ou_e2e_owner");
+    await feishuDialog.getByRole("button", { name: "连接", exact: true }).click();
+    await page.locator(".channels-connection").filter({ hasText: "E2E Feishu" }).waitFor();
+    assert(!JSON.stringify(await readChannels()).includes(feishuSecret));
+    await openConnectionMenu("E2E Feishu");
+    await page.getByRole("menuitem", { name: "删除" }).click();
+    await page
+      .getByRole("dialog", { name: "删除连接" })
+      .getByRole("button", { name: "确认删除" })
+      .click();
+    await page.getByText("已删除「E2E Feishu」。").waitFor();
 
     // The rail link is an App-level navigation. It must reset this page's URL
     // state instead of leaving a stale platform behind.
@@ -1250,7 +1281,7 @@ try {
     // leaves no stale cards or inline animation residue.
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto(new URL("/channels.html", url).href);
-    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 6);
     const reducedMotion = await page.evaluate(() => ({
       matches: matchMedia("(prefers-reduced-motion: reduce)").matches,
       hidden: [...document.querySelectorAll("[data-channel-animate]")].filter(element => {
@@ -1260,19 +1291,19 @@ try {
     }));
     assert(reducedMotion.matches);
     assert.equal(reducedMotion.hidden, 0);
-    for (const candidate of ["qq", "telegram", "discord", "wechat", "qq", "telegram"]) {
+    for (const candidate of ["qq", "telegram", "discord", "wechat", "feishu", "wecom", "qq", "telegram"]) {
       await page.locator(`.channels-platform[data-platform="${candidate}"]`).click();
       await page.goBack();
     }
     await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
-    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 6);
     await page.emulateMedia({ reducedMotion: "no-preference" });
-    for (const candidate of ["qq", "telegram", "discord", "wechat", "qq", "telegram"]) {
+    for (const candidate of ["qq", "telegram", "discord", "wechat", "feishu", "wecom", "qq", "telegram"]) {
       await page.locator(`.channels-platform[data-platform="${candidate}"]`).click();
       await page.goBack();
     }
     await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
-    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 4);
+    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 6);
     await page.waitForTimeout(800);
     const animatedResidue = await page.evaluate(() =>
       [...document.querySelectorAll("[data-channel-animate]")].filter(element => {

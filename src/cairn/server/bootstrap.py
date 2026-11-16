@@ -23,6 +23,7 @@ from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.agent.models.runtime import ProviderRuntime, build_provider_runtime
 from cairn.agent.workspace.lease import WorkspaceLease
 from cairn.channels.adapter import ChannelAdapterRegistry
+from cairn.channels.feishu import feishu_adapter_factory
 from cairn.channels.manager import ChannelManager
 from cairn.channels.models import ChannelPlatform
 from cairn.channels.replies import ChannelReplyCoordinator
@@ -148,6 +149,7 @@ def runtime_app(
         channel_adapters.register(
             ChannelPlatform.TELEGRAM, telegram_adapter_factory(channel_store)
         )
+        channel_adapters.register(ChannelPlatform.FEISHU, feishu_adapter_factory())
         channel_manager = ChannelManager(
             store=channel_store,
             conversations=conversations,

@@ -18,6 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 class ChannelPlatform(StrEnum):
     WECHAT = "wechat"
+    FEISHU = "feishu"
+    WECOM = "wecom"
     QQ = "qq"
     TELEGRAM = "telegram"
     DISCORD = "discord"
@@ -183,6 +185,21 @@ PLATFORM_CREDENTIAL_SCHEMAS: dict[
     ChannelPlatform, tuple[ChannelCredentialField, ...]
 ] = {
     ChannelPlatform.WECHAT: (),
+    ChannelPlatform.FEISHU: (
+        ChannelCredentialField(
+            key="app_id",
+            label="App ID",
+            secret=False,
+            placeholder="cli_…",
+        ),
+        ChannelCredentialField(
+            key="app_secret",
+            label="App Secret",
+            placeholder="仅写入, 不回显",
+        ),
+    ),
+    # The platform is visible in the console before its Adapter exists.
+    ChannelPlatform.WECOM: (),
     ChannelPlatform.QQ: (
         ChannelCredentialField(
             key="app_id",

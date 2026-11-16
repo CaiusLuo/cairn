@@ -452,6 +452,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 }
 .channel-mark svg { width: 22px; height: 22px; }
 .channel-mark[data-platform="wechat"] { color: #07a854; }
+.channel-mark[data-platform="feishu"] { color: #3370ff; }
+.channel-mark[data-platform="wecom"] { color: #0082ef; }
 .channel-mark[data-platform="qq"] { color: #0d93cc; }
 .channel-mark[data-platform="telegram"] { color: #2089bd; }
 .channel-mark[data-platform="discord"] { color: #5865f2; }

@@ -187,16 +187,17 @@ retried automatically.
 
 ## Channels (C0 connection core)
 
-`src/cairn/channels` is the shared connection foundation for WeChat, QQ, Telegram
-and Discord. It implements configuration, private credential storage, lifecycle,
-health, inbound dedupe, outbound delivery audit and durable source replies.
-Telegram has a real aiogram long-polling adapter; QQ and Discord are
+`src/cairn/channels` is the shared connection foundation for WeChat, Feishu,
+WeCom, QQ, Telegram and Discord. It implements configuration, private
+credential storage, lifecycle, health, inbound dedupe, outbound delivery audit
+and durable source replies. Telegram has a real aiogram long-polling adapter and
+Feishu a real `lark-oapi` WebSocket adapter; WeCom, QQ and Discord are
 configuration-only for now, so `start` or `reconnect` for them returns
-`adapter_not_implemented` (HTTP 501). Such a connection never reports `running`,
-its platform summary stays `silent`, and it remains editable and deletable. The
-deterministic Fake Adapter is injected only by tests.
+`adapter_not_implemented` (HTTP 501). A configuration-only connection never
+reports `running`, its platform summary stays `silent`, and it remains editable
+and deletable. The deterministic Fake Adapter is injected only by tests.
 
-The independent Web connection console at `/channels.html` shows the four fixed
+The independent Web connection console at `/channels.html` shows the six fixed
 platforms, then one platform page with its connection list and per-connection
 actions. Create and edit open a centered dialog, so there is no third-level page;
 `platform` is the only URL parameter, and direct entry, refresh and browser
@@ -303,6 +304,45 @@ back only one running connection in the process; a second one fails with
 bounded backoff, a 409 marks the connection `error`, and 429 replies are retried
 with the advertised delay. Replies are split below Telegram's 4096 UTF-16 limit,
 sent as Markdown, and fall back to plain text when Telegram rejects the entities.
+
+### Feishu
+
+A Feishu connection uses an enterprise self-built app's `app_id` and
+`app_secret`, collected by the Web console, with the app's **WebSocket long
+connection** event mode (`im.message.receive_v1`). Only private (`p2p`) text
+messages from human senders are accepted; the bot's own events, bot authors,
+group chats and non-text message types are acknowledged and ignored. The
+SDK-level dedupe and text batching are disabled so the durable
+`(connection_id, adapter_identity, external_message_id)` claim remains the only
+dedupe authority, and outbound SDK retry is disabled so an uncertain send stays
+`unknown` instead of being replayed. Because the SDK sends the event ACK
+automatically, an admission that loses the race with a busy Run is held in a
+bounded per-connection queue and retried for up to five minutes; a crash in that
+window depends on Feishu redelivery, which the same claim resolves to the same
+Run.
+
+The bot identity is `feishu:{app_id}:{bot_open_id}`, taken from the trusted
+credentials and the open_id the SDK reports after connecting, never from message
+content. Replacing the app credentials with a different app therefore creates a
+new identity: old inbound receipts do not match its events and old pending
+replies fail closed with `reply_bot_mismatch`. Replacing the secret for the same
+app keeps the identity.
+
+`lark-oapi` binds its WebSocket client to the event loop that was current at
+import, so it must not be imported lazily inside a running loop. Cairn imports
+it when the module loads (before the Server loop) and enforces one Feishu
+WebSocket connection per Server process: a second connection for the same app
+fails `feishu_app_in_use`, and a second connection for a different app fails
+`feishu_ws_busy`. This is stricter than Feishu's per-app limit and is a property
+of the SDK, not the platform.
+
+Replies are split below Feishu's 3500-character text limit at newline or space
+boundaries. Definite refusals (`format_error`, `target_revoked`,
+`permission_denied`) are `rejected`; `rate_limited` is retried once after the
+advertised delay; timeouts, disconnects and unknown failures are `unknown` and
+never resent. A partial multi-chunk reply reports `unknown` with
+`feishu_partial_send` and is not continued automatically. A successful send API
+response only means Feishu accepted the message, not that the user read it.
 
 Every terminal Channel Run has a durable reply intent tied to its original
 connection and external conversation. The intent records the trusted sender

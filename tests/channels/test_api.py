@@ -124,13 +124,15 @@ def test_reads_require_login_and_writes_require_host_origin(tmp_path: Path) -> N
         assert bearer.status_code == 201
 
 
-def test_zero_config_lists_all_four_platforms(tmp_path: Path) -> None:
+def test_zero_config_lists_all_six_platforms(tmp_path: Path) -> None:
     web, _ = _app(tmp_path)
     with TestClient(web, base_url=ORIGIN) as client:
         _login(client)
         payload = client.get("/api/channels").json()
         assert [row["platform"] for row in payload["platforms"]] == [
             "wechat",
+            "feishu",
+            "wecom",
             "qq",
             "telegram",
             "discord",
@@ -139,6 +141,70 @@ def test_zero_config_lists_all_four_platforms(tmp_path: Path) -> None:
             row["display_state"] == "unconfigured" for row in payload["platforms"]
         )
         assert payload["connections"] == []
+
+
+def test_feishu_is_runnable_while_wecom_is_declared_unsupported(
+    tmp_path: Path,
+) -> None:
+    factory = CapturingFactory()
+    manager = ChannelManager(
+        store=ChannelStore(tmp_path / "channels"),
+        conversations=FakeIntake(),
+        adapters=ChannelAdapterRegistry().register(ChannelPlatform.FEISHU, factory),
+    )
+    web = create_app(
+        _config(tmp_path),
+        runtime_token=TOKEN,
+        channels=manager,
+    )
+    with TestClient(web, base_url=ORIGIN) as client:
+        _login(client)
+        capabilities = {
+            row["platform"]: row
+            for row in client.get("/api/channels/capabilities").json()["platforms"]
+        }
+        feishu = capabilities["feishu"]
+        assert feishu["adapter_supported"] is True
+        assert feishu["legacy_managed"] is False
+        assert [field["key"] for field in feishu["credential_schema"]] == [
+            "app_id",
+            "app_secret",
+        ]
+        assert [field["secret"] for field in feishu["credential_schema"]] == [
+            False,
+            True,
+        ]
+        wecom = capabilities["wecom"]
+        assert wecom["adapter_supported"] is False
+        assert wecom["supported_actions"] == ["create", "update", "delete"]
+
+        response = client.post(
+            "/api/channels/feishu/connections",
+            json={
+                "request_id": "create-feishu-api",
+                "display_name": "Feishu Home",
+                "enabled": True,
+                "owner_identity": "ou_owner",
+                "credentials": {
+                    "app_id": "cli_aaaaaaaaaaaaaaaa",
+                    "app_secret": TEST_SECRET,
+                },
+            },
+            headers={"Origin": ORIGIN},
+        )
+        assert response.status_code == 201
+        assert TEST_SECRET not in response.text
+        connection = response.json()["connection"]
+        assert connection["credential_ref"] is not None
+        assert connection["platform"] == "feishu"
+
+        started = client.post(
+            f"/api/channels/connections/{connection['connection_id']}/start",
+            json={"request_id": "start-feishu-api"},
+            headers={"Origin": ORIGIN},
+        )
+        assert started.status_code == 200
+        assert started.json()["runtime"]["actual_state"] == "running"
 
 
 def test_create_never_returns_the_secret_and_start_stop_reconnect_work(
@@ -647,6 +713,8 @@ def test_missing_production_adapter_is_explicit_and_config_stays_editable(
         capabilities = client.get("/api/channels/capabilities").json()
         assert [row["platform"] for row in capabilities["platforms"]] == [
             "wechat",
+            "feishu",
+            "wecom",
             "qq",
             "telegram",
             "discord",

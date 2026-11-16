@@ -1,6 +1,12 @@
 import { RuntimeError } from "./runtime-api";
 
-export type ChannelPlatform = "wechat" | "qq" | "telegram" | "discord";
+export type ChannelPlatform =
+  | "wechat"
+  | "feishu"
+  | "wecom"
+  | "qq"
+  | "telegram"
+  | "discord";
 export type ChannelDisplayState = "unconfigured" | "running" | "silent";
 export type ChannelActualState = "running" | "stopped" | "connecting" | "error";
 export type ChannelDesiredState = "running" | "stopped";
