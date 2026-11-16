@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type ReactNode,
   type RefObject,
 } from "react";
 import { newRequestId } from "../ids";
@@ -36,6 +37,12 @@ const platformName: Record<ChannelPlatform, string> = {
   telegram: "Telegram",
   discord: "Discord",
 };
+const platformBlurb: Record<ChannelPlatform, string> = {
+  wechat: "复用宿主登录会话，在私聊与群聊中收发消息。",
+  qq: "配置 QQ 机器人连接，集中管理运行状态。",
+  telegram: "用 Bot Token 接入 Telegram，接收私聊与群组消息。",
+  discord: "配置 Discord 机器人连接，集中管理运行状态。",
+};
 const displayLabel: Record<ChannelDisplayState, string> = {
   unconfigured: "未连接",
   running: "运行中",
@@ -51,8 +58,6 @@ const REQUEST_KEY = "cairn.web.pending.channels";
 
 type ChannelRoute = {
   platform: ChannelPlatform | "";
-  connectionId: string;
-  mode: "" | "new" | "edit";
 };
 
 type WechatStatus = {
@@ -64,6 +69,12 @@ type WechatStatus = {
   account_saved: boolean;
   enabled: boolean;
 };
+
+type ChannelDialogState =
+  | { kind: "create"; platform: ChannelPlatform }
+  | { kind: "edit"; view: ChannelView }
+  | { kind: "delete"; view: ChannelView }
+  | { kind: "wechat" };
 
 type PendingEntry = {
   request_id: string;
@@ -90,22 +101,12 @@ function readRoute(): ChannelRoute {
   const platform = PLATFORMS.includes(requested as ChannelPlatform)
     ? (requested as ChannelPlatform)
     : "";
-  const connectionId = platform ? (params.get("connection_id") ?? "") : "";
-  const rawMode = params.get("mode");
-  const mode: ChannelRoute["mode"] =
-    rawMode === "new" && platform
-      ? "new"
-      : rawMode === "edit" && connectionId
-        ? "edit"
-        : "";
-  return { platform, connectionId, mode };
+  return { platform };
 }
 
 function writeRoute(route: ChannelRoute, mode: "push" | "replace") {
   const params = new URLSearchParams();
   if (route.platform) params.set("platform", route.platform);
-  if (route.connectionId) params.set("connection_id", route.connectionId);
-  if (route.mode) params.set("mode", route.mode);
   const url = location.pathname + (params.size ? `?${params}` : "");
   if (mode === "replace") window.history.replaceState({}, "", url);
   else window.history.pushState({}, "", url);
@@ -311,14 +312,6 @@ function messageOf(reason: unknown) {
   return reason instanceof Error ? reason.message : String(reason);
 }
 
-function dateLabel(value: string | null) {
-  if (!value) return "—";
-  const parsed = new Date(value);
-  return Number.isFinite(parsed.getTime())
-    ? parsed.toLocaleString("zh-CN", { hour12: false })
-    : value;
-}
-
 function parseSenders(value: string) {
   return Array.from(
     new Set(
@@ -479,75 +472,114 @@ function StatusPill({
 function WechatLegacyPanel({
   status,
   error,
+  busy,
+  onLogin,
 }: {
   status: WechatStatus | null;
   error: string;
+  busy: boolean;
+  onLogin: () => void;
 }) {
+  const state = status?.running
+    ? "running"
+    : status?.login_pending
+      ? "connecting"
+      : "stopped";
   return (
     <section className="wb-card channels-legacy" aria-label="微信宿主托管" data-channel-animate>
-      <div>
-        <h2>宿主托管的微信</h2>
-        <p className="wb-muted">
-          微信沿用 Server 现有的单一登录会话，作为 legacy-wechat 展示；这里不会创建第二个
-          微信 Controller，也不会删除旧登录状态。扫码、验证码、账号与断开操作仍在设置页。
-        </p>
+      <div className="channels-legacy-head">
+        <PlatformMark platform="wechat" />
+        <div className="channels-legacy-title">
+          <h2>宿主托管的微信</h2>
+          <span className="wb-muted">
+            沿用 Server 现有的单一登录会话，不创建第二个微信 Controller。
+          </span>
+        </div>
+        {status && <StatusPill state={state} kind="actual" />}
       </div>
       {status ? (
-        <div className="channels-legacy-state">
-          <p
-            className="channels-legacy-status"
-            role="status"
-            data-wechat-status={status.status}
-          >
-            {status.status}
-          </p>
-          <p className="wb-muted">
-            {status.enabled ? "宿主已启用" : "宿主已停用"}
-            {" · "}
-            {status.running ? "后台接收中" : "当前未运行"}
-            {" · "}
-            {status.account_saved ? "已保存登录账号" : "尚未保存登录账号"}
-          </p>
-          {status.login_pending ? (
-            <p
-              className="channels-note"
-              role="status"
-              data-wechat-notice={
-                status.verification_required ? "verification" : "scan"
-              }
-            >
-              {status.verification_required
-                ? "微信要求输入登录验证码；请在设置 → 微信提交验证码。"
-                : "等待扫码登录；请使用上方二维码，或前往设置 → 微信继续。"}
-            </p>
-          ) : (
-            status.verification_required && (
-              <p
-                className="channels-note"
-                role="alert"
-                data-wechat-notice="verification"
-              >
-                微信要求输入登录验证码；请在设置 → 微信完成验证。
-              </p>
-            )
-          )}
-        </div>
+        <p className="wb-muted channels-legacy-meta">
+          {status.enabled ? "宿主已启用" : "宿主已停用"}
+          {" · "}
+          {status.running
+            ? "后台接收中"
+            : status.login_pending
+              ? "等待登录"
+              : "当前未运行"}
+          {" · "}
+          {status.account_saved ? "已保存登录账号" : "尚未保存登录账号"}
+        </p>
       ) : (
         <p className="wb-muted" role="status">
           {error || "正在读取微信登录状态…"}
         </p>
       )}
-      {status?.qr_image && (
-        <figure className="channels-qr">
-          <img src={status.qr_image} alt="微信登录二维码" width="180" height="180" />
-          <figcaption>使用微信扫码登录（与设置页共用同一登录流程）</figcaption>
-        </figure>
+      {status?.verification_required && (
+        <p className="channels-note" role="alert">
+          微信要求输入登录验证码，请打开登录面板完成验证。
+        </p>
       )}
-      <a className="channels-settings-link" href="/settings.html?section=wechat">
-        <Icon name="settings" size={14} />
-        打开微信设置
-      </a>
+      <div className="channels-legacy-actions">
+        <button className="primary" disabled={!status || busy} onClick={onLogin}>
+          登录微信
+        </button>
+        {status?.qr_image && (
+          <span className="wb-muted">二维码已生成，打开登录面板扫码。</span>
+        )}
+      </div>
     </section>
+  );
+}
+
+function ChannelDialog({
+  title,
+  subtitle,
+  narrow = false,
+  onClose,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  narrow?: boolean;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = ref.current;
+    if (!dialog || dialog.open) return;
+    dialog.showModal();
+    // Native dialogs focus the first control, which is the close button.
+    // Prefer the control the dialog marks as its starting point instead.
+    dialog.querySelector<HTMLElement>("[data-autofocus]")?.focus();
+  }, []);
+  return (
+    <dialog
+      ref={ref}
+      className={`channels-dialog${narrow ? " channels-dialog-narrow" : ""}`}
+      aria-label={title}
+      onCancel={event => {
+        event.preventDefault();
+        onClose();
+      }}
+    >
+      <div className="channels-dialog-head">
+        <div>
+          <h2>{title}</h2>
+          {subtitle && <p className="wb-muted">{subtitle}</p>}
+        </div>
+        <button
+          type="button"
+          className="channels-dialog-close"
+          aria-label="关闭"
+          title="关闭"
+          onClick={onClose}
+        >
+          <Icon name="close" size={17} />
+        </button>
+      </div>
+      <div className="channels-dialog-body">{children}</div>
+    </dialog>
   );
 }
 
@@ -571,8 +603,10 @@ function ConnectionForm({
   onCreatedConnection: (connectionId: string) => void;
 }) {
   const editing = initial !== null;
+  // New connections are retained and runnable by default; editing does not
+  // silently re-enable a connection the user deliberately stopped.
+  const enabled = initial?.enabled ?? true;
   const [displayName, setDisplayName] = useState(initial?.display_name ?? "");
-  const [enabled, setEnabled] = useState(initial?.enabled ?? true);
   const [owner, setOwner] = useState(initial?.owner_identity ?? "");
   const [senders, setSenders] = useState(
     (initial?.allowed_senders ?? []).join("\n"),
@@ -702,6 +736,8 @@ function ConnectionForm({
         连接名称
         <input
           required
+          autoFocus
+          data-autofocus
           maxLength={120}
           value={displayName}
           onChange={event => {
@@ -710,17 +746,6 @@ function ConnectionForm({
           }}
           placeholder={`例如：我的 ${platformName[platform]}`}
         />
-      </label>
-      <label className="channels-check">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={event => {
-            setEnabled(event.target.checked);
-            onDirty();
-          }}
-        />
-        保存后允许该连接运行
       </label>
       <label>
         宿主所有者（可选）
@@ -796,7 +821,7 @@ function ConnectionForm({
       )}
       <div className="channels-form-actions">
         <button className="primary" disabled={busy}>
-          {busy ? "保存中…" : editing ? "保存修改" : "保存连接"}
+          {busy ? "保存中…" : editing ? "保存修改" : "连接"}
         </button>
         <button type="button" disabled={busy} onClick={onCancel}>
           取消
@@ -817,10 +842,18 @@ export function Channels() {
   const [revision, setRevision] = useState(0);
   const [actionError, setActionError] = useState("");
   const [actionNotice, setActionNotice] = useState("");
-  const [busy, setBusy] = useState("");
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [busy, setBusy] = useState<
+    "" | "start" | "stop" | "reconnect" | "delete"
+  >("");
+  const [dialog, setDialog] = useState<ChannelDialogState | null>(null);
+  const [dialogError, setDialogError] = useState("");
+  const [menuFor, setMenuFor] = useState<string | null>(null);
   const [wechat, setWechat] = useState<WechatStatus | null>(null);
   const [wechatError, setWechatError] = useState("");
+  const [wechatBusy, setWechatBusy] = useState(false);
+  const [wechatCode, setWechatCode] = useState("");
+  const [wechatNotice, setWechatNotice] = useState("");
+  const [wechatActionError, setWechatActionError] = useState("");
   const pageRef = useRef<HTMLDivElement>(null);
   const pollEpoch = useRef(0);
 
@@ -829,7 +862,7 @@ export function Channels() {
     setRoute(next);
     setActionError("");
     setActionNotice("");
-    setConfirmDelete(false);
+    setMenuFor(null);
     document.querySelector(".wb-main")?.scrollTo(0, 0);
   }, []);
 
@@ -838,11 +871,38 @@ export function Channels() {
       setRoute(readRoute());
       setActionError("");
       setActionNotice("");
-      setConfirmDelete(false);
+      setDialog(null);
+      setMenuFor(null);
     };
     window.addEventListener("popstate", update);
     return () => window.removeEventListener("popstate", update);
   }, []);
+
+  // Old links may still carry connection_id/mode; only the platform is part
+  // of the second-level view, so rewrite them to the canonical URL.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if ([...params.keys()].some(key => key !== "platform")) {
+      writeRoute(readRoute(), "replace");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!menuFor) return;
+    const close = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (!target?.closest(".channels-menu-wrap")) setMenuFor(null);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuFor(null);
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", escape);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", escape);
+    };
+  }, [menuFor]);
 
   useVisiblePoll(
     true,
@@ -918,23 +978,14 @@ export function Channels() {
         view => view.connection.platform === platform,
       )
     : [];
-  const current = route.connectionId
-    ? (overview?.connections ?? []).find(
-        view => view.connection.connection_id === route.connectionId,
-      ) ?? null
-    : null;
   const loading = !overview && !overviewError;
-  const animationKey = route.mode
-    ? `${route.platform}:${route.mode}:${route.connectionId}`
-    : route.connectionId
-      ? `connection:${route.connectionId}:${current?.runtime.actual_state ?? ""}`
-      : platform
-        ? `platform:${platform}:${platformViews
-            .map(view => `${view.connection.connection_id}:${view.runtime.actual_state}`)
-            .join(",")}`
-        : `overview:${(overview?.platforms ?? [])
-            .map(row => `${row.platform}:${row.display_state}:${row.connections}:${row.running}`)
-            .join(",")}`;
+  const animationKey = platform
+    ? `platform:${platform}:${platformViews
+        .map(view => `${view.connection.connection_id}:${view.runtime.actual_state}`)
+        .join(",")}`
+    : `overview:${(overview?.platforms ?? [])
+        .map(row => `${row.platform}:${row.display_state}:${row.connections}:${row.running}`)
+        .join(",")}`;
 
   useChannelAnimation(pageRef, animationKey);
 
@@ -948,18 +999,22 @@ export function Channels() {
     if (reason.reconciled) refreshChannels();
   }
 
-  async function runAction(action: "start" | "stop" | "reconnect") {
-    if (!current || busy) return;
-    const connectionId = current.connection.connection_id;
+  async function runAction(
+    action: "start" | "stop" | "reconnect",
+    view: ChannelView,
+  ) {
+    if (busy) return;
+    const connectionId = view.connection.connection_id;
     const key = `action:${action}:${connectionId}`;
     const identity = `action:${action}:${connectionId}`;
+    setMenuFor(null);
     setBusy(action);
     setActionError("");
     setActionNotice("");
     let requestId = "";
     try {
       requestId = (await requestIdFor(key, identity, null)).requestId;
-      const view = await channelAction(connectionId, action, requestId);
+      const updated = await channelAction(connectionId, action, requestId);
       clearRequestId(key, requestId);
       pollEpoch.current += 1;
       setActionNotice(
@@ -970,8 +1025,9 @@ export function Channels() {
           ? {
               ...state,
               connections: state.connections.map(row =>
-                row.connection.connection_id === view.connection.connection_id
-                  ? view
+                row.connection.connection_id ===
+                updated.connection.connection_id
+                  ? updated
                   : row,
               ),
             }
@@ -991,14 +1047,14 @@ export function Channels() {
     }
   }
 
-  async function removeConnection() {
-    if (!current || busy) return;
-    const connectionId = current.connection.connection_id;
-    const revision = current.connection.revision;
+  async function removeConnection(view: ChannelView) {
+    if (busy) return;
+    const connectionId = view.connection.connection_id;
+    const revision = view.connection.revision;
     const key = `delete:${connectionId}:${revision}`;
     const identity = `delete:${connectionId}:${revision}`;
     setBusy("delete");
-    setActionError("");
+    setDialogError("");
     let requestId = "";
     try {
       requestId = (await requestIdFor(key, identity, null)).requestId;
@@ -1008,41 +1064,83 @@ export function Channels() {
         confirm: true,
       });
       clearRequestId(key, requestId);
-      setConfirmDelete(false);
+      setDialog(null);
+      setActionNotice(`已删除「${view.connection.display_name}」。`);
       refreshChannels();
-      navigate(
-        { platform: current.connection.platform, connectionId: "", mode: "" },
-        "replace",
-      );
     } catch (reason) {
       if (reason instanceof StaleChannelIntentError) {
-        handleStaleIntent(reason);
+        setDialogError(reason.message);
+        if (reason.reconciled) refreshChannels();
         return;
       }
       if (!shouldKeepRequestId(reason) && requestId) {
         clearRequestId(key, requestId);
       }
-      setActionError(messageOf(reason));
+      setDialogError(messageOf(reason));
     } finally {
       setBusy("");
     }
   }
 
-  function openNew() {
-    if (!platform) return;
-    navigate({ platform, connectionId: "", mode: "new" }, "push");
+  function closeDialog() {
+    setDialog(null);
+    setDialogError("");
   }
 
-  function openEdit() {
-    if (!current) return;
-    navigate(
-      {
-        platform: current.connection.platform,
-        connectionId: current.connection.connection_id,
-        mode: "edit",
-      },
-      "push",
-    );
+  function openCreate() {
+    if (!platform) return;
+    setDialogError("");
+    setDialog({ kind: "create", platform });
+  }
+
+  function openWechatLogin() {
+    setMenuFor(null);
+    setDialogError("");
+    setWechatCode("");
+    setWechatNotice("");
+    setWechatActionError("");
+    setDialog({ kind: "wechat" });
+  }
+
+  async function runWechat(args: string) {
+    if (wechatBusy) return;
+    setWechatBusy(true);
+    setWechatActionError("");
+    setWechatNotice("");
+    try {
+      await runtimeApi("commands", {
+        command: "/wx",
+        args,
+        source: "web",
+        request_id: newRequestId(),
+        confirmed: false,
+      });
+      setWechatNotice(
+        args === "stop"
+          ? "已提交停止微信接收。"
+          : args === "login"
+            ? "已提交重新登录，二维码稍后刷新。"
+            : args.startsWith("verify ")
+              ? "已提交验证码，状态稍后刷新。"
+              : "已提交微信登录，二维码稍后出现。",
+      );
+      refreshChannels();
+    } catch (reason) {
+      setWechatActionError(messageOf(reason));
+    } finally {
+      setWechatBusy(false);
+    }
+  }
+
+  async function submitWechatCode(event: FormEvent) {
+    event.preventDefault();
+    const code = wechatCode.trim();
+    if (!code) {
+      setWechatActionError("请输入验证码。");
+      return;
+    }
+    await runWechat(`verify ${code}`);
+    setWechatCode("");
   }
 
   const headerActions = (
@@ -1084,20 +1182,24 @@ export function Channels() {
                     data-channel-animate
                     key={candidate}
                     onClick={() =>
-                      navigate(
-                        { platform: candidate, connectionId: "", mode: "" },
-                        "push",
-                      )
+                      navigate({ platform: candidate }, "push")
                     }
                   >
-                    <PlatformMark platform={candidate} />
-                    <span className="channels-platform-copy">
-                      <strong>{platformName[candidate]}</strong>
-                      <span className="wb-muted">
-                        已配置 {row?.connections ?? 0} · 运行中 {row?.running ?? 0}
+                    <span className="channels-platform-top">
+                      <PlatformMark platform={candidate} />
+                      <span className="channels-platform-copy">
+                        <strong>{platformName[candidate]}</strong>
+                        <span className="wb-muted">
+                          已配置 {row?.connections ?? 0} · 运行中 {row?.running ?? 0}
+                        </span>
                       </span>
                     </span>
-                    <StatusPill state={state} />
+                    <span className="channels-platform-foot">
+                      <span className="channels-platform-note">
+                        {platformBlurb[candidate]}
+                      </span>
+                      <StatusPill state={state} />
+                    </span>
                   </button>
                 );
               })}
@@ -1109,35 +1211,35 @@ export function Channels() {
         </>
       )}
 
-      {platform && !route.mode && !route.connectionId && (
+      {platform && (
         <>
+          <button
+            className="wb-back"
+            onClick={() => navigate({ platform: "" }, "push")}
+          >
+            ‹ 返回总览
+          </button>
           <PageHeader
             icon="server"
-            title={`${platformName[platform]}连接`}
+            title={
+              platform === "wechat"
+                ? "微信连接"
+                : `${platformName[platform]} 连接`
+            }
             description={
-              summary
-                ? `已配置 ${summary.connections} · 运行中 ${summary.running}`
-                : undefined
+              platform === "wechat"
+                ? "扫码登录，复用宿主现有的微信会话"
+                : summary
+                  ? `已配置 ${summary.connections} · 运行中 ${summary.running}`
+                  : undefined
             }
             actions={
-              <>
-                <button
-                  onClick={() =>
-                    navigate(
-                      { platform: "", connectionId: "", mode: "" },
-                      "push",
-                    )
-                  }
-                >
-                  返回总览
+              capability?.supported_actions.includes("create") ? (
+                <button className="primary" onClick={openCreate}>
+                  <Icon name="plus" size={15} />
+                  新建连接
                 </button>
-                {capability?.supported_actions.includes("create") && (
-                  <button className="primary" onClick={openNew}>
-                    <Icon name="plus" size={15} />
-                    新建连接
-                  </button>
-                )}
-              </>
+              ) : undefined
             }
           />
           {overviewError && (
@@ -1150,14 +1252,30 @@ export function Channels() {
               {capabilityError}
             </p>
           )}
+          {actionError && (
+            <p className="channels-error" role="alert">
+              {actionError}
+            </p>
+          )}
+          {actionNotice && (
+            <p className="wb-muted" role="status">
+              {actionNotice}
+            </p>
+          )}
           {capability && !capability.adapter_supported && (
             <p className="channels-note" role="note">
-              Server 尚未实现该平台的 Adapter。连接可以保存和编辑，但不会显示为运行中，
-              启动操作也不可用。
+              {capability.legacy_managed
+                ? "宿主尚未启用微信会话，登录与生命周期操作暂不可用。"
+                : "Server 尚未实现该平台的 Adapter。连接可以保存和编辑，但不会显示为运行中，启动操作也不可用。"}
             </p>
           )}
           {platform === "wechat" && (
-            <WechatLegacyPanel status={wechat} error={wechatError} />
+            <WechatLegacyPanel
+              status={wechat}
+              error={wechatError}
+              busy={wechatBusy}
+              onLogin={openWechatLogin}
+            />
           )}
           {loading ? (
             <p className="wb-muted" role="status">
@@ -1165,320 +1283,371 @@ export function Channels() {
             </p>
           ) : platformViews.length ? (
             <div className="channels-list">
-              {platformViews.map(view => (
-                <button
-                  className="wb-card channels-connection"
-                  data-channel-animate
-                  key={view.connection.connection_id}
-                  onClick={() =>
-                    navigate(
-                      {
-                        platform,
-                        connectionId: view.connection.connection_id,
-                        mode: "",
-                      },
-                      "push",
-                    )
-                  }
-                >
-                  <span className="channels-connection-main">
-                    <strong>
-                      {view.connection.display_name}
-                      {view.connection.legacy && (
-                        <em className="channels-legacy-badge">宿主托管</em>
-                      )}
-                    </strong>
-                    <span className="wb-muted">
-                      {view.connection.connection_id} · v{view.connection.revision}
-                    </span>
-                    {view.runtime.last_error && (
-                      <span className="channels-error-line" role="note">
-                        最近错误：{view.runtime.last_error}
-                      </span>
-                    )}
-                  </span>
-                  <StatusPill
-                    state={view.runtime.actual_state}
-                    kind="actual"
-                  />
-                </button>
-              ))}
+              {platformViews.map(view => {
+                const connection = view.connection;
+                const supported = capability?.supported_actions ?? [];
+                const menuOpen = menuFor === connection.connection_id;
+                return (
+                  <article
+                    className="wb-card channels-connection"
+                    data-channel-animate
+                    key={connection.connection_id}
+                  >
+                    <div className="channels-connection-top">
+                      <div className="channels-connection-main">
+                        <strong>
+                          {connection.display_name}
+                          {connection.legacy && (
+                            <em className="channels-legacy-badge">宿主托管</em>
+                          )}
+                        </strong>
+                        <span className="wb-muted">
+                          {connection.connection_id} · v{connection.revision}
+                        </span>
+                        {view.runtime.last_error && (
+                          <span className="channels-error-line" role="note">
+                            最近错误：{view.runtime.last_error}
+                          </span>
+                        )}
+                      </div>
+                      <StatusPill state={view.runtime.actual_state} kind="actual" />
+                      <div className="channels-menu-wrap">
+                        <button
+                          type="button"
+                          className="channels-more"
+                          aria-label={`${connection.display_name} 的操作`}
+                          title="更多操作"
+                          aria-haspopup="menu"
+                          aria-expanded={menuOpen}
+                          disabled={Boolean(busy)}
+                          onClick={() =>
+                            setMenuFor(
+                              menuOpen ? null : connection.connection_id,
+                            )
+                          }
+                        >
+                          <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="currentColor"
+                            aria-hidden="true"
+                          >
+                            <circle cx="5" cy="12" r="1.8" />
+                            <circle cx="12" cy="12" r="1.8" />
+                            <circle cx="19" cy="12" r="1.8" />
+                          </svg>
+                        </button>
+                        {menuOpen && (
+                          <div className="channels-menu" role="menu">
+                            {supported.includes("start") &&
+                              view.runtime.actual_state !== "running" && (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  disabled={Boolean(busy)}
+                                  onClick={() => void runAction("start", view)}
+                                >
+                                  <Icon name="play" size={14} />
+                                  {busy === "start" ? "启动中…" : "启动"}
+                                </button>
+                              )}
+                            {supported.includes("stop") &&
+                              view.runtime.actual_state !== "stopped" && (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  disabled={Boolean(busy)}
+                                  onClick={() => void runAction("stop", view)}
+                                >
+                                  <Icon name="stop" size={14} />
+                                  {busy === "stop" ? "停止中…" : "停止"}
+                                </button>
+                              )}
+                            {supported.includes("reconnect") && (
+                              <button
+                                type="button"
+                                role="menuitem"
+                                disabled={Boolean(busy)}
+                                onClick={() => void runAction("reconnect", view)}
+                              >
+                                <Icon name="refresh" size={14} />
+                                {busy === "reconnect" ? "重连中…" : "重连"}
+                              </button>
+                            )}
+                            {connection.legacy && (
+                              <button
+                                type="button"
+                                role="menuitem"
+                                onClick={openWechatLogin}
+                              >
+                                <Icon name="settings" size={14} />
+                                登录微信
+                              </button>
+                            )}
+                            {!connection.legacy &&
+                              supported.includes("update") && (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  disabled={Boolean(busy)}
+                                  onClick={() => {
+                                    setMenuFor(null);
+                                    setDialogError("");
+                                    setDialog({ kind: "edit", view });
+                                  }}
+                                >
+                                  <Icon name="edit" size={14} />
+                                  编辑
+                                </button>
+                              )}
+                            {!connection.legacy &&
+                              supported.includes("delete") && (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  className="danger"
+                                  disabled={Boolean(busy)}
+                                  onClick={() => {
+                                    setMenuFor(null);
+                                    setDialogError("");
+                                    setDialog({ kind: "delete", view });
+                                  }}
+                                >
+                                  <Icon name="trash" size={14} />
+                                  删除
+                                </button>
+                              )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
-          ) : (
+          ) : platform === "wechat" ? null : (
             <div className="wb-card channels-empty">
-              <p>
-                {platform === "wechat"
-                  ? "微信尚未登录。请在设置页完成扫码登录；该连接会作为 legacy-wechat 自动出现。"
-                  : `还没有 ${platformName[platform]} 连接。`}
-              </p>
-              {capability?.supported_actions.includes("create") && (
-                <button className="primary" onClick={openNew}>
-                  <Icon name="plus" size={15} />
-                  新建连接
-                </button>
-              )}
+              <p>{`还没有 ${platformName[platform]} 连接。使用右上角的「新建连接」开始。`}</p>
             </div>
           )}
         </>
       )}
 
-      {platform && route.mode && capability && (
-        <>
-          <PageHeader
-            icon="server"
-            title={route.mode === "edit" ? "编辑连接" : "新建连接"}
-            description={`${platformName[platform]} · ${
-              route.mode === "edit" ? current?.connection.display_name ?? "" : "凭据仅写入"
-            }`}
-            actions={
-              <button
-                onClick={() =>
-                  navigate(
-                    {
-                      platform,
-                      connectionId: route.mode === "edit" ? route.connectionId : "",
-                      mode: "",
-                    },
-                    "push",
-                  )
-                }
-              >
-                返回
-              </button>
-            }
-          />
-          {route.mode === "edit" && !current ? (
-            <p className="channels-error" role="alert">
-              该连接不存在或已被删除。
-            </p>
-          ) : (
+      {dialog?.kind === "create" && (
+        <ChannelDialog
+          title={`新建 ${platformName[dialog.platform]} 连接`}
+          subtitle="凭据只写入，不会回显。"
+          onClose={closeDialog}
+        >
+          {capabilities[dialog.platform] ? (
             <ConnectionForm
-              key={`${platform}:${route.connectionId}:${route.mode}`}
-              platform={platform}
-              capability={capability}
-              initial={route.mode === "edit" ? current?.connection ?? null : null}
-              onCancel={() =>
-                navigate(
-                  {
-                    platform,
-                    connectionId: route.mode === "edit" ? route.connectionId : "",
-                    mode: "",
-                  },
-                  "push",
-                )
-              }
+              key={`create:${dialog.platform}`}
+              platform={dialog.platform}
+              capability={capabilities[dialog.platform]}
+              initial={null}
+              onCancel={closeDialog}
               onDirty={() => {
                 setActionError("");
                 setActionNotice("");
               }}
               onReconciled={refreshChannels}
-              onCreatedConnection={connectionId => {
+              onCreatedConnection={() => {
                 refreshChannels();
-                navigate({ platform, connectionId, mode: "" }, "replace");
-                setActionNotice("连接已保存。");
+                closeDialog();
+                setActionNotice("连接已创建。");
               }}
-              onSaved={(view, created) => {
+              onSaved={() => {
                 refreshChannels();
-                navigate(
-                  {
-                    platform: view.connection.platform,
-                    connectionId: view.connection.connection_id,
-                    mode: "",
-                  },
-                  "replace",
-                );
-                setActionNotice(created ? "连接已保存。" : "连接修改已保存。");
+                closeDialog();
+                setActionNotice("连接已创建。");
               }}
             />
-          )}
-        </>
-      )}
-
-      {platform && route.mode && !capability && (
-        <p className="wb-muted" role="status">
-          {capabilityError || "正在读取平台能力…"}
-        </p>
-      )}
-
-      {platform && !route.mode && current && (
-        <>
-          <PageHeader
-            icon="server"
-            title={current.connection.display_name}
-            description={`${platformName[platform]} · ${current.connection.connection_id}`}
-            actions={
-              <button
-                onClick={() =>
-                  navigate(
-                    { platform, connectionId: "", mode: "" },
-                    "push",
-                  )
-                }
-              >
-                返回列表
-              </button>
-            }
-          />
-          {current.connection.legacy && (
-            <p className="channels-note" role="note">
-              这是宿主托管的 legacy-wechat 连接，由现有微信登录会话提供；不能通过普通
-              连接 CRUD 编辑或删除，旧登录状态也不会在这里被移除。
+          ) : (
+            <p className="wb-muted" role="status">
+              {capabilityError || "正在读取平台能力…"}
             </p>
           )}
-          {overviewError && (
+        </ChannelDialog>
+      )}
+
+      {dialog?.kind === "edit" && (
+        <ChannelDialog
+          title="编辑连接"
+          subtitle={dialog.view.connection.display_name}
+          onClose={closeDialog}
+        >
+          {capabilities[dialog.view.connection.platform] ? (
+            <ConnectionForm
+              key={`edit:${dialog.view.connection.connection_id}`}
+              platform={dialog.view.connection.platform}
+              capability={capabilities[dialog.view.connection.platform]}
+              initial={dialog.view.connection}
+              onCancel={closeDialog}
+              onDirty={() => {
+                setActionError("");
+                setActionNotice("");
+              }}
+              onReconciled={refreshChannels}
+              onCreatedConnection={() => undefined}
+              onSaved={() => {
+                refreshChannels();
+                closeDialog();
+                setActionNotice("连接修改已保存。");
+              }}
+            />
+          ) : (
+            <p className="wb-muted" role="status">
+              {capabilityError || "正在读取平台能力…"}
+            </p>
+          )}
+        </ChannelDialog>
+      )}
+
+      {dialog?.kind === "delete" && (
+        <ChannelDialog
+          title="删除连接"
+          subtitle={dialog.view.connection.display_name}
+          narrow
+          onClose={closeDialog}
+        >
+          <p className="channels-dialog-copy">
+            删除后无法恢复，审计记录会保留。确定删除「
+            {dialog.view.connection.display_name}」？
+          </p>
+          {dialogError && (
             <p className="channels-error" role="alert">
-              {overviewError}
+              {dialogError}
             </p>
           )}
-          <section className="wb-card channels-detail" aria-label="连接详情" data-channel-animate>
-            <div className="channels-detail-head">
-              <PlatformMark platform={platform} />
-              <div>
-                <strong>{current.connection.display_name}</strong>
-                <span className="wb-muted">
-                  {platformName[platform]} · v{current.connection.revision}
-                </span>
-              </div>
-              <StatusPill state={current.runtime.actual_state} kind="actual" />
-            </div>
-            <dl className="channels-facts">
-              <div>
-                <dt>当前状态</dt>
-                <dd data-state={current.runtime.actual_state}>
-                  {actualLabel[current.runtime.actual_state]}
-                </dd>
-              </div>
-              <div>
-                <dt>期望状态</dt>
-                <dd>
-                  {current.connection.desired_state === "running" ? "运行" : "停止"}
-                </dd>
-              </div>
-              <div>
-                <dt>已启用</dt>
-                <dd>{current.connection.enabled ? "是" : "否"}</dd>
-              </div>
-              <div>
-                <dt>上次连接时间</dt>
-                <dd>{dateLabel(current.runtime.last_connected_at)}</dd>
-              </div>
-              <div>
-                <dt>上次心跳</dt>
-                <dd>{dateLabel(current.runtime.last_heartbeat_at)}</dd>
-              </div>
-              <div>
-                <dt>下次重试</dt>
-                <dd>{dateLabel(current.runtime.next_retry_at)}</dd>
-              </div>
-              <div className="channels-fact-wide">
-                <dt>最近错误</dt>
-                <dd>{current.runtime.last_error ?? "无"}</dd>
-              </div>
-            </dl>
-            <div className="channels-detail-actions">
-              <button
-                className={capability?.adapter_supported ? "primary" : undefined}
-                disabled={
-                  Boolean(busy) ||
-                  !capability?.supported_actions.includes("start") ||
-                  current.runtime.actual_state === "running"
-                }
-                title={
-                  capability?.supported_actions.includes("start")
-                    ? undefined
-                    : "Server 尚未实现该平台 Adapter"
-                }
-                onClick={() => void runAction("start")}
-              >
-                {busy === "start" ? "启动中…" : "启动"}
-              </button>
-              <button
-                disabled={
-                  Boolean(busy) ||
-                  !capability?.supported_actions.includes("stop") ||
-                  current.runtime.actual_state === "stopped"
-                }
-                onClick={() => void runAction("stop")}
-              >
-                {busy === "stop" ? "停止中…" : "停止"}
-              </button>
-              <button
-                disabled={
-                  Boolean(busy) ||
-                  !capability?.supported_actions.includes("reconnect")
-                }
-                onClick={() => void runAction("reconnect")}
-              >
-                {busy === "reconnect" ? "重连中…" : "重连"}
-              </button>
-              {!current.connection.legacy &&
-                capability?.supported_actions.includes("update") && (
-                  <button disabled={Boolean(busy)} onClick={openEdit}>
-                    编辑
-                  </button>
-                )}
-              {!current.connection.legacy &&
-                capability?.supported_actions.includes("delete") && (
-                  <button
-                    className="channels-danger"
-                    disabled={Boolean(busy)}
-                    onClick={() => setConfirmDelete(true)}
-                  >
-                    删除
-                  </button>
-                )}
-            </div>
-            {!capability?.adapter_supported && (
-              <p className="channels-note" role="note">
-                配置已保存；Server 没有该平台的真实 Adapter，因此不会启动，也不会调用
-                Fake Adapter。
-              </p>
-            )}
-            {current.connection.legacy && (
-              <p className="channels-note" role="note">
-                微信扫码、验证码与账号状态请使用
-                <a href="/settings.html?section=wechat">设置 → 微信</a>；此处只复用宿主
-                已有的启动、停止和重连能力。
-              </p>
-            )}
-            {actionError && (
-              <p className="channels-error" role="alert">
-                {actionError}
-              </p>
-            )}
-            {actionNotice && (
-              <p className="wb-muted" role="status">
-                {actionNotice}
-              </p>
-            )}
-            {confirmDelete && (
-              <div className="channels-confirm" role="alertdialog" aria-label="确认删除连接">
-                <p>
-                  删除「{current.connection.display_name}」后无法恢复，审计记录会保留。
-                  确定删除？
+          <div className="channels-dialog-actions">
+            <button
+              className="channels-danger primary"
+              disabled={Boolean(busy)}
+              onClick={() => void removeConnection(dialog.view)}
+            >
+              {busy === "delete" ? "删除中…" : "确认删除"}
+            </button>
+            <button data-autofocus disabled={Boolean(busy)} onClick={closeDialog}>
+              取消
+            </button>
+          </div>
+        </ChannelDialog>
+      )}
+
+      {dialog?.kind === "wechat" && (
+        <ChannelDialog
+          title="登录微信"
+          subtitle="复用宿主现有的登录会话；关闭面板不会中断登录。"
+          narrow
+          onClose={closeDialog}
+        >
+          <div className="channels-wechat">
+            {wechat ? (
+              <>
+                <p
+                  className="channels-legacy-status"
+                  role="status"
+                  data-wechat-status={wechat.status}
+                >
+                  {wechat.status}
                 </p>
-                <div className="channels-detail-actions">
-                  <button
-                    className="channels-danger primary"
-                    disabled={Boolean(busy)}
-                    onClick={() => void removeConnection()}
+                <p className="wb-muted">
+                  {wechat.enabled ? "宿主已启用" : "宿主已停用"}
+                  {" · "}
+                  {wechat.running
+                    ? "后台接收中"
+                    : wechat.login_pending
+                      ? "等待扫码"
+                      : "当前未运行"}
+                  {" · "}
+                  {wechat.account_saved ? "已保存登录账号" : "尚未保存登录账号"}
+                </p>
+                {wechat.qr_image && (
+                  <figure className="channels-qr">
+                    <img
+                      src={wechat.qr_image}
+                      alt="微信登录二维码"
+                      width="200"
+                      height="200"
+                    />
+                    <figcaption>使用微信扫码登录</figcaption>
+                  </figure>
+                )}
+                {wechat.login_pending && (
+                  <p
+                    className="channels-note"
+                    role="status"
+                    data-wechat-notice={
+                      wechat.verification_required ? "verification" : "scan"
+                    }
                   >
-                    {busy === "delete" ? "删除中…" : "确认删除"}
+                    {wechat.verification_required
+                      ? "扫码后还需要输入登录验证码。"
+                      : "等待扫码。登录流程由 Server 继续，关闭面板不会中断。"}
+                  </p>
+                )}
+                {wechat.verification_required && (
+                  <form className="channels-verify" onSubmit={submitWechatCode}>
+                    <label>
+                      登录验证码
+                      <input
+                        autoComplete="one-time-code"
+                        maxLength={50}
+                        value={wechatCode}
+                        disabled={wechatBusy}
+                        onChange={event => setWechatCode(event.target.value)}
+                        placeholder="输入验证码"
+                      />
+                    </label>
+                    <button
+                      className="primary"
+                      disabled={wechatBusy || !wechatCode.trim()}
+                    >
+                      提交验证码
+                    </button>
+                  </form>
+                )}
+                <div className="channels-dialog-actions">
+                  <button
+                    className="primary"
+                    data-autofocus
+                    disabled={wechatBusy || wechat.running || wechat.login_pending}
+                    onClick={() => void runWechat("")}
+                  >
+                    {wechat.account_saved ? "启动已登录账号" : "登录微信"}
                   </button>
-                  <button disabled={Boolean(busy)} onClick={() => setConfirmDelete(false)}>
-                    取消
+                  <button
+                    disabled={wechatBusy || wechat.running || wechat.login_pending}
+                    onClick={() => void runWechat("login")}
+                  >
+                    重新扫码登录
+                  </button>
+                  <button
+                    disabled={wechatBusy || (!wechat.running && !wechat.login_pending)}
+                    onClick={() => void runWechat("stop")}
+                  >
+                    停止接收
                   </button>
                 </div>
-              </div>
+              </>
+            ) : (
+              <p className="wb-muted" role="status">
+                {wechatError || "正在读取微信登录状态…"}
+              </p>
             )}
-          </section>
-        </>
-      )}
-
-      {platform && !route.mode && route.connectionId && !current && (
-        <p className={loading ? "wb-muted" : "channels-error"} role={loading ? "status" : "alert"}>
-          {loading ? "正在读取连接…" : overviewError || "该连接不存在或已被删除。"}
-        </p>
+            {wechatNotice && (
+              <p className="wb-muted" role="status">
+                {wechatNotice}
+              </p>
+            )}
+            {wechatActionError && (
+              <p className="channels-error" role="alert">
+                {wechatActionError}
+              </p>
+            )}
+          </div>
+        </ChannelDialog>
       )}
     </div>
   );

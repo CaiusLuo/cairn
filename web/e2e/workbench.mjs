@@ -117,7 +117,7 @@ try {
     await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
 
     await page.context().setOffline(true);
-    await page.getByRole("link", { name: "工作台", exact: true }).click();
+    await page.getByRole("link", { name: "对话", exact: true }).click();
     await (await conversationLink(new RegExp(cliPrompt))).click();
     await page.getByRole("alert").waitFor();
     assert.match(await page.getByRole("alert").innerText(), /无法连接 Server/);
@@ -125,7 +125,7 @@ try {
     await page.getByRole("button", { name: "重试" }).click();
     await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
 
-    await page.getByRole("link", { name: "工作台", exact: true }).click();
+    await page.getByRole("link", { name: "对话", exact: true }).click();
     await send("Web-created conversation");
     await page.getByRole("heading", { name: "Web-created conversation" }).waitFor();
     await page.getByRole("img", { name: "Web" }).first().waitFor();
@@ -642,6 +642,19 @@ try {
       assert.equal(response.status(), 200, "Could not read channels");
       return response.json();
     }
+    async function channelByName(name) {
+      return (await readChannels()).connections.find(
+        view => view.connection.display_name === name,
+      )?.connection;
+    }
+    async function openConnectionMenu(name) {
+      await page
+        .locator(".channels-connection")
+        .filter({ hasText: name })
+        .getByRole("button", { name: `${name} 的操作` })
+        .click();
+      await page.getByRole("menu").waitFor();
+    }
 
     await createChannel("telegram", "E2E Telegram", { bot_token: channelSecret }, "e2e-channel-telegram");
     for (let index = 1; index <= 3; index += 1) {
@@ -689,10 +702,11 @@ try {
     await page.reload();
     await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 4);
 
-    // 0 / 1 / N configured connections on the real fixture.
+    // 0 / 1 / N configured connections stay on the same second-level page.
     await discordCard.click();
-    await page.getByRole("heading", { name: "Discord连接", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Discord 连接", exact: true }).waitFor();
     await page.waitForFunction(() => document.querySelectorAll(".channels-connection").length === 3);
+    assert.equal(new URL(page.url()).searchParams.get("connection_id"), null);
     await page.goBack();
     await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
     await qqCard.click();
@@ -700,82 +714,86 @@ try {
     await page.goBack();
     await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
     await telegramCard.click();
-    await page.getByRole("heading", { name: "Telegram连接", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Telegram 连接", exact: true }).waitFor();
     await page.waitForFunction(() => document.querySelectorAll(".channels-connection").length === 1);
 
     // The rail link is an App-level navigation. It must reset this page's URL
-    // state instead of leaving a detail view behind an overview URL.
+    // state instead of leaving a stale platform behind.
     await page.getByRole("link", { name: "连接", exact: true }).click();
     await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
     assert.equal(new URL(page.url()).search, "");
     await telegramCard.click();
-    await page.getByRole("heading", { name: "Telegram连接", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Telegram 连接", exact: true }).waitFor();
 
-    // Create and edit through the capability-driven form. Credentials are
-    // write-only, and editing metadata must not rotate the credential reference.
+    // Create through a centered dialog: no third-level URL, credentials are
+    // write-only, and the created row appears in the list in place.
     await page.getByRole("button", { name: "新建连接", exact: true }).click();
-    await page.getByRole("heading", { name: "新建连接", exact: true }).waitFor();
-    assert.equal(new URL(page.url()).searchParams.get("mode"), "new");
-    const createdSecret = ["e2e", "created", "token", Date.now().toString(36)].join("-");
-    await page.getByLabel("连接名称").fill("E2E Telegram 2");
-    await page.getByLabel("Bot Token").fill(createdSecret);
-    await shot("Cairn-workbench-channel-form");
-    await page.getByRole("button", { name: "保存连接", exact: true }).click();
-    await page.getByRole("heading", { name: "E2E Telegram 2", exact: true }).waitFor();
-    const channelId = new URL(page.url()).searchParams.get("connection_id");
-    assert(channelId, "Saving must open the created connection");
+    const createDialog = page.getByRole("dialog", { name: "新建 Telegram 连接" });
+    await createDialog.waitFor();
     assert.equal(new URL(page.url()).searchParams.get("mode"), null);
-    assert(!(await page.locator("body").innerText()).includes(createdSecret));
-    assert(await page.getByRole("button", { name: "启动", exact: true }).isDisabled());
-    await page.getByText(/没有该平台的真实 Adapter/).first().waitFor();
-    await shot("Cairn-workbench-channel-detail");
-
-    const beforeEdit = (await readChannels()).connections.find(view => view.connection.connection_id === channelId);
-    assert(beforeEdit, "The created connection must be listed");
-    assert(beforeEdit.connection.credential_ref);
-    await page.getByRole("button", { name: "编辑", exact: true }).click();
-    await page.getByRole("heading", { name: "编辑连接", exact: true }).waitFor();
-    assert.equal(await page.getByLabel("Bot Token").inputValue(), "");
-    await page.getByLabel("连接名称").fill("E2E Telegram 2 renamed");
-    await page.getByRole("button", { name: "保存修改", exact: true }).click();
-    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
-    const afterNameEdit = (await readChannels()).connections.find(view => view.connection.connection_id === channelId);
-    assert.equal(afterNameEdit.connection.credential_ref, beforeEdit.connection.credential_ref);
-
-    await page.getByRole("button", { name: "编辑", exact: true }).click();
-    await page.getByLabel("Bot Token").fill("e2e-replacement-token-value");
-    await page.getByRole("button", { name: "保存修改", exact: true }).click();
-    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
-    const afterCredentialEdit = (await readChannels()).connections.find(view => view.connection.connection_id === channelId);
-    assert.notEqual(afterCredentialEdit.connection.credential_ref, beforeEdit.connection.credential_ref);
-    assert(!JSON.stringify(afterCredentialEdit).includes("e2e-replacement-token-value"));
-
-    // Refresh, Back and Forward keep the URL as the authority for the view.
-    await page.reload();
-    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
-    assert.equal(new URL(page.url()).searchParams.get("connection_id"), channelId);
-    await page.goBack();
-    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
-    assert.equal(new URL(page.url()).searchParams.get("connection_id"), channelId);
-    await page.goBack();
-    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
-    assert.equal(new URL(page.url()).searchParams.get("connection_id"), channelId);
-    await page.goBack();
-    await page.getByRole("heading", { name: "Telegram连接", exact: true }).waitFor();
+    const createdSecret = ["e2e", "created", "token", Date.now().toString(36)].join("-");
+    await createDialog.getByLabel("连接名称").fill("E2E Telegram 2");
+    await createDialog.getByLabel("Bot Token").fill(createdSecret);
+    await shot("Cairn-workbench-channel-dialog");
+    await createDialog.getByRole("button", { name: "连接", exact: true }).click();
+    await createDialog.waitFor({ state: "detached" });
+    await page.getByText("连接已创建。").waitFor();
+    const createdConnection = await channelByName("E2E Telegram 2");
+    assert(createdConnection, "The created connection must be listed");
+    const channelId = createdConnection.connection_id;
     assert.equal(new URL(page.url()).searchParams.get("connection_id"), null);
+    assert(!(await page.locator("body").innerText()).includes(createdSecret));
+    await page
+      .locator(".channels-connection")
+      .filter({ hasText: "E2E Telegram 2" })
+      .waitFor();
+    await shot("Cairn-workbench-channel-list");
+
+    const beforeEdit = await channelByName("E2E Telegram 2");
+    assert.equal(beforeEdit.connection_id, channelId);
+    assert(beforeEdit.credential_ref);
+    await openConnectionMenu("E2E Telegram 2");
+    await page.getByRole("menuitem", { name: "编辑" }).click();
+    let editDialog = page.getByRole("dialog", { name: "编辑连接" });
+    await editDialog.waitFor();
+    assert.equal(await editDialog.getByLabel("Bot Token").inputValue(), "");
+    await editDialog.getByLabel("连接名称").fill("E2E Telegram 2 renamed");
+    await editDialog.getByRole("button", { name: "保存修改", exact: true }).click();
+    await editDialog.waitFor({ state: "detached" });
+    await page.getByText("连接修改已保存。").waitFor();
+    const afterNameEdit = await channelByName("E2E Telegram 2 renamed");
+    assert.equal(afterNameEdit.credential_ref, beforeEdit.credential_ref);
+
+    const replacementCredential = ["e2e", "replacement", "credential", Date.now().toString(36)].join("-");
+    await openConnectionMenu("E2E Telegram 2 renamed");
+    await page.getByRole("menuitem", { name: "编辑" }).click();
+    editDialog = page.getByRole("dialog", { name: "编辑连接" });
+    await editDialog.getByLabel("Bot Token").fill(replacementCredential);
+    await editDialog.getByRole("button", { name: "保存修改", exact: true }).click();
+    await editDialog.waitFor({ state: "detached" });
+    await page.getByText("连接修改已保存。").waitFor();
+    const afterCredentialEdit = await channelByName("E2E Telegram 2 renamed");
+    assert.notEqual(afterCredentialEdit.credential_ref, beforeEdit.credential_ref);
+    assert(!JSON.stringify(afterCredentialEdit).includes(replacementCredential));
+
+    // Refresh, Back and Forward keep the second-level URL as the authority.
+    await page.reload();
+    await page.getByRole("heading", { name: "Telegram 连接", exact: true }).waitFor();
+    await page
+      .locator(".channels-connection")
+      .filter({ hasText: "E2E Telegram 2 renamed" })
+      .waitFor();
+    assert.equal(new URL(page.url()).searchParams.get("platform"), "telegram");
+    assert.equal(new URL(page.url()).searchParams.get("connection_id"), null);
+    await page.goBack();
+    await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
     await page.goForward();
-    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
-    await page.goForward();
-    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
-    await page.goForward();
-    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Telegram 连接", exact: true }).waitFor();
 
     // A lost write response keeps the original submission intent. Retrying the
     // same fields must reuse that request id instead of applying a second
     // update under a new identity.
-    const beforeLost = (await readChannels()).connections.find(
-      view => view.connection.connection_id === channelId,
-    );
+    const beforeLost = await channelByName("E2E Telegram 2 renamed");
     assert(beforeLost, "The connection must still exist before the lost-write checks");
     const lostIds = [];
     let loseFirstUpdate = true;
@@ -791,27 +809,26 @@ try {
       }
       await route.continue();
     });
-    await page.getByRole("button", { name: "编辑", exact: true }).click();
-    await page.getByLabel("宿主所有者（可选）").fill("e2e-owner-after-loss");
-    await page.getByRole("button", { name: "保存修改", exact: true }).click();
-    await page.locator('[data-channel-error="transport"]').waitFor();
-    await page.getByRole("button", { name: "保存修改", exact: true }).click();
-    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
+    await openConnectionMenu("E2E Telegram 2 renamed");
+    await page.getByRole("menuitem", { name: "编辑" }).click();
+    editDialog = page.getByRole("dialog", { name: "编辑连接" });
+    await editDialog.getByLabel("宿主所有者（可选）").fill("e2e-owner-after-loss");
+    await editDialog.getByRole("button", { name: "保存修改", exact: true }).click();
+    await editDialog.locator('[data-channel-error="transport"]').waitFor();
+    await editDialog.getByRole("button", { name: "保存修改", exact: true }).click();
+    await editDialog.waitFor({ state: "detached" });
+    await page.getByText("连接修改已保存。").waitFor();
     assert.equal(lostIds.length, 2, "Only the original and its retry may reach the Server");
     assert.equal(lostIds[1], lostIds[0], "An identical retry must keep its request id");
-    const afterLost = (await readChannels()).connections.find(
-      view => view.connection.connection_id === channelId,
-    );
-    assert.equal(afterLost.connection.owner_identity, "e2e-owner-after-loss");
-    assert.equal(afterLost.connection.revision, beforeLost.connection.revision + 1);
+    const afterLost = await channelByName("E2E Telegram 2 renamed");
+    assert.equal(afterLost.owner_identity, "e2e-owner-after-loss");
+    assert.equal(afterLost.revision, beforeLost.revision + 1);
     await page.unroute(updatePattern);
 
     // Changing the payload after the same lost response is a new intent. The
     // console reconciles the old receipt and asks for a fresh submission; it
     // must not send the old request id with the new credential.
-    const beforeCredentialLoss = (await readChannels()).connections.find(
-      view => view.connection.connection_id === channelId,
-    );
+    const beforeCredentialLoss = await channelByName("E2E Telegram 2 renamed");
     const credentialIds = [];
     let loseCredentialUpdate = true;
     await page.route(updatePattern, async route => {
@@ -825,41 +842,49 @@ try {
       }
       await route.continue();
     });
-    await page.getByRole("button", { name: "编辑", exact: true }).click();
+    await openConnectionMenu("E2E Telegram 2 renamed");
+    await page.getByRole("menuitem", { name: "编辑" }).click();
+    editDialog = page.getByRole("dialog", { name: "编辑连接" });
     const changedCredential = ["e2e", "lost", "credential", Date.now().toString(36)].join("-");
     const nextCredential = ["e2e", "next", "credential", Date.now().toString(36)].join("-");
-    await page.getByLabel("Bot Token").fill(changedCredential);
-    await page.getByRole("button", { name: "保存修改", exact: true }).click();
-    await page.locator('[data-channel-error="transport"]').waitFor();
-    await page.getByLabel("Bot Token").fill(nextCredential);
-    await page.getByRole("button", { name: "保存修改", exact: true }).click();
-    await page.locator('[data-channel-error="stale-intent"]').waitFor();
+    await editDialog.getByLabel("Bot Token").fill(changedCredential);
+    await editDialog.getByRole("button", { name: "保存修改", exact: true }).click();
+    await editDialog.locator('[data-channel-error="transport"]').waitFor();
+    await editDialog.getByLabel("Bot Token").fill(nextCredential);
+    await editDialog.getByRole("button", { name: "保存修改", exact: true }).click();
+    await editDialog.locator('[data-channel-error="stale-intent"]').waitFor();
     assert.equal(credentialIds.length, 1, "A changed payload must not replay the old request");
-    await page.getByRole("button", { name: "保存修改", exact: true }).click();
-    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
+    await editDialog.getByRole("button", { name: "保存修改", exact: true }).click();
+    await editDialog.waitFor({ state: "detached" });
+    await page.getByText("连接修改已保存。").waitFor();
     assert.equal(credentialIds.length, 2);
     assert.notEqual(credentialIds[1], credentialIds[0], "A new intent needs a new request id");
-    const afterCredentialLoss = (await readChannels()).connections.find(
-      view => view.connection.connection_id === channelId,
-    );
+    const afterCredentialLoss = await channelByName("E2E Telegram 2 renamed");
     assert.notEqual(
-      afterCredentialLoss.connection.credential_ref,
-      beforeCredentialLoss.connection.credential_ref,
+      afterCredentialLoss.credential_ref,
+      beforeCredentialLoss.credential_ref,
     );
     assert(!JSON.stringify(afterCredentialLoss).includes(nextCredential));
     assert(!JSON.stringify(afterCredentialLoss).includes(changedCredential));
     await page.unroute(updatePattern);
     console.log("Channel lost-response intent boundaries passed.");
 
-    await page.getByRole("button", { name: "删除", exact: true }).click();
-    const deleteDialog = page.getByRole("alertdialog", { name: "确认删除连接" });
+    // Delete is a confirmation dialog opened from the row action menu.
+    await openConnectionMenu("E2E Telegram 2 renamed");
+    await page.getByRole("menuitem", { name: "删除" }).click();
+    const deleteDialog = page.getByRole("dialog", { name: "删除连接" });
     await deleteDialog.waitFor();
+    await shot("Cairn-workbench-channel-delete");
     await deleteDialog.getByRole("button", { name: "取消", exact: true }).click();
     await deleteDialog.waitFor({ state: "detached" });
-    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
-    await page.getByRole("button", { name: "删除", exact: true }).click();
-    await page.getByRole("alertdialog", { name: "确认删除连接" }).getByRole("button", { name: "确认删除", exact: true }).click();
-    await page.getByRole("heading", { name: "Telegram连接", exact: true }).waitFor();
+    await openConnectionMenu("E2E Telegram 2 renamed");
+    await page.getByRole("menuitem", { name: "删除" }).click();
+    await page
+      .getByRole("dialog", { name: "删除连接" })
+      .getByRole("button", { name: "确认删除", exact: true })
+      .click();
+    await page.getByRole("dialog", { name: "删除连接" }).waitFor({ state: "detached" });
+    await page.getByText("已删除「E2E Telegram 2 renamed」。").waitFor();
     await page.waitForFunction(() => document.querySelectorAll(".channels-connection").length === 1);
     assert(!(await readChannels()).connections.some(view => view.connection.connection_id === channelId));
     console.log("Channel console CRUD, history and write-only credentials passed.");
@@ -883,22 +908,27 @@ try {
     const lostCreateName = "E2E Lost Create " + Date.now().toString(36);
     const lostCreateSecret = ["e2e", "lost", "create", Date.now().toString(36)].join("-");
     await page.getByRole("button", { name: "新建连接", exact: true }).click();
-    await page.getByRole("heading", { name: "新建连接", exact: true }).waitFor();
-    await page.getByLabel("连接名称").fill(lostCreateName);
-    await page.getByLabel("Bot Token").fill(lostCreateSecret);
-    await page.getByRole("button", { name: "保存连接", exact: true }).click();
-    await page.locator('[data-channel-error="transport"]').waitFor();
-    await page.getByLabel("连接名称").fill(lostCreateName + " Changed");
-    await page.getByRole("button", { name: "保存连接", exact: true }).click();
-    await page.getByRole("heading", { name: lostCreateName, exact: true }).waitFor();
-    const reconciledCreateId = new URL(page.url()).searchParams.get("connection_id");
-    assert(reconciledCreateId, "Reconciliation must open the created connection");
+    const lostCreateDialog = page.getByRole("dialog", { name: "新建 Telegram 连接" });
+    await lostCreateDialog.waitFor();
+    await lostCreateDialog.getByLabel("连接名称").fill(lostCreateName);
+    await lostCreateDialog.getByLabel("Bot Token").fill(lostCreateSecret);
+    await lostCreateDialog.getByRole("button", { name: "连接", exact: true }).click();
+    await lostCreateDialog.locator('[data-channel-error="transport"]').waitFor();
+    await lostCreateDialog.getByLabel("连接名称").fill(lostCreateName + " Changed");
+    await lostCreateDialog.getByRole("button", { name: "连接", exact: true }).click();
+    await lostCreateDialog.waitFor({ state: "detached" });
+    await page.getByText("连接已创建。").waitFor();
     assert.equal(createIds.length, 1, "A changed create must not create a second connection");
     const reconciledConnections = (await readChannels()).connections.filter(
       view => view.connection.display_name.startsWith(lostCreateName),
     );
     assert.equal(reconciledConnections.length, 1);
-    assert.equal(reconciledConnections[0].connection.connection_id, reconciledCreateId);
+    const reconciledCreateId = reconciledConnections[0].connection.connection_id;
+    assert.equal(reconciledConnections[0].connection.display_name, lostCreateName);
+    await page
+      .locator(".channels-connection")
+      .filter({ hasText: lostCreateName })
+      .waitFor();
     assert(!(await page.locator("body").innerText()).includes(lostCreateSecret));
     const visibleInputValues = await page
       .locator("input")
@@ -981,9 +1011,14 @@ try {
         }),
       });
     });
-    await page.goto(new URL(`/channels.html?platform=telegram&connection_id=${seededTelegram.connection.connection_id}`, url).href);
-    await page.getByRole("heading", { name: "E2E Telegram", exact: true }).waitFor();
-    await page.getByRole("button", { name: "启动", exact: true }).click();
+    await page.goto(new URL("/channels.html?platform=telegram", url).href);
+    await page.getByRole("heading", { name: "Telegram 连接", exact: true }).waitFor();
+    await page
+      .locator(".channels-connection")
+      .filter({ hasText: "E2E Telegram" })
+      .waitFor();
+    await openConnectionMenu("E2E Telegram");
+    await page.getByRole("menuitem", { name: "启动" }).click();
     await page.getByRole("alert").filter({ hasText: "尚未实现该平台的 Adapter" }).waitFor();
 
     // A poll already in flight when a lifecycle action succeeds must not
@@ -1006,7 +1041,8 @@ try {
       });
     });
     await pollStarted;
-    await page.getByRole("button", { name: "重连", exact: true }).click();
+    await openConnectionMenu("E2E Telegram");
+    await page.getByRole("menuitem", { name: "重连" }).click();
     await page.getByText(/已提交重连/).waitFor();
     await page.locator('.channel-state[data-state="running"]').waitFor({ timeout: 2000 });
     releasePoll();
@@ -1107,8 +1143,8 @@ try {
     await page.unroute(overviewPattern);
     console.log("Channel polling is single-flight.");
 
-    // The legacy WeChat projection has no normal create/edit/delete path and
-    // keeps pointing at the existing settings login flow.
+    // The legacy WeChat projection has no normal create/edit/delete path. Its
+    // login panel is a centered dialog on the same page, not a settings jump.
     const legacyConnection = {
       connection_id: "legacy-wechat",
       platform: "wechat",
@@ -1152,6 +1188,12 @@ try {
     await page.goto(new URL("/channels.html?platform=wechat", url).href);
     await page.getByRole("heading", { name: "微信连接", exact: true }).waitFor();
     await page.getByRole("heading", { name: "宿主托管的微信", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "新建连接", exact: true }).count(), 0);
+    await openConnectionMenu("个人微信 Bot");
+    assert.equal(await page.getByRole("menuitem", { name: "编辑" }).count(), 0);
+    assert.equal(await page.getByRole("menuitem", { name: "删除" }).count(), 0);
+    await page.getByRole("menuitem", { name: "登录微信" }).click();
+    await page.getByRole("heading", { name: "登录微信", exact: true }).waitFor();
     const realManagement = await api.get("/api/runtime/management?section=wechat");
     assert.equal(realManagement.status(), 200);
     const managementSnapshot = await realManagement.json();
@@ -1160,17 +1202,10 @@ try {
     assert.equal(
       await page.locator(".channels-legacy-status").getAttribute("data-wechat-status"),
       managementSnapshot.wechat.status,
-      "The legacy panel must render the real nested management snapshot",
+      "The login dialog must render the real nested management snapshot",
     );
-    assert.equal(await page.getByRole("button", { name: "新建连接", exact: true }).count(), 0);
-    await page.locator(".channels-connection").filter({ hasText: "个人微信 Bot" }).click();
-    await page.getByRole("heading", { name: "个人微信 Bot", exact: true }).waitFor();
-    assert.equal(await page.getByRole("button", { name: "编辑", exact: true }).count(), 0);
-    assert.equal(await page.getByRole("button", { name: "删除", exact: true }).count(), 0);
-    assert.match(
-      await page.getByRole("link", { name: /设置 → 微信/ }).getAttribute("href"),
-      /settings\.html\?section=wechat/,
-    );
+    assert.equal(await page.getByRole("link", { name: /设置 → 微信/ }).count(), 0);
+    await page.locator(".channels-dialog-close").click();
 
     // The real console reads the nested wechat object from the Server's
     // management snapshot; the QR and verification prompt follow that shape.
@@ -1199,6 +1234,8 @@ try {
     });
     await page.goto(new URL("/channels.html?platform=wechat", url).href);
     await page.getByRole("heading", { name: "宿主托管的微信", exact: true }).waitFor();
+    await page.getByRole("button", { name: "登录微信", exact: true }).first().click();
+    await page.getByRole("heading", { name: "登录微信", exact: true }).waitFor();
     await page.getByRole("img", { name: "微信登录二维码" }).waitFor();
     await page.locator('[data-wechat-notice="verification"]').waitFor();
     assert.equal(
@@ -1246,7 +1283,6 @@ try {
     assert.equal(animatedResidue, 0);
     console.log("Channel reduced motion and rapid route switching passed.");
 
-
     let approvalUrl;
     const recoveryId = process.env.CAIRN_WEB_E2E_RECOVERY_TASK;
     if (recoveryId) {
@@ -1280,7 +1316,7 @@ try {
     await shot("Cairn-workbench-run");
     const runUrl = page.url();
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole("link", { name: "工作台", exact: true }).click();
+    await page.getByRole("link", { name: "对话", exact: true }).click();
     // The toggle cycles light -> dark -> system; pin a known starting point.
     await page.evaluate(() => localStorage.setItem("cairn-theme", "light"));
     await page.reload();

@@ -14,7 +14,6 @@ import { conversationTitle, isActive, sourceIcon, sourceLabel, type Conversation
 
 export type View = "home" | "chat" | "tasks" | "knowledge" | "channels" | "runs" | "approvals" | "settings";
 const navigation: { view: View; label: string; icon: IconName }[] = [
-  { view: "home", label: "工作台", icon: "home-start" },
   { view: "chat", label: "对话", icon: "chat" },
   { view: "tasks", label: "开发任务", icon: "board" },
   { view: "knowledge", label: "知识", icon: "doc" },
@@ -94,7 +93,9 @@ export function Shell({ view, active, conversations, workspace, status, navigate
   const [mutating, setMutating] = useState(false);
   const { theme, chooseTheme } = useAppearance();
   const items = conversations.filter(item => (item.title || item.initial_prompt).toLocaleLowerCase().includes(filter.toLocaleLowerCase()));
-  const current = navigation.find(item => item.view === view);
+  // "/" still renders the chat home for old links; highlight the one chat entry.
+  const activeView = view === "home" ? "chat" : view;
+  const current = navigation.find(item => item.view === activeView);
   const connection = { online: "Server 已连接", offline: "Server 已断开", connecting: "正在连接 Server" }[status];
 
   useEffect(() => {
@@ -144,7 +145,7 @@ export function Shell({ view, active, conversations, workspace, status, navigate
     setMutating(true);
     try {
       await runtimeApi(`conversations/${encodeURIComponent(item.conversation_id)}/delete`, {});
-      if (active === item.conversation_id) navigate(href("home"));
+      if (active === item.conversation_id) navigate(href("chat"));
       onConversationsChanged?.();
     } catch (error) {
       window.alert(mutationError(error, "删除失败"));
@@ -159,7 +160,7 @@ export function Shell({ view, active, conversations, workspace, status, navigate
 
   return <div className={`workbench ${collapsed ? "side-collapsed" : ""} ${mobileOpen ? "side-mobile-open" : ""}`}>
     <nav className="wb-rail" aria-label="主导航">
-      <div className="rail-group">{navigation.map(item => <div key={item.view}>{link(href(item.view), item.label, item.icon, view === item.view)}</div>)}</div>
+      <div className="rail-group">{navigation.map(item => <div key={item.view}>{link(href(item.view), item.label, item.icon, activeView === item.view)}</div>)}</div>
       <div className="rail-group">
         <button className="rail-link" aria-label="切换会话侧栏" aria-controls="workbench-sidebar" aria-expanded={narrow ? mobileOpen : !collapsed} title="切换会话侧栏" onClick={() => { if (narrow) setMobileOpen(value => !value); else { setCollapsed(!collapsed); localStorage.setItem("cairn-sidebar", collapsed ? "open" : "closed"); } }}><Icon name="panel-left" /></button>
         {link(href("settings"), "设置", "settings", view === "settings")}
@@ -175,7 +176,7 @@ export function Shell({ view, active, conversations, workspace, status, navigate
           {workspaceOpen && <div className="workspace-popover"><strong>当前工作区</strong><code>{workspace ?? "等待 Server 连接"}</code><small>由宿主配置</small></div>}
         </div>
         <div className="wb-side-actions">
-          <button className="side-new" onClick={() => { navigate(href("home")); setMobileOpen(false); }}><Icon name="edit" size={15}/>新对话</button>
+          <button className="side-new" onClick={() => { navigate(href("chat")); setMobileOpen(false); }}><Icon name="edit" size={15}/>新对话</button>
           <button className="icon-button" aria-label="搜索对话" title="搜索对话" aria-expanded={searching} onClick={() => { setSearching(!searching); setFilter(""); }}><Icon name="search" size={16}/></button>
         </div>
         {searching && <input className="side-search" autoFocus placeholder="搜索对话" aria-label="筛选对话" value={filter} onChange={event => setFilter(event.target.value)} onKeyDown={event => { if (event.key === "Escape") { setFilter(""); setSearching(false); } }} />}

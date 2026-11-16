@@ -200,21 +200,22 @@ its platform summary stays `silent`, and it remains editable and deletable. The
 deterministic Fake Adapter is injected only by tests.
 
 The independent Web connection console at `/channels.html` shows the four fixed
-platforms, then platform and connection detail. Forms come from the
-Server-authored `GET /api/channels/capabilities` schema; a platform without a
-registered adapter can save configuration but cannot start, and the console never
-invents a running state. `platform`, `connection_id` and `mode` are URL
-parameters, so direct entry, refresh and browser history keep the same view.
-Credentials remain write-only, and every mutation uses the same request IDs and
-revisions as the API.
+platforms, then one platform page with its connection list and per-connection
+actions. Create and edit open a centered dialog, so there is no third-level page;
+`platform` is the only URL parameter, and direct entry, refresh and browser
+history keep the same platform view. Forms come from the Server-authored
+`GET /api/channels/capabilities` schema; a platform without a registered adapter
+can save configuration but cannot start, and the console never invents a running
+state. Credentials remain write-only, and every mutation uses the same request
+IDs and revisions as the API.
 
 WeChat remains the existing single host-owned session. The channel API projects
 that same `WechatSessionController` (QR login, Conversation/Run, Scheduler and
 daily-review delivery are unchanged) and forwards start/stop/reconnect to it.
 Do not create a second WeChat client for the same account: one Server owns one
 WeChat session, and the channel layer never persists or replaces its login state.
-The legacy connection is read-only through the channel API; use `/wx` or Web
-Settings to log in or change the account.
+The legacy connection is read-only through the channel API; use `/wx` or the
+WeChat login dialog on the channels page to sign in or change the account.
 
 The private database lives at `data_root/channels/channels.sqlite3` with a `0700`
 directory and `0600` files. Credential values are write-only: no API response,
