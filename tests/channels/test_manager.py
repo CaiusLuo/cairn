@@ -24,10 +24,12 @@ from cairn.channels.models import (
     ChannelNotFound,
     ChannelPlatform,
     ChannelPlatformSummary,
+    ChannelReplyRejected,
     ChannelRequestConflict,
+    ChannelSendResult,
     ChannelSendStatus,
 )
-from cairn.channels.store import ChannelStore
+from cairn.channels.store import ChannelStore, ReplyRecord
 from cairn.conversation.models import ConversationSource
 from tests.channels.support import (
     CapturingFactory,
@@ -261,6 +263,177 @@ def test_inbound_dedupe_submits_once_and_rejects_changed_reuse(
         assert recovered.state == "accepted"
         assert recovered.run_id == "run-2"
         assert len(intake.submissions) == 2
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("second_text", ["world", "hello"])
+def test_inbound_dedupe_is_scoped_to_the_bot_identity(
+    tmp_path: Path, second_text: str
+) -> None:
+    async def scenario() -> None:
+        manager, _, intake, factory = make_manager(tmp_path / "channels")
+        connection = await _create(manager, request_id="bot-scope-create")
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "bot-scope-start")
+        adapter = factory.adapters[connection_id]
+        adapter.adapter_identity = "bot-a"
+
+        first = await manager.accept_inbound(
+            inbound(connection_id, "7:42", "hello", adapter_identity="bot-a")
+        )
+        assert first.state == "accepted"
+        assert first.run_id == "run-1"
+        duplicate = await manager.accept_inbound(
+            inbound(connection_id, "7:42", "hello", adapter_identity="bot-a")
+        )
+        assert duplicate.duplicate is True
+        assert duplicate.run_id == "run-1"
+
+        adapter.adapter_identity = "bot-b"
+        second = await manager.accept_inbound(
+            inbound(connection_id, "7:42", second_text, adapter_identity="bot-b")
+        )
+        assert second.state == "accepted"
+        assert second.duplicate is False
+        assert second.run_id == "run-2"
+        assert len(intake.submissions) == 2
+        assert intake.submissions[0][3] != intake.submissions[1][3]
+
+        repeated = await manager.accept_inbound(
+            inbound(connection_id, "7:42", second_text, adapter_identity="bot-b")
+        )
+        assert repeated.duplicate is True
+        assert repeated.run_id == "run-2"
+        assert len(intake.submissions) == 2
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_bot_scoped_inbound_redelivery_after_restart_returns_the_same_run(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "channels"
+
+    async def first() -> tuple[str, str]:
+        manager, _, _, factory = make_manager(root)
+        connection = await _create(manager, request_id="restart-bot-create")
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "restart-bot-start")
+        factory.adapters[connection_id].adapter_identity = "bot-a"
+        accepted = await manager.accept_inbound(
+            inbound(connection_id, "7:42", "hello", adapter_identity="bot-a")
+        )
+        await manager.close()
+        return connection_id, accepted.run_id or ""
+
+    connection_id, run_id = asyncio.run(first())
+
+    async def second() -> None:
+        manager, _, intake, factory = make_manager(root)
+        await manager.start()
+        await manager.wait_for_state(connection_id, ChannelActualState.RUNNING)
+        factory.adapters[connection_id].adapter_identity = "bot-a"
+        duplicate = await manager.accept_inbound(
+            inbound(connection_id, "7:42", "hello", adapter_identity="bot-a")
+        )
+        assert duplicate.duplicate is True
+        assert duplicate.run_id == run_id
+        assert intake.submissions == []
+        await manager.close()
+
+    asyncio.run(second())
+
+
+def test_inbound_rejects_an_identity_the_adapter_did_not_report(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        manager, _, intake, _ = make_manager(tmp_path / "channels")
+        connection = await _create(manager, request_id="identity-create")
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "identity-start")
+
+        with pytest.raises(ChannelInboundRejected):
+            await manager.accept_inbound(
+                inbound(connection_id, "m-1", adapter_identity="other-bot")
+            )
+        with pytest.raises(ChannelInboundRejected):
+            await manager.accept_inbound(
+                inbound(connection_id, "m-2", adapter_identity=None)
+            )
+        assert intake.submissions == []
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_legacy_inbound_retry_reuses_the_run_created_before_upgrade(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        manager, store, intake, _ = make_manager(tmp_path / "channels")
+        connection = await _create(manager, request_id="legacy-retry-create")
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "legacy-retry-start")
+        event = inbound(connection_id, "7:42", "hello")
+
+        # Simulate a Run submitted just before the identity-scoped request ID
+        # existed, with the durable claim left behind by a crash.
+        conversation = intake.ensure_channel_conversation(
+            "telegram", connection_id, "sender-1", "chat-1", "hello"
+        )
+        legacy_request_id = manager._legacy_inbound_request_id(event)
+        existing = intake.submit(
+            conversation.conversation_id,
+            "hello",
+            ConversationSource.CHANNEL,
+            legacy_request_id,
+        )
+        assert store.claim_inbound(event).created is True
+
+        recovered = await manager.accept_inbound(event)
+        assert recovered.state == "accepted"
+        assert recovered.run_id == existing.run_id
+        assert len(intake.submissions) == 1
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_upgraded_legacy_message_stays_idempotent_for_the_adopted_bot(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        manager, store, intake, factory = make_manager(tmp_path / "channels")
+        connection = await _create(
+            manager,
+            request_id="legacy-adopt-create",
+            credentials={"bot_token": "123456:" + "a" * 35},
+        )
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "legacy-adopt-start")
+        factory.adapters[connection_id].adapter_identity = "bot-a"
+
+        legacy = inbound(connection_id, "7:42", "hello", adapter_identity=None)
+        assert store.claim_inbound(legacy, sender_role="owner").created is True
+        store.complete_inbound(
+            connection_id,
+            "7:42",
+            state="accepted",
+            run_id="run-legacy",
+        )
+        assert store.adopt_unidentified_inbound(connection_id, "bot-a") == 1
+
+        duplicate = await manager.accept_inbound(
+            inbound(connection_id, "7:42", "hello", adapter_identity="bot-a")
+        )
+        assert duplicate.state == "accepted"
+        assert duplicate.duplicate is True
+        assert duplicate.run_id == "run-legacy"
+        assert intake.submissions == []
         await manager.close()
 
     asyncio.run(scenario())
@@ -757,6 +930,342 @@ def test_duplicate_delivery_recreates_a_missing_reply_intent(tmp_path: Path) -> 
         record = store.reply_for_run(first.run_id)
         assert record is not None
         assert record.target == "chat-1"
+        assert record.sender_id == "sender-1"
+        assert record.sender_role == "owner"
+        assert record.adapter_identity == "fake-bot"
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def _reply(
+    store: ChannelStore,
+    *,
+    connection_id: str,
+    run_id: str,
+    sender_id: str,
+    sender_role: str,
+    adapter_identity: str = "fake-bot",
+) -> ReplyRecord:
+    return store.claim_reply(
+        connection_id=connection_id,
+        conversation_id="conv-1",
+        run_id=run_id,
+        target="chat-1",
+        external_message_id=f"{run_id}:1",
+        sender_id=sender_id,
+        sender_role=sender_role,
+        adapter_identity=adapter_identity,
+    )
+
+
+def test_reply_authorization_accepts_owner_and_allowed_sender(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager, store, _, factory = make_manager(tmp_path / "channels")
+        connection = await _create(
+            manager,
+            owner_identity="owner",
+            allowed_senders=["guest"],
+            request_id="reply-auth-create",
+        )
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "reply-auth-start")
+        adapter = factory.adapters[connection_id]
+
+        owner = _reply(
+            store,
+            connection_id=connection_id,
+            run_id="run-owner",
+            sender_id="owner",
+            sender_role="owner",
+        )
+        guest = _reply(
+            store,
+            connection_id=connection_id,
+            run_id="run-guest",
+            sender_id="guest",
+            sender_role="allowed",
+        )
+        assert (
+            await manager.send_reply(owner, "owner answer", "reply-owner")
+        ).status is ChannelSendStatus.ACCEPTED
+        assert (
+            await manager.send_reply(guest, "guest answer", "reply-guest")
+        ).status is ChannelSendStatus.ACCEPTED
+        assert adapter.sent == [
+            ("chat-1", "owner answer", "reply-owner"),
+            ("chat-1", "guest answer", "reply-guest"),
+        ]
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_reply_is_refused_after_the_sender_loses_authorization(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        manager, store, _, factory = make_manager(tmp_path / "channels")
+        connection = await _create(
+            manager,
+            owner_identity="owner",
+            allowed_senders=["guest"],
+            request_id="reply-revoke-create",
+        )
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "reply-revoke-start")
+        guest = _reply(
+            store,
+            connection_id=connection_id,
+            run_id="run-guest",
+            sender_id="guest",
+            sender_role="allowed",
+        )
+        await manager.update_connection(
+            connection_id,
+            expected_revision=1,
+            request_id="reply-revoke-update",
+            changes={"allowed_senders": []},
+        )
+        with pytest.raises(ChannelReplyRejected) as excinfo:
+            await manager.send_reply(guest, "stale answer", "reply-revoked")
+        assert str(excinfo.value) == "sender_not_authorized"
+        assert factory.adapters[connection_id].sent == []
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_owner_downgrade_blocks_an_owner_scoped_pending_reply(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        manager, store, _, factory = make_manager(tmp_path / "channels")
+        connection = await _create(
+            manager,
+            owner_identity="owner",
+            request_id="reply-downgrade-create",
+        )
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "reply-downgrade-start")
+        owner = _reply(
+            store,
+            connection_id=connection_id,
+            run_id="run-owner",
+            sender_id="owner",
+            sender_role="owner",
+        )
+        await manager.update_connection(
+            connection_id,
+            expected_revision=1,
+            request_id="reply-downgrade-update",
+            changes={"owner_identity": "other", "allowed_senders": ["owner"]},
+        )
+        with pytest.raises(ChannelReplyRejected) as excinfo:
+            await manager.send_reply(owner, "private answer", "reply-downgraded")
+        assert str(excinfo.value) == "sender_role_revoked"
+        assert factory.adapters[connection_id].sent == []
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_reply_is_refused_when_another_bot_is_connected(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager, store, _, factory = make_manager(tmp_path / "channels")
+        connection = await _create(manager, request_id="reply-bot-create")
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "reply-bot-start")
+        reply = _reply(
+            store,
+            connection_id=connection_id,
+            run_id="run-1",
+            sender_id="sender-1",
+            sender_role="owner",
+            adapter_identity="bot-a",
+        )
+        factory.adapters[connection_id].adapter_identity = "bot-b"
+        with pytest.raises(ChannelReplyRejected) as excinfo:
+            await manager.send_reply(reply, "answer", "reply-bot")
+        assert str(excinfo.value) == "reply_bot_mismatch"
+        assert factory.adapters[connection_id].sent == []
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_revocation_waits_for_an_in_flight_reply_before_committing(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        manager, store, _, factory = make_manager(tmp_path / "channels")
+        connection = await _create(
+            manager,
+            owner_identity="owner",
+            allowed_senders=["guest"],
+            request_id="reply-race-create",
+        )
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "reply-race-start")
+        adapter = factory.adapters[connection_id]
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        delivered: list[str] = []
+
+        async def slow_send(
+            target: str, message: str, idempotency_key: str
+        ) -> ChannelSendResult:
+            entered.set()
+            await release.wait()
+            delivered.append(message)
+            adapter.sent.append((target, message, idempotency_key))
+            return ChannelSendResult(status=ChannelSendStatus.ACCEPTED)
+
+        adapter.send = slow_send  # type: ignore[method-assign]
+        first = _reply(
+            store,
+            connection_id=connection_id,
+            run_id="run-first",
+            sender_id="guest",
+            sender_role="allowed",
+        )
+        send_task = asyncio.create_task(
+            manager.send_reply(first, "first answer", "reply-first")
+        )
+        await entered.wait()
+        update_task = asyncio.create_task(
+            manager.update_connection(
+                connection_id,
+                expected_revision=1,
+                request_id="reply-race-update",
+                changes={"allowed_senders": []},
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert not update_task.done(), "revocation must wait for the in-flight send"
+        release.set()
+        assert (await send_task).status is ChannelSendStatus.ACCEPTED
+        await update_task
+        assert delivered == ["first answer"]
+
+        second = _reply(
+            store,
+            connection_id=connection_id,
+            run_id="run-second",
+            sender_id="guest",
+            sender_role="allowed",
+        )
+        with pytest.raises(ChannelReplyRejected):
+            await manager.send_reply(second, "second answer", "reply-second")
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_stop_waits_for_an_in_flight_reply_and_blocks_later_sends(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        manager, store, _, factory = make_manager(tmp_path / "channels")
+        connection = await _create(manager, request_id="reply-stop-create")
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "reply-stop-start")
+        adapter = factory.adapters[connection_id]
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_send(
+            target: str, message: str, idempotency_key: str
+        ) -> ChannelSendResult:
+            entered.set()
+            await release.wait()
+            adapter.sent.append((target, message, idempotency_key))
+            return ChannelSendResult(status=ChannelSendStatus.ACCEPTED)
+
+        adapter.send = slow_send  # type: ignore[method-assign]
+        first = _reply(
+            store,
+            connection_id=connection_id,
+            run_id="run-first",
+            sender_id="sender-1",
+            sender_role="owner",
+        )
+        send_task = asyncio.create_task(
+            manager.send_reply(first, "first answer", "reply-first")
+        )
+        await entered.wait()
+        stop_task = asyncio.create_task(
+            manager.stop_connection(connection_id, "reply-stop")
+        )
+        await asyncio.sleep(0.05)
+        assert not stop_task.done(), "stop must wait for the in-flight send"
+        release.set()
+        assert (await send_task).status is ChannelSendStatus.ACCEPTED
+        stopped = await stop_task
+        assert stopped.connection.desired_state is ChannelDesiredState.STOPPED
+
+        second = _reply(
+            store,
+            connection_id=connection_id,
+            run_id="run-second",
+            sender_id="sender-1",
+            sender_role="owner",
+        )
+        with pytest.raises(ChannelDisabled):
+            await manager.send_reply(second, "second answer", "reply-second")
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_token_replacement_waits_for_an_in_flight_reply(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager, store, _, factory = make_manager(tmp_path / "channels")
+        connection = await _create(manager, request_id="reply-token-create")
+        connection_id = connection.connection.connection_id
+        await manager.start_connection(connection_id, "reply-token-start")
+        first_adapter = factory.adapters[connection_id]
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_send(
+            target: str, message: str, idempotency_key: str
+        ) -> ChannelSendResult:
+            entered.set()
+            await release.wait()
+            first_adapter.sent.append((target, message, idempotency_key))
+            return ChannelSendResult(status=ChannelSendStatus.ACCEPTED)
+
+        first_adapter.send = slow_send  # type: ignore[method-assign]
+        reply = _reply(
+            store,
+            connection_id=connection_id,
+            run_id="run-1",
+            sender_id="sender-1",
+            sender_role="owner",
+        )
+        send_task = asyncio.create_task(
+            manager.send_reply(reply, "answer", "reply-token")
+        )
+        await entered.wait()
+        update_task = asyncio.create_task(
+            manager.update_connection(
+                connection_id,
+                expected_revision=1,
+                request_id="reply-token-update",
+                changes={},
+                credentials={"token": "replacement"},
+                replace_credentials=True,
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert not update_task.done(), "replacement must wait for the in-flight send"
+        release.set()
+        await send_task
+        await update_task
+        assert first_adapter.sent == [("chat-1", "answer", "reply-token")]
+        assert first_adapter.stops == 1
+        assert factory.adapters[connection_id] is not first_adapter
         await manager.close()
 
     asyncio.run(scenario())

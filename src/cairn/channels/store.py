@@ -36,8 +36,31 @@ from cairn.channels.models import (
     validate_metadata,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 REQUEST_RETENTION_DAYS = 30
+
+# One update ID is only unique inside the Bot/account that produced it, so the
+# inbound primary key includes the adapter identity that received the message.
+_INBOUND_TABLE_SQL = """
+            CREATE TABLE IF NOT EXISTS channel_inbound (
+                platform TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                external_message_id TEXT NOT NULL,
+                event_digest TEXT NOT NULL,
+                state TEXT NOT NULL,
+                conversation_id TEXT,
+                run_id TEXT,
+                conversation_binding TEXT NOT NULL DEFAULT '',
+                sender_id TEXT NOT NULL DEFAULT '',
+                sender_role TEXT NOT NULL DEFAULT '',
+                adapter_identity TEXT NOT NULL DEFAULT '',
+                request_id TEXT NOT NULL DEFAULT '',
+                error TEXT,
+                received_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (connection_id, adapter_identity, external_message_id)
+            );
+            """
 
 
 def _json(value: object) -> str:
@@ -62,6 +85,14 @@ def _receipt_result(value: str | None) -> dict[str, Any] | None:
     if not isinstance(result, dict):
         raise RuntimeError("channel request receipt is corrupt")
     return result
+
+
+def _timestamp(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def inbound_digest(event: ChannelInboundEvent) -> str:
@@ -122,6 +153,12 @@ class InboundClaim:
     conversation_id: str | None
     run_id: str | None
     error: str | None
+    sender_id: str
+    sender_role: str
+    adapter_identity: str
+    # The deterministic Conversation request ID recorded at admission. Legacy
+    # rows leave it empty; callers then fall back to the pre-identity formula.
+    request_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +182,12 @@ class ReplyRecord:
     run_id: str
     target: str
     external_message_id: str
+    # Trusted identities captured when the inbound message was admitted. A
+    # reply with an empty identity predates the identity binding and is never
+    # delivered.
+    sender_id: str
+    sender_role: str
+    adapter_identity: str
     state: str
     attempts: int
     error: str | None
@@ -159,6 +202,9 @@ class UnrepliedInbound:
     run_id: str
     target: str
     external_message_id: str
+    sender_id: str
+    sender_role: str
+    adapter_identity: str
 
 
 class ChannelStore:
@@ -179,7 +225,7 @@ class ChannelStore:
             raise ValueError("Channel store cannot be a symlink")
         with self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in (0, 1, SCHEMA_VERSION):
+            if version not in (0, 1, 2, 3, SCHEMA_VERSION):
                 raise ValueError("Unsupported channel store schema")
             self._create_schema(connection)
             columns = {
@@ -193,17 +239,7 @@ class ChannelStore:
                     "ALTER TABLE channel_connections ADD COLUMN "
                     "allowed_senders_json TEXT NOT NULL DEFAULT '[]'"
                 )
-            inbound_columns = {
-                str(row["name"])
-                for row in connection.execute(
-                    "PRAGMA table_info(channel_inbound)"
-                ).fetchall()
-            }
-            if "conversation_binding" not in inbound_columns:
-                connection.execute(
-                    "ALTER TABLE channel_inbound ADD COLUMN "
-                    "conversation_binding TEXT NOT NULL DEFAULT ''"
-                )
+            self._migrate_inbound_identity(connection)
             connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         with suppress(OSError):
             self.path.chmod(0o600)
@@ -255,20 +291,9 @@ class ChannelStore:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS channel_inbound (
-                platform TEXT NOT NULL,
-                connection_id TEXT NOT NULL,
-                external_message_id TEXT NOT NULL,
-                event_digest TEXT NOT NULL,
-                state TEXT NOT NULL,
-                conversation_id TEXT,
-                run_id TEXT,
-                conversation_binding TEXT NOT NULL DEFAULT '',
-                error TEXT,
-                received_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (connection_id, external_message_id)
-            );
+            """
+            + _INBOUND_TABLE_SQL
+            + """
             CREATE TABLE IF NOT EXISTS channel_deliveries (
                 delivery_id TEXT PRIMARY KEY,
                 connection_id TEXT NOT NULL,
@@ -288,6 +313,9 @@ class ChannelStore:
                 run_id TEXT NOT NULL UNIQUE,
                 target TEXT NOT NULL,
                 external_message_id TEXT NOT NULL,
+                sender_id TEXT NOT NULL DEFAULT '',
+                sender_role TEXT NOT NULL DEFAULT '',
+                adapter_identity TEXT NOT NULL DEFAULT '',
                 state TEXT NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 error TEXT,
@@ -303,6 +331,79 @@ class ChannelStore:
             );
             """
         )
+
+    @staticmethod
+    def _migrate_inbound_identity(connection: sqlite3.Connection) -> None:
+        inbound_columns = {
+            str(row["name"])
+            for row in connection.execute(
+                "PRAGMA table_info(channel_inbound)"
+            ).fetchall()
+        }
+        for column in (
+            "conversation_binding",
+            "sender_id",
+            "sender_role",
+            "adapter_identity",
+            "request_id",
+        ):
+            if column not in inbound_columns:
+                connection.execute(
+                    f"ALTER TABLE channel_inbound ADD COLUMN "
+                    f"{column} TEXT NOT NULL DEFAULT ''"
+                )
+        reply_columns = {
+            str(row["name"])
+            for row in connection.execute(
+                "PRAGMA table_info(channel_replies)"
+            ).fetchall()
+        }
+        for column in ("sender_id", "sender_role", "adapter_identity"):
+            if column not in reply_columns:
+                connection.execute(
+                    f"ALTER TABLE channel_replies ADD COLUMN "
+                    f"{column} TEXT NOT NULL DEFAULT ''"
+                )
+        primary_key = {
+            str(row["name"])
+            for row in connection.execute(
+                "PRAGMA table_info(channel_inbound)"
+            ).fetchall()
+            if int(row["pk"]) > 0
+        }
+        if primary_key == {
+            "connection_id",
+            "adapter_identity",
+            "external_message_id",
+        }:
+            return
+        if (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'channel_inbound_legacy'"
+            ).fetchone()
+            is not None
+        ):
+            raise ValueError("channel store inbound migration is incomplete")
+        # Rebuild atomically: a crash leaves either the old table or the
+        # identity-scoped one, never a partially copied dedupe space.
+        connection.commit()
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "ALTER TABLE channel_inbound RENAME TO channel_inbound_legacy"
+        )
+        connection.execute(_INBOUND_TABLE_SQL)
+        connection.execute(
+            "INSERT INTO channel_inbound "
+            "(platform, connection_id, external_message_id, event_digest, state, "
+            "conversation_id, run_id, conversation_binding, sender_id, sender_role, "
+            "adapter_identity, request_id, error, received_at, updated_at) "
+            "SELECT platform, connection_id, external_message_id, event_digest, "
+            "state, conversation_id, run_id, conversation_binding, sender_id, "
+            "sender_role, adapter_identity, request_id, error, received_at, "
+            "updated_at FROM channel_inbound_legacy"
+        )
+        connection.execute("DROP TABLE channel_inbound_legacy")
 
     @staticmethod
     def _connection(row: sqlite3.Row) -> ChannelConnection:
@@ -338,6 +439,9 @@ class ChannelStore:
             run_id=str(row["run_id"]),
             target=str(row["target"]),
             external_message_id=str(row["external_message_id"]),
+            sender_id=str(row["sender_id"]),
+            sender_role=str(row["sender_role"]),
+            adapter_identity=str(row["adapter_identity"]),
             state=str(row["state"]),
             attempts=int(row["attempts"]),
             error=str(row["error"]) if row["error"] is not None else None,
@@ -813,29 +917,45 @@ class ChannelStore:
                 )
             self._finish_request(connection, request_id, result, now)
 
-    def claim_inbound(self, event: ChannelInboundEvent) -> InboundClaim:
+    def claim_inbound(
+        self,
+        event: ChannelInboundEvent,
+        *,
+        sender_role: str = "",
+        request_id: str = "",
+    ) -> InboundClaim:
         digest = inbound_digest(event)
+        adapter_identity = event.adapter_identity or ""
         now = utc_now()
         with self._connect() as connection:
             inserted = connection.execute(
                 "INSERT OR IGNORE INTO channel_inbound "
                 "(platform, connection_id, external_message_id, event_digest, "
-                "state, conversation_binding, received_at, updated_at) "
-                "VALUES (?, ?, ?, ?, 'claimed', ?, ?, ?)",
+                "state, conversation_binding, sender_id, sender_role, "
+                "adapter_identity, request_id, received_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 'claimed', ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event.platform.value,
                     event.connection_id,
                     event.external_message_id,
                     digest,
                     event.conversation_binding,
+                    event.sender_id,
+                    sender_role,
+                    adapter_identity,
+                    request_id,
                     event.received_at,
                     now,
                 ),
             )
             row = connection.execute(
                 "SELECT * FROM channel_inbound WHERE connection_id = ? "
-                "AND external_message_id = ?",
-                (event.connection_id, event.external_message_id),
+                "AND adapter_identity = ? AND external_message_id = ?",
+                (
+                    event.connection_id,
+                    adapter_identity,
+                    event.external_message_id,
+                ),
             ).fetchone()
             if row is None:
                 raise RuntimeError("channel inbound claim disappeared")
@@ -850,6 +970,10 @@ class ChannelStore:
                 ),
                 run_id=str(row["run_id"]) if row["run_id"] is not None else None,
                 error=str(row["error"]) if row["error"] is not None else None,
+                sender_id=str(row["sender_id"]),
+                sender_role=str(row["sender_role"]),
+                adapter_identity=str(row["adapter_identity"]),
+                request_id=str(row["request_id"]),
             )
 
     def complete_inbound(
@@ -857,6 +981,7 @@ class ChannelStore:
         connection_id: str,
         external_message_id: str,
         *,
+        adapter_identity: str = "",
         state: str,
         conversation_id: str | None = None,
         run_id: str | None = None,
@@ -866,7 +991,7 @@ class ChannelStore:
             updated = connection.execute(
                 "UPDATE channel_inbound SET state = ?, conversation_id = ?, "
                 "run_id = ?, error = ?, updated_at = ? WHERE connection_id = ? "
-                "AND external_message_id = ?",
+                "AND adapter_identity = ? AND external_message_id = ?",
                 (
                     state,
                     conversation_id,
@@ -874,11 +999,78 @@ class ChannelStore:
                     error,
                     utc_now(),
                     connection_id,
+                    adapter_identity,
                     external_message_id,
                 ),
             )
             if updated.rowcount != 1:
                 raise RuntimeError("channel inbound claim disappeared")
+
+    def adopt_unidentified_inbound(
+        self, connection_id: str, adapter_identity: str
+    ) -> int:
+        """Bind legacy inbound rows to a Bot only when history proves it.
+
+        Replacing credentials creates a new credential row, so the current
+        credential's creation time is the last token change. Rows received at
+        or after it were produced by the current token and therefore by the
+        current Bot. Older rows stay unscoped: their Bot cannot be proven, so
+        a different Bot's colliding update IDs are never suppressed.
+        """
+        if not adapter_identity:
+            return 0
+        with self._connect() as connection:
+            credential = connection.execute(
+                "SELECT credentials.created_at AS created_at "
+                "FROM channel_connections AS connections "
+                "LEFT JOIN channel_credentials AS credentials "
+                "ON credentials.credential_ref = connections.credential_ref "
+                "WHERE connections.connection_id = ?",
+                (connection_id,),
+            ).fetchone()
+            if credential is None or credential["created_at"] is None:
+                return 0
+            cutoff = _timestamp(str(credential["created_at"]))
+            if cutoff is None:
+                return 0
+            rows = connection.execute(
+                "SELECT external_message_id, received_at FROM channel_inbound "
+                "WHERE connection_id = ? AND adapter_identity = ''",
+                (connection_id,),
+            ).fetchall()
+            adopted = 0
+            for row in rows:
+                received_at = _timestamp(str(row["received_at"]))
+                if received_at is None or received_at < cutoff:
+                    continue
+                updated = connection.execute(
+                    "UPDATE OR IGNORE channel_inbound SET adapter_identity = ? "
+                    "WHERE connection_id = ? AND adapter_identity = '' "
+                    "AND external_message_id = ?",
+                    (
+                        adapter_identity,
+                        connection_id,
+                        row["external_message_id"],
+                    ),
+                )
+                adopted += updated.rowcount
+            # A reply is only as trustworthy as the inbound row that produced
+            # it. Fill identities for replies whose inbound row is now bound;
+            # replies from unproven history stay empty and fail closed.
+            connection.execute(
+                "UPDATE channel_replies SET adapter_identity = ? "
+                "WHERE connection_id = ? AND adapter_identity = '' AND run_id IN ("
+                "SELECT run_id FROM channel_inbound "
+                "WHERE connection_id = ? AND adapter_identity = ? "
+                "AND run_id IS NOT NULL)",
+                (
+                    adapter_identity,
+                    connection_id,
+                    connection_id,
+                    adapter_identity,
+                ),
+            )
+            return adopted
 
     def begin_delivery(
         self,
@@ -977,17 +1169,26 @@ class ChannelStore:
         run_id: str,
         target: str,
         external_message_id: str,
+        sender_id: str = "",
+        sender_role: str = "",
+        adapter_identity: str = "",
     ) -> ReplyRecord:
         """Persist one reply intent per accepted Run, idempotently."""
-        raw = f"channel-reply:{connection_id}:{external_message_id}"
+        # The platform message ID is only unique inside its Bot namespace, so
+        # the intent identity includes the adapter identity as well. The Run
+        # lookup below still finds intents written before this scoping.
+        raw = (
+            f"channel-reply:{connection_id}\0{adapter_identity}\0{external_message_id}"
+        )
         reply_id = "reply-" + hashlib.sha256(raw.encode()).hexdigest()[:32]
         now = utc_now()
         with self._connect() as connection:
             connection.execute(
                 "INSERT OR IGNORE INTO channel_replies "
                 "(reply_id, connection_id, conversation_id, run_id, target, "
-                "external_message_id, state, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                "external_message_id, sender_id, sender_role, adapter_identity, "
+                "state, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
                 (
                     reply_id,
                     connection_id,
@@ -995,6 +1196,9 @@ class ChannelStore:
                     run_id,
                     target,
                     external_message_id,
+                    sender_id,
+                    sender_role,
+                    adapter_identity,
                     now,
                     now,
                 ),
@@ -1002,6 +1206,12 @@ class ChannelStore:
             row = connection.execute(
                 "SELECT * FROM channel_replies WHERE reply_id = ?", (reply_id,)
             ).fetchone()
+            if row is None:
+                # An intent written before identity-scoped IDs existed still
+                # owns this Run; keep it instead of inserting a second one.
+                row = connection.execute(
+                    "SELECT * FROM channel_replies WHERE run_id = ?", (run_id,)
+                ).fetchone()
             if row is None:
                 raise RuntimeError("channel reply intent disappeared")
             record = self._reply(row)
@@ -1074,7 +1284,8 @@ class ChannelStore:
             rows = connection.execute(
                 "SELECT inbound.connection_id, inbound.conversation_id, "
                 "inbound.run_id, inbound.conversation_binding, "
-                "inbound.external_message_id "
+                "inbound.external_message_id, inbound.sender_id, "
+                "inbound.sender_role, inbound.adapter_identity "
                 "FROM channel_inbound AS inbound "
                 "LEFT JOIN channel_replies AS reply ON reply.run_id = inbound.run_id "
                 "WHERE inbound.state = 'accepted' AND inbound.run_id IS NOT NULL "
@@ -1088,6 +1299,9 @@ class ChannelStore:
                 run_id=str(row["run_id"]),
                 target=str(row["conversation_binding"]),
                 external_message_id=str(row["external_message_id"]),
+                sender_id=str(row["sender_id"]),
+                sender_role=str(row["sender_role"]),
+                adapter_identity=str(row["adapter_identity"]),
             )
             for row in rows
         )

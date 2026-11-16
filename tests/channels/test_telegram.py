@@ -131,6 +131,11 @@ class RecordingStore:
         self.events.append("offset")
         self.store.save_adapter_state(connection_id, key, value)
 
+    def adopt_unidentified_inbound(
+        self, connection_id: str, adapter_identity: str
+    ) -> int:
+        return self.store.adopt_unidentified_inbound(connection_id, adapter_identity)
+
 
 def connection(connection_id: str = "ch-telegram") -> ChannelConnection:
     return ChannelConnection(
@@ -294,13 +299,17 @@ def test_private_update_is_persisted_before_the_offset_advances(
         await wait_until(
             lambda: store.load_adapter_state("ch-telegram", "telegram") is not None
         )
-        assert events == ["inbound", "offset"]
+        assert events[-2:] == ["inbound", "offset"]
         assert seen[0].platform is ChannelPlatform.TELEGRAM
         assert seen[0].external_message_id == "7:41"
         assert seen[0].sender_id == "7"
         assert seen[0].conversation_binding == "7"
         assert seen[0].text == "hi there"
-        assert store.load_adapter_state("ch-telegram", "telegram") == {"offset": 42}
+        assert seen[0].adapter_identity == str(BOT_ID)
+        assert store.load_adapter_state("ch-telegram", "telegram") == {
+            "bot_id": str(BOT_ID),
+            "offset": 42,
+        }
         await adapter.stop()
 
     asyncio.run(scenario())
@@ -329,7 +338,8 @@ def test_group_bot_and_self_messages_are_acknowledged_without_intake(
         )
         await wait_until(
             lambda: (
-                store.load_adapter_state("ch-telegram", "telegram") == {"offset": 14}
+                store.load_adapter_state("ch-telegram", "telegram")
+                == {"bot_id": str(BOT_ID), "offset": 14}
             )
         )
         assert seen == []
@@ -356,7 +366,8 @@ def test_definite_rejection_advances_and_uncertain_redelivery_reuses_the_update(
         await session.updates.put([update(20)])
         await wait_until(
             lambda: (
-                store.load_adapter_state("ch-telegram", "telegram") == {"offset": 21}
+                store.load_adapter_state("ch-telegram", "telegram")
+                == {"bot_id": str(BOT_ID), "offset": 21}
             )
         )
         await adapter.stop()
@@ -378,7 +389,8 @@ def test_definite_rejection_advances_and_uncertain_redelivery_reuses_the_update(
         await session.updates.put([duplicated])
         await wait_until(
             lambda: (
-                store.load_adapter_state("ch-telegram", "telegram") == {"offset": 31}
+                store.load_adapter_state("ch-telegram", "telegram")
+                == {"bot_id": str(BOT_ID), "offset": 31}
             )
         )
         assert calls == 2
@@ -391,12 +403,117 @@ def test_definite_rejection_advances_and_uncertain_redelivery_reuses_the_update(
 def test_restart_resumes_from_the_persisted_offset(tmp_path: Path) -> None:
     async def scenario() -> None:
         store = ChannelStore(tmp_path / "channels")
-        store.save_adapter_state("ch-telegram", "telegram", {"offset": 77})
+        store.save_adapter_state(
+            "ch-telegram", "telegram", {"bot_id": str(BOT_ID), "offset": 77}
+        )
         session = FakeSession()
         adapter = adapter_with(session, store, ignore)
         await adapter.start()
         await wait_until(lambda: bool(session.offsets))
         assert session.offsets[0] == 77
+        await adapter.stop()
+
+    asyncio.run(scenario())
+
+
+def test_legacy_state_without_a_bot_id_discards_the_offset(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        store = ChannelStore(tmp_path / "channels")
+        store.save_adapter_state("ch-telegram", "telegram", {"offset": 77})
+        session = FakeSession()
+        adapter = adapter_with(session, store, ignore)
+        await adapter.start()
+        await wait_until(lambda: bool(session.offsets))
+        assert session.offsets[0] is None
+        assert store.load_adapter_state("ch-telegram", "telegram") == {
+            "bot_id": str(BOT_ID),
+            "offset": None,
+        }
+        await adapter.stop()
+
+    asyncio.run(scenario())
+
+
+def test_start_binds_provably_legacy_inbound_rows_to_the_current_bot(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        store = ChannelStore(tmp_path / "channels")
+        created = store.create_connection(
+            platform=ChannelPlatform.TELEGRAM,
+            display_name="Telegram",
+            enabled=True,
+            owner_identity="7",
+            metadata={},
+            credentials={"bot_token": TOKEN},
+            request_id="create-legacy-inbound",
+        )
+        connection_id = created.connection.connection_id
+        legacy = ChannelInboundEvent(
+            platform=ChannelPlatform.TELEGRAM,
+            connection_id=connection_id,
+            external_message_id="7:42",
+            sender_id="7",
+            conversation_binding="7",
+            text="hello",
+            adapter_identity=None,
+        )
+        assert store.claim_inbound(legacy, sender_role="owner").created is True
+        store.complete_inbound(
+            connection_id, "7:42", state="accepted", run_id="run-legacy"
+        )
+        store.claim_reply(
+            connection_id=connection_id,
+            conversation_id="conv-legacy",
+            run_id="run-legacy",
+            target="7",
+            external_message_id="7:42",
+            sender_id="7",
+            sender_role="owner",
+        )
+
+        session = FakeSession()
+        adapter = adapter_with(session, store, ignore, connection_id=connection_id)
+        await adapter.start()
+        await wait_until(
+            lambda: adapter.health().actual_state is ChannelActualState.RUNNING
+        )
+        adopted = store.claim_inbound(
+            ChannelInboundEvent(
+                platform=ChannelPlatform.TELEGRAM,
+                connection_id=connection_id,
+                external_message_id="7:42",
+                sender_id="7",
+                conversation_binding="7",
+                text="hello",
+                adapter_identity=str(BOT_ID),
+            )
+        )
+        assert adopted.created is False
+        assert adopted.run_id == "run-legacy"
+        reply = store.reply_for_run("run-legacy")
+        assert reply is not None
+        assert reply.adapter_identity == str(BOT_ID)
+        await adapter.stop()
+
+    asyncio.run(scenario())
+
+
+def test_a_different_bot_never_reuses_the_previous_offset(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        store = ChannelStore(tmp_path / "channels")
+        store.save_adapter_state(
+            "ch-telegram", "telegram", {"bot_id": "111", "offset": 77}
+        )
+        session = FakeSession()
+        adapter = adapter_with(session, store, ignore)
+        await adapter.start()
+        await wait_until(lambda: bool(session.offsets))
+        assert session.offsets[0] is None
+        assert store.load_adapter_state("ch-telegram", "telegram") == {
+            "bot_id": str(BOT_ID),
+            "offset": None,
+        }
         await adapter.stop()
 
     asyncio.run(scenario())
@@ -520,7 +637,8 @@ def test_network_loss_reconnects_without_stopping_the_adapter(
         await session.updates.put([update(50)])
         await wait_until(
             lambda: (
-                store.load_adapter_state("ch-telegram", "telegram") == {"offset": 51}
+                store.load_adapter_state("ch-telegram", "telegram")
+                == {"bot_id": str(BOT_ID), "offset": 51}
             )
         )
         assert adapter.health().actual_state is ChannelActualState.RUNNING
@@ -625,7 +743,7 @@ def test_aiogram_http_boundary_round_trip(tmp_path: Path) -> None:
             await wait_until(
                 lambda: (
                     store.load_adapter_state("ch-telegram", "telegram")
-                    == {"offset": 71}
+                    == {"bot_id": str(BOT_ID), "offset": 71}
                 )
             )
             assert seen[0].text == "hello over http"
@@ -688,7 +806,8 @@ def test_manager_admits_an_owner_once_and_rejects_another_sender(
         await session.updates.put([update(101, text="and again", user_id=8, chat_id=8)])
         await wait_until(
             lambda: (
-                store.load_adapter_state(connection_id, "telegram") == {"offset": 102}
+                store.load_adapter_state(connection_id, "telegram")
+                == {"bot_id": str(BOT_ID), "offset": 102}
             )
         )
         assert len(intake.submissions) == 2
@@ -711,7 +830,8 @@ def test_manager_admits_an_owner_once_and_rejects_another_sender(
         await session.updates.put([update(102, text="hello", user_id=9, chat_id=9)])
         await wait_until(
             lambda: (
-                store.load_adapter_state(connection_id, "telegram") == {"offset": 103}
+                store.load_adapter_state(connection_id, "telegram")
+                == {"bot_id": str(BOT_ID), "offset": 103}
             )
         )
         assert len(intake.submissions) == 2

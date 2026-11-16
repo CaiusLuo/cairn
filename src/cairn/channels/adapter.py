@@ -76,6 +76,14 @@ class ChannelAdapter(Protocol):
 
     def health(self) -> ChannelAdapterHealth: ...
 
+    def identity(self) -> str | None:
+        """The platform identity of the currently connected bot/account.
+
+        ``None`` means the adapter cannot prove which remote identity is
+        active, so identity-bound replies must not be sent through it.
+        """
+        ...
+
     async def send(
         self, target: str, message: str, idempotency_key: str
     ) -> ChannelSendResult: ...
@@ -100,6 +108,8 @@ class FakeChannelAdapter:
         self._last_connected_at: str | None = None
         self._last_heartbeat_at: str | None = None
         self._last_error: str | None = None
+        # Tests may change this to model a different bot taking over.
+        self.adapter_identity: str | None = "fake-bot"
         self.fail_start = False
         self.fail_send = False
         self.starts = 0
@@ -135,6 +145,9 @@ class FakeChannelAdapter:
             last_heartbeat_at=self._last_heartbeat_at,
             last_error=self._last_error,
         )
+
+    def identity(self) -> str | None:
+        return self.adapter_identity
 
     async def send(
         self, target: str, message: str, idempotency_key: str

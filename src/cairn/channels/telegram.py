@@ -73,6 +73,10 @@ class AdapterStateStore(Protocol):
         self, connection_id: str, key: str, value: dict[str, object]
     ) -> None: ...
 
+    def adopt_unidentified_inbound(
+        self, connection_id: str, adapter_identity: str
+    ) -> int: ...
+
 
 BotFactory = Callable[[str], Bot]
 
@@ -138,7 +142,7 @@ class TelegramAdapter:
         self._sleep = sleep
         self._bot: Bot | None = None
         self._bot_id: int | None = None
-        self._offset = self._load_offset()
+        self._stored_bot_id, self._offset = self._load_state()
         self._state = ChannelActualState.STOPPED
         self._last_connected_at: str | None = None
         self._last_heartbeat_at: str | None = None
@@ -146,16 +150,27 @@ class TelegramAdapter:
         self._poll_task: asyncio.Task[None] | None = None
         self._reserved = False
 
-    def _load_offset(self) -> int | None:
+    def _load_state(self) -> tuple[str | None, int | None]:
         value = self._store.load_adapter_state(self.connection_id, "telegram")
         if value is None:
-            return None
+            return None, None
+        raw_bot_id = value.get("bot_id")
+        if isinstance(raw_bot_id, bool):
+            bot_id = None
+        elif isinstance(raw_bot_id, (str, int)):
+            bot_id = str(raw_bot_id)
+        else:
+            bot_id = None
         offset = value.get("offset")
-        return offset if isinstance(offset, int) and offset >= 0 else None
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            offset = None
+        return bot_id or None, offset
 
-    def _save_offset(self) -> None:
+    def _save_state(self) -> None:
         self._store.save_adapter_state(
-            self.connection_id, "telegram", {"offset": self._offset}
+            self.connection_id,
+            "telegram",
+            {"bot_id": self._stored_bot_id, "offset": self._offset},
         )
 
     def _token(self) -> str:
@@ -225,6 +240,27 @@ class TelegramAdapter:
             raise ChannelAdapterError(self._last_error) from exc
         self._bot = bot
         self._bot_id = me.id
+        current_bot_id = str(me.id)
+        # An offset belongs to the Bot that produced it. A fresh connection, a
+        # legacy row without a bot ID, or a replaced token starts from Telegram's
+        # own pending queue rather than reusing another Bot's position.
+        if self._stored_bot_id != current_bot_id:
+            self._offset = None
+        self._stored_bot_id = current_bot_id
+        try:
+            self._save_state()
+            # Legacy inbound rows have no recorded Bot identity. Bind the ones
+            # that this token provably produced before polling, so a redelivered
+            # old update still resolves to its original Run.
+            self._store.adopt_unidentified_inbound(self.connection_id, current_bot_id)
+        except Exception as exc:
+            await self._close_bot(bot)
+            self._bot = None
+            self._bot_id = None
+            self._release_token()
+            self._state = ChannelActualState.ERROR
+            self._last_error = self._safe_error(exc)
+            raise ChannelAdapterError(self._last_error) from exc
         self._state = ChannelActualState.RUNNING
         self._last_connected_at = utc_now()
         self._last_heartbeat_at = self._last_connected_at
@@ -254,6 +290,9 @@ class TelegramAdapter:
             last_heartbeat_at=self._last_heartbeat_at,
             last_error=self._last_error,
         )
+
+    def identity(self) -> str | None:
+        return str(self._bot_id) if self._bot_id is not None else None
 
     async def _close_bot(self, bot: Bot | None) -> None:
         if bot is None:
@@ -343,6 +382,9 @@ class TelegramAdapter:
                 conversation_binding=str(message.chat.id),
                 text=message.text,
                 received_at=utc_now(),
+                adapter_identity=(
+                    str(self._bot_id) if self._bot_id is not None else None
+                ),
             )
             try:
                 await self._inbound(event)
@@ -353,7 +395,7 @@ class TelegramAdapter:
             except ChannelInboundUncertain:
                 raise
         self._offset = update.update_id + 1
-        self._save_offset()
+        self._save_state()
 
     async def send(
         self, target: str, message: str, idempotency_key: str

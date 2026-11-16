@@ -123,6 +123,9 @@ class ChannelInboundEvent(BaseModel):
     conversation_binding: str = Field(min_length=1, max_length=200)
     text: str = Field(min_length=1, max_length=32000)
     received_at: str = Field(default_factory=utc_now)
+    # The platform identity of the bot/account that received this update, as
+    # reported by the adapter itself. Never derived from message text.
+    adapter_identity: str | None = Field(default=None, max_length=200)
 
 
 class ChannelInboundResult(BaseModel):
@@ -250,6 +253,10 @@ class ChannelInboundUncertain(ChannelError):
 
 class ChannelDeliveryUncertain(ChannelError):
     pass
+
+
+class ChannelReplyRejected(ChannelError):
+    """A pending source reply is no longer safe to deliver."""
 
 
 class ChannelDisabled(ChannelError):
@@ -404,6 +411,7 @@ __all__ = [
     "ChannelPlatform",
     "ChannelPlatformCapabilities",
     "ChannelPlatformSummary",
+    "ChannelReplyRejected",
     "ChannelRequestConflict",
     "ChannelRevisionConflict",
     "ChannelRuntimeStatus",

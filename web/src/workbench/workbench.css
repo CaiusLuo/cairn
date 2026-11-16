@@ -569,11 +569,13 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 }
 .channels-dialog-head h2 { margin: 0; font-size: 18px; letter-spacing: -0.01em; }
 .channels-dialog-head p { margin: 5px 0 0; font-size: 12px; line-height: 1.55; }
-.channels-dialog-close {
-  display: grid; place-items: center; flex: none; width: 30px; height: 30px; padding: 0;
+.channels-dialog .channels-dialog-close {
+  display: grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0;
   border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--hui-muted);
+  line-height: 0;
 }
-.channels-dialog-close:hover:enabled { color: var(--hui-text); border-color: var(--hui-border); background: var(--hui-canvas); }
+.channels-dialog .channels-dialog-close svg { display: block; }
+.channels-dialog .channels-dialog-close:hover:enabled { color: var(--hui-text); border-color: var(--hui-border); background: var(--hui-canvas); }
 .channels-dialog-body {
   padding: 0 22px 22px; overflow-y: auto; overscroll-behavior: contain;
   max-height: calc(min(86vh, 820px) - 84px);

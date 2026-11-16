@@ -46,7 +46,11 @@ def _create(
 
 
 def _event(
-    connection_id: str, message_id: str = "m-1", text: str = "hi"
+    connection_id: str,
+    message_id: str = "m-1",
+    text: str = "hi",
+    *,
+    adapter_identity: str | None = None,
 ) -> ChannelInboundEvent:
     return ChannelInboundEvent(
         platform=ChannelPlatform.TELEGRAM,
@@ -55,6 +59,7 @@ def _event(
         sender_id="sender",
         conversation_binding="chat",
         text=text,
+        adapter_identity=adapter_identity,
     )
 
 
@@ -279,6 +284,104 @@ def test_inbound_claim_is_unique_per_connection_and_detects_content_change(
     assert duplicate.event_digest == inbound_digest(event)
     changed = _event(connection_id, text="different")
     assert inbound_digest(changed) != duplicate.event_digest
+
+
+def test_inbound_identity_separates_colliding_message_ids_from_different_bots(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    connection_id = _create(store)
+    first = _event(connection_id, "7:42", "hello", adapter_identity="bot-a")
+    assert store.claim_inbound(first, request_id="request-a").created is True
+    store.complete_inbound(
+        connection_id,
+        "7:42",
+        adapter_identity="bot-a",
+        state="accepted",
+        run_id="run-a",
+    )
+    duplicate = store.claim_inbound(first, request_id="request-a")
+    assert duplicate.created is False
+    assert duplicate.run_id == "run-a"
+    assert duplicate.request_id == "request-a"
+
+    # Identical text is not proof of the same message when another Bot owns
+    # the update-ID namespace.
+    second = _event(connection_id, "7:42", "hello", adapter_identity="bot-b")
+    claimed = store.claim_inbound(second, request_id="request-b")
+    assert claimed.created is True
+    assert claimed.request_id == "request-b"
+    store.complete_inbound(
+        connection_id,
+        "7:42",
+        adapter_identity="bot-b",
+        state="accepted",
+        run_id="run-b",
+    )
+    repeated = store.claim_inbound(second)
+    assert repeated.created is False
+    assert repeated.run_id == "run-b"
+    with sqlite3.connect(store.path) as database:
+        count = database.execute(
+            "SELECT COUNT(*) FROM channel_inbound WHERE connection_id = ?",
+            (connection_id,),
+        ).fetchone()[0]
+    assert count == 2
+
+
+def test_adoption_binds_only_inbound_rows_after_the_current_credential(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    connection_id = _create(store, credentials={"bot_token": "123456:" + "a" * 35})
+    current = _event(connection_id, "7:42", "hello")
+    assert store.claim_inbound(current).created is True
+    store.complete_inbound(
+        connection_id,
+        "7:42",
+        state="accepted",
+        run_id="run-current",
+    )
+    store.claim_reply(
+        connection_id=connection_id,
+        conversation_id="conv",
+        run_id="run-current",
+        target="7",
+        external_message_id="7:42",
+        sender_id="sender",
+        sender_role="owner",
+    )
+    older = _event(connection_id, "7:41", "older")
+    assert store.claim_inbound(older).created is True
+    store.complete_inbound(
+        connection_id,
+        "7:41",
+        state="accepted",
+        run_id="run-older",
+    )
+    with sqlite3.connect(store.path) as database:
+        database.execute(
+            "UPDATE channel_inbound SET received_at = ? "
+            "WHERE connection_id = ? AND external_message_id = ?",
+            ("2000-01-01T00:00:00+00:00", connection_id, "7:41"),
+        )
+
+    assert store.adopt_unidentified_inbound(connection_id, "bot-a") == 1
+    adopted = store.claim_inbound(
+        _event(connection_id, "7:42", "hello", adapter_identity="bot-a")
+    )
+    assert adopted.created is False
+    assert adopted.run_id == "run-current"
+    reply = store.reply_for_run("run-current")
+    assert reply is not None and reply.adapter_identity == "bot-a"
+
+    # A row from before the current token cannot be proven. It stays in the
+    # legacy namespace and never suppresses Bot B's colliding update ID.
+    unproven = store.claim_inbound(
+        _event(connection_id, "7:41", "older", adapter_identity="bot-b")
+    )
+    assert unproven.created is True
+    assert store.adopt_unidentified_inbound(connection_id, "bot-b") == 0
 
 
 def test_inflight_delivery_becomes_unknown_after_restart(tmp_path: Path) -> None:
@@ -533,6 +636,75 @@ def test_unreplied_inbound_lists_only_accepted_runs_without_an_intent(
         external_message_id="m-1",
     )
     assert store.unreplied_inbound() == ()
+
+
+def test_schema_v2_rows_gain_empty_identity_columns(tmp_path: Path) -> None:
+    root = tmp_path / "channels"
+    root.mkdir()
+    with sqlite3.connect(root / "channels.sqlite3") as database:
+        database.executescript(
+            """
+            CREATE TABLE channel_inbound (
+                platform TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                external_message_id TEXT NOT NULL,
+                event_digest TEXT NOT NULL,
+                state TEXT NOT NULL,
+                conversation_id TEXT,
+                run_id TEXT,
+                conversation_binding TEXT NOT NULL DEFAULT '',
+                error TEXT,
+                received_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (connection_id, external_message_id)
+            );
+            CREATE TABLE channel_replies (
+                reply_id TEXT PRIMARY KEY,
+                connection_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                run_id TEXT NOT NULL UNIQUE,
+                target TEXT NOT NULL,
+                external_message_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO channel_replies VALUES (
+                'reply-old', 'ch-1', 'conv-old', 'run-old', 'chat', 'm-old',
+                'pending', 0, NULL, '', ''
+            );
+            INSERT INTO channel_inbound VALUES (
+                'telegram', 'ch-1', 'm-new', 'digest', 'accepted', 'conv-new',
+                'run-new', 'chat', NULL, '', ''
+            );
+            PRAGMA user_version=2;
+            """
+        )
+    store = ChannelStore(root)
+    old = store.reply_for_run("run-old")
+    assert old is not None
+    assert (old.sender_id, old.sender_role, old.adapter_identity) == ("", "", "")
+    pending = store.unreplied_inbound()
+    assert len(pending) == 1
+    assert (pending[0].sender_id, pending[0].sender_role) == ("", "")
+    assert pending[0].adapter_identity == ""
+    with sqlite3.connect(store.path) as database:
+        assert database.execute("PRAGMA user_version").fetchone()[0] == 4
+        primary_key = [
+            row[1]
+            for row in sorted(
+                database.execute("PRAGMA table_info(channel_inbound)"),
+                key=lambda row: row[5],
+            )
+            if row[5] > 0
+        ]
+        assert primary_key == [
+            "connection_id",
+            "adapter_identity",
+            "external_message_id",
+        ]
 
 
 def test_adapter_state_roundtrips_and_ignores_corrupt_json(tmp_path: Path) -> None:

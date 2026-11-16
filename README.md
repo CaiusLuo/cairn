@@ -254,8 +254,13 @@ restored after a Server restart with bounded exponential backoff
 adapter's health report; configuration alone displays as `silent`. A delivery
 left in `sending` by a process interruption becomes `unknown` after restart and
 is never resent automatically. Inbound messages are deduplicated by
-`(connection_id, external_message_id)` and bound to one Cairn Conversation per
-external conversation.
+`(connection_id, adapter_identity, external_message_id)` and bound to one Cairn
+Conversation per external conversation. The receiving identity must match the
+running adapter and is never inferred from message text, so two Bots that reuse
+the same platform message ID keep separate claims and Runs. The deterministic
+Conversation request ID is scoped by the same identity, and a claim records the
+request ID it used so an interrupted admission can be retried after an upgrade
+without creating a second Run.
 
 Inbound work is authorized per connection before any Conversation or Run exists.
 The `owner_identity` is always allowed, `allowed_senders` adds explicit platform
@@ -267,6 +272,15 @@ is stored as `unknown`; a redelivery reconciles the deterministic request ID
 against an existing Run instead of creating a second side effect or staying
 rejected forever. Configuration and credentials are still accepted without a
 registered adapter.
+
+Rows written before identity-scoped dedupe carry an empty adapter identity.
+When Telegram reports its Bot ID, rows received at or after the current
+credential was installed are bound to that Bot; older rows stay unscoped because
+their Bot cannot be proven. Adopted rows keep their original Runs and their
+pending replies gain the same identity, while unprovable rows are never matched
+against a new Bot's colliding update IDs and their replies stay failed closed.
+Replacing the token with the same Bot is therefore treated conservatively:
+history from before the replacement remains unscoped.
 
 The trusted connection record, never message text, decides the Run's Channel
 principal. Only the owner receives personal memory, schedules and host tools; an
@@ -280,19 +294,27 @@ with `getMe` before long polling starts. Only private text messages are accepted
 bot authors, the bot itself, groups and other update types are acknowledged and
 ignored. The update offset is persisted only after local inbound admission, so a
 crash between Telegram acknowledgement and the local write causes redelivery
-that the deterministic inbound claim resolves to the same Run. A token can back
-only one running connection in the process; a second one fails with
+that the deterministic inbound claim resolves to the same Run. The offset is
+bound to the Bot ID returned by `getMe`: restarting the same Bot resumes from it,
+while a different Bot or a legacy state row without a Bot ID starts from
+Telegram's pending queue instead of reusing another Bot's updates. A token can
+back only one running connection in the process; a second one fails with
 `telegram_token_in_use` instead of stealing updates. Network loss reconnects with
 bounded backoff, a 409 marks the connection `error`, and 429 replies are retried
 with the advertised delay. Replies are split below Telegram's 4096 UTF-16 limit,
 sent as Markdown, and fall back to plain text when Telegram rejects the entities.
 
 Every terminal Channel Run has a durable reply intent tied to its original
-connection and external conversation. The coordinator sends through the normal
-`ChannelManager.send` delivery audit, so a duplicate Run Settled event cannot
-send twice. After restart, pending intents are delivered when the connection is
-available and an interrupted in-flight send becomes `unknown`, never resent
-automatically. A stopped or deleted connection records an explicit failure
+connection and external conversation. The intent records the trusted sender
+role and the Bot identity that received the message; before sending, both are
+re-checked under the same per-connection lock as stop, configuration changes and
+token replacement. A pending reply therefore cannot be delivered after its
+sender is revoked, an owner is downgraded, or a different Bot takes over, and an
+intent that predates identity recording fails closed instead of guessing. The
+coordinator sends through the normal delivery audit, so a duplicate Run Settled
+event cannot send twice. After restart, pending intents are delivered when the
+connection is available and an interrupted in-flight send becomes `unknown`,
+never resent automatically. A stopped or deleted connection records an explicit failure
 reason instead of silently dropping the reply; `GET /api/channels/replies/{run_id}`
 exposes its state, attempts and error.
 

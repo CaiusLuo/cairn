@@ -149,6 +149,9 @@ class WechatLegacyAdapter:
             last_error=None,
         )
 
+    def identity(self) -> str | None:
+        return self.controller.account_id()
+
     def secret_values(self) -> tuple[str, ...]:
         """Legacy credentials stay host-owned but must still be filtered."""
         return tuple(value for value in self.controller.secret_values() if value)

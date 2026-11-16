@@ -19,7 +19,7 @@ from cairn.channels.models import (
     ChannelSendStatus,
 )
 from cairn.channels.replies import ChannelReplyCoordinator
-from cairn.channels.store import ChannelStore
+from cairn.channels.store import ChannelStore, ReplyRecord
 from cairn.conversation.models import ConversationSource, Run, RunStatus
 
 
@@ -47,10 +47,10 @@ class FakeReplyManager:
             ),
         )
 
-    async def send(
-        self, connection_id: str, target: str, message: str, idempotency_key: str
+    async def send_reply(
+        self, reply: ReplyRecord, message: str, idempotency_key: str
     ) -> ChannelSendResult:
-        self.sent.append((connection_id, target, message, idempotency_key))
+        self.sent.append((reply.connection_id, reply.target, message, idempotency_key))
         if self.errors:
             raise self.errors.pop(0)
         return self.result
@@ -121,6 +121,9 @@ def test_terminal_run_replies_once_even_when_settled_twice(tmp_path: Path) -> No
             run_id="run-1",
             target="chat-7",
             external_message_id="7:1",
+            sender_id="owner",
+            sender_role="owner",
+            adapter_identity="bot-1",
         )
         replies.on_run_settled(runs.runs["run-1"])
         replies.on_run_settled(runs.runs["run-1"])
@@ -145,6 +148,9 @@ def test_queued_run_waits_until_it_becomes_terminal(tmp_path: Path) -> None:
             run_id="run-1",
             target="chat-7",
             external_message_id="7:1",
+            sender_id="owner",
+            sender_role="owner",
+            adapter_identity="bot-1",
         )
         replies.on_run_settled(queued)
         await settle(replies._tasks)
@@ -173,6 +179,9 @@ def test_failed_run_replies_with_an_observable_status(tmp_path: Path) -> None:
             run_id="run-1",
             target="chat-7",
             external_message_id="7:1",
+            sender_id="owner",
+            sender_role="owner",
+            adapter_identity="bot-1",
         )
         replies.on_run_settled(failed)
         await settle(replies._tasks)
@@ -195,6 +204,9 @@ def test_unknown_send_is_not_replayed_after_restart(tmp_path: Path) -> None:
             run_id="run-1",
             target="chat-7",
             external_message_id="7:1",
+            sender_id="owner",
+            sender_role="owner",
+            adapter_identity="bot-1",
         )
         replies.on_run_settled(terminal)
         await settle(replies._tasks)
@@ -226,6 +238,9 @@ def test_adapter_starting_keeps_the_intent_pending_for_retry(
             run_id="run-1",
             target="chat-7",
             external_message_id="7:1",
+            sender_id="owner",
+            sender_role="owner",
+            adapter_identity="bot-1",
         )
         replies.on_run_settled(terminal)
         await settle(replies._tasks)
@@ -256,6 +271,9 @@ def test_connection_still_starting_keeps_the_reply_pending(tmp_path: Path) -> No
             run_id="run-1",
             target="chat-7",
             external_message_id="7:1",
+            sender_id="owner",
+            sender_role="owner",
+            adapter_identity="bot-1",
         )
         replies.on_run_settled(terminal)
         await settle(replies._tasks)
@@ -282,6 +300,9 @@ def test_stopped_connection_fails_the_reply_without_sending(tmp_path: Path) -> N
             run_id="run-1",
             target="chat-7",
             external_message_id="7:1",
+            sender_id="owner",
+            sender_role="owner",
+            adapter_identity="bot-1",
         )
         replies.on_run_settled(terminal)
         await settle(replies._tasks)
@@ -306,6 +327,9 @@ def test_missing_run_fails_the_intent_instead_of_retrying_forever(
             run_id="missing-run",
             target="chat-7",
             external_message_id="7:1",
+            sender_id="owner",
+            sender_role="owner",
+            adapter_identity="bot-1",
         )
         await replies.start()
         await settle(replies._tasks)
@@ -341,12 +365,15 @@ def test_startup_recreates_a_missing_intent_from_accepted_inbound(
                 sender_id="7",
                 conversation_binding="7",
                 text="hello",
-            )
+                adapter_identity="bot-1",
+            ),
+            sender_role="owner",
         )
         assert event.created
         store.complete_inbound(
             connection_id,
             "7:1",
+            adapter_identity="bot-1",
             state="accepted",
             conversation_id="conv-1",
             run_id="run-1",
@@ -377,5 +404,64 @@ def test_startup_recreates_a_missing_intent_from_accepted_inbound(
                 "channel-reply:run-1",
             )
         ]
+
+    asyncio.run(scenario())
+
+
+def test_a_reply_without_trusted_identity_fails_closed(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        store = ChannelStore(tmp_path / "channels")
+        manager = FakeReplyManager(connection())
+        terminal = run()
+        replies = coordinator(store, manager, Runs({"run-1": terminal}))
+        store.claim_reply(
+            connection_id="ch-1",
+            conversation_id="conv-1",
+            run_id="run-1",
+            target="chat-7",
+            external_message_id="7:1",
+        )
+        await replies.start()
+        await settle(replies._tasks)
+        await replies.close()
+        record = store.reply_for_run("run-1")
+        assert record is not None and record.state == "failed"
+        assert record.error == "reply_identity_missing"
+        assert manager.sent == []
+
+    asyncio.run(scenario())
+
+
+def test_pending_reply_with_identity_survives_restart_and_is_sent_once(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        store = ChannelStore(tmp_path / "channels")
+        manager = FakeReplyManager(connection())
+        terminal = run()
+        store.claim_reply(
+            connection_id="ch-1",
+            conversation_id="conv-1",
+            run_id="run-1",
+            target="chat-7",
+            external_message_id="7:1",
+            sender_id="owner",
+            sender_role="owner",
+            adapter_identity="bot-1",
+        )
+
+        first = coordinator(store, manager, Runs({"run-1": terminal}))
+        await first.start()
+        await settle(first._tasks)
+        await first.close()
+        assert len(manager.sent) == 1
+
+        restarted = coordinator(store, manager, Runs({"run-1": terminal}))
+        await restarted.start()
+        await settle(restarted._tasks)
+        await restarted.close()
+        assert len(manager.sent) == 1
+        record = store.reply_for_run("run-1")
+        assert record is not None and record.state == "sent"
 
     asyncio.run(scenario())
