@@ -770,6 +770,87 @@ try {
     await page.goForward();
     await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
 
+    // A lost write response keeps the original submission intent. Retrying the
+    // same fields must reuse that request id instead of applying a second
+    // update under a new identity.
+    const beforeLost = (await readChannels()).connections.find(
+      view => view.connection.connection_id === channelId,
+    );
+    assert(beforeLost, "The connection must still exist before the lost-write checks");
+    const lostIds = [];
+    let loseFirstUpdate = true;
+    const updatePattern = new RegExp(`/api/channels/connections/${channelId}$`);
+    await page.route(updatePattern, async route => {
+      if (route.request().method() !== "PATCH") return route.continue();
+      lostIds.push(route.request().postDataJSON().request_id);
+      if (loseFirstUpdate) {
+        loseFirstUpdate = false;
+        await route.fetch();
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    });
+    await page.getByRole("button", { name: "编辑", exact: true }).click();
+    await page.getByLabel("宿主所有者（可选）").fill("e2e-owner-after-loss");
+    await page.getByRole("button", { name: "保存修改", exact: true }).click();
+    await page.getByRole("alert").filter({ hasText: "无法连接 Server" }).waitFor();
+    await page.getByRole("button", { name: "保存修改", exact: true }).click();
+    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
+    assert.equal(lostIds.length, 2, "Only the original and its retry may reach the Server");
+    assert.equal(lostIds[1], lostIds[0], "An identical retry must keep its request id");
+    const afterLost = (await readChannels()).connections.find(
+      view => view.connection.connection_id === channelId,
+    );
+    assert.equal(afterLost.connection.owner_identity, "e2e-owner-after-loss");
+    assert.equal(afterLost.connection.revision, beforeLost.connection.revision + 1);
+    await page.unroute(updatePattern);
+
+    // Changing the payload after the same lost response is a new intent. The
+    // console reconciles the old receipt and asks for a fresh submission; it
+    // must not send the old request id with the new credential.
+    const beforeCredentialLoss = (await readChannels()).connections.find(
+      view => view.connection.connection_id === channelId,
+    );
+    const credentialIds = [];
+    let loseCredentialUpdate = true;
+    await page.route(updatePattern, async route => {
+      if (route.request().method() !== "PATCH") return route.continue();
+      credentialIds.push(route.request().postDataJSON().request_id);
+      if (loseCredentialUpdate) {
+        loseCredentialUpdate = false;
+        await route.fetch();
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    });
+    await page.getByRole("button", { name: "编辑", exact: true }).click();
+    const changedCredential = ["e2e", "lost", "credential", Date.now().toString(36)].join("-");
+    const nextCredential = ["e2e", "next", "credential", Date.now().toString(36)].join("-");
+    await page.getByLabel("Bot Token").fill(changedCredential);
+    await page.getByRole("button", { name: "保存修改", exact: true }).click();
+    await page.getByRole("alert").filter({ hasText: "无法连接 Server" }).waitFor();
+    await page.getByLabel("Bot Token").fill(nextCredential);
+    await page.getByRole("button", { name: "保存修改", exact: true }).click();
+    await page.getByRole("alert").filter({ hasText: "上一次提交已完成" }).waitFor();
+    assert.equal(credentialIds.length, 1, "A changed payload must not replay the old request");
+    await page.getByRole("button", { name: "保存修改", exact: true }).click();
+    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
+    assert.equal(credentialIds.length, 2);
+    assert.notEqual(credentialIds[1], credentialIds[0], "A new intent needs a new request id");
+    const afterCredentialLoss = (await readChannels()).connections.find(
+      view => view.connection.connection_id === channelId,
+    );
+    assert.notEqual(
+      afterCredentialLoss.connection.credential_ref,
+      beforeCredentialLoss.connection.credential_ref,
+    );
+    assert(!JSON.stringify(afterCredentialLoss).includes(nextCredential));
+    assert(!JSON.stringify(afterCredentialLoss).includes(changedCredential));
+    await page.unroute(updatePattern);
+    console.log("Channel lost-response intent boundaries passed.");
+
     await page.getByRole("button", { name: "删除", exact: true }).click();
     const deleteDialog = page.getByRole("alertdialog", { name: "确认删除连接" });
     await deleteDialog.waitFor();
@@ -854,13 +935,77 @@ try {
     await page.getByRole("heading", { name: "E2E Telegram", exact: true }).waitFor();
     await page.getByRole("button", { name: "启动", exact: true }).click();
     await page.getByRole("alert").filter({ hasText: "尚未实现该平台的 Adapter" }).waitFor();
+
+    // A poll already in flight when a lifecycle action succeeds must not
+    // overwrite the newer action result with its older snapshot.
+    let releasePoll;
+    let markPollStarted;
+    const pollStarted = new Promise(resolve => {
+      markPollStarted = resolve;
+    });
+    await page.route(overviewPattern, async route => {
+      if (route.request().method() !== "GET") return route.continue();
+      markPollStarted();
+      await new Promise(resolve => {
+        releasePoll = resolve;
+      });
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(baseOverview),
+      });
+    });
+    await pollStarted;
     await page.getByRole("button", { name: "重连", exact: true }).click();
     await page.getByText(/已提交重连/).waitFor();
     await page.locator('.channel-state[data-state="running"]').waitFor({ timeout: 2000 });
+    releasePoll();
+    await page.waitForTimeout(500);
+    assert.equal(
+      await page.locator('.channel-state[data-state="running"]').count(),
+      1,
+      "An older poll response must not overwrite the action result",
+    );
+    await page.unroute(overviewPattern);
     await page.unroute(capabilityPattern);
     await page.unroute(startPattern);
     await page.unroute(reconnectPattern);
     console.log("Channel lifecycle failure and reconnect states passed.");
+
+    // Polling is single-flight: a slow response makes the next visible tick
+    // wait instead of stacking another request. It still keeps polling.
+    const pollGate = { active: 0, max: 0, count: 0 };
+    let releaseSlowPoll;
+    const slowPollGate = new Promise(resolve => {
+      releaseSlowPoll = resolve;
+    });
+    await page.route(overviewPattern, async route => {
+      if (route.request().method() !== "GET") return route.continue();
+      pollGate.active += 1;
+      pollGate.count += 1;
+      pollGate.max = Math.max(pollGate.max, pollGate.active);
+      try {
+        await Promise.race([
+          new Promise(resolve => setTimeout(resolve, 6000)),
+          slowPollGate,
+        ]);
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(baseOverview),
+        });
+      } finally {
+        pollGate.active -= 1;
+      }
+    });
+    await page.goto(new URL("/channels.html", url).href);
+    await page.waitForTimeout(8500);
+    assert.equal(pollGate.max, 1, "Overview polling must not overlap");
+    assert(pollGate.count >= 2, "A visible page must keep polling");
+    releaseSlowPoll();
+    await page.waitForTimeout(200);
+    await page.unroute(overviewPattern);
+    console.log("Channel polling is single-flight.");
 
     // The legacy WeChat projection has no normal create/edit/delete path and
     // keeps pointing at the existing settings login flow.
@@ -907,6 +1052,12 @@ try {
     await page.goto(new URL("/channels.html?platform=wechat", url).href);
     await page.getByRole("heading", { name: "微信连接", exact: true }).waitFor();
     await page.getByRole("heading", { name: "宿主托管的微信", exact: true }).waitFor();
+    const realManagement = await api.get("/api/runtime/management?section=wechat");
+    assert.equal(realManagement.status(), 200);
+    const managementSnapshot = await realManagement.json();
+    assert.equal(typeof managementSnapshot.wechat?.status, "string");
+    await page.locator(".channels-legacy-status").waitFor();
+    assert.match(await page.locator(".channels-legacy-status").innerText(), /微信登录/);
     assert.equal(await page.getByRole("button", { name: "新建连接", exact: true }).count(), 0);
     await page.locator(".channels-connection").filter({ hasText: "个人微信 Bot" }).click();
     await page.getByRole("heading", { name: "个人微信 Bot", exact: true }).waitFor();
@@ -916,6 +1067,40 @@ try {
       await page.getByRole("link", { name: /设置 → 微信/ }).getAttribute("href"),
       /settings\.html\?section=wechat/,
     );
+
+    // The real console reads the nested wechat object from the Server's
+    // management snapshot; the QR and verification prompt follow that shape.
+    const managementPattern = /\/api\/runtime\/management\?section=wechat$/;
+    await page.route(managementPattern, async route => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          workspace: url,
+          notices: [],
+          pending_operations: [],
+          wechat: {
+            status: "微信登录: 等待扫码\n微信服务: 未运行",
+            running: false,
+            login_pending: true,
+            verification_required: true,
+            qr_image: "data:image/gif;base64,R0lGODlhAQABAAAAACw=",
+            account_saved: false,
+            enabled: true,
+            trusted_senders: [],
+          },
+        }),
+      });
+    });
+    await page.goto(new URL("/channels.html?platform=wechat", url).href);
+    await page.getByRole("heading", { name: "宿主托管的微信", exact: true }).waitFor();
+    await page.getByRole("img", { name: "微信登录二维码" }).waitFor();
+    await page.getByText(/微信要求输入登录验证码/).waitFor();
+    assert.match(
+      await page.locator(".channels-legacy-status").innerText(),
+      /微信登录: 等待扫码/,
+    );
+    await page.unroute(managementPattern);
     await page.unroute(overviewPattern);
     console.log("Legacy WeChat compatibility panel passed.");
 

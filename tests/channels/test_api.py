@@ -266,6 +266,44 @@ def test_request_ids_and_revisions_are_idempotent_and_conflicts_are_explicit(
         }
 
 
+def test_request_receipts_reconcile_lost_responses_without_leaking_secrets(
+    tmp_path: Path,
+) -> None:
+    web, manager = _app(tmp_path)
+    secret = "receipt-" + "secret-" + "value"
+    with TestClient(web, base_url=ORIGIN) as client:
+        _login(client)
+        created = _create(
+            client,
+            request_id="receipt-create",
+            display_name="Receipt Telegram",
+            credentials={"bot_token": secret},
+        )
+        response = client.get("/api/channels/requests/receipt-create")
+        assert response.status_code == 200
+        receipt = response.json()
+        assert receipt["state"] == "completed"
+        assert (
+            receipt["result"]["connection_id"] == created["connection"]["connection_id"]
+        )
+        assert secret not in response.text
+
+        manager.store.claim_request(
+            "receipt-pending", operation="update", digest_value={"probe": True}
+        )
+        pending = client.get("/api/channels/requests/receipt-pending")
+        assert pending.status_code == 200
+        assert pending.json()["state"] == "pending"
+        assert pending.json()["result"] is None
+
+        missing = client.get("/api/channels/requests/receipt-missing")
+        assert missing.status_code == 404
+        assert missing.json()["error"] == "channel_request_not_found"
+
+    with TestClient(web, base_url=ORIGIN) as anonymous:
+        assert anonymous.get("/api/channels/requests/receipt-create").status_code == 401
+
+
 def test_update_requires_explicit_secret_replacement_and_keeps_old_secret(
     tmp_path: Path,
 ) -> None:

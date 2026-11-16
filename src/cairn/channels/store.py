@@ -95,6 +95,13 @@ class RequestClaim:
 
 
 @dataclass(frozen=True, slots=True)
+class RequestReceipt:
+    request_id: str
+    state: str
+    result: dict[str, Any] | None
+
+
+@dataclass(frozen=True, slots=True)
 class InboundClaim:
     created: bool
     state: str
@@ -680,6 +687,27 @@ class ChannelStore:
             )
         return current
 
+    def request_receipt(self, request_id: str) -> RequestReceipt | None:
+        """Return a request's durable outcome without replaying the operation.
+
+        The Web console uses this to reconcile a lost response before it
+        submits a different intent under a fresh request ID.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT state, result_json FROM channel_requests WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            result = json.loads(str(row["result_json"])) if row["result_json"] else None
+        except ValueError:
+            raise RuntimeError("channel request receipt is corrupt") from None
+        if result is not None and not isinstance(result, dict):
+            raise RuntimeError("channel request receipt is corrupt")
+        return RequestReceipt(str(request_id), str(row["state"]), result)
+
     def claim_request(
         self, request_id: str, *, operation: str, digest_value: object
     ) -> RequestClaim:
@@ -891,5 +919,6 @@ __all__ = [
     "DeliveryRecord",
     "InboundClaim",
     "RequestClaim",
+    "RequestReceipt",
     "UpdateResult",
 ]

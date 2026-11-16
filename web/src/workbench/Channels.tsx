@@ -15,6 +15,7 @@ import {
   deleteChannelConnection,
   getChannelCapabilities,
   getChannelOverview,
+  getChannelRequestReceipt,
   updateChannelConnection,
   type ChannelActualState,
   type ChannelCapabilities,
@@ -22,6 +23,7 @@ import {
   type ChannelDisplayState,
   type ChannelOverview,
   type ChannelPlatform,
+  type ChannelRequestReceipt,
   type ChannelView,
 } from "../channels-api";
 import { PageHeader } from "./execution";
@@ -63,7 +65,23 @@ type WechatStatus = {
   enabled: boolean;
 };
 
-type PendingEntry = { request_id: string; at: string };
+type PendingEntry = {
+  request_id: string;
+  intent: string;
+  revision?: number;
+  at: string;
+};
+
+class StaleChannelIntentError extends Error {
+  constructor(
+    message: string,
+    readonly reconciled: boolean,
+    readonly revision: number | null = null,
+  ) {
+    super(message);
+    this.name = "StaleChannelIntentError";
+  }
+}
 
 function readRoute(): ChannelRoute {
   const params = new URLSearchParams(location.search);
@@ -92,45 +110,176 @@ function writeRoute(route: ChannelRoute, mode: "push" | "replace") {
   else window.history.pushState({}, "", url);
 }
 
+// Private browsing or blocked site data can make localStorage unavailable.
+// Keeping the same map in memory still lets this page retry an uncertain
+// request with its original identity.
+let memoryPending: Record<string, PendingEntry> = {};
+
 function readPending(): Record<string, PendingEntry> {
   try {
-    const parsed = JSON.parse(localStorage.getItem(REQUEST_KEY) ?? "{}");
-    return parsed && typeof parsed === "object"
-      ? (parsed as Record<string, PendingEntry>)
-      : {};
+    const raw = localStorage.getItem(REQUEST_KEY);
+    if (raw === null) return { ...memoryPending };
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { ...memoryPending };
+    }
+    const entries = Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>)
+        .map(([scope, value]) => {
+          if (!value || typeof value !== "object" || Array.isArray(value)) {
+            return null;
+          }
+          const entry = value as Record<string, unknown>;
+          if (typeof entry.request_id !== "string" || !entry.request_id) {
+            return null;
+          }
+          return [
+            scope,
+            {
+              request_id: entry.request_id,
+              intent: typeof entry.intent === "string" ? entry.intent : "",
+              ...(typeof entry.revision === "number"
+                ? { revision: entry.revision }
+                : {}),
+              at: typeof entry.at === "string" ? entry.at : "",
+            } satisfies PendingEntry,
+          ] as const;
+        })
+        .filter((item): item is readonly [string, PendingEntry] => item !== null),
+    );
+    memoryPending = entries;
+    return entries;
   } catch {
-    return {};
+    return { ...memoryPending };
   }
 }
 
-function requestIdFor(key: string) {
-  const pending = readPending();
-  const current = pending[key];
-  if (current?.request_id) return current.request_id;
-  const requestId = newRequestId();
-  pending[key] = { request_id: requestId, at: new Date().toISOString() };
+function writePending(pending: Record<string, PendingEntry>) {
+  const bounded = Object.fromEntries(Object.entries(pending).slice(-20));
+  memoryPending = bounded;
   try {
-    localStorage.setItem(
-      REQUEST_KEY,
-      JSON.stringify(
-        Object.fromEntries(Object.entries(pending).slice(-20)),
-      ),
-    );
+    localStorage.setItem(REQUEST_KEY, JSON.stringify(bounded));
   } catch {
-    /* best effort: the id still lasts for this component */
+    /* memoryPending keeps the retry identity for this page */
   }
-  return requestId;
+}
+
+async function intentFingerprint(intent: Record<string, unknown>) {
+  const text = JSON.stringify(intent);
+  if (globalThis.crypto?.subtle) {
+    try {
+      const digest = await globalThis.crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(text),
+      );
+      return (
+        "sha256:" +
+        Array.from(new Uint8Array(digest), value =>
+          value.toString(16).padStart(2, "0"),
+        ).join("")
+      );
+    } catch {
+      /* fall through to the deterministic local digest */
+    }
+  }
+  // The secret values themselves must never be stored. This fallback only
+  // protects an equality check when Web Crypto is unavailable on plain HTTP.
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `fnv1a:${(hash >>> 0).toString(16)}:${text.length}`;
+}
+
+function rememberRequestId(
+  scope: string,
+  intent: string,
+  revision: number | null,
+) {
+  const pending = readPending();
+  const requestId = newRequestId();
+  delete pending[scope];
+  pending[scope] = {
+    request_id: requestId,
+    intent,
+    ...(revision === null ? {} : { revision }),
+    at: new Date().toISOString(),
+  };
+  writePending(pending);
+  return { requestId, expectedRevision: revision };
+}
+
+function receiptRevision(receipt: ChannelRequestReceipt) {
+  const connection = receipt.result?.connection;
+  return connection &&
+    typeof connection === "object" &&
+    typeof (connection as Record<string, unknown>).revision === "number"
+    ? Number((connection as Record<string, unknown>).revision)
+    : null;
+}
+
+async function requestIdFor(
+  scope: string,
+  intent: string,
+  revision: number | null,
+): Promise<{ requestId: string; expectedRevision: number | null }> {
+  const pending = readPending();
+  const current = pending[scope];
+  if (!current) return rememberRequestId(scope, intent, revision);
+  if (current.intent && current.intent === intent) {
+    // Rebuild the original payload, including its original revision, so the
+    // Server sees exactly the same request instead of rejecting a new intent.
+    return {
+      requestId: current.request_id,
+      expectedRevision: current.revision ?? revision,
+    };
+  }
+  let receipt: ChannelRequestReceipt;
+  try {
+    receipt = await getChannelRequestReceipt(current.request_id);
+  } catch (reason) {
+    if (
+      reason instanceof ChannelApiError &&
+      reason.status === 404 &&
+      reason.code === "channel_request_not_found"
+    ) {
+      // No durable receipt means the old intent never reached the Server.
+      delete pending[scope];
+      writePending(pending);
+      return rememberRequestId(scope, intent, revision);
+    }
+    throw new StaleChannelIntentError(
+      "上一次提交的结果仍未知，请稍后重试，或先刷新核对连接状态。",
+      false,
+    );
+  }
+  if (receipt.state === "pending") {
+    throw new StaleChannelIntentError(
+      "上一次提交的结果仍在确认中；核对完成前不会用新内容重放旧请求。",
+      false,
+    );
+  }
+  if (receipt.state !== "completed") {
+    throw new StaleChannelIntentError(
+      "上一次提交的结果无法确认，请先刷新核对连接状态。",
+      false,
+    );
+  }
+  delete pending[scope];
+  writePending(pending);
+  throw new StaleChannelIntentError(
+    "上一次提交已完成；连接状态正在刷新，请核对后重新提交本次修改。",
+    true,
+    receiptRevision(receipt),
+  );
 }
 
 function clearRequestId(key: string, requestId: string) {
   const pending = readPending();
   if (pending[key]?.request_id !== requestId) return;
   delete pending[key];
-  try {
-    localStorage.setItem(REQUEST_KEY, JSON.stringify(pending));
-  } catch {
-    /* best effort */
-  }
+  writePending(pending);
 }
 
 function shouldKeepRequestId(reason: unknown) {
@@ -197,6 +346,60 @@ function useChannelAnimation(
       media?.revert();
     };
   }, [ref, animationKey]);
+}
+
+function useVisiblePoll<T>(
+  enabled: boolean,
+  restart: number,
+  epoch: { current: number },
+  load: (signal: AbortSignal) => Promise<T>,
+  onValue: (value: T) => void,
+  onError: (reason: unknown) => void,
+) {
+  const callbacks = useRef({ load, onValue, onError });
+  callbacks.current = { load, onValue, onError };
+  useEffect(() => {
+    if (!enabled) return;
+    let stopped = false;
+    let controller: AbortController | null = null;
+    const tick = async () => {
+      if (stopped || controller) return;
+      const requestEpoch = epoch.current;
+      const current = new AbortController();
+      controller = current;
+      try {
+        const value = await callbacks.current.load(current.signal);
+        if (
+          stopped ||
+          current.signal.aborted ||
+          epoch.current !== requestEpoch
+        ) {
+          return;
+        }
+        callbacks.current.onValue(value);
+      } catch (reason) {
+        if (
+          !stopped &&
+          !current.signal.aborted &&
+          epoch.current === requestEpoch
+        ) {
+          callbacks.current.onError(reason);
+        }
+      } finally {
+        if (controller === current) controller = null;
+      }
+    };
+    void tick();
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") void tick();
+    }, 4000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+      controller?.abort();
+      controller = null;
+    };
+  }, [enabled, restart, epoch]);
 }
 
 function PlatformMark({ platform }: { platform: ChannelPlatform }) {
@@ -266,10 +469,31 @@ function WechatLegacyPanel({
         </p>
       </div>
       {status ? (
-        <p className="channels-legacy-status" role="status">
-          {status.status}
-          {status.login_pending ? " · 等待扫码或验证码" : ""}
-        </p>
+        <div className="channels-legacy-state">
+          <p className="channels-legacy-status" role="status">
+            {status.status}
+          </p>
+          <p className="wb-muted">
+            {status.enabled ? "宿主已启用" : "宿主已停用"}
+            {" · "}
+            {status.running ? "后台接收中" : "当前未运行"}
+            {" · "}
+            {status.account_saved ? "已保存登录账号" : "尚未保存登录账号"}
+          </p>
+          {status.login_pending ? (
+            <p className="channels-note" role="status">
+              {status.verification_required
+                ? "微信要求输入登录验证码；请在设置 → 微信提交验证码。"
+                : "等待扫码登录；请使用上方二维码，或前往设置 → 微信继续。"}
+            </p>
+          ) : (
+            status.verification_required && (
+              <p className="channels-note" role="alert">
+                微信要求输入登录验证码；请在设置 → 微信完成验证。
+              </p>
+            )
+          )}
+        </div>
       ) : (
         <p className="wb-muted" role="status">
           {error || "正在读取微信登录状态…"}
@@ -296,6 +520,7 @@ function ConnectionForm({
   onCancel,
   onSaved,
   onDirty,
+  onReconciled,
 }: {
   platform: ChannelPlatform;
   capability: ChannelCapabilities;
@@ -303,6 +528,7 @@ function ConnectionForm({
   onCancel: () => void;
   onSaved: (view: ChannelView, created: boolean) => void;
   onDirty: () => void;
+  onReconciled: () => void;
 }) {
   const editing = initial !== null;
   const [displayName, setDisplayName] = useState(initial?.display_name ?? "");
@@ -314,7 +540,7 @@ function ConnectionForm({
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [requestKey, setRequestKey] = useState<string | null>(null);
+  const [reconciledRevision, setReconciledRevision] = useState(0);
 
   const fields = capability.credential_schema;
   const filled = Object.fromEntries(
@@ -323,13 +549,6 @@ function ConnectionForm({
       .filter(([, value]) => value !== ""),
   );
   const replacing = Object.keys(filled).length > 0;
-
-  function change(setter: (value: string) => void) {
-    return (value: string) => {
-      setter(value);
-      setRequestKey(null);
-    };
-  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -354,42 +573,71 @@ function ConnectionForm({
         return;
       }
     }
-    const key =
-      requestKey ??
-      (editing
-        ? `update:${initial.connection_id}:${initial.revision}:${name}`
-        : `create:${platform}:${name}`);
-    const requestId = requestIdFor(key);
-    setRequestKey(key);
+    const changes = {
+      display_name: name,
+      enabled,
+      owner_identity: owner.trim() || null,
+      allowed_senders: parseSenders(senders),
+    };
+    const scope = editing
+      ? `update:${initial.connection_id}`
+      : `create:${platform}`;
+    const intent = editing
+      ? {
+          operation: "update",
+          connection_id: initial.connection_id,
+          ...changes,
+          credentials: replacing ? filled : null,
+          replace_credentials: replacing,
+        }
+      : {
+          operation: "create",
+          platform,
+          ...changes,
+          credentials: replacing ? filled : null,
+        };
+    const fingerprint = await intentFingerprint(intent);
+    const baseRevision = editing
+      ? Math.max(initial.revision, reconciledRevision)
+      : null;
     setBusy(true);
     setError("");
+    let requestId = "";
     try {
+      const claim = await requestIdFor(scope, fingerprint, baseRevision);
+      requestId = claim.requestId;
       const view = editing
         ? await updateChannelConnection(initial.connection_id, {
-            expected_revision: initial.revision,
+            expected_revision: claim.expectedRevision ?? initial.revision,
             request_id: requestId,
-            display_name: name,
-            enabled,
-            owner_identity: owner.trim() || null,
-            allowed_senders: parseSenders(senders),
+            ...changes,
             ...(replacing
               ? { credentials: filled, replace_credentials: true }
               : {}),
           })
         : await createChannelConnection(platform, {
             request_id: requestId,
-            display_name: name,
-            enabled,
-            owner_identity: owner.trim() || null,
-            allowed_senders: parseSenders(senders),
+            ...changes,
             ...(replacing ? { credentials: filled } : {}),
           });
-      clearRequestId(key, requestId);
+      clearRequestId(scope, requestId);
+      setReconciledRevision(0);
       onSaved(view, !editing);
     } catch (reason) {
-      if (!shouldKeepRequestId(reason)) clearRequestId(key, requestId);
+      if (reason instanceof StaleChannelIntentError) {
+        setError(reason.message);
+        if (reason.reconciled) {
+          setReconciledRevision(current =>
+            Math.max(current, reason.revision ?? 0),
+          );
+          onReconciled();
+        }
+        return;
+      }
+      if (!shouldKeepRequestId(reason) && requestId) {
+        clearRequestId(scope, requestId);
+      }
       setError(messageOf(reason));
-      setRequestKey(null);
     } finally {
       setBusy(false);
     }
@@ -404,7 +652,7 @@ function ConnectionForm({
           maxLength={120}
           value={displayName}
           onChange={event => {
-            change(setDisplayName)(event.target.value);
+            setDisplayName(event.target.value);
             onDirty();
           }}
           placeholder={`例如：我的 ${platformName[platform]}`}
@@ -416,7 +664,6 @@ function ConnectionForm({
           checked={enabled}
           onChange={event => {
             setEnabled(event.target.checked);
-            setRequestKey(null);
             onDirty();
           }}
         />
@@ -428,7 +675,7 @@ function ConnectionForm({
           maxLength={200}
           value={owner}
           onChange={event => {
-            change(setOwner)(event.target.value);
+            setOwner(event.target.value);
             onDirty();
           }}
           placeholder="平台侧的用户或机器人身份"
@@ -440,7 +687,7 @@ function ConnectionForm({
           rows={3}
           value={senders}
           onChange={event => {
-            change(setSenders)(event.target.value);
+            setSenders(event.target.value);
             onDirty();
           }}
           placeholder="留空表示仅宿主所有者"
@@ -468,7 +715,6 @@ function ConnectionForm({
                     ...current,
                     [field.key]: event.target.value,
                   }));
-                  setRequestKey(null);
                   onDirty();
                 }}
                 placeholder={
@@ -519,6 +765,7 @@ export function Channels() {
   const [wechat, setWechat] = useState<WechatStatus | null>(null);
   const [wechatError, setWechatError] = useState("");
   const pageRef = useRef<HTMLDivElement>(null);
+  const pollEpoch = useRef(0);
 
   const navigate = useCallback((next: ChannelRoute, mode: "push" | "replace") => {
     writeRoute(next, mode);
@@ -540,31 +787,17 @@ export function Channels() {
     return () => window.removeEventListener("popstate", update);
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    const controller = new AbortController();
-    const load = async () => {
-      try {
-        const value = await getChannelOverview(controller.signal);
-        if (cancelled) return;
-        setOverview(value);
-        setOverviewError("");
-      } catch (reason) {
-        if (!cancelled && !controller.signal.aborted) {
-          setOverviewError(messageOf(reason));
-        }
-      }
-    };
-    void load();
-    const timer = setInterval(() => {
-      if (document.visibilityState === "visible") void load();
-    }, 4000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-      controller.abort();
-    };
-  }, [revision]);
+  useVisiblePoll(
+    true,
+    revision,
+    pollEpoch,
+    getChannelOverview,
+    value => {
+      setOverview(value);
+      setOverviewError("");
+    },
+    reason => setOverviewError(messageOf(reason)),
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -593,36 +826,30 @@ export function Channels() {
     if (route.platform !== "wechat") {
       setWechat(null);
       setWechatError("");
-      return;
     }
-    let cancelled = false;
-    const controller = new AbortController();
-    const load = async () => {
-      try {
-        const value = await runtimeApi<WechatStatus>(
-          "management?section=wechat",
-          undefined,
-          controller.signal,
-        );
-        if (cancelled) return;
-        setWechat(value);
-        setWechatError("");
-      } catch (reason) {
-        if (!cancelled && !controller.signal.aborted) {
-          setWechatError(messageOf(reason));
-        }
+  }, [route.platform]);
+
+  useVisiblePoll(
+    route.platform === "wechat",
+    revision,
+    pollEpoch,
+    async signal => {
+      const value = await runtimeApi<{ wechat?: WechatStatus }>(
+        "management?section=wechat",
+        undefined,
+        signal,
+      );
+      if (!value.wechat || typeof value.wechat.status !== "string") {
+        throw new Error("Server 未返回微信登录状态。");
       }
-    };
-    void load();
-    const timer = setInterval(() => {
-      if (document.visibilityState === "visible") void load();
-    }, 4000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-      controller.abort();
-    };
-  }, [route.platform, revision]);
+      return value.wechat;
+    },
+    value => {
+      setWechat(value);
+      setWechatError("");
+    },
+    reason => setWechatError(messageOf(reason)),
+  );
 
   const platform = route.platform || null;
   const summary = platform
@@ -656,18 +883,18 @@ export function Channels() {
 
   async function runAction(action: "start" | "stop" | "reconnect") {
     if (!current || busy) return;
-    const key = `action:${action}:${current.connection.connection_id}`;
-    const requestId = requestIdFor(key);
+    const connectionId = current.connection.connection_id;
+    const key = `action:${action}:${connectionId}`;
+    const intent = `action:${action}:${connectionId}`;
     setBusy(action);
     setActionError("");
     setActionNotice("");
+    let requestId = "";
     try {
-      const view = await channelAction(
-        current.connection.connection_id,
-        action,
-        requestId,
-      );
+      requestId = (await requestIdFor(key, intent, null)).requestId;
+      const view = await channelAction(connectionId, action, requestId);
       clearRequestId(key, requestId);
+      pollEpoch.current += 1;
       setActionNotice(
         `${action === "start" ? "已提交启动" : action === "stop" ? "已提交停止" : "已提交重连"}；状态以 Server 为准。`,
       );
@@ -684,7 +911,17 @@ export function Channels() {
           : state,
       );
     } catch (reason) {
-      if (!shouldKeepRequestId(reason)) clearRequestId(key, requestId);
+      if (reason instanceof StaleChannelIntentError) {
+        setActionError(reason.message);
+        if (reason.reconciled) {
+          pollEpoch.current += 1;
+          setRevision(value => value + 1);
+        }
+        return;
+      }
+      if (!shouldKeepRequestId(reason) && requestId) {
+        clearRequestId(key, requestId);
+      }
       setActionError(messageOf(reason));
     } finally {
       setBusy("");
@@ -693,25 +930,40 @@ export function Channels() {
 
   async function removeConnection() {
     if (!current || busy) return;
-    const key = `delete:${current.connection.connection_id}:${current.connection.revision}`;
-    const requestId = requestIdFor(key);
+    const connectionId = current.connection.connection_id;
+    const revision = current.connection.revision;
+    const key = `delete:${connectionId}:${revision}`;
+    const intent = `delete:${connectionId}:${revision}`;
     setBusy("delete");
     setActionError("");
+    let requestId = "";
     try {
-      await deleteChannelConnection(current.connection.connection_id, {
-        expected_revision: current.connection.revision,
+      requestId = (await requestIdFor(key, intent, null)).requestId;
+      await deleteChannelConnection(connectionId, {
+        expected_revision: revision,
         request_id: requestId,
         confirm: true,
       });
       clearRequestId(key, requestId);
       setConfirmDelete(false);
+      pollEpoch.current += 1;
       setRevision(value => value + 1);
       navigate(
         { platform: current.connection.platform, connectionId: "", mode: "" },
         "replace",
       );
     } catch (reason) {
-      if (!shouldKeepRequestId(reason)) clearRequestId(key, requestId);
+      if (reason instanceof StaleChannelIntentError) {
+        setActionError(reason.message);
+        if (reason.reconciled) {
+          pollEpoch.current += 1;
+          setRevision(value => value + 1);
+        }
+        return;
+      }
+      if (!shouldKeepRequestId(reason) && requestId) {
+        clearRequestId(key, requestId);
+      }
       setActionError(messageOf(reason));
     } finally {
       setBusy("");
@@ -961,7 +1213,12 @@ export function Channels() {
                 setActionError("");
                 setActionNotice("");
               }}
+              onReconciled={() => {
+                pollEpoch.current += 1;
+                setRevision(value => value + 1);
+              }}
               onSaved={(view, created) => {
+                pollEpoch.current += 1;
                 setRevision(value => value + 1);
                 navigate(
                   {

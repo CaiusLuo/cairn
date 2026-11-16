@@ -506,7 +506,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .channels-legacy { display: grid; gap: 10px; border-color: color-mix(in srgb, var(--hui-accent) 28%, var(--hui-border)); }
 .channels-legacy h2 { margin: 0; }
 .channels-legacy p { margin: 0; line-height: 1.65; }
-.channels-legacy-status { font-weight: 600; font-size: 13px; }
+.channels-legacy-state { display: grid; gap: 8px; }
+.channels-legacy-status { margin: 0; font-weight: 600; font-size: 13px; white-space: pre-line; }
 .channels-qr { margin: 0; }
 .channels-qr img { display: block; max-width: 100%; height: auto; border-radius: 8px; background: #fff; }
 .channels-qr figcaption { margin-top: 6px; color: var(--hui-muted); font-size: 12px; }

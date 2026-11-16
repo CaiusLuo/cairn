@@ -47,6 +47,7 @@ from cairn.channels.store import (
     CreateResult,
     DeleteResult,
     RequestClaim,
+    RequestReceipt,
     UpdateResult,
     inbound_digest,
 )
@@ -301,6 +302,10 @@ class ChannelManager:
             credential_schema=PLATFORM_CREDENTIAL_SCHEMAS[platform],
             supported_actions=tuple(actions),
         )
+
+    def request_receipt(self, request_id: str) -> RequestReceipt | None:
+        """Read a write receipt for lost-response reconciliation."""
+        return self.store.request_receipt(request_id)
 
     def get_connection_view(self, connection_id: str) -> ChannelConnectionView:
         if self._legacy is not None and connection_id == self._legacy.connection_id:

@@ -271,6 +271,25 @@ def channel_routes(
             headers=_json_headers(),
         )
 
+    async def request_receipt(request: Request) -> JSONResponse:
+        request_id = request.path_params.get("request_id", "")
+        try:
+            receipt = manager.request_receipt(request_id)
+        except (OSError, sqlite3.Error):
+            return _error(503, "channel_store_unavailable")
+        except RuntimeError:
+            return _error(500, "channel_internal_error")
+        if receipt is None:
+            return _error(404, "channel_request_not_found")
+        return JSONResponse(
+            {
+                "request_id": receipt.request_id,
+                "state": receipt.state,
+                "result": receipt.result,
+            },
+            headers=_json_headers(),
+        )
+
     async def platform_connections(request: Request) -> JSONResponse:
         try:
             platform = _platform(request.path_params.get("platform", ""))
@@ -438,6 +457,11 @@ def channel_routes(
     routes: list[BaseRoute] = [
         Route("/api/channels", overview, methods=["GET"]),
         Route("/api/channels/capabilities", capabilities, methods=["GET"]),
+        Route(
+            "/api/channels/requests/{request_id}",
+            request_receipt,
+            methods=["GET"],
+        ),
         Route(
             "/api/channels/connections/{connection_id}",
             update_connection,

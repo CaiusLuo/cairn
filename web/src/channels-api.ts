@@ -59,6 +59,12 @@ export type ChannelCapabilities = {
   supported_actions: string[];
 };
 
+export type ChannelRequestReceipt = {
+  request_id: string;
+  state: "pending" | "completed";
+  result: Record<string, unknown> | null;
+};
+
 export type ChannelOverview = {
   platforms: ChannelPlatformSummary[];
   connections: ChannelView[];
@@ -150,6 +156,16 @@ export function getChannelCapabilities(signal?: AbortSignal) {
   return channelApi<{ platforms: ChannelCapabilities[] }>("/capabilities", {
     signal,
   });
+}
+
+export function getChannelRequestReceipt(
+  requestId: string,
+  signal?: AbortSignal,
+) {
+  return channelApi<ChannelRequestReceipt>(
+    `/requests/${encodeURIComponent(requestId)}`,
+    { signal },
+  );
 }
 
 export function createChannelConnection(

@@ -232,6 +232,7 @@ require the exact Origin or host bearer token):
 ```text
 GET    /api/channels
 GET    /api/channels/capabilities
+GET    /api/channels/requests/{request_id}
 GET    /api/channels/{platform}/connections
 POST   /api/channels/{platform}/connections
 PATCH  /api/channels/connections/{id}
@@ -242,7 +243,11 @@ GET    /api/channels/connections/{id}/status
 
 Create replies use `request_id` idempotency; PATCH/DELETE use
 `expected_revision` plus `request_id`; DELETE also needs `confirm: true`. Reusing
-a request ID with different input is a conflict, not a replay. Desired state is
+a request ID with different input is a conflict, not a replay. The console keeps
+the original form intent after a lost response: retrying the same input reuses
+its request ID, while changed input first reconciles the old receipt through
+`GET /api/channels/requests/{request_id}` and only then receives a new identity.
+Desired state is
 persisted and restored after a Server restart with bounded exponential backoff
 (no tight reconnect loop on bad credentials). Runtime state always comes from the
 adapter's health report; configuration alone displays as `silent`. A delivery
