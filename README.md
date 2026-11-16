@@ -25,7 +25,7 @@ permissions and budgets, and retains work for safe continuation.
 
 Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Development tasks need
 Git 2.40+ for Worktree operations. Durable storage also checks the SQLite library
-linked to Python; see [operations](docs/guides/pilot-runbook.md).
+linked to Python.
 
 ```sh
 git clone https://github.com/CaiusLuo/cairn.git
@@ -33,9 +33,8 @@ cd cairn
 uv sync --locked --all-groups
 ```
 
-For real models, configure `.env` or `.cairn/models.toml` using
-[configuration](docs/configuration.md). The offline example below needs no model
-credentials and makes no paid API requests.
+For real models, configure `.env` or `.cairn/models.toml`. The offline example
+below needs no model credentials and makes no paid API requests.
 
 ## Start Cairn Server
 
@@ -160,9 +159,7 @@ Run cancellation is a `POST /api/runtime/runs/{run_id}/cancel`; recovery review 
 `/wx status` and `/wx verify CODE` manage it. Web Settings offers these same
 controls plus Schedule and Memory. Client exit leaves background services running.
 
-The [Server guide](docs/guides/runtime-service.md) covers configuration priority,
-persistent files, explicit backed-up data import, provider authorization and
-systemd operation. `./scripts/start.sh` supports `start`, `stop`, `restart`, `status` and
+`./scripts/start.sh` supports `start`, `stop`, `restart`, `status` and
 `logs`; supervision belongs to systemd. Host setup and service operations need
 root or equivalent systemd rights.
 Standalone CLI/WeChat Runtime launchers have been retired.
@@ -317,4 +314,3 @@ Run the regression tests for the code you change; the full offline suite is
 `uv run pytest`. For parallel full acceptance with coverage and CI trigger
 behavior, see [Tests](tests/README.md#feedback-cost).
 [Operational scripts](scripts/README.md) have their own short index.
-[Documentation](docs/README.md) covers configuration, running and recovery.
