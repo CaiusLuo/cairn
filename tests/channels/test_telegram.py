@@ -15,6 +15,7 @@ from aiogram.exceptions import (
     TelegramBadRequest,
     TelegramConflictError,
     TelegramForbiddenError,
+    TelegramNetworkError,
     TelegramRetryAfter,
     TelegramUnauthorizedError,
 )
@@ -163,6 +164,10 @@ async def no_sleep(_: float) -> None:
     return None
 
 
+async def yield_sleep(_: float) -> None:
+    await asyncio.sleep(0)
+
+
 async def wait_until(predicate: Any, *, timeout: float = 2.0) -> None:
     deadline = asyncio.get_running_loop().time() + timeout
     while not predicate():
@@ -182,6 +187,7 @@ def adapter_with(
     *,
     connection_id: str = "ch-telegram",
     credentials: dict[str, str] | None = None,
+    sleep: Any = no_sleep,
 ) -> TelegramAdapter:
     return TelegramAdapter(
         connection(connection_id),
@@ -189,7 +195,7 @@ def adapter_with(
         sink,
         store=store,
         bot_factory=lambda token: Bot(token=token, session=session),
-        sleep=no_sleep,
+        sleep=sleep,
     )
 
 
@@ -489,6 +495,31 @@ def test_poll_loop_turns_a_token_conflict_into_observable_error(
             lambda: adapter.health().actual_state is ChannelActualState.ERROR
         )
         assert "telegram_conflict" in (adapter.health().last_error or "")
+        await adapter.stop()
+
+    asyncio.run(scenario())
+
+
+def test_network_loss_reconnects_without_stopping_the_adapter(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        store = ChannelStore(tmp_path / "channels")
+        session = FakeSession()
+        session.get_updates_error = TelegramNetworkError(GetUpdates(), "disconnected")
+        adapter = adapter_with(session, store, ignore, sleep=yield_sleep)
+        await adapter.start()
+        await wait_until(
+            lambda: adapter.health().actual_state is ChannelActualState.CONNECTING
+        )
+        session.get_updates_error = None
+        await session.updates.put([update(50)])
+        await wait_until(
+            lambda: (
+                store.load_adapter_state("ch-telegram", "telegram") == {"offset": 51}
+            )
+        )
+        assert adapter.health().actual_state is ChannelActualState.RUNNING
         await adapter.stop()
 
     asyncio.run(scenario())
