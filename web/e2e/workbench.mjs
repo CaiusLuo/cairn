@@ -940,6 +940,20 @@ try {
     await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
     await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 4);
     await page.emulateMedia({ reducedMotion: "no-preference" });
+    for (const candidate of ["qq", "telegram", "discord", "wechat", "qq", "telegram"]) {
+      await page.locator(`.channels-platform[data-platform="${candidate}"]`).click();
+      await page.goBack();
+    }
+    await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 4);
+    await page.waitForTimeout(800);
+    const animatedResidue = await page.evaluate(() =>
+      [...document.querySelectorAll("[data-channel-animate]")].filter(element => {
+        const style = getComputedStyle(element);
+        return style.opacity !== "1" || style.visibility !== "visible";
+      }).length,
+    );
+    assert.equal(animatedResidue, 0);
     console.log("Channel reduced motion and rapid route switching passed.");
 
 
