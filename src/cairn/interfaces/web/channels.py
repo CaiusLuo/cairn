@@ -290,6 +290,29 @@ def channel_routes(
             headers=_json_headers(),
         )
 
+    async def reply_status(request: Request) -> JSONResponse:
+        run_id = request.path_params.get("run_id", "")
+        try:
+            reply = manager.reply_for_run(run_id)
+        except (OSError, sqlite3.Error):
+            return _error(503, "channel_store_unavailable")
+        if reply is None:
+            return _error(404, "channel_reply_not_found")
+        return JSONResponse(
+            {
+                "run_id": reply.run_id,
+                "connection_id": reply.connection_id,
+                "conversation_id": reply.conversation_id,
+                "target": reply.target,
+                "state": reply.state,
+                "attempts": reply.attempts,
+                "error": reply.error,
+                "created_at": reply.created_at,
+                "updated_at": reply.updated_at,
+            },
+            headers=_json_headers(),
+        )
+
     async def platform_connections(request: Request) -> JSONResponse:
         try:
             platform = _platform(request.path_params.get("platform", ""))
@@ -460,6 +483,11 @@ def channel_routes(
         Route(
             "/api/channels/requests/{request_id}",
             request_receipt,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/channels/replies/{run_id}",
+            reply_status,
             methods=["GET"],
         ),
         Route(

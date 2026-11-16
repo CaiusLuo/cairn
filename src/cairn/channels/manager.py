@@ -46,6 +46,7 @@ from cairn.channels.store import (
     ChannelStore,
     CreateResult,
     DeleteResult,
+    ReplyRecord,
     RequestClaim,
     RequestReceipt,
     UpdateResult,
@@ -309,6 +310,10 @@ class ChannelManager:
     def request_receipt(self, request_id: str) -> RequestReceipt | None:
         """Read a write receipt for lost-response reconciliation."""
         return self.store.request_receipt(request_id)
+
+    def reply_for_run(self, run_id: str) -> ReplyRecord | None:
+        """Read the durable source-reply state for one Channel Run."""
+        return self.store.reply_for_run(run_id)
 
     def get_connection_view(self, connection_id: str) -> ChannelConnectionView:
         if self._legacy is not None and connection_id == self._legacy.connection_id:

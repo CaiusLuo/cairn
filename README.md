@@ -232,6 +232,7 @@ require the exact Origin or host bearer token):
 GET    /api/channels
 GET    /api/channels/capabilities
 GET    /api/channels/requests/{request_id}
+GET    /api/channels/replies/{run_id}
 GET    /api/channels/{platform}/connections
 POST   /api/channels/{platform}/connections
 PATCH  /api/channels/connections/{id}
@@ -294,7 +295,8 @@ connection and external conversation. The coordinator sends through the normal
 send twice. After restart, pending intents are delivered when the connection is
 available and an interrupted in-flight send becomes `unknown`, never resent
 automatically. A stopped or deleted connection records an explicit failure
-reason instead of silently dropping the reply.
+reason instead of silently dropping the reply; `GET /api/channels/replies/{run_id}`
+exposes its state, attempts and error.
 
 The first connection remains the only WeChat protocol implementation; no
 automatic credential migration is performed.

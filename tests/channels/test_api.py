@@ -10,6 +10,7 @@ from starlette.testclient import TestClient
 
 from cairn.channels.adapter import ChannelAdapterRegistry
 from cairn.channels.manager import ChannelManager
+from cairn.channels.models import ChannelPlatform
 from cairn.channels.store import ChannelStore
 from cairn.channels.wechat import LEGACY_WECHAT_ID, wechat_legacy_adapter
 from cairn.interfaces.web.app import create_app
@@ -683,3 +684,37 @@ def test_missing_production_adapter_is_explicit_and_config_stays_editable(
             headers={"Origin": ORIGIN},
         )
         assert deleted.status_code == 200
+
+
+def test_reply_status_exposes_the_persisted_failure_reason(tmp_path: Path) -> None:
+    web, manager = _app(tmp_path)
+    created = manager.store.create_connection(
+        platform=ChannelPlatform.TELEGRAM,
+        display_name="Telegram Home",
+        enabled=True,
+        owner_identity="7",
+        metadata={},
+        credentials={"bot_token": "token-1"},
+        request_id="reply-status-create",
+    )
+    connection_id = created.connection.connection_id
+    reply = manager.store.claim_reply(
+        connection_id=connection_id,
+        conversation_id="conv-1",
+        run_id="run-1",
+        target="chat-7",
+        external_message_id="7:1",
+    )
+    manager.store.complete_reply(reply.reply_id, "failed", "connection_not_running")
+
+    with TestClient(web, base_url=ORIGIN) as client:
+        _login(client)
+        response = client.get("/api/channels/replies/run-1")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["run_id"] == "run-1"
+        assert body["state"] == "failed"
+        assert body["error"] == "connection_not_running"
+        assert body["target"] == "chat-7"
+        assert body["attempts"] == 0
+        assert client.get("/api/channels/replies/missing").status_code == 404
