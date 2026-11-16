@@ -120,7 +120,11 @@ class ChannelReplyCoordinator:
     async def _reconcile_pending(self) -> None:
         for reply in self.store.list_replies("pending"):
             run = self.runs.get_run(reply.run_id)
-            if run is None or run.status not in TERMINAL:
+            if run is None:
+                # The Run is gone, so this intent can never become confirmable.
+                self.store.complete_reply(reply.reply_id, "failed", "run_not_found")
+                continue
+            if run.status not in TERMINAL:
                 continue
             self._spawn(self._deliver(reply, run))
 

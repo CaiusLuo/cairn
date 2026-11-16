@@ -293,6 +293,31 @@ def test_stopped_connection_fails_the_reply_without_sending(tmp_path: Path) -> N
     asyncio.run(scenario())
 
 
+def test_missing_run_fails_the_intent_instead_of_retrying_forever(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        store = ChannelStore(tmp_path / "channels")
+        manager = FakeReplyManager(connection())
+        replies = coordinator(store, manager, Runs({}))
+        store.claim_reply(
+            connection_id="ch-1",
+            conversation_id="conv-1",
+            run_id="missing-run",
+            target="chat-7",
+            external_message_id="7:1",
+        )
+        await replies.start()
+        await settle(replies._tasks)
+        await replies.close()
+        record = store.reply_for_run("missing-run")
+        assert record is not None and record.state == "failed"
+        assert record.error == "run_not_found"
+        assert manager.sent == []
+
+    asyncio.run(scenario())
+
+
 def test_startup_recreates_a_missing_intent_from_accepted_inbound(
     tmp_path: Path,
 ) -> None:
