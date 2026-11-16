@@ -864,6 +864,52 @@ try {
     assert(!(await readChannels()).connections.some(view => view.connection.connection_id === channelId));
     console.log("Channel console CRUD, history and write-only credentials passed.");
 
+    // A lost create response is reconciled to the connection the Server already
+    // created. Changing the payload afterwards must not create a second one.
+    const createPattern = /\/api\/channels\/telegram\/connections$/;
+    const createIds = [];
+    let loseFirstCreate = true;
+    await page.route(createPattern, async route => {
+      if (route.request().method() !== "POST") return route.continue();
+      createIds.push(route.request().postDataJSON().request_id);
+      if (loseFirstCreate) {
+        loseFirstCreate = false;
+        await route.fetch();
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    });
+    const lostCreateName = "E2E Lost Create " + Date.now().toString(36);
+    const lostCreateSecret = ["e2e", "lost", "create", Date.now().toString(36)].join("-");
+    await page.getByRole("button", { name: "新建连接", exact: true }).click();
+    await page.getByRole("heading", { name: "新建连接", exact: true }).waitFor();
+    await page.getByLabel("连接名称").fill(lostCreateName);
+    await page.getByLabel("Bot Token").fill(lostCreateSecret);
+    await page.getByRole("button", { name: "保存连接", exact: true }).click();
+    await page.locator('[data-channel-error="transport"]').waitFor();
+    await page.getByLabel("连接名称").fill(lostCreateName + " Changed");
+    await page.getByRole("button", { name: "保存连接", exact: true }).click();
+    await page.getByRole("heading", { name: lostCreateName, exact: true }).waitFor();
+    const reconciledCreateId = new URL(page.url()).searchParams.get("connection_id");
+    assert(reconciledCreateId, "Reconciliation must open the created connection");
+    assert.equal(createIds.length, 1, "A changed create must not create a second connection");
+    const reconciledConnections = (await readChannels()).connections.filter(
+      view => view.connection.display_name.startsWith(lostCreateName),
+    );
+    assert.equal(reconciledConnections.length, 1);
+    assert.equal(reconciledConnections[0].connection.connection_id, reconciledCreateId);
+    assert(!(await page.locator("body").innerText()).includes(lostCreateSecret));
+    await page.unroute(createPattern);
+    await api.delete(`/api/channels/connections/${reconciledCreateId}`, {
+      data: {
+        expected_revision: reconciledConnections[0].connection.revision,
+        request_id: "e2e-lost-create-cleanup",
+        confirm: true,
+      },
+    });
+    console.log("Channel lost create response reconciled without duplication.");
+
     // Request receipts: identical replay returns the same connection, a reused
     // request id with different intent is rejected, and secrets never echo.
     const idempotentSecret = ["e2e", "idempotent", "token", Date.now().toString(36)].join("-");
@@ -1057,7 +1103,11 @@ try {
     const managementSnapshot = await realManagement.json();
     assert.equal(typeof managementSnapshot.wechat?.status, "string");
     await page.locator(".channels-legacy-status").waitFor();
-    assert((await page.locator(".channels-legacy-status").innerText()).trim().length > 0);
+    assert.equal(
+      await page.locator(".channels-legacy-status").getAttribute("data-wechat-status"),
+      managementSnapshot.wechat.status,
+      "The legacy panel must render the real nested management snapshot",
+    );
     assert.equal(await page.getByRole("button", { name: "新建连接", exact: true }).count(), 0);
     await page.locator(".channels-connection").filter({ hasText: "个人微信 Bot" }).click();
     await page.getByRole("heading", { name: "个人微信 Bot", exact: true }).waitFor();

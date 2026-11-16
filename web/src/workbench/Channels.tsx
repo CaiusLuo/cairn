@@ -77,6 +77,7 @@ class StaleChannelIntentError extends Error {
     message: string,
     readonly reconciled: boolean,
     readonly revision: number | null = null,
+    readonly createdConnectionId: string | null = null,
   ) {
     super(message);
     this.name = "StaleChannelIntentError";
@@ -220,6 +221,11 @@ function receiptRevision(receipt: ChannelRequestReceipt) {
     : null;
 }
 
+function receiptConnectionId(receipt: ChannelRequestReceipt) {
+  const connectionId = receipt.result?.connection_id;
+  return typeof connectionId === "string" ? connectionId : null;
+}
+
 async function requestIdFor(
   scope: string,
   identity: string,
@@ -270,9 +276,12 @@ async function requestIdFor(
   delete pending[scope];
   writePending(pending);
   throw new StaleChannelIntentError(
-    "上一次提交已完成；连接状态正在刷新，请核对后重新提交本次修改。",
+    scope.startsWith("create:")
+      ? "上一次创建已完成；正在打开已创建的连接。"
+      : "上一次提交已完成；连接状态正在刷新，请核对后重新提交本次修改。",
     true,
     receiptRevision(receipt),
+    scope.startsWith("create:") ? receiptConnectionId(receipt) : null,
   );
 }
 
@@ -349,6 +358,8 @@ function useChannelAnimation(
   }, [ref, animationKey]);
 }
 
+const POLL_TIMEOUT_MS = 15_000;
+
 function useVisiblePoll<T>(
   enabled: boolean,
   restart: number,
@@ -368,6 +379,9 @@ function useVisiblePoll<T>(
       const requestEpoch = epoch.current;
       const current = new AbortController();
       controller = current;
+      // A request that never settles must not hold the single-flight slot
+      // forever; abort it and let the next visible tick try again.
+      const timeout = window.setTimeout(() => current.abort(), POLL_TIMEOUT_MS);
       try {
         const value = await callbacks.current.load(current.signal);
         if (
@@ -387,6 +401,7 @@ function useVisiblePoll<T>(
           callbacks.current.onError(reason);
         }
       } finally {
+        window.clearTimeout(timeout);
         if (controller === current) controller = null;
       }
     };
@@ -471,7 +486,11 @@ function WechatLegacyPanel({
       </div>
       {status ? (
         <div className="channels-legacy-state">
-          <p className="channels-legacy-status" role="status">
+          <p
+            className="channels-legacy-status"
+            role="status"
+            data-wechat-status={status.status}
+          >
             {status.status}
           </p>
           <p className="wb-muted">
@@ -532,6 +551,7 @@ function ConnectionForm({
   onSaved,
   onDirty,
   onReconciled,
+  onExisting,
 }: {
   platform: ChannelPlatform;
   capability: ChannelCapabilities;
@@ -540,6 +560,7 @@ function ConnectionForm({
   onSaved: (view: ChannelView, created: boolean) => void;
   onDirty: () => void;
   onReconciled: () => void;
+  onExisting: (connectionId: string) => void;
 }) {
   const editing = initial !== null;
   const [displayName, setDisplayName] = useState(initial?.display_name ?? "");
@@ -643,6 +664,10 @@ function ConnectionForm({
       onSaved(view, !editing);
     } catch (reason) {
       if (reason instanceof StaleChannelIntentError) {
+        if (reason.createdConnectionId) {
+          onExisting(reason.createdConnectionId);
+          return;
+        }
         setError(reason.message);
         setErrorKind("stale-intent");
         if (reason.reconciled) {
@@ -1239,6 +1264,15 @@ export function Channels() {
               onReconciled={() => {
                 pollEpoch.current += 1;
                 setRevision(value => value + 1);
+              }}
+              onExisting={connectionId => {
+                pollEpoch.current += 1;
+                setRevision(value => value + 1);
+                navigate(
+                  { platform, connectionId, mode: "" },
+                  "replace",
+                );
+                setActionNotice("连接已保存。");
               }}
               onSaved={(view, created) => {
                 pollEpoch.current += 1;
