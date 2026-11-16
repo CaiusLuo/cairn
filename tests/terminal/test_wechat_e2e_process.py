@@ -104,7 +104,7 @@ def test_real_server_process_wechat_chat_and_development_delivery(
             assert task["status"] == "completed"
             assert task["source"] == "wechat"
             assert task["delivery_recipient"] == "owner"
-            assert task["delivery_account"] == "bot-1"
+            assert task["delivery_account"] == fake.account_id
             development_messages = fake.sent[3:]
             assert len(development_messages) == 2
             assert all(
@@ -166,7 +166,7 @@ def test_pending_delivery_survives_server_restart(tmp_path: Path) -> None:
             token = (server.state / "runtime.token").read_text().strip()
             client = RuntimeClient(server.url, token)
             conversation = await client.ensure_wechat_conversation(
-                "bot-1", "owner", "restart prompt"
+                fake.account_id, "owner", "restart prompt"
             )
             request_id = "wechat:restart-e2e"
             run = await client.send_conversation(
@@ -192,7 +192,7 @@ def test_pending_delivery_survives_server_restart(tmp_path: Path) -> None:
                 message_key="msg:restart",
                 message_id="restart-message",
                 request_id=request_id,
-                account_id="bot-1",
+                account_id=fake.account_id,
                 sender_id="owner",
                 context_token="restart-context",
                 content="restart prompt",

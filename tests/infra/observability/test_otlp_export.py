@@ -49,7 +49,12 @@ class _Collector:
                 pass
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        # Only the test server shutdown poll changes; requests and cleanup stay real.
+        self.thread = threading.Thread(
+            target=self.server.serve_forever,
+            kwargs={"poll_interval": 0.01},
+            daemon=True,
+        )
 
     @property
     def endpoint(self) -> str:
@@ -65,6 +70,7 @@ class _Collector:
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=5)
+        assert not self.thread.is_alive(), "OTLP test collector did not stop"
 
 
 def _span(name: str = "agent.turn", **attributes: Any):  # type: ignore[no-untyped-def]

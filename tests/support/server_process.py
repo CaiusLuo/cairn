@@ -96,6 +96,18 @@ class NativeClient:
                 return
 
     def send(self, text: str) -> None:
+        import termios
+
+        def input_ready() -> bool:
+            assert self.process.poll() is None, bytes(self.output).decode(
+                errors="replace"
+            )[-2000:]
+            # A banner or restored history can precede prompt_toolkit entering
+            # raw mode. Sending then races the terminal's input flush.
+            flags = termios.tcgetattr(self.master)[3]
+            return not flags & (termios.ICANON | termios.ECHO)
+
+        wait_for(input_ready)
         os.write(self.master, (text + "\r").encode())
 
     def close(self) -> None:

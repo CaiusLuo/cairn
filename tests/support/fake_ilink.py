@@ -5,10 +5,13 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from uuid import uuid4
 
 
 class FakeILink:
     def __init__(self) -> None:
+        # Stable across restarts of this fake, unique across concurrent fixtures.
+        self.account_id = "test-bot-" + uuid4().hex
         self.qr_statuses: list[dict[str, Any]] = []
         self.confirm: dict[str, Any] = {}
         self.updates: list[dict[str, Any]] = []
@@ -103,7 +106,12 @@ class FakeILink:
                 return
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        # Only the test server shutdown poll changes; requests and cleanup stay real.
+        self._thread = threading.Thread(
+            target=self._server.serve_forever,
+            kwargs={"poll_interval": 0.01},
+            daemon=True,
+        )
         self._thread.start()
         return self
 
@@ -113,6 +121,7 @@ class FakeILink:
             self._server.server_close()
         if self._thread is not None:
             self._thread.join(timeout=2)
+            assert not self._thread.is_alive(), "iLink test server did not stop"
 
     def __enter__(self) -> "FakeILink":
         return self.start()
