@@ -16,6 +16,7 @@ def require_web_assets(root: Path) -> Path:
         "chat.html",
         "tasks.html",
         "knowledge.html",
+        "channels.html",
         "settings.html",
         "login.html",
     )

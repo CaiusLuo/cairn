@@ -24,6 +24,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         chat: `${root}chat.html`,
+        channels: `${root}channels.html`,
         knowledge: `${root}knowledge.html`,
         settings: `${root}settings.html`,
         sessions: `${root}index.html`,

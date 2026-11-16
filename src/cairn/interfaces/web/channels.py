@@ -18,6 +18,7 @@ from starlette.routing import BaseRoute, Route
 
 from cairn.channels.manager import ChannelConnectionView, ChannelManager
 from cairn.channels.models import (
+    ALL_PLATFORMS,
     ChannelAdapterError,
     ChannelAdapterNotImplemented,
     ChannelConfirmationRequired,
@@ -258,6 +259,18 @@ def channel_routes(
             headers=_json_headers(),
         )
 
+    async def capabilities(_request: Request) -> JSONResponse:
+        try:
+            rows = [
+                manager.platform_capabilities(platform) for platform in ALL_PLATFORMS
+            ]
+        except (OSError, sqlite3.Error):
+            return _error(503, "channel_store_unavailable")
+        return JSONResponse(
+            {"platforms": [row.model_dump(mode="json") for row in rows]},
+            headers=_json_headers(),
+        )
+
     async def platform_connections(request: Request) -> JSONResponse:
         try:
             platform = _platform(request.path_params.get("platform", ""))
@@ -424,6 +437,7 @@ def channel_routes(
 
     routes: list[BaseRoute] = [
         Route("/api/channels", overview, methods=["GET"]),
+        Route("/api/channels/capabilities", capabilities, methods=["GET"]),
         Route(
             "/api/channels/connections/{connection_id}",
             update_connection,

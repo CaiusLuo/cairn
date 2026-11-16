@@ -7,12 +7,13 @@ import { Shell, type View } from "./Shell";
 // Heavy, route-specific views stay out of the initial chat bundle.
 const Approvals = lazy(() => import("./Approvals").then(module => ({ default: module.Approvals })));
 const Knowledge = lazy(() => import("./Knowledge").then(module => ({ default: module.Knowledge })));
+const Channels = lazy(() => import("./Channels").then(module => ({ default: module.Channels })));
 const SettingsPage = lazy(() => import("../SettingsPage").then(module => ({ default: module.SettingsPage })));
 
 function currentRoute() {
   const params = new URLSearchParams(location.search);
   const requested = params.get("view");
-  const alias: Record<string, View> = { "/chat.html": params.has("task") ? "tasks" : "chat", "/settings.html": "settings", "/tasks.html": "tasks", "/knowledge.html": "knowledge" };
+  const alias: Record<string, View> = { "/chat.html": params.has("task") ? "tasks" : "chat", "/settings.html": "settings", "/tasks.html": "tasks", "/knowledge.html": "knowledge", "/channels.html": "channels" };
   // The graph view is gone; old bookmarks still land on their task.
   const view = requested === "workflow" ? "tasks" : requested === "runs" || requested === "approvals" || requested === "knowledge" ? requested : alias[location.pathname] ?? "home";
   return { view, params };
@@ -20,6 +21,7 @@ function currentRoute() {
 
 export function App() {
   const [route, setRoute] = useState(currentRoute);
+  const [navigationEpoch, setNavigationEpoch] = useState(0);
   const { view, params } = route;
   const config = useResource<WorkbenchConfig>("management?section=workbench", 4500);
   const conversations = useResource<Conversation[]>("conversations", 2000);
@@ -39,6 +41,7 @@ export function App() {
   const navigate = useCallback((url: string) => {
     if (location.pathname + location.search !== url) window.history.pushState({}, "", url);
     setRoute(currentRoute());
+    setNavigationEpoch(value => value + 1);
     document.querySelector(".wb-main")?.scrollTo(0, 0);
   }, []);
   const refresh = useCallback(() => { conversations.refresh(); tasks.refresh(); runs.refresh(); }, [conversations.refresh, tasks.refresh, runs.refresh]);
@@ -49,6 +52,7 @@ export function App() {
       {(view === "home" || view === "chat") && <Chat key={id || params.get("mode") || "new"} id={id} initialMode={params.get("mode") === "development" ? "development" : "conversation"} config={config.data} navigate={navigate} onSubmit={refresh}/>}
       {view === "tasks" && <Tasks tasks={development} id={task} navigate={navigate} refresh={refresh} loading={!tasks.data} error={tasks.error}/>}
       {view === "knowledge" && <Knowledge/>}
+      {view === "channels" && <Channels key={navigationEpoch}/>}
       {view === "runs" && <Runs runs={runs.data ?? []} id={run} navigate={navigate} error={runs.error}/>}
       {view === "approvals" && <Approvals task={task} run={run} tasks={development} runs={runs.data ?? []} navigate={navigate} refresh={refresh} error={runs.error || tasks.error}/>}
       {view === "settings" && <SettingsPage key={params.get("section")} />}

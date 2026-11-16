@@ -92,6 +92,7 @@ def test_reads_require_login_and_writes_require_host_origin(tmp_path: Path) -> N
     web, _ = _app(tmp_path)
     with TestClient(web, base_url=ORIGIN) as anonymous:
         assert anonymous.get("/api/channels").status_code == 401
+        assert anonymous.get("/api/channels/capabilities").status_code == 401
         assert (
             anonymous.post(
                 "/api/channels/telegram/connections",
@@ -146,6 +147,25 @@ def test_create_never_returns_the_secret_and_start_stop_reconnect_work(
     web, _ = _app(tmp_path, factory=factory)
     with TestClient(web, base_url=ORIGIN) as client:
         _login(client)
+        telegram = next(
+            row
+            for row in client.get("/api/channels/capabilities").json()["platforms"]
+            if row["platform"] == "telegram"
+        )
+        assert telegram["adapter_supported"] is True
+        assert telegram["legacy_managed"] is False
+        assert telegram["configured"] is False
+        assert telegram["supported_actions"] == [
+            "create",
+            "update",
+            "delete",
+            "start",
+            "stop",
+            "reconnect",
+        ]
+        assert [field["key"] for field in telegram["credential_schema"]] == [
+            "bot_token"
+        ]
         response = client.post(
             "/api/channels/telegram/connections",
             json={
@@ -418,6 +438,17 @@ def test_legacy_wechat_is_listed_and_refuses_config_mutation(tmp_path: Path) -> 
             LEGACY_WECHAT_ID
         )
         assert payload["connections"][0]["connection"]["legacy"] is True
+        capabilities = client.get("/api/channels/capabilities").json()["platforms"][0]
+        assert capabilities["platform"] == "wechat"
+        assert capabilities["configured"] is True
+        assert capabilities["adapter_supported"] is True
+        assert capabilities["legacy_managed"] is True
+        assert capabilities["credential_schema"] == []
+        assert capabilities["supported_actions"] == [
+            "start",
+            "stop",
+            "reconnect",
+        ]
 
         create = client.post(
             "/api/channels/wechat/connections",
@@ -573,6 +604,25 @@ def test_missing_production_adapter_is_explicit_and_config_stays_editable(
         )
         assert telegram["display_state"] == "silent"
         assert overview["connections"][0]["runtime"]["actual_state"] != "running"
+
+        capabilities = client.get("/api/channels/capabilities").json()
+        assert [row["platform"] for row in capabilities["platforms"]] == [
+            "wechat",
+            "qq",
+            "telegram",
+            "discord",
+        ]
+        unsupported = next(
+            row for row in capabilities["platforms"] if row["platform"] == "telegram"
+        )
+        assert unsupported["configured"] is True
+        assert unsupported["adapter_supported"] is False
+        assert unsupported["legacy_managed"] is False
+        assert unsupported["supported_actions"] == ["create", "update", "delete"]
+        assert [field["key"] for field in unsupported["credential_schema"]] == [
+            "bot_token"
+        ]
+        assert unsupported["credential_schema"][0]["secret"] is True
 
         renamed = client.patch(
             f"/api/channels/connections/{connection_id}",

@@ -16,6 +16,7 @@ from cairn.channels.adapter import (
 )
 from cairn.channels.models import (
     ALL_PLATFORMS,
+    PLATFORM_CREDENTIAL_SCHEMAS,
     ChannelActualState,
     ChannelAdapterError,
     ChannelAdapterHealth,
@@ -34,6 +35,7 @@ from cairn.channels.models import (
     ChannelLegacyManaged,
     ChannelNotFound,
     ChannelPlatform,
+    ChannelPlatformCapabilities,
     ChannelPlatformSummary,
     ChannelRevisionConflict,
     ChannelRuntimeStatus,
@@ -272,6 +274,33 @@ class ChannelManager:
                 )
             )
         return tuple(result)
+
+    def platform_capabilities(
+        self, platform: ChannelPlatform
+    ) -> ChannelPlatformCapabilities:
+        """Declare what this Server can actually do for one platform.
+
+        The Web console must not infer support from the platform name: until a
+        real adapter is registered, configuration is editable but the lifecycle
+        actions stay unavailable and never fall back to a fake adapter.
+        """
+        legacy = platform is ChannelPlatform.WECHAT
+        adapter_supported = (
+            self._legacy is not None if legacy else self._adapters.supports(platform)
+        )
+        actions: list[str] = []
+        if not legacy:
+            actions.extend(("create", "update", "delete"))
+        if adapter_supported:
+            actions.extend(("start", "stop", "reconnect"))
+        return ChannelPlatformCapabilities(
+            platform=platform,
+            configured=bool(self.list_connection_views(platform)),
+            adapter_supported=adapter_supported,
+            legacy_managed=legacy,
+            credential_schema=PLATFORM_CREDENTIAL_SCHEMAS[platform],
+            supported_actions=tuple(actions),
+        )
 
     def get_connection_view(self, connection_id: str) -> ChannelConnectionView:
         if self._legacy is not None and connection_id == self._legacy.connection_id:

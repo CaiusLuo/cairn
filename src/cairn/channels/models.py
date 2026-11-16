@@ -151,6 +151,65 @@ class ChannelPlatformSummary(BaseModel):
     running: int = Field(ge=0)
 
 
+class ChannelCredentialField(BaseModel):
+    """One write-only credential input the Web form may collect."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    key: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=80)
+    required: bool = True
+    secret: bool = True
+    placeholder: str | None = Field(default=None, max_length=120)
+
+
+class ChannelPlatformCapabilities(BaseModel):
+    """Server-authored capabilities; the Web console never guesses them."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    platform: ChannelPlatform
+    configured: bool
+    adapter_supported: bool
+    legacy_managed: bool
+    credential_schema: tuple[ChannelCredentialField, ...]
+    supported_actions: tuple[str, ...]
+
+
+PLATFORM_CREDENTIAL_SCHEMAS: dict[
+    ChannelPlatform, tuple[ChannelCredentialField, ...]
+] = {
+    ChannelPlatform.WECHAT: (),
+    ChannelPlatform.QQ: (
+        ChannelCredentialField(
+            key="app_id",
+            label="App ID",
+            secret=False,
+            placeholder="QQ 机器人 App ID",
+        ),
+        ChannelCredentialField(
+            key="client_secret",
+            label="Client Secret",
+            placeholder="仅写入, 不回显",
+        ),
+    ),
+    ChannelPlatform.TELEGRAM: (
+        ChannelCredentialField(
+            key="bot_token",
+            label="Bot Token",
+            placeholder="123456:ABC…",
+        ),
+    ),
+    ChannelPlatform.DISCORD: (
+        ChannelCredentialField(
+            key="bot_token",
+            label="Bot Token",
+            placeholder="仅写入, 不回显",
+        ),
+    ),
+}
+
+
 class ChannelError(Exception):
     """Base for channel failures that are safe to present to the host."""
 
@@ -320,6 +379,7 @@ def validate_metadata(value: object) -> dict[str, Any]:
 
 __all__ = [
     "ALL_PLATFORMS",
+    "PLATFORM_CREDENTIAL_SCHEMAS",
     "ChannelActualState",
     "ChannelAdapterError",
     "ChannelAdapterHealth",
@@ -327,6 +387,7 @@ __all__ = [
     "ChannelConfirmationRequired",
     "ChannelConnection",
     "ChannelCredentialError",
+    "ChannelCredentialField",
     "ChannelDeliveryUncertain",
     "ChannelDesiredState",
     "ChannelDisabled",
@@ -341,6 +402,7 @@ __all__ = [
     "ChannelNotFound",
     "ChannelOperationUncertain",
     "ChannelPlatform",
+    "ChannelPlatformCapabilities",
     "ChannelPlatformSummary",
     "ChannelRequestConflict",
     "ChannelRevisionConflict",

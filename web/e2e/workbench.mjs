@@ -622,6 +622,326 @@ try {
     assert.equal(await loadMore.isEnabled(), true);
     console.log("Review pagination race and detail identity passed.");
 
+    // Channels: four fixed platforms, real CRUD against the isolated Server,
+    // with capability and lifecycle route mocks only where no real adapter exists.
+    const channelSecret = ["e2e", "channel", "secret", Date.now().toString(36)].join("-");
+    async function createChannel(platform, name, credentials, requestId) {
+      const response = await api.post(`/api/channels/${platform}/connections`, {
+        data: {
+          request_id: requestId,
+          display_name: name,
+          enabled: true,
+          ...(credentials ? { credentials } : {}),
+        },
+      });
+      assert.equal(response.status(), 201, "Could not seed " + name);
+      return response.json();
+    }
+    async function readChannels() {
+      const response = await api.get("/api/channels");
+      assert.equal(response.status(), 200, "Could not read channels");
+      return response.json();
+    }
+
+    await createChannel("telegram", "E2E Telegram", { bot_token: channelSecret }, "e2e-channel-telegram");
+    for (let index = 1; index <= 3; index += 1) {
+      await createChannel(
+        "discord",
+        `E2E Discord ${index}`,
+        { bot_token: `e2e-discord-secret-${index}` },
+        `e2e-channel-discord-${index}`,
+      );
+    }
+
+    await page.getByRole("link", { name: "连接", exact: true }).click();
+    await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 4);
+    const telegramCard = page.locator('.channels-platform[data-platform="telegram"]');
+    const discordCard = page.locator('.channels-platform[data-platform="discord"]');
+    const qqCard = page.locator('.channels-platform[data-platform="qq"]');
+    assert.match(await telegramCard.textContent(), /已配置 1 · 运行中 0/);
+    assert.match(await discordCard.textContent(), /已配置 3 · 运行中 0/);
+    assert.match(await qqCard.textContent(), /未连接/);
+    await shot("Cairn-workbench-channels");
+
+    // Exercise all three overview states without inventing a real adapter:
+    // the mocked overview is still shaped exactly like the Server contract.
+    const overviewPattern = /\/api\/channels$/;
+    const mockedOverview = {
+      platforms: [
+        { platform: "wechat", display_state: "unconfigured", connections: 0, running: 0 },
+        { platform: "qq", display_state: "running", connections: 1, running: 1 },
+        { platform: "telegram", display_state: "silent", connections: 1, running: 0 },
+        { platform: "discord", display_state: "unconfigured", connections: 0, running: 0 },
+      ],
+      connections: [],
+    };
+    await page.route(overviewPattern, async route => {
+      if (route.request().method() !== "GET") return route.continue();
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(mockedOverview) });
+    });
+    await page.reload();
+    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 4);
+    assert.equal(await page.locator('.channels-platform[data-platform="wechat"] .channel-state').textContent(), "未连接");
+    assert.equal(await page.locator('.channels-platform[data-platform="qq"] .channel-state').textContent(), "运行中");
+    assert.equal(await page.locator('.channels-platform[data-platform="telegram"] .channel-state').textContent(), "沉默中");
+    await page.unroute(overviewPattern);
+    await page.reload();
+    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 4);
+
+    // 0 / 1 / N configured connections on the real fixture.
+    await discordCard.click();
+    await page.getByRole("heading", { name: "Discord连接", exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelectorAll(".channels-connection").length === 3);
+    await page.goBack();
+    await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
+    await qqCard.click();
+    await page.getByText("还没有 QQ 连接。").waitFor();
+    await page.goBack();
+    await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
+    await telegramCard.click();
+    await page.getByRole("heading", { name: "Telegram连接", exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelectorAll(".channels-connection").length === 1);
+
+    // The rail link is an App-level navigation. It must reset this page's URL
+    // state instead of leaving a detail view behind an overview URL.
+    await page.getByRole("link", { name: "连接", exact: true }).click();
+    await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
+    assert.equal(new URL(page.url()).search, "");
+    await telegramCard.click();
+    await page.getByRole("heading", { name: "Telegram连接", exact: true }).waitFor();
+
+    // Create and edit through the capability-driven form. Credentials are
+    // write-only, and editing metadata must not rotate the credential reference.
+    await page.getByRole("button", { name: "新建连接", exact: true }).click();
+    await page.getByRole("heading", { name: "新建连接", exact: true }).waitFor();
+    assert.equal(new URL(page.url()).searchParams.get("mode"), "new");
+    const createdSecret = ["e2e", "created", "token", Date.now().toString(36)].join("-");
+    await page.getByLabel("连接名称").fill("E2E Telegram 2");
+    await page.getByLabel("Bot Token").fill(createdSecret);
+    await shot("Cairn-workbench-channel-form");
+    await page.getByRole("button", { name: "保存连接", exact: true }).click();
+    await page.getByRole("heading", { name: "E2E Telegram 2", exact: true }).waitFor();
+    const channelId = new URL(page.url()).searchParams.get("connection_id");
+    assert(channelId, "Saving must open the created connection");
+    assert.equal(new URL(page.url()).searchParams.get("mode"), null);
+    assert(!(await page.locator("body").innerText()).includes(createdSecret));
+    assert(await page.getByRole("button", { name: "启动", exact: true }).isDisabled());
+    await page.getByText(/没有该平台的真实 Adapter/).first().waitFor();
+    await shot("Cairn-workbench-channel-detail");
+
+    const beforeEdit = (await readChannels()).connections.find(view => view.connection.connection_id === channelId);
+    assert(beforeEdit, "The created connection must be listed");
+    assert(beforeEdit.connection.credential_ref);
+    await page.getByRole("button", { name: "编辑", exact: true }).click();
+    await page.getByRole("heading", { name: "编辑连接", exact: true }).waitFor();
+    assert.equal(await page.getByLabel("Bot Token").inputValue(), "");
+    await page.getByLabel("连接名称").fill("E2E Telegram 2 renamed");
+    await page.getByRole("button", { name: "保存修改", exact: true }).click();
+    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
+    const afterNameEdit = (await readChannels()).connections.find(view => view.connection.connection_id === channelId);
+    assert.equal(afterNameEdit.connection.credential_ref, beforeEdit.connection.credential_ref);
+
+    await page.getByRole("button", { name: "编辑", exact: true }).click();
+    await page.getByLabel("Bot Token").fill("e2e-replacement-token-value");
+    await page.getByRole("button", { name: "保存修改", exact: true }).click();
+    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
+    const afterCredentialEdit = (await readChannels()).connections.find(view => view.connection.connection_id === channelId);
+    assert.notEqual(afterCredentialEdit.connection.credential_ref, beforeEdit.connection.credential_ref);
+    assert(!JSON.stringify(afterCredentialEdit).includes("e2e-replacement-token-value"));
+
+    // Refresh, Back and Forward keep the URL as the authority for the view.
+    await page.reload();
+    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
+    assert.equal(new URL(page.url()).searchParams.get("connection_id"), channelId);
+    await page.goBack();
+    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
+    assert.equal(new URL(page.url()).searchParams.get("connection_id"), channelId);
+    await page.goBack();
+    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
+    assert.equal(new URL(page.url()).searchParams.get("connection_id"), channelId);
+    await page.goBack();
+    await page.getByRole("heading", { name: "Telegram连接", exact: true }).waitFor();
+    assert.equal(new URL(page.url()).searchParams.get("connection_id"), null);
+    await page.goForward();
+    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
+    await page.goForward();
+    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
+    await page.goForward();
+    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
+
+    await page.getByRole("button", { name: "删除", exact: true }).click();
+    const deleteDialog = page.getByRole("alertdialog", { name: "确认删除连接" });
+    await deleteDialog.waitFor();
+    await deleteDialog.getByRole("button", { name: "取消", exact: true }).click();
+    await deleteDialog.waitFor({ state: "detached" });
+    await page.getByRole("heading", { name: "E2E Telegram 2 renamed", exact: true }).waitFor();
+    await page.getByRole("button", { name: "删除", exact: true }).click();
+    await page.getByRole("alertdialog", { name: "确认删除连接" }).getByRole("button", { name: "确认删除", exact: true }).click();
+    await page.getByRole("heading", { name: "Telegram连接", exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelectorAll(".channels-connection").length === 1);
+    assert(!(await readChannels()).connections.some(view => view.connection.connection_id === channelId));
+    console.log("Channel console CRUD, history and write-only credentials passed.");
+
+    // Request receipts: identical replay returns the same connection, a reused
+    // request id with different intent is rejected, and secrets never echo.
+    const idempotentSecret = ["e2e", "idempotent", "token", Date.now().toString(36)].join("-");
+    const idempotentBody = {
+      request_id: "e2e-channel-idempotent",
+      display_name: "E2E Idempotent",
+      enabled: true,
+      credentials: { bot_token: idempotentSecret },
+    };
+    const replayFirst = await api.post("/api/channels/telegram/connections", { data: idempotentBody });
+    assert.equal(replayFirst.status(), 201);
+    const firstIdempotent = await replayFirst.json();
+    assert(!JSON.stringify(firstIdempotent).includes(idempotentSecret));
+    const replayAgain = await api.post("/api/channels/telegram/connections", { data: idempotentBody });
+    assert.equal(replayAgain.status(), 201);
+    assert.equal((await replayAgain.json()).connection.connection_id, firstIdempotent.connection.connection_id);
+    const replayConflict = await api.post("/api/channels/telegram/connections", {
+      data: { ...idempotentBody, display_name: "E2E Idempotent Different" },
+    });
+    assert.equal(replayConflict.status(), 409);
+    assert.equal((await replayConflict.json()).error, "request_id_conflict");
+    assert(!JSON.stringify(await readChannels()).includes(idempotentSecret));
+    await api.delete(`/api/channels/connections/${firstIdempotent.connection.connection_id}`, {
+      data: {
+        expected_revision: firstIdempotent.connection.revision,
+        request_id: "e2e-channel-idempotent-cleanup",
+        confirm: true,
+      },
+    });
+    console.log("Channel request idempotency and write-only credentials passed.");
+
+    // Lifecycle failures and reconnect are rendered from Server responses.
+    // A mocked capability represents a Server that has registered the adapter;
+    // the mocked POSTs verify the browser error/notice paths.
+    const baseOverview = await readChannels();
+    const seededTelegram = baseOverview.connections.find(view => view.connection.display_name === "E2E Telegram");
+    assert(seededTelegram, "The seeded Telegram connection must remain");
+    const capabilityResponse = await api.get("/api/channels/capabilities");
+    assert.equal(capabilityResponse.status(), 200);
+    const mockedCapabilities = await capabilityResponse.json();
+    mockedCapabilities.platforms = mockedCapabilities.platforms.map(row =>
+      row.platform === "telegram"
+        ? { ...row, adapter_supported: true, supported_actions: ["create", "update", "delete", "start", "stop", "reconnect"] }
+        : row,
+    );
+    const capabilityPattern = /\/api\/channels\/capabilities$/;
+    const startPattern = /\/api\/channels\/connections\/[^/]+\/start$/;
+    const reconnectPattern = /\/api\/channels\/connections\/[^/]+\/reconnect$/;
+    await page.route(capabilityPattern, async route => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(mockedCapabilities) });
+    });
+    await page.route(startPattern, async route => {
+      if (route.request().method() !== "POST") return route.continue();
+      await route.fulfill({ status: 501, contentType: "application/json", body: JSON.stringify({ error: "adapter_not_implemented" }) });
+    });
+    await page.route(reconnectPattern, async route => {
+      if (route.request().method() !== "POST") return route.continue();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          request_id: "e2e-channel-reconnect",
+          connection: seededTelegram.connection,
+          runtime: { ...seededTelegram.runtime, actual_state: "running", last_connected_at: new Date().toISOString() },
+        }),
+      });
+    });
+    await page.goto(new URL(`/channels.html?platform=telegram&connection_id=${seededTelegram.connection.connection_id}`, url).href);
+    await page.getByRole("heading", { name: "E2E Telegram", exact: true }).waitFor();
+    await page.getByRole("button", { name: "启动", exact: true }).click();
+    await page.getByRole("alert").filter({ hasText: "尚未实现该平台的 Adapter" }).waitFor();
+    await page.getByRole("button", { name: "重连", exact: true }).click();
+    await page.getByText(/已提交重连/).waitFor();
+    await page.locator('.channel-state[data-state="running"]').waitFor({ timeout: 2000 });
+    await page.unroute(capabilityPattern);
+    await page.unroute(startPattern);
+    await page.unroute(reconnectPattern);
+    console.log("Channel lifecycle failure and reconnect states passed.");
+
+    // The legacy WeChat projection has no normal create/edit/delete path and
+    // keeps pointing at the existing settings login flow.
+    const legacyConnection = {
+      connection_id: "legacy-wechat",
+      platform: "wechat",
+      display_name: "个人微信 Bot",
+      enabled: false,
+      desired_state: "stopped",
+      credential_ref: null,
+      owner_identity: null,
+      allowed_senders: [],
+      metadata: { legacy: true, adapter: "wechat_session" },
+      revision: 1,
+      created_at: "2026-01-01T00:00:00+00:00",
+      updated_at: "2026-01-01T00:00:00+00:00",
+      legacy: true,
+    };
+    const legacyOverview = {
+      ...baseOverview,
+      platforms: baseOverview.platforms.map(row =>
+        row.platform === "wechat"
+          ? { ...row, display_state: "silent", connections: 1, running: 0 }
+          : row,
+      ),
+      connections: [
+        {
+          connection: legacyConnection,
+          runtime: {
+            connection_id: "legacy-wechat",
+            actual_state: "stopped",
+            last_connected_at: null,
+            last_heartbeat_at: null,
+            last_error: null,
+            next_retry_at: null,
+          },
+        },
+      ],
+    };
+    await page.route(overviewPattern, async route => {
+      if (route.request().method() !== "GET") return route.continue();
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(legacyOverview) });
+    });
+    await page.goto(new URL("/channels.html?platform=wechat", url).href);
+    await page.getByRole("heading", { name: "微信连接", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "宿主托管的微信", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "新建连接", exact: true }).count(), 0);
+    await page.locator(".channels-connection").filter({ hasText: "个人微信 Bot" }).click();
+    await page.getByRole("heading", { name: "个人微信 Bot", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "编辑", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "删除", exact: true }).count(), 0);
+    assert.match(
+      await page.getByRole("link", { name: /设置 → 微信/ }).getAttribute("href"),
+      /settings\.html\?section=wechat/,
+    );
+    await page.unroute(overviewPattern);
+    console.log("Legacy WeChat compatibility panel passed.");
+
+    // Reduced motion skips the GSAP entrance, and rapid history switching
+    // leaves no stale cards or inline animation residue.
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto(new URL("/channels.html", url).href);
+    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 4);
+    const reducedMotion = await page.evaluate(() => ({
+      matches: matchMedia("(prefers-reduced-motion: reduce)").matches,
+      hidden: [...document.querySelectorAll("[data-channel-animate]")].filter(element => {
+        const style = getComputedStyle(element);
+        return style.opacity !== "1" || style.visibility !== "visible";
+      }).length,
+    }));
+    assert(reducedMotion.matches);
+    assert.equal(reducedMotion.hidden, 0);
+    for (const candidate of ["qq", "telegram", "discord", "wechat", "qq", "telegram"]) {
+      await page.locator(`.channels-platform[data-platform="${candidate}"]`).click();
+      await page.goBack();
+    }
+    await page.getByRole("heading", { name: "连接", exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelectorAll(".channels-platform").length === 4);
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    console.log("Channel reduced motion and rapid route switching passed.");
+
 
     let approvalUrl;
     const recoveryId = process.env.CAIRN_WEB_E2E_RECOVERY_TASK;
@@ -673,6 +993,7 @@ try {
       ["chat", chatUrl, "CLI browser takeover"],
       ["task", taskUrl, "工作树"],
       ["knowledge", knowledgeUrl, "知识"],
+      ["channels", new URL("/channels.html", url).href, "连接"],
       ["run", runUrl, "执行时间线"],
       ...(approvalUrl ? [["approval", approvalUrl, "恢复核对"]] : []),
     ]) {
