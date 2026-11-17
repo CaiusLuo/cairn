@@ -16,6 +16,9 @@ _READ_ONLY_TOOLS = frozenset(
         "glob",
         "grep",
         "memory_search",
+        "knowledge_list",
+        "knowledge_search",
+        "knowledge_get",
         "task_list",
         "task_detail",
     }

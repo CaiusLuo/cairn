@@ -12,6 +12,7 @@ from cairn.agent.tools.registry import ToolRegistry
 from cairn.development.catalogue import ChannelPrincipal, RuntimeTask
 from cairn.development.execution.runtime import apply_channel_tool_scope
 from cairn.server.config import Services
+from cairn.knowledge.store import KnowledgeStore
 from cairn.server.management import ServerControls
 
 
@@ -119,3 +120,26 @@ def test_owner_gets_skills_but_direct_controls_are_unused_for_guests(
     owner.configure_agent(agent, channel_task("owner"))
     assert agent.skill_library is not None
     assert "read_skill" in registry.tools
+
+
+def test_knowledge_tools_are_owner_only(tmp_path: Path) -> None:
+    owner = controls()
+    owner.services = Services(memory=False, schedule=False)
+    owner.workspace = tmp_path
+    owner.knowledge_store = KnowledgeStore(tmp_path / "knowledge")
+    owner.knowledge_store.create("PRIVATE-KNOWLEDGE-ONLY")
+
+    owner_agent, owner_registry = agent_with_registry()
+    owner_agent.system_prompt = "Assistant."
+    owner.configure_agent(owner_agent, channel_task("owner"))
+    assert {"knowledge_list", "knowledge_search", "knowledge_get"} <= set(
+        owner_registry.tools
+    )
+    assert "knowledge_list" in owner_agent.system_prompt
+
+    guest_agent, guest_registry = agent_with_registry()
+    owner.configure_agent(guest_agent, channel_task("allowed"))
+    assert "knowledge_search" not in guest_registry.tools
+    assert "knowledge_get" not in guest_registry.tools
+    apply_channel_tool_scope(guest_agent, channel_task("allowed"))
+    assert not guest_registry.tools
