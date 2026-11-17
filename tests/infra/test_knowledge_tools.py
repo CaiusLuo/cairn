@@ -11,7 +11,11 @@ import pytest
 
 from cairn.agent.tools.base import InvalidArguments
 from cairn.knowledge.store import KnowledgeStore
-from cairn.knowledge.tools import KnowledgeGetTool, KnowledgeListTool, KnowledgeSearchTool
+from cairn.knowledge.tools import (
+    KnowledgeGetTool,
+    KnowledgeListTool,
+    KnowledgeSearchTool,
+)
 
 
 def result(tool: object, args: dict[str, object]) -> dict[str, object]:
@@ -22,7 +26,10 @@ def result(tool: object, args: dict[str, object]) -> dict[str, object]:
 
 def test_list_search_get_pagination_and_archived_filter(tmp_path: Path) -> None:
     store = KnowledgeStore(tmp_path / "knowledge")
-    first, _ = store.create("Cairn saved knowledge: blue-shape " + "x" * 9000, tags=["cairn"])
+    first, _ = store.create(
+        "Cairn saved knowledge: blue-shape " + "x" * 9000,
+        tags=["cairn"],
+    )
     archived, _ = store.create("obsolete blue-shape", tags=["cairn"])
     store.set_archived(archived.clip_id, archived=True)
     store.create("newest note", tags=["journal"])
@@ -52,11 +59,20 @@ def test_list_search_get_pagination_and_archived_filter(tmp_path: Path) -> None:
     assert len(rest["content"]) == 1000
     assert detail["untrusted_reference"] is True
 
-    assert result(KnowledgeGetTool(store), {"clip_id": archived.clip_id})["status"] == "not_found"
-    assert result(KnowledgeGetTool(store), {"clip_id": "clip-missing"})["status"] == "not_found"
+    assert (
+        result(KnowledgeGetTool(store), {"clip_id": archived.clip_id})["status"]
+        == "not_found"
+    )
+    assert (
+        result(KnowledgeGetTool(store), {"clip_id": "clip-missing"})["status"]
+        == "not_found"
+    )
 
     reopened = KnowledgeStore(tmp_path / "knowledge")
-    assert result(KnowledgeGetTool(reopened), {"clip_id": first.clip_id})["status"] == "ok"
+    assert (
+        result(KnowledgeGetTool(reopened), {"clip_id": first.clip_id})["status"]
+        == "ok"
+    )
 
 
 def test_tools_validate_model_arguments(tmp_path: Path) -> None:
@@ -73,7 +89,9 @@ def test_tools_validate_model_arguments(tmp_path: Path) -> None:
             tool.validate(args)
 
 
-def test_unavailable_store_is_distinct_from_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unavailable_store_is_distinct_from_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     store = KnowledgeStore(tmp_path / "knowledge")
     def unavailable(*args: object, **kwargs: object) -> None:
         raise sqlite3.OperationalError("secret path /private/knowledge.sqlite3")

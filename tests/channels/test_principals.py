@@ -11,8 +11,8 @@ from cairn.agent.tools.base import ToolExecutionContext
 from cairn.agent.tools.registry import ToolRegistry
 from cairn.development.catalogue import ChannelPrincipal, RuntimeTask
 from cairn.development.execution.runtime import apply_channel_tool_scope
-from cairn.server.config import Services
 from cairn.knowledge.store import KnowledgeStore
+from cairn.server.config import Services
 from cairn.server.management import ServerControls
 
 

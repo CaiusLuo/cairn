@@ -23,12 +23,22 @@ READ_CHARS = 4000
 
 def _json_result(payload: dict[str, Any], *, ok: bool = True) -> ToolResult:
     data = json.dumps(payload, ensure_ascii=False)
-    return ToolResult(stdout=data if ok else "", stderr="" if ok else data, exit_code=0 if ok else 1)
+    return ToolResult(
+        stdout=data if ok else "",
+        stderr="" if ok else data,
+        exit_code=0 if ok else 1,
+    )
 
 
-def _number(args: dict[str, Any], key: str, default: int, upper: int, *, lower: int = 0) -> int:
+def _number(
+    args: dict[str, Any], key: str, default: int, upper: int, *, lower: int = 0
+) -> int:
     value = args.get(key, default)
-    if isinstance(value, bool) or not isinstance(value, int) or not lower <= value <= upper:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not lower <= value <= upper
+    ):
         raise InvalidArguments(f"{key} must be an integer between {lower} and {upper}")
     return value
 
@@ -59,7 +69,10 @@ class _KnowledgeTool:
     @staticmethod
     def _unavailable() -> ToolResult:
         # Deliberately omit filesystem paths, private content and raw SQLite errors.
-        return _json_result({"status": "unavailable", "error": "knowledge_store_unavailable"}, ok=False)
+        return _json_result(
+            {"status": "unavailable", "error": "knowledge_store_unavailable"},
+            ok=False,
+        )
 
 
 class KnowledgeListTool(_KnowledgeTool):
@@ -79,7 +92,11 @@ class KnowledgeListTool(_KnowledgeTool):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "limit": {"type": "integer", "minimum": 1, "maximum": PAGE_LIMIT},
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": PAGE_LIMIT,
+                        },
                         "offset": {"type": "integer", "minimum": 0, "maximum": 1000000},
                     },
                     "additionalProperties": False,
@@ -130,7 +147,11 @@ class KnowledgeSearchTool(_KnowledgeTool):
                     "type": "object",
                     "properties": {
                         "query": {"type": "string", "minLength": 1, "maxLength": 500},
-                        "limit": {"type": "integer", "minimum": 1, "maximum": PAGE_LIMIT},
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": PAGE_LIMIT,
+                        },
                         "offset": {"type": "integer", "minimum": 0, "maximum": 1000000},
                     },
                     "required": ["query"],
@@ -160,7 +181,10 @@ class KnowledgeSearchTool(_KnowledgeTool):
             return self._unavailable()
         return _json_result({
             "status": "ok" if clips else "empty",
-            "clips": [_metadata(clip, preview_chars=PREVIEW_CHARS) for clip in clips[:limit]],
+            "clips": [
+                _metadata(clip, preview_chars=PREVIEW_CHARS)
+                for clip in clips[:limit]
+            ],
             "limit": limit,
             "offset": offset,
             "has_more": len(clips) > limit,
@@ -186,7 +210,11 @@ class KnowledgeGetTool(_KnowledgeTool):
                     "properties": {
                         "clip_id": {"type": "string", "minLength": 1, "maxLength": 100},
                         "offset": {"type": "integer", "minimum": 0, "maximum": 100000},
-                        "max_chars": {"type": "integer", "minimum": 1, "maximum": READ_CHARS},
+                        "max_chars": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": READ_CHARS,
+                        },
                     },
                     "required": ["clip_id"],
                     "additionalProperties": False,
@@ -198,7 +226,9 @@ class KnowledgeGetTool(_KnowledgeTool):
         _keys(arguments, {"clip_id", "offset", "max_chars"})
         clip_id = arguments.get("clip_id")
         if not isinstance(clip_id, str) or not clip_id.strip() or len(clip_id) > 100:
-            raise InvalidArguments("clip_id must be a nonblank ID of at most 100 characters")
+            raise InvalidArguments(
+                "clip_id must be a nonblank ID of at most 100 characters"
+            )
         _number(arguments, "offset", 0, 100000)
         _number(arguments, "max_chars", READ_CHARS, READ_CHARS, lower=1)
 
@@ -228,7 +258,16 @@ class KnowledgeGetTool(_KnowledgeTool):
 
 def personal_knowledge_tools(store: KnowledgeStore) -> tuple[Tool, ...]:
     """The owner-only, read-only tool set for ordinary conversation."""
-    return (KnowledgeListTool(store), KnowledgeSearchTool(store), KnowledgeGetTool(store))
+    return (
+        KnowledgeListTool(store),
+        KnowledgeSearchTool(store),
+        KnowledgeGetTool(store),
+    )
 
 
-__all__ = ["KnowledgeListTool", "KnowledgeSearchTool", "KnowledgeGetTool", "personal_knowledge_tools"]
+__all__ = [
+    "KnowledgeGetTool",
+    "KnowledgeListTool",
+    "KnowledgeSearchTool",
+    "personal_knowledge_tools",
+]

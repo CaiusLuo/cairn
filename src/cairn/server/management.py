@@ -28,13 +28,13 @@ from cairn.development.execution.headless import HeadlessResult, HeadlessStatus
 from cairn.development.execution.runtime import ServiceExecution
 from cairn.development.service import TaskService
 from cairn.integrations.wechat.session import WechatSessionController
+from cairn.knowledge.store import KnowledgeStore
+from cairn.knowledge.tools import personal_knowledge_tools
 from cairn.memory.commands import MemoryController
 from cairn.memory.journal import TaskJournal
 from cairn.memory.service import PersonalMemoryService
 from cairn.memory.store import PersonalMemoryStore
 from cairn.memory.tools import personal_memory_tools
-from cairn.knowledge.store import KnowledgeStore
-from cairn.knowledge.tools import personal_knowledge_tools
 from cairn.scheduling.commands import ScheduleController
 from cairn.scheduling.store import ScheduleStore
 from cairn.scheduling.tools import (
