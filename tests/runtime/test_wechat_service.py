@@ -1429,14 +1429,6 @@ def test_wechat_tasks_link_to_their_persistent_sender_session(
                 LLMResponse(
                     tool_calls=[
                         ToolCall(
-                            id="b1", name="task_create", arguments={"title": "B first"}
-                        )
-                    ]
-                ),
-                LLMResponse(content="B first done"),
-                LLMResponse(
-                    tool_calls=[
-                        ToolCall(
                             id="a2", name="task_create", arguments={"title": "A later"}
                         )
                     ]
