@@ -99,13 +99,23 @@ def test_tools_validate_model_arguments(tmp_path: Path) -> None:
     store = KnowledgeStore(tmp_path / "knowledge")
     for tool, args in (
         (KnowledgeListTool(store), {"limit": True}),
+        (KnowledgeListTool(store), {"limit": 0}),
+        (KnowledgeListTool(store), {"limit": 21}),
+        (KnowledgeListTool(store), {"offset": -1}),
+        (KnowledgeListTool(store), {"offset": 1_000_001}),
         (KnowledgeListTool(store), {"include_archived": True}),
         (KnowledgeListTool(store), {"path": "/private/state/domain.sqlite3"}),
         (KnowledgeSearchTool(store), {"query": " "}),
         (KnowledgeSearchTool(store), {"query": "x" * 501}),
+        (KnowledgeSearchTool(store), {"query": "x", "limit": 0}),
+        (KnowledgeSearchTool(store), {"query": "x", "limit": 21}),
+        (KnowledgeSearchTool(store), {"query": "x", "offset": -1}),
         (KnowledgeSearchTool(store), {"query": "x", "token": "secret"}),
         (KnowledgeGetTool(store), {"clip_id": ""}),
+        (KnowledgeGetTool(store), {"clip_id": "clip-1", "max_chars": 0}),
         (KnowledgeGetTool(store), {"clip_id": "clip-1", "max_chars": 5000}),
+        (KnowledgeGetTool(store), {"clip_id": "clip-1", "offset": -1}),
+        (KnowledgeGetTool(store), {"clip_id": "clip-1", "offset": 100001}),
         (KnowledgeGetTool(store), {"clip_id": "clip-1", "path": "/etc/passwd"}),
     ):
         with pytest.raises(InvalidArguments):
