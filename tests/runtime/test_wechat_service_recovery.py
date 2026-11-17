@@ -511,7 +511,12 @@ def test_configured_wechat_restores_tool_facts_after_service_restart(
             config = ServeConfig(
                 workspace=workspace,
                 state_dir=state_dir,
-                account=_account(fake),
+                account=WechatAccount(
+                    bot_token=TOKEN,
+                    ilink_bot_id=fake.account_id,
+                    base_url=fake.url,
+                    ilink_user_id="u1",
+                ),
                 approval=approval,
                 allowed_senders=frozenset({"u1"}),
                 max_steps=20,

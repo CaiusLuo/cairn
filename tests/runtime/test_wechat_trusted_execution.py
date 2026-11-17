@@ -288,14 +288,14 @@ def test_standalone_wechat_scope_follows_the_bound_owner(
         task = default_task_executor(config)
         denied = await task(
             "start development", asyncio.Event(), "trusted-task", sender="trusted"
-        )
+        )  # type: ignore[call-arg]
         assert denied.status is HeadlessStatus.UNAUTHORIZED
         assert "主人" in (denied.final_response or "")
         assert len(captured) == 2
 
         allowed = await task(
             "start development", asyncio.Event(), "owner-task", sender="owner"
-        )
+        )  # type: ignore[call-arg]
         assert allowed.status is HeadlessStatus.COMPLETED
         assert len(captured) == 3
 
