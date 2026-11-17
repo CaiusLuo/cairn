@@ -76,7 +76,7 @@ def test_owner_chat_reads_saved_clip_through_registered_tool(tmp_path: Path) -> 
         )
         async with app.router.lifespan_context(app):
             conversation = await api.create_conversation(
-                "知识库里有什么？", source="cli"
+                "知识库里有什么?", source="cli"
             )
             run = await api.send_conversation(
                 conversation["conversation_id"],
