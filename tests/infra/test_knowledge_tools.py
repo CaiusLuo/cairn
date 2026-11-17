@@ -47,11 +47,14 @@ def test_list_search_get_pagination_and_archived_filter(tmp_path: Path) -> None:
     assert matches["clips"][0]["clip_id"] == first.clip_id
     assert matches["clips"][0]["tags"] == ["cairn"]
     assert len(matches["clips"][0]["preview"]) <= 240
+    assert matches["untrusted_reference"] is True
+    assert listed["untrusted_reference"] is True
     assert result(KnowledgeSearchTool(store), {"query": "absent"})["status"] == "empty"
 
     detail = result(KnowledgeGetTool(store), {"clip_id": first.clip_id})
     assert detail["clip"]["clip_id"] == first.clip_id
     assert len(detail["content"]) == 4000
+    assert detail["total_chars"] == len(first.content)
     assert detail["next_offset"] == 4000
     rest = result(
         KnowledgeGetTool(store),
@@ -59,6 +62,14 @@ def test_list_search_get_pagination_and_archived_filter(tmp_path: Path) -> None:
     )
     assert len(rest["content"]) == 1000
     assert detail["untrusted_reference"] is True
+    past_end = result(
+        KnowledgeGetTool(store),
+        {"clip_id": first.clip_id, "offset": len(first.content) + 10},
+    )
+    assert past_end["status"] == "ok"
+    assert past_end["content"] == ""
+    assert past_end["total_chars"] == len(first.content)
+    assert past_end["next_offset"] is None
 
     assert (
         result(KnowledgeGetTool(store), {"clip_id": archived.clip_id})["status"]
@@ -75,15 +86,27 @@ def test_list_search_get_pagination_and_archived_filter(tmp_path: Path) -> None:
     )
 
 
+def test_chinese_keyword_search_returns_citeable_clip(tmp_path: Path) -> None:
+    store = KnowledgeStore(tmp_path / "knowledge")
+    clip, _ = store.create("项目代号: 蓝石。下周与供应商确认交付时间。")
+    outcome = result(KnowledgeSearchTool(store), {"query": "蓝石"})
+    assert outcome["status"] == "ok"
+    assert [item["clip_id"] for item in outcome["clips"]] == [clip.clip_id]
+    assert "蓝石" in outcome["clips"][0]["preview"]
+
+
 def test_tools_validate_model_arguments(tmp_path: Path) -> None:
     store = KnowledgeStore(tmp_path / "knowledge")
     for tool, args in (
         (KnowledgeListTool(store), {"limit": True}),
         (KnowledgeListTool(store), {"include_archived": True}),
+        (KnowledgeListTool(store), {"path": "/private/state/domain.sqlite3"}),
         (KnowledgeSearchTool(store), {"query": " "}),
         (KnowledgeSearchTool(store), {"query": "x" * 501}),
+        (KnowledgeSearchTool(store), {"query": "x", "token": "secret"}),
         (KnowledgeGetTool(store), {"clip_id": ""}),
         (KnowledgeGetTool(store), {"clip_id": "clip-1", "max_chars": 5000}),
+        (KnowledgeGetTool(store), {"clip_id": "clip-1", "path": "/etc/passwd"}),
     ):
         with pytest.raises(InvalidArguments):
             tool.validate(args)
@@ -93,12 +116,19 @@ def test_unavailable_store_is_distinct_from_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = KnowledgeStore(tmp_path / "knowledge")
+    clip, _ = store.create("needle")
 
     def unavailable(*args: object, **kwargs: object) -> None:
         raise sqlite3.OperationalError("secret path /private/knowledge.sqlite3")
 
-    monkeypatch.setattr(store, "list_clips", unavailable)
-    outcome = asyncio.run(KnowledgeSearchTool(store).execute({"query": "needle"}))
-    assert outcome.exit_code == 1
-    assert "knowledge_store_unavailable" in outcome.stderr
-    assert "/private/" not in outcome.stderr
+    for tool, args, method in (
+        (KnowledgeSearchTool(store), {"query": "needle"}, "list_clips"),
+        (KnowledgeListTool(store), {}, "list_clips"),
+        (KnowledgeGetTool(store), {"clip_id": clip.clip_id}, "get"),
+    ):
+        monkeypatch.setattr(store, method, unavailable)
+        outcome = asyncio.run(tool.execute(args))
+        assert outcome.exit_code == 1
+        assert "knowledge_store_unavailable" in outcome.stderr
+        assert "/private/" not in outcome.stderr
+        assert outcome.stdout == ""

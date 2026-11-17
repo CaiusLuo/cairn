@@ -66,7 +66,7 @@ Open `http://127.0.0.1:8777/chat.html`; username is `cairn`, password is
 service restarts; the browser cookie is backed by hashed sessions in
 `data_root/runtime/web-sessions.json`. The Web Workbench shares this Server for conversations, development tasks, run
 history, execution recovery and private knowledge clips. Settings manages WeChat, schedules and memory. Knowledge clips
-are stored outside the Agent workspace and are never injected automatically into Agent turns or `MEMORY.md`. The owner's ordinary chat Agent can query active clips on demand with read-only `knowledge_list`, `knowledge_search` and `knowledge_get` tools, returning bounded excerpts and clip IDs for citations. Channel guests do not receive these tools, and archived clips are excluded. Use an SSH tunnel for a remote server.
+are stored outside the Agent workspace and are never injected automatically into Agent turns or `MEMORY.md`. The owner's ordinary chat Agent can query active clips on demand with read-only `knowledge_list`, `knowledge_search` and `knowledge_get` tools, returning bounded excerpts and clip IDs for citations. Channel guests and trusted WeChat senders do not receive these tools, and archived clips are excluded. Use an SSH tunnel for a remote server.
 
 Daily reviews are generated from the day's clips, Task/Run receipts and personal journal through
 `POST /api/knowledge/reviews/daily`; `GET /api/knowledge/reviews` and

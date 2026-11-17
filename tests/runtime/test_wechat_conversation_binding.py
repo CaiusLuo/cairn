@@ -39,3 +39,20 @@ def test_wechat_first_message_concurrency_creates_one_conversation(
         results = list(executor.map(bind, range(2)))
     assert results[0] == results[1]
     assert len(store.list_conversations()) == 1
+
+
+def test_wechat_binding_verifies_exact_account_and_sender(tmp_path: Path) -> None:
+    store = DomainStore(tmp_path / "domain.sqlite3")
+    conversation = _bind(store, "bot-1", "owner")
+
+    assert store.is_wechat_binding(conversation, account_id="bot-1", sender_id="owner")
+    assert not store.is_wechat_binding(
+        conversation, account_id="bot-1", sender_id="other"
+    )
+    assert not store.is_wechat_binding(
+        conversation, account_id="bot-2", sender_id="owner"
+    )
+    assert not store.is_wechat_binding(
+        "conversation-missing", account_id="bot-1", sender_id="owner"
+    )
+    assert not store.is_wechat_binding(conversation, account_id="", sender_id="owner")

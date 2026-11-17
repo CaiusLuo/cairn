@@ -340,6 +340,35 @@ class DomainStore:
             ).fetchone()
         return self._conversation(row) if row is not None else None
 
+    def is_wechat_binding(
+        self,
+        conversation_id: str,
+        *,
+        account_id: str,
+        sender_id: str,
+    ) -> bool:
+        """Whether this conversation belongs to the exact WeChat account/sender.
+
+        The binding stores only hashed identity digests, so a caller that knows
+        the trusted account and owner identity can verify ownership without
+        recovering any other sender's identifier.
+        """
+        if not conversation_id or not account_id or not sender_id:
+            return False
+        account_digest = hashlib.sha256(
+            ("wechat-account:" + account_id).encode()
+        ).hexdigest()
+        sender_digest = hashlib.sha256(
+            ("wechat-sender:" + sender_id).encode()
+        ).hexdigest()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM wechat_bindings WHERE conversation_id = ? "
+                "AND account_digest = ? AND sender_digest = ? LIMIT 1",
+                (conversation_id, account_digest, sender_digest),
+            ).fetchone()
+        return row is not None
+
     def get_or_create_wechat_conversation(
         self,
         *,

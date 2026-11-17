@@ -126,6 +126,7 @@ class KnowledgeListTool(_KnowledgeTool):
                 "limit": limit,
                 "offset": offset,
                 "has_more": len(clips) > limit,
+                "untrusted_reference": True,
             }
         )
 
@@ -134,9 +135,11 @@ class KnowledgeSearchTool(_KnowledgeTool):
     name = "knowledge_search"
     description = (
         "Search the owner's active knowledge clips by a text or tag substring. "
-        "Return citeable clip IDs and bounded excerpts. For detailed answers read "
-        "a matching clip with knowledge_get. Do not search repository files as a "
-        "substitute for private knowledge."
+        "Use short, distinctive keywords (for Chinese, one or two key terms "
+        "rather than a whole question sentence) and try another term if the "
+        "first misses. Return citeable clip IDs and bounded excerpts. For "
+        "detailed answers read a matching clip with knowledge_get. Do not "
+        "search repository files as a substitute for private knowledge."
     )
 
     def schema(self) -> dict[str, Any]:
@@ -191,6 +194,7 @@ class KnowledgeSearchTool(_KnowledgeTool):
                 "limit": limit,
                 "offset": offset,
                 "has_more": len(clips) > limit,
+                "untrusted_reference": True,
             }
         )
 
@@ -249,14 +253,16 @@ class KnowledgeGetTool(_KnowledgeTool):
             return self._unavailable()
         if clip is None or clip.archived_at is not None:
             return _json_result({"status": "not_found", "clip_id": clip_id})
-        end = min(offset + max_chars, len(clip.content))
+        total_chars = len(clip.content)
+        end = min(offset + max_chars, total_chars)
         return _json_result(
             {
                 "status": "ok",
                 "clip": _metadata(clip),
                 "content": clip.content[offset:end],
                 "offset": offset,
-                "next_offset": end if end < len(clip.content) else None,
+                "total_chars": total_chars,
+                "next_offset": end if end < total_chars else None,
                 "untrusted_reference": True,
             }
         )
