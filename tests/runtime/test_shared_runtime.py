@@ -12,6 +12,7 @@ from cairn.integrations.wechat.runtime import (
     WechatConversationAdapter,
     WechatRuntimeAdapter,
 )
+from cairn.integrations.wechat.state import WechatAccount, WechatState
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 
@@ -42,6 +43,14 @@ def repository(root: Path) -> Path:
 def test_cli_web_wechat_share_real_execution_and_worktree(tmp_path: Path) -> None:
     async def scenario() -> None:
         source = repository(tmp_path / "source")
+        WechatState(tmp_path / "state" / "wechat").save_account(
+            WechatAccount(
+                bot_token="unit-test-wechat-bot",
+                ilink_bot_id="bot-1",
+                base_url="https://example.test",
+                ilink_user_id="owner",
+            )
+        )
         app = runtime_app(
             source,
             tmp_path / "state",
@@ -101,7 +110,10 @@ def test_cli_web_wechat_share_real_execution_and_worktree(tmp_path: Path) -> Non
             await asyncio.wait_for(app.state.runtime.queue.join(), 30)
             assert (await api.inspect(second["task_id"]))["status"] == "completed"
             third = await wechat.reply(
-                "/task Create from WeChat", message_id="wechat-message-1"
+                "/task Create from WeChat",
+                message_id="wechat-message-1",
+                sender="owner",
+                account="bot-1",
             )
             await asyncio.wait_for(app.state.runtime.queue.join(), 30)
             assert "task-" in third
@@ -369,7 +381,7 @@ def test_pause_survives_service_restart_with_usage_and_original_worktree(
 
         app = build()
         async with app.router.lifespan_context(app):
-            task = app.state.runtime.submit("Create", "wechat")
+            task = app.state.runtime.submit("Create", "cli")
             await asyncio.wait_for(app.state.runtime.queue.join(), 30)
             first = app.state.runtime.inspect(task.task_id)
             assert first.status == "paused"
@@ -649,10 +661,19 @@ def test_full_wechat_bridge_startup_does_not_initialize_legacy_agent(
         async with app.router.lifespan_context(app):
             with FakeILink() as fake:
                 fake.updates.append(
-                    {"ret": 0, "msgs": [_msg("/task Create through the full bridge")]}
+                    {
+                        "ret": 0,
+                        "msgs": [
+                            _msg(
+                                "/task Create through the full bridge",
+                                sender="owner",
+                            )
+                        ],
+                    }
                 )
                 config = replace(
                     _config(fake, source, tmp_path / "wechat", max_polls=None),
+                    allowed_senders=frozenset({"owner", "u1"}),
                     runtime_url="http://127.0.0.1:8777",
                     runtime_client=api,
                     schedule_store=tmp_path / "legacy-schedule",

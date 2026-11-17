@@ -22,6 +22,7 @@ from cairn.development.service import (
     TaskNotContinuable,
     TaskRecoveryRequired,
     TaskService,
+    TaskSubmissionForbidden,
 )
 from cairn.interfaces.web.auth import operator_request
 from cairn.shared.lifecycle import settle_owned
@@ -158,6 +159,10 @@ def task_routes(
         except TaskNotContinuable as error:
             return JSONResponse(
                 {"error": "task_not_continuable", "message": str(error)}, 409
+            )
+        except TaskSubmissionForbidden as error:
+            return JSONResponse(
+                {"error": "task_submission_forbidden", "message": str(error)}, 403
             )
         except (ValueError, ValidationError, TaskNeedsRecovery):
             return JSONResponse({"error": "invalid_request_or_unsafe_continue"}, 409)

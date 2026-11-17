@@ -368,13 +368,22 @@ class WechatRuntimeAdapter:
             return "暂无任务"
         if command != "/task":
             raise ValueError("普通微信聊天必须使用 WechatConversationAdapter")
-        task = await self.client.submit(
-            argument,
-            "wechat",
-            request_id=message_id,
-            delivery_recipient=sender,
-            delivery_account=account,
-        )
+        try:
+            task = await self.client.submit(
+                argument,
+                "wechat",
+                request_id=message_id,
+                delivery_recipient=sender,
+                delivery_account=account,
+            )
+        except httpx.HTTPStatusError as error:
+            code = ""
+            if error.response.status_code == 403:
+                with suppress(ValueError):
+                    code = str(error.response.json().get("error", ""))
+            if code == "task_submission_forbidden":
+                return "只有当前微信账号绑定的主人可以发起开发任务。"
+            raise
         if not deliver:
             # ServerControls is the single delivery owner for adapter-forwarded
             # tasks and will send the final result from TaskService.on_settled.

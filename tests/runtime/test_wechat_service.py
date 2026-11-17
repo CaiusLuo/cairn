@@ -33,7 +33,6 @@ from tests.support.fake_ilink import FakeILink
 from tests.support.runtime import SequenceLLM
 from tests.support.wechat_service import (
     TOKEN,
-    _account,
     _client,
     _completed,
     _config,
@@ -698,6 +697,7 @@ def test_default_wechat_executor_exposes_shared_task_tools(
             bot_token="bot-token-very-long-123",
             ilink_bot_id="bot",
             base_url="http://127.0.0.1",
+            ilink_user_id="u1",
         ),
         approval=None,
         allowed_senders=frozenset({"u1"}),
@@ -798,6 +798,7 @@ def test_wechat_session_refuses_agent_writable_storage(
                 bot_token="fake-bot-token-very-long",
                 ilink_bot_id="bot",
                 base_url="https://example.test",
+                ilink_user_id="u1",
             ),
             approval=None,
             allowed_senders=frozenset({"u1"}),
@@ -870,6 +871,7 @@ def test_wechat_workspace_observation_uses_current_secret_names(
                 bot_token="fake-bot-token-very-long",
                 ilink_bot_id="bot",
                 base_url="https://example.test",
+                ilink_user_id="u1",
             ),
             approval=None,
             allowed_senders=frozenset({"u1"}),
@@ -977,6 +979,7 @@ def test_wechat_durable_session_respects_explicit_capabilities(
                 bot_token="fake-bot-token-very-long",
                 ilink_bot_id="bot",
                 base_url="https://example.test",
+                ilink_user_id="u1",
             ),
             approval=None,
             allowed_senders=frozenset({"u1"}),
@@ -1062,6 +1065,7 @@ def test_wechat_durable_failed_check_can_repair_and_recheck(
                 bot_token="fake-bot-token-very-long",
                 ilink_bot_id="bot",
                 base_url="https://example.test",
+                ilink_user_id="u1",
             ),
             approval=None,
             allowed_senders=frozenset({"u1"}),
@@ -1144,6 +1148,7 @@ def test_wechat_session_close_failure_retains_owner_and_primary(
                 bot_token="fake-bot-token-very-long",
                 ilink_bot_id="bot",
                 base_url="https://example.test",
+                ilink_user_id="u1",
             ),
             approval=None,
             allowed_senders=frozenset({"u1"}),
@@ -1234,6 +1239,7 @@ def test_wechat_reopen_failure_releases_attached_session_owner(
                 bot_token="fake-bot-token-very-long",
                 ilink_bot_id="bot",
                 base_url="https://example.test",
+                ilink_user_id="u1",
             ),
             approval=None,
             allowed_senders=frozenset({"u1"}),
@@ -1321,6 +1327,7 @@ def test_wechat_attachment_failure_keeps_writer_for_host_close_retry(
                 bot_token="fake-bot-token-very-long",
                 ilink_bot_id="bot",
                 base_url="https://example.test",
+                ilink_user_id="u1",
             ),
             approval=None,
             allowed_senders=frozenset({"u1"}),
@@ -1458,7 +1465,12 @@ def test_wechat_tasks_link_to_their_persistent_sender_session(
             config = ServeConfig(
                 workspace=workspace,
                 state_dir=state_dir,
-                account=_account(fake),
+                account=WechatAccount(
+                    bot_token=TOKEN,
+                    ilink_bot_id=fake.account_id,
+                    base_url=fake.url,
+                    ilink_user_id="u1",
+                ),
                 approval=None,
                 allowed_senders=frozenset({"u1", "u2"}),
                 max_steps=20,
@@ -1486,21 +1498,23 @@ def test_wechat_tasks_link_to_their_persistent_sender_session(
             asyncio.run(exchange("u2", "B first request", 202, "second"))
             asyncio.run(exchange("u1", "A later request", 203, "third"))
 
-        for message_id in (201, 202, 203):
-            record = WechatState(state_dir).get_record(f"msg:{message_id}")
-            assert record is not None and record["state"] == "completed"
-        assert len(llm.calls) == 6
-        b_context = llm.calls[2][0]
-        a_context = llm.calls[4][0]
-        assert not any(m.content == "A first request" for m in b_context)
-        assert any(m.content == "A first request" for m in a_context)
-        assert not any(m.content == "B first request" for m in a_context)
+        owner_first = WechatState(state_dir).get_record("msg:201")
+        trusted = WechatState(state_dir).get_record("msg:202")
+        owner_later = WechatState(state_dir).get_record("msg:203")
+        assert owner_first is not None and owner_first["state"] == "completed"
+        # A trusted sender can neither start a task nor open a task session.
+        assert trusted is not None and trusted["state"] == "unauthorized"
+        assert owner_later is not None and owner_later["state"] == "completed"
+        assert any("主人" in str(message) for message in fake.sent)
+        assert len(llm.calls) == 4
+        later_context = llm.calls[2][0]
+        assert any(m.content == "A first request" for m in later_context)
+        assert not any(m.content == "B first request" for m in later_context)
 
         tasks = {task.title: task for task in TaskBoardStore(board_dir).load()}
-        assert set(tasks) == {"A first", "B first", "A later"}
+        assert set(tasks) == {"A first", "A later"}
         assert all(task.source is TaskSource.WECHAT for task in tasks.values())
         assert tasks["A first"].session_id == tasks["A later"].session_id
-        assert tasks["A first"].session_id != tasks["B first"].session_id
 
         store = SessionStore(
             state_dir / "sessions", mode="inspect", forbidden_roots=(workspace,)
@@ -1509,10 +1523,7 @@ def test_wechat_tasks_link_to_their_persistent_sender_session(
             session_ids = {summary.session_id for summary in store.list_sessions()}
         finally:
             store.close()
-        assert {
-            tasks["A first"].session_id.removeprefix("wechat:"),
-            tasks["B first"].session_id.removeprefix("wechat:"),
-        } == session_ids
+        assert {tasks["A first"].session_id.removeprefix("wechat:")} == session_ids
 
 
 def test_serve_queues_busy_messages_in_received_order(tmp_path: Path) -> None:

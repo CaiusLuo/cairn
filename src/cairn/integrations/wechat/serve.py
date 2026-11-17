@@ -321,6 +321,7 @@ def default_task_executor(
 ) -> TaskExecutor:
     if task_source is not TaskSource.WECHAT and task_source is not TaskSource.SCHEDULE:
         raise ValueError("unsupported task source for WeChat executor")
+    owner = config.account.ilink_user_id.strip()
     agent_home = default_agent_home()
     ensure_agent_home_outside_workspace(agent_home, config.workspace)
     personal_memory = PersonalMemoryService(PersonalMemoryStore(agent_home))
@@ -634,6 +635,14 @@ def default_task_executor(
     async def execute(
         prompt: str, cancel: asyncio.Event, task_id: str, *, sender: str = ""
     ) -> HeadlessResult:
+        if sender and (not owner or sender != owner):
+            return HeadlessResult(
+                task_id=task_id,
+                status=HeadlessStatus.UNAUTHORIZED,
+                workspace=str(config.workspace),
+                final_response="只有当前微信账号绑定的主人可以发起开发任务。",
+                error_category="wechat_owner_required",
+            )
         if not project_lease.acquire():
             cleanup_retained()
             return HeadlessResult(
@@ -720,7 +729,8 @@ def default_conversation_executor(
     durable_factory: object | None = None,
     project_lease: WorkspaceLease | None = None,
 ) -> ConversationExecutor:
-    """Full-capability background conversation; same provider/tool policy as tasks."""
+    """Owner conversation keeps task parity; trusted senders get safe chat."""
+    owner = config.account.ilink_user_id.strip()
     agent_home = default_agent_home()
     ensure_agent_home_outside_workspace(agent_home, config.workspace)
     personal_memory = PersonalMemoryService(PersonalMemoryStore(agent_home))
@@ -760,36 +770,49 @@ def default_conversation_executor(
     )
 
     async def execute(question: str, sender: str, snapshot: str) -> str:
+        owned = bool(owner) and sender == owner
         active_sessions: list[DurableSession] = []
         factory = (
-            durable_factory(sender, active_sessions, purpose="chat")
+            durable_factory(
+                sender,
+                active_sessions,
+                purpose="chat" if owned else "chat-guest",
+            )
             if callable(durable_factory)
             else None
+        )
+        scope = (
+            "You are the persistent Cairn assistant for this WeChat sender. "
+            "You have the same tools and memory as task work. Use tools when needed."
+            if owned
+            else "You are the Cairn assistant for a trusted WeChat sender. Private "
+            "memory, schedules, task management and host writes are unavailable. "
+            "Answer ordinary conversation only."
         )
         cleanup_error: BaseException | None = None
         try:
             result = await _run_via_config_async(
                 workspace=config.workspace,
                 prompt=(
-                    "You are the persistent Cairn assistant for this WeChat sender. "
-                    "You have the same tools and memory as task work. Use tools when "
-                    "needed. The bounded current-task facts are:\n"
+                    f"{scope} The bounded current-task facts are:\n"
                     f"{snapshot}\nUser message:\n{question}"
                 ),
                 task_id=f"wechat-chat-{sender[-8:]}",
-                grant_shell=config.allow_shell,
+                grant_shell=config.allow_shell and owned,
                 approval=config.approval,
                 max_steps=config.max_steps,
                 trace_dir=config.trace_dir,
                 cancellation_event=None,
-                personal_context=personal_memory.render_context(),
-                read_only=False,
-                sandbox_shell=config.allow_shell,
+                personal_context=personal_memory.render_context() if owned else "",
+                read_only=not owned,
+                sandbox_shell=config.allow_shell and owned,
                 system_prompt=system_prompt_for("chat"),
                 conversation_only=factory is not None,
                 tool_lease=project_lease,
                 durable_session_factory=factory,
-                extra_tools=(*memory_tools, *task_tools, *schedule_tools),
+                extra_tools=(
+                    (*memory_tools, *task_tools, *schedule_tools) if owned else ()
+                ),
             )
         finally:
             primary_error = sys.exception()

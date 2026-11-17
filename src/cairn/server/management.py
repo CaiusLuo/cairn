@@ -26,7 +26,7 @@ from cairn.development.board.service import TaskBoardService
 from cairn.development.catalogue import RuntimeTask
 from cairn.development.execution.headless import HeadlessResult, HeadlessStatus
 from cairn.development.execution.runtime import ServiceExecution
-from cairn.development.service import TaskService
+from cairn.development.service import TaskService, TaskSubmissionForbidden
 from cairn.integrations.wechat.session import WechatSessionController
 from cairn.knowledge.store import KnowledgeStore
 from cairn.knowledge.tools import personal_knowledge_tools
@@ -171,6 +171,7 @@ class ServerControls:
         self.execution.configure_agent = self.configure_agent
         self.execution.validate_task = self.validate_task
         self.service.validate_submission = self.validate_task
+        self.service.authorize_new_submission = self.authorize_new_task
         self.service.on_settled = self.observe_settled
 
     def _notice(self, text: str) -> None:
@@ -856,6 +857,28 @@ class ServerControls:
         elif command not in {"/status", "/task", "/cancel"}:
             raise ValueError("Unknown WeChat task command")
         return {"ok": True, "task": task.model_dump(mode="json")}
+
+    def authorize_new_task(self, task: RuntimeTask) -> None:
+        """Only the bound Owner may create a new WeChat task.
+
+        This is the server-side admission decision for the explicit ``/task``
+        path, not an adapter-only check. Existing Tasks keep their stored
+        sender/account binding in ``_require_wechat_task``; this hook runs only
+        for a new submission.
+        """
+        if task.source != "wechat":
+            return
+        owner = self.wechat.recipient_id()
+        account = self.wechat.account_id()
+        if (
+            not owner
+            or not account
+            or task.delivery_recipient != owner
+            or task.delivery_account != account
+        ):
+            raise TaskSubmissionForbidden(
+                "Only the bound WeChat owner may create a WeChat task"
+            )
 
     def validate_task(self, task: RuntimeTask) -> None:
         if (task.delivery_recipient is None) != (task.delivery_account is None):

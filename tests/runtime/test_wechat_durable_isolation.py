@@ -99,6 +99,7 @@ def configured(
             bot_token="fake-bot-token",
             ilink_bot_id="test-bot-" + uuid.uuid4().hex,
             base_url="https://example.test",
+            ilink_user_id="u1",
         ),
         approval=approval,
         allowed_senders=frozenset({"u1"}),
