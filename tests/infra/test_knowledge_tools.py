@@ -6,10 +6,11 @@ import asyncio
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
-from cairn.agent.tools.base import InvalidArguments
+from cairn.agent.tools.base import InvalidArguments, Tool
 from cairn.knowledge.store import KnowledgeStore
 from cairn.knowledge.tools import (
     KnowledgeGetTool,
@@ -18,10 +19,10 @@ from cairn.knowledge.tools import (
 )
 
 
-def result(tool: object, args: dict[str, object]) -> dict[str, object]:
-    outcome = asyncio.run(tool.execute(args))  # type: ignore[attr-defined]
+def result(tool: Tool, args: dict[str, Any]) -> dict[str, Any]:
+    outcome = asyncio.run(tool.execute(args))
     assert outcome.exit_code == 0, outcome.stderr
-    return json.loads(outcome.stdout)
+    return cast(dict[str, Any], json.loads(outcome.stdout))
 
 
 def test_list_search_get_pagination_and_archived_filter(tmp_path: Path) -> None:
