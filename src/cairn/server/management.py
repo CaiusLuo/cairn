@@ -865,7 +865,7 @@ class ServerControls:
         ):
             raise ValueError("Task delivery identity is not authorized")
 
-    def _owner_task(self, task: RuntimeTask) -> bool:
+    def _is_owner_task(self, task: RuntimeTask) -> bool:
         """Host-verified owner identity for private capabilities.
 
         Channel principals carry the role from the stored connection. Legacy
@@ -902,7 +902,7 @@ class ServerControls:
         # and private knowledge. A trusted sender keeps read-only project
         # inspection but no private capability; an unknown sender never
         # reaches execution.
-        personal = self._owner_task(task)
+        personal = self._is_owner_task(task)
         if personal and self.services.memory:
             agent.personal_context = "\n\n".join(
                 filter(None, (agent.personal_context, self.memory.render_context()))
@@ -911,9 +911,8 @@ class ServerControls:
                 agent.tools.register_tool(tool)
         # Knowledge is an explicit, owner-only read capability. It never
         # injects saved clip bodies into unrelated conversations.
-        knowledge_store = getattr(self, "knowledge_store", None)
-        if personal and knowledge_store is not None:
-            for tool in personal_knowledge_tools(knowledge_store):
+        if personal and self.knowledge_store is not None:
+            for tool in personal_knowledge_tools(self.knowledge_store):
                 agent.tools.register_tool(tool)
             agent.system_prompt += (
                 "\n\nYou can read the owner's private knowledge clips using "

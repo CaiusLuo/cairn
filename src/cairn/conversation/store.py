@@ -317,18 +317,20 @@ class DomainStore:
             ).fetchone()
         return None if row is None else self._conversation(row)
 
+    @staticmethod
+    def _wechat_digests(account_id: str, sender_id: str) -> tuple[str, str]:
+        return (
+            hashlib.sha256(("wechat-account:" + account_id).encode()).hexdigest(),
+            hashlib.sha256(("wechat-sender:" + sender_id).encode()).hexdigest(),
+        )
+
     def get_wechat_conversation(
         self, *, workspace: Path | str, account_id: str, sender_id: str
     ) -> Conversation | None:
         if not account_id or not sender_id:
             return None
         workspace_id = workspace_id_for(workspace)
-        account_digest = hashlib.sha256(
-            ("wechat-account:" + account_id).encode()
-        ).hexdigest()
-        sender_digest = hashlib.sha256(
-            ("wechat-sender:" + sender_id).encode()
-        ).hexdigest()
+        account_digest, sender_digest = self._wechat_digests(account_id, sender_id)
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT conversations.* FROM wechat_bindings "
@@ -355,12 +357,7 @@ class DomainStore:
         """
         if not conversation_id or not account_id or not sender_id:
             return False
-        account_digest = hashlib.sha256(
-            ("wechat-account:" + account_id).encode()
-        ).hexdigest()
-        sender_digest = hashlib.sha256(
-            ("wechat-sender:" + sender_id).encode()
-        ).hexdigest()
+        account_digest, sender_digest = self._wechat_digests(account_id, sender_id)
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT 1 FROM wechat_bindings WHERE conversation_id = ? "
@@ -383,12 +380,7 @@ class DomainStore:
         if not initial_prompt.strip():
             raise ValueError("WeChat binding requires an initial prompt")
         workspace_id = workspace_id_for(workspace)
-        account_digest = hashlib.sha256(
-            ("wechat-account:" + account_id).encode()
-        ).hexdigest()
-        sender_digest = hashlib.sha256(
-            ("wechat-sender:" + sender_id).encode()
-        ).hexdigest()
+        account_digest, sender_digest = self._wechat_digests(account_id, sender_id)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(

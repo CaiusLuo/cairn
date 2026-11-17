@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Sequence
 from typing import Any
 
 from cairn.agent.models.messages import ToolResult
@@ -17,6 +18,7 @@ from cairn.knowledge.models import Clip
 from cairn.knowledge.store import KnowledgeStore
 
 PAGE_LIMIT = 20
+LIST_PREVIEW_CHARS = 160
 PREVIEW_CHARS = 240
 READ_CHARS = 4000
 
@@ -30,7 +32,7 @@ def _json_result(payload: dict[str, Any], *, ok: bool = True) -> ToolResult:
     )
 
 
-def _number(
+def _bounded_int(
     args: dict[str, Any], key: str, default: int, upper: int, *, lower: int = 0
 ) -> int:
     value = args.get(key, default)
@@ -43,7 +45,7 @@ def _number(
     return value
 
 
-def _keys(args: dict[str, Any], allowed: set[str]) -> None:
+def _reject_unknown_keys(args: dict[str, Any], allowed: set[str]) -> None:
     if set(args) - allowed:
         raise InvalidArguments("unexpected knowledge tool arguments")
 
@@ -60,6 +62,23 @@ def _metadata(clip: Clip, *, preview_chars: int = 0) -> dict[str, Any]:
         item["preview"] = clip.content[:preview_chars]
         item["preview_truncated"] = len(clip.content) > preview_chars
     return item
+
+
+def _page_result(
+    clips: Sequence[Clip], *, limit: int, offset: int, preview_chars: int
+) -> ToolResult:
+    return _json_result(
+        {
+            "status": "ok" if clips else "empty",
+            "clips": [
+                _metadata(clip, preview_chars=preview_chars) for clip in clips[:limit]
+            ],
+            "limit": limit,
+            "offset": offset,
+            "has_more": len(clips) > limit,
+            "untrusted_reference": True,
+        }
+    )
 
 
 class _KnowledgeTool:
@@ -105,29 +124,22 @@ class KnowledgeListTool(_KnowledgeTool):
         }
 
     def validate(self, arguments: dict[str, Any]) -> None:
-        _keys(arguments, {"limit", "offset"})
-        _number(arguments, "limit", 10, PAGE_LIMIT, lower=1)
-        _number(arguments, "offset", 0, 1000000)
+        _reject_unknown_keys(arguments, {"limit", "offset"})
+        _bounded_int(arguments, "limit", 10, PAGE_LIMIT, lower=1)
+        _bounded_int(arguments, "offset", 0, 1000000)
 
     async def execute(
         self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
     ) -> ToolResult:
         self.validate(arguments)
-        limit = _number(arguments, "limit", 10, PAGE_LIMIT, lower=1)
-        offset = _number(arguments, "offset", 0, 1000000)
+        limit = _bounded_int(arguments, "limit", 10, PAGE_LIMIT, lower=1)
+        offset = _bounded_int(arguments, "offset", 0, 1000000)
         try:
             clips = self.store.list_clips(limit=limit + 1, offset=offset)
         except (OSError, sqlite3.Error, ValueError):
             return self._unavailable()
-        return _json_result(
-            {
-                "status": "ok" if clips else "empty",
-                "clips": [_metadata(clip, preview_chars=160) for clip in clips[:limit]],
-                "limit": limit,
-                "offset": offset,
-                "has_more": len(clips) > limit,
-                "untrusted_reference": True,
-            }
+        return _page_result(
+            clips, limit=limit, offset=offset, preview_chars=LIST_PREVIEW_CHARS
         )
 
 
@@ -166,36 +178,26 @@ class KnowledgeSearchTool(_KnowledgeTool):
         }
 
     def validate(self, arguments: dict[str, Any]) -> None:
-        _keys(arguments, {"query", "limit", "offset"})
+        _reject_unknown_keys(arguments, {"query", "limit", "offset"})
         query = arguments.get("query")
         if not isinstance(query, str) or not query.strip() or len(query) > 500:
             raise InvalidArguments("query must be 1..500 nonblank characters")
-        _number(arguments, "limit", 10, PAGE_LIMIT, lower=1)
-        _number(arguments, "offset", 0, 1000000)
+        _bounded_int(arguments, "limit", 10, PAGE_LIMIT, lower=1)
+        _bounded_int(arguments, "offset", 0, 1000000)
 
     async def execute(
         self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
     ) -> ToolResult:
         self.validate(arguments)
         query = str(arguments["query"]).strip()
-        limit = _number(arguments, "limit", 10, PAGE_LIMIT, lower=1)
-        offset = _number(arguments, "offset", 0, 1000000)
+        limit = _bounded_int(arguments, "limit", 10, PAGE_LIMIT, lower=1)
+        offset = _bounded_int(arguments, "offset", 0, 1000000)
         try:
             clips = self.store.list_clips(query=query, limit=limit + 1, offset=offset)
         except (OSError, sqlite3.Error, ValueError):
             return self._unavailable()
-        return _json_result(
-            {
-                "status": "ok" if clips else "empty",
-                "clips": [
-                    _metadata(clip, preview_chars=PREVIEW_CHARS)
-                    for clip in clips[:limit]
-                ],
-                "limit": limit,
-                "offset": offset,
-                "has_more": len(clips) > limit,
-                "untrusted_reference": True,
-            }
+        return _page_result(
+            clips, limit=limit, offset=offset, preview_chars=PREVIEW_CHARS
         )
 
 
@@ -231,22 +233,24 @@ class KnowledgeGetTool(_KnowledgeTool):
         }
 
     def validate(self, arguments: dict[str, Any]) -> None:
-        _keys(arguments, {"clip_id", "offset", "max_chars"})
+        _reject_unknown_keys(arguments, {"clip_id", "offset", "max_chars"})
         clip_id = arguments.get("clip_id")
         if not isinstance(clip_id, str) or not clip_id.strip() or len(clip_id) > 100:
             raise InvalidArguments(
                 "clip_id must be a nonblank ID of at most 100 characters"
             )
-        _number(arguments, "offset", 0, 100000)
-        _number(arguments, "max_chars", READ_CHARS, READ_CHARS, lower=1)
+        _bounded_int(arguments, "offset", 0, 100000)
+        _bounded_int(arguments, "max_chars", READ_CHARS, READ_CHARS, lower=1)
 
     async def execute(
         self, arguments: dict[str, Any], *, context: ToolExecutionContext | None = None
     ) -> ToolResult:
         self.validate(arguments)
         clip_id = str(arguments["clip_id"]).strip()
-        offset = _number(arguments, "offset", 0, 100000)
-        max_chars = _number(arguments, "max_chars", READ_CHARS, READ_CHARS, lower=1)
+        offset = _bounded_int(arguments, "offset", 0, 100000)
+        max_chars = _bounded_int(
+            arguments, "max_chars", READ_CHARS, READ_CHARS, lower=1
+        )
         try:
             clip = self.store.get(clip_id)
         except (OSError, sqlite3.Error, ValueError):

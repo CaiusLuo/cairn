@@ -82,6 +82,7 @@ def controls() -> ServerControls:
     controls = ServerControls.__new__(ServerControls)
     controls.services = Services(memory=True, schedule=False)
     controls.workspace = Path("/tmp/cairn-principal-test")
+    controls.knowledge_store = None
     return controls
 
 
