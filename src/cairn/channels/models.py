@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -140,6 +141,17 @@ class ChannelInboundResult(BaseModel):
     error: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ChannelInboundInboxEntry:
+    """One durable inbound envelope waiting for admission or already settled."""
+
+    event: ChannelInboundEvent
+    state: str
+    attempts: int
+    last_error: str | None
+    deadline_at: float
+
+
 class ChannelSendResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
@@ -262,6 +274,15 @@ class ChannelInboundConflict(ChannelError):
 
 class ChannelInboundRejected(ChannelError):
     pass
+
+
+class ChannelInboundPaused(ChannelInboundRejected):
+    """The connection is disabled or not running; retry when it resumes.
+
+    Kept as a rejection subclass so adapters that poll only while running can
+    keep treating it as final, while adapters with a durable inbox hold the
+    envelope instead of discarding it.
+    """
 
 
 class ChannelInboundUncertain(ChannelError):

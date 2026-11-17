@@ -149,7 +149,9 @@ def runtime_app(
         channel_adapters.register(
             ChannelPlatform.TELEGRAM, telegram_adapter_factory(channel_store)
         )
-        channel_adapters.register(ChannelPlatform.FEISHU, feishu_adapter_factory())
+        channel_adapters.register(
+            ChannelPlatform.FEISHU, feishu_adapter_factory(channel_store)
+        )
         channel_manager = ChannelManager(
             store=channel_store,
             conversations=conversations,

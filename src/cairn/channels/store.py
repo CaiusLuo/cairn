@@ -12,6 +12,7 @@ import hashlib
 import json
 import secrets
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from cairn.channels.models import (
     ChannelConnection,
     ChannelDesiredState,
     ChannelInboundEvent,
+    ChannelInboundInboxEntry,
     ChannelNotFound,
     ChannelOperationUncertain,
     ChannelPlatform,
@@ -36,7 +38,7 @@ from cairn.channels.models import (
     validate_metadata,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 REQUEST_RETENTION_DAYS = 30
 
 # One update ID is only unique inside the Bot/account that produced it, so the
@@ -60,6 +62,34 @@ _INBOUND_TABLE_SQL = """
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (connection_id, adapter_identity, external_message_id)
             );
+            """
+
+# The inbox is written before admission, so an event acknowledged by the
+# platform is never represented only by adapter memory. Rows stay queryable
+# after a terminal state; only a retried pending row consumes attempts.
+_INBOX_TABLE_SQL = """
+            CREATE TABLE IF NOT EXISTS channel_inbound_inbox (
+                connection_id TEXT NOT NULL,
+                adapter_identity TEXT NOT NULL,
+                external_message_id TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                event_digest TEXT NOT NULL,
+                sender_id TEXT NOT NULL,
+                conversation_binding TEXT NOT NULL,
+                text TEXT NOT NULL,
+                received_at TEXT NOT NULL,
+                state TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                next_attempt_at REAL,
+                deadline_at REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (connection_id, adapter_identity, external_message_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_channel_inbound_inbox_due
+                ON channel_inbound_inbox
+                (connection_id, adapter_identity, state, next_attempt_at);
             """
 
 
@@ -225,7 +255,7 @@ class ChannelStore:
             raise ValueError("Channel store cannot be a symlink")
         with self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in (0, 1, 2, 3, SCHEMA_VERSION):
+            if version not in (0, 1, 2, 3, 4, SCHEMA_VERSION):
                 raise ValueError("Unsupported channel store schema")
             self._create_schema(connection)
             columns = {
@@ -293,6 +323,7 @@ class ChannelStore:
             );
             """
             + _INBOUND_TABLE_SQL
+            + _INBOX_TABLE_SQL
             + """
             CREATE TABLE IF NOT EXISTS channel_deliveries (
                 delivery_id TEXT PRIMARY KEY,
@@ -1005,6 +1036,251 @@ class ChannelStore:
             )
             if updated.rowcount != 1:
                 raise RuntimeError("channel inbound claim disappeared")
+
+    def enqueue_inbound_inbox(
+        self,
+        event: ChannelInboundEvent,
+        *,
+        pending_limit: int,
+        window_seconds: float,
+        now: float | None = None,
+    ) -> tuple[bool, str]:
+        """Persist an inbound envelope before admission.
+
+        Returns ``(created, state)``. A repeated delivery keeps the first row;
+        ``state`` is ``conflict`` when the same external message ID arrives with
+        different content. The pending limit is enforced after the insert so an
+        over-limit event is retained as an explicitly failed, queryable row
+        rather than silently discarded.
+        """
+        moment = time.time() if now is None else now
+        adapter_identity = event.adapter_identity or ""
+        digest = inbound_digest(event)
+        timestamp = utc_now()
+        with self._connect() as connection:
+            inserted = connection.execute(
+                "INSERT OR IGNORE INTO channel_inbound_inbox "
+                "(connection_id, adapter_identity, external_message_id, platform, "
+                "event_digest, sender_id, conversation_binding, text, received_at, "
+                "state, attempts, last_error, next_attempt_at, deadline_at, "
+                "created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, NULL, ?, ?, ?, ?)",
+                (
+                    event.connection_id,
+                    adapter_identity,
+                    event.external_message_id,
+                    event.platform.value,
+                    digest,
+                    event.sender_id,
+                    event.conversation_binding,
+                    event.text,
+                    event.received_at,
+                    moment,
+                    moment + window_seconds,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            row = connection.execute(
+                "SELECT state, event_digest FROM channel_inbound_inbox "
+                "WHERE connection_id = ? AND adapter_identity = ? "
+                "AND external_message_id = ?",
+                (
+                    event.connection_id,
+                    adapter_identity,
+                    event.external_message_id,
+                ),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("channel inbound inbox row disappeared")
+            state = str(row["state"])
+            if inserted.rowcount != 1:
+                if str(row["event_digest"]) != digest:
+                    return False, "conflict"
+                return False, state
+            pending = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM channel_inbound_inbox "
+                    "WHERE connection_id = ? AND adapter_identity = ? "
+                    "AND state = 'pending'",
+                    (event.connection_id, adapter_identity),
+                ).fetchone()[0]
+            )
+            if pending_limit > 0 and pending > pending_limit:
+                connection.execute(
+                    "UPDATE channel_inbound_inbox SET state = 'failed', "
+                    "last_error = ?, next_attempt_at = NULL, updated_at = ? "
+                    "WHERE connection_id = ? AND adapter_identity = ? "
+                    "AND external_message_id = ? AND state = 'pending'",
+                    (
+                        "inbound_pending_limit",
+                        timestamp,
+                        event.connection_id,
+                        adapter_identity,
+                        event.external_message_id,
+                    ),
+                )
+                return True, "failed"
+        return True, "pending"
+
+    def due_inbound_inbox(
+        self,
+        connection_id: str,
+        adapter_identity: str,
+        *,
+        now: float | None = None,
+        limit: int = 64,
+    ) -> tuple[ChannelInboundInboxEntry, ...]:
+        moment = time.time() if now is None else now
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM channel_inbound_inbox "
+                "WHERE connection_id = ? AND adapter_identity = ? "
+                "AND state = 'pending' "
+                "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) "
+                "ORDER BY created_at, rowid LIMIT ?",
+                (connection_id, adapter_identity, moment, limit),
+            ).fetchall()
+        return tuple(self._inbox_entry(row) for row in rows)
+
+    def has_pending_inbound_inbox(
+        self, connection_id: str, adapter_identity: str
+    ) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM channel_inbound_inbox "
+                "WHERE connection_id = ? AND adapter_identity = ? "
+                "AND state = 'pending' LIMIT 1",
+                (connection_id, adapter_identity),
+            ).fetchone()
+        return row is not None
+
+    def record_inbound_inbox_attempt(
+        self,
+        connection_id: str,
+        adapter_identity: str,
+        external_message_id: str,
+        *,
+        error: str,
+        next_attempt_at: float,
+        increment: bool = True,
+    ) -> None:
+        attempts = "attempts + 1" if increment else "attempts"
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE channel_inbound_inbox SET "
+                f"attempts = {attempts}, last_error = ?, next_attempt_at = ?, "
+                "updated_at = ? WHERE connection_id = ? AND adapter_identity = ? "
+                "AND external_message_id = ? AND state = 'pending'",
+                (
+                    error[:300],
+                    next_attempt_at,
+                    utc_now(),
+                    connection_id,
+                    adapter_identity,
+                    external_message_id,
+                ),
+            )
+
+    def settle_inbound_inbox(
+        self,
+        connection_id: str,
+        adapter_identity: str,
+        external_message_id: str,
+        *,
+        state: str,
+        error: str | None = None,
+    ) -> bool:
+        if state not in {"admitted", "rejected", "failed"}:
+            raise ValueError("invalid inbound inbox state")
+        with self._connect() as connection:
+            updated = connection.execute(
+                "UPDATE channel_inbound_inbox SET state = ?, last_error = ?, "
+                "next_attempt_at = NULL, updated_at = ? "
+                "WHERE connection_id = ? AND adapter_identity = ? "
+                "AND external_message_id = ? AND state = 'pending'",
+                (
+                    state,
+                    error[:300] if error else None,
+                    utc_now(),
+                    connection_id,
+                    adapter_identity,
+                    external_message_id,
+                ),
+            )
+        return updated.rowcount == 1
+
+    def fail_inbound_inbox_other_identity(
+        self,
+        connection_id: str,
+        adapter_identity: str,
+        *,
+        reason: str,
+    ) -> int:
+        """Isolate pending envelopes received by a different App identity."""
+        with self._connect() as connection:
+            updated = connection.execute(
+                "UPDATE channel_inbound_inbox SET state = 'failed', "
+                "last_error = ?, next_attempt_at = NULL, updated_at = ? "
+                "WHERE connection_id = ? AND adapter_identity <> ? "
+                "AND state = 'pending'",
+                (reason[:300], utc_now(), connection_id, adapter_identity),
+            )
+        return updated.rowcount
+
+    def inbound_inbox_entry(
+        self,
+        connection_id: str,
+        adapter_identity: str,
+        external_message_id: str,
+    ) -> ChannelInboundInboxEntry | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM channel_inbound_inbox "
+                "WHERE connection_id = ? AND adapter_identity = ? "
+                "AND external_message_id = ?",
+                (connection_id, adapter_identity, external_message_id),
+            ).fetchone()
+        return self._inbox_entry(row) if row is not None else None
+
+    def inbound_inbox_summary(
+        self, connection_id: str, adapter_identity: str | None = None
+    ) -> dict[str, int]:
+        query = (
+            "SELECT state, COUNT(*) AS count FROM channel_inbound_inbox "
+            "WHERE connection_id = ?"
+        )
+        parameters: list[object] = [connection_id]
+        if adapter_identity is not None:
+            query += " AND adapter_identity = ?"
+            parameters.append(adapter_identity)
+        query += " GROUP BY state"
+        with self._connect() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        summary = {str(row["state"]): int(row["count"]) for row in rows}
+        summary["total"] = sum(summary.values())
+        return summary
+
+    @staticmethod
+    def _inbox_entry(row: sqlite3.Row) -> ChannelInboundInboxEntry:
+        return ChannelInboundInboxEntry(
+            event=ChannelInboundEvent(
+                platform=ChannelPlatform(str(row["platform"])),
+                connection_id=str(row["connection_id"]),
+                external_message_id=str(row["external_message_id"]),
+                sender_id=str(row["sender_id"]),
+                conversation_binding=str(row["conversation_binding"]),
+                text=str(row["text"]),
+                received_at=str(row["received_at"]),
+                adapter_identity=str(row["adapter_identity"]),
+            ),
+            state=str(row["state"]),
+            attempts=int(row["attempts"]),
+            last_error=(
+                str(row["last_error"]) if row["last_error"] is not None else None
+            ),
+            deadline_at=float(row["deadline_at"]),
+        )
 
     def adopt_unidentified_inbound(
         self, connection_id: str, adapter_identity: str

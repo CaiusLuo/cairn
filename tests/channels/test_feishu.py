@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sqlite3
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,12 +29,13 @@ from cairn.channels.models import (
     ChannelCredentialError,
     ChannelDesiredState,
     ChannelInboundEvent,
+    ChannelInboundInboxEntry,
     ChannelInboundUncertain,
     ChannelPlatform,
     ChannelReplyRejected,
     ChannelSendStatus,
 )
-from cairn.channels.store import ChannelStore
+from cairn.channels.store import ChannelStore, inbound_digest
 from tests.channels.support import FakeIntake
 
 APP_ID = "cli_aaaaaaaaaaaaaaaa"
@@ -61,6 +66,156 @@ class FakeSendResult:
     error: FakeError | None = None
 
 
+@dataclass
+class _InboxRow:
+    event: ChannelInboundEvent
+    state: str
+    attempts: int = 0
+    last_error: str | None = None
+    deadline_at: float = 0.0
+    next_attempt_at: float | None = None
+    digest: str = ""
+
+
+class MemoryInbox:
+    """Protocol-compatible inbox for adapter-only tests."""
+
+    def __init__(self) -> None:
+        self.rows: dict[tuple[str, str, str], _InboxRow] = {}
+
+    def enqueue_inbound_inbox(
+        self,
+        event: ChannelInboundEvent,
+        *,
+        pending_limit: int,
+        window_seconds: float,
+    ) -> tuple[bool, str]:
+        key = (
+            event.connection_id,
+            event.adapter_identity or "",
+            event.external_message_id,
+        )
+        digest = inbound_digest(event)
+        if key in self.rows:
+            row = self.rows[key]
+            return False, "conflict" if row.digest != digest else row.state
+        now = time.time()
+        row = _InboxRow(
+            event=event,
+            state="pending",
+            deadline_at=now + window_seconds,
+            digest=digest,
+        )
+        self.rows[key] = row
+        pending = sum(
+            1
+            for candidate in self.rows.values()
+            if candidate.event.connection_id == event.connection_id
+            and candidate.event.adapter_identity == event.adapter_identity
+            and candidate.state == "pending"
+        )
+        if pending_limit > 0 and pending > pending_limit:
+            row.state = "failed"
+            row.last_error = "inbound_pending_limit"
+            return True, "failed"
+        return True, "pending"
+
+    def due_inbound_inbox(
+        self,
+        connection_id: str,
+        adapter_identity: str,
+        *,
+        limit: int = 64,
+    ) -> tuple[ChannelInboundInboxEntry, ...]:
+        now = time.time()
+        items = [
+            ChannelInboundInboxEntry(
+                event=row.event,
+                state=row.state,
+                attempts=row.attempts,
+                last_error=row.last_error,
+                deadline_at=row.deadline_at,
+            )
+            for row in self.rows.values()
+            if row.event.connection_id == connection_id
+            and (row.event.adapter_identity or "") == adapter_identity
+            and row.state == "pending"
+            and (row.next_attempt_at is None or row.next_attempt_at <= now)
+        ]
+        return tuple(items[:limit])
+
+    def has_pending_inbound_inbox(
+        self, connection_id: str, adapter_identity: str
+    ) -> bool:
+        return any(
+            row.event.connection_id == connection_id
+            and (row.event.adapter_identity or "") == adapter_identity
+            and row.state == "pending"
+            for row in self.rows.values()
+        )
+
+    def record_inbound_inbox_attempt(
+        self,
+        connection_id: str,
+        adapter_identity: str,
+        external_message_id: str,
+        *,
+        error: str,
+        next_attempt_at: float,
+        increment: bool = True,
+    ) -> None:
+        row = self.rows[(connection_id, adapter_identity, external_message_id)]
+        if increment:
+            row.attempts += 1
+        row.last_error = error
+        row.next_attempt_at = next_attempt_at
+
+    def settle_inbound_inbox(
+        self,
+        connection_id: str,
+        adapter_identity: str,
+        external_message_id: str,
+        *,
+        state: str,
+        error: str | None = None,
+    ) -> bool:
+        row = self.rows[(connection_id, adapter_identity, external_message_id)]
+        if row.state != "pending":
+            return False
+        row.state = state
+        row.last_error = error
+        row.next_attempt_at = None
+        return True
+
+    def fail_inbound_inbox_other_identity(
+        self,
+        connection_id: str,
+        adapter_identity: str,
+        *,
+        reason: str,
+    ) -> int:
+        failed = 0
+        for row in self.rows.values():
+            if (
+                row.event.connection_id == connection_id
+                and (row.event.adapter_identity or "") != adapter_identity
+                and row.state == "pending"
+            ):
+                row.state = "failed"
+                row.last_error = reason
+                row.next_attempt_at = None
+                failed += 1
+        return failed
+
+
+class FakeDispatcher:
+    def __init__(self) -> None:
+        self.payloads: list[Any] = []
+
+    def _do_without_validation(self, payload: Any) -> None:
+        self.payloads.append(payload)
+
+
 class FakeFeishuChannel:
     def __init__(
         self,
@@ -73,9 +228,12 @@ class FakeFeishuChannel:
         self.app_secret = app_secret
         self.bot_identity: FakeIdentity | None = FakeIdentity(open_id)
         self.handlers: dict[str, list[Any]] = {}
+        self.dispatcher = FakeDispatcher()
+        self._ws_client = SimpleNamespace(_event_handler=self.dispatcher)
         self.started = False
         self.stopped = False
         self.start_error: BaseException | None = None
+        self.stop_error: BaseException | None = None
         self.send_script: list[FakeSendResult | BaseException] = []
         self.sent: list[tuple[str, str, Any]] = []
 
@@ -89,6 +247,8 @@ class FakeFeishuChannel:
         self.started = True
 
     async def stop_background(self) -> None:
+        if self.stop_error is not None:
+            raise self.stop_error
         self.stopped = True
 
     async def resolve_bot_identity(self) -> FakeIdentity | None:
@@ -122,6 +282,10 @@ class FakeFeishuChannel:
     def emit_reconnected(self) -> None:
         for handler in list(self.handlers.get("reconnected", [])):
             handler()
+
+    def ack_raw(self, payload: object) -> None:
+        """Simulate the WS dispatcher path that runs immediately before ACK."""
+        self.dispatcher._do_without_validation(payload)
 
 
 class ChannelFactory:
@@ -158,6 +322,41 @@ def inbound(
     )
 
 
+def raw_message(
+    message_id: str = "om_raw",
+    text: str = "raw hello",
+    *,
+    sender_id: str = OWNER,
+    chat_id: str = "oc_chat_1",
+    chat_type: str = "p2p",
+    message_type: str = "text",
+    sender_type: str = "user",
+    content: object | None = None,
+) -> dict[str, object]:
+    return {
+        "schema": "2.0",
+        "header": {"event_type": "im.message.receive_v1"},
+        "event": {
+            "sender": {
+                "sender_id": {"open_id": sender_id},
+                "sender_type": sender_type,
+            },
+            "message": {
+                "message_id": message_id,
+                "chat_id": chat_id,
+                "chat_type": chat_type,
+                "message_type": message_type,
+                "content": (
+                    content
+                    if content is not None
+                    else json.dumps({"text": text}, ensure_ascii=False)
+                ),
+                "create_time": str(int(time.time() * 1000)),
+            },
+        },
+    }
+
+
 def connection(connection_id: str = "ch-feishu") -> ChannelConnection:
     return ChannelConnection(
         connection_id=connection_id,
@@ -175,6 +374,11 @@ def adapter_with(
     connection_id: str = "ch-feishu",
     credentials: dict[str, str] | None = None,
     sink: Any = None,
+    inbox: MemoryInbox | None = None,
+    retry_seconds: float = 0.01,
+    window_seconds: float = 5.0,
+    max_attempts: int = 150,
+    max_pending: int = 512,
 ) -> FeishuAdapter:
     async def ignore(_: ChannelInboundEvent) -> None:
         return None
@@ -185,13 +389,42 @@ def adapter_with(
         if credentials is not None
         else {"app_id": APP_ID, "app_secret": APP_SECRET},
         sink or ignore,
+        inbox=inbox or MemoryInbox(),
         channel_factory=lambda app_id, app_secret: channel,
         sleep=no_sleep,
+        retry_seconds=retry_seconds,
+        window_seconds=window_seconds,
+        max_attempts=max_attempts,
+        max_pending=max_pending,
     )
 
 
 async def no_sleep(_: float) -> None:
     await asyncio.sleep(0)
+
+
+def store_adapter(
+    tmp_path: Path,
+    channel: FakeFeishuChannel,
+    sink: Any,
+    **kwargs: Any,
+) -> tuple[FeishuAdapter, ChannelStore, str]:
+    store = ChannelStore(tmp_path / "channels")
+    options: dict[str, Any] = {
+        "retry_seconds": 0.01,
+        "window_seconds": 60.0,
+    }
+    options.update(kwargs)
+    adapter = FeishuAdapter(
+        connection(),
+        {"app_id": APP_ID, "app_secret": APP_SECRET},
+        sink,
+        inbox=store,
+        channel_factory=lambda app_id, app_secret: channel,
+        sleep=no_sleep,
+        **options,
+    )
+    return adapter, store, "ch-feishu"
 
 
 async def ignore(_: ChannelInboundEvent) -> None:
@@ -235,6 +468,7 @@ def test_missing_and_malformed_credentials_never_reach_the_sdk(tmp_path: Path) -
                 connection(),
                 credentials,
                 ignore,
+                inbox=MemoryInbox(),
                 channel_factory=lambda app_id, secret: pytest.fail(
                     "the SDK must not be reached"
                 ),
@@ -334,6 +568,7 @@ def test_only_private_human_text_reaches_the_inbound_sink(tmp_path: Path) -> Non
             inbound(message_id="om_image", content=SimpleNamespace(image_key="x"))
         )
         await channel.emit(inbound(message_id="om_blank", text="   "))
+        await wait_until(lambda: len(received) == 1)
         assert [event.external_message_id for event in received] == ["om_1"]
         event = received[0]
         assert event.sender_id == OWNER
@@ -408,8 +643,10 @@ def test_reconnect_opens_a_fresh_transport(tmp_path: Path) -> None:
             connection(),
             {"app_id": APP_ID, "app_secret": APP_SECRET},
             ignore,
+            inbox=MemoryInbox(),
             channel_factory=factory,
             sleep=no_sleep,
+            retry_seconds=0.01,
         )
         await adapter.start()
         assert len(factory.created) == 1
@@ -558,7 +795,9 @@ async def manager_for(
     store = ChannelStore(tmp_path / "channels")
     registry = ChannelAdapterRegistry().register(
         ChannelPlatform.FEISHU,
-        feishu_adapter_factory(channel_factory=factory, sleep=no_sleep),
+        feishu_adapter_factory(
+            store, channel_factory=factory, sleep=no_sleep, retry_seconds=0.01
+        ),
     )
     manager = ChannelManager(
         store=store,
@@ -592,7 +831,7 @@ def test_manager_admits_owner_once_and_rejects_other_senders(tmp_path: Path) -> 
         await channel.emit(inbound(text="介绍一下 Cairn"))  # transport redelivery
         await channel.emit(inbound(message_id="om_allowed", sender_id=ALLOWED))
         await channel.emit(inbound(message_id="om_unknown", sender_id="ou_stranger"))
-        assert len(intake.submissions) == 2
+        await wait_until(lambda: len(intake.submissions) == 2)
         assert intake.submissions[0][1] == "介绍一下 Cairn"
         assert intake.submissions[1][1] == "hello"
         metadata = intake.metadata[0]
@@ -624,8 +863,9 @@ def test_admission_response_loss_reconciles_and_redelivery_is_idempotent(
             tmp_path, ChannelFactory(channel), intake
         )
         await channel.emit(inbound(text="first"))
-        assert len(intake.submissions) == 1
+        await wait_until(lambda: len(intake.submissions) == 1)
         await channel.emit(inbound(text="first"))
+        await asyncio.sleep(0.05)
         assert len(intake.submissions) == 1
         await manager.stop_connection(connection_id, "stop-feishu")
         await manager.close()
@@ -641,7 +881,7 @@ def test_restart_keeps_the_same_run_for_a_redelivered_message(tmp_path: Path) ->
             tmp_path, ChannelFactory(first_channel), intake
         )
         await first_channel.emit(inbound(text="remember me"))
-        assert len(intake.submissions) == 1
+        await wait_until(lambda: len(intake.submissions) == 1)
         run_id = next(iter(intake.runs.values())).run_id
         await first.close()
 
@@ -649,7 +889,10 @@ def test_restart_keeps_the_same_run_for_a_redelivered_message(tmp_path: Path) ->
         registry = ChannelAdapterRegistry().register(
             ChannelPlatform.FEISHU,
             feishu_adapter_factory(
-                channel_factory=ChannelFactory(second_channel), sleep=no_sleep
+                store,
+                channel_factory=ChannelFactory(second_channel),
+                sleep=no_sleep,
+                retry_seconds=0.01,
             ),
         )
         second = ChannelManager(
@@ -666,6 +909,7 @@ def test_restart_keeps_the_same_run_for_a_redelivered_message(tmp_path: Path) ->
             )
         )
         await second_channel.emit(inbound(text="remember me"))
+        await asyncio.sleep(0.05)
         assert len(intake.submissions) == 1
         claim = store.reply_for_run(run_id)
         assert claim is not None
@@ -687,6 +931,7 @@ def test_outbound_reply_is_identity_bound_and_old_app_reply_fails_closed(
         intake = FakeIntake()
         manager, store, connection_id = await manager_for(tmp_path, factory, intake)
         await first_channel.emit(inbound(text="first app"))
+        await wait_until(lambda: store.reply_for_run("run-1") is not None)
         reply = store.reply_for_run("run-1")
         assert reply is not None
 
@@ -713,7 +958,7 @@ def test_outbound_reply_is_identity_bound_and_old_app_reply_fails_closed(
             )
         )
         await second_channel.emit(inbound(message_id="om_1", text="second app"))
-        assert len(intake.submissions) == 2
+        await wait_until(lambda: len(intake.submissions) == 2)
 
         # ...but a pending reply captured under the old App is not delivered by
         # the new one.
@@ -736,6 +981,7 @@ def test_revoked_sender_blocks_a_pending_reply(tmp_path: Path) -> None:
             tmp_path, ChannelFactory(channel), intake
         )
         await channel.emit(inbound(text="owner request"))
+        await wait_until(lambda: store.reply_for_run("run-1") is not None)
         reply = store.reply_for_run("run-1")
         assert reply is not None
         await manager.update_connection(
@@ -750,5 +996,351 @@ def test_revoked_sender_blocks_a_pending_reply(tmp_path: Path) -> None:
         assert channel.sent == []
         await manager.stop_connection(connection_id, "stop-feishu")
         await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_admission_survives_a_transient_store_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario() -> None:
+        channel = FakeFeishuChannel(APP_ID, APP_SECRET)
+        intake = FakeIntake()
+        manager, store, connection_id = await manager_for(
+            tmp_path, ChannelFactory(channel), intake
+        )
+        original = store.claim_inbound
+        remaining = 1
+
+        def flaky(event: Any, **kwargs: Any) -> Any:
+            nonlocal remaining
+            if remaining:
+                remaining -= 1
+                raise sqlite3.OperationalError("database is locked")
+            return original(event, **kwargs)
+
+        monkeypatch.setattr(store, "claim_inbound", flaky)
+        await channel.emit(inbound(text="retry me"))
+        await wait_until(lambda: len(intake.submissions) == 1)
+        entry = store.inbound_inbox_entry(
+            connection_id, f"feishu:{APP_ID}:{BOT_OPEN_ID}", "om_1"
+        )
+        assert entry is not None
+        assert entry.state == "admitted"
+        assert entry.attempts >= 1
+        await manager.stop_connection(connection_id, "stop-feishu")
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_pre_ack_hook_persists_before_the_handler_and_recovers_after_exit(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        store = ChannelStore(tmp_path / "channels")
+        first_channel = FakeFeishuChannel(APP_ID, APP_SECRET)
+        first_received: list[ChannelInboundEvent] = []
+
+        async def first_sink(event: ChannelInboundEvent) -> None:
+            first_received.append(event)
+
+        first = FeishuAdapter(
+            connection(),
+            {"app_id": APP_ID, "app_secret": APP_SECRET},
+            first_sink,
+            inbox=store,
+            channel_factory=lambda app_id, app_secret: first_channel,
+            sleep=no_sleep,
+            retry_seconds=0.01,
+        )
+        await first.start()
+        first_channel.ack_raw(raw_message("om_acked", "persist before ack"))
+        identity = f"feishu:{APP_ID}:{BOT_OPEN_ID}"
+        entry = store.inbound_inbox_entry("ch-feishu", identity, "om_acked")
+        assert entry is not None
+        assert entry.state == "pending"
+        # Exit before the SDK background loop can run the async handler.
+        await first.stop()
+        assert first_received == []
+        retained = store.inbound_inbox_entry("ch-feishu", identity, "om_acked")
+        assert retained is not None
+        assert retained.state == "pending"
+
+        second_channel = FakeFeishuChannel(APP_ID, APP_SECRET)
+        received: list[ChannelInboundEvent] = []
+
+        async def second_sink(event: ChannelInboundEvent) -> None:
+            received.append(event)
+
+        second = FeishuAdapter(
+            connection(),
+            {"app_id": APP_ID, "app_secret": APP_SECRET},
+            second_sink,
+            inbox=store,
+            channel_factory=lambda app_id, app_secret: second_channel,
+            sleep=no_sleep,
+            retry_seconds=0.01,
+        )
+        await second.start()
+        await wait_until(lambda: len(received) == 1)
+        assert received[0].external_message_id == "om_acked"
+        assert received[0].text == "persist before ack"
+        admitted = store.inbound_inbox_entry("ch-feishu", identity, "om_acked")
+        assert admitted is not None and admitted.state == "admitted"
+        await second.stop()
+
+    asyncio.run(scenario())
+
+
+def test_more_than_the_old_queue_capacity_is_retained_and_admitted(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        channel = FakeFeishuChannel(APP_ID, APP_SECRET)
+        gate = asyncio.Event()
+        received: list[ChannelInboundEvent] = []
+
+        async def sink(event: ChannelInboundEvent) -> None:
+            await gate.wait()
+            received.append(event)
+
+        adapter, store, connection_id = store_adapter(tmp_path, channel, sink)
+        await adapter.start()
+        for index in range(40):
+            await channel.emit(inbound(message_id=f"om_{index}", text=f"m{index}"))
+        summary = store.inbound_inbox_summary(connection_id)
+        assert summary.get("pending") == 40
+        gate.set()
+        await wait_until(lambda: len(received) == 40)
+        assert [event.external_message_id for event in received] == [
+            f"om_{index}" for index in range(40)
+        ]
+        await adapter.stop()
+        assert store.inbound_inbox_summary(connection_id)["admitted"] == 40
+
+    asyncio.run(scenario())
+
+
+def test_pending_limit_is_explicit_and_queryable(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        channel = FakeFeishuChannel(APP_ID, APP_SECRET)
+        gate = asyncio.Event()
+        received: list[ChannelInboundEvent] = []
+
+        async def sink(event: ChannelInboundEvent) -> None:
+            await gate.wait()
+            received.append(event)
+
+        adapter, store, connection_id = store_adapter(
+            tmp_path, channel, sink, max_pending=4
+        )
+        await adapter.start()
+        for index in range(6):
+            await channel.emit(inbound(message_id=f"om_{index}", text=f"m{index}"))
+        summary = store.inbound_inbox_summary(connection_id)
+        assert summary.get("pending") == 4
+        assert summary.get("failed") == 2
+        identity = f"feishu:{APP_ID}:{BOT_OPEN_ID}"
+        failed = store.inbound_inbox_entry(connection_id, identity, "om_5")
+        assert failed is not None
+        assert failed.state == "failed"
+        assert failed.last_error == "inbound_pending_limit"
+        gate.set()
+        await wait_until(lambda: len(received) == 4)
+        await adapter.stop()
+
+    asyncio.run(scenario())
+
+
+def test_retry_window_ends_in_a_queryable_failed_state(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        channel = FakeFeishuChannel(APP_ID, APP_SECRET)
+
+        async def sink(event: ChannelInboundEvent) -> None:
+            raise ChannelInboundUncertain("conversation is busy")
+
+        adapter, store, connection_id = store_adapter(
+            tmp_path,
+            channel,
+            sink,
+            window_seconds=0.05,
+            max_attempts=1000,
+        )
+        await adapter.start()
+        await channel.emit(inbound(message_id="om_expire", text="expire"))
+        identity = f"feishu:{APP_ID}:{BOT_OPEN_ID}"
+
+        def failed() -> bool:
+            entry = store.inbound_inbox_entry(connection_id, identity, "om_expire")
+            return entry is not None and entry.state == "failed"
+
+        await wait_until(failed)
+        entry = store.inbound_inbox_entry(connection_id, identity, "om_expire")
+        assert entry is not None
+        assert (entry.last_error or "").startswith("feishu_inbound_expired:")
+        assert entry.attempts >= 1
+        assert store.inbound_inbox_summary(connection_id)["failed"] == 1
+        await adapter.stop()
+
+    asyncio.run(scenario())
+
+
+def test_stop_keeps_pending_envelopes_for_the_next_start(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        first_channel = FakeFeishuChannel(APP_ID, APP_SECRET)
+        second_channel = FakeFeishuChannel(APP_ID, APP_SECRET)
+        store = ChannelStore(tmp_path / "channels")
+        allow = False
+        received: list[ChannelInboundEvent] = []
+
+        async def sink(event: ChannelInboundEvent) -> None:
+            if not allow:
+                raise ChannelInboundUncertain("conversation is busy")
+            received.append(event)
+
+        adapter = FeishuAdapter(
+            connection(),
+            {"app_id": APP_ID, "app_secret": APP_SECRET},
+            sink,
+            inbox=store,
+            channel_factory=ChannelFactory(first_channel, second_channel),
+            sleep=no_sleep,
+            retry_seconds=0.01,
+            window_seconds=60.0,
+        )
+        await adapter.start()
+        await first_channel.emit(inbound(message_id="om_stop", text="keep me"))
+        identity = f"feishu:{APP_ID}:{BOT_OPEN_ID}"
+
+        def attempted() -> bool:
+            entry = store.inbound_inbox_entry("ch-feishu", identity, "om_stop")
+            return entry is not None and entry.attempts >= 1
+
+        await wait_until(attempted)
+        await adapter.stop()
+        stopped = store.inbound_inbox_entry("ch-feishu", identity, "om_stop")
+        assert stopped is not None and stopped.state == "pending"
+        allow = True
+        await adapter.start()
+        await wait_until(lambda: len(received) == 1)
+        assert received[0].external_message_id == "om_stop"
+        admitted = store.inbound_inbox_entry("ch-feishu", identity, "om_stop")
+        assert admitted is not None and admitted.state == "admitted"
+        await adapter.stop()
+
+    asyncio.run(scenario())
+
+
+def test_app_switch_isolates_pending_envelopes_from_the_old_app(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        first_channel = FakeFeishuChannel(APP_ID, APP_SECRET)
+        second_channel = FakeFeishuChannel(
+            APP_ID_2, APP_SECRET_2, open_id=BOT_OPEN_ID_2
+        )
+        intake = FakeIntake()
+        manager, store, connection_id = await manager_for(
+            tmp_path, ChannelFactory(first_channel, second_channel), intake
+        )
+        old_identity = f"feishu:{APP_ID}:{BOT_OPEN_ID}"
+        new_identity = f"feishu:{APP_ID_2}:{BOT_OPEN_ID_2}"
+        event = ChannelInboundEvent(
+            platform=ChannelPlatform.FEISHU,
+            connection_id=connection_id,
+            external_message_id="om_old_app",
+            sender_id=OWNER,
+            conversation_binding="oc_chat_1",
+            text="old app message",
+            adapter_identity=old_identity,
+        )
+        created, state = store.enqueue_inbound_inbox(
+            event, pending_limit=100, window_seconds=60.0
+        )
+        assert created is True and state == "pending"
+
+        await manager.update_connection(
+            connection_id,
+            expected_revision=1,
+            request_id="switch-app",
+            changes={},
+            credentials={"app_id": APP_ID_2, "app_secret": APP_SECRET_2},
+            replace_credentials=True,
+        )
+        await wait_until(
+            lambda: (
+                manager.get_connection_view(connection_id).runtime.actual_state
+                is ChannelActualState.RUNNING
+            )
+        )
+        isolated = store.inbound_inbox_entry(connection_id, old_identity, "om_old_app")
+        assert isolated is not None
+        assert isolated.state == "failed"
+        assert isolated.last_error == "feishu_inbound_identity_changed"
+        assert intake.submissions == []
+
+        await second_channel.emit(inbound(message_id="om_new_app", text="new app"))
+        await wait_until(lambda: len(intake.submissions) == 1)
+        assert intake.submissions[0][1] == "new app"
+        new_entry = store.inbound_inbox_entry(connection_id, new_identity, "om_new_app")
+        assert new_entry is not None and new_entry.state == "admitted"
+        await manager.stop_connection(connection_id, "stop-feishu")
+        await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_inbound_from_the_sdk_thread_is_admitted_on_the_server_loop(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        server_thread = threading.get_ident()
+        channel = FakeFeishuChannel(APP_ID, APP_SECRET)
+        seen: list[tuple[ChannelInboundEvent, int]] = []
+
+        async def sink(event: ChannelInboundEvent) -> None:
+            seen.append((event, threading.get_ident()))
+
+        adapter, _, _ = store_adapter(tmp_path, channel, sink)
+        await adapter.start()
+
+        def emit_from_sdk_thread() -> None:
+            asyncio.run(channel.emit(inbound(message_id="om_thread", text="thread")))
+
+        await asyncio.to_thread(emit_from_sdk_thread)
+        await wait_until(lambda: len(seen) == 1)
+        assert seen[0][0].external_message_id == "om_thread"
+        assert seen[0][1] == server_thread
+        await adapter.stop()
+
+    asyncio.run(scenario())
+
+
+def test_failed_stop_keeps_acknowledged_events_durable(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        channel = FakeFeishuChannel(APP_ID, APP_SECRET)
+        channel.stop_error = RuntimeError("transport still connected")
+
+        async def sink(event: ChannelInboundEvent) -> None:
+            raise ChannelInboundUncertain("conversation is busy")
+
+        adapter, store, connection_id = store_adapter(tmp_path, channel, sink)
+        await adapter.start()
+        identity = f"feishu:{APP_ID}:{BOT_OPEN_ID}"
+        channel.ack_raw(raw_message("om_stop_fail", "before a failed stop"))
+
+        with pytest.raises(ChannelAdapterError):
+            await adapter.stop()
+        first = store.inbound_inbox_entry(connection_id, identity, "om_stop_fail")
+        assert first is not None
+        assert first.state == "pending"
+
+        # The transport may still deliver after the failed stop; keep the
+        # pre-ACK hook active so those events are still persisted.
+        channel.ack_raw(raw_message("om_stop_fail_2", "after a failed stop"))
+        second = store.inbound_inbox_entry(connection_id, identity, "om_stop_fail_2")
+        assert second is not None
+        assert second.state == "pending"
 
     asyncio.run(scenario())

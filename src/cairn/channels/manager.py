@@ -29,6 +29,7 @@ from cairn.channels.models import (
     ChannelDisplayState,
     ChannelInboundConflict,
     ChannelInboundEvent,
+    ChannelInboundPaused,
     ChannelInboundRejected,
     ChannelInboundResult,
     ChannelInboundUncertain,
@@ -746,7 +747,7 @@ class ChannelManager:
     async def accept_inbound(self, event: ChannelInboundEvent) -> ChannelInboundResult:
         connection = self._view_for_inbound(event.connection_id)
         if not connection.enabled:
-            raise ChannelInboundRejected("channel connection is disabled")
+            raise ChannelInboundPaused("channel connection is disabled")
         if connection.platform is not event.platform:
             raise ChannelInboundConflict("inbound platform does not match connection")
         # Authorization precedes every durable side effect. An owner or an
@@ -757,7 +758,7 @@ class ChannelManager:
         if role is None:
             raise ChannelInboundRejected("sender is not authorized")
         if not self._adapter_running(connection):
-            raise ChannelInboundRejected("channel connection is not running")
+            raise ChannelInboundPaused("channel connection is not running")
         # The adapter is the only trusted source of the receiving identity. A
         # message is deduplicated inside that identity's namespace, so an
         # unverifiable identity must not enter the durable claim.

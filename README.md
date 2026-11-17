@@ -315,11 +315,36 @@ group chats and non-text message types are acknowledged and ignored. The
 SDK-level dedupe and text batching are disabled so the durable
 `(connection_id, adapter_identity, external_message_id)` claim remains the only
 dedupe authority, and outbound SDK retry is disabled so an uncertain send stays
-`unknown` instead of being replayed. Because the SDK sends the event ACK
-automatically, an admission that loses the race with a busy Run is held in a
-bounded per-connection queue and retried for up to five minutes; a crash in that
-window depends on Feishu redelivery, which the same claim resolves to the same
-Run.
+`unknown` instead of being replayed.
+
+The `lark-oapi` ACK timing decides what Cairn can promise. The SDK dispatcher
+runs its synchronous callback and then writes the WebSocket ACK, while Cairn's
+channel handler runs later on the SDK background loop. Cairn therefore keeps a
+best-effort pre-ACK hook on the dispatcher: it synchronously writes a minimal
+normalized envelope to the durable inbox, so a message Feishu considers
+delivered is already on disk before the ACK is written. The normal handler then
+persists the same row idempotently and wakes the Server-loop drain task. If the
+pre-ACK write fails, the event is still persisted by the handler; only when both
+fail does the event depend on Feishu redelivery, which the deterministic claim
+resolves to the same Run.
+
+The inbox is the existing `ChannelStore` SQLite database
+(`channel_inbound_inbox`), keyed by `(connection_id, adapter_identity,
+external_message_id)` with state `pending → admitted | rejected | failed`.
+Pending rows survive stop, reconnect and restart; a disabled or not-running
+connection leaves them pending and they are admitted when it resumes. Admission
+runs only on the Server loop: SDK-thread handlers do a synchronous SQLite insert
+and a thread-safe wake-up, never a cross-thread queue. Retryable failures
+(conversation busy, uncertain acceptance) retry with backoff for up to five
+minutes and a bounded attempt count; a terminal row keeps its attempt count and
+last error instead of being silently dropped. More than 512 pending envelopes
+for one connection marks the newest explicitly failed
+(`inbound_pending_limit`). A definitive admission rejection settles `rejected`,
+and a missing connection or Run target settles `failed`. Every retry re-reads
+the stored connection and re-checks the sender's current role and the running
+adapter identity, so a revoked sender or a replaced app stops the envelope
+instead of admitting it. Starting under a different app identity fails pending
+rows from the old identity with `feishu_inbound_identity_changed`.
 
 The bot identity is `feishu:{app_id}:{bot_open_id}`, taken from the trusted
 credentials and the open_id the SDK reports after connecting, never from message

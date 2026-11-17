@@ -11,6 +11,15 @@ Inbound identity is the SDK-resolved bot open_id scoped by the configured app
 ID. It is never derived from message text. The ChannelStore uses it to scope
 inbound dedupe and reply intents, so replacing the application identity opens
 a new namespace while old pending replies fail closed.
+
+The SDK's WebSocket client ACKs a DATA frame immediately after its synchronous
+dispatcher returns; the dispatcher only schedules the channel-level message
+pipeline on the SDK background loop. Cairn therefore installs a best-effort
+pre-ACK hook that persists a private-text envelope into the SQLite inbox before
+the ACK is written. The normal async handler writes the same envelope again
+(idempotent), and a Server-loop drain worker performs admission. If the
+process exits after the ACK, pending envelopes are recovered and admitted on
+the next start instead of depending on a platform redelivery.
 """
 
 from __future__ import annotations
@@ -18,10 +27,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import json
 import re
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 # Imported eagerly on purpose; see the module docstring.
 from lark_oapi.channel import (
@@ -45,6 +56,8 @@ from cairn.channels.models import (
     ChannelCredentialError,
     ChannelInboundConflict,
     ChannelInboundEvent,
+    ChannelInboundInboxEntry,
+    ChannelInboundPaused,
     ChannelInboundRejected,
     ChannelInboundUncertain,
     ChannelNotFound,
@@ -59,7 +72,12 @@ START_TIMEOUT = 20.0
 IDENTITY_TIMEOUT = 10.0
 INBOUND_RETRY_SECONDS = 2.0
 INBOUND_RETRY_WINDOW = 300.0
-MAX_DEFERRED_INBOUND = 32
+MAX_INBOX_ATTEMPTS = 150
+MAX_PENDING_INBOX = 512
+DRAIN_BATCH = 64
+DRAIN_STOP_TIMEOUT = 5.0
+PERSIST_RETRIES = 3
+PERSIST_RETRY_DELAY = 0.05
 MAX_RETRY_AFTER = 30.0
 STALE_WINDOW_MS = 24 * 60 * 60 * 1000
 
@@ -69,6 +87,7 @@ _DEFINITE_SEND_FAILURES = {
     "target_revoked",
     "permission_denied",
 }
+_INBOX_ERROR_PREFIXES = ("feishu_inbound", "inbound_uncertain")
 
 
 class FeishuIdentityProtocol(Protocol):
@@ -96,6 +115,59 @@ class FeishuChannelProtocol(Protocol):
 
 
 ChannelFactory = Callable[[str, str], FeishuChannelProtocol]
+
+
+class FeishuInboxProtocol(Protocol):
+    """Durable inbound envelopes owned by the ChannelStore."""
+
+    def enqueue_inbound_inbox(
+        self,
+        event: ChannelInboundEvent,
+        *,
+        pending_limit: int,
+        window_seconds: float,
+    ) -> tuple[bool, str]: ...
+
+    def due_inbound_inbox(
+        self,
+        connection_id: str,
+        adapter_identity: str,
+        *,
+        limit: int = 64,
+    ) -> tuple[ChannelInboundInboxEntry, ...]: ...
+
+    def has_pending_inbound_inbox(
+        self, connection_id: str, adapter_identity: str
+    ) -> bool: ...
+
+    def record_inbound_inbox_attempt(
+        self,
+        connection_id: str,
+        adapter_identity: str,
+        external_message_id: str,
+        *,
+        error: str,
+        next_attempt_at: float,
+        increment: bool = True,
+    ) -> None: ...
+
+    def settle_inbound_inbox(
+        self,
+        connection_id: str,
+        adapter_identity: str,
+        external_message_id: str,
+        *,
+        state: str,
+        error: str | None = None,
+    ) -> bool: ...
+
+    def fail_inbound_inbox_other_identity(
+        self,
+        connection_id: str,
+        adapter_identity: str,
+        *,
+        reason: str,
+    ) -> int: ...
 
 
 def _default_channel(app_id: str, app_secret: str) -> FeishuChannelProtocol:
@@ -127,12 +199,6 @@ class _Reservations:
 
 
 _ACTIVE = _Reservations(app_connections={}, ws_connection=None)
-
-
-@dataclass(frozen=True, slots=True)
-class _DeferredInbound:
-    event: ChannelInboundEvent
-    deadline: float
 
 
 def split_message(text: str, limit: int = MESSAGE_LIMIT) -> tuple[str, ...]:
@@ -177,14 +243,24 @@ class FeishuAdapter:
         credentials: dict[str, str] | None,
         inbound: InboundSink,
         *,
+        inbox: FeishuInboxProtocol,
         channel_factory: ChannelFactory | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        retry_seconds: float = INBOUND_RETRY_SECONDS,
+        window_seconds: float = INBOUND_RETRY_WINDOW,
+        max_attempts: int = MAX_INBOX_ATTEMPTS,
+        max_pending: int = MAX_PENDING_INBOX,
     ) -> None:
         self.connection_id = connection.connection_id
         self._credentials = dict(credentials or {})
         self._inbound = inbound
+        self._inbox = inbox
         self._channel_factory = channel_factory or _default_channel
         self._sleep = sleep
+        self._retry_seconds = retry_seconds
+        self._window_seconds = window_seconds
+        self._max_attempts = max_attempts
+        self._max_pending = max_pending
         self._channel: FeishuChannelProtocol | None = None
         self._identity: str | None = None
         self._bot_open_id: str | None = None
@@ -193,8 +269,10 @@ class FeishuAdapter:
         self._last_heartbeat_at: str | None = None
         self._last_error: str | None = None
         self._closing = False
-        self._deferred: list[_DeferredInbound] = []
-        self._worker: asyncio.Task[None] | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._wake: asyncio.Event | None = None
+        self._drain_task: asyncio.Task[None] | None = None
+        self._pre_ack_active = False
         self._reserved_app: str | None = None
         self._reserved_ws = False
 
@@ -301,6 +379,12 @@ class FeishuAdapter:
             self._last_connected_at = utc_now()
             self._last_heartbeat_at = self._last_connected_at
             self._last_error = None
+            self._isolate_other_identity()
+            self._loop = asyncio.get_running_loop()
+            self._wake = asyncio.Event()
+            self._pre_ack_active = True
+            self._install_pre_ack_hook(channel)
+            self._drain_task = asyncio.create_task(self._drain_loop())
         except asyncio.CancelledError:
             await self._abort_start(channel)
             raise
@@ -321,36 +405,64 @@ class FeishuAdapter:
         return self._safe_error(exc)
 
     async def _abort_start(self, channel: FeishuChannelProtocol | None) -> None:
+        self._closing = True
+        self._pre_ack_active = False
         if channel is not None:
             with contextlib.suppress(Exception):
                 await channel.stop_background()
+        await self._stop_drain(grace=0.0)
         self._channel = None
         self._release()
         self._identity = None
         self._bot_open_id = None
-        self._deferred.clear()
-        self._worker = None
+
+    async def _stop_drain(self, *, grace: float) -> None:
+        task, self._drain_task = self._drain_task, None
+        self._wake_worker()
+        if task is not None and not task.done():
+            try:
+                await asyncio.wait_for(task, timeout=grace)
+            except TimeoutError:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+        self._wake = None
+        self._loop = None
 
     async def stop(self) -> None:
         self._closing = True
         channel, self._channel = self._channel, None
+        failure: Exception | None = None
         if channel is not None:
             try:
                 await channel.stop_background()
             except Exception as exc:
-                self._channel = channel
-                self._state = ChannelActualState.ERROR
-                self._last_error = self._safe_error(exc)
-                raise ChannelAdapterError(self._last_error) from exc
+                failure = exc
+        if failure is not None:
+            # The transport may still be delivering after a failed stop. Keep
+            # the pre-ACK hook active so anything acknowledged during that
+            # window is persisted for the next start, and leave the drain
+            # stopped so nothing is admitted under an Error connection.
+            await self._stop_drain(grace=0.0)
+            self._channel = channel
+            self._state = ChannelActualState.ERROR
+            self._last_error = self._safe_error(failure)
+            raise ChannelAdapterError(self._last_error) from failure
+        # Stop the transport before deactivating the pre-ACK hook so an event
+        # already acknowledged during shutdown still reaches the inbox.
+        self._pre_ack_active = False
+        await self._stop_drain(grace=DRAIN_STOP_TIMEOUT)
         self._release()
         self._identity = None
         self._bot_open_id = None
-        self._deferred.clear()
-        self._worker = None
         self._state = ChannelActualState.STOPPED
         self._last_heartbeat_at = None
-        # ``_closing`` stays set until the next start so a deferred-admission
-        # worker left on the SDK loop exits instead of racing a new identity.
+        # Pending inbox rows are deliberately retained. The next start drains
+        # them after re-checking the current sender authorization and identity.
 
     async def reconnect(self) -> None:
         await self.stop()
@@ -377,39 +489,336 @@ class FeishuAdapter:
             self._state = ChannelActualState.RUNNING
             self._last_error = None
             self._last_heartbeat_at = utc_now()
+            self._wake_worker()
+
+    def _isolate_other_identity(self) -> None:
+        identity = self._identity
+        if identity is None:
+            return
+        try:
+            failed = self._inbox.fail_inbound_inbox_other_identity(
+                self.connection_id,
+                identity,
+                reason="feishu_inbound_identity_changed",
+            )
+        except Exception as exc:
+            self._last_error = (
+                f"feishu_inbound_inbox_unavailable: {self._safe_error(exc)}"[:300]
+            )
+            return
+        if failed:
+            self._last_error = (
+                f"feishu_inbound_identity_changed: {failed} pending message(s) isolated"
+            )[:300]
+
+    def _install_pre_ack_hook(self, channel: FeishuChannelProtocol) -> None:
+        """Persist a private-text envelope before the SDK writes its ACK.
+
+        ``lark-oapi``'s WS client invokes the dispatcher synchronously and ACKs
+        immediately after it returns; the channel-level ``message`` handler is
+        only scheduled on the SDK background loop. Wrapping the private
+        dispatcher method closes the ACK-to-handler crash window. This is
+        deliberately best-effort: a missing or changed SDK attribute leaves the
+        normal handler and durable admission in place.
+        """
+        ws_client = getattr(channel, "_ws_client", None)
+        dispatcher = getattr(ws_client, "_event_handler", None)
+        original = getattr(dispatcher, "_do_without_validation", None)
+        if dispatcher is None or not callable(original):
+            return
+
+        def dispatch_with_durability(payload: Any) -> Any:
+            try:
+                self._persist_raw_payload(payload)
+            except Exception as exc:
+                self._last_error = (
+                    f"feishu_inbound_preack_failed: {self._safe_error(exc)}"[:300]
+                )
+            return original(payload)
+
+        try:
+            dispatcher._do_without_validation = dispatch_with_durability
+        except (AttributeError, TypeError):
+            return
+
+    def _persist_raw_payload(self, payload: Any) -> None:
+        if not self._pre_ack_active:
+            return
+        event = self._raw_inbound(payload)
+        if event is not None:
+            self._enqueue(event)
+
+    def _raw_inbound(self, payload: Any) -> ChannelInboundEvent | None:
+        """Minimal p2 ``im.message.receive_v1`` parser for the pre-ACK hook.
+
+        The async SDK pipeline still performs the authoritative normalization;
+        this parser only covers the scope Cairn accepts (private human text)
+        and returns ``None`` for anything else so the normal handler remains the
+        filter of record.
+        """
+        identity = self._identity
+        if identity is None:
+            return None
+        if isinstance(payload, bytes):
+            try:
+                raw = json.loads(payload.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                return None
+        else:
+            raw = payload
+        if not isinstance(raw, dict):
+            return None
+        header = raw.get("header")
+        if not isinstance(header, dict):
+            return None
+        if header.get("event_type") != "im.message.receive_v1":
+            return None
+        event = raw.get("event")
+        if not isinstance(event, dict):
+            return None
+        message = event.get("message")
+        sender = event.get("sender")
+        if not isinstance(message, dict) or not isinstance(sender, dict):
+            return None
+        if message.get("chat_type") != "p2p":
+            return None
+        if message.get("message_type") != "text":
+            return None
+        if sender.get("sender_type") not in (None, "user"):
+            return None
+        sender_ids = sender.get("sender_id")
+        sender_id = sender_ids.get("open_id") if isinstance(sender_ids, dict) else None
+        message_id = message.get("message_id")
+        chat_id = message.get("chat_id")
+        content = message.get("content")
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except ValueError:
+                return None
+        text = content.get("text") if isinstance(content, dict) else None
+        if (
+            not isinstance(sender_id, str)
+            or not sender_id.strip()
+            or not isinstance(message_id, str)
+            or not message_id.strip()
+            or not isinstance(chat_id, str)
+            or not chat_id.strip()
+            or not isinstance(text, str)
+            or not text.strip()
+        ):
+            return None
+        if self._bot_open_id is not None and sender_id == self._bot_open_id:
+            return None
+        if self._is_stale(message.get("create_time")):
+            return None
+        return ChannelInboundEvent(
+            platform=ChannelPlatform.FEISHU,
+            connection_id=self.connection_id,
+            external_message_id=message_id,
+            sender_id=sender_id,
+            conversation_binding=chat_id,
+            text=text,
+            received_at=utc_now(),
+            adapter_identity=identity,
+        )
+
+    @staticmethod
+    def _is_stale(create_time: object) -> bool:
+        if isinstance(create_time, bool) or not isinstance(create_time, (int, str)):
+            return False
+        try:
+            created_ms = int(create_time)
+        except (TypeError, ValueError):
+            return False
+        if created_ms <= 0:
+            return False
+        return bool(created_ms < (time.time() * 1000) - STALE_WINDOW_MS)
 
     async def _handle_message(self, inbound: object) -> None:
         event = self._normalise(inbound)
         if event is None:
             return
-        if self._deferred or self._state is not ChannelActualState.RUNNING:
-            # Preserve per-connection order while the head is waiting for an
-            # active Run to finish, and hold messages that arrive during a
-            # reconnect instead of dropping an event the SDK has already ACKed.
-            self._defer(event)
+        state = self._enqueue(event)
+        if state is None:
+            for _ in range(PERSIST_RETRIES - 1):
+                await self._sleep(PERSIST_RETRY_DELAY)
+                state = self._enqueue(event)
+                if state is not None:
+                    break
+        if state is None:
+            self._last_error = "feishu_inbound_persist_failed"
             return
-        if not await self._admit(event):
-            self._defer(event)
+        if state == "pending" and not self._closing:
+            self._wake_worker()
 
-    async def _admit(self, event: ChannelInboundEvent) -> bool:
-        """Try durable admission; return False only for a retryable outcome."""
+    def _enqueue(self, event: ChannelInboundEvent) -> str | None:
         try:
-            await self._inbound(event)
-        except (ChannelInboundRejected, ChannelInboundConflict, ChannelNotFound):
-            # A definite refusal is final; replaying it only repeats the answer.
-            return True
-        except ChannelInboundUncertain as exc:
-            self._last_error = f"inbound_uncertain: {self._safe_error(exc)}"[:300]
-            return False
+            _, state = self._inbox.enqueue_inbound_inbox(
+                event,
+                pending_limit=self._max_pending,
+                window_seconds=self._window_seconds,
+            )
         except Exception as exc:
-            self._last_error = self._safe_error(exc)
-            return True
+            self._last_error = f"feishu_inbound_persist_retry: {self._safe_error(exc)}"[
+                :300
+            ]
+            return None
+        if state == "conflict":
+            self._last_error = "feishu_inbound_id_conflict"
+        elif state == "failed":
+            self._last_error = "feishu_inbound_backpressure"
+        return state
+
+    def _wake_worker(self) -> None:
+        loop = self._loop
+        wake = self._wake
+        if loop is None or wake is None or loop.is_closed():
+            return
+        try:
+            loop.call_soon_threadsafe(wake.set)
+        except RuntimeError:
+            return
+
+    def _is_closing(self) -> bool:
+        return self._closing
+
+    async def _drain_loop(self) -> None:
+        try:
+            while not self._closing:
+                identity = self._identity
+                if identity is None:
+                    return
+                if self._state is not ChannelActualState.RUNNING:
+                    await self._wait_for_work()
+                    continue
+                try:
+                    items = self._inbox.due_inbound_inbox(
+                        self.connection_id, identity, limit=DRAIN_BATCH
+                    )
+                except Exception as exc:
+                    self._last_error = (
+                        f"feishu_inbound_inbox_unavailable: {self._safe_error(exc)}"[
+                            :300
+                        ]
+                    )
+                    await self._sleep(self._retry_seconds)
+                    continue
+                if not items:
+                    await self._wait_for_work()
+                    continue
+                for item in items:
+                    if self._is_closing():
+                        return
+                    try:
+                        await self._process_inbox(item)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        self._last_error = (
+                            f"feishu_inbound_drain_error: {self._safe_error(exc)}"[:300]
+                        )
+                        await self._sleep(self._retry_seconds)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._last_error = f"feishu_inbound_drain_stopped: {self._safe_error(exc)}"[
+                :300
+            ]
+
+    async def _wait_for_work(self) -> None:
+        wake = self._wake
+        identity = self._identity
+        if wake is None or identity is None:
+            return
+        try:
+            if self._inbox.has_pending_inbound_inbox(self.connection_id, identity):
+                await asyncio.wait_for(wake.wait(), timeout=self._retry_seconds)
+            else:
+                await wake.wait()
+        except TimeoutError:
+            pass
+        finally:
+            if not self._closing:
+                wake.clear()
+
+    async def _process_inbox(self, item: ChannelInboundInboxEntry) -> None:
+        try:
+            await self._inbound(item.event)
+        except ChannelInboundPaused as exc:
+            error = f"feishu_inbound_paused: {self._safe_error(exc)}"[:300]
+            self._last_error = error
+            self._record_attempt(item, error, increment=False)
+            return
+        except (ChannelInboundRejected, ChannelInboundConflict) as exc:
+            self._settle(item, "rejected", self._safe_error(exc))
+            return
+        except ChannelNotFound as exc:
+            self._settle(item, "failed", self._safe_error(exc))
+            return
+        except ChannelInboundUncertain as exc:
+            self._record_attempt(item, self._safe_error(exc), increment=True)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # A plain adapter/store failure is not an acceptance. Keep the
+            # envelope pending so the next attempt reconciles the same claim.
+            self._record_attempt(item, self._safe_error(exc), increment=True)
+            return
+        self._settle(item, "admitted")
         self._last_heartbeat_at = utc_now()
-        return True
+        if (self._last_error or "").startswith(_INBOX_ERROR_PREFIXES):
+            self._last_error = None
+
+    def _record_attempt(
+        self, item: ChannelInboundInboxEntry, error: str, *, increment: bool
+    ) -> None:
+        self._last_error = f"feishu_inbound_retry: {error}"[:300]
+        attempts = item.attempts + 1 if increment else item.attempts
+        now = time.time()
+        if increment and (attempts >= self._max_attempts or now >= item.deadline_at):
+            self._settle(item, "failed", f"feishu_inbound_expired: {error}"[:300])
+            return
+        try:
+            self._inbox.record_inbound_inbox_attempt(
+                self.connection_id,
+                item.event.adapter_identity or "",
+                item.event.external_message_id,
+                error=error,
+                next_attempt_at=now + self._retry_seconds,
+                increment=increment,
+            )
+        except Exception as exc:
+            self._last_error = (
+                f"feishu_inbound_inbox_unavailable: {self._safe_error(exc)}"[:300]
+            )
+
+    def _settle(
+        self,
+        item: ChannelInboundInboxEntry,
+        state: str,
+        error: str | None = None,
+    ) -> None:
+        try:
+            self._inbox.settle_inbound_inbox(
+                self.connection_id,
+                item.event.adapter_identity or "",
+                item.event.external_message_id,
+                state=state,
+                error=error,
+            )
+        except Exception as exc:
+            self._last_error = (
+                f"feishu_inbound_inbox_unavailable: {self._safe_error(exc)}"[:300]
+            )
+        else:
+            if state == "admitted" and (self._last_error or "").startswith(
+                _INBOX_ERROR_PREFIXES
+            ):
+                self._last_error = None
 
     def _normalise(self, inbound: object) -> ChannelInboundEvent | None:
-        if self._closing:
-            return None
         if self._state not in {
             ChannelActualState.RUNNING,
             ChannelActualState.CONNECTING,
@@ -455,67 +864,6 @@ class FeishuAdapter:
             received_at=utc_now(),
             adapter_identity=self._identity,
         )
-
-    def _defer(self, event: ChannelInboundEvent) -> None:
-        if len(self._deferred) >= MAX_DEFERRED_INBOUND:
-            self._last_error = "feishu_inbound_deferred_full"
-            return
-        deadline = asyncio.get_running_loop().time() + INBOUND_RETRY_WINDOW
-        self._deferred.append(_DeferredInbound(event=event, deadline=deadline))
-        if self._worker is None or self._worker.done():
-            self._worker = asyncio.create_task(self._drain_deferred())
-
-    async def _drain_deferred(self) -> None:
-        current = asyncio.current_task()
-        try:
-            while self._deferred and not self._closing and self._worker is current:
-                pending = self._deferred[0]
-                if self._state is not ChannelActualState.RUNNING:
-                    # A reconnect or stop may be in progress. Keep waiting while
-                    # the identity is still valid; ``stop`` clears this queue.
-                    if asyncio.get_running_loop().time() >= pending.deadline:
-                        self._drop_head(pending)
-                        self._last_error = "feishu_inbound_deferred_expired"
-                        continue
-                    await self._sleep(INBOUND_RETRY_SECONDS)
-                    continue
-                try:
-                    await self._inbound(pending.event)
-                except (
-                    ChannelInboundRejected,
-                    ChannelInboundConflict,
-                    ChannelNotFound,
-                ):
-                    pass
-                except ChannelInboundUncertain as exc:
-                    self._last_error = f"inbound_deferred: {self._safe_error(exc)}"[
-                        :300
-                    ]
-                    if asyncio.get_running_loop().time() >= pending.deadline:
-                        self._drop_head(pending)
-                        self._last_error = (
-                            f"inbound_deferred_expired: {self._safe_error(exc)}"[:300]
-                        )
-                        continue
-                    await self._sleep(INBOUND_RETRY_SECONDS)
-                    continue
-                except Exception as exc:
-                    self._last_error = self._safe_error(exc)
-                else:
-                    self._last_heartbeat_at = utc_now()
-                self._drop_head(pending)
-        finally:
-            if self._worker is current:
-                self._worker = None
-            if not self._deferred and (self._last_error or "").startswith(
-                "inbound_deferred"
-            ):
-                self._last_error = None
-
-    def _drop_head(self, pending: _DeferredInbound) -> None:
-        # ``stop`` may clear the list while the worker is awaiting admission.
-        if self._deferred and self._deferred[0] is pending:
-            self._deferred.pop(0)
 
     async def send(
         self, target: str, message: str, idempotency_key: str
@@ -611,9 +959,14 @@ class FeishuAdapter:
 
 
 def feishu_adapter_factory(
+    inbox: FeishuInboxProtocol,
     *,
     channel_factory: ChannelFactory | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    retry_seconds: float = INBOUND_RETRY_SECONDS,
+    window_seconds: float = INBOUND_RETRY_WINDOW,
+    max_attempts: int = MAX_INBOX_ATTEMPTS,
+    max_pending: int = MAX_PENDING_INBOX,
 ) -> AdapterFactory:
     def build(
         connection: ChannelConnection,
@@ -624,8 +977,13 @@ def feishu_adapter_factory(
             connection,
             credentials,
             inbound,
+            inbox=inbox,
             channel_factory=channel_factory,
             sleep=sleep,
+            retry_seconds=retry_seconds,
+            window_seconds=window_seconds,
+            max_attempts=max_attempts,
+            max_pending=max_pending,
         )
 
     return build

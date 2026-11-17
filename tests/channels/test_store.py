@@ -691,7 +691,7 @@ def test_schema_v2_rows_gain_empty_identity_columns(tmp_path: Path) -> None:
     assert (pending[0].sender_id, pending[0].sender_role) == ("", "")
     assert pending[0].adapter_identity == ""
     with sqlite3.connect(store.path) as database:
-        assert database.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert database.execute("PRAGMA user_version").fetchone()[0] == 5
         primary_key = [
             row[1]
             for row in sorted(
@@ -723,3 +723,98 @@ def test_adapter_state_roundtrips_and_ignores_corrupt_json(tmp_path: Path) -> No
             (connection_id,),
         )
     assert store.load_adapter_state(connection_id, "telegram") is None
+
+
+def test_inbound_inbox_dedupes_retries_and_keeps_terminal_state(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    connection_id = _create(store)
+    event = _event(connection_id, "m-inbox", adapter_identity="bot-a")
+    created, state = store.enqueue_inbound_inbox(
+        event, pending_limit=10, window_seconds=60.0
+    )
+    assert created is True and state == "pending"
+    duplicate, duplicate_state = store.enqueue_inbound_inbox(
+        event, pending_limit=10, window_seconds=60.0
+    )
+    assert duplicate is False and duplicate_state == "pending"
+    conflict, conflict_state = store.enqueue_inbound_inbox(
+        _event(connection_id, "m-inbox", "different", adapter_identity="bot-a"),
+        pending_limit=10,
+        window_seconds=60.0,
+    )
+    assert conflict is False and conflict_state == "conflict"
+
+    due = store.due_inbound_inbox(connection_id, "bot-a")
+    assert len(due) == 1
+    assert due[0].event.text == "hi"
+    store.record_inbound_inbox_attempt(
+        connection_id,
+        "bot-a",
+        "m-inbox",
+        error="database is locked",
+        next_attempt_at=0,
+    )
+    entry = store.inbound_inbox_entry(connection_id, "bot-a", "m-inbox")
+    assert entry is not None
+    assert entry.attempts == 1
+    assert entry.last_error == "database is locked"
+    assert len(store.due_inbound_inbox(connection_id, "bot-a")) == 1
+
+    assert (
+        store.settle_inbound_inbox(connection_id, "bot-a", "m-inbox", state="admitted")
+        is True
+    )
+    assert (
+        store.settle_inbound_inbox(connection_id, "bot-a", "m-inbox", state="rejected")
+        is False
+    )
+    admitted = store.inbound_inbox_entry(connection_id, "bot-a", "m-inbox")
+    assert admitted is not None and admitted.state == "admitted"
+    assert store.inbound_inbox_summary(connection_id) == {
+        "admitted": 1,
+        "total": 1,
+    }
+
+
+def test_inbound_inbox_pending_limit_is_an_explicit_failure(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    connection_id = _create(store)
+    states = [
+        store.enqueue_inbound_inbox(
+            _event(connection_id, f"m-{index}", adapter_identity="bot-a"),
+            pending_limit=2,
+            window_seconds=60.0,
+        )[1]
+        for index in range(3)
+    ]
+    assert states == ["pending", "pending", "failed"]
+    summary = store.inbound_inbox_summary(connection_id, "bot-a")
+    assert summary == {"pending": 2, "failed": 1, "total": 3}
+    failed = store.inbound_inbox_entry(connection_id, "bot-a", "m-2")
+    assert failed is not None
+    assert failed.last_error == "inbound_pending_limit"
+    assert store.due_inbound_inbox(connection_id, "bot-a")[0].event.text == "hi"
+
+
+def test_schema_v4_store_adds_the_durable_inbound_inbox(tmp_path: Path) -> None:
+    root = tmp_path / "channels"
+    root.mkdir()
+    with sqlite3.connect(root / "channels.sqlite3") as database:
+        database.execute("PRAGMA user_version=4")
+    store = ChannelStore(root)
+    with sqlite3.connect(store.path) as database:
+        assert database.execute("PRAGMA user_version").fetchone()[0] == 5
+        table = database.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'channel_inbound_inbox'"
+        ).fetchone()
+        assert table is not None
+    connection_id = _create(store)
+    created, state = store.enqueue_inbound_inbox(
+        _event(connection_id, "m-v4", adapter_identity="bot-a"),
+        pending_limit=10,
+        window_seconds=60.0,
+    )
+    assert created is True and state == "pending"
