@@ -865,23 +865,27 @@ class ServerControls:
         ):
             raise ValueError("Task delivery identity is not authorized")
 
-    def _knowledge_is_personal(self, task: RuntimeTask, *, personal: bool) -> bool:
-        """Whether this task may read the owner's private knowledge library.
+    def _owner_task(self, task: RuntimeTask) -> bool:
+        """Host-verified owner identity for private capabilities.
 
-        Channel principals carry the role determined by the Host. Legacy
+        Channel principals carry the role from the stored connection. Legacy
         WeChat conversation runs have no principal and no delivery recipient,
-        so their ownership must come from the stored account/sender binding
-        rather than from an empty recipient field.
+        so ownership must come from the stored account/sender binding. Prompt
+        text, historical context and tool arguments never contribute.
         """
-        if not personal:
+        channel = task.channel_principal
+        if channel is not None:
+            return channel.role == "owner"
+        if task.source == "wechat":
+            if task.delivery_recipient is None:
+                return self._wechat_conversation_is_owned(task)
+            return task.delivery_recipient == self.wechat.recipient_id()
+        if task.source == "channel":
             return False
-        if (
-            task.channel_principal is None
-            and task.source == "wechat"
-            and task.delivery_recipient is None
-        ):
-            return self._wechat_conversation_is_owned(task)
-        return True
+        return (
+            task.delivery_recipient is None
+            or task.delivery_recipient == self.wechat.recipient_id()
+        )
 
     def _wechat_conversation_is_owned(self, task: RuntimeTask) -> bool:
         domain = self.service.domain_store
@@ -894,18 +898,11 @@ class ServerControls:
         )
 
     def configure_agent(self, agent: Agent, task: RuntimeTask) -> None:
-        # A channel sender's role comes from the stored connection. Only the
-        # owner gets personal memory and host tools; an allowed guest gets no
-        # personal capability, and an unknown sender never reaches execution.
-        channel = task.channel_principal
-        personal = (
-            channel.role == "owner"
-            if channel is not None
-            else (
-                task.delivery_recipient is None
-                or task.delivery_recipient == self.wechat.recipient_id()
-            )
-        )
+        # Only the Host-verified owner gets personal memory, schedules, skills
+        # and private knowledge. A trusted sender keeps read-only project
+        # inspection but no private capability; an unknown sender never
+        # reaches execution.
+        personal = self._owner_task(task)
         if personal and self.services.memory:
             agent.personal_context = "\n\n".join(
                 filter(None, (agent.personal_context, self.memory.render_context()))
@@ -915,8 +912,7 @@ class ServerControls:
         # Knowledge is an explicit, owner-only read capability. It never
         # injects saved clip bodies into unrelated conversations.
         knowledge_store = getattr(self, "knowledge_store", None)
-        knowledge_personal = self._knowledge_is_personal(task, personal=personal)
-        if knowledge_personal and knowledge_store is not None:
+        if personal and knowledge_store is not None:
             for tool in personal_knowledge_tools(knowledge_store):
                 agent.tools.register_tool(tool)
             agent.system_prompt += (
@@ -942,7 +938,20 @@ class ServerControls:
                         require_trusted_message=True,
                     )
                 )
-        if channel is None or channel.role == "owner":
+        if (
+            task.mode == "conversation"
+            and task.channel_principal is None
+            and not personal
+        ):
+            # A legacy trusted sender may inspect project files read-only,
+            # but only the owner may ask the Host to prepare a writable
+            # worktree. Explicit owner commands remain the development path.
+            agent.tools.unregister_tool("begin_development")
+            agent.system_prompt += (
+                "\n\nYou may inspect project files read-only. Development "
+                "work must be started explicitly by the owner."
+            )
+        if personal:
             library = layered_skills(
                 Path(task.worktree) if task.worktree else self.workspace
             )

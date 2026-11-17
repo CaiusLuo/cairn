@@ -274,6 +274,7 @@ def test_owner_searches_chinese_keyword_then_gets_matching_clip(tmp_path: Path) 
         clip = _clip(tmp_path, "项目代号: 蓝石。供应商交付日期是周五。")
         model = ScriptedModel(
             [
+                ("knowledge_list", {}),
                 ("knowledge_search", {"query": "蓝石"}),
                 ("knowledge_get", {"clip_id": clip.clip_id}),
             ],
@@ -292,9 +293,10 @@ def test_owner_searches_chinese_keyword_then_gets_matching_clip(tmp_path: Path) 
             assert clip.clip_id in result["result"]
             payloads = _tool_payloads(history)
             assert payloads[0]["clips"][0]["clip_id"] == clip.clip_id
-            assert "蓝石" in payloads[0]["clips"][0]["preview"]
-            assert "周五" in payloads[1]["content"]
-            assert payloads[1]["total_chars"] == len(clip.content)
+            assert payloads[1]["clips"][0]["clip_id"] == clip.clip_id
+            assert "蓝石" in payloads[1]["clips"][0]["preview"]
+            assert "周五" in payloads[2]["content"]
+            assert payloads[2]["total_chars"] == len(clip.content)
 
     asyncio.run(scenario())
 

@@ -12,7 +12,10 @@ from cairn.agent.tools.registry import ToolRegistry
 from cairn.conversation.store import DomainStore
 from cairn.development.catalogue import ChannelPrincipal, RuntimeTask
 from cairn.development.execution.runtime import apply_channel_tool_scope
+from cairn.development.request import DevelopmentRequest
 from cairn.knowledge.store import KnowledgeStore
+from cairn.memory.service import PersonalMemoryService
+from cairn.memory.store import PersonalMemoryStore
 from cairn.server.config import Services
 from cairn.server.management import ServerControls
 
@@ -200,3 +203,90 @@ def test_legacy_wechat_knowledge_tools_require_owner_binding(tmp_path: Path) -> 
     unbound_agent, unbound_registry = agent_with_registry()
     server.configure_agent(unbound_agent, wechat_task(None))
     assert "knowledge_search" not in unbound_registry.tools
+
+
+def test_legacy_wechat_trusted_sender_has_no_private_capabilities(
+    tmp_path: Path,
+) -> None:
+    domain = DomainStore(tmp_path / "domain.sqlite3")
+    owner_conversation = domain.get_or_create_wechat_conversation(
+        workspace=tmp_path,
+        account_id="bot-1",
+        sender_id="owner",
+        initial_prompt="hello",
+    )
+    guest_conversation = domain.get_or_create_wechat_conversation(
+        workspace=tmp_path,
+        account_id="bot-1",
+        sender_id="trusted-guest",
+        initial_prompt="hello",
+    )
+    server = ServerControls.__new__(ServerControls)
+    server.services = Services(memory=True, schedule=True)
+    server.workspace = tmp_path
+    server.schedules = cast(Any, SimpleNamespace(store=object()))
+    server.knowledge_store = KnowledgeStore(tmp_path / "knowledge")
+    server.knowledge_store.create("PRIVATE-WECHAT-KNOWLEDGE")
+    server.memory = PersonalMemoryService(
+        PersonalMemoryStore(tmp_path / "agent"), enabled=True
+    )
+    server.memory.store.write_memory_md("OWNER-MEMORY-MARKER")
+    server.service = cast(Any, SimpleNamespace(domain_store=domain))
+    server.wechat = cast(
+        Any,
+        SimpleNamespace(account_id=lambda: "bot-1", recipient_id=lambda: "owner"),
+    )
+
+    def chat_task(conversation_id: str) -> RuntimeTask:
+        return RuntimeTask(
+            prompt="hello",
+            source="wechat",
+            mode="conversation",
+            conversation_key=conversation_id,
+        )
+
+    def agent_with_development_request() -> tuple[Agent, ToolRegistry]:
+        registry = ToolRegistry()
+        registry.register_tool(DummyTool())
+        registry.register_tool(DevelopmentRequest())
+        agent = cast(
+            Agent,
+            SimpleNamespace(
+                tools=registry,
+                personal_context="",
+                skill_library=None,
+                system_prompt="Assistant.",
+            ),
+        )
+        return agent, registry
+
+    owner_agent, owner_registry = agent_with_development_request()
+    server.configure_agent(owner_agent, chat_task(owner_conversation.conversation_id))
+    assert {
+        "memory_search",
+        "memory_remember",
+        "knowledge_get",
+        "schedule_create",
+        "read_skill",
+    } <= set(owner_registry.tools)
+    assert "begin_development" in owner_registry.tools
+    assert "OWNER-MEMORY-MARKER" in owner_agent.personal_context
+
+    guest_agent, guest_registry = agent_with_development_request()
+    server.configure_agent(guest_agent, chat_task(guest_conversation.conversation_id))
+    for name in (
+        "memory_search",
+        "memory_remember",
+        "knowledge_list",
+        "knowledge_search",
+        "knowledge_get",
+        "schedule_create",
+        "schedule_list",
+        "schedule_manage",
+        "read_skill",
+        "read_skill_resource",
+        "begin_development",
+    ):
+        assert name not in guest_registry.tools
+    assert guest_agent.personal_context == ""
+    assert "OWNER-MEMORY-MARKER" not in guest_agent.system_prompt
