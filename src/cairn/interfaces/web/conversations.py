@@ -12,7 +12,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route, WebSocketRoute
@@ -70,6 +70,24 @@ class ConversationMessage(BaseModel):
     source: ConversationSource = ConversationSource.CLI
     request_id: str = Field(min_length=1, max_length=200)
     model_id: str | None = Field(default=None, min_length=1, max_length=200)
+    # The WeChat bridge supplies the exact identity that admitted this message.
+    # The Host uses it only to scope durable history; tool authorization still
+    # comes from the stored conversation binding.
+    wechat_account: str | None = Field(default=None, min_length=1, max_length=256)
+    wechat_sender: str | None = Field(default=None, min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def _wechat_identity_pair(self) -> ConversationMessage:
+        if (self.wechat_account is None) != (self.wechat_sender is None):
+            raise ValueError(
+                "wechat_account and wechat_sender must be provided together"
+            )
+        if (
+            self.wechat_account is not None
+            and self.source is not ConversationSource.WECHAT
+        ):
+            raise ValueError("WeChat identity metadata requires source=wechat")
+        return self
 
 
 class ConversationRename(BaseModel):
@@ -310,6 +328,14 @@ def conversation_routes(
                     message_body.source,
                     message_body.request_id,
                     model_id=message_body.model_id,
+                    metadata=(
+                        {
+                            "wechat_account": message_body.wechat_account,
+                            "wechat_sender": message_body.wechat_sender,
+                        }
+                        if message_body.wechat_account is not None
+                        else None
+                    ),
                 )
                 return JSONResponse(
                     run_payload(run.run_id), headers={"Cache-Control": "no-store"}

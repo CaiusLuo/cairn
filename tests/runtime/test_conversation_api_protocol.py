@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 
 from cairn.agent.budget import RunBudget
 from cairn.agent.context.window import ContextBuilder
@@ -331,3 +332,32 @@ def test_conversation_rename_and_delete(tmp_path: Path) -> None:
             assert recreated["conversation_id"] != conversation_id
 
     asyncio.run(scenario())
+
+
+def test_conversation_message_requires_exact_wechat_identity_pair() -> None:
+    from cairn.interfaces.web.conversations import ConversationMessage
+
+    message = ConversationMessage(
+        prompt="hello",
+        source=ConversationSource.WECHAT,
+        request_id="request-1",
+        wechat_account="bot-1",
+        wechat_sender="owner",
+    )
+    assert message.wechat_account == "bot-1"
+    assert message.wechat_sender == "owner"
+    with pytest.raises(ValueError):
+        ConversationMessage(
+            prompt="hello",
+            source=ConversationSource.WECHAT,
+            request_id="request-1",
+            wechat_account="bot-1",
+        )
+    with pytest.raises(ValueError):
+        ConversationMessage(
+            prompt="hello",
+            source=ConversationSource.WEB,
+            request_id="request-1",
+            wechat_account="bot-1",
+            wechat_sender="owner",
+        )

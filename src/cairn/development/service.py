@@ -58,6 +58,10 @@ class TaskNotContinuable(ValueError):
     """A terminal state cannot accept another input; start a new Task."""
 
 
+class TaskSubmissionForbidden(PermissionError):
+    """Host policy refused a new Task before it was durably accepted."""
+
+
 class TaskService:
     def __init__(
         self,
@@ -68,6 +72,9 @@ class TaskService:
         board: TaskBoardService | None = None,
     ) -> None:
         self.validate_submission: Callable[[RuntimeTask], None] | None = None
+        # Host policy for creating a Task. It is deliberately separate from the
+        # follow-up validator: existing Tasks keep their stored binding.
+        self.authorize_new_submission: Callable[[RuntimeTask], None] | None = None
         self.default_model_id: str | None = None
         self.on_settled: Callable[[RuntimeTask], None] | None = None
         self.board = board
@@ -339,6 +346,9 @@ class TaskService:
         validator = self.validate_submission
         if validator is not None:
             validator(task)
+        authorizer = self.authorize_new_submission
+        if authorizer is not None:
+            authorizer(task)
         task = self.record(task, "accepted", {"source": source})
         self.queue.put_nowait(task.task_id)
         return task

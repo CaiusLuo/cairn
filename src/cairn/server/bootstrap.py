@@ -198,6 +198,7 @@ def runtime_app(
             agent_home=agent_home or state / "agent",
             schedule_state=schedule_state or state / "schedules",
             channels_state=channel_root,
+            knowledge_store=knowledge_store,
             services=services,
             review=review,
             config_file=config_file,

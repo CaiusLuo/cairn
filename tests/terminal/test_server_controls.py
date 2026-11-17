@@ -1067,13 +1067,18 @@ def test_wechat_task_commands_use_receipts_and_revalidate_authorization(
             controls.state = controls.state.model_copy(
                 update={"trusted_senders": ("u2",)}
             )
-            task = app.state.runtime.submit(
-                "projection test",
-                "wechat",
-                request_id="wx-task-submit",
-                mode="development",
-                delivery_recipient="u2",
-                delivery_account="bot-1",
+            from cairn.development.catalogue import RuntimeTask
+
+            task = app.state.runtime.record(
+                RuntimeTask(
+                    prompt="projection test",
+                    source="wechat",
+                    request_id="wx-task-submit",
+                    mode="development",
+                    delivery_recipient="u2",
+                    delivery_account="bot-1",
+                ),
+                "seeded",
             )
             calls: list[dict[str, Any]] = []
 
