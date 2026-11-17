@@ -47,7 +47,8 @@ from `[server]`. Offline mode makes no paid model requests.
 
 Open **http://127.0.0.1:8777/chat.html**. Sign in as `cairn`, using the contents
 of `data_root/runtime/runtime.token` as the password (`data_root` is in the
-server configuration). For a remote server, use an SSH tunnel:
+server configuration). For remote use, put the listener behind a reverse proxy
+with TLS, or connect through an SSH tunnel:
 
 ```sh
 ssh -N -L 8777:127.0.0.1:8777 YOUR_SERVER
@@ -112,16 +113,17 @@ Open **`/channels.html`** to configure connections and inspect their status.
 | Feishu | Self-built app ID and secret, WebSocket events (`im.message.receive_v1`); private text messages |
 | WeCom, QQ, Discord | Configuration only; adapters cannot start yet |
 
-Set the owner and allowed sender identities in host-controlled configuration.
-Allowing someone to chat does not grant them owner privileges. Group chats and
+The QR-login account is the owner. Add trusted senders with `/wx allow USER_ID`
+or from Settings. A trusted sender can chat, but cannot create development tasks
+or read the owner's private knowledge or memory. Group chats and
 non-text messages are not supported by the Telegram and Feishu adapters. Run
 only one Feishu connection per server process, and do not run competing clients
 for the same messaging account or bot.
 
 ## Operation and usage tips
 
-- Keep model credentials and the Web login token private. Use an SSH tunnel for
-  remote access rather than exposing the default listener publicly.
+- Keep model credentials and the Web login token private. If you expose the Web
+  listener remotely, put it behind a reverse proxy with TLS and restrict access.
 - Ordinary chat does not allocate a development worktree. Start development
   explicitly; shell and network access depend on host configuration.
 - Closing CLI or Web leaves the server running. Inspect recovery information
