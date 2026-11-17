@@ -92,6 +92,8 @@ class WechatConversationAdapter:
                 content,
                 source="wechat",
                 request_id=request_id,
+                wechat_account=account,
+                wechat_sender=sender,
             )
             self._bind(
                 delivery_key,

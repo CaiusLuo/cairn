@@ -111,6 +111,9 @@ async def _run(
     model: ScopeModel,
     conversation_id: str,
     request_id: str,
+    *,
+    account: str = "bot-1",
+    sender: str = "owner",
 ) -> tuple[Run, list[dict[str, Any]]]:
     app.state.execution.llm_factory = lambda: model
     run = app.state.conversations.submit(
@@ -118,6 +121,7 @@ async def _run(
         "请读取知识库并回答",
         ConversationSource.WECHAT,
         request_id,
+        metadata={"wechat_account": account, "wechat_sender": sender},
     )
     await asyncio.wait_for(app.state.conversations.queue.join(), 30)
     final = app.state.conversations.get_run(run.run_id)
@@ -155,12 +159,14 @@ def test_owner_has_private_capabilities_and_trusted_sender_has_none(
                 },
                 forbidden=set(),
                 answer=f"Owner read {clip.clip_id}",
+                attempt_clip_id=clip.clip_id,
             )
             owner_final, _ = await _run(
                 app, owner_model, owner_conversation.conversation_id, "owner-scope"
             )
             assert clip.clip_id in (owner_final.result or "")
             assert _contains(owner_model.messages, MEMORY_MARKER)
+            assert _contains(owner_model.messages, clip.content)
 
             guest_conversation = app.state.conversations.ensure_wechat_conversation(
                 "bot-1", "trusted-guest", "hello"
@@ -172,7 +178,11 @@ def test_owner_has_private_capabilities_and_trusted_sender_has_none(
                 attempt_clip_id=clip.clip_id,
             )
             guest_final, guest_history = await _run(
-                app, guest_model, guest_conversation.conversation_id, "guest-scope"
+                app,
+                guest_model,
+                guest_conversation.conversation_id,
+                "guest-scope",
+                sender="trusted-guest",
             )
             assert "无权" in (guest_final.result or "")
             assert not _contains(guest_model.messages, MEMORY_MARKER)
@@ -200,6 +210,25 @@ def test_wechat_owner_binding_survives_restart_and_account_switch(
             owner_id = owner_conversation.conversation_id
             guest_id = guest_conversation.conversation_id
 
+            owner_model = ScopeModel(
+                expected={
+                    "knowledge_get",
+                    "memory_search",
+                    "memory_remember",
+                    "schedule_create",
+                    "read_skill",
+                    "begin_development",
+                },
+                forbidden=set(),
+                answer=f"Owner read {clip.clip_id}",
+                attempt_clip_id=clip.clip_id,
+            )
+            owner_final, _ = await _run(
+                first, owner_model, owner_id, "owner-before-restart"
+            )
+            assert clip.clip_id in (owner_final.result or "")
+            assert _contains(owner_model.messages, clip.content)
+
         reopened = _app(source, state)
         async with reopened.router.lifespan_context(reopened):
             owner_model = ScopeModel(
@@ -218,7 +247,11 @@ def test_wechat_owner_binding_survives_restart_and_account_switch(
                 answer="Restart does not grant access.",
             )
             guest_final, guest_history = await _run(
-                reopened, guest_model, guest_id, "guest-after-restart"
+                reopened,
+                guest_model,
+                guest_id,
+                "guest-after-restart",
+                sender="trusted-guest",
             )
             assert "does not grant access" in (guest_final.result or "")
             assert clip.content not in json.dumps(guest_history, ensure_ascii=False)
@@ -239,9 +272,14 @@ def test_wechat_owner_binding_survives_restart_and_account_switch(
                 answer="Account changed; owner authorization not inherited.",
             )
             switched_final, switched_history = await _run(
-                switched, switched_model, owner_id, "owner-after-account-switch"
+                switched,
+                switched_model,
+                owner_id,
+                "owner-after-account-switch",
+                account="bot-2",
             )
             assert "not inherited" in (switched_final.result or "")
+            assert not _contains(switched_model.messages, clip.content)
             assert clip.content not in json.dumps(switched_history, ensure_ascii=False)
 
     asyncio.run(scenario())

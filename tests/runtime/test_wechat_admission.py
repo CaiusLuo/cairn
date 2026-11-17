@@ -110,6 +110,34 @@ def test_timeout_recovers_original_run_from_request_id(tmp_path: Path) -> None:
     assert row["delivery_status"] == "pending"
 
 
+def test_conversation_adapter_reports_exact_wechat_identity() -> None:
+    class RecordingClient:
+        def __init__(self) -> None:
+            self.body: dict[str, Any] = {}
+
+        async def ensure_wechat_conversation(self, *_args: Any) -> dict[str, Any]:
+            return {"conversation_id": "conv-1"}
+
+        async def send_conversation(self, *_args: Any, **kwargs: Any) -> dict[str, Any]:
+            self.body = kwargs
+            return {"run_id": "run-1", "status": "queued"}
+
+    client = RecordingClient()
+    adapter = WechatConversationAdapter(client)  # type: ignore[arg-type]
+    asyncio_run(
+        adapter.reply(
+            "hello",
+            message_id="message-1",
+            sender="owner",
+            account="bot-1",
+            deliver=False,
+        )
+    )
+    assert client.body["source"] == "wechat"
+    assert client.body["wechat_account"] == "bot-1"
+    assert client.body["wechat_sender"] == "owner"
+
+
 def asyncio_run(awaitable: Any) -> Any:
     import asyncio
 

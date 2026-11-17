@@ -937,6 +937,24 @@ class ConversationService:
                 with suppress(Exception):
                     listener(settled)
 
+    def _wechat_identity_mismatch(self, run: Run) -> bool:
+        """Whether the run's claimed WeChat identity no longer owns the conversation.
+
+        A changed account or sender must not reopen the prior Session: its
+        checkpoint can contain private tool output from the original owner.
+        """
+        if run.source is not ConversationSource.WECHAT:
+            return False
+        account = run.metadata.get("wechat_account")
+        sender = run.metadata.get("wechat_sender")
+        if not isinstance(account, str) or not account:
+            return False
+        if not isinstance(sender, str) or not sender:
+            return False
+        return not self.store.is_wechat_binding(
+            run.conversation_id, account_id=account, sender_id=sender
+        )
+
     def _prior_run(self, run: Run, runs: tuple[Run, ...] | None = None) -> Run | None:
         candidates = (
             runs
@@ -1037,7 +1055,8 @@ class ConversationService:
         self.active_run_id = run_id
         self.store.update_run(run_id, status=RunStatus.RUNNING)
         runs = self.store.list_runs_for_conversation(run.conversation_id)
-        prior = self._prior_run(run, runs)
+        identity_mismatch = self._wechat_identity_mismatch(run)
+        prior = None if identity_mismatch else self._prior_run(run, runs)
         degradation = self._unreadable_session(prior) if prior is not None else None
         if degradation is not None:
             LOGGER.warning(
@@ -1050,9 +1069,13 @@ class ConversationService:
         if prior is not None and prior.checkpoint_receipt is not None:
             with suppress(ValueError):
                 origins = (CheckpointReceipt.model_validate(prior.checkpoint_receipt),)
-        historical_context = self._history_context(
-            self._uncaptured_runs(run, runs, prior),
-            degraded=degradation is not None,
+        historical_context = (
+            ""
+            if identity_mismatch
+            else self._history_context(
+                self._uncaptured_runs(run, runs, prior),
+                degraded=degradation is not None,
+            )
         )
 
         def bind_run_session(session_id: str) -> None:

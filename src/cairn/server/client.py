@@ -190,12 +190,22 @@ class RuntimeClient:
         *,
         source: str = "cli",
         request_id: str,
+        wechat_account: str | None = None,
+        wechat_sender: str | None = None,
     ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "prompt": prompt,
+            "source": source,
+            "request_id": request_id,
+        }
+        if wechat_account is not None and wechat_sender is not None:
+            body["wechat_account"] = wechat_account
+            body["wechat_sender"] = wechat_sender
         return dict(
             await self.request(
                 "POST",
                 f"conversations/{conversation_id}/messages",
-                {"prompt": prompt, "source": source, "request_id": request_id},
+                body,
             )
         )
 
