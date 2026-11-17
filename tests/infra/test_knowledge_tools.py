@@ -70,8 +70,7 @@ def test_list_search_get_pagination_and_archived_filter(tmp_path: Path) -> None:
 
     reopened = KnowledgeStore(tmp_path / "knowledge")
     assert (
-        result(KnowledgeGetTool(reopened), {"clip_id": first.clip_id})["status"]
-        == "ok"
+        result(KnowledgeGetTool(reopened), {"clip_id": first.clip_id})["status"] == "ok"
     )
 
 
@@ -93,8 +92,10 @@ def test_unavailable_store_is_distinct_from_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = KnowledgeStore(tmp_path / "knowledge")
+
     def unavailable(*args: object, **kwargs: object) -> None:
         raise sqlite3.OperationalError("secret path /private/knowledge.sqlite3")
+
     monkeypatch.setattr(store, "list_clips", unavailable)
     outcome = asyncio.run(KnowledgeSearchTool(store).execute({"query": "needle"}))
     assert outcome.exit_code == 1

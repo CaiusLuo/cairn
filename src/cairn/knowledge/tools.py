@@ -119,13 +119,15 @@ class KnowledgeListTool(_KnowledgeTool):
             clips = self.store.list_clips(limit=limit + 1, offset=offset)
         except (OSError, sqlite3.Error, ValueError):
             return self._unavailable()
-        return _json_result({
-            "status": "ok" if clips else "empty",
-            "clips": [_metadata(clip, preview_chars=160) for clip in clips[:limit]],
-            "limit": limit,
-            "offset": offset,
-            "has_more": len(clips) > limit,
-        })
+        return _json_result(
+            {
+                "status": "ok" if clips else "empty",
+                "clips": [_metadata(clip, preview_chars=160) for clip in clips[:limit]],
+                "limit": limit,
+                "offset": offset,
+                "has_more": len(clips) > limit,
+            }
+        )
 
 
 class KnowledgeSearchTool(_KnowledgeTool):
@@ -179,16 +181,18 @@ class KnowledgeSearchTool(_KnowledgeTool):
             clips = self.store.list_clips(query=query, limit=limit + 1, offset=offset)
         except (OSError, sqlite3.Error, ValueError):
             return self._unavailable()
-        return _json_result({
-            "status": "ok" if clips else "empty",
-            "clips": [
-                _metadata(clip, preview_chars=PREVIEW_CHARS)
-                for clip in clips[:limit]
-            ],
-            "limit": limit,
-            "offset": offset,
-            "has_more": len(clips) > limit,
-        })
+        return _json_result(
+            {
+                "status": "ok" if clips else "empty",
+                "clips": [
+                    _metadata(clip, preview_chars=PREVIEW_CHARS)
+                    for clip in clips[:limit]
+                ],
+                "limit": limit,
+                "offset": offset,
+                "has_more": len(clips) > limit,
+            }
+        )
 
 
 class KnowledgeGetTool(_KnowledgeTool):
@@ -246,14 +250,16 @@ class KnowledgeGetTool(_KnowledgeTool):
         if clip is None or clip.archived_at is not None:
             return _json_result({"status": "not_found", "clip_id": clip_id})
         end = min(offset + max_chars, len(clip.content))
-        return _json_result({
-            "status": "ok",
-            "clip": _metadata(clip),
-            "content": clip.content[offset:end],
-            "offset": offset,
-            "next_offset": end if end < len(clip.content) else None,
-            "untrusted_reference": True,
-        })
+        return _json_result(
+            {
+                "status": "ok",
+                "clip": _metadata(clip),
+                "content": clip.content[offset:end],
+                "offset": offset,
+                "next_offset": end if end < len(clip.content) else None,
+                "untrusted_reference": True,
+            }
+        )
 
 
 def personal_knowledge_tools(store: KnowledgeStore) -> tuple[Tool, ...]:
