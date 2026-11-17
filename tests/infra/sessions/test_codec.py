@@ -10,8 +10,10 @@ from cairn.agent.models.messages import Message, ToolCall
 from cairn.agent.session.codec import (
     canonical,
     decode_checkpoint,
+    decode_storage_checkpoint,
     encode_checkpoint,
     encode_record,
+    encode_storage_checkpoint,
     parse,
     restore_messages,
     validate_record,
@@ -20,6 +22,7 @@ from cairn.agent.session.models import (
     MAX_MESSAGE_BYTES,
     MAX_MESSAGES,
     MAX_RECORD_BYTES,
+    CheckpointDelta,
     CheckpointPayload,
     MessageRange,
     Revision,
@@ -66,6 +69,68 @@ def test_empty_unicode_full_history_and_detached_core_models(tmp_path: Path) -> 
     assert "changed" not in decoded.messages[1].tool_calls[0].arguments_json
     with pytest.raises(ValidationError):
         decoded.seq = 99
+
+
+def test_records_written_before_the_summary_cache_are_still_readable(
+    tmp_path: Path,
+) -> None:
+    """The compaction cache is optional: older stored bytes keep decoding."""
+    bind = binding(tmp_path)
+    empty = CheckpointPayload(
+        session_id=SESSION,
+        turn_id=None,
+        seq=0,
+        binding=bind,
+        messages=(),
+        message_range=MessageRange(start=0, end=0),
+        outcome=None,
+        started_at_utc=None,
+        settled_at_utc=T0,
+    )
+
+    raw, _ = encode_checkpoint(empty)
+    legacy = json.loads(raw)
+    del legacy["compaction"]
+    legacy_raw = canonical(legacy)
+
+    decoded = decode_checkpoint(legacy_raw, hashlib.sha256(legacy_raw).hexdigest())
+
+    assert decoded == empty
+    assert decoded.compaction is None
+
+    delta_raw, _ = encode_storage_checkpoint(empty, None, format_version=2)
+    delta = json.loads(delta_raw)
+    del delta["compaction"]
+    legacy_delta = canonical(delta)
+
+    decoded_delta = decode_storage_checkpoint(
+        legacy_delta, hashlib.sha256(legacy_delta).hexdigest(), format_version=2
+    )
+
+    assert isinstance(decoded_delta, CheckpointDelta)
+    assert decoded_delta.compaction is None
+
+
+def test_only_the_known_late_optional_field_may_be_absent(tmp_path: Path) -> None:
+    bind = binding(tmp_path)
+    empty = CheckpointPayload(
+        session_id=SESSION,
+        turn_id=None,
+        seq=0,
+        binding=bind,
+        messages=(),
+        message_range=MessageRange(start=0, end=0),
+        outcome=None,
+        started_at_utc=None,
+        settled_at_utc=T0,
+    )
+    raw, _ = encode_checkpoint(empty)
+    missing_trace = json.loads(raw)
+    del missing_trace["trace"]
+    damaged = canonical(missing_trace)
+
+    with pytest.raises(SessionStoreError):
+        decode_checkpoint(damaged, hashlib.sha256(damaged).hexdigest())
 
 
 def test_group_local_call_id_reuse_and_closed_interruption(tmp_path: Path) -> None:

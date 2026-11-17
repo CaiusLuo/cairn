@@ -19,10 +19,11 @@ from typing import TYPE_CHECKING, Any, Literal
 from cairn.agent.budget import RunBudget
 from cairn.agent.context.window import ContextBudget, ContextRequest
 from cairn.agent.harness import Agent
-from cairn.agent.models.messages import LLMResponse, LLMUsage
+from cairn.agent.models.messages import LLMResponse
 from cairn.agent.models.selection import ModelConfig
 from cairn.agent.tracing.models import Span, SpanStatus
 from cairn.agent.turn.events import Event
+from cairn.agent.turn.usage import UsageLedger
 
 if TYPE_CHECKING:
     from cairn.agent.turn.compaction import CompactionOutcome
@@ -49,9 +50,18 @@ class TurnTraceSummary:
 class TurnTrace:
     """Own the spans, usage and trace events of exactly one turn."""
 
-    def __init__(self, agent: Agent, budget: RunBudget) -> None:
+    def __init__(
+        self,
+        agent: Agent,
+        budget: RunBudget,
+        usage: UsageLedger | None = None,
+    ) -> None:
         self._agent = agent
         self._budget = budget
+        # The turn's one usage ledger. ``run_turn`` shares this instance with its
+        # budget policy, so the trace, budget and Run metrics report the same
+        # calls; a direct caller may leave it private.
+        self._usage = usage if usage is not None else UsageLedger()
         # Opaque ids only (session/turn/task). Application happens on ``start``
         # so a caller never has to know this constructor's keyword surface.
         self._correlation: dict[str, str] = {}
@@ -59,13 +69,8 @@ class TurnTrace:
         self._llm_span: Span | None = None
         self._attempt: AttemptContext | None = None
         self._attempt_started = False
-        self._response_count = 0
         self._compaction_outcomes = 0
         self._reported_omitted_turns = 0
-        self._input_tokens: int | None = 0
-        self._output_tokens: int | None = 0
-        self._cached_tokens: int | None = 0
-        self._reasoning_tokens: int | None = 0
         self._summary: TurnTraceSummary | None = None
 
     @property
@@ -186,10 +191,8 @@ class TurnTrace:
         if not self._attempt_started:
             return
         self._attempt_started = False
-        self._input_tokens = None
-        self._output_tokens = None
-        self._cached_tokens = None
-        self._reasoning_tokens = None
+        # The ledger already knows this request has no response, so every total
+        # that includes it stays unknown; no per-field erasure is needed here.
         if self._llm_span is not None and self._agent.tracer is not None:
             if isinstance(exc, asyncio.CancelledError):
                 self._llm_span.attributes["cancelled"] = True
@@ -204,30 +207,7 @@ class TurnTrace:
 
     def on_response(self, response: LLMResponse) -> None:
         """Accumulate usage and close the attempt span for a completed call."""
-        self._response_count += 1
-        if self._input_tokens is not None:
-            if response.usage is None or response.usage.input_tokens is None:
-                self._input_tokens = None
-            else:
-                self._input_tokens += response.usage.input_tokens
-        if self._output_tokens is not None:
-            if response.usage is None or response.usage.output_tokens is None:
-                self._output_tokens = None
-            else:
-                self._output_tokens += response.usage.output_tokens
-        # Cache hits and reasoning tokens are reported only by some providers;
-        # a turn where no response reported one keeps None rather than zero, so
-        # the display can omit the figure instead of implying a real measurement.
-        for field in ("cached_tokens", "reasoning_tokens"):
-            current = getattr(self, f"_{field}")
-            if current is None:
-                continue
-            value = None if response.usage is None else getattr(response.usage, field)
-            if value is None:
-                setattr(self, f"_{field}", None)
-            else:
-                setattr(self, f"_{field}", current + value)
-
+        self._usage.response(response.usage)
         if self._llm_span is None or self._agent.tracer is None:
             return
         self._llm_span.attributes["tool_call_count"] = len(response.tool_calls)
@@ -250,8 +230,9 @@ class TurnTrace:
         than disappearing.
         """
         self._compaction_outcomes += 1
-        if outcome.usage is not None:
-            self._add_usage(outcome.usage)
+        # A summary is a real provider request. ``attempted`` keeps a failed or
+        # unreported call in the ledger as unknown instead of letting it vanish.
+        self._usage.summary(outcome.usage, attempted=outcome.summary_attempted)
         if self._turn_span is None or self._agent.tracer is None:
             return
         attributes = self._turn_span.attributes
@@ -264,22 +245,6 @@ class TurnTrace:
         attributes["compaction_tokens_before"] = outcome.tokens_before
         attributes["compaction_tokens_after"] = outcome.tokens_after
 
-    def _add_usage(self, usage: LLMUsage) -> None:
-        for field, attribute in (
-            ("input_tokens", "_input_tokens"),
-            ("output_tokens", "_output_tokens"),
-            ("cached_tokens", "_cached_tokens"),
-            ("reasoning_tokens", "_reasoning_tokens"),
-        ):
-            current = getattr(self, attribute)
-            if current is None:
-                continue
-            value = getattr(usage, field)
-            if value is None:
-                setattr(self, attribute, None)
-            else:
-                setattr(self, attribute, current + value)
-
     def close(self, trace_error: str | None) -> None:
         """Finalize the turn span, its usage and the ``trace_finish`` event.
 
@@ -290,8 +255,9 @@ class TurnTrace:
             self._summary = TurnTraceSummary()
             return
         status = SpanStatus.OK if trace_error is None else SpanStatus.ERROR
-        input_tokens = self._input_tokens if self._response_count else None
-        output_tokens = self._output_tokens if self._response_count else None
+        totals = self._usage.totals()
+        input_tokens = totals.input_tokens
+        output_tokens = totals.output_tokens
         if input_tokens is not None:
             self._turn_span.attributes["input_tokens"] = input_tokens
         if output_tokens is not None:
@@ -313,10 +279,10 @@ class TurnTrace:
             usage["input_tokens"] = input_tokens
         if output_tokens is not None:
             usage["output_tokens"] = output_tokens
-        cached_tokens = self._cached_tokens if self._response_count else None
+        cached_tokens = totals.cached_tokens
         if cached_tokens is not None:
             usage["cached_tokens"] = cached_tokens
-        reasoning_tokens = self._reasoning_tokens if self._response_count else None
+        reasoning_tokens = totals.reasoning_tokens
         if reasoning_tokens is not None:
             usage["reasoning_tokens"] = reasoning_tokens
         if usage:

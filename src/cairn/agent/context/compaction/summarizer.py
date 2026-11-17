@@ -65,6 +65,16 @@ def check_summary(text: str, *, max_tokens: int) -> SummaryResult:
 
 
 class Summarizer(Protocol):
+    @property
+    def policy_version(self) -> int:
+        """Identity of the prompt/contract that produced this summary.
+
+        Persisted summaries are only reused while this value matches; a changed
+        summary policy discards the old cache instead of presenting text written
+        under a contract the model no longer follows.
+        """
+        ...
+
     async def summarize(
         self, messages: list[Message], *, max_tokens: int
     ) -> SummaryResult:

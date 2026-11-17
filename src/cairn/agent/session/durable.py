@@ -10,6 +10,7 @@ from typing import NoReturn
 from uuid import UUID
 
 from cairn.agent.budget import BudgetReason, RunBudget, RunBudgetExceeded
+from cairn.agent.context.compaction import CompactionRecord, ReusableCompaction
 from cairn.agent.harness import Agent, SessionAdmissionError
 from cairn.agent.models.messages import Message, ToolCall
 from cairn.agent.permissions import PermissionCapability, SessionPermissionHandler
@@ -20,8 +21,10 @@ from cairn.agent.session.codec import (
     encode_storage_checkpoint,
     restore_messages,
     snapshot_messages,
+    validate_record,
 )
 from cairn.agent.session.models import (
+    MAX_CHECKPOINT_BYTES,
     MAX_INVOCATIONS,
     MAX_MESSAGE_BYTES,
     MAX_MESSAGES,
@@ -36,6 +39,7 @@ from cairn.agent.session.models import (
     SessionBinding,
     SessionStoreError,
     SettledTurn,
+    StoredCompaction,
     StoredMessage,
     ToolFence,
     TraceSummary,
@@ -45,8 +49,67 @@ from cairn.agent.session.models import (
 from cairn.agent.session.session import Session, SessionState, TurnOutcome
 from cairn.agent.session.store import SessionStore
 from cairn.agent.session.task_models import TaskRecord, TaskRecoveryReport
+from cairn.agent.turn.compaction import summarizer_policy_version
 from cairn.agent.turn.events import Event
 from cairn.agent.turn.trace import TurnTraceSummary
+
+
+def _stored_compaction(
+    agent: Agent, sensitive_values: tuple[str, ...]
+) -> StoredCompaction | None:
+    """The accepted summary as a discardable cache, or None when unusable.
+
+    A summary is derived data. If it cannot be represented safely (for example
+    it contains credential-shaped text), drop it rather than failing the commit
+    that carries the real conversation.
+    """
+    remembered = agent.compaction
+    if remembered is None or not remembered.reusable_with(agent.state.messages):
+        return None
+    record = remembered.record
+    try:
+        stored = StoredCompaction(
+            retained_from=record.retained_from,
+            summary=record.summary,
+            folded_tokens=record.folded_tokens,
+            tokens_after=record.tokens_after,
+            folded_results=record.folded_results,
+            fingerprint=remembered.fingerprint,
+            conversation_length=remembered.conversation_length,
+            policy_version=remembered.policy_version,
+        )
+        validate_record(
+            stored, limit=MAX_CHECKPOINT_BYTES, sensitive_values=sensitive_values
+        )
+    except (SessionStoreError, ValueError, TypeError):
+        return None
+    return stored
+
+
+def _restore_compaction(agent: Agent, stored: StoredCompaction | None) -> None:
+    """Attach a persisted summary cache when it still describes this history."""
+    agent.compaction = None
+    if stored is None:
+        return
+    if stored.policy_version != summarizer_policy_version(agent.summarizer):
+        return
+    try:
+        record = CompactionRecord(
+            retained_from=stored.retained_from,
+            summary=stored.summary,
+            folded_tokens=stored.folded_tokens,
+            tokens_after=stored.tokens_after,
+            folded_results=stored.folded_results,
+        )
+    except ValueError:
+        return
+    agent.compaction = ReusableCompaction.restore(
+        record,
+        stored.fingerprint,
+        stored.conversation_length,
+        stored.policy_version,
+        agent.state.messages,
+    )
 
 
 class SessionDurabilityError(RuntimeError):
@@ -143,6 +206,7 @@ class DurableSession(Session):
             # status already reports the store-wide latch; see RecoveryReport.
             session._recovery = report.status != "clean"
             agent.state.messages = restore_messages(report.checkpoint)
+            _restore_compaction(agent, report.checkpoint.compaction)
             return session
         except BaseException:
             session._closed = True
@@ -817,6 +881,7 @@ class DurableSession(Session):
                     output_tokens=summary.output_tokens,
                     error_code=summary.error_code,
                 ),
+                compaction=_stored_compaction(self.agent, self._store.sensitive_values),
             )
             _, digest = encode_storage_checkpoint(
                 checkpoint,

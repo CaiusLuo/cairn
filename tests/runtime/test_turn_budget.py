@@ -5,11 +5,61 @@ from typing import Any
 import pytest
 
 from cairn.agent.budget import BudgetReason, RunBudget, RunBudgetExceeded
-from cairn.agent.models.messages import LLMResponse, LLMUsage, ToolCall, ToolResult
+from cairn.agent.context.window import ContextBudget, ContextBuilder
+from cairn.agent.harness import Agent
+from cairn.agent.models.executor import ModelExecutor
+from cairn.agent.models.messages import (
+    LLMResponse,
+    LLMUsage,
+    Message,
+    ToolCall,
+    ToolResult,
+)
+from cairn.agent.models.selection import ModelConfig, ModelManager, ProviderConfig
 from cairn.agent.tools.base import ToolExecutionContext
+from cairn.agent.tools.registry import ToolRegistry
 from cairn.agent.turn.events import Event
 from cairn.agent.turn.loop import run_turn
+from tests.support.compaction import CharacterCounter
 from tests.support.runtime import RecordingTool, SequenceLLM, make_agent
+
+
+class CappedLLM:
+    """Answers one scripted response and records every per-request output cap."""
+
+    def __init__(self, response: LLMResponse, caps: list[int] | None = None) -> None:
+        self.response = response
+        self.caps = caps if caps is not None else []
+
+    def with_output_limit(self, max_output_tokens: int) -> "CappedLLM":
+        self.caps.append(max_output_tokens)
+        return CappedLLM(self.response, self.caps)
+
+    async def generate(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
+        return self.response
+
+
+class FlakyThenAnswer:
+    """One provider failure, then an answer that reports its usage."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def generate(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
+        self.calls += 1
+        if self.calls == 1:
+            raise ConnectionError("provider unavailable")
+        return LLMResponse(
+            content="done", usage=LLMUsage(input_tokens=10, output_tokens=5)
+        )
 
 
 def response(ident: str = "call", usage: bool = True) -> LLMResponse:
@@ -125,5 +175,123 @@ def test_durable_fence_capacity_pauses_before_unknown_effects(tmp_path: Path) ->
             assert agent.last_budget_usage.stop_reason == "checkpoint_capacity"
         finally:
             session.close()
+
+    asyncio.run(scenario())
+
+
+def test_final_answer_overrun_is_recorded_on_the_completed_turn() -> None:
+    """A paid-for answer is kept, but the overspend is no longer invisible."""
+
+    async def scenario() -> None:
+        llm = SequenceLLM(
+            [
+                LLMResponse(
+                    content="done",
+                    usage=LLMUsage(input_tokens=15, output_tokens=20),
+                )
+            ]
+        )
+        agent = make_agent(llm, RecordingTool())
+
+        answer = await run_turn(agent, "hello", budget=RunBudget(5, max_tokens=10))
+
+        assert answer == "done"
+        usage = agent.last_budget_usage
+        assert usage is not None
+        assert usage.total_tokens == 35
+        # The turn completed, but the fact that its last request crossed the
+        # ceiling is recorded rather than shown as an empty stop reason.
+        assert usage.stop_reason == BudgetReason.MAX_TOKENS.value
+        assert usage.input_tokens == 15 and usage.output_tokens == 20
+
+    asyncio.run(scenario())
+
+
+def test_request_output_is_capped_to_the_remaining_token_budget() -> None:
+    """The provider is asked for at most what the ceiling still allows."""
+
+    async def scenario() -> None:
+        llm = CappedLLM(
+            LLMResponse(content="done", usage=LLMUsage(input_tokens=3, output_tokens=2))
+        )
+        agent = Agent(
+            llm=llm,
+            tools=ToolRegistry(),
+            system_prompt="sys",
+            context_builder=ContextBuilder(
+                budget=ContextBudget(max_tokens=1000, response_tokens=20),
+                counter=CharacterCounter(),
+            ),
+        )
+
+        # The measured request is 8 characters; 105 - 8 leaves 97.
+        assert (
+            await run_turn(agent, "hello", budget=RunBudget(5, max_tokens=105))
+            == "done"
+        )
+
+        assert llm.caps == [97]
+        usage = agent.last_budget_usage
+        assert usage is not None
+        assert usage.total_tokens == 5
+        assert usage.stop_reason is None
+
+    asyncio.run(scenario())
+
+
+def test_fallback_failure_keeps_usage_unknown_instead_of_zero() -> None:
+    """A failed candidate may have been billed; the total stays unknown."""
+
+    async def scenario() -> None:
+        from litellm.exceptions import RateLimitError
+
+        class RateLimited(FlakyThenAnswer):
+            async def generate(
+                self,
+                messages: list[Message],
+                tools: list[dict[str, Any]] | None = None,
+            ) -> LLMResponse:
+                self.calls += 1
+                if self.calls == 1:
+                    raise RateLimitError(
+                        message="model request limit",
+                        model="openai/one",
+                        llm_provider="openai",
+                    )
+                return LLMResponse(
+                    content="done", usage=LLMUsage(input_tokens=10, output_tokens=5)
+                )
+
+        flaky = RateLimited()
+        manager = ModelManager(
+            ProviderConfig(
+                base_url="https://example.test/v1",
+                api_key_env="TEST_KEY",
+                model_config=(
+                    ModelConfig("one", ("openai/one",)),
+                    ModelConfig("two", ("openai/two",)),
+                ),
+            )
+        )
+        agent = Agent(
+            llm=flaky,
+            tools=ToolRegistry(),
+            model_executor=ModelExecutor(
+                manager, lambda _id: (flaky, agent.context_builder)
+            ),
+        )
+
+        assert (
+            await run_turn(agent, "hello", budget=RunBudget(5, max_tokens=1_000_000))
+            == "done"
+        )
+
+        usage = agent.last_budget_usage
+        assert usage is not None
+        assert flaky.calls == 2
+        # The successful response reported usage, but the failed attempt did
+        # not, so the turn total cannot be presented as a measurement.
+        assert usage.total_tokens is None
+        assert usage.stop_reason == BudgetReason.USAGE_UNKNOWN.value
 
     asyncio.run(scenario())

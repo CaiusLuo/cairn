@@ -92,6 +92,84 @@ class TestReuse:
         assert captured.reusable_with(swapped) is False
 
 
+class TestRestore:
+    """A persisted cache is accepted only while it still describes the history."""
+
+    def test_restores_a_record_for_the_same_growing_history(self) -> None:
+        history = [user("a"), assistant("b")]
+        captured = ReusableCompaction.capture(history, record(2), policy_version=3)
+        grown = [*history, user("c")]
+
+        restored = ReusableCompaction.restore(
+            captured.record,
+            captured.fingerprint,
+            captured.conversation_length,
+            captured.policy_version,
+            grown,
+        )
+
+        assert restored is not None
+        assert restored.policy_version == 3
+        assert restored.record_for(grown) == captured.record
+
+    def test_rejects_a_prefix_that_no_longer_matches(self) -> None:
+        captured = ReusableCompaction.capture([user("a"), assistant("b")], record(2))
+
+        assert (
+            ReusableCompaction.restore(
+                captured.record,
+                captured.fingerprint,
+                captured.conversation_length,
+                1,
+                [user("different"), assistant("b")],
+            )
+            is None
+        )
+
+    def test_rejects_a_fingerprint_that_does_not_cover_the_record(self) -> None:
+        captured = ReusableCompaction.capture([user("a"), assistant("b")], record(2))
+
+        assert (
+            ReusableCompaction.restore(
+                captured.record,
+                captured.fingerprint[:1],
+                captured.conversation_length,
+                1,
+                [user("a"), assistant("b")],
+            )
+            is None
+        )
+
+    def test_rejects_a_history_shorter_than_the_recorded_conversation(self) -> None:
+        history = [user("a"), assistant("b"), user("c"), assistant("d")]
+        captured = ReusableCompaction.capture(history, record(2))
+
+        assert (
+            ReusableCompaction.restore(
+                captured.record,
+                captured.fingerprint,
+                captured.conversation_length,
+                1,
+                history[:3],
+            )
+            is None
+        )
+
+    def test_rejects_a_conversation_shorter_than_the_prefix(self) -> None:
+        captured = ReusableCompaction.capture([user("a"), assistant("b")], record(2))
+
+        assert (
+            ReusableCompaction.restore(
+                captured.record,
+                captured.fingerprint,
+                1,
+                1,
+                [user("a"), assistant("b")],
+            )
+            is None
+        )
+
+
 def test_fold_reuse_checks_the_result_and_the_call_arguments() -> None:
     history = [user("task"), *group("old", result_content="x" * 500)]
     record = CompactionRecord(

@@ -59,3 +59,26 @@ class StreamingLLMClient(Protocol):
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncGenerator[LLMStreamChunk, None]: ...
+
+
+@runtime_checkable
+class OutputLimitedLLMClient(Protocol):
+    """Optional capability: the same client with a lower per-request output cap.
+
+    A turn budget can be smaller than the client's configured allowance. A
+    client that can honour a tighter ceiling advertises it here; callers that
+    need the limit wrap the client for one request instead of mutating shared
+    state. Clients without the capability still work, and their usage is still
+    accounted for after the response.
+    """
+
+    def with_output_limit(self, max_output_tokens: int) -> LLMClient: ...
+
+
+def with_output_limit(client: LLMClient, max_output_tokens: int | None) -> LLMClient:
+    """Return ``client`` bound to ``max_output_tokens`` when it supports it."""
+    if max_output_tokens is None or not isinstance(client, OutputLimitedLLMClient):
+        return client
+    if max_output_tokens < 1:
+        raise ValueError("max_output_tokens must be positive")
+    return client.with_output_limit(max_output_tokens)

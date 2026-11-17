@@ -6,7 +6,12 @@ from typing import Any
 
 from cairn.agent.context.compaction import CompactionRecord
 from cairn.agent.context.window import ContextBudget, ContextBuilder, ContextRequest
-from cairn.agent.models.client import LLMClient, StreamingLLMClient, StreamProtocolError
+from cairn.agent.models.client import (
+    LLMClient,
+    StreamingLLMClient,
+    StreamProtocolError,
+    with_output_limit,
+)
 from cairn.agent.models.messages import LLMResponse, Message
 from cairn.agent.models.providers.errors import _short_diagnostic, is_fallback_error
 from cairn.agent.models.selection import ModelConfig, ModelManager
@@ -196,6 +201,7 @@ class ModelExecutor:
         | None = None,
         on_fallback: Callable[[Exception], None] | None = None,
         on_stream: Callable[[Event], None] | None = None,
+        output_limit: Callable[[ContextRequest], int | None] | None = None,
     ) -> tuple[ContextRequest, LLMResponse]:
         errors: list[tuple[str, Exception]] = []
 
@@ -242,17 +248,22 @@ class ModelExecutor:
                     await await_owned(building)
                     raise
                 attempt += 1
+                # Reserve the turn budget before this candidate is sent, using
+                # the request the candidate would actually carry. A budget stop
+                # here happens before any provider cost is incurred.
+                limit = output_limit(request) if output_limit is not None else None
                 if on_request is not None:
                     on_request(request, builder.budget, model, model_id, attempt)
-                streaming = isinstance(llm, StreamingLLMClient) and (
-                    getattr(llm, "supports_streaming", True) is True
+                bounded = with_output_limit(llm, limit)
+                streaming = isinstance(bounded, StreamingLLMClient) and (
+                    getattr(bounded, "supports_streaming", True) is True
                 )
                 attribution = {"attempt": attempt, "model_id": model_id}
                 try:
-                    if streaming and isinstance(llm, StreamingLLMClient):
+                    if streaming and isinstance(bounded, StreamingLLMClient):
                         collecting = asyncio.create_task(
                             _assemble_stream(
-                                llm, request, tools, on_stream, attribution
+                                bounded, request, tools, on_stream, attribution
                             )
                         )
                         try:
@@ -261,7 +272,7 @@ class ModelExecutor:
                             await settle_owned(collecting)
                             raise
                     else:
-                        response = await llm.generate(
+                        response = await bounded.generate(
                             messages=request.messages,
                             tools=tools,
                         )

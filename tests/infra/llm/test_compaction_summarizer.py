@@ -44,6 +44,18 @@ class StubClient:
         return self.response
 
 
+class CappedStubClient(StubClient):
+    """A client that can bound one request's output, as the provider adapter can."""
+
+    def __init__(self, response: LLMResponse | None = None) -> None:
+        super().__init__(response)
+        self.limits: list[int] = []
+
+    def with_output_limit(self, max_output_tokens: int) -> "CappedStubClient":
+        self.limits.append(max_output_tokens)
+        return self
+
+
 def summarize(
     client: StubClient, messages: list[Message], max_tokens: int = 100
 ) -> SummaryResult:
@@ -72,6 +84,25 @@ class TestRequestShape:
         summarize(client, history())
 
         assert client.requests[0][1] is None, "a summarizer must never call tools"
+
+    def test_bounds_the_provider_output_with_the_summary_allowance(self) -> None:
+        client = CappedStubClient()
+
+        result = summarize(client, history(), max_tokens=37)
+
+        assert result.ok
+        assert client.requests, "the capped client must issue the request"
+        # The allowance the caller validated against is also what the provider
+        # was asked for; generating more would only be rejected after billing.
+        assert client.limits == [37]
+
+    def test_an_ordinary_client_without_capping_is_still_usable(self) -> None:
+        client = StubClient()
+
+        result = summarize(client, history(), max_tokens=37)
+
+        assert result.ok, "the output cap is an optional provider capability"
+        assert client.requests
 
     def test_states_its_policy_first(self) -> None:
         client = StubClient()

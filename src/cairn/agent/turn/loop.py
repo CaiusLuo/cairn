@@ -22,6 +22,7 @@ Turn flow::
     +-----------------------------------------------------------+
     | step, at most budget.max_steps:                           |
     |   build system messages, tool schemas, memory context     |
+    |   compact the request when an accepted summary applies     |
     |   model_executor.execute()      # candidate fallback      |
     |   add the assistant message; pending = its tool calls     |
     +-----------------------------------------------------------+  <------+
@@ -90,12 +91,13 @@ from cairn.agent.turn.budget import TurnBudgetPolicy
 from cairn.agent.turn.context import build_system_messages
 from cairn.agent.turn.events import Event
 from cairn.agent.turn.hook import (
-    compact_before_next_step,
+    compact_before_request,
     reusable_record,
 )
 from cairn.agent.turn.steering import SteerQueue
 from cairn.agent.turn.tools import execute_tool_call
 from cairn.agent.turn.trace import AttemptContext, TurnTrace
+from cairn.agent.turn.usage import UsageLedger
 from cairn.shared.lifecycle import settle_owned
 
 
@@ -163,7 +165,8 @@ async def run_turn(
         session._admit(agent)
     else:
         agent._stateless_turns += 1
-    budget_policy = TurnBudgetPolicy(budget, agent.emit)
+    usage = UsageLedger()
+    budget_policy = TurnBudgetPolicy(budget, agent.emit, usage)
     agent.last_budget_usage = None
     outcome = TurnOutcome.RUNTIME_ERROR
     trace_finalization_failed = False
@@ -175,7 +178,7 @@ async def run_turn(
         trace_error: str | None = None
         tool_execution_started = False
         pending_tool_calls: deque[ToolCall] = deque()
-        trace = TurnTrace(agent, budget)
+        trace = TurnTrace(agent, budget, usage)
         if session is not None:
             # Opaque ids attach only after admission, so a rejected turn records
             # no attribution it never owned.
@@ -236,6 +239,20 @@ async def run_turn(
                 system_messages = await build_system_messages(agent, session=session)
                 tool_schemas = agent.tools.schemas()
 
+                # Measure, reuse an accepted summary and, when needed, compact
+                # before this request. A new turn with a long history is exactly
+                # when the request is largest, so leaving compaction to the
+                # post-tool boundary would send a whole-turn omission notice
+                # instead of the summarized facts.
+                await compact_before_request(
+                    agent,
+                    system_messages=system_messages,
+                    tool_schemas=tool_schemas,
+                    turn_start=turn_start,
+                    trace=trace,
+                    remaining_tokens=budget_policy.remaining_tokens(),
+                )
+
                 trace.begin_step(
                     AttemptContext(
                         step=step + 1,
@@ -255,13 +272,11 @@ async def run_turn(
 
                 def on_request(*args: Any) -> None:
                     assert trace is not None
-                    budget_policy.check()
-                    budget_policy.requests += 1
+                    usage.request()
                     trace.on_request(*args)
 
                 def on_fallback(exc: Exception) -> None:
                     assert trace is not None
-                    budget_policy.known = False
                     trace.on_failure(exc)
 
                 try:
@@ -275,6 +290,7 @@ async def run_turn(
                         on_request=on_request,
                         on_fallback=on_fallback,
                         on_stream=on_stream,
+                        output_limit=budget_policy.output_limit,
                     )
                 except (asyncio.CancelledError, Exception) as exc:
                     # Cancellation and provider failures both finalize the attempt.
@@ -282,7 +298,6 @@ async def run_turn(
                     raise
                 else:
                     trace.on_response(response)
-                    budget_policy.observe_response(response)
 
                 if durable is not None:
                     try:
@@ -301,6 +316,10 @@ async def run_turn(
                     # believing they redirected work that continued unchanged.
                     if steering is not None and steering.has_pending_steers:
                         return {"step": step + 1, "done": False, "answer": ""}
+                    # The answer exists and has already been paid for. If this
+                    # last call crossed the budget, record the overrun instead of
+                    # discarding the result; no further request will start.
+                    budget_policy.finish()
                     agent.emit(
                         Event(
                             type="agent_finish",
@@ -368,6 +387,7 @@ async def run_turn(
                 ):
                     agent.state.add_assistant_message(answer)
                     outcome = TurnOutcome.COMPLETED
+                    budget_policy.finish()
                     agent.emit(
                         Event(
                             type="agent_finish",
@@ -382,18 +402,6 @@ async def run_turn(
                     agent.permission_handler,
                 )
                 budget_policy.check()
-
-                # Every call in this batch has settled, so the conversation is
-                # whole and the next request is the first one that can be
-                # reduced. Compaction is an optimisation: a failure here leaves
-                # the conversation untouched and must not end the turn.
-                await compact_before_next_step(
-                    agent,
-                    system_messages=system_messages,
-                    tool_schemas=tool_schemas,
-                    turn_start=turn_start,
-                    trace=trace,
-                )
 
                 return state
 

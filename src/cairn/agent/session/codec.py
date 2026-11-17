@@ -172,6 +172,27 @@ def encode_record(
         raise SessionStoreError("invalid_record") from None
 
 
+#: Optional checkpoint fields added after the first stored format. A checkpoint
+#: written before one existed is still accepted when the only difference from its
+#: canonical dump is that field holding its default. These are derived caches,
+#: never conversation facts, so accepting their absence loses nothing.
+_LATER_OPTIONAL_FIELDS: dict[str, object] = {"compaction": None}
+
+
+def _accepts_missing_optional(
+    kind: type[StrictDTO], data: object, expected: dict[str, object], raw: bytes
+) -> bool:
+    if kind not in (CheckpointPayload, CheckpointDelta) or not isinstance(data, dict):
+        return False
+    missing = set(expected) - set(data)
+    if not missing or not missing <= _LATER_OPTIONAL_FIELDS.keys():
+        return False
+    if any(expected[name] != _LATER_OPTIONAL_FIELDS[name] for name in missing):
+        return False
+    without = {key: value for key, value in expected.items() if key not in missing}
+    return canonical(without) == raw
+
+
 def decode_record[T: StrictDTO](
     kind: type[T],
     raw: bytes,
@@ -193,7 +214,10 @@ def decode_record[T: StrictDTO](
         # JSON strict mode accepts JSON arrays for immutable tuples, but no coercion
         # of strings to integers/bools or unknown fields. Revalidates model_copy.
         checked = kind.model_validate_json(raw, strict=True)
-        if canonical(checked.model_dump(mode="json", serialize_as_any=True)) != raw:
+        expected = checked.model_dump(mode="json", serialize_as_any=True)
+        if canonical(expected) != raw and not _accepts_missing_optional(
+            kind, data, expected, raw
+        ):
             raise SessionStoreError("invalid_record")
         return checked
     except SessionStoreError:

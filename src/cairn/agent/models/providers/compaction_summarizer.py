@@ -13,8 +13,13 @@ from cairn.agent.context.compaction.summarizer import (
     SummaryResult,
     check_summary,
 )
-from cairn.agent.models.client import LLMClient
+from cairn.agent.models.client import LLMClient, with_output_limit
 from cairn.agent.models.messages import Message
+
+#: Bump whenever SUMMARY_POLICY or the summary contract changes. Persisted
+#: summaries are a cache; a version change discards them instead of serving text
+#: written under different instructions.
+SUMMARY_POLICY_VERSION = 1
 
 #: Quoted conversation history can contain hostile text. Keep it as data.
 SUMMARY_POLICY = (
@@ -41,6 +46,10 @@ class LLMCompactionSummarizer:
     def __init__(self, client: LLMClient) -> None:
         self.client = client
 
+    @property
+    def policy_version(self) -> int:
+        return SUMMARY_POLICY_VERSION
+
     async def summarize(
         self, messages: list[Message], *, max_tokens: int
     ) -> SummaryResult:
@@ -56,7 +65,12 @@ class LLMCompactionSummarizer:
             ),
         ]
         try:
-            response = await self.client.generate(request, None)
+            # The same allowance that validates the answer bounds the request.
+            # Without it a provider may generate (and bill for) more than the
+            # compaction reserved, only to have the text rejected afterwards.
+            response = await with_output_limit(self.client, max_tokens).generate(
+                request, None
+            )
         except asyncio.CancelledError:
             # Cancellation is the caller's outcome, not a summary failure.
             raise

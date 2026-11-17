@@ -2,9 +2,9 @@
 
 This module owns when a compaction runs against an Agent and what happens to the
 accepted record. It does not own the turn: ``run_turn`` still sequences steps and
-decides rollback, and it calls the hook here between a settled tool batch and the
-next request. Keeping the wiring out of the loop leaves that module as the single
-place that reads as one turn.
+decides rollback, and it calls the hook here before each request, while no tool
+call is pending. Keeping the wiring out of the loop leaves that module as the
+single place that reads as one turn.
 """
 
 import asyncio
@@ -24,9 +24,11 @@ from cairn.agent.turn.compaction import (
     CompactionStep,
     RequestCompactor,
     compact,
+    summarizer_policy_version,
 )
 from cairn.agent.turn.context import build_system_messages
 from cairn.agent.turn.trace import TurnTrace
+from cairn.shared.lifecycle import await_owned
 
 
 async def run_compaction(
@@ -111,34 +113,61 @@ def reusable_record(agent: Agent, history: list[Message]) -> CompactionRecord | 
         return None
 
 
-async def compact_before_next_step(
+async def compact_before_request(
     agent: Agent,
     *,
     system_messages: list[Message],
     tool_schemas: list[dict[str, Any]],
     turn_start: int,
     trace: TurnTrace,
+    remaining_tokens: int | None = None,
 ) -> None:
-    """Reduce the next request after a settled tool batch.
+    """Reduce the request that is about to be sent, at any step.
 
-    Runs between steps, never inside a response: the boundary it relies on is
-    that no tool call is pending, so it cannot split a tool group or touch the
-    current turn's own message.
+    Runs before every model request, not only after a settled tool batch: a long
+    history that opens a new turn is exactly when the request is largest, and
+    leaving it to the context builder's whole-turn omission would send a notice
+    instead of the facts. No tool call is pending at this boundary, so the
+    current turn's own messages stay protected and no group is split.
+
+    ``remaining_tokens`` is the turn budget's leftover ceiling. It can only lower
+    the summary allowance; a summary that cannot be paid for is skipped rather
+    than issued and then discovered to be unaffordable.
     """
-    try:
-        outcome = await _reduce(
+    reducing = asyncio.create_task(
+        _reduce(
             agent,
             system_messages=system_messages,
             tools=tool_schemas,
             turn_start=turn_start,
             summarize_budget=None,
+            remaining_tokens=remaining_tokens,
             forced=False,
         )
+    )
+    try:
+        outcome = await asyncio.shield(reducing)
     except asyncio.CancelledError:
-        # Cancellation keeps its existing owner: no record is written here.
+        # The measurement reads the conversation in a worker thread, and a
+        # summary may already be in flight. A turn rollback must not trim the
+        # list under it, so finish observing the work before the cancellation
+        # leaves this hook.
+        await await_owned(reducing)
+        if not reducing.cancelled() and reducing.exception() is None:
+            # The summary completed and was paid for even though the turn is
+            # ending. Its usage belongs to this turn's ledger; the record itself
+            # is not kept, because the rollback is about to shorten the history
+            # it was captured against.
+            finished = reducing.result()
+            if finished.step is not CompactionStep.NOT_NEEDED:
+                trace.on_compaction(finished)
         raise
     except Exception:
         # Compaction must never convert a usable turn into a failed one.
+        return
+    if outcome.step is CompactionStep.NOT_NEEDED:
+        # The request already fits. Running this check before every request is
+        # intentional, so an unchanged measurement is not a compaction outcome.
         return
     trace.on_compaction(outcome)
     remember(agent, outcome)
@@ -152,10 +181,24 @@ async def _reduce(
     turn_start: int,
     summarize_budget: int | None,
     forced: bool,
+    remaining_tokens: int | None = None,
 ) -> CompactionOutcome:
     """Run one reduction against this Agent's current budget and conversation."""
     builder = agent.context_builder
     compactor = RequestCompactor(counter=builder.counter, budget=builder.budget)
+    allowance = (
+        compactor.policy.summarizer_reserve
+        if summarize_budget is None
+        else summarize_budget
+    )
+    summarizer = agent.summarizer
+    if remaining_tokens is not None:
+        allowance = min(allowance, remaining_tokens)
+        if allowance < 1:
+            # The turn budget cannot pay for a summary request. Rule folding may
+            # still reduce the view; offering a summarizer would spend money the
+            # budget has already accounted for elsewhere.
+            summarizer = None
     return await compact(
         source=CompactionInput(
             messages=agent.state.messages,
@@ -165,12 +208,8 @@ async def _reduce(
             previous=reusable_record(agent, agent.state.messages),
         ),
         compactor=compactor,
-        summarizer=agent.summarizer,
-        summarize_budget=(
-            compactor.policy.summarizer_reserve
-            if summarize_budget is None
-            else summarize_budget
-        ),
+        summarizer=summarizer,
+        summarize_budget=max(1, allowance),
         forced=forced,
     )
 
@@ -179,5 +218,7 @@ def remember(agent: Agent, outcome: CompactionOutcome) -> None:
     """Keep an accepted substitution for later turns; ignore a degraded attempt."""
     if outcome.record is not None:
         agent.compaction = ReusableCompaction.capture(
-            agent.state.messages, outcome.record
+            agent.state.messages,
+            outcome.record,
+            policy_version=summarizer_policy_version(agent.summarizer),
         )

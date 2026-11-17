@@ -11,7 +11,7 @@ from typing import Any
 
 from cairn.agent.context.compaction.summarizer import SummaryResult
 from cairn.agent.context.window import TokenCount
-from cairn.agent.models.messages import Message, ToolCall
+from cairn.agent.models.messages import LLMUsage, Message, ToolCall
 
 
 class CharacterCounter:
@@ -38,10 +38,14 @@ class StubSummarizer:
         summary: str = "summary",
         error: BaseException | None = None,
         failure: str | None = None,
+        usage: LLMUsage | None = None,
+        policy_version: int = 1,
     ) -> None:
         self.summary = summary
         self.error = error
         self.failure = failure
+        self.usage = usage
+        self.policy_version = policy_version
         self.calls: list[tuple[list[Message], int]] = []
 
     async def summarize(
@@ -51,8 +55,8 @@ class StubSummarizer:
         if self.error is not None:
             raise self.error
         if self.failure is not None:
-            return SummaryResult.failed(self.failure)
-        return SummaryResult(text=self.summary)
+            return SummaryResult.failed(self.failure, usage=self.usage)
+        return SummaryResult(text=self.summary, usage=self.usage)
 
 
 def user(content: str = "u") -> Message:

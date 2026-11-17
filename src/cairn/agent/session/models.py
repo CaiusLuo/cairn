@@ -283,6 +283,41 @@ class TraceSummary(StrictDTO):
         return self
 
 
+class StoredCompaction(StrictDTO):
+    """The derived summary cache stored beside the untouched conversation.
+
+    A summary shortens what a request sends; it never replaces the original
+    messages in ``CheckpointPayload``. This record is therefore discardable: a
+    changed prefix, a shorter conversation or a new summary policy simply means
+    the next compaction pays for a new summary. ``fingerprint`` identifies the
+    history prefix the summary replaced, exactly as ``ReusableCompaction`` does
+    in memory.
+    """
+
+    retained_from: Annotated[int, Field(ge=0, le=MAX_MESSAGES)]
+    summary: str = Field(max_length=MAX_MESSAGE_BYTES)
+    folded_tokens: Counter
+    tokens_after: Counter
+    folded_results: tuple[Annotated[int, Field(ge=0, le=MAX_MESSAGES)], ...] = Field(
+        default=(), max_length=MAX_MESSAGES
+    )
+    fingerprint: tuple[Digest, ...] = Field(default=(), max_length=MAX_MESSAGES)
+    conversation_length: Annotated[int, Field(ge=0, le=MAX_MESSAGES)]
+    policy_version: Counter
+
+    @model_validator(mode="after")
+    def shape(self) -> Self:
+        if self.retained_from > len(self.fingerprint):
+            raise ValueError("fingerprint does not cover the replaced prefix")
+        if any(index >= len(self.fingerprint) for index in self.folded_results):
+            raise ValueError("folded result is outside the persisted prefix")
+        if self.conversation_length < len(self.fingerprint):
+            raise ValueError("conversation shorter than its persisted prefix")
+        if self.retained_from and not self.summary.strip():
+            raise ValueError("a summary record requires a summary")
+        return self
+
+
 class CheckpointPayload(StrictDTO):
     format_version: Literal[1] = 1
     session_id: str
@@ -295,6 +330,9 @@ class CheckpointPayload(StrictDTO):
     started_at_utc: str | None
     settled_at_utc: str
     trace: TraceSummary = Field(default_factory=TraceSummary)
+    #: Derived, rebuildable summary cache. Optional so every checkpoint written
+    #: before the cache existed stays readable.
+    compaction: StoredCompaction | None = None
 
     _session = field_validator("session_id")(uuid4_text)
     _settle = field_validator("settled_at_utc")(utc_text)
@@ -429,6 +467,7 @@ class CheckpointDelta(StrictDTO):
     started_at_utc: str | None
     settled_at_utc: str
     trace: TraceSummary = Field(default_factory=TraceSummary)
+    compaction: StoredCompaction | None = None
     predecessor: CheckpointReceipt | None
 
     @field_validator("format_version", mode="before")

@@ -212,7 +212,9 @@ def test_fallback_selects_streaming_per_candidate_with_matching_admission(
     assert [request["model"] for request in requests] == list(models)
     assert [request["max_tokens"] for request in requests] == [20, 30]
     assert built == [models[1]]
-    assert counters[0].messages == counters[1].messages
+    # The primary counter also measures the pre-request compaction, so compare
+    # each candidate's final admission rather than every measurement.
+    assert counters[0].messages[-1] == counters[1].messages[-1]
     assert [message.role for message in agent.state.messages] == ["user", "assistant"]
     assert agent.state.messages[-1].content == "accepted"
     attempts = [span for span in sink.spans if span.name == "llm.generate"]
@@ -377,7 +379,9 @@ def test_partial_fallback_uses_fresh_admission_assembly_and_unknown_total_usage(
     assert agent.state.messages[-1].tool_calls == []
     assert first.closed == second.closed == 1
     assert first.calls == second.calls
-    assert a.messages == b.messages
+    # The primary counter also measures the pre-request compaction, so compare
+    # each candidate's final admission rather than every measurement.
+    assert a.messages[-1] == b.messages[-1]
     assert [
         event.data["status"] for event in events if event.type == "model_stream_end"
     ] == ["abandoned", "completed"]
