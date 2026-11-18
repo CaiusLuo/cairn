@@ -128,7 +128,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
       if (reason instanceof RuntimeError && reason.status === 409 && reason.message === "conversation_busy") {
         sessionStorage.removeItem(key);
         setPending(null);
-        setQueue(rows => rows.some(row => row.id === next.id) ? rows : [...rows, { id: next.id, prompt: next.prompt, model: next.model }]);
+        setQueue(rows => rows.some(row => row.id === next.id) ? rows : [...rows, { id: next.id, prompt: next.prompt, model: next.model, attachment_ids: next.attachment_ids }]);
         retryAt.current = Date.now() + 1200;
         window.setTimeout(() => { if (mounted.current) setRetryTick(value => value + 1); }, 1300);
       } else {
