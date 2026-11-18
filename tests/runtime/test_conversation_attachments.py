@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
 
 import httpx
 import pytest
+from docx import Document
+from openpyxl import Workbook
+from pptx import Presentation
 
 from cairn.agent.budget import RunBudget
 from cairn.agent.models.messages import LLMResponse, Message, ToolCall
@@ -136,25 +140,98 @@ def _pdf(text: str) -> bytes:
     return bytes(output)
 
 
+def _docx(text: str) -> bytes:
+    document = Document()
+    document.add_paragraph(text)
+    table = document.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = text
+    table.cell(0, 1).text = "table cell"
+    buffer = BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def _xlsx(text: str) -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.title = "Data"
+    sheet.append(["launch code", text])
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def _pptx(text: str) -> bytes:
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide.shapes.add_textbox(0, 0, 300, 80).text_frame.text = text
+    buffer = BytesIO()
+    presentation.save(buffer)
+    return buffer.getvalue()
+
+
+def _html(text: str) -> bytes:
+    return (
+        f"<html><head><title>Report</title></head><body><p>{text}</p>"
+        "<script>bad()</script></body></html>"
+    ).encode()
+
+
 @pytest.mark.parametrize(
-    ("name", "media_type", "payload", "expected"),
+    ("name", "media_type", "payload", "expected", "forbidden"),
     [
         (
             "notes.txt",
             "text/plain",
             b"the launch code is 4321\n",
             "launch code is 4321",
+            "",
         ),
         (
             "report.pdf",
             "application/pdf",
             _pdf("attachment says hello"),
             "attachment says hello",
+            "",
+        ),
+        (
+            "report.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            _docx("attachment says hello"),
+            "attachment says hello",
+            "",
+        ),
+        (
+            "sheet.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            _xlsx("attachment says hello"),
+            "attachment says hello",
+            "",
+        ),
+        (
+            "slides.pptx",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            _pptx("attachment says hello"),
+            "attachment says hello",
+            "",
+        ),
+        (
+            "page.html",
+            "text/html",
+            _html("attachment says hello"),
+            "attachment says hello",
+            "bad()",
         ),
     ],
 )
 def test_attachments_are_read_by_a_run_scoped_tool(
-    tmp_path: Path, name: str, media_type: str, payload: bytes, expected: str
+    tmp_path: Path,
+    name: str,
+    media_type: str,
+    payload: bytes,
+    expected: str,
+    forbidden: str,
 ) -> None:
     app = _app(tmp_path)
     model = AttachmentModel(name)
@@ -176,6 +253,7 @@ def test_attachments_are_read_by_a_run_scoped_tool(
             settled = await _wait_terminal(api, run["run_id"])
             assert settled["status"] == "completed", settled
             assert expected in settled["result"]
+            assert not forbidden or forbidden not in settled["result"]
             assert [item["name"] for item in settled["attachments"]] == [name]
             assert "read_attachment" in model.seen_tools[0]
             events = (await api.run_events(run["run_id"]))["events"]
@@ -505,6 +583,34 @@ def test_restart_completes_an_interrupted_attachment_claim(tmp_path: Path) -> No
     assert (
         tmp_path / "attachments" / "runs" / run.run_id / "notes.txt"
     ).read_bytes() == b"recovered"
+
+
+def test_restart_uses_the_manifest_after_a_crash_mid_claim(
+    tmp_path: Path,
+) -> None:
+    attachment_store = AttachmentStore(tmp_path / "attachments")
+    upload = attachment_store.stage("notes.txt", "text/plain", b"bound before crash")
+    store, run = _queued_run_with_attachment(tmp_path, upload.attachment_id)
+    # Simulation: bind() finished, but the process died before the Run
+    # metadata recorded the claim.
+    attachment_store.bind(run.run_id, attachment_store.plan((upload.attachment_id,)))
+    execution = RecordingExecution()
+
+    async def scenario() -> None:
+        service = ConversationService(
+            store, cast(Any, execution), workspace=tmp_path / "workspace"
+        )
+        await service.start()
+        try:
+            await asyncio.wait_for(service.queue.join(), WAIT_SECONDS)
+        finally:
+            await service.close()
+
+    asyncio.run(scenario())
+    settled = store.get_run(run.run_id)
+    assert settled is not None and settled.status is RunStatus.COMPLETED
+    assert [item["name"] for item in settled.metadata["attachments"]] == ["notes.txt"]
+    assert execution.calls == 1
 
 
 def test_restart_fails_a_run_whose_uploads_are_gone(tmp_path: Path) -> None:

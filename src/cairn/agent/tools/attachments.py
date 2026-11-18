@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol
 
+from docx import Document
+from openpyxl import load_workbook
+from pptx import Presentation
 from pypdf import PdfReader
 
 from cairn.agent.models.messages import ToolResult
@@ -13,6 +18,15 @@ from cairn.agent.tools.arguments import function_schema, reject_unknown_keys
 from cairn.agent.tools.base import InvalidArguments, ToolExecutionContext
 
 MAX_ATTACHMENT_CHARS = 32_000
+MAX_PDF_PAGES = 50
+MAX_SHEET_ROWS = 2_000
+_DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_XLSX_MACRO_MEDIA = "application/vnd.ms-excel.sheet.macroEnabled.12"
+_PPTX_MEDIA = (
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+)
+_LEGACY_OFFICE_SUFFIXES = frozenset({".doc", ".ppt", ".xls"})
 _TEXT_SUFFIXES = frozenset(
     {
         ".csv",
@@ -42,9 +56,14 @@ _TEXT_MEDIA_TYPES = frozenset(
 
 
 class AttachmentRef(Protocol):
-    name: str
-    media_type: str
-    size: int
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def media_type(self) -> str: ...
+
+    @property
+    def size(self) -> int: ...
 
 
 class ReadAttachmentTool:
@@ -55,7 +74,10 @@ class ReadAttachmentTool:
     """
 
     name = "read_attachment"
-    description = "Read a text or PDF file attached to this conversation turn."
+    description = (
+        "Read a text, PDF, Word, Excel, PowerPoint or HTML file attached to "
+        "this conversation turn."
+    )
 
     def __init__(self, root: Path, attachments: tuple[AttachmentRef, ...]) -> None:
         self.root = root.resolve()
@@ -111,6 +133,20 @@ def _extract(path: Path, attachment: AttachmentRef) -> str:
     data = path.read_bytes()
     if media == "application/pdf" or suffix == ".pdf":
         return _extract_pdf(data, attachment)
+    if media == _DOCX_MEDIA or suffix == ".docx":
+        return _safe(_docx_text, data, attachment, "Word document")
+    if media in {_XLSX_MEDIA, _XLSX_MACRO_MEDIA} or suffix in {".xlsx", ".xlsm"}:
+        return _safe(_xlsx_text, data, attachment, "Excel workbook")
+    if media == _PPTX_MEDIA or suffix == ".pptx":
+        return _safe(_pptx_text, data, attachment, "PowerPoint deck")
+    if media == "text/html" or suffix in {".html", ".htm"}:
+        return _safe(_html_text, data, attachment, "HTML file")
+    if suffix in _LEGACY_OFFICE_SUFFIXES:
+        return (
+            f"Legacy Office attachment {attachment.name} ({media}, "
+            f"{attachment.size} bytes). Save it as .docx, .xlsx or .pptx to "
+            "make it readable."
+        )
     if (
         media.startswith("text/")
         or media in _TEXT_MEDIA_TYPES
@@ -124,16 +160,112 @@ def _extract(path: Path, attachment: AttachmentRef) -> str:
         )
     return (
         f"Binary attachment {attachment.name} ({media}, {attachment.size} bytes). "
-        "Only text and PDF attachments can be read."
+        "Only text, PDF, Office and HTML attachments can be read."
     )
+
+
+def _safe(
+    parser: Callable[[bytes], str],
+    data: bytes,
+    attachment: AttachmentRef,
+    label: str,
+) -> str:
+    try:
+        return parser(data)
+    except Exception:
+        return f"{label} attachment {attachment.name} could not be parsed as text."
+
+
+def _docx_text(data: bytes) -> str:
+    document = Document(BytesIO(data))
+    parts: list[str] = []
+    for paragraph in document.paragraphs:
+        if paragraph.text.strip():
+            parts.append(paragraph.text)
+    for table in document.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells]
+            if any(cells):
+                parts.append("\t".join(cells))
+    return "\n".join(parts)
+
+
+def _xlsx_text(data: bytes) -> str:
+    workbook = load_workbook(BytesIO(data), read_only=True, data_only=True)
+    try:
+        parts: list[str] = []
+        characters = 0
+        rows = 0
+        for sheet in workbook.worksheets:
+            parts.append(f"[Sheet: {sheet.title}]")
+            for values in sheet.iter_rows(values_only=True):
+                cells = ["" if value is None else str(value) for value in values]
+                line = "\t".join(cells).rstrip("\t")
+                if not line:
+                    continue
+                parts.append(line)
+                characters += len(line) + 1
+                rows += 1
+                if characters > MAX_ATTACHMENT_CHARS or rows > MAX_SHEET_ROWS:
+                    parts.append("[workbook truncated]")
+                    return "\n".join(parts)
+        return "\n".join(parts)
+    finally:
+        workbook.close()
+
+
+def _pptx_text(data: bytes) -> str:
+    presentation = Presentation(BytesIO(data))
+    parts: list[str] = []
+    for index, slide in enumerate(presentation.slides, 1):
+        parts.append(f"[Slide {index}]")
+        for shape in slide.shapes:
+            if shape.has_text_frame and shape.text_frame.text.strip():
+                parts.append(shape.text_frame.text)
+            if shape.has_table:
+                for row in shape.table.rows:
+                    cells = [cell.text.strip() for cell in row.cells]
+                    if any(cells):
+                        parts.append("\t".join(cells))
+    return "\n".join(parts)
+
+
+class _HTMLText(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+        self._skipping = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        if tag in {"script", "style"}:
+            self._skipping += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style"} and self._skipping:
+            self._skipping -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._skipping and data.strip():
+            self.parts.append(data.strip())
+
+
+def _html_text(data: bytes) -> str:
+    parser = _HTMLText()
+    parser.feed(data.decode("utf-8", errors="replace"))
+    parser.close()
+    return "\n".join(parser.parts)
 
 
 def _extract_pdf(data: bytes, attachment: AttachmentRef) -> str:
     try:
         reader = PdfReader(BytesIO(data))
-        text = "\n".join((page.extract_text() or "") for page in reader.pages[:50])
+        pages = reader.pages
+        text = "\n".join((page.extract_text() or "") for page in pages[:MAX_PDF_PAGES])
     except Exception:
         return f"PDF attachment {attachment.name} could not be parsed as text."
+    if len(pages) > MAX_PDF_PAGES:
+        text += f"\n[only the first {MAX_PDF_PAGES} of {len(pages)} pages were read]"
     if not text.strip():
         return (
             f"PDF attachment {attachment.name} has no extractable text; "

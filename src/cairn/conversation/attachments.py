@@ -82,6 +82,7 @@ class AttachmentStore:
         attachment_id = "att-" + uuid4().hex
         cleaned = safe_attachment_name(name)
         media = (media_type or "application/octet-stream").split(";")[0].strip().lower()
+        digest = hashlib.sha256(data).hexdigest()
         _write_private(self.uploads / attachment_id, data)
         _write_private(
             self.uploads / (attachment_id + ".json"),
@@ -91,7 +92,7 @@ class AttachmentStore:
                     "name": cleaned,
                     "media_type": media[:200] or "application/octet-stream",
                     "size": len(data),
-                    "sha256": hashlib.sha256(data).hexdigest(),
+                    "sha256": digest,
                 },
                 ensure_ascii=False,
             ).encode("utf-8"),
@@ -101,7 +102,7 @@ class AttachmentStore:
             name=cleaned,
             media_type=media or "application/octet-stream",
             size=len(data),
-            sha256=hashlib.sha256(data).hexdigest(),
+            sha256=digest,
         )
 
     def plan(self, attachment_ids: tuple[str, ...]) -> tuple[AttachmentPlan, ...]:
@@ -159,8 +160,44 @@ class AttachmentStore:
             json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
         )
 
-    def directory(self, run_id: str) -> Path:
-        return self.runs / run_id
+    def manifest(self, run_id: str) -> list[dict[str, object]] | None:
+        """Read a completed claim's manifest, for recovery after a crash."""
+        run_dir = self.runs / run_id
+        try:
+            entries = json.loads((run_dir / "manifest.json").read_bytes())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(entries, list):
+            return None
+        recovered: list[dict[str, object]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                return None
+            name = entry.get("name")
+            media_type = entry.get("media_type")
+            size = entry.get("size")
+            sha256 = entry.get("sha256")
+            if (
+                not isinstance(name, str)
+                or not isinstance(media_type, str)
+                or not isinstance(size, int)
+                or isinstance(size, bool)
+                or not isinstance(sha256, str)
+                or name in {"", ".", "..", "manifest.json"}
+                or "/" in name
+                or "\\" in name
+                or not (run_dir / name).is_file()
+            ):
+                return None
+            recovered.append(
+                {
+                    "name": name,
+                    "media_type": media_type,
+                    "size": size,
+                    "sha256": sha256,
+                }
+            )
+        return recovered
 
     def discard(self, run_id: str) -> None:
         """Remove a deleted Run's private files; never leave a Run directory."""
@@ -171,9 +208,9 @@ class AttachmentStore:
     def sweep(self) -> None:
         cutoff = time.time() - UPLOAD_TTL_SECONDS
         for path in self.uploads.iterdir():
-            with_suffix = path.name.endswith(".json")
+            is_metadata = path.name.endswith(".json")
             stem = path.name.removesuffix(".json")
-            if not with_suffix and not _ATTACHMENT_ID.match(path.name):
+            if not is_metadata and not _ATTACHMENT_ID.match(path.name):
                 continue
             if _ATTACHMENT_ID.match(stem) and path.stat().st_mtime < cutoff:
                 path.unlink(missing_ok=True)

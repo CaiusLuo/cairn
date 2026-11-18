@@ -10,6 +10,9 @@ conversations and tasks running when you close a client.
 
 - **Chat and develop:** keep conversation history, follow progress, and start
   explicit development tasks in separate Git worktrees.
+- **Attach files:** in Web chat, attach text, PDF, Word, Excel, PowerPoint or
+  HTML files to one turn; the Agent reads them through a tool scoped to that
+  turn.
 - **Keep knowledge and memory:** save private knowledge clips, ask the owner
   Agent to list or search them, and manage personal memory in Settings.
 - **Schedule and review:** create reminders and generate daily or weekly reviews

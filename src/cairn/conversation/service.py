@@ -633,19 +633,36 @@ class ConversationService:
         if not attachment_ids or run.metadata.get("attachments"):
             return True
         try:
-            self._claim_attachments(
-                run.run_id, self.attachments.plan(tuple(attachment_ids))
-            )
+            planned = self.attachments.plan(tuple(attachment_ids))
         except Exception:
+            # A crash can land after bind() moved the files but before the
+            # metadata write. The manifest it left is the durable receipt.
+            recovered = self.attachments.manifest(run.run_id)
+            if recovered is None:
+                self._fail_attachment_claim(run.run_id)
+                return False
             with suppress(Exception):
                 self.store.update_run(
                     run.run_id,
-                    status=RunStatus.FAILED,
-                    error="attachment_binding_failed",
-                    ended_at=utc_now(),
+                    metadata={**run.metadata, "attachments": recovered},
                 )
+                return True
+            self._fail_attachment_claim(run.run_id)
+            return False
+        try:
+            self._claim_attachments(run.run_id, planned)
+        except Exception:
             return False
         return True
+
+    def _fail_attachment_claim(self, run_id: str) -> None:
+        with suppress(Exception):
+            self.store.update_run(
+                run_id,
+                status=RunStatus.FAILED,
+                error="attachment_binding_failed",
+                ended_at=utc_now(),
+            )
 
     def _claim_attachments(
         self, run_id: str, planned: tuple[AttachmentPlan, ...]
@@ -671,13 +688,7 @@ class ConversationService:
                 },
             )
         except Exception:
-            with suppress(Exception):
-                self.store.update_run(
-                    run_id,
-                    status=RunStatus.FAILED,
-                    error="attachment_binding_failed",
-                    ended_at=utc_now(),
-                )
+            self._fail_attachment_claim(run_id)
             raise
 
     def steer(self, run_id: str, prompt: str) -> dict[str, Any]:

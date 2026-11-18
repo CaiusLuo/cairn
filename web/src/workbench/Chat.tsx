@@ -45,6 +45,7 @@ function useSteerAnimation(ref: RefObject<HTMLDivElement | null>, phase: SteerPh
 type Queued = { id: string; prompt: string; model?: string; attachment_ids?: string[] };
 
 const sizeLabel = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MiB` : `${Math.max(1, Math.round(bytes / 1024))} KiB`;
+const attachmentNames = (items?: { name: string }[]) => items?.map(item => item.name).join(" · ");
 
 export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   id: string; initialMode: Submission["mode"]; config?: WorkbenchConfig; navigate: (url: string) => void; onSubmit: () => void;
@@ -264,7 +265,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
       <div className="composer-controls">
         <span className="composer-harness"><Icon name="sparkles" size={15}/>Cairn Agent</span>
         <input ref={fileInput} type="file" multiple hidden onChange={event => void attachFiles(event.target.files)}/>
-        <button className="composer-icon" type="button" aria-label="添加附件" title="添加附件（文本或 PDF）" disabled={mode === "development" || uploading || steering || attachments.length >= 5} onClick={() => fileInput.current?.click()}><Icon name={uploading ? "clock" : "doc"} size={16}/></button>
+        <button className="composer-icon" type="button" aria-label="添加附件" title="添加附件（文本、PDF、Office 或 HTML）" disabled={mode === "development" || uploading || steering || attachments.length >= 5} onClick={() => fileInput.current?.click()}><Icon name={uploading ? "clock" : "doc"} size={16}/></button>
         <label><Icon name="server" size={15}/><select aria-label="模型" disabled={mode === "development" || !config?.models.length} value={mode === "development" ? "" : model} onChange={event => setModel(event.target.value)}>
           <option value="">{mode === "development" ? config?.development_model ?? "Server 默认模型" : config?.conversation_model ?? "离线验收模型"}</option>
           {config?.models.map(item => <option key={item} value={item}>{item}</option>)}
@@ -293,13 +294,13 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
         {messages.map((message, index) => <article key={index} className={`wb-message ${message.role}`}>
           {message.role === "assistant" && <CairnMark size={22}/>}<Markdown text={message.content!}/>
         </article>)}
-        {active && run?.prompt && (messages.at(-1)?.role !== "user" || messages.at(-1)?.content !== run.prompt) && <article className="wb-message user"><Markdown text={run.prompt}/>{!!run.attachments?.length && <p className="wb-muted">附件：{run.attachments.map(item => item.name).join(" · ")}</p>}</article>}
+        {active && run?.prompt && (messages.at(-1)?.role !== "user" || messages.at(-1)?.content !== run.prompt) && <article className="wb-message user"><Markdown text={run.prompt}/>{!!run.attachments?.length && <p className="wb-muted">附件：{attachmentNames(run.attachments)}</p>}</article>}
         {active && <article className="wb-message assistant" aria-live="polite"><CairnMark size={22}/><div>
           {stream.events.length > 0 && <details className="wb-process" open={!stream.preview}><summary>正在处理 · {stream.events.length} 条活动</summary><Timeline events={stream.events} compact/></details>}
           {stream.preview ? <Markdown text={stream.preview}/> : <p className="wb-muted">{run?.status === "queued" ? "等待 Server 执行…" : "Cairn 正在处理…"}</p>}
         </div></article>}
         {!active && run && <SettledTrace key={run.run_id} id={run.run_id}/>}
-        {!active && !!run?.attachments?.length && <p className="wb-muted">本轮附件：{run.attachments.map(item => item.name).join(" · ")}</p>}
+        {!active && !!run?.attachments?.length && <p className="wb-muted">本轮附件：{attachmentNames(run.attachments)}</p>}
         {!active && run?.error && <p className="wb-error">{run.error}{failed && <> · <a href={href("approvals", { run: run.run_id })}>打开恢复核对</a></>}</p>}
         {run?.task_id && <a className="wb-inline-link" href={href("tasks", { task: run.task_id })}>打开开发任务 <Icon name="arrow-right" size={14}/></a>}
         <div ref={tail}/>
