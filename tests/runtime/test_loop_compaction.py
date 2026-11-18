@@ -763,3 +763,44 @@ def test_reopen_drops_a_summary_written_under_an_older_policy(
         assert newer.calls == [], "the huge budget needs no automatic summary"
     finally:
         reopened.close()
+
+
+def test_compaction_keeps_a_constraint_an_action_and_an_open_question() -> None:
+    """The next decision must still see the facts folded out of the history.
+
+    The stub echoes the three facts into its summary; the loop then substitutes
+    that summary for the folded turns in the next request. This pins the contract
+    the summarizer prompt relies on, not the quality of a real summary.
+    """
+    facts = (
+        "constraint: never touch the deploy script",
+        "completed: migrated the config",
+        "open: which database does staging use?",
+    )
+    summarizer = StubSummarizer(" | ".join(facts))
+    agent = build_agent(
+        [LLMResponse(content="done")], summarizer=summarizer, budget_tokens=100_000
+    )
+    for fact in facts:
+        agent.state.add_user_message(fact + " " + "x" * 200)
+        agent.state.add_assistant_message("noted " + "y" * 200)
+    agent.state.add_user_message("current task")
+
+    outcome = asyncio.run(run_compaction(agent))
+
+    assert outcome.record is not None
+    assert summarizer.calls
+    seen = "\n".join(message.content or "" for message in summarizer.calls[0][0])
+    assert all(fact in seen for fact in facts)
+    assert agent.compaction is not None
+
+    asyncio.run(run_turn(agent, "continue", budget=TEST_BUDGET))
+
+    assert isinstance(agent.llm, SequenceLLM)
+    sent, _ = agent.llm.calls[-1]
+    summary_message = next(
+        message
+        for message in sent
+        if (message.content or "").startswith(SUMMARY_PREFIX)
+    )
+    assert all(fact in (summary_message.content or "") for fact in facts)

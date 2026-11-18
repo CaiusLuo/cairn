@@ -48,18 +48,18 @@ class TurnBudgetPolicy:
 
     def snapshot(self) -> BudgetUsage:
         totals = self.usage.totals()
-        measured = totals.total_tokens
-        if measured is None:
+        if totals.attempts == 0:
             # Nothing attempted is a real zero. Anything else attempted but
             # unmeasured stays unknown rather than being reported as zero.
-            zero = totals.attempts == 0
-            input_tokens: int | None = 0 if zero else None
-            output_tokens: int | None = 0 if zero else None
-            total_tokens: int | None = 0 if zero else None
+            input_tokens: int | None = 0
+            output_tokens: int | None = 0
+            total_tokens: int | None = 0
         else:
+            # Each component stays visible when its provider reported it; the
+            # total and cost still need both, so they remain unknown otherwise.
             input_tokens = totals.input_tokens
             output_tokens = totals.output_tokens
-            total_tokens = measured
+            total_tokens = totals.total_tokens
         cost = self._cost(input_tokens, output_tokens)
         return BudgetUsage(
             self.steps,

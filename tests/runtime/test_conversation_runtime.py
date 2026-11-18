@@ -985,3 +985,115 @@ def test_missing_session_continues_in_a_new_session_after_restart(
             assert "reply:first prompt" in joined
 
     asyncio.run(scenario())
+
+
+def test_a_run_claims_only_a_receipt_committed_by_its_own_turn(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        initialize_repository(source)
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="zzzz",
+        )
+        app.state.execution.llm_factory = ChatModel
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            conversation = await api.create_conversation("hello", source="cli")
+            first = await api.send_conversation(
+                conversation["conversation_id"],
+                "first",
+                source="cli",
+                request_id="receipt-first",
+            )
+            for _ in range(100):
+                current = await api.get_run(first["run_id"])
+                if current["status"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.02)
+            assert current["status"] == "completed", current
+            committed = current["checkpoint_receipt"]
+            assert committed is not None
+
+            class UnavailableModel:
+                def __init__(self) -> None:
+                    raise RuntimeError("model selection failed")
+
+            # This Run fails before the Agent admits a turn, so it must not
+            # inherit the receipt the previous Run committed.
+            app.state.execution.llm_factory = UnavailableModel
+            second = await api.send_conversation(
+                conversation["conversation_id"],
+                "second",
+                source="cli",
+                request_id="receipt-second",
+            )
+            for _ in range(100):
+                current = await api.get_run(second["run_id"])
+                if current["status"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.02)
+            assert current["status"] == "failed", current
+            assert current["checkpoint_receipt"] is None
+            assert current["session_id"]
+
+    asyncio.run(scenario())
+
+
+def test_partial_usage_reaches_the_run_budget_projection(tmp_path: Path) -> None:
+    class InputOnlyModel:
+        async def generate(
+            self,
+            messages: list[Message],
+            tools: list[dict[str, Any]] | None = None,
+        ) -> LLMResponse:
+            del messages, tools
+            return LLMResponse(content="partial", usage=LLMUsage(input_tokens=37))
+
+    async def scenario() -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        initialize_repository(source)
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="zzzz",
+        )
+        app.state.execution.llm_factory = InputOnlyModel
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            conversation = await api.create_conversation("hello", source="cli")
+            run = await api.send_conversation(
+                conversation["conversation_id"],
+                "measure",
+                source="cli",
+                request_id="partial-usage",
+            )
+            for _ in range(100):
+                current = await api.get_run(run["run_id"])
+                if current["status"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.02)
+            assert current["status"] == "completed", current
+            budget = current["budget"]
+            assert budget["input_tokens"] == 37
+            assert budget["output_tokens"] is None
+            assert budget["total_tokens"] is None
+            assert budget.get("estimated_cost") is None
+
+    asyncio.run(scenario())

@@ -18,8 +18,10 @@ from cairn.agent.models.messages import (
 from cairn.agent.models.selection import ModelConfig, ModelManager, ProviderConfig
 from cairn.agent.tools.base import ToolExecutionContext
 from cairn.agent.tools.registry import ToolRegistry
+from cairn.agent.turn.budget import TurnBudgetPolicy
 from cairn.agent.turn.events import Event
 from cairn.agent.turn.loop import run_turn
+from cairn.agent.turn.usage import UsageLedger
 from tests.support.compaction import CharacterCounter
 from tests.support.runtime import RecordingTool, SequenceLLM, make_agent
 
@@ -300,3 +302,21 @@ def test_fallback_failure_keeps_usage_unknown_instead_of_zero(capped: bool) -> N
         )
 
     asyncio.run(scenario())
+
+
+def test_partial_usage_keeps_its_reported_component_in_the_budget_snapshot() -> None:
+    usage = UsageLedger()
+    usage.request()
+    usage.response(LLMUsage(input_tokens=37))
+    policy = TurnBudgetPolicy(
+        RunBudget(5, input_cost_per_million=1.0, output_cost_per_million=2.0),
+        emit=lambda event: None,
+        usage=usage,
+    )
+
+    snapshot = policy.snapshot()
+
+    assert snapshot.input_tokens == 37
+    assert snapshot.output_tokens is None
+    assert snapshot.total_tokens is None
+    assert snapshot.estimated_cost is None
