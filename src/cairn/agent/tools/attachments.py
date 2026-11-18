@@ -7,7 +7,7 @@ from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol
-from zipfile import BadZipFile, ZipFile
+from zipfile import ZipFile
 
 from docx import Document
 from openpyxl import load_workbook
@@ -188,7 +188,8 @@ def _expands_too_far(data: bytes) -> bool:
                 sum(item.file_size for item in archive.infolist())
                 > MAX_UNCOMPRESSED_BYTES
             )
-    except BadZipFile:
+    except Exception:
+        # A malformed container is reported by the parser itself.
         return False
 
 
