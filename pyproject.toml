@@ -17,6 +17,7 @@ dependencies = [
     "mcp>=2.3.0,<3",
     "prompt-toolkit>=3.0.53",
     "pydantic>=2.13.5",
+    "pypdf>=7.1.1",
     "python-dotenv>=1.2.3",
     "pyyaml>=6",
     "qrcode>=8.2",

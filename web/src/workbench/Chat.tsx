@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { newRequestId } from "../ids";
-import { RuntimeError, runtimeApi } from "../runtime-api";
+import { RuntimeError, runtimeApi, uploadAttachment, type UploadedAttachment } from "../runtime-api";
 import { readSubmission, sendSubmission, useRunStream, type Submission } from "./chat-state";
 import { conversationTitle, isActive, sourceLabel, useResource, type Conversation, type Message, type Run, type WorkbenchConfig } from "./data";
 import { Badge, Drawer, Markdown, Outputs, Timeline } from "./evidence";
@@ -42,7 +42,9 @@ function useSteerAnimation(ref: RefObject<HTMLDivElement | null>, phase: SteerPh
   }, [ref, phase]);
 }
 
-type Queued = { id: string; prompt: string; model?: string };
+type Queued = { id: string; prompt: string; model?: string; attachment_ids?: string[] };
+
+const sizeLabel = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MiB` : `${Math.max(1, Math.round(bytes / 1024))} KiB`;
 
 export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   id: string; initialMode: Submission["mode"]; config?: WorkbenchConfig; navigate: (url: string) => void; onSubmit: () => void;
@@ -66,9 +68,12 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   const [steering, setSteering] = useState(false);
   const [steer, setSteer] = useState<Steering | null>(null);
   const [canceling, setCanceling] = useState(false);
+  const [attachments, setAttachments] = useState<UploadedAttachment[]>([]);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const [artifacts, setArtifacts] = useState(false);
   const [, setRetryTick] = useState(0);
+  const fileInput = useRef<HTMLInputElement>(null);
   const inFlight = useRef(false);
   const retryAt = useRef(0);
   const mounted = useRef(true);
@@ -111,6 +116,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
       onSubmit();
       if (!mounted.current) return;
       setPending(null);
+      setAttachments([]);
       if ("task" in result && result.task) {
         navigate(href("tasks", { task: result.task.task_id }));
       } else if (result.run) {
@@ -137,6 +143,24 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   function sendQueued(item: Queued) {
     setQueue(rows => rows.filter(row => row.id !== item.id));
     void submit({ ...item, conversation: id, mode: "conversation" });
+  }
+
+  async function attachFiles(files: FileList | null) {
+    if (!files?.length || mode === "development") return;
+    setUploading(true);
+    setError("");
+    try {
+      const room = Math.max(0, 5 - attachments.length);
+      const chosen = Array.from(files).slice(0, room);
+      const uploaded: UploadedAttachment[] = [];
+      for (const file of chosen) uploaded.push(await uploadAttachment(file));
+      if (mounted.current) setAttachments(current => [...current, ...uploaded].slice(0, 5));
+    } catch (reason) {
+      if (mounted.current) setError(String(reason));
+    } finally {
+      if (fileInput.current) fileInput.current.value = "";
+      if (mounted.current) setUploading(false);
+    }
   }
 
   useEffect(() => {
@@ -172,17 +196,20 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
 
   function sendDraft() {
     const prompt = draft.trim();
-    if (!prompt || sending || steering || !config || (failed && mode === "conversation")) return;
+    if (!prompt || sending || steering || uploading || !config || (failed && mode === "conversation")) return;
     if (pending) {
       sessionStorage.removeItem(key);
       setPending(null);
     }
-    const next = { id: newRequestId(), prompt, model: mode === "conversation" && model ? model : undefined };
+    const attachment_ids = attachments.map(item => item.attachment_id);
+    const next = { id: newRequestId(), prompt, model: mode === "conversation" && model ? model : undefined, ...(attachment_ids.length ? { attachment_ids } : {}) };
     setDraft("");
     stickToBottom.current = true;
     if (steerable) void steerPrompt(prompt);
-    else if (active && mode === "conversation") setQueue(rows => [...rows, next]);
-    else void submit({ ...next, conversation: id, mode });
+    else if (active && mode === "conversation") {
+      setQueue(rows => [...rows, next]);
+      setAttachments([]);
+    } else void submit({ ...next, conversation: id, mode });
   }
 
   async function cancel() {
@@ -201,7 +228,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   }
 
   const failed = run?.status === "recovery_required";
-  const steerable = active && run?.status === "running" && mode === "conversation";
+  const steerable = active && run?.status === "running" && mode === "conversation" && attachments.length === 0;
   const degraded = (detail.data?.runs ?? [])
     .map(item => item.metadata?.history_degraded)
     .filter((value): value is string => typeof value === "string")
@@ -227,9 +254,17 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
       {!error && <button type="button" onClick={() => { detail.refresh(); history.refresh(); }}>重试</button>}
     </p>}
     <form className="wb-composer" onSubmit={event => { event.preventDefault(); sendDraft(); }}>
+      {!!attachments.length && <div className="attachment-tray">
+        {attachments.map(item => <span className="attachment-chip" key={item.attachment_id}>
+          <Icon name="doc" size={14}/><span title={item.name}>{item.name}</span><small>{sizeLabel(item.size)}</small>
+          <button type="button" aria-label={`移除 ${item.name}`} onClick={() => setAttachments(rows => rows.filter(row => row.attachment_id !== item.attachment_id))}><Icon name="close" size={12}/></button>
+        </span>)}
+      </div>}
       <textarea aria-label="消息" placeholder={mode === "development" ? "描述要完成的开发目标…" : steerable ? "输入以引导当前运行…" : "问 Cairn，或交给它一项工作…"} value={draft} maxLength={32000} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); sendDraft(); } }}/>
       <div className="composer-controls">
         <span className="composer-harness"><Icon name="sparkles" size={15}/>Cairn Agent</span>
+        <input ref={fileInput} type="file" multiple hidden onChange={event => void attachFiles(event.target.files)}/>
+        <button className="composer-icon" type="button" aria-label="添加附件" title="添加附件（文本或 PDF）" disabled={mode === "development" || uploading || steering || attachments.length >= 5} onClick={() => fileInput.current?.click()}><Icon name={uploading ? "clock" : "doc"} size={16}/></button>
         <label><Icon name="server" size={15}/><select aria-label="模型" disabled={mode === "development" || !config?.models.length} value={mode === "development" ? "" : model} onChange={event => setModel(event.target.value)}>
           <option value="">{mode === "development" ? config?.development_model ?? "Server 默认模型" : config?.conversation_model ?? "离线验收模型"}</option>
           {config?.models.map(item => <option key={item} value={item}>{item}</option>)}
@@ -239,7 +274,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
         </select></label>
         <div className="composer-send">
           {active && <button className="composer-icon" type="button" aria-label="中断运行" title="中断运行" disabled={canceling} onClick={() => void cancel()}><Icon name="stop" size={17}/></button>}
-          <button className="send-button" type="submit" aria-label={steerable ? "引导当前运行" : active && mode === "conversation" ? "加入发送队列" : "发送"} title={steerable ? "引导当前运行" : active && mode === "conversation" ? "加入发送队列" : "发送"} disabled={!draft.trim() || !config || sending || steering || (failed && mode === "conversation")}><Icon name={steerable ? "sparkles" : active && mode === "conversation" ? "queue" : "arrow-up"} size={18}/></button>
+          <button className="send-button" type="submit" aria-label={steerable ? "引导当前运行" : active && mode === "conversation" ? "加入发送队列" : "发送"} title={steerable ? "引导当前运行" : active && mode === "conversation" ? "加入发送队列" : "发送"} disabled={!draft.trim() || !config || sending || steering || uploading || (failed && mode === "conversation")}><Icon name={steerable ? "sparkles" : active && mode === "conversation" ? "queue" : "arrow-up"} size={18}/></button>
         </div>
       </div>
     </form>
@@ -258,12 +293,13 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
         {messages.map((message, index) => <article key={index} className={`wb-message ${message.role}`}>
           {message.role === "assistant" && <CairnMark size={22}/>}<Markdown text={message.content!}/>
         </article>)}
-        {active && run?.prompt && (messages.at(-1)?.role !== "user" || messages.at(-1)?.content !== run.prompt) && <article className="wb-message user"><Markdown text={run.prompt}/></article>}
+        {active && run?.prompt && (messages.at(-1)?.role !== "user" || messages.at(-1)?.content !== run.prompt) && <article className="wb-message user"><Markdown text={run.prompt}/>{!!run.attachments?.length && <p className="wb-muted">附件：{run.attachments.map(item => item.name).join(" · ")}</p>}</article>}
         {active && <article className="wb-message assistant" aria-live="polite"><CairnMark size={22}/><div>
           {stream.events.length > 0 && <details className="wb-process" open={!stream.preview}><summary>正在处理 · {stream.events.length} 条活动</summary><Timeline events={stream.events} compact/></details>}
           {stream.preview ? <Markdown text={stream.preview}/> : <p className="wb-muted">{run?.status === "queued" ? "等待 Server 执行…" : "Cairn 正在处理…"}</p>}
         </div></article>}
         {!active && run && <SettledTrace key={run.run_id} id={run.run_id}/>}
+        {!active && !!run?.attachments?.length && <p className="wb-muted">本轮附件：{run.attachments.map(item => item.name).join(" · ")}</p>}
         {!active && run?.error && <p className="wb-error">{run.error}{failed && <> · <a href={href("approvals", { run: run.run_id })}>打开恢复核对</a></>}</p>}
         {run?.task_id && <a className="wb-inline-link" href={href("tasks", { task: run.task_id })}>打开开发任务 <Icon name="arrow-right" size={14}/></a>}
         <div ref={tail}/>

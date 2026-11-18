@@ -15,6 +15,7 @@ export type Run = {
   created_at?: string;
   ended_at?: string | null;
   budget?: Record<string, unknown>;
+  attachments?: { name: string; media_type: string; size: number }[];
   cursor?: number;
   session_id?: string | null;
   metadata?: Record<string, unknown>;

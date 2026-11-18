@@ -209,6 +209,14 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .composer-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 11px; padding-left: 4px; }
 .composer-controls label, .composer-harness { display: flex; align-items: center; gap: 4px; min-width: 0; color: var(--hui-secondary); font-size: 12px; }
 .wb-main .composer-controls select { font-size: 12px; max-width: min(205px, 30vw); padding: 2px 4px; border: 0; background: transparent; }
+.attachment-tray { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 6px 8px; }
+.attachment-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 6px 4px 8px; border: 1px solid var(--hui-border); border-radius: 9px; font-size: 12px; }
+.attachment-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-chip small { color: var(--hui-muted); }
+.attachment-chip button { display: grid; place-items: center; padding: 2px; border: 0; background: transparent; color: var(--hui-muted); cursor: pointer; }
+.composer-controls > .composer-icon { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--hui-secondary); cursor: pointer; }
+.composer-controls > .composer-icon:hover:enabled { background: var(--hui-accent-soft); color: var(--hui-text); }
+.composer-controls > .composer-icon:disabled { cursor: default; opacity: .45; }
 .composer-send { margin-left: auto; display: flex; gap: 5px; align-items: center; }
 .wb-main .composer-send button { width: 33px; height: 33px; display: grid; place-items: center; padding: 0; border-radius: 10px; }
 .wb-main .composer-send .send-button { background: var(--hui-text); color: var(--hui-surface); border-color: transparent; }
