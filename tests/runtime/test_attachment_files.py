@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 from openpyxl import Workbook
@@ -122,6 +123,18 @@ def test_unparseable_office_file_reports_instead_of_raising(tmp_path: Path) -> N
     tool = _tool(tmp_path, "broken.docx", DOCX_MEDIA, b"not a zip archive")
     result = asyncio.run(tool.execute({"name": "broken.docx"}))
     assert "broken.docx could not be parsed as text" in result.stdout
+
+
+def test_office_expansion_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tools, "MAX_UNCOMPRESSED_BYTES", 10)
+    buffer = BytesIO()
+    with ZipFile(buffer, "w") as archive:
+        archive.writestr("word/document.xml", b"x" * 100)
+    tool = _tool(tmp_path, "bomb.docx", DOCX_MEDIA, buffer.getvalue())
+    result = asyncio.run(tool.execute({"name": "bomb.docx"}))
+    assert "expands beyond the reading limit" in result.stdout
 
 
 def test_legacy_office_formats_get_a_conversion_hint(tmp_path: Path) -> None:

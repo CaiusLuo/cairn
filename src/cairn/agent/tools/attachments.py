@@ -7,6 +7,7 @@ from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol
+from zipfile import BadZipFile, ZipFile
 
 from docx import Document
 from openpyxl import load_workbook
@@ -20,6 +21,8 @@ from cairn.agent.tools.base import InvalidArguments, ToolExecutionContext
 MAX_ATTACHMENT_CHARS = 32_000
 MAX_PDF_PAGES = 50
 MAX_SHEET_ROWS = 2_000
+# OOXML files are zip containers; a small upload must not expand without bound.
+MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
 _DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 _XLSX_MACRO_MEDIA = "application/vnd.ms-excel.sheet.macroEnabled.12"
@@ -134,11 +137,11 @@ def _extract(path: Path, attachment: AttachmentRef) -> str:
     if media == "application/pdf" or suffix == ".pdf":
         return _extract_pdf(data, attachment)
     if media == _DOCX_MEDIA or suffix == ".docx":
-        return _safe(_docx_text, data, attachment, "Word document")
+        return _office_text(_docx_text, data, attachment, "Word document")
     if media in {_XLSX_MEDIA, _XLSX_MACRO_MEDIA} or suffix in {".xlsx", ".xlsm"}:
-        return _safe(_xlsx_text, data, attachment, "Excel workbook")
+        return _office_text(_xlsx_text, data, attachment, "Excel workbook")
     if media == _PPTX_MEDIA or suffix == ".pptx":
-        return _safe(_pptx_text, data, attachment, "PowerPoint deck")
+        return _office_text(_pptx_text, data, attachment, "PowerPoint deck")
     if media == "text/html" or suffix in {".html", ".htm"}:
         return _safe(_html_text, data, attachment, "HTML file")
     if suffix in _LEGACY_OFFICE_SUFFIXES:
@@ -162,6 +165,31 @@ def _extract(path: Path, attachment: AttachmentRef) -> str:
         f"Binary attachment {attachment.name} ({media}, {attachment.size} bytes). "
         "Only text, PDF, Office and HTML attachments can be read."
     )
+
+
+def _office_text(
+    parser: Callable[[bytes], str],
+    data: bytes,
+    attachment: AttachmentRef,
+    label: str,
+) -> str:
+    if _expands_too_far(data):
+        return (
+            f"{label} attachment {attachment.name} expands beyond the "
+            "reading limit; save a smaller copy to read it."
+        )
+    return _safe(parser, data, attachment, label)
+
+
+def _expands_too_far(data: bytes) -> bool:
+    try:
+        with ZipFile(BytesIO(data)) as archive:
+            return (
+                sum(item.file_size for item in archive.infolist())
+                > MAX_UNCOMPRESSED_BYTES
+            )
+    except BadZipFile:
+        return False
 
 
 def _safe(
