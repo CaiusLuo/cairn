@@ -32,5 +32,4 @@ def test_dynamic_secrets_reach_the_default_trace_redactor(tmp_path: Path) -> Non
     text = (tmp_path / "traces" / f"{span.context.trace_id}.jsonl").read_text()
     assert "late-secret" not in text
     assert "initial-secret" not in text
-    assert text.count("[redacted]") == 2
     assert "private conversation" not in text

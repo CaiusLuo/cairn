@@ -107,7 +107,7 @@ def test_compaction_phase_event_reports_duration_and_usage() -> None:
 
     compacted = next(event for event in events if event.type == "context_compacted")
     assert compacted.data == {
-        "step": "summarized",
+        "compaction_step": "summarized",
         "status": "ok",
         "folded_messages": 4,
         "tokens_before": 900,

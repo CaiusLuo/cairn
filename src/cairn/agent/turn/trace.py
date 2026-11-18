@@ -332,7 +332,7 @@ class TurnTrace:
             attributes["compaction_tokens_after"] = outcome.tokens_after
 
         compacted: dict[str, Any] = {
-            "step": outcome.step.value,
+            "compaction_step": outcome.step.value,
             "status": outcome.status.value if outcome.status is not None else "ok",
             "folded_messages": outcome.folded_messages,
             "tokens_before": outcome.tokens_before,
@@ -398,6 +398,8 @@ class TurnTrace:
         if usage:
             trace_finish_data["usage"] = usage
 
+        self._agent.emit(Event(type="trace_finish", data=trace_finish_data))
+        # Publish the summary only after the final event returns successfully.
         self._summary = TurnTraceSummary(
             trace_id=self._turn_span.context.trace_id,
             input_tokens=input_tokens,
@@ -405,7 +407,6 @@ class TurnTrace:
             persisted=persistence_error is None,
             error_code=None if persistence_error is None else "sink_failed",
         )
-        self._agent.emit(Event(type="trace_finish", data=trace_finish_data))
 
 
 def _elapsed_ms(started: float | None) -> float | None:

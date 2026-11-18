@@ -350,5 +350,14 @@ def test_diagnostic_retention_preserves_lifecycle_and_event_cursor(
         keep=2,
     )
     assert [row.sequence for row in store.list_run_events(run.run_id)] == [1, 4, 5, 6]
-    assert store.run_event_cursor(run.run_id) == 6
-    assert store.append_run_event(run.run_id, "turn_settled").sequence == 7
+
+    # A restart must not resurrect pruned rows or reset the high-water cursor.
+    reopened = DomainStore(tmp_path / "domain.sqlite3")
+    assert [row.sequence for row in reopened.list_run_events(run.run_id)] == [
+        1,
+        4,
+        5,
+        6,
+    ]
+    assert reopened.run_event_cursor(run.run_id) == 6
+    assert reopened.append_run_event(run.run_id, "turn_settled").sequence == 7

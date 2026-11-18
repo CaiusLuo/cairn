@@ -154,11 +154,11 @@ FIELDS: Mapping[str, tuple[str, ...]] = {
         "failure_kind",
         "duration_ms",
     ),
-    "agent_finish": ("step", "truncated", "stop_reason"),
+    "agent_finish": ("step", "truncated", "stop_reason", "content_length"),
     "agent_budget_exhausted": ("reason", "limit", "used"),
     "context_trimmed": ("omitted_turns", "omitted_messages"),
     "context_compacted": (
-        "step",
+        "compaction_step",
         "status",
         "folded_messages",
         "tokens_before",
