@@ -7,7 +7,8 @@ read the same totals from this object, so they cannot report different numbers.
 
 Two rules make an incomplete record honest:
 
-* a completed response that omitted usage leaves the total unknown, never zero;
+* a completed response that omitted a usage field leaves that field unknown,
+  never zero; a field every response reported is still shown;
 * a request that produced no response leaves the total unknown too, because the
   provider may still have billed for it.
 
@@ -52,7 +53,8 @@ class UsageLedger:
         self._responses = 0
         self._summaries = 0
         self._summary_responses = 0
-        self._unreported = 0
+        self._input_known = True
+        self._output_known = True
         self._input = 0
         self._output = 0
         self._cached: int | None = 0
@@ -78,7 +80,6 @@ class UsageLedger:
         known = (
             self._requests == self._responses
             and self._summaries == self._summary_responses
-            and self._unreported == 0
         )
         reported = self._responses + self._summaries > 0
         measured = known and reported
@@ -86,25 +87,30 @@ class UsageLedger:
             requests=self._requests,
             responses=self._responses,
             summaries=self._summaries,
-            input_tokens=self._input if measured else None,
-            output_tokens=self._output if measured else None,
+            input_tokens=self._input if measured and self._input_known else None,
+            output_tokens=self._output if measured and self._output_known else None,
             cached_tokens=self._cached if measured else None,
             reasoning_tokens=self._reasoning if measured else None,
         )
 
     def _consume(self, usage: LLMUsage | None) -> None:
-        if usage is None or usage.input_tokens is None or usage.output_tokens is None:
-            self._unreported += 1
+        if usage is None:
+            self._input_known = False
+            self._output_known = False
             # Optional counters share the response's budget: once one response
             # could not be measured, a partial sum would imply a measurement
             # that was never made.
             self._cached = None
             self._reasoning = None
             return
-        self._input += usage.input_tokens
-        self._output += usage.output_tokens
-        # Cache hits and reasoning tokens are reported only by some providers;
-        # a turn where no response reported one keeps None rather than zero.
+        if usage.input_tokens is None:
+            self._input_known = False
+        else:
+            self._input += usage.input_tokens
+        if usage.output_tokens is None:
+            self._output_known = False
+        else:
+            self._output += usage.output_tokens
         self._cached = (
             None
             if self._cached is None or usage.cached_tokens is None

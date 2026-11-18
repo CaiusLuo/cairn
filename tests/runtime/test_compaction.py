@@ -78,9 +78,11 @@ def test_overflow_does_not_resummarize_an_unchanged_prefix() -> None:
         assistant("y" * 450),
         user("p" * 300),
         assistant("q" * 300),
-        user("current " + "z" * 650),
+        user("current " + "z" * 3_000),
     ]
-    budget_tokens = 1_000
+    # The policy reserves at least 1024 tokens for a summary; a smaller budget
+    # can only fold, so this case needs a ceiling that can actually pay for one.
+    budget_tokens = 3_000
     before = source(messages, budget_tokens=budget_tokens)
     reducer = compactor(budget_tokens)
     first = run(
