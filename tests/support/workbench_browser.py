@@ -487,6 +487,7 @@ def main() -> None:
                         "conversation_id"
                     ],
                     "CAIRN_WEB_E2E_RECOVERY_TASK": task["task_id"],
+                    "CAIRN_WEB_E2E_GATES": str(server.gates),
                     "CAIRN_WEB_E2E_REAL_MODEL": "0",
                 }
                 if args.channel:

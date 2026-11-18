@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from cairn.agent.session.models import CheckpointReceipt, SessionStoreError
+from cairn.agent.turn.steering import PendingMessage, SteerQueue
 from cairn.conversation.models import (
     Conversation,
     ConversationSource,
@@ -58,6 +59,10 @@ class ConversationRecoveryRequired(RuntimeError):
 
 class ConversationProtected(RuntimeError):
     """A conversation owns durable work and cannot be deleted."""
+
+
+class RunNotSteerable(RuntimeError):
+    """The Run is not running, so an instruction cannot join its turn."""
 
 
 class RunLedger:
@@ -193,6 +198,7 @@ class ConversationService:
         self.stopping = False
         self.subscribers: dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
         self.active_ledgers: dict[str, RunLedger] = {}
+        self.active_steering: dict[str, SteerQueue] = {}
         self.changed = asyncio.Event()
         self.settled_listeners: list[Callable[[Run], None]] = []
         self._runs_since_diagnostic_sweep = 0
@@ -580,6 +586,45 @@ class ConversationService:
             self.queue.put_nowait(run.run_id)
         return run
 
+    def steer(self, run_id: str, prompt: str) -> dict[str, Any]:
+        """Join a running turn at its next step boundary.
+
+        Acceptance is recorded as a durable Run event before it is acknowledged.
+        A steer accepted after the final model step is recorded as unapplied
+        when the Run settles rather than silently dropped.
+        """
+        run = self.get_run(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        text = prompt.strip()
+        if not text:
+            raise ValueError("Steer prompt must not be empty")
+        queue = self.active_steering.get(run_id)
+        ledger = self.active_ledgers.get(run_id)
+        # Synchronous check-and-push: settlement runs on this same event loop,
+        # so an accepted steer cannot race past the queue's lifetime here.
+        if run.status is not RunStatus.RUNNING or queue is None or ledger is None:
+            raise RunNotSteerable("Run is not accepting steers")
+        queue.push(PendingMessage(text=text))
+        self._record(
+            run_id, ledger, "steer_accepted", {"text": text, "pending": len(queue)}
+        )
+        return {
+            "accepted": True,
+            "run_id": run_id,
+            "status": run.status.value,
+            "pending": len(queue),
+        }
+
+    def _record(
+        self, run_id: str, ledger: RunLedger, kind: str, data: dict[str, Any]
+    ) -> None:
+        ledger.record(ledger.inspect(run_id), kind, data)
+        if kind == "model_text_delta":
+            self.publish(run_id, {"type": "preview", "text": data["text"]})
+        else:
+            self.publish(run_id, {"type": "event", "kind": kind, "data": data})
+
     def events(self, run_id: str, after: int = 0) -> tuple[RunEvent, ...]:
         if self.get_run(run_id) is None:
             raise ValueError("Run not found")
@@ -852,7 +897,12 @@ class ConversationService:
 
     def preview_snapshot(self, run_id: str) -> str:
         ledger = self.active_ledgers.get(run_id)
-        return ledger.visible_text if ledger is not None else ""
+        if ledger is not None:
+            return ledger.visible_text
+        # A finished run no longer has a ledger, but a consumer reconnecting
+        # after settlement still needs the text the replayed deltas describe.
+        run = self.get_run(run_id)
+        return (run.result or "") if run is not None else ""
 
     def publish(self, run_id: str, message: dict[str, Any]) -> None:
         for queue in tuple(self.subscribers.get(run_id, ())):
@@ -944,6 +994,14 @@ class ConversationService:
                 self.queue.task_done()
 
     def _settle_observers(self, run_id: str) -> None:
+        steering = self.active_steering.pop(run_id, None)
+        ledger = self.active_ledgers.get(run_id)
+        if steering is not None and ledger is not None:
+            with suppress(Exception):
+                for pending in steering.drain():
+                    self._record(
+                        run_id, ledger, "steer_unapplied", {"text": pending.text}
+                    )
         self.active_ledgers.pop(run_id, None)
         self.cancel_requested.discard(run_id)
         if self.active_run_id == run_id:
@@ -1110,6 +1168,8 @@ class ConversationService:
             on_session_bound=bind_run_session,
         )
         self.active_ledgers[run_id] = ledger
+        steering = SteerQueue()
+        self.active_steering[run_id] = steering
         if degradation is not None:
             self.store.update_run(
                 run_id,
@@ -1123,19 +1183,22 @@ class ConversationService:
                     "run_id": run_id,
                     "conversation_id": run.conversation_id,
                 }
-            current = ledger.inspect(run_id)
-            ledger.record(current, kind, data)
-            if kind == "model_text_delta":
-                self.publish(run_id, {"type": "preview", "text": data["text"]})
-            else:
-                self.publish(run_id, {"type": "event", "kind": kind, "data": data})
+            if kind == "agent_step":
+                # Record what was applied before the step's own event, so the
+                # timeline shows the steer took effect at this boundary.
+                for text in data.get("steers", ()):
+                    if isinstance(text, str):
+                        self._record(run_id, ledger, "steer_applied", {"text": text})
+            self._record(run_id, ledger, kind, data)
 
         try:
             # A prior Session is already a reliable identity; publish it before
             # reopening so a crash while reopening still leaves an auditable link.
             if ledger.session_id is not None:
                 bind_run_session(ledger.session_id)
-            result = await self.execution(ledger.task, emit, service=ledger)
+            result = await self.execution(
+                ledger.task, emit, service=ledger, steering=steering
+            )
             ledger.flush_preview()
             self.store.update_run(
                 run_id,
@@ -1215,4 +1278,5 @@ __all__ = [
     "ConversationRecoveryRequired",
     "ConversationService",
     "RunLedger",
+    "RunNotSteerable",
 ]

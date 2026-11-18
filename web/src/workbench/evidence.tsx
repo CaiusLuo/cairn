@@ -27,6 +27,7 @@ const eventLabel: Record<string, string> = {
   model_request: "请求上下文", model_first_token: "首 Token", model_response: "模型响应", model_error: "模型失败",
   turn_started: "轮次开始", turn_settled: "轮次结束", turn_committed: "轮次已提交",
   trace_start: "开始追踪", trace_finish: "执行指标",
+  steer_accepted: "接收引导", steer_applied: "引导已生效", steer_unapplied: "引导未生效",
 };
 
 export const phaseMs = (event: ExecutionEvent): number | undefined => {

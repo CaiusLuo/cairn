@@ -37,6 +37,7 @@ from cairn.agent.tracing.retention import RetentionTraceSink
 from cairn.agent.tracing.sinks import JsonlTraceSink, RedactingTraceSink
 from cairn.agent.tracing.tracer import Tracer
 from cairn.agent.turn.events import Event
+from cairn.agent.turn.steering import SteerQueue
 from cairn.agent.workspace.lease import WorkspaceLease
 from cairn.agent.workspace.workspace import Workspace
 from cairn.development.catalogue import RuntimeTask
@@ -184,6 +185,7 @@ class ServiceExecution:
         emit: Callable[[str, dict[str, Any]], None],
         *,
         service: Any | None = None,
+        steering: SteerQueue | None = None,
     ) -> str:
         started = perf_counter()
         ledger = service if service is not None else self.service
@@ -539,7 +541,8 @@ class ServiceExecution:
                                 else task.input_prompt or task.prompt
                             )
                         ),
-                    )
+                    ),
+                    steering=steering,
                 )
             interrupted_tool = (
                 any(

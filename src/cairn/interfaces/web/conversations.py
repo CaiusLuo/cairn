@@ -24,6 +24,7 @@ from cairn.conversation.service import (
     ConversationProtected,
     ConversationRecoveryRequired,
     ConversationService,
+    RunNotSteerable,
 )
 from cairn.development.handoff import HandoffReviewConflict, HandoffReviewFailed
 from cairn.interfaces.web.auth import operator_request
@@ -93,6 +94,11 @@ class ConversationMessage(BaseModel):
 class ConversationRename(BaseModel):
     model_config = ConfigDict(extra="forbid")
     title: str = Field(min_length=1, max_length=200)
+
+
+class RunSteer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    prompt: str = Field(min_length=1, max_length=32000)
 
 
 class WechatConversationCreate(BaseModel):
@@ -352,6 +358,16 @@ def conversation_routes(
                         run_payload(cancelled.run_id),
                         headers={"Cache-Control": "no-store"},
                     )
+                if action == "steer":
+                    if request.method != "POST":
+                        return JSONResponse(
+                            {"error": "method_not_allowed"}, status_code=405
+                        )
+                    steer_body = RunSteer.model_validate(await request_body(request))
+                    return JSONResponse(
+                        service.steer(run_id, steer_body.prompt),
+                        headers={"Cache-Control": "no-store"},
+                    )
                 if action == "reconcile":
                     if request.method != "POST":
                         return JSONResponse(
@@ -453,6 +469,8 @@ def conversation_routes(
             return JSONResponse({"error": "conversation_protected"}, 409)
         except ConversationRecoveryRequired:
             return JSONResponse({"error": "conversation_recovery_required"}, 409)
+        except RunNotSteerable:
+            return JSONResponse({"error": "run_not_steerable"}, 409)
         except HandoffReviewFailed as exc:
             return JSONResponse(
                 {

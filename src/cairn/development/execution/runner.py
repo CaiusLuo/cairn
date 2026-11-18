@@ -35,6 +35,7 @@ from cairn.agent.tools.lease import LeaseTool
 from cairn.agent.tracing.tracer import Tracer
 from cairn.agent.turn.events import Event, EventHandler
 from cairn.agent.turn.loop import run_turn
+from cairn.agent.turn.steering import SteerQueue
 from cairn.agent.workspace.lease import WorkspaceLease
 from cairn.agent.workspace.workspace import Workspace
 from cairn.development.execution.metrics import TaskExecutionSummary, _TaskObservation
@@ -116,6 +117,7 @@ class CodingTaskRunner:
         cancellation_event: asyncio.Event | None = None,
         durable_session: DurableSession | None = None,
         selected_skills: Sequence[str] = (),
+        steering: SteerQueue | None = None,
     ) -> TaskResult:
         observation: _TaskObservation | None = None
         started: float | None = None
@@ -131,7 +133,12 @@ class CodingTaskRunner:
         # interrupt its child/process cleanup. This task is always observed.
         worker = asyncio.create_task(
             self._execute(
-                spec, cancellation_event, durable_session, observation, selected_skills
+                spec,
+                cancellation_event,
+                durable_session,
+                observation,
+                selected_skills,
+                steering,
             )
         )
         try:
@@ -168,6 +175,7 @@ class CodingTaskRunner:
         durable_session: DurableSession | None = None,
         selected_skills: Sequence[str] = (),
         message_id: str = "",
+        steering: SteerQueue | None = None,
     ) -> str | None:
         if durable_session is None:
             execution = (
@@ -177,9 +185,16 @@ class CodingTaskRunner:
                     budget=self.budget,
                     selected_skills=selected_skills,
                     message_id=message_id,
+                    steering=steering,
                 )
                 if selected_skills
-                else run_turn(agent, prompt, budget=self.budget, message_id=message_id)
+                else run_turn(
+                    agent,
+                    prompt,
+                    budget=self.budget,
+                    message_id=message_id,
+                    steering=steering,
+                )
             )
         else:
             execution = (
@@ -190,6 +205,7 @@ class CodingTaskRunner:
                     session=durable_session,
                     selected_skills=selected_skills,
                     message_id=message_id,
+                    steering=steering,
                 )
                 if selected_skills
                 else run_turn(
@@ -198,6 +214,7 @@ class CodingTaskRunner:
                     budget=self.budget,
                     session=durable_session,
                     message_id=message_id,
+                    steering=steering,
                 )
             )
         if cancellation_event is None:
@@ -349,6 +366,7 @@ class CodingTaskRunner:
         durable_session: DurableSession | None = None,
         observation: _TaskObservation | None = None,
         selected_skills: Sequence[str] = (),
+        steering: SteerQueue | None = None,
     ) -> TaskResult:
         trace_id: str | None = None
         final_response: str | None = None
@@ -413,6 +431,7 @@ class CodingTaskRunner:
                         cancellation_event,
                         durable_session,
                         message_id=self.message_id or spec.task_id,
+                        steering=steering,
                     )
                     if response is None:
                         status = TaskStatus.CANCELLED
@@ -442,6 +461,7 @@ class CodingTaskRunner:
                         durable_session,
                         selected_skills,
                         message_id=self.message_id or spec.task_id,
+                        steering=steering,
                     )
                     if response is None:
                         status = TaskStatus.CANCELLED
@@ -476,10 +496,14 @@ class CodingTaskRunner:
                             cancellation_event,
                             selected_skills=selected_skills,
                             message_id=self.message_id or spec.task_id,
+                            steering=steering,
                         )
                     else:
                         response = await self._turn(
-                            agent, spec.prompt, cancellation_event
+                            agent,
+                            spec.prompt,
+                            cancellation_event,
+                            steering=steering,
                         )
                     if response is None:
                         status = TaskStatus.CANCELLED

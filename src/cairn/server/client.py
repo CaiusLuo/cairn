@@ -242,6 +242,11 @@ class RuntimeClient:
     async def cancel_run(self, run_id: str) -> dict[str, Any]:
         return dict(await self.request("POST", f"runs/{run_id}/cancel", {}))
 
+    async def steer_run(self, run_id: str, prompt: str) -> dict[str, Any]:
+        return dict(
+            await self.request("POST", f"runs/{run_id}/steer", {"prompt": prompt})
+        )
+
     async def get_handoff(self, run_id: str) -> dict[str, Any]:
         return dict(await self.request("GET", f"handoffs/{run_id}"))
 

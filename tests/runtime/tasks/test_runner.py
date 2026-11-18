@@ -127,7 +127,7 @@ def test_coding_task_uses_real_loop_and_preserves_runtime_boundaries(
     assert all(message.role != "system" for message in agent.state.messages)
     # Stateless tasks do not invent an external message identity.
     loop.assert_awaited_once_with(
-        agent, SPEC.prompt, budget=runner.budget, message_id=""
+        agent, SPEC.prompt, budget=runner.budget, message_id="", steering=None
     )
     assert events[0].type == "trace_start"
     assert events[-1].type == "trace_finish"

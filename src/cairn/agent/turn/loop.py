@@ -217,14 +217,14 @@ async def run_turn(
                 # conversation here, before the request is built. This is the only
                 # safe boundary: the tool batch has settled, so no call group is
                 # split, and compaction below sees the new message as real context.
-                if steering is not None:
-                    for pending in steering.take_steers():
-                        agent.state.add_user_message(pending.text)
+                steers = steering.take_steers() if steering is not None else []
+                for pending in steers:
+                    agent.state.add_user_message(pending.text)
 
-                # The context budget travels with the existing step event rather
-                # than a new event type: the event vocabulary is a closed
-                # contract that other consumers read, and a status line needs
-                # only data, not a new kind of thing to handle.
+                # The context budget and the applied steers travel with the
+                # existing step event rather than a new event type: the event
+                # vocabulary is a closed contract that other consumers read, and
+                # a status line needs only data, not a new kind of thing to handle.
                 agent.emit(
                     Event(
                         type="agent_step",
@@ -233,6 +233,11 @@ async def run_turn(
                             "max_steps": budget.max_steps,
                             "context_limit": _context_limit(agent),
                             "budget": asdict(budget_policy.snapshot()),
+                            **(
+                                {"steers": [pending.text for pending in steers]}
+                                if steers
+                                else {}
+                            ),
                         },
                     )
                 )

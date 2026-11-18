@@ -158,7 +158,7 @@ def test_group_local_call_id_reuse_and_closed_interruption(tmp_path: Path) -> No
         "system",
         "blank_call",
         "bad_arguments",
-        "two_users",
+        "consecutive_users",
     ],
 )
 def test_invalid_message_groups(tmp_path: Path, damage: str) -> None:
@@ -183,12 +183,36 @@ def test_invalid_message_groups(tmp_path: Path, damage: str) -> None:
     elif damage == "bad_arguments":
         history[1].tool_calls[0].arguments = {"n": float("nan")}
     else:
-        history.append(Message(role="user", content="second turn"))
+        history.insert(2, Message(role="user", content="no step before this"))
     with pytest.raises(SessionStoreError):
         turn = intent(
             binding(tmp_path), Revision(session_id=SESSION, version=0, head_seq=0)
         )
         encode_checkpoint(settled(turn, history=history).checkpoint)
+
+
+def test_a_steered_turn_may_hold_later_user_messages(tmp_path: Path) -> None:
+    """A steer joins the live turn after a settled step, so it is a later user message."""
+    history = messages("start")[:3]
+    history.extend(
+        [
+            Message(role="user", content="use the other module"),
+            Message(role="assistant", content="final"),
+        ]
+    )
+    turn = intent(
+        binding(tmp_path), Revision(session_id=SESSION, version=0, head_seq=0)
+    )
+
+    raw, digest = encode_checkpoint(settled(turn, history=history).checkpoint)
+
+    assert [message.role for message in decode_checkpoint(raw, digest).messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "user",
+        "assistant",
+    ]
 
 
 @pytest.mark.parametrize(

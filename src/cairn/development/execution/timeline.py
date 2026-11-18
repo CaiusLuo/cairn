@@ -116,7 +116,7 @@ FIELDS: Mapping[str, tuple[str, ...]] = {
         "error_type",
         "cancelled",
     ),
-    "agent_step": ("step", "max_steps", "context_limit", "budget"),
+    "agent_step": ("step", "max_steps", "context_limit", "budget", "steers"),
     "permission_check": (
         "tool",
         "tool_call_id",
