@@ -23,17 +23,18 @@ const eventLabel: Record<string, string> = {
   failed: "运行失败", paused: "已暂停", cancelled: "已取消", recovery_required: "需要核对",
   interrupted: "执行中断", reconciled: "人工核对", agent_step: "Agent 步骤", agent_finish: "Agent 完成",
   agent_budget_exhausted: "预算耗尽", context_trimmed: "上下文裁剪", context_compacted: "上下文压缩",
-  model_request: "模型请求", model_first_token: "首 Token", model_response: "模型响应", model_error: "模型失败",
+  context_prepare: "上下文准备", tool_execution_cancelled: "工具执行取消",
+  model_request: "请求上下文", model_first_token: "首 Token", model_response: "模型响应", model_error: "模型失败",
   turn_started: "轮次开始", turn_settled: "轮次结束", turn_committed: "轮次已提交",
   trace_start: "开始追踪", trace_finish: "执行指标",
 };
 
-const phaseMs = (event: ExecutionEvent): number | undefined => {
+export const phaseMs = (event: ExecutionEvent): number | undefined => {
   const data = event.data;
   if (typeof data.duration_ms === "number") return data.duration_ms;
   if (event.kind === "model_first_token" && typeof data.first_token_ms === "number") return data.first_token_ms;
   if (event.kind === "model_request" && typeof data.context_prepare_ms === "number") return data.context_prepare_ms;
-  if (event.kind === "turn_committed" && typeof data.persist_ms === "number") return data.persist_ms;
+  if (event.kind === "turn_committed" && typeof data.persist_ms === "number") return data.persist_ms + (typeof data.encode_ms === "number" ? data.encode_ms : 0);
   if (event.kind === "trace_finish" && typeof data.turn_ms === "number") return data.turn_ms;
   return undefined;
 };
@@ -48,8 +49,11 @@ export function Timeline({ events, compact = false }: { events: ExecutionEvent[]
   return <ol className={`wb-timeline ${compact ? "compact" : ""}`}>{visible.map(event => {
     const tool = event.data.tool ?? event.data.tool_name ?? event.data.name;
     const phase = phaseMs(event);
+    const diagnostic = event.kind === "trace_finish" && event.data.persisted === false
+      ? " · Trace 写入失败"
+      : event.data.truncated === true ? " · 输出截断" : "";
     return <li key={event.sequence}><details>
-      <summary><Icon name={event.kind.startsWith("tool") ? "terminal" : "clock"} size={14}/><span>{eventLabel[event.kind] ?? event.kind}{typeof tool === "string" ? " · " + tool : ""}{phase !== undefined ? " · " + durationLabel(phase) : ""}</span>{event.created_at && !compact && <time>{dateLabel(event.created_at)}</time>}</summary>
+      <summary><Icon name={event.kind.startsWith("tool") ? "terminal" : "clock"} size={14}/><span>{eventLabel[event.kind] ?? event.kind}{typeof tool === "string" ? " · " + tool : ""}{phase !== undefined ? " · " + durationLabel(phase) : ""}{diagnostic}</span>{event.created_at && !compact && <time>{dateLabel(event.created_at)}</time>}</summary>
       {Object.keys(event.data).length > 0 && <pre>{JSON.stringify(event.data, null, 2)}</pre>}
     </details></li>;
   })}</ol>;

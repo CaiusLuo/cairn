@@ -8,7 +8,7 @@ code and a phase duration have different owners and different guarantees.
 
 Only metadata, counts, fixed class names and bounded summaries cross this
 boundary. Tool arguments are reduced to a redacted preview plus digest, and
-error text is redacted and truncated.
+free-form error text stays out of the timeline.
 """
 
 from __future__ import annotations
@@ -19,11 +19,24 @@ from collections.abc import Mapping
 from typing import Any
 
 from cairn.agent.turn.events import Event, SessionEvent
-from cairn.shared.redaction import redact_text, redact_value
+from cairn.shared.redaction import redact_value
 
 ARGUMENT_PREVIEW_CHARS = 4096
-ERROR_PREVIEW_CHARS = 1024
-PERSISTENCE_PREVIEW_CHARS = 512
+# Optional phase records must never interrupt execution or define durable state.
+DIAGNOSTIC_EVENTS = (
+    "context_prepare",
+    "context_compacted",
+    "model_request",
+    "model_first_token",
+    "model_response",
+    "model_error",
+    "permission_check",
+    "tool_execution_cancelled",
+    "trace_start",
+    "trace_finish",
+)
+DIAGNOSTIC_MAX_AGE_DAYS = 30
+DIAGNOSTIC_MAX_ROWS = 20_000
 
 FIELDS: Mapping[str, tuple[str, ...]] = {
     "turn_started": (),
@@ -55,6 +68,14 @@ FIELDS: Mapping[str, tuple[str, ...]] = {
         "output_tokens",
         "cached_tokens",
     ),
+    "context_prepare": (
+        "step",
+        "attempt",
+        "model_id",
+        "phase",
+        "duration_ms",
+        "status",
+    ),
     "model_request": (
         "step",
         "attempt",
@@ -85,6 +106,7 @@ FIELDS: Mapping[str, tuple[str, ...]] = {
         "reasoning_tokens",
         "tool_call_count",
         "has_content",
+        "truncated",
     ),
     "model_error": (
         "step",
@@ -103,7 +125,10 @@ FIELDS: Mapping[str, tuple[str, ...]] = {
         "prompted",
         "source",
         "duration_ms",
+        "status",
+        "error_type",
     ),
+    "tool_execution_cancelled": ("tool", "tool_call_id", "duration_ms"),
     "tool_call": ("tool", "tool_call_id"),
     "tool_result": (
         "tool",
@@ -129,7 +154,7 @@ FIELDS: Mapping[str, tuple[str, ...]] = {
         "failure_kind",
         "duration_ms",
     ),
-    "agent_finish": ("step",),
+    "agent_finish": ("step", "truncated", "stop_reason"),
     "agent_budget_exhausted": ("reason", "limit", "used"),
     "context_trimmed": ("omitted_turns", "omitted_messages"),
     "context_compacted": (
@@ -147,14 +172,11 @@ FIELDS: Mapping[str, tuple[str, ...]] = {
         "trace_id",
         "status",
         "persisted",
-        "persistence_error",
         "error_code",
         "turn_ms",
         "usage",
     ),
 }
-
-_ERROR_KINDS = frozenset({"tool_error", "tool_denied"})
 
 
 def project_event(
@@ -162,26 +184,10 @@ def project_event(
 ) -> dict[str, Any]:
     """Return the public diagnostic fields for one Runtime event."""
     if event.type == "tool_call":
-        data = _bounded_text_fields(event.data, FIELDS.get("tool_call", ()))
+        data = _selected_fields(event.data, FIELDS.get("tool_call", ()))
         data.update(_argument_summary(event.data.get("arguments"), sensitive_values))
     else:
-        data = _bounded_text_fields(event.data, FIELDS.get(event.type, ()))
-
-    if event.type in _ERROR_KINDS:
-        error = event.data.get("error")
-        if isinstance(error, str):
-            redacted = redact_text(error, sensitive_values)
-            data["error"] = redacted[:ERROR_PREVIEW_CHARS]
-            data["error_truncated"] = len(redacted) > ERROR_PREVIEW_CHARS
-
-    if event.type == "trace_finish":
-        error = event.data.get("persistence_error")
-        if isinstance(error, str):
-            redacted = redact_text(error, sensitive_values)
-            data["persistence_error"] = redacted[:PERSISTENCE_PREVIEW_CHARS]
-            data["persistence_error_truncated"] = (
-                len(redacted) > PERSISTENCE_PREVIEW_CHARS
-            )
+        data = _selected_fields(event.data, FIELDS.get(event.type, ()))
 
     if event.type == "agent_finish":
         content = event.data.get("content")
@@ -192,10 +198,10 @@ def project_event(
     if isinstance(event, SessionEvent):
         data.setdefault("session_id", str(event.session_id))
         data.setdefault("turn_id", str(event.turn_id))
-    return data
+    return {key: redact_value(value, sensitive_values) for key, value in data.items()}
 
 
-def _bounded_text_fields(
+def _selected_fields(
     source: Mapping[str, Any], fields: tuple[str, ...]
 ) -> dict[str, Any]:
     # ``False`` is a fact (denied, not truncated), so only ``None`` is omitted.

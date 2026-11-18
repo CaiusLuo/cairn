@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { newRequestId } from "../ids";
 import { runtimeApi } from "../runtime-api";
 import { dateLabel, isActive, sourceLabel, useResource, type ExecutionEvent, type Message, type Run, type Task } from "./data";
-import { activityEvents, Badge, Drawer, Markdown, Outputs, Timeline } from "./evidence";
+import { activityEvents, Badge, Drawer, Markdown, Outputs, phaseMs, Timeline } from "./evidence";
 import { Icon, type IconName } from "./Icon";
 import { href } from "./Shell";
 
@@ -21,6 +21,12 @@ export function useEventLog(resource: string, active: boolean): { rows: Executio
     let timer: ReturnType<typeof setTimeout>;
     let cursor = 0;
     let rows: ExecutionEvent[] = [];
+    const highlights = new Map<string, ExecutionEvent>();
+
+    function visibleRows() {
+      const unique = new Map([...highlights.values(), ...rows].map(event => [event.sequence, event]));
+      return [...unique.values()].sort((a, b) => a.sequence - b.sequence);
+    }
 
     async function read() {
       try {
@@ -28,13 +34,25 @@ export function useEventLog(resource: string, active: boolean): { rows: Executio
           const page = await runtimeApi<{ events: ExecutionEvent[]; cursor: number }>(`${resource}/events?after=${cursor}`, undefined, controller.signal);
           if (controller.signal.aborted) return;
           const next = activityEvents(page.events.filter(event => event.sequence > cursor));
+          for (const event of next) {
+            if (event.kind === "trace_finish") {
+              if (event.data.persisted === false) highlights.set("trace_failure", event);
+              continue;
+            }
+            const duration = phaseMs(event);
+            if (duration === undefined) continue;
+            const phase = event.kind === "context_prepare" && event.data.phase === "request"
+              ? "request_build_failure" : event.kind;
+            const previous = highlights.get(phase);
+            if (!previous || duration > (phaseMs(previous) ?? 0)) highlights.set(phase, event);
+          }
           rows = [...rows, ...next].slice(-400);
-          setEntry({ resource, rows });
+          setEntry({ resource, rows: visibleRows() });
           if (page.cursor <= cursor) break;
           cursor = page.cursor;
         }
       } catch (reason) {
-        if (!controller.signal.aborted) setEntry({ resource, rows, error: String(reason) });
+        if (!controller.signal.aborted) setEntry({ resource, rows: visibleRows(), error: String(reason) });
       } finally {
         if (active && !controller.signal.aborted) timer = setTimeout(read, 1500);
       }

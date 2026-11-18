@@ -2,9 +2,7 @@ import asyncio
 
 import pytest
 
-from cairn.agent.harness import Agent
 from cairn.agent.models.messages import LLMResponse, LLMUsage
-from cairn.agent.tools.registry import ToolRegistry
 from cairn.agent.tracing.tracer import Tracer
 from cairn.agent.turn.compaction import CompactionOutcome, CompactionStep
 from cairn.agent.turn.events import Event
@@ -93,11 +91,7 @@ def test_failed_attempt_reports_its_type_and_duration_without_provider_text() ->
 
 def test_compaction_phase_event_reports_duration_and_usage() -> None:
     events: list[Event] = []
-    agent = Agent(
-        llm=SequenceLLM([]),
-        tools=ToolRegistry(),
-        event_handler=events.append,
-    )
+    agent = make_agent(SequenceLLM([]), events=events)
     trace = TurnTrace(agent, TEST_BUDGET)
 
     trace.on_compaction(
@@ -106,7 +100,7 @@ def test_compaction_phase_event_reports_duration_and_usage() -> None:
             folded_messages=4,
             tokens_before=900,
             tokens_after=300,
-            usage=LLMUsage(input_tokens=40, output_tokens=10),
+            summary_usage=LLMUsage(input_tokens=40, output_tokens=10),
         ),
         duration_ms=25.25,
     )

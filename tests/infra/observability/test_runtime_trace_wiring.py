@@ -2,6 +2,7 @@ from pathlib import Path
 
 from cairn.agent.budget import RunBudget
 from cairn.agent.models.offline import OfflineDevelopmentModel
+from cairn.agent.tracing.models import SpanStatus
 from cairn.development.execution.runtime import ServiceExecution
 
 
@@ -26,9 +27,10 @@ def test_dynamic_secrets_reach_the_default_trace_redactor(tmp_path: Path) -> Non
         "agent.turn",
         attributes={"value": "late-secret", "other": "initial-secret"},
     )
-    execution.tracer.end_span(span)
+    execution.tracer.end_span(span, SpanStatus.ERROR, error="private conversation")
 
     text = (tmp_path / "traces" / f"{span.context.trace_id}.jsonl").read_text()
     assert "late-secret" not in text
     assert "initial-secret" not in text
     assert text.count("[redacted]") == 2
+    assert "private conversation" not in text

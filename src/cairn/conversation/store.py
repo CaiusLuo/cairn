@@ -1336,6 +1336,32 @@ class DomainStore:
             )
         return event
 
+    def prune_run_diagnostics(
+        self, *, kinds: tuple[str, ...], before: str, keep: int
+    ) -> None:
+        """Drop old diagnostic rows without changing any Run's high-water cursor."""
+        placeholders = ", ".join("?" for _ in kinds)
+        with self._connect() as connection:
+            connection.execute(
+                f"""
+                DELETE FROM run_events WHERE rowid IN (
+                    SELECT event_row FROM (
+                        SELECT event.rowid AS event_row, event.created_at,
+                            ROW_NUMBER() OVER (
+                                ORDER BY event.created_at DESC, event.rowid DESC
+                            ) AS recency
+                        FROM run_events AS event
+                        WHERE event.kind IN ({placeholders})
+                          AND event.sequence < (
+                              SELECT MAX(tail.sequence) FROM run_events AS tail
+                              WHERE tail.run_id = event.run_id
+                          )
+                    ) WHERE created_at < ? OR recency > ?
+                )
+                """,
+                (*kinds, before, keep),
+            )
+
     def run_event_cursor(self, run_id: str) -> int:
         with self._connect() as connection:
             row = connection.execute(

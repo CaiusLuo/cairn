@@ -12,6 +12,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,11 @@ from cairn.conversation.models import (
 from cairn.conversation.store import DomainStore
 from cairn.development.catalogue import ChannelPrincipal, RuntimeTask
 from cairn.development.execution.runtime import ServiceExecution
+from cairn.development.execution.timeline import (
+    DIAGNOSTIC_EVENTS,
+    DIAGNOSTIC_MAX_AGE_DAYS,
+    DIAGNOSTIC_MAX_ROWS,
+)
 from cairn.development.handoff import DevelopmentHandoff
 from cairn.development.models import HandoffStatus
 from cairn.development.service import (
@@ -146,7 +152,8 @@ class RunLedger:
         if kind == "model_reasoning_delta":
             self._wake(kind, persisted=False)
             return updated
-        self.flush_preview()
+        if kind not in DIAGNOSTIC_EVENTS:
+            self.flush_preview()
         if kind == "tool_call":
             self.open_tools += 1
         elif kind in {"tool_result", "tool_error", "tool_denied"}:
@@ -188,6 +195,17 @@ class ConversationService:
         self.active_ledgers: dict[str, RunLedger] = {}
         self.changed = asyncio.Event()
         self.settled_listeners: list[Callable[[Run], None]] = []
+        self._runs_since_diagnostic_sweep = 0
+
+    def _prune_diagnostics(self) -> None:
+        self._runs_since_diagnostic_sweep = 0
+        cutoff = datetime.now(UTC) - timedelta(days=DIAGNOSTIC_MAX_AGE_DAYS)
+        with suppress(Exception):
+            self.store.prune_run_diagnostics(
+                kinds=DIAGNOSTIC_EVENTS,
+                before=cutoff.isoformat(),
+                keep=DIAGNOSTIC_MAX_ROWS,
+            )
 
     def add_run_settled_listener(self, listener: Callable[[Run], None]) -> None:
         self.settled_listeners.append(listener)
@@ -203,6 +221,7 @@ class ConversationService:
         # interrupted. This completes the Task/Run linkage without replaying
         # an existing RuntimeTask.
         self.development_handoff.recover_incomplete()
+        self._prune_diagnostics()
         for run in self.store.list_runs():
             if run.workspace_id != self.workspace_id:
                 continue
@@ -1098,6 +1117,12 @@ class ConversationService:
             )
 
         def emit(kind: str, data: dict[str, Any]) -> None:
+            if "turn_id" in data:
+                data = {
+                    **data,
+                    "run_id": run_id,
+                    "conversation_id": run.conversation_id,
+                }
             current = ledger.inspect(run_id)
             ledger.record(current, kind, data)
             if kind == "model_text_delta":
@@ -1168,6 +1193,9 @@ class ConversationService:
             )
         finally:
             self._settle_observers(run_id)
+            self._runs_since_diagnostic_sweep += 1
+            if self._runs_since_diagnostic_sweep >= 32:
+                self._prune_diagnostics()
 
     async def close(self) -> None:
         self.stopping = True

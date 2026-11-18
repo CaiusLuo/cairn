@@ -9,6 +9,8 @@ EventType = Literal[
     "turn_committed",
     "model_stream_start",
     "model_first_token",
+    "context_prepare",
+    "tool_execution_cancelled",
     "model_text_delta",
     "model_reasoning_delta",
     "model_stream_end",

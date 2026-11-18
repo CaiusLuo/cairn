@@ -10,6 +10,7 @@ class BudgetReason(StrEnum):
     MAX_SECONDS = "max_seconds"
     CHECKPOINT_CAPACITY = "checkpoint_capacity"
     MAX_TOKENS = "max_tokens"
+    OUTPUT_LIMIT = "output_limit"
     MAX_COST = "max_cost"
     NO_PROGRESS = "no_progress"
     USAGE_UNKNOWN = "usage_unknown"

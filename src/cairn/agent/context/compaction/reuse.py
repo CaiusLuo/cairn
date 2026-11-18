@@ -12,6 +12,7 @@ loses nothing but the work.
 """
 
 import hashlib
+import json
 from dataclasses import dataclass
 
 from cairn.agent.context.compaction.rules import CompactionRecord
@@ -40,11 +41,17 @@ class ReusableCompaction:
     record: CompactionRecord
     fingerprint: tuple[str, ...]
     conversation_length: int
+    #: Identity of the summary policy that produced ``record``. A persisted
+    #: record is only restored while this still matches the current summarizer.
+    policy_version: int = 0
 
     @classmethod
-    @classmethod
     def capture(
-        cls, history: list[Message], record: CompactionRecord
+        cls,
+        history: list[Message],
+        record: CompactionRecord,
+        *,
+        policy_version: int = 0,
     ) -> "ReusableCompaction":
         """Remember ``record`` against the prefix containing its source messages."""
         prefix_end = max(
@@ -57,7 +64,38 @@ class ReusableCompaction:
             record=record,
             fingerprint=_fingerprint(replaced),
             conversation_length=len(history),
+            policy_version=policy_version,
         )
+
+    @classmethod
+    def restore(
+        cls,
+        record: CompactionRecord,
+        fingerprint: tuple[str, ...],
+        conversation_length: int,
+        policy_version: int,
+        history: list[Message],
+    ) -> "ReusableCompaction | None":
+        """Rebuild a persisted record, or None when it no longer fits ``history``.
+
+        The stored cache is discardable: an inconsistent shape, a shorter
+        conversation or a changed prefix simply means the next compaction pays
+        for a new summary instead of trusting stale text.
+        """
+        prefix_end = max(
+            record.retained_from, max(record.folded_results, default=-1) + 1
+        )
+        if prefix_end != len(fingerprint) or conversation_length < prefix_end:
+            return None
+        remembered = cls(
+            record=record,
+            fingerprint=fingerprint,
+            conversation_length=conversation_length,
+            policy_version=policy_version,
+        )
+        if len(history) < conversation_length:
+            return None
+        return remembered if remembered.reusable_with(history) else None
 
     def reusable_with(self, history: list[Message]) -> bool:
         """Whether ``history`` still begins with the prefix this record replaced."""
@@ -91,6 +129,8 @@ def _fingerprint(messages: list[Message]) -> tuple[str, ...]:
     without retaining another copy of a potentially large conversation.
     """
     return tuple(
-        hashlib.sha256(message.model_dump_json().encode("utf-8")).hexdigest()
+        hashlib.sha256(
+            json.dumps(message.model_dump(mode="json"), sort_keys=True).encode("utf-8")
+        ).hexdigest()
         for message in messages
     )

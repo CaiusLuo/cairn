@@ -23,7 +23,7 @@ DEFAULT_SWEEP_EVERY = 32
 
 
 class RetentionTraceSink:
-    """Bound a trace directory by file count and age, one root span at a time."""
+    """Bound a trace directory by file count and age, as new traces arrive."""
 
     def __init__(
         self,
@@ -45,14 +45,15 @@ class RetentionTraceSink:
         self.max_files = max_files
         self.max_age_seconds = max_age_days * 24 * 60 * 60
         self.sweep_every = sweep_every
-        self._completed = 0
+        self._created = 0
 
     def emit(self, span: Span) -> None:
-        # A write failure must remain visible to Tracer as a persistence error.
+        # Count new files, even for traces whose root never reaches the sink.
+        fresh = not (self.root / f"{span.context.trace_id}.jsonl").exists()
         self.inner.emit(span)
-        if span.context.parent_span_id is None and span.end_time is not None:
-            self._completed += 1
-            if self._completed % self.sweep_every == 0:
+        if fresh:
+            self._created += 1
+            if self._created % self.sweep_every == 0:
                 with suppress(Exception):
                     self.sweep()
 
@@ -70,9 +71,9 @@ class RetentionTraceSink:
             ((path.stat().st_mtime, path) for path in files),
             key=lambda item: item[0],
         )
-        expired = [
+        expired = {
             path for modified, path in dated if now - modified > self.max_age_seconds
-        ]
+        }
         remaining = [
             (modified, path) for modified, path in dated if path not in expired
         ]

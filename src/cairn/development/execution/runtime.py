@@ -42,7 +42,7 @@ from cairn.agent.workspace.workspace import Workspace
 from cairn.development.catalogue import RuntimeTask
 from cairn.development.execution.models import TaskSpec, TaskStatus
 from cairn.development.execution.runner import CodingTaskRunner
-from cairn.development.execution.timeline import project_event
+from cairn.development.execution.timeline import DIAGNOSTIC_EVENTS, project_event
 from cairn.development.request import DevelopmentRequest
 from cairn.development.service import (
     TaskAdvanced,
@@ -99,12 +99,16 @@ class ServiceExecution:
         self.tracer = tracer
         self._trace_redactor: RedactingTraceSink | None = None
         if self.tracer is None and trace_root is not None:
-            retention = RetentionTraceSink(JsonlTraceSink(trace_root), trace_root)
+            retention = RetentionTraceSink(
+                JsonlTraceSink(trace_root, max_file_bytes=1_048_576), trace_root
+            )
             # A server that never completes a turn should still shed expired
             # traces at startup; retention failures are diagnostic only.
             with suppress(Exception):
                 retention.sweep()
-            redactor = RedactingTraceSink(retention, sensitive_values)
+            redactor = RedactingTraceSink(
+                retention, sensitive_values, metadata_only=True
+            )
             self.tracer = Tracer(redactor)
             self._trace_redactor = redactor
         self.provider_runtime = provider_runtime
@@ -400,22 +404,30 @@ class ServiceExecution:
                 return
             if event.type == "model_reasoning_delta":
                 return
-            # Each kind publishes only its contracted diagnostic fields; see
-            # development.execution.timeline. Arguments and error text are
-            # redacted and bounded there before they reach a durable Run event.
-            emit(
-                event.type,
-                project_event(event, sensitive_values=self.sensitive_values),
-            )
+            if event.type in DIAGNOSTIC_EVENTS:
+                with suppress(Exception):
+                    emit(
+                        event.type,
+                        project_event(event, sensitive_values=self.sensitive_values),
+                    )
+                return
             if event.type == "tool_error" and event.data.get("failure_kind") in {
                 "effect_unknown",
                 "deadline",
                 "cancelled",
             }:
                 effects_unknown = True
+                with suppress(Exception):
+                    emit(
+                        event.type,
+                        project_event(event, sensitive_values=self.sensitive_values),
+                    )
                 # The original loop will settle its pending calls and preserve
                 # executed facts. Stop before another model/tool request can replay.
                 raise TaskNeedsRecovery()
+            emit(
+                event.type, project_event(event, sensitive_values=self.sensitive_values)
+            )
 
         runner = CodingTaskRunner(
             workspace=workspace,

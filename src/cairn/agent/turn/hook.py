@@ -2,15 +2,16 @@
 
 This module owns when a compaction runs against an Agent and what happens to the
 accepted record. It does not own the turn: ``run_turn`` still sequences steps and
-decides rollback, and it calls the hook here between a settled tool batch and the
-next request. Keeping the wiring out of the loop leaves that module as the single
-place that reads as one turn.
+decides rollback, and it calls the hook here before each request, while no tool
+call is pending. Keeping the wiring out of the loop leaves that module as the
+single place that reads as one turn.
 """
 
 import asyncio
 from time import perf_counter
 from typing import Any
 
+from cairn.agent.budget import RunBudgetExceeded
 from cairn.agent.context.compaction import (
     CompactionRecord,
     ReusableCompaction,
@@ -19,14 +20,17 @@ from cairn.agent.context.compaction import (
 from cairn.agent.harness import Agent
 from cairn.agent.models.messages import Message
 from cairn.agent.session.session import Session
+from cairn.agent.turn.budget import TurnBudgetPolicy
 from cairn.agent.turn.compaction import (
     CompactionInput,
     CompactionOutcome,
     CompactionStep,
     RequestCompactor,
     compact,
+    summarizer_policy_version,
 )
 from cairn.agent.turn.context import build_system_messages
+from cairn.agent.turn.events import Event
 from cairn.agent.turn.trace import TurnTrace
 
 
@@ -112,35 +116,45 @@ def reusable_record(agent: Agent, history: list[Message]) -> CompactionRecord | 
         return None
 
 
-async def compact_before_next_step(
+async def compact_before_request(
     agent: Agent,
     *,
     system_messages: list[Message],
     tool_schemas: list[dict[str, Any]],
     turn_start: int,
     trace: TurnTrace,
+    budget_policy: TurnBudgetPolicy | None = None,
 ) -> None:
-    """Reduce the next request after a settled tool batch.
-
-    Runs between steps, never inside a response: the boundary it relies on is
-    that no tool call is pending, so it cannot split a tool group or touch the
-    current turn's own message.
-    """
+    """Reduce the request while the current turn is protected and no call is pending."""
+    started = perf_counter()
     try:
-        started = perf_counter()
         outcome = await _reduce(
             agent,
             system_messages=system_messages,
             tools=tool_schemas,
             turn_start=turn_start,
             summarize_budget=None,
+            budget_policy=budget_policy,
             forced=False,
         )
-    except asyncio.CancelledError:
-        # Cancellation keeps its existing owner: no record is written here.
-        raise
-    except Exception:
+    except (asyncio.CancelledError, Exception) as exc:
+        cancelled = isinstance(exc, asyncio.CancelledError)
+        agent.emit(
+            Event(
+                type="context_compacted",
+                data={
+                    "status": "cancelled" if cancelled else "failed",
+                    "duration_ms": round((perf_counter() - started) * 1000, 3),
+                },
+            )
+        )
+        if isinstance(exc, (asyncio.CancelledError, RunBudgetExceeded)):
+            raise
         # Compaction must never convert a usable turn into a failed one.
+        return
+    if outcome.step is CompactionStep.NOT_NEEDED:
+        # The request already fits. Running this check before every request is
+        # intentional, so an unchanged measurement is not a compaction outcome.
         return
     trace.on_compaction(outcome, duration_ms=(perf_counter() - started) * 1000)
     remember(agent, outcome)
@@ -154,10 +168,16 @@ async def _reduce(
     turn_start: int,
     summarize_budget: int | None,
     forced: bool,
+    budget_policy: TurnBudgetPolicy | None = None,
 ) -> CompactionOutcome:
     """Run one reduction against this Agent's current budget and conversation."""
     builder = agent.context_builder
     compactor = RequestCompactor(counter=builder.counter, budget=builder.budget)
+    allowance = (
+        compactor.policy.summarizer_reserve
+        if summarize_budget is None
+        else summarize_budget
+    )
     return await compact(
         source=CompactionInput(
             messages=agent.state.messages,
@@ -168,12 +188,9 @@ async def _reduce(
         ),
         compactor=compactor,
         summarizer=agent.summarizer,
-        summarize_budget=(
-            compactor.policy.summarizer_reserve
-            if summarize_budget is None
-            else summarize_budget
-        ),
+        summarize_budget=max(1, allowance),
         forced=forced,
+        budget_policy=budget_policy,
     )
 
 
@@ -181,5 +198,7 @@ def remember(agent: Agent, outcome: CompactionOutcome) -> None:
     """Keep an accepted substitution for later turns; ignore a degraded attempt."""
     if outcome.record is not None:
         agent.compaction = ReusableCompaction.capture(
-            agent.state.messages, outcome.record
+            agent.state.messages,
+            outcome.record,
+            policy_version=summarizer_policy_version(agent.summarizer),
         )

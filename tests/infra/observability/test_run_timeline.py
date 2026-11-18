@@ -5,7 +5,6 @@ from uuid import uuid4
 from cairn.agent.turn.events import Event, SessionEvent
 from cairn.development.execution.timeline import (
     ARGUMENT_PREVIEW_CHARS,
-    ERROR_PREVIEW_CHARS,
     project_event,
 )
 from cairn.shared.redaction import redact_value
@@ -82,8 +81,8 @@ def test_session_envelope_correlates_ids_and_tool_metadata_without_output() -> N
     }
 
 
-def test_tool_error_text_is_redacted_and_bounded() -> None:
-    error = SECRET + "x" * (ERROR_PREVIEW_CHARS + 50)
+def test_tool_error_text_stays_out_of_the_timeline() -> None:
+    error = "provider echoed the entire prompt"
     data = project_event(
         Event(
             type="tool_error",
@@ -97,9 +96,8 @@ def test_tool_error_text_is_redacted_and_bounded() -> None:
         ),
         sensitive_values=(SECRET,),
     )
-    assert SECRET not in data["error"]
-    assert data["error_truncated"] is True
-    assert len(data["error"]) == ERROR_PREVIEW_CHARS
+    assert "error" not in data
+    assert data["error_type"] == "BashError"
 
 
 def test_tool_arguments_are_a_redacted_preview_plus_digest() -> None:
@@ -157,5 +155,4 @@ def test_trace_persistence_failure_is_a_stable_visible_fact() -> None:
     assert data["persisted"] is False
     assert data["error_code"] == "sink_failed"
     assert data["turn_ms"] == 15.5
-    assert SECRET not in data["persistence_error"]
-    assert data["persistence_error_truncated"] is False
+    assert "persistence_error" not in data

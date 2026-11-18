@@ -50,12 +50,22 @@ def test_interleaved_calls_fragmented_identity_and_arguments() -> None:
     ]
 
 
-@pytest.mark.parametrize(
-    "reason", ["length", "content_filter", "function_call", "unknown"]
-)
+@pytest.mark.parametrize("reason", ["content_filter", "function_call", "unknown"])
 def test_unsuccessful_finish_is_rejected(reason: str) -> None:
     with pytest.raises(StreamProtocolError, match="finish"):
         assemble(LLMStreamChunk(text="partial", finish_reason=reason))
+
+
+def test_length_finish_keeps_partial_text_and_usage_as_truncated() -> None:
+    usage = LLMUsage(input_tokens=2, output_tokens=3)
+    response = assemble(
+        LLMStreamChunk(text="partial", usage=usage),
+        LLMStreamChunk(finish_reason="length"),
+    ).finish()
+    assert response.content == "partial"
+    assert response.usage == usage
+    assert response.truncated is True
+    assert response.tool_calls == []
 
 
 @pytest.mark.parametrize(

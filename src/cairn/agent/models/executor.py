@@ -7,7 +7,12 @@ from typing import Any
 
 from cairn.agent.context.compaction import CompactionRecord
 from cairn.agent.context.window import ContextBudget, ContextBuilder, ContextRequest
-from cairn.agent.models.client import LLMClient, StreamingLLMClient, StreamProtocolError
+from cairn.agent.models.client import (
+    LLMClient,
+    StreamingLLMClient,
+    StreamProtocolError,
+    with_output_limit,
+)
 from cairn.agent.models.messages import LLMResponse, Message
 from cairn.agent.models.providers.errors import _short_diagnostic, is_fallback_error
 from cairn.agent.models.selection import ModelConfig, ModelManager
@@ -55,10 +60,10 @@ async def _assemble_stream(
     stream = client.stream_generate(request.messages, tools)
     assembler = ResponseAssembler()
     primary: BaseException | None = None
-    started = perf_counter()
     first_output = False
     try:
         _notify(observer, Event(type="model_stream_start", data=attribution))
+        started = perf_counter()
         async for chunk in stream:
             assembler.add(chunk)
             if not first_output and (
@@ -233,6 +238,7 @@ class ModelExecutor:
         | None = None,
         on_fallback: Callable[[Exception], None] | None = None,
         on_stream: Callable[[Event], None] | None = None,
+        output_limit: Callable[[ContextRequest], int | None] | None = None,
     ) -> tuple[ContextRequest, LLMResponse]:
         errors: list[tuple[str, Exception]] = []
 
@@ -274,26 +280,47 @@ class ModelExecutor:
                 )
                 try:
                     request = await asyncio.shield(building)
-                except asyncio.CancelledError:
-                    # A running thread cannot be cancelled. Finish observing it
-                    # before run_turn may roll back the history it is reading.
-                    await await_owned(building)
+                except (asyncio.CancelledError, Exception) as exc:
+                    cancelled = isinstance(exc, asyncio.CancelledError)
+                    if cancelled:
+                        # Don't roll back history while the worker reads it.
+                        await await_owned(building)
+                    _notify(
+                        on_stream,
+                        Event(
+                            type="context_prepare",
+                            data={
+                                "phase": "request",
+                                "attempt": attempt + 1,
+                                "model_id": model_id,
+                                "duration_ms": round(
+                                    (perf_counter() - build_started) * 1000, 3
+                                ),
+                                "status": "cancelled" if cancelled else "failed",
+                            },
+                        ),
+                    )
                     raise
                 prepare_ms = round((perf_counter() - build_started) * 1000, 3)
                 attempt += 1
+                # Reserve the turn budget before this candidate is sent, using
+                # the request the candidate would actually carry. A budget stop
+                # here happens before any provider cost is incurred.
+                limit = output_limit(request) if output_limit is not None else None
+                bounded = with_output_limit(llm, limit)
                 if on_request is not None:
                     on_request(
                         request, builder.budget, model, model_id, attempt, prepare_ms
                     )
-                streaming = isinstance(llm, StreamingLLMClient) and (
-                    getattr(llm, "supports_streaming", True) is True
+                streaming = isinstance(bounded, StreamingLLMClient) and (
+                    getattr(bounded, "supports_streaming", True) is True
                 )
                 attribution = {"attempt": attempt, "model_id": model_id}
                 try:
-                    if streaming and isinstance(llm, StreamingLLMClient):
+                    if streaming and isinstance(bounded, StreamingLLMClient):
                         collecting = asyncio.create_task(
                             _assemble_stream(
-                                llm, request, tools, on_stream, attribution
+                                bounded, request, tools, on_stream, attribution
                             )
                         )
                         try:
@@ -302,7 +329,7 @@ class ModelExecutor:
                             await settle_owned(collecting)
                             raise
                     else:
-                        response = await llm.generate(
+                        response = await bounded.generate(
                             messages=request.messages,
                             tools=tools,
                         )

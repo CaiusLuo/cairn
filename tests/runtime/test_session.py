@@ -61,7 +61,9 @@ def test_trace_initialization_failure_releases_only_the_admitted_guard(
     agent = Agent(llm, ToolRegistry(), event_handler=lambda event: events.append(event))
     session = Session(agent)
 
-    def fail_initialization(agent: Agent, budget: RunBudget) -> None:
+    def fail_initialization(
+        agent: Agent, budget: RunBudget, usage: object = None
+    ) -> None:
         raise RuntimeError("trace initialization failed")
 
     monkeypatch.setattr(loop_module, "TurnTrace", fail_initialization)

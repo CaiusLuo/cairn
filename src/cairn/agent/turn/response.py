@@ -119,7 +119,7 @@ class ResponseAssembler:
             indices.add(delta.index)
             self._add_call(delta)
         if chunk.finish_reason is not None:
-            if chunk.finish_reason not in ("stop", "tool_calls"):
+            if chunk.finish_reason not in ("stop", "tool_calls", "length"):
                 raise StreamProtocolError("Unsuccessful or unsupported stream finish.")
             self._finish = chunk.finish_reason
         if chunk.usage is not None:
@@ -192,6 +192,11 @@ class ResponseAssembler:
             raise StreamProtocolError("Stream assembly was discarded.")
         if self._finish is None:
             raise StreamProtocolError("Stream exhausted without provider completion.")
+        if self._finish == "length":
+            # A parseable tool call may still be part of a truncated batch.
+            return LLMResponse(
+                content="".join(self._text) or None, usage=self._usage, truncated=True
+            )
         if bool(self._calls) != (self._finish == "tool_calls"):
             raise StreamProtocolError("Stream finish does not match tool call group.")
         calls: list[ToolCall] = []

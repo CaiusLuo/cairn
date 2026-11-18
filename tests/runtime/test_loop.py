@@ -316,6 +316,7 @@ def test_run_turn_returns_direct_model_response() -> None:
     assert [message.role for message in agent.state.messages] == ["user", "assistant"]
     assert [event.type for event in events] == [
         "agent_step",
+        "context_prepare",
         "model_request",
         "model_response",
         "agent_finish",

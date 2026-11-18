@@ -101,6 +101,8 @@ def test_fallback_attempt_records_a_fixed_reason() -> None:
     trace.begin_step(
         AttemptContext(step=1, tool_schema_count=0, system_message_count=1)
     )
+    trace.on_request(_request(builder), builder.budget, None, None, 1)
+    trace.on_failure(RuntimeError("provider detail"), fallback=True)
     trace.on_request(
         _request(builder),
         builder.budget,
@@ -110,8 +112,10 @@ def test_fallback_attempt_records_a_fixed_reason() -> None:
     )
     trace.on_response(LLMResponse(content="ok"))  # ends the attempt span
     trace.close(None)
-    attempt_span = next(span for span in sink.spans if span.name == "llm.generate")
-    assert attempt_span.attributes["fallback_reason"] == "candidate_unavailable"
+    attempt_span = next(
+        span for span in reversed(sink.spans) if span.name == "llm.generate"
+    )
+    assert attempt_span.attributes["fallback_reason"] == "provider_rate_limit"
     assert attempt_span.attributes["fallback_attempt"] == 1
 
 

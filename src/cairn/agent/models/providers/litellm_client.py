@@ -121,6 +121,23 @@ class LiteLLMClient:
         self.max_output_tokens = max_output_tokens
         self.missing_credential = missing_credential
 
+    def with_output_limit(self, max_output_tokens: int) -> "LiteLLMClient":
+        """This client with the tighter of its configured and requested ceiling."""
+        if max_output_tokens < 1:
+            raise ValueError("max_output_tokens must be positive")
+        limit = (
+            max_output_tokens
+            if self.max_output_tokens is None
+            else min(self.max_output_tokens, max_output_tokens)
+        )
+        return LiteLLMClient(
+            model=self.model,
+            api_key=self.api_key,
+            api_base=self.api_base,
+            max_output_tokens=limit,
+            missing_credential=self.missing_credential,
+        )
+
     @property
     def supports_streaming(self) -> bool:
         """Select only audited chat routes using local configuration/SDK metadata.
@@ -209,7 +226,12 @@ class LiteLLMClient:
                 ) from None
             raise
 
-        message = response.choices[0].message
+        choice = response.choices[0]
+        message = choice.message
+        if getattr(choice, "finish_reason", None) == "length":
+            return LLMResponse(
+                content=message.content, usage=_parse_usage(response), truncated=True
+            )
 
         tool_calls = [
             ToolCall(

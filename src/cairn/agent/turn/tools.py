@@ -243,6 +243,7 @@ def _record_tool_error(
     started: float | None = None,
 ) -> None:
     """Record an expected preflight or execution failure through one path."""
+    duration = _elapsed_ms(started) if started is not None else None
     if isinstance(error, PermissionRefused):
         # A well-formed call that only needs approval. The model is told which
         # targets are blocked so it can ask the operator and retry the call.
@@ -293,8 +294,8 @@ def _record_tool_error(
         "error_type": failure.type,
         "failure_kind": failure_kind.value,
     }
-    if started is not None:
-        data["duration_ms"] = round((perf_counter() - started) * 1000, 3)
+    if duration is not None:
+        data["duration_ms"] = duration
     agent.emit(Event(type="tool_error", data=data))
 
 
@@ -312,28 +313,36 @@ def _accessible_roots(permission: PermissionResult) -> tuple[Path, ...]:
 def _emit_permission(
     agent: Agent,
     tool_call: ToolCall,
-    permission: PermissionResult,
-    started: float,
+    permission: PermissionResult | None,
+    duration_ms: float,
+    *,
+    error: BaseException | None = None,
 ) -> None:
-    """Publish the permission phase independently of the tool result.
-
-    The duration includes any prompt the operator answered, so a Run that waited
-    on approval shows that wait instead of attributing it to tool execution.
-    """
-    agent.emit(
-        Event(
-            type="permission_check",
-            data={
-                "tool": tool_call.name,
-                "tool_call_id": tool_call.id,
-                "allowed": permission.allowed,
-                "policy_decision": permission.policy_decision.value,
-                "prompted": permission.prompted,
-                "source": permission.source.value,
-                "duration_ms": round((perf_counter() - started) * 1000, 3),
-            },
+    data: dict[str, object] = {
+        "tool": tool_call.name,
+        "tool_call_id": tool_call.id,
+        "duration_ms": duration_ms,
+    }
+    if permission is not None:
+        data.update(
+            allowed=permission.allowed,
+            policy_decision=permission.policy_decision.value,
+            prompted=permission.prompted,
+            source=permission.source.value,
+            status="completed",
         )
-    )
+    elif error is not None:
+        data.update(
+            status="cancelled"
+            if isinstance(error, asyncio.CancelledError)
+            else "failed",
+            error_type=type(error).__name__,
+        )
+    agent.emit(Event(type="permission_check", data=data))
+
+
+def _elapsed_ms(started: float) -> float:
+    return round((perf_counter() - started) * 1000, 3)
 
 
 def _check_tool_permission(
@@ -401,9 +410,10 @@ def _check_tool_permission(
             )
         raise
     else:
+        duration = _elapsed_ms(started)
         if permission_span is not None and tracer is not None:
             tracer.end_span(permission_span, status=SpanStatus.OK)
-        _emit_permission(agent, tool_call, permission, started)
+        _emit_permission(agent, tool_call, permission, duration)
 
     return permission
 
@@ -450,6 +460,7 @@ async def _check_tool_permission_async(
                 }
             )
     except asyncio.CancelledError as exc:
+        _emit_permission(agent, tool_call, None, _elapsed_ms(started), error=exc)
         if permission_span is not None and tracer is not None:
             tracer.end_span(
                 permission_span,
@@ -458,6 +469,7 @@ async def _check_tool_permission_async(
             )
         raise
     except Exception as exc:
+        _emit_permission(agent, tool_call, None, _elapsed_ms(started), error=exc)
         if permission_span is not None and tracer is not None:
             tracer.end_span(
                 permission_span,
@@ -466,9 +478,10 @@ async def _check_tool_permission_async(
             )
         raise
     else:
+        duration = _elapsed_ms(started)
         if permission_span is not None and tracer is not None:
             tracer.end_span(permission_span, status=SpanStatus.OK)
-        _emit_permission(agent, tool_call, permission, started)
+        _emit_permission(agent, tool_call, permission, duration)
     return permission
 
 
@@ -539,7 +552,6 @@ async def execute_tool_call(
                     "error": failure.error,
                     "error_type": failure.type,
                     "failure_kind": ToolFailureKind.PERMISSION_DENIED.value,
-                    "duration_ms": round((perf_counter() - started) * 1000, 3),
                 },
             )
         )
@@ -584,6 +596,7 @@ async def execute_tool_call(
         )
 
     except asyncio.CancelledError:
+        duration = _elapsed_ms(tool_started)
         tool_content = ToolFailure(
             error="Tool execution was cancelled.",
             type="ToolCancelled",
@@ -594,6 +607,16 @@ async def execute_tool_call(
             content=tool_content,
         )
         consume_tool_call()
+        agent.emit(
+            Event(
+                type="tool_execution_cancelled",
+                data={
+                    "tool": tool_call.name,
+                    "tool_call_id": tool_call.id,
+                    "duration_ms": duration,
+                },
+            )
+        )
 
         if tool_span is not None and agent.tracer is not None:
             tool_span.attributes.update(
@@ -630,6 +653,7 @@ async def execute_tool_call(
 
         return
     else:
+        duration = _elapsed_ms(tool_started)
         tool_content = json.dumps(
             result.model_dump(),
             ensure_ascii=False,
@@ -673,7 +697,7 @@ async def execute_tool_call(
                 "tool_call_id": tool_call.id,
                 "tool": tool_call.name,
                 "exit_code": result.exit_code,
-                "duration_ms": round((perf_counter() - tool_started) * 1000, 3),
+                "duration_ms": duration,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
                 "stdout_length": len(result.stdout),

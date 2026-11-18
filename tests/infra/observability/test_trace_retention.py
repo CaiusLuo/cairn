@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from cairn.agent.tracing.models import SpanStatus, new_trace_context, start_span
+from cairn.agent.tracing.models import Span, SpanStatus, new_trace_context, start_span
 from cairn.agent.tracing.retention import RetentionTraceSink
 from cairn.agent.tracing.sinks import JsonlTraceSink
 
 
-def _root_span():
+def _root_span() -> Span:
     span = start_span("agent.turn", new_trace_context())
     span.end_time = datetime.now(UTC)
     span.status = SpanStatus.OK
@@ -60,3 +60,15 @@ def test_write_failure_still_propagates_to_the_tracer(tmp_path: Path) -> None:
 
     with pytest.raises(OSError, match="disk unavailable"):
         sink.emit(_root_span())
+
+
+def test_file_capacity_failure_is_reported_without_growing_trace(
+    tmp_path: Path,
+) -> None:
+    from cairn.agent.tracing.tracer import Tracer
+
+    tracer = Tracer(JsonlTraceSink(tmp_path, max_file_bytes=512))
+    span = tracer.start_root_span("agent.turn", {"detail": "x" * 1024})
+    tracer.end_span(span)
+    assert tracer.pop_persistence_error(span.context.trace_id)
+    assert (tmp_path / f"{span.context.trace_id}.jsonl").stat().st_size == 0
