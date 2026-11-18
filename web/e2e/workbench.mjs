@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, request } from "playwright";
 
@@ -44,6 +44,14 @@ async function authenticate(path = url) {
 async function send(text) {
   await page.getByRole("textbox", { name: "消息" }).fill(text);
   await page.getByRole("button", { name: "发送", exact: true }).click();
+}
+async function waitForPath(path, timeout = 10000) {
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    if (existsSync(path)) return;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.fail("Timed out waiting for " + path);
 }
 async function conversationLink(pattern) {
   await page.locator(".conversation-tree li").first().waitFor();
@@ -232,6 +240,41 @@ try {
     await shot("Cairn-workbench-chat");
     const chatUrl = page.url();
     assert((await read("tasks")).every(item => item.mode === "development"));
+
+    // A message typed during a RUNNING turn steers it instead of waiting for it.
+    if (process.env.CAIRN_WEB_E2E_GATES) {
+      const gates = process.env.CAIRN_WEB_E2E_GATES;
+      const gate = join(gates, "before");
+      const entered = join(gates, "before.entered");
+      writeFileSync(gate, "");
+      try {
+        await page.goto(new URL("/chat.html", url).href);
+        await page.getByRole("status").filter({ hasText: "Server 已连接" }).waitFor();
+        await send("Steered browser run");
+        await page.locator('.status-badge[data-status="running"]').waitFor();
+        await waitForPath(entered);
+        assert.equal(await page.locator("button.send-button").getAttribute("aria-label"), "引导当前运行");
+        await page.getByRole("textbox", { name: "消息" }).fill("Use the other module");
+        await page.getByRole("textbox", { name: "消息" }).press("Enter");
+        const steerStatus = page.locator(".steer-status").filter({ hasText: "已加入当前运行" });
+        await steerStatus.waitFor();
+        await shot("Cairn-workbench-steer");
+        rmSync(gate, { force: true });
+        await page.locator('.status-badge[data-status="completed"]').waitFor({ timeout: 20000 });
+        const steeredConversation = new URL(page.url()).searchParams.get("conversation");
+        const steered = await read("conversations/" + steeredConversation);
+        const steeredRun = steered.runs.at(-1);
+        const steeredEvents = (await read("runs/" + steeredRun.run_id + "/events")).events;
+        assert(steeredEvents.some(event => event.kind === "steer_accepted" && event.data.text === "Use the other module"), "Steer acceptance must be durable");
+        assert(steeredEvents.some(event => event.kind === "steer_applied" && event.data.text === "Use the other module"), "The applied steer must be recorded");
+        const steeredHistory = await read("conversations/" + steeredConversation + "/history");
+        assert(steeredHistory.some(message => message.role === "user" && message.content === "Use the other module"), "The applied steer must commit to history");
+        console.log("Web steering acceptance and application passed.");
+      } finally {
+        rmSync(gate, { force: true });
+        rmSync(entered, { force: true });
+      }
+    }
 
     const wx = await post("wechat/conversations", { account_id: "browser-fixture-bot", sender_id: "browser-fixture-sender", prompt: "微信工作台验收" });
     await post("conversations/" + wx.conversation_id + "/messages", { prompt: "微信工作台验收", request_id: "browser-wx-1", source: "wechat" });

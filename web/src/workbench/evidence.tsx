@@ -21,6 +21,7 @@ const eventLabel: Record<string, string> = {
   tool_start: "调用工具", tool_end: "工具结束", tool_result: "工具结果", completed: "运行完成",
   failed: "运行失败", paused: "已暂停", cancelled: "已取消", recovery_required: "需要核对",
   interrupted: "执行中断", reconciled: "人工核对", agent_step: "Agent 步骤", trace_finish: "执行指标",
+  steer_accepted: "接收引导", steer_applied: "引导已生效", steer_unapplied: "引导未生效",
 };
 
 export const activityEvents = (events: ExecutionEvent[]) => events.filter(event => !["model_text_delta", "model_reasoning_delta", "model_stream_start", "model_stream_end"].includes(event.kind));

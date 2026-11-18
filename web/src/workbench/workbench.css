@@ -221,6 +221,18 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .queued-line, .submission-review { display: flex; align-items: center; gap: 7px; font-size: 12px; }
 .queued-line span, .submission-review span { flex: 1; min-width: 0; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
 .wb-main .queued-line button, .wb-main .submission-review button { border-color: transparent; padding: 3px 5px; background: transparent; }
+.steer-status {
+  display: flex; align-items: center; gap: 7px;
+  padding: 8px 10px 12px; margin: 0 10px -5px; border: 1px solid var(--hui-border); border-radius: 12px 12px 0 0;
+  background: var(--hui-canvas); color: var(--hui-secondary); font-size: 12px;
+}
+.steer-status > span { flex: 1; min-width: 0; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+.steer-status small { max-width: 45%; color: var(--hui-muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+.steer-status .steer-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--hui-info); }
+.steer-status[data-phase="applied"] { color: var(--hui-success); }
+.steer-status[data-phase="applied"] .steer-dot { background: var(--hui-success); }
+.steer-status[data-phase="queued"] { color: var(--hui-warn); }
+.steer-status[data-phase="queued"] .steer-dot { background: var(--hui-warn); }
 .status-badge {
   --status: var(--hui-neutral);
   display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; width: fit-content; border-radius: 999px; white-space: nowrap;

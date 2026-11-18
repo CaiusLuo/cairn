@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { newRequestId } from "../ids";
 import { RuntimeError, runtimeApi } from "../runtime-api";
 import { readSubmission, sendSubmission, useRunStream, type Submission } from "./chat-state";
@@ -13,6 +13,33 @@ import { useEventLog } from "./execution";
 function SettledTrace({ id }: { id: string }) {
   const log = useEventLog(`runs/${encodeURIComponent(id)}`, false);
   return log.rows.length ? <details className="wb-process"><summary>执行轨迹 · {log.rows.length} 条活动</summary><Timeline events={log.rows} compact/></details> : null;
+}
+
+type SteerPhase = "sending" | "accepted" | "applied" | "queued";
+type Steering = { id: string; text: string; phase: SteerPhase; after: number; pending?: number };
+
+const steerLabel = (steer: Steering) =>
+  steer.phase === "sending" ? "正在加入当前运行…"
+    : steer.phase === "accepted" ? (steer.pending ?? 0) > 1 ? `已加入当前运行 · ${steer.pending} 条待处理` : "已加入当前运行，下一步生效"
+    : steer.phase === "applied" ? "引导已生效" : "运行已结束，已放入发送队列";
+
+function useSteerAnimation(ref: RefObject<HTMLDivElement | null>, phase: SteerPhase | null) {
+  useEffect(() => {
+    let cancelled = false;
+    let media: { revert: () => void } | undefined;
+    void import("gsap").then(({ gsap }) => {
+      if (cancelled || !ref.current) return;
+      const context = gsap.matchMedia();
+      media = context;
+      context.add("(prefers-reduced-motion: no-preference)", () => {
+        const element = ref.current;
+        if (!element) return;
+        gsap.fromTo(element, { y: 5, autoAlpha: 0 }, { y: 0, autoAlpha: 1, duration: 0.22, ease: "power2.out", clearProps: "transform,opacity,visibility" });
+        if (phase === "applied") gsap.fromTo(element.querySelector(".steer-dot"), { scale: 0.4 }, { scale: 1, duration: 0.36, ease: "back.out(2.4)", clearProps: "transform" });
+      });
+    });
+    return () => { cancelled = true; media?.revert(); };
+  }, [ref, phase]);
 }
 
 type Queued = { id: string; prompt: string; model?: string };
@@ -36,6 +63,8 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   const [queue, setQueue] = useState<Queued[]>([]);
   const [auto, setAuto] = useState(true);
   const [sending, setSending] = useState(false);
+  const [steering, setSteering] = useState(false);
+  const [steer, setSteer] = useState<Steering | null>(null);
   const [canceling, setCanceling] = useState(false);
   const [error, setError] = useState("");
   const [artifacts, setArtifacts] = useState(false);
@@ -46,9 +75,25 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   const tail = useRef<HTMLDivElement>(null);
   const transcript = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  const steerRef = useRef<HTMLDivElement>(null);
+  useSteerAnimation(steerRef, steer?.phase ?? null);
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => { setPending(readSubmission(key)); }, [key]);
+  useEffect(() => { setSteer(null); }, [id]);
+  useEffect(() => {
+    if (!steer || steer.phase === "queued" || steer.phase === "applied") return;
+    const match = [...stream.events].reverse().find(event =>
+      (event.kind === "steer_applied" || event.kind === "steer_unapplied") &&
+      event.sequence > steer.after && event.data.text === steer.text);
+    if (!match) return;
+    if (match.kind === "steer_applied") {
+      setSteer(current => current?.id === steer.id ? { ...current, phase: "applied" } : current);
+    } else {
+      setQueue(rows => rows.some(row => row.id === steer.id) ? rows : [...rows, { id: steer.id, prompt: steer.text }]);
+      setSteer(current => current?.id === steer.id ? { ...current, phase: "queued" } : current);
+    }
+  }, [stream.events, steer]);
   useEffect(() => { if (id && !active) history.refresh(); }, [id, active, run?.run_id, history.refresh]);
   useEffect(() => {
     if (stickToBottom.current) tail.current?.scrollIntoView({ block: "end" });
@@ -59,6 +104,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
     inFlight.current = true;
     setSending(true);
     setError("");
+    setSteer(null);
     setPending(next);
     try {
       const result = await sendSubmission(next, key);
@@ -97,9 +143,36 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
     if (auto && queue[0] && run?.status === "completed" && !sending && config && Date.now() >= retryAt.current) sendQueued(queue[0]);
   });
 
+  async function steerPrompt(prompt: string) {
+    if (!run || steering) return;
+    const next: Steering = { id: newRequestId(), text: prompt, phase: "sending", after: stream.events.at(-1)?.sequence ?? 0 };
+    setDraft("");
+    stickToBottom.current = true;
+    setError("");
+    setSteering(true);
+    setSteer(next);
+    try {
+      const receipt = await runtimeApi<{ pending: number }>(`runs/${encodeURIComponent(run.run_id)}/steer`, { prompt });
+      if (!mounted.current) return;
+      setSteer(current => current?.id === next.id && current.phase === "sending" ? { ...current, phase: "accepted", pending: receipt.pending } : current);
+    } catch (reason) {
+      if (!mounted.current) return;
+      if (reason instanceof RuntimeError && reason.status === 409) {
+        setQueue(rows => rows.some(row => row.id === next.id) ? rows : [...rows, { id: next.id, prompt }]);
+        setSteer(current => current?.id === next.id ? { ...current, phase: "queued" } : current);
+      } else {
+        setDraft(prompt);
+        setSteer(current => current?.id === next.id ? null : current);
+        setError(String(reason));
+      }
+    } finally {
+      if (mounted.current) setSteering(false);
+    }
+  }
+
   function sendDraft() {
     const prompt = draft.trim();
-    if (!prompt || sending || !config || (failed && mode === "conversation")) return;
+    if (!prompt || sending || steering || !config || (failed && mode === "conversation")) return;
     if (pending) {
       sessionStorage.removeItem(key);
       setPending(null);
@@ -107,7 +180,8 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
     const next = { id: newRequestId(), prompt, model: mode === "conversation" && model ? model : undefined };
     setDraft("");
     stickToBottom.current = true;
-    if (active && mode === "conversation") setQueue(rows => [...rows, next]);
+    if (steerable) void steerPrompt(prompt);
+    else if (active && mode === "conversation") setQueue(rows => [...rows, next]);
     else void submit({ ...next, conversation: id, mode });
   }
 
@@ -127,6 +201,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   }
 
   const failed = run?.status === "recovery_required";
+  const steerable = active && run?.status === "running" && mode === "conversation";
   const degraded = (detail.data?.runs ?? [])
     .map(item => item.metadata?.history_degraded)
     .filter((value): value is string => typeof value === "string")
@@ -144,12 +219,15 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
       </div>)}
     </div>}
     {pending && <div className="submission-review" role="status"><span>待确认请求 · {pending.prompt.slice(0, 100)}（发送新消息会放弃这条记录）</span><button disabled={sending} onClick={() => void submit(pending)}>用原编号重试</button><button disabled={sending} onClick={() => { sessionStorage.removeItem(key); setPending(null); detail.refresh(); }}>放弃这条记录</button></div>}
+    {steer && <div className="steer-status" role="status" data-phase={steer.phase} ref={steerRef} key={steer.phase}>
+      <i className="steer-dot" aria-hidden="true"/><span>{steerLabel(steer)}</span><small title={steer.text}>{steer.text}</small>
+    </div>}
     {(error || detail.error || history.error) && <p className="wb-error wb-error-action" role="alert">
       <span>{error || detail.error || history.error}</span>
       {!error && <button type="button" onClick={() => { detail.refresh(); history.refresh(); }}>重试</button>}
     </p>}
     <form className="wb-composer" onSubmit={event => { event.preventDefault(); sendDraft(); }}>
-      <textarea aria-label="消息" placeholder={mode === "development" ? "描述要完成的开发目标…" : "问 Cairn，或交给它一项工作…"} value={draft} maxLength={32000} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); sendDraft(); } }}/>
+      <textarea aria-label="消息" placeholder={mode === "development" ? "描述要完成的开发目标…" : steerable ? "输入以引导当前运行…" : "问 Cairn，或交给它一项工作…"} value={draft} maxLength={32000} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); sendDraft(); } }}/>
       <div className="composer-controls">
         <span className="composer-harness"><Icon name="sparkles" size={15}/>Cairn Agent</span>
         <label><Icon name="server" size={15}/><select aria-label="模型" disabled={mode === "development" || !config?.models.length} value={mode === "development" ? "" : model} onChange={event => setModel(event.target.value)}>
@@ -161,7 +239,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
         </select></label>
         <div className="composer-send">
           {active && <button className="composer-icon" type="button" aria-label="中断运行" title="中断运行" disabled={canceling} onClick={() => void cancel()}><Icon name="stop" size={17}/></button>}
-          <button className="send-button" type="submit" aria-label={active && mode === "conversation" ? "加入发送队列" : "发送"} title={active && mode === "conversation" ? "加入发送队列" : "发送"} disabled={!draft.trim() || !config || sending || (failed && mode === "conversation")}><Icon name={active && mode === "conversation" ? "queue" : "arrow-up"} size={18}/></button>
+          <button className="send-button" type="submit" aria-label={steerable ? "引导当前运行" : active && mode === "conversation" ? "加入发送队列" : "发送"} title={steerable ? "引导当前运行" : active && mode === "conversation" ? "加入发送队列" : "发送"} disabled={!draft.trim() || !config || sending || steering || (failed && mode === "conversation")}><Icon name={steerable ? "sparkles" : active && mode === "conversation" ? "queue" : "arrow-up"} size={18}/></button>
         </div>
       </div>
     </form>
