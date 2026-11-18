@@ -29,9 +29,14 @@ def test_cancel_during_tool_call_requires_recovery(tmp_path: Path) -> None:
 
         class ToolExecution:
             async def __call__(
-                self, task: Any, emit: Any, *, service: Any | None = None
+                self,
+                task: Any,
+                emit: Any,
+                *,
+                service: Any | None = None,
+                steering: Any | None = None,
             ) -> str:
-                del emit
+                del emit, steering
                 assert service is not None
                 service.record(task, "tool_call", {"tool": "write_file"})
                 await asyncio.Event().wait()

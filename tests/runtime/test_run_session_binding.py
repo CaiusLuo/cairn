@@ -56,9 +56,14 @@ def test_run_persists_session_before_execution_finishes(tmp_path: Path) -> None:
             self.session_id: str | None = None
 
         async def __call__(
-            self, task: Any, emit: Any, *, service: Any | None = None
+            self,
+            task: Any,
+            emit: Any,
+            *,
+            service: Any | None = None,
+            steering: Any | None = None,
         ) -> str:
-            del emit
+            del emit, steering
             assert service is not None
             self.session_id = str(uuid4())
             updated = task.model_copy(update={"session_id": self.session_id})

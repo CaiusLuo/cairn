@@ -34,6 +34,7 @@ from cairn.agent.session.models import (
 )
 from cairn.agent.session.store import SessionStore
 from cairn.agent.turn.events import Event
+from cairn.agent.turn.steering import SteerQueue
 from cairn.agent.workspace.lease import WorkspaceLease
 from cairn.agent.workspace.workspace import Workspace
 from cairn.development.catalogue import RuntimeTask
@@ -153,6 +154,7 @@ class ServiceExecution:
         emit: Callable[[str, dict[str, Any]], None],
         *,
         service: Any | None = None,
+        steering: SteerQueue | None = None,
     ) -> str:
         started = perf_counter()
         ledger = service if service is not None else self.service
@@ -391,6 +393,12 @@ class ServiceExecution:
                 "budget",
             }
             data = {key: value for key, value in event.data.items() if key in allowed}
+            if "steers" in event.data:
+                # Applied instructions are user text and follow the same redaction
+                # as model output before they reach durable Run events.
+                data["steers"] = redact_value(
+                    event.data["steers"], self.sensitive_values
+                )
             if event.type == "tool_call":
                 arguments = redact_value(
                     event.data.get("arguments", {}), self.sensitive_values
@@ -519,7 +527,8 @@ class ServiceExecution:
                                 else task.input_prompt or task.prompt
                             )
                         ),
-                    )
+                    ),
+                    steering=steering,
                 )
             interrupted_tool = (
                 any(
