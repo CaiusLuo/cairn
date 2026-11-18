@@ -14,12 +14,14 @@ what a completed turn reported; that answer lives here.
 
 import asyncio
 from dataclasses import dataclass
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, Literal
 
 from cairn.agent.budget import RunBudget
 from cairn.agent.context.window import ContextBudget, ContextRequest
 from cairn.agent.harness import Agent
 from cairn.agent.models.messages import LLMResponse
+from cairn.agent.models.providers.errors import fallback_reason
 from cairn.agent.models.selection import ModelConfig
 from cairn.agent.tracing.models import Span, SpanStatus
 from cairn.agent.turn.events import Event
@@ -72,6 +74,14 @@ class TurnTrace:
         self._compaction_outcomes = 0
         self._reported_omitted_turns = 0
         self._summary: TurnTraceSummary | None = None
+        # Phase clocks. They describe the same turn the spans do but are
+        # published as run events, which stay useful even when no trace sink is
+        # configured or the sink fails.
+        self._turn_started: float | None = None
+        self._request_started: float | None = None
+        self._attempt_number: int | None = None
+        self._model_id: str | None = None
+        self._fallback_reason: str | None = None
 
     @property
     def summary(self) -> TurnTraceSummary | None:
@@ -95,6 +105,7 @@ class TurnTrace:
 
     def start(self) -> None:
         """Open the turn's root span and announce the trace, if tracing is on."""
+        self._turn_started = perf_counter()
         if self._agent.tracer is None:
             return
         self._turn_span = self._agent.tracer.start_root_span(
@@ -121,6 +132,10 @@ class TurnTrace:
         self._attempt = attempt
         self._llm_span = None
         self._attempt_started = False
+        self._request_started = None
+        self._attempt_number = None
+        self._model_id = None
+        self._fallback_reason = None
 
     def on_request(
         self,
@@ -129,9 +144,12 @@ class TurnTrace:
         model: ModelConfig | None,
         model_id: str | None,
         attempt_number: int,
+        prepare_ms: float | None = None,
     ) -> None:
         """Record admission metadata and open the attempt span for one call."""
         self._attempt_started = True
+        self._attempt_number = attempt_number
+        self._model_id = model_id
         if (
             request.omitted_turns
             and request.omitted_turns != self._reported_omitted_turns
@@ -147,9 +165,44 @@ class TurnTrace:
             )
         self._reported_omitted_turns = request.omitted_turns
 
+        context = self._attempt
+        step = context.step if context is not None else None
+        request_data: dict[str, Any] = {
+            "context_tokens_before": request.tokens_before.tokens,
+            "context_tokens_after": request.tokens_after.tokens,
+            "context_estimate": request.tokens_after.is_estimate,
+            "context_max_tokens": context_budget.max_tokens,
+            "context_compacted": request.compacted,
+            "context_compacted_messages": request.compacted_messages,
+            "context_compaction_tokens_saved": request.compaction_tokens_saved,
+            "context_folded_tool_results": request.folded_tool_results,
+            "context_omitted_turns": request.omitted_turns,
+            "context_omitted_messages": request.omitted_messages,
+            "attempt": attempt_number,
+        }
+        if step is not None:
+            request_data["step"] = step
+        if prepare_ms is not None:
+            request_data["context_prepare_ms"] = prepare_ms
+        # Attribution is always present, even for a provider-neutral stateless
+        # agent: consumers can correlate the phase without guessing whether the
+        # key was omitted or the model was unnamed.
+        request_data["model_id"] = model_id
+        if model is not None:
+            request_data["model_name"] = model.name
+        if self._fallback_reason is not None:
+            # A candidate was replaced before this request. The reason is a fixed
+            # class, never provider error text: a fallback happened, and this is
+            # why the primary was abandoned.
+            request_data["fallback_reason"] = self._fallback_reason
+            request_data["fallback_attempt"] = attempt_number - 1
+        self._agent.emit(Event(type="model_request", data=request_data))
+        # Start the model clock after the event is delivered: publishing a
+        # diagnostic must not be charged to the provider.
+        self._request_started = perf_counter()
+
         if self._agent.tracer is None or self._turn_span is None:
             return
-        context = self._attempt
         assert context is not None
         attributes: dict[str, Any] = {
             "step": context.step,
@@ -174,23 +227,22 @@ class TurnTrace:
             attributes.update(
                 model=model_id, model_name=model.name, attempt=attempt_number
             )
-        if attempt_number > 1:
-            # A candidate was replaced before this request. The reason is a fixed
-            # class, never provider error text: a fallback happened, and this is
-            # why the primary was abandoned.
-            attributes["fallback_reason"] = "candidate_unavailable"
+        if self._fallback_reason is not None:
+            attributes["fallback_reason"] = self._fallback_reason
             attributes["fallback_attempt"] = attempt_number - 1
         self._llm_span = self._agent.tracer.start_child_span(
             self._turn_span, "llm.generate", attributes=attributes
         )
 
-    def on_failure(self, exc: BaseException) -> None:
+    def on_failure(self, exc: BaseException, *, fallback: bool = False) -> None:
         """Close the attempt span after a call produced no response."""
         # No attempt means admission failed before any provider call, so usage
         # already accounted for by earlier steps must survive.
         if not self._attempt_started:
             return
         self._attempt_started = False
+        duration = _elapsed_ms(self._request_started)
+        self._request_started = None
         # The ledger already knows this request has no response, so every total
         # that includes it stays unknown; no per-field erasure is needed here.
         if self._llm_span is not None and self._agent.tracer is not None:
@@ -205,36 +257,96 @@ class TurnTrace:
         # A fallback closes this attempt before the next one starts.
         self._llm_span = None
 
+        if fallback:
+            self._fallback_reason = fallback_reason(exc)
+        failure: dict[str, Any] = {
+            "error_type": type(exc).__name__,
+            "cancelled": isinstance(exc, asyncio.CancelledError),
+        }
+        if duration is not None:
+            failure["duration_ms"] = duration
+        if self._attempt is not None:
+            failure["step"] = self._attempt.step
+        if self._attempt_number is not None:
+            failure["attempt"] = self._attempt_number
+        failure["model_id"] = self._model_id
+        self._agent.emit(Event(type="model_error", data=failure))
+
     def on_response(self, response: LLMResponse) -> None:
         """Accumulate usage and close the attempt span for a completed call."""
+        duration = _elapsed_ms(self._request_started)
+        self._request_started = None
         self._usage.response(response.usage)
-        if self._llm_span is None or self._agent.tracer is None:
-            return
-        self._llm_span.attributes["tool_call_count"] = len(response.tool_calls)
-        self._llm_span.attributes["has_content"] = response.content is not None
-        if response.usage is not None:
-            if response.usage.input_tokens is not None:
-                self._llm_span.attributes["input_tokens"] = response.usage.input_tokens
-            if response.usage.output_tokens is not None:
-                self._llm_span.attributes["output_tokens"] = (
-                    response.usage.output_tokens
-                )
-        self._agent.tracer.end_span(self._llm_span, status=SpanStatus.OK)
+        if self._llm_span is not None and self._agent.tracer is not None:
+            self._llm_span.attributes["tool_call_count"] = len(response.tool_calls)
+            self._llm_span.attributes["has_content"] = response.content is not None
+            if response.usage is not None:
+                if response.usage.input_tokens is not None:
+                    self._llm_span.attributes["input_tokens"] = (
+                        response.usage.input_tokens
+                    )
+                if response.usage.output_tokens is not None:
+                    self._llm_span.attributes["output_tokens"] = (
+                        response.usage.output_tokens
+                    )
+            self._agent.tracer.end_span(self._llm_span, status=SpanStatus.OK)
 
-    def on_compaction(self, outcome: "CompactionOutcome") -> None:
+        completed: dict[str, Any] = {
+            "tool_call_count": len(response.tool_calls),
+            "has_content": response.content is not None,
+            "truncated": response.truncated,
+        }
+        if duration is not None:
+            completed["duration_ms"] = duration
+        if response.usage is not None:
+            for name in (
+                "input_tokens",
+                "output_tokens",
+                "cached_tokens",
+                "reasoning_tokens",
+            ):
+                value = getattr(response.usage, name)
+                if value is not None:
+                    completed[name] = value
+        if self._attempt is not None:
+            completed["step"] = self._attempt.step
+        if self._attempt_number is not None:
+            completed["attempt"] = self._attempt_number
+        completed["model_id"] = self._model_id
+        self._agent.emit(Event(type="model_response", data=completed))
+
+    def on_compaction(
+        self, outcome: "CompactionOutcome", *, duration_ms: float | None = None
+    ) -> None:
         """Trace reduction status and sizes without retaining summary text."""
         self._compaction_outcomes += 1
-        if self._turn_span is None or self._agent.tracer is None:
-            return
-        attributes = self._turn_span.attributes
-        attributes["compaction_count"] = self._compaction_outcomes
-        attributes["compaction_last_step"] = outcome.step.value
-        attributes["compaction_last_status"] = (
-            outcome.status.value if outcome.status is not None else "ok"
-        )
-        attributes["compaction_messages_folded"] = outcome.folded_messages
-        attributes["compaction_tokens_before"] = outcome.tokens_before
-        attributes["compaction_tokens_after"] = outcome.tokens_after
+        if self._turn_span is not None and self._agent.tracer is not None:
+            attributes = self._turn_span.attributes
+            attributes["compaction_count"] = self._compaction_outcomes
+            attributes["compaction_last_step"] = outcome.step.value
+            attributes["compaction_last_status"] = (
+                outcome.status.value if outcome.status is not None else "ok"
+            )
+            attributes["compaction_messages_folded"] = outcome.folded_messages
+            attributes["compaction_tokens_before"] = outcome.tokens_before
+            attributes["compaction_tokens_after"] = outcome.tokens_after
+
+        compacted: dict[str, Any] = {
+            "compaction_step": outcome.step.value,
+            "status": outcome.status.value if outcome.status is not None else "ok",
+            "folded_messages": outcome.folded_messages,
+            "tokens_before": outcome.tokens_before,
+            "tokens_after": outcome.tokens_after,
+        }
+        if duration_ms is not None:
+            compacted["duration_ms"] = round(duration_ms, 3)
+        if outcome.summary_usage is not None:
+            compacted.update(
+                outcome.summary_usage.model_dump(
+                    include={"input_tokens", "output_tokens"}, exclude_none=True
+                )
+            )
+        self._agent.emit(Event(type="context_compacted", data=compacted))
 
     def close(self, trace_error: str | None) -> None:
         """Finalize the turn span, its usage and the ``trace_finish`` event.
@@ -254,6 +366,7 @@ class TurnTrace:
         if output_tokens is not None:
             self._turn_span.attributes["output_tokens"] = output_tokens
 
+        turn_ms = _elapsed_ms(self._turn_started)
         self._agent.tracer.end_span(self._turn_span, status=status, error=trace_error)
 
         persistence_error = self._agent.tracer.pop_persistence_error(
@@ -265,6 +378,12 @@ class TurnTrace:
             "persisted": persistence_error is None,
             "persistence_error": persistence_error,
         }
+        if persistence_error is not None:
+            # A stable code lets a timeline show a broken sink without parsing
+            # the free-form error text.
+            trace_finish_data["error_code"] = "sink_failed"
+        if turn_ms is not None:
+            trace_finish_data["turn_ms"] = turn_ms
         usage: dict[str, int] = {}
         if input_tokens is not None:
             usage["input_tokens"] = input_tokens
@@ -280,6 +399,7 @@ class TurnTrace:
             trace_finish_data["usage"] = usage
 
         self._agent.emit(Event(type="trace_finish", data=trace_finish_data))
+        # Publish the summary only after the final event returns successfully.
         self._summary = TurnTraceSummary(
             trace_id=self._turn_span.context.trace_id,
             input_tokens=input_tokens,
@@ -287,3 +407,9 @@ class TurnTrace:
             persisted=persistence_error is None,
             error_code=None if persistence_error is None else "sink_failed",
         )
+
+
+def _elapsed_ms(started: float | None) -> float | None:
+    if started is None:
+        return None
+    return round((perf_counter() - started) * 1000, 3)

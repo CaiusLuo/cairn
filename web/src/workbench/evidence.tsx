@@ -18,11 +18,29 @@ export function Badge({ status }: { status: string }) {
 
 const eventLabel: Record<string, string> = {
   accepted: "接收任务", running: "开始运行", worktree_ready: "准备工作树", conversation_ready: "建立执行会话",
-  tool_start: "调用工具", tool_end: "工具结束", tool_result: "工具结果", completed: "运行完成",
+  tool_start: "调用工具", tool_end: "工具结束", tool_call: "工具调用", tool_result: "工具结果", tool_error: "工具错误", tool_denied: "工具被拒",
+  permission_check: "权限检查", completed: "运行完成",
   failed: "运行失败", paused: "已暂停", cancelled: "已取消", recovery_required: "需要核对",
-  interrupted: "执行中断", reconciled: "人工核对", agent_step: "Agent 步骤", trace_finish: "执行指标",
+  interrupted: "执行中断", reconciled: "人工核对", agent_step: "Agent 步骤", agent_finish: "Agent 完成",
+  agent_budget_exhausted: "预算耗尽", context_trimmed: "上下文裁剪", context_compacted: "上下文压缩",
+  context_prepare: "上下文准备", tool_execution_cancelled: "工具执行取消",
+  model_request: "请求上下文", model_first_token: "首 Token", model_response: "模型响应", model_error: "模型失败",
+  turn_started: "轮次开始", turn_settled: "轮次结束", turn_committed: "轮次已提交",
+  trace_start: "开始追踪", trace_finish: "执行指标",
   steer_accepted: "接收引导", steer_applied: "引导已生效", steer_unapplied: "引导未生效",
 };
+
+export const phaseMs = (event: ExecutionEvent): number | undefined => {
+  const data = event.data;
+  if (typeof data.duration_ms === "number") return data.duration_ms;
+  if (event.kind === "model_first_token" && typeof data.first_token_ms === "number") return data.first_token_ms;
+  if (event.kind === "model_request" && typeof data.context_prepare_ms === "number") return data.context_prepare_ms;
+  if (event.kind === "turn_committed" && typeof data.persist_ms === "number") return data.persist_ms + (typeof data.encode_ms === "number" ? data.encode_ms : 0);
+  if (event.kind === "trace_finish" && typeof data.turn_ms === "number") return data.turn_ms;
+  return undefined;
+};
+
+const durationLabel = (milliseconds: number) => milliseconds >= 1000 ? `${(milliseconds / 1000).toFixed(1)}s` : `${Math.round(milliseconds)}ms`;
 
 export const activityEvents = (events: ExecutionEvent[]) => events.filter(event => !["model_text_delta", "model_reasoning_delta", "model_stream_start", "model_stream_end"].includes(event.kind));
 
@@ -31,8 +49,12 @@ export function Timeline({ events, compact = false }: { events: ExecutionEvent[]
   if (!visible.length) return <p className="wb-muted">暂无已记录的活动。</p>;
   return <ol className={`wb-timeline ${compact ? "compact" : ""}`}>{visible.map(event => {
     const tool = event.data.tool ?? event.data.tool_name ?? event.data.name;
+    const phase = phaseMs(event);
+    const diagnostic = event.kind === "trace_finish" && event.data.persisted === false
+      ? " · Trace 写入失败"
+      : event.data.truncated === true ? " · 输出截断" : "";
     return <li key={event.sequence}><details>
-      <summary><Icon name={event.kind.startsWith("tool") ? "terminal" : "clock"} size={14}/><span>{eventLabel[event.kind] ?? event.kind}{typeof tool === "string" ? " · " + tool : ""}</span>{event.created_at && !compact && <time>{dateLabel(event.created_at)}</time>}</summary>
+      <summary><Icon name={event.kind.startsWith("tool") ? "terminal" : "clock"} size={14}/><span>{eventLabel[event.kind] ?? event.kind}{typeof tool === "string" ? " · " + tool : ""}{phase !== undefined ? " · " + durationLabel(phase) : ""}{diagnostic}</span>{event.created_at && !compact && <time>{dateLabel(event.created_at)}</time>}</summary>
       {Object.keys(event.data).length > 0 && <pre>{JSON.stringify(event.data, null, 2)}</pre>}
     </details></li>;
   })}</ol>;

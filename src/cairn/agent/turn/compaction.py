@@ -37,7 +37,7 @@ from cairn.agent.context.compaction import (
 )
 from cairn.agent.context.compaction.summarizer import Summarizer, SummaryResult
 from cairn.agent.context.window import ContextBudget, TokenCount, TokenCounter
-from cairn.agent.models.messages import Message
+from cairn.agent.models.messages import LLMUsage, Message
 from cairn.agent.turn.budget import TurnBudgetPolicy
 from cairn.shared.lifecycle import finish_cleanup, settle_owned
 
@@ -72,6 +72,7 @@ class CompactionOutcome:
     folded_messages: int = 0
     tokens_before: int = 0
     tokens_after: int = 0
+    summary_usage: LLMUsage | None = None
 
     @property
     def changed(self) -> bool:
@@ -313,7 +314,7 @@ async def _summarize(
     except Exception:
         return folded.degraded(before)
     if not summary.ok:
-        return folded.degraded(before)
+        return replace(folded.degraded(before), summary_usage=summary.usage)
 
     substituted = _substituted(folded.messages, folded.boundary, summary.text)
     try:
@@ -321,7 +322,7 @@ async def _summarize(
             asyncio.to_thread(_measure, compactor, source, substituted)
         )
     except Exception:
-        return folded.degraded(before)
+        return replace(folded.degraded(before), summary_usage=summary.usage)
     record = CompactionRecord(
         retained_from=folded.boundary.retained_from,
         summary=summary.text,
@@ -334,13 +335,14 @@ async def _summarize(
     if record.is_gainless():
         # The summary did not shrink anything; keep the folded view rather than
         # pay for a replacement that makes the request no smaller.
-        return folded.degraded(before)
+        return replace(folded.degraded(before), summary_usage=summary.usage)
     return CompactionOutcome(
         step=CompactionStep.SUMMARIZED,
         record=record,
         folded_messages=folded.count,
         tokens_before=before,
         tokens_after=after,
+        summary_usage=summary.usage,
     )
 
 

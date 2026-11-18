@@ -71,6 +71,7 @@ import asyncio
 from collections import deque
 from collections.abc import Awaitable, Sequence
 from dataclasses import asdict
+from time import perf_counter
 from typing import Any, Literal, Protocol, TypedDict
 
 from langgraph.errors import NodeCancelledError
@@ -241,8 +242,31 @@ async def run_turn(
                     )
                 )
 
-                system_messages = await build_system_messages(agent, session=session)
-                tool_schemas = agent.tools.schemas()
+                prepare_started = perf_counter()
+                prepare_status = "failed"
+                try:
+                    system_messages = await build_system_messages(
+                        agent, session=session
+                    )
+                    tool_schemas = agent.tools.schemas()
+                    prepare_status = "completed"
+                except asyncio.CancelledError:
+                    prepare_status = "cancelled"
+                    raise
+                finally:
+                    agent.emit(
+                        Event(
+                            type="context_prepare",
+                            data={
+                                "step": step + 1,
+                                "phase": "system",
+                                "status": prepare_status,
+                                "duration_ms": round(
+                                    (perf_counter() - prepare_started) * 1000, 3
+                                ),
+                            },
+                        )
+                    )
 
                 # Measure, reuse an accepted summary and, when needed, compact
                 # before this request. A new turn with a long history is exactly
@@ -282,7 +306,7 @@ async def run_turn(
 
                 def on_fallback(exc: Exception) -> None:
                     assert trace is not None
-                    trace.on_failure(exc)
+                    trace.on_failure(exc, fallback=True)
 
                 try:
                     _, response = await agent.model_executor.execute(
@@ -325,6 +349,7 @@ async def run_turn(
                     # last call crossed the budget, record the overrun instead of
                     # discarding the result; no further request will start.
                     budget_policy.finish(truncated=response.truncated)
+                    stop_reason = budget_policy.snapshot().stop_reason
                     agent.emit(
                         Event(
                             type="agent_finish",
@@ -332,6 +357,7 @@ async def run_turn(
                                 "content": response.content,
                                 "step": step + 1,
                                 **({"truncated": True} if response.truncated else {}),
+                                **({"stop_reason": stop_reason} if stop_reason else {}),
                             },
                         )
                     )

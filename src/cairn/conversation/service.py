@@ -12,6 +12,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,11 @@ from cairn.conversation.models import (
 from cairn.conversation.store import DomainStore
 from cairn.development.catalogue import ChannelPrincipal, RuntimeTask
 from cairn.development.execution.runtime import ServiceExecution
+from cairn.development.execution.timeline import (
+    DIAGNOSTIC_EVENTS,
+    DIAGNOSTIC_MAX_AGE_DAYS,
+    DIAGNOSTIC_MAX_ROWS,
+)
 from cairn.development.handoff import DevelopmentHandoff
 from cairn.development.models import HandoffStatus
 from cairn.development.service import (
@@ -151,7 +157,8 @@ class RunLedger:
         if kind == "model_reasoning_delta":
             self._wake(kind, persisted=False)
             return updated
-        self.flush_preview()
+        if kind not in DIAGNOSTIC_EVENTS:
+            self.flush_preview()
         if kind == "tool_call":
             self.open_tools += 1
         elif kind in {"tool_result", "tool_error", "tool_denied"}:
@@ -194,6 +201,17 @@ class ConversationService:
         self.active_steering: dict[str, SteerQueue] = {}
         self.changed = asyncio.Event()
         self.settled_listeners: list[Callable[[Run], None]] = []
+        self._runs_since_diagnostic_sweep = 0
+
+    def _prune_diagnostics(self) -> None:
+        self._runs_since_diagnostic_sweep = 0
+        cutoff = datetime.now(UTC) - timedelta(days=DIAGNOSTIC_MAX_AGE_DAYS)
+        with suppress(Exception):
+            self.store.prune_run_diagnostics(
+                kinds=DIAGNOSTIC_EVENTS,
+                before=cutoff.isoformat(),
+                keep=DIAGNOSTIC_MAX_ROWS,
+            )
 
     def add_run_settled_listener(self, listener: Callable[[Run], None]) -> None:
         self.settled_listeners.append(listener)
@@ -209,6 +227,7 @@ class ConversationService:
         # interrupted. This completes the Task/Run linkage without replaying
         # an existing RuntimeTask.
         self.development_handoff.recover_incomplete()
+        self._prune_diagnostics()
         for run in self.store.list_runs():
             if run.workspace_id != self.workspace_id:
                 continue
@@ -878,7 +897,12 @@ class ConversationService:
 
     def preview_snapshot(self, run_id: str) -> str:
         ledger = self.active_ledgers.get(run_id)
-        return ledger.visible_text if ledger is not None else ""
+        if ledger is not None:
+            return ledger.visible_text
+        # A finished run no longer has a ledger, but a consumer reconnecting
+        # after settlement still needs the text the replayed deltas describe.
+        run = self.get_run(run_id)
+        return (run.result or "") if run is not None else ""
 
     def publish(self, run_id: str, message: dict[str, Any]) -> None:
         for queue in tuple(self.subscribers.get(run_id, ())):
@@ -1153,7 +1177,15 @@ class ConversationService:
             )
 
         def emit(kind: str, data: dict[str, Any]) -> None:
+            if "turn_id" in data:
+                data = {
+                    **data,
+                    "run_id": run_id,
+                    "conversation_id": run.conversation_id,
+                }
             if kind == "agent_step":
+                # Record what was applied before the step's own event, so the
+                # timeline shows the steer took effect at this boundary.
                 for text in data.get("steers", ()):
                     if isinstance(text, str):
                         self._record(run_id, ledger, "steer_applied", {"text": text})
@@ -1224,6 +1256,9 @@ class ConversationService:
             )
         finally:
             self._settle_observers(run_id)
+            self._runs_since_diagnostic_sweep += 1
+            if self._runs_since_diagnostic_sweep >= 32:
+                self._prune_diagnostics()
 
     async def close(self) -> None:
         self.stopping = True

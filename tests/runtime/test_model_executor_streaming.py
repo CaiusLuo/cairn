@@ -131,7 +131,7 @@ def test_unsupported_stream_configuration_uses_one_generate_request(
     assert "stream_options" not in requests[0]
     assert [message.role for message in agent.state.messages] == ["user", "assistant"]
     assert agent.state.messages[-1].content == "done"
-    assert not any(event.type.startswith("model_") for event in events)
+    assert not any(event.type.startswith("model_stream_") for event in events)
     attempt = next(span for span in sink.spans if span.name == "llm.generate")
     assert attempt.attributes["input_tokens"] == 17
     assert attempt.attributes["output_tokens"] == 3
@@ -489,3 +489,28 @@ def test_failed_abandonment_notification_preserves_primary_error_and_stops_fallb
     assert error.value is primary
     assert first.closed == 1 and second.calls == b.messages == []
     assert agent.state.messages == []
+
+
+def test_each_stream_attempt_reports_its_first_token_and_fallback_reason() -> None:
+    first = ScriptedStreamLLM([LLMStreamChunk(text="partial"), throttled()])
+    second = ScriptedStreamLLM(
+        [
+            LLMStreamChunk(reasoning_text="thinking"),
+            LLMStreamChunk(text="accepted"),
+            LLMStreamChunk(finish_reason="stop"),
+        ]
+    )
+    events: list[Event] = []
+    agent, _, _ = configure(first, second, events)
+
+    assert asyncio.run(run_turn(agent, "hello", budget=TEST_BUDGET)) == "accepted"
+
+    first_tokens = [event for event in events if event.type == "model_first_token"]
+    assert [
+        (event.data["attempt"], event.data["output"]) for event in first_tokens
+    ] == [(1, "text"), (2, "reasoning")]
+    assert all(event.data["first_token_ms"] >= 0 for event in first_tokens)
+    retry = [event for event in events if event.type == "model_request"][-1]
+    assert retry.data["attempt"] == 2
+    assert retry.data["fallback_reason"] == "provider_rate_limit"
+    assert retry.data["fallback_attempt"] == 1

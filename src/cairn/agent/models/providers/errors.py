@@ -121,3 +121,10 @@ def is_fallback_error(error: BaseException) -> bool:
     ):
         return False
     return not _records_shared_quota(error)
+
+
+def fallback_reason(error: BaseException) -> str:
+    """Fixed diagnostic for a failure the executor already classified as retryable."""
+    if _is_model_free_tier_exhaustion(error):
+        return "model_quota"
+    return "provider_rate_limit"

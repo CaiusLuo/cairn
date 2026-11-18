@@ -131,19 +131,20 @@ def test_authorized_review_is_sent_through_real_ilink_http(tmp_path: Path) -> No
         async def scenario() -> None:
             await coordinator.start()
             try:
-                for _ in range(200):
-                    if fake.sent:
-                        break
-                    await asyncio.sleep(0.01)
+                # Receiving the HTTP request precedes acknowledging and settling it.
+                async with asyncio.timeout(5):
+                    while True:
+                        delivery = store.get_delivery(review.review_id)
+                        if delivery is not None and delivery.status is (
+                            ReviewDeliveryStatus.ACCEPTED
+                        ):
+                            break
+                        await asyncio.sleep(0.01)
                 assert len(fake.sent) == 1
                 assert fake.sent[0]["to_user_id"] == "owner"
                 assert fake.sent[0]["context_token"] == "ctx-1"
                 text = fake.sent[0]["item_list"][0]["text_item"]["text"]
                 assert text.startswith("Cairn · 每日复盘")
-                assert (
-                    store.get_delivery(review.review_id).status  # type: ignore[union-attr]
-                    is ReviewDeliveryStatus.ACCEPTED
-                )
             finally:
                 await coordinator.close()
 

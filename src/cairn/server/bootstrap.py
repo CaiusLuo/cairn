@@ -21,6 +21,7 @@ from cairn.agent.budget import RunBudget
 from cairn.agent.models.config.admission import ProviderApproval, load_approved_provider
 from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.agent.models.runtime import ProviderRuntime, build_provider_runtime
+from cairn.agent.tracing.tracer import Tracer
 from cairn.agent.workspace.lease import WorkspaceLease
 from cairn.channels.adapter import ChannelAdapterRegistry
 from cairn.channels.feishu import feishu_adapter_factory
@@ -93,6 +94,7 @@ def runtime_app(
     review: ReviewConfig = DEFAULT_REVIEW,
     config_file: Path | None = None,
     protected_paths: tuple[Path, ...] = (),
+    tracer: Tracer | None = None,
 ) -> Any:
     catalogue = RuntimeCatalogue(
         state,
@@ -113,6 +115,8 @@ def runtime_app(
             sensitive_values=(token, *sensitive_values),
             allow_shell=allow_shell,
             allow_network=allow_network,
+            tracer=tracer,
+            trace_root=state / "traces",
         )
     except BaseException:
         catalogue.close()

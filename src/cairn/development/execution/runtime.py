@@ -33,6 +33,9 @@ from cairn.agent.session.models import (
     SessionBinding,
 )
 from cairn.agent.session.store import SessionStore
+from cairn.agent.tracing.retention import RetentionTraceSink
+from cairn.agent.tracing.sinks import JsonlTraceSink, RedactingTraceSink
+from cairn.agent.tracing.tracer import Tracer
 from cairn.agent.turn.events import Event
 from cairn.agent.turn.steering import SteerQueue
 from cairn.agent.workspace.lease import WorkspaceLease
@@ -40,6 +43,7 @@ from cairn.agent.workspace.workspace import Workspace
 from cairn.development.catalogue import RuntimeTask
 from cairn.development.execution.models import TaskSpec, TaskStatus
 from cairn.development.execution.runner import CodingTaskRunner
+from cairn.development.execution.timeline import DIAGNOSTIC_EVENTS, project_event
 from cairn.development.request import DevelopmentRequest
 from cairn.development.service import (
     TaskAdvanced,
@@ -49,7 +53,7 @@ from cairn.development.service import (
 )
 from cairn.development.worktree import WorktreeProvider
 from cairn.shared.credential_paths import protect_host_paths
-from cairn.shared.redaction import StreamRedactor, redact_text, redact_value
+from cairn.shared.redaction import StreamRedactor, redact_text
 
 
 def apply_channel_tool_scope(agent: Agent, task: RuntimeTask) -> None:
@@ -79,6 +83,8 @@ class ServiceExecution:
         provider_runtime: ProviderRuntime | None = None,
         secret_env_keys: frozenset[str] = frozenset(),
         sensitive_values: tuple[str, ...] = (),
+        tracer: Tracer | None = None,
+        trace_root: Path | None = None,
     ) -> None:
         self.source = Workspace(source)
         self.state = state
@@ -88,6 +94,24 @@ class ServiceExecution:
         ):
             raise ValueError("Worktrees must live outside source")
         self.sensitive_values = sensitive_values
+        # One tracer serves every run this Runtime executes. The default sink is
+        # redacting, bounded and best effort; a caller may inject a tracer for
+        # tests or an external exporter.
+        self.tracer = tracer
+        self._trace_redactor: RedactingTraceSink | None = None
+        if self.tracer is None and trace_root is not None:
+            retention = RetentionTraceSink(
+                JsonlTraceSink(trace_root, max_file_bytes=1_048_576), trace_root
+            )
+            # A server that never completes a turn should still shed expired
+            # traces at startup; retention failures are diagnostic only.
+            with suppress(Exception):
+                retention.sweep()
+            redactor = RedactingTraceSink(
+                retention, sensitive_values, metadata_only=True
+            )
+            self.tracer = Tracer(redactor)
+            self._trace_redactor = redactor
         self.provider_runtime = provider_runtime
         self.secret_env_keys = secret_env_keys
         self.allow_network = allow_network
@@ -116,6 +140,13 @@ class ServiceExecution:
 
     def protect_secrets(self, values: tuple[str, ...]) -> None:
         self.sensitive_values = tuple(dict.fromkeys((*self.sensitive_values, *values)))
+        if self._trace_redactor is not None:
+            # Channel credentials are discovered after the Server starts. The
+            # sink must see them before the first traced turn, not only at
+            # construction time.
+            self._trace_redactor.secret_values = tuple(
+                value for value in self.sensitive_values if value
+            )
         if self._store is not None:
             self._store.sensitive_values = self.sensitive_values
 
@@ -375,48 +406,30 @@ class ServiceExecution:
                 return
             if event.type == "model_reasoning_delta":
                 return
-            allowed = {
-                "step",
-                "max_steps",
-                "attempt",
-                "tool",
-                "tool_call_id",
-                "error_type",
-                "failure_kind",
-                "status",
-                "input_tokens",
-                "output_tokens",
-                "cached_tokens",
-                "reason",
-                "limit",
-                "used",
-                "budget",
-            }
-            data = {key: value for key, value in event.data.items() if key in allowed}
-            if "steers" in event.data:
-                # Applied instructions are user text and follow the same redaction
-                # as model output before they reach durable Run events.
-                data["steers"] = redact_value(
-                    event.data["steers"], self.sensitive_values
-                )
-            if event.type == "tool_call":
-                arguments = redact_value(
-                    event.data.get("arguments", {}), self.sensitive_values
-                )
-                encoded = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
-                data["arguments_preview"] = encoded[:4096]
-                data["arguments_truncated"] = len(encoded) > 4096
-                data["arguments_digest"] = hashlib.sha256(encoded.encode()).hexdigest()
-            emit(event.type, data)
+            if event.type in DIAGNOSTIC_EVENTS:
+                with suppress(Exception):
+                    emit(
+                        event.type,
+                        project_event(event, sensitive_values=self.sensitive_values),
+                    )
+                return
             if event.type == "tool_error" and event.data.get("failure_kind") in {
                 "effect_unknown",
                 "deadline",
                 "cancelled",
             }:
                 effects_unknown = True
+                with suppress(Exception):
+                    emit(
+                        event.type,
+                        project_event(event, sensitive_values=self.sensitive_values),
+                    )
                 # The original loop will settle its pending calls and preserve
                 # executed facts. Stop before another model/tool request can replay.
                 raise TaskNeedsRecovery()
+            emit(
+                event.type, project_event(event, sensitive_values=self.sensitive_values)
+            )
 
         runner = CodingTaskRunner(
             workspace=workspace,
@@ -431,6 +444,7 @@ class ServiceExecution:
             personal_context=historical_context,
             permission_handler=permissions(),
             event_handler=observe,
+            tracer=self.tracer,
             durable_session_factory=bind,
             conversation_only=True,
             message_id=task.input_id or task.task_id,

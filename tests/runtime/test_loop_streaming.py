@@ -227,8 +227,11 @@ def test_invalid_stream_commits_no_partial_messages_or_tool_effects(
     assert agent.state.messages == prior
     assert tool.calls == []
     assert llm.closed == 1
-    assert events[-1].type == "model_stream_end"
-    assert events[-1].data["status"] == "incomplete"
+    assert events[-1].type == "model_error"
+    stream_end = next(
+        event for event in reversed(events) if event.type == "model_stream_end"
+    )
+    assert stream_end.data["status"] == "incomplete"
 
 
 @pytest.mark.parametrize(
@@ -268,7 +271,11 @@ def test_partial_cancellation_rolls_back_and_repeated_cancel_finishes_cleanup(
         assert tool.calls == []
         assert agent.state.messages == []
         assert llm.closed == 1
-        assert events[-1].data["status"] == "incomplete"
+        assert events[-1].type == "model_error"
+        stream_end = next(
+            event for event in reversed(events) if event.type == "model_stream_end"
+        )
+        assert stream_end.data["status"] == "incomplete"
         assert not [
             owned
             for owned in asyncio.all_tasks()

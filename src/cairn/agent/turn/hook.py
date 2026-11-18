@@ -7,6 +7,8 @@ call is pending. Keeping the wiring out of the loop leaves that module as the
 single place that reads as one turn.
 """
 
+import asyncio
+from time import perf_counter
 from typing import Any
 
 from cairn.agent.budget import RunBudgetExceeded
@@ -28,6 +30,7 @@ from cairn.agent.turn.compaction import (
     summarizer_policy_version,
 )
 from cairn.agent.turn.context import build_system_messages
+from cairn.agent.turn.events import Event
 from cairn.agent.turn.trace import TurnTrace
 
 
@@ -123,6 +126,7 @@ async def compact_before_request(
     budget_policy: TurnBudgetPolicy | None = None,
 ) -> None:
     """Reduce the request while the current turn is protected and no call is pending."""
+    started = perf_counter()
     try:
         outcome = await _reduce(
             agent,
@@ -133,16 +137,26 @@ async def compact_before_request(
             budget_policy=budget_policy,
             forced=False,
         )
-    except RunBudgetExceeded:
-        raise
-    except Exception:
+    except (asyncio.CancelledError, Exception) as exc:
+        cancelled = isinstance(exc, asyncio.CancelledError)
+        agent.emit(
+            Event(
+                type="context_compacted",
+                data={
+                    "status": "cancelled" if cancelled else "failed",
+                    "duration_ms": round((perf_counter() - started) * 1000, 3),
+                },
+            )
+        )
+        if isinstance(exc, (asyncio.CancelledError, RunBudgetExceeded)):
+            raise
         # Compaction must never convert a usable turn into a failed one.
         return
     if outcome.step is CompactionStep.NOT_NEEDED:
         # The request already fits. Running this check before every request is
         # intentional, so an unchanged measurement is not a compaction outcome.
         return
-    trace.on_compaction(outcome)
+    trace.on_compaction(outcome, duration_ms=(perf_counter() - started) * 1000)
     remember(agent, outcome)
 
 

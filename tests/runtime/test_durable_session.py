@@ -84,11 +84,17 @@ def test_intent_precedes_events_state_and_provider_then_full_history_commits(
         ] == list(range(1, len(events) + 1))
         committed = [e for e in events if e.type == "turn_committed"]
         assert [e.data["checkpoint_seq"] for e in committed] == [1, 2]
-        assert committed[-1].data == {
+        assert {
+            key: committed[-1].data[key]
+            for key in ("checkpoint_seq", "revision", "outcome")
+        } == {
             "checkpoint_seq": 2,
             "revision": report.revision.version,
             "outcome": "completed",
         }
+        assert committed[-1].data["persist_ms"] >= 0
+        assert committed[-1].data["encode_ms"] >= 0
+        assert committed[-1].data["checkpoint_bytes"] > 0
         assert events[-2].type == "turn_settled" and events[-1].type == "turn_committed"
         assert session.last_turn is not None
         assert not session.last_turn.settlement_delivery_failed

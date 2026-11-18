@@ -13,8 +13,6 @@ from cairn.integrations.wechat.serve import (
 from cairn.integrations.wechat.state import WechatAccount, WechatState
 from cairn.scheduling.store import ScheduleStore
 
-NOW = datetime.now(ZoneInfo("Asia/Shanghai"))
-
 
 class Client:
     def __init__(self) -> None:
@@ -26,6 +24,7 @@ class Client:
 
 
 async def _scenario(tmp_path: Path) -> None:
+    received_at = datetime.now(ZoneInfo("Asia/Shanghai")).timestamp()
     workspace = tmp_path / "ws"
     workspace.mkdir()
     state = WechatState(tmp_path / "state")
@@ -37,7 +36,7 @@ async def _scenario(tmp_path: Path) -> None:
     )
     state.save_account(account)
     state.record_received("msg:1", sender="owner", context_token="ctx", text="hello")
-    state.mark("msg:1", "received", received_at=NOW.timestamp())
+    state.mark("msg:1", "received", received_at=received_at)
     store = ScheduleStore(tmp_path / "schedule")
     called: list[str] = []
 
@@ -76,7 +75,7 @@ async def _scenario(tmp_path: Path) -> None:
         state.mark(
             key,
             "received",
-            received_at=NOW.timestamp(),
+            received_at=received_at,
             sender="owner",
             context_token="ctx",
             text=text,

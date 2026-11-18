@@ -13,17 +13,23 @@ class TraceSink(Protocol):
 class JsonlTraceSink:
     """Append-only JSONL writer: the sole persistent record of a trace."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, max_file_bytes: int | None = None) -> None:
         self.root = root
+        self.max_file_bytes = max_file_bytes
 
     def emit(self, span: Span) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
 
         path = self.root / f"{span.context.trace_id}.jsonl"
 
-        with path.open("a", encoding="utf-8") as f:
-            f.write(span.model_dump_json())
-            f.write("\n")
+        line = (span.model_dump_json() + "\n").encode("utf-8")
+        with path.open("ab") as f:
+            if (
+                self.max_file_bytes is not None
+                and f.tell() + len(line) > self.max_file_bytes
+            ):
+                raise OSError("trace file limit reached")
+            f.write(line)
 
 
 class FanoutTraceSink:
@@ -69,16 +75,27 @@ class RedactingTraceSink:
     values are untouched.
     """
 
-    def __init__(self, inner: TraceSink, secret_values: "tuple[str, ...]") -> None:
+    def __init__(
+        self,
+        inner: TraceSink,
+        secret_values: tuple[str, ...],
+        *,
+        metadata_only: bool = False,
+    ) -> None:
         self.inner = inner
+        self.metadata_only = metadata_only
         self.secret_values = tuple(value for value in secret_values if value)
 
     def emit(self, span: Span) -> None:
-        if not self.secret_values:
+        if not self.secret_values and not self.metadata_only:
             self.inner.emit(span)
             return
         redacted = span.model_copy(deep=True)
         if redacted.error is not None:
-            redacted.error = _redact_text(redacted.error, self.secret_values)
+            redacted.error = (
+                "details_omitted"
+                if self.metadata_only
+                else _redact_text(redacted.error, self.secret_values)
+            )
         redacted.attributes = _redact_value(redacted.attributes, self.secret_values)
         self.inner.emit(redacted)

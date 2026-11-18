@@ -2,6 +2,7 @@ from typing import Any
 
 from cairn.agent.budget import RunBudget
 from cairn.agent.harness import Agent
+from cairn.agent.models.client import LLMClient
 from cairn.agent.models.messages import LLMResponse, Message, ToolCall, ToolResult
 from cairn.agent.tools.base import Tool, ToolExecutionContext
 from cairn.agent.tools.registry import ToolRegistry
@@ -91,7 +92,7 @@ class FailingSink:
 
 
 def make_agent(
-    llm: SequenceLLM,
+    llm: LLMClient,
     tool: Tool | None = None,
     events: list[Event] | None = None,
 ) -> Agent:

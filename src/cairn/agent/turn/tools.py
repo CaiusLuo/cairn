@@ -51,6 +51,7 @@ import asyncio
 import json
 from collections.abc import Callable
 from pathlib import Path
+from time import perf_counter
 from typing import cast
 
 from cairn.agent.harness import Agent
@@ -239,8 +240,10 @@ def _record_tool_error(
     tool_span: Span | None = None,
     *,
     failure_kind: ToolFailureKind = ToolFailureKind.EFFECT_UNKNOWN,
+    started: float | None = None,
 ) -> None:
     """Record an expected preflight or execution failure through one path."""
+    duration = _elapsed_ms(started) if started is not None else None
     if isinstance(error, PermissionRefused):
         # A well-formed call that only needs approval. The model is told which
         # targets are blocked so it can ask the operator and retry the call.
@@ -284,17 +287,16 @@ def _record_tool_error(
             error=f"{failure.type}: {failure.error}",
         )
 
-    agent.emit(
-        Event(
-            type="tool_error",
-            data={
-                "tool": tool_call.name,
-                "error": failure.error,
-                "error_type": failure.type,
-                "failure_kind": failure_kind.value,
-            },
-        )
-    )
+    data: dict[str, object] = {
+        "tool": tool_call.name,
+        "tool_call_id": tool_call.id,
+        "error": failure.error,
+        "error_type": failure.type,
+        "failure_kind": failure_kind.value,
+    }
+    if duration is not None:
+        data["duration_ms"] = duration
+    agent.emit(Event(type="tool_error", data=data))
 
 
 def _accessible_roots(permission: PermissionResult) -> tuple[Path, ...]:
@@ -308,74 +310,39 @@ def _accessible_roots(permission: PermissionResult) -> tuple[Path, ...]:
     return tuple(Path(root) for root in sorted(permission.granted_roots))
 
 
-def _check_tool_permission(
+def _emit_permission(
     agent: Agent,
     tool_call: ToolCall,
-    turn_span: Span | None,
-    tool: Tool | None = None,
-) -> PermissionResult:
-    # A span exists only when a tracer does, so one local binding is enough.
-    tracer = agent.tracer
-    permission_span = None
-
-    if tracer is not None and turn_span is not None:
-        permission_span = tracer.start_child_span(
-            turn_span,
-            "permission.check",
-            attributes={
-                "tool": tool_call.name,
-                "tool_call_id": tool_call.id,
-                "handler_configured": agent.permission_handler is not None,
-            },
+    permission: PermissionResult | None,
+    duration_ms: float,
+    *,
+    error: BaseException | None = None,
+) -> None:
+    data: dict[str, object] = {
+        "tool": tool_call.name,
+        "tool_call_id": tool_call.id,
+        "duration_ms": duration_ms,
+    }
+    if permission is not None:
+        data.update(
+            allowed=permission.allowed,
+            policy_decision=permission.policy_decision.value,
+            prompted=permission.prompted,
+            source=permission.source.value,
+            status="completed",
         )
+    elif error is not None:
+        data.update(
+            status="cancelled"
+            if isinstance(error, asyncio.CancelledError)
+            else "failed",
+            error_type=type(error).__name__,
+        )
+    agent.emit(Event(type="permission_check", data=data))
 
-    try:
-        # Pure policy first. Baseline ALLOW and hard DENY never reach a handler,
-        # so a permissive handler can never re-authorize a policy denial.
-        permission = evaluate_permission_policy(tool_call)
-        if permission.policy_decision is not PermissionDecision.ASK and getattr(
-            tool, "requires_authorization", False
-        ):
-            # A dynamically sourced tool must never inherit the baseline ALLOW
-            # that ordinary built-ins receive.
-            permission = PermissionResult(
-                policy_decision=PermissionDecision.ASK, allowed=False
-            )
-        if permission.policy_decision is PermissionDecision.ASK:
-            permission = _resolve_ask(agent, tool, tool_call)
 
-        if permission_span is not None and tracer is not None:
-            permission_span.attributes.update(
-                {
-                    "policy_decision": permission.policy_decision.value,
-                    "allowed": permission.allowed,
-                    "prompted": permission.prompted,
-                    "source": permission.source.value,
-                    "granted_capabilities": sorted(permission.granted_capabilities),
-                    "granted_roots": sorted(permission.granted_roots),
-                }
-            )
-    except asyncio.CancelledError as exc:
-        if permission_span is not None and tracer is not None:
-            tracer.end_span(
-                permission_span,
-                status=SpanStatus.ERROR,
-                error=f"{type(exc).__name__}: {exc or 'permission approval cancelled'}",
-            )
-        raise
-    except Exception as exc:
-        if permission_span is not None and tracer is not None:
-            tracer.end_span(
-                permission_span,
-                status=SpanStatus.ERROR,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-        raise
-    else:
-        if permission_span is not None and tracer is not None:
-            tracer.end_span(permission_span, status=SpanStatus.OK)
-
-    return permission
+def _elapsed_ms(started: float) -> float:
+    return round((perf_counter() - started) * 1000, 3)
 
 
 async def _check_tool_permission_async(
@@ -387,6 +354,7 @@ async def _check_tool_permission_async(
     """Permission check for the turn path, which may await a live UI decision."""
     tracer = agent.tracer
     permission_span = None
+    started = perf_counter()
     if tracer is not None and turn_span is not None:
         permission_span = tracer.start_child_span(
             turn_span,
@@ -419,6 +387,7 @@ async def _check_tool_permission_async(
                 }
             )
     except asyncio.CancelledError as exc:
+        _emit_permission(agent, tool_call, None, _elapsed_ms(started), error=exc)
         if permission_span is not None and tracer is not None:
             tracer.end_span(
                 permission_span,
@@ -427,6 +396,7 @@ async def _check_tool_permission_async(
             )
         raise
     except Exception as exc:
+        _emit_permission(agent, tool_call, None, _elapsed_ms(started), error=exc)
         if permission_span is not None and tracer is not None:
             tracer.end_span(
                 permission_span,
@@ -435,8 +405,10 @@ async def _check_tool_permission_async(
             )
         raise
     else:
+        duration = _elapsed_ms(started)
         if permission_span is not None and tracer is not None:
             tracer.end_span(permission_span, status=SpanStatus.OK)
+        _emit_permission(agent, tool_call, permission, duration)
     return permission
 
 
@@ -459,6 +431,7 @@ async def execute_tool_call(
     intentionally leave the call pending so ``run_turn`` can decide whether to
     roll back the whole turn or add ``TurnAborted`` messages.
     """
+    started = perf_counter()
     agent.emit(
         Event(
             type="tool_call",
@@ -482,6 +455,7 @@ async def execute_tool_call(
             turn_span,
             exc,
             failure_kind=ToolFailureKind.PERMANENT,
+            started=started,
         )
         return
 
@@ -500,6 +474,7 @@ async def execute_tool_call(
             Event(
                 type="tool_denied",
                 data={
+                    "tool_call_id": tool_call.id,
                     "tool": tool_call.name,
                     "error": failure.error,
                     "error_type": failure.type,
@@ -516,6 +491,7 @@ async def execute_tool_call(
         before_execute()
 
     tool_span = None
+    tool_started = perf_counter()
 
     if agent.tracer is not None and turn_span is not None:
         tool_span = agent.tracer.start_child_span(
@@ -547,6 +523,7 @@ async def execute_tool_call(
         )
 
     except asyncio.CancelledError:
+        duration = _elapsed_ms(tool_started)
         tool_content = ToolFailure(
             error="Tool execution was cancelled.",
             type="ToolCancelled",
@@ -557,6 +534,16 @@ async def execute_tool_call(
             content=tool_content,
         )
         consume_tool_call()
+        agent.emit(
+            Event(
+                type="tool_execution_cancelled",
+                data={
+                    "tool": tool_call.name,
+                    "tool_call_id": tool_call.id,
+                    "duration_ms": duration,
+                },
+            )
+        )
 
         if tool_span is not None and agent.tracer is not None:
             tool_span.attributes.update(
@@ -588,10 +575,12 @@ async def execute_tool_call(
             exc,
             tool_span,
             failure_kind=kind,
+            started=tool_started,
         )
 
         return
     else:
+        duration = _elapsed_ms(tool_started)
         tool_content = json.dumps(
             result.model_dump(),
             ensure_ascii=False,
@@ -635,8 +624,11 @@ async def execute_tool_call(
                 "tool_call_id": tool_call.id,
                 "tool": tool_call.name,
                 "exit_code": result.exit_code,
+                "duration_ms": duration,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
+                "stdout_length": len(result.stdout),
+                "stderr_length": len(result.stderr),
                 "stdout_truncated": result.stdout_truncated,
                 "stderr_truncated": result.stderr_truncated,
             },
