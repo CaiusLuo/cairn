@@ -239,7 +239,8 @@ def test_request_output_is_capped_to_the_remaining_token_budget() -> None:
     asyncio.run(scenario())
 
 
-def test_fallback_failure_keeps_usage_unknown_instead_of_zero() -> None:
+@pytest.mark.parametrize("capped", [False, True])
+def test_fallback_failure_keeps_usage_unknown_instead_of_zero(capped: bool) -> None:
     """A failed candidate may have been billed; the total stays unknown."""
 
     async def scenario() -> None:
@@ -281,17 +282,21 @@ def test_fallback_failure_keeps_usage_unknown_instead_of_zero() -> None:
             ),
         )
 
-        assert (
-            await run_turn(agent, "hello", budget=RunBudget(5, max_tokens=1_000_000))
-            == "done"
-        )
+        if capped:
+            with pytest.raises(RunBudgetExceeded) as error:
+                await run_turn(
+                    agent, "hello", budget=RunBudget(5, max_tokens=1_000_000)
+                )
+            assert error.value.reason is BudgetReason.USAGE_UNKNOWN
+        else:
+            assert await run_turn(agent, "hello", budget=RunBudget(5)) == "done"
 
         usage = agent.last_budget_usage
         assert usage is not None
-        assert flaky.calls == 2
-        # The successful response reported usage, but the failed attempt did
-        # not, so the turn total cannot be presented as a measurement.
+        assert flaky.calls == (1 if capped else 2)
         assert usage.total_tokens is None
-        assert usage.stop_reason == BudgetReason.USAGE_UNKNOWN.value
+        assert usage.stop_reason == (
+            BudgetReason.USAGE_UNKNOWN.value if capped else None
+        )
 
     asyncio.run(scenario())

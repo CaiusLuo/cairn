@@ -38,6 +38,7 @@ class LLMResponse(BaseModel):
 
     tool_calls: list[ToolCall] = Field(default_factory=list)
     usage: LLMUsage | None = None
+    truncated: bool = False
 
 
 class ToolResult(BaseModel):

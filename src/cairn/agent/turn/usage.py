@@ -51,6 +51,7 @@ class UsageLedger:
         self._requests = 0
         self._responses = 0
         self._summaries = 0
+        self._summary_responses = 0
         self._unreported = 0
         self._input = 0
         self._output = 0
@@ -66,20 +67,19 @@ class UsageLedger:
         self._responses += 1
         self._consume(usage)
 
-    def summary(self, usage: LLMUsage | None, *, attempted: bool) -> None:
-        """Record one compaction summary request.
-
-        ``attempted`` distinguishes "no summarizer request was made" from "one
-        was made and its usage is unknown"; the latter must not be counted as
-        zero.
-        """
-        if not attempted:
-            return
+    def summary_request(self) -> None:
         self._summaries += 1
+
+    def summary_response(self, usage: LLMUsage | None) -> None:
+        self._summary_responses += 1
         self._consume(usage)
 
     def totals(self) -> UsageTotals:
-        known = self._requests == self._responses and self._unreported == 0
+        known = (
+            self._requests == self._responses
+            and self._summaries == self._summary_responses
+            and self._unreported == 0
+        )
         reported = self._responses + self._summaries > 0
         measured = known and reported
         return UsageTotals(

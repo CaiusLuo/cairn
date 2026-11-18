@@ -226,7 +226,12 @@ class LiteLLMClient:
                 ) from None
             raise
 
-        message = response.choices[0].message
+        choice = response.choices[0]
+        message = choice.message
+        if getattr(choice, "finish_reason", None) == "length":
+            return LLMResponse(
+                content=message.content, usage=_parse_usage(response), truncated=True
+            )
 
         tool_calls = [
             ToolCall(

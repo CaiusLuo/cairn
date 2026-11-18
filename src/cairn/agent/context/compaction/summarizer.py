@@ -8,6 +8,7 @@ builds a request stays testable with a stub and the adapter stays replaceable.
 from dataclasses import dataclass
 from typing import Protocol
 
+from cairn.agent.context.window import TokenCounter
 from cairn.agent.models.messages import LLMUsage, Message
 
 #: A summary longer than this share of its token allowance is treated as a
@@ -73,6 +74,10 @@ class Summarizer(Protocol):
         summary policy discards the old cache instead of presenting text written
         under a contract the model no longer follows.
         """
+        ...
+
+    def input_tokens(self, messages: list[Message], counter: TokenCounter) -> int:
+        """Measure the full summary prompt, including instructions."""
         ...
 
     async def summarize(

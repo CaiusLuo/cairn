@@ -250,7 +250,7 @@ async def run_turn(
                     tool_schemas=tool_schemas,
                     turn_start=turn_start,
                     trace=trace,
-                    remaining_tokens=budget_policy.remaining_tokens(),
+                    budget_policy=budget_policy,
                 )
 
                 trace.begin_step(
@@ -319,13 +319,14 @@ async def run_turn(
                     # The answer exists and has already been paid for. If this
                     # last call crossed the budget, record the overrun instead of
                     # discarding the result; no further request will start.
-                    budget_policy.finish()
+                    budget_policy.finish(truncated=response.truncated)
                     agent.emit(
                         Event(
                             type="agent_finish",
                             data={
                                 "content": response.content,
                                 "step": step + 1,
+                                **({"truncated": True} if response.truncated else {}),
                             },
                         )
                     )

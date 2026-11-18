@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from math import isfinite
+from math import floor, isfinite
 from time import monotonic
 from typing import Any, NoReturn
 
@@ -43,6 +43,7 @@ class TurnBudgetPolicy:
         self.tool_attempts = 0
         self.stagnant = 0
         self.previous: str | None = None
+        self._terminal_request = False
         self.stopped: tuple[BudgetReason, int | float, int | float] | None = None
 
     def snapshot(self) -> BudgetUsage:
@@ -92,49 +93,49 @@ class TurnBudgetPolicy:
             return None
         return max(0, self.budget.max_seconds - (monotonic() - self.started))
 
-    def remaining_tokens(self) -> int | None:
-        """Tokens still available before ``max_tokens``, or None when unbounded.
-
-        Unknown usage returns None: the caller cannot reserve an amount it cannot
-        measure, and ``check`` stops the turn before another request.
-        """
-        if self.budget.max_tokens is None:
-            return None
-        total = self._spent_tokens()
-        if total is None:
-            return None
-        return max(0, self.budget.max_tokens - total)
-
-    def _spent_tokens(self) -> int | None:
-        """Total tokens consumed, 0 before any call, None when unmeasurable."""
-        totals = self.usage.totals()
-        if totals.total_tokens is not None:
-            return totals.total_tokens
-        return 0 if totals.attempts == 0 else None
+    @property
+    def has_spend_limit(self) -> bool:
+        return self.budget.max_tokens is not None or self.budget.max_cost is not None
 
     def output_limit(self, request: ContextRequest) -> int | None:
-        """Pre-request admission: reserve the measured input, cap the output.
-
-        Called after a candidate request has been measured and before it is sent.
-        A positive return is the provider output ceiling for this request. None
-        means the remaining ceiling cannot cover the input plus one output token;
-        the request is admitted as the turn's last and ``finish`` records any
-        overrun.
-        """
-        if self.budget.max_tokens is None:
+        """Admit a candidate, allowing one final request when its input won't fit."""
+        self.check()
+        usage = self.snapshot()
+        if self.budget.max_tokens is None or usage.total_tokens is None:
             return None
-        total = self._spent_tokens()
-        if total is None:
-            # The unknown attempt is already recorded; an earlier or later
-            # ``check`` stops further work once a token or cost limit applies.
-            return None
-        remaining = self.budget.max_tokens - total
-        if remaining <= 0:
-            self.stop(BudgetReason.MAX_TOKENS, self.budget.max_tokens, total)
-        request_tokens = request.tokens_after.tokens
-        if remaining > request_tokens:
-            return remaining - request_tokens
+        remaining = self.budget.max_tokens - usage.total_tokens
+        output = remaining - request.tokens_after.tokens
+        if output > 0:
+            return output
+        self._terminal_request = True
         return None
+
+    def summary_output_limit(
+        self, input_tokens: int, next_input_tokens: int, allowance: int
+    ) -> int:
+        """Reserve the summary's input and leave room for the primary reply."""
+        self.check()
+        usage = self.snapshot()
+        budget = self.budget
+        required = input_tokens + next_input_tokens
+        if budget.max_tokens is not None and usage.total_tokens is not None:
+            allowance = min(
+                allowance, budget.max_tokens - usage.total_tokens - required - 1
+            )
+        if budget.max_cost is not None:
+            assert usage.estimated_cost is not None
+            input_cost = self._cost(required, 1)
+            if input_cost is None:
+                return 0
+            remaining = budget.max_cost - usage.estimated_cost - input_cost
+            if remaining <= 0:
+                return 0
+            rate = budget.output_cost_per_million
+            assert rate is not None
+            unit_cost = rate / 1_000_000
+            if unit_cost and allowance * unit_cost > remaining:
+                allowance = floor(remaining / unit_cost)
+        return allowance
 
     def observe_batch(
         self, calls: tuple[ToolCall, ...], results: list[Message], authority: Any
@@ -177,8 +178,8 @@ class TurnBudgetPolicy:
             )
         )
 
-    def finish(self) -> None:
-        """Record an overrun that only the final response revealed.
+    def finish(self, *, truncated: bool = False) -> None:
+        """Record an output limit or overrun revealed by the final response.
 
         The answer already exists and was already paid for. Discarding it would
         not recover the cost, so the turn completes with the overrun recorded in
@@ -187,16 +188,12 @@ class TurnBudgetPolicy:
         if self.stopped is not None:
             return
         usage = self.snapshot()
-        if (
-            (self.budget.max_tokens is not None or self.budget.max_cost is not None)
-            and usage.total_tokens is None
-            and usage.requests
-        ):
+        if self.has_spend_limit and usage.total_tokens is None and usage.requests:
             self._note(BudgetReason.USAGE_UNKNOWN, 0, usage.requests)
         elif (
             self.budget.max_tokens is not None
             and usage.total_tokens is not None
-            and usage.total_tokens >= self.budget.max_tokens
+            and (self._terminal_request or usage.total_tokens >= self.budget.max_tokens)
         ):
             self._note(
                 BudgetReason.MAX_TOKENS, self.budget.max_tokens, usage.total_tokens
@@ -209,6 +206,8 @@ class TurnBudgetPolicy:
             self._note(
                 BudgetReason.MAX_COST, self.budget.max_cost, usage.estimated_cost
             )
+        elif truncated:
+            self._note(BudgetReason.OUTPUT_LIMIT, 0, 0)
 
     def _note(
         self, reason: BudgetReason, limit: int | float, used: int | float
@@ -230,16 +229,12 @@ class TurnBudgetPolicy:
             self.stop(
                 BudgetReason.MAX_SECONDS, budget.max_seconds, usage.elapsed_seconds
             )
-        if (
-            usage.requests
-            and (budget.max_tokens is not None or budget.max_cost is not None)
-            and usage.total_tokens is None
-        ):
+        if usage.requests and self.has_spend_limit and usage.total_tokens is None:
             self.stop(BudgetReason.USAGE_UNKNOWN, 0, usage.requests)
         if (
             budget.max_tokens is not None
             and usage.total_tokens is not None
-            and usage.total_tokens >= budget.max_tokens
+            and (self._terminal_request or usage.total_tokens >= budget.max_tokens)
         ):
             self.stop(BudgetReason.MAX_TOKENS, budget.max_tokens, usage.total_tokens)
         if budget.max_cost is not None:

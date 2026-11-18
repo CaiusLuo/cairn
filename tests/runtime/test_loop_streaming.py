@@ -4,10 +4,11 @@ from typing import Any
 import pytest
 from litellm.exceptions import RateLimitError
 
+from cairn.agent.budget import BudgetReason, RunBudget
 from cairn.agent.harness import Agent
 from cairn.agent.models.client import LLMStreamChunk, StreamProtocolError, ToolCallDelta
 from cairn.agent.models.executor import StreamObserverError
-from cairn.agent.models.messages import Message, ToolCall, ToolResult
+from cairn.agent.models.messages import LLMUsage, Message, ToolCall, ToolResult
 from cairn.agent.permissions import (
     PermissionCapability,
     PermissionDecision,
@@ -149,11 +150,35 @@ def test_accepted_group_keeps_preflight_and_capability_authority(allowed: bool) 
     assert any(event.type == "tool_denied" for event in events) is (not allowed)
 
 
+def test_truncated_stream_preserves_text_and_usage_without_executing_tools() -> None:
+    llm = ScriptedStreamLLM(
+        [
+            LLMStreamChunk(
+                text="partial", tool_calls=(ToolCallDelta(0, "a", "record", "{}"),)
+            ),
+            LLMStreamChunk(finish_reason="length"),
+            LLMStreamChunk(usage=LLMUsage(input_tokens=5, output_tokens=3)),
+        ]
+    )
+    events: list[Event] = []
+    tool = RecordingTool()
+    agent = make_agent(llm, events, tool)
+
+    assert asyncio.run(run_turn(agent, "hello", budget=RunBudget(1))) == "partial"
+    assert agent.state.messages[-1] == Message(role="assistant", content="partial")
+    assert tool.calls == []
+    assert agent.last_budget_usage is not None
+    assert agent.last_budget_usage.total_tokens == 8
+    assert agent.last_budget_usage.stop_reason == BudgetReason.OUTPUT_LIMIT.value
+    assert next(event for event in events if event.type == "agent_finish").data[
+        "truncated"
+    ]
+
+
 @pytest.mark.parametrize(
     "script",
     [
         [LLMStreamChunk(text="partial")],
-        [LLMStreamChunk(text="partial", finish_reason="length")],
         [
             LLMStreamChunk(tool_calls=(ToolCallDelta(0, "a", "record", "{"),)),
             LLMStreamChunk(finish_reason="tool_calls"),

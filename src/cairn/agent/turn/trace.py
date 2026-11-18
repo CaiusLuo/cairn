@@ -222,17 +222,8 @@ class TurnTrace:
         self._agent.tracer.end_span(self._llm_span, status=SpanStatus.OK)
 
     def on_compaction(self, outcome: "CompactionOutcome") -> None:
-        """Record that this turn reduced its request, and account for its cost.
-
-        Only statuses, counts and token figures are recorded; the summary text
-        lives in the compaction record and never reaches the trace. A summary
-        request is a real provider call, so its usage joins the turn total rather
-        than disappearing.
-        """
+        """Trace reduction status and sizes without retaining summary text."""
         self._compaction_outcomes += 1
-        # A summary is a real provider request. ``attempted`` keeps a failed or
-        # unreported call in the ledger as unknown instead of letting it vanish.
-        self._usage.summary(outcome.usage, attempted=outcome.summary_attempted)
         if self._turn_span is None or self._agent.tracer is None:
             return
         attributes = self._turn_span.attributes

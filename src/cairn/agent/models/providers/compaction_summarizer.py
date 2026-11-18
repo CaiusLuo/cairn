@@ -13,6 +13,7 @@ from cairn.agent.context.compaction.summarizer import (
     SummaryResult,
     check_summary,
 )
+from cairn.agent.context.window import TokenCounter
 from cairn.agent.models.client import LLMClient, with_output_limit
 from cairn.agent.models.messages import Message
 
@@ -50,26 +51,18 @@ class LLMCompactionSummarizer:
     def policy_version(self) -> int:
         return SUMMARY_POLICY_VERSION
 
+    def input_tokens(self, messages: list[Message], counter: TokenCounter) -> int:
+        return counter.count(_summary_request(messages), []).tokens
+
     async def summarize(
         self, messages: list[Message], *, max_tokens: int
     ) -> SummaryResult:
-        request = [
-            Message(role="system", content=SUMMARY_POLICY),
-            *_as_quoted_history(messages),
-            Message(
-                role="user",
-                content=(
-                    "Summarize the quoted conversation above using these sections: "
-                    f"{SUMMARY_SECTIONS}. Reply with the summary text only."
-                ),
-            ),
-        ]
         try:
             # The same allowance that validates the answer bounds the request.
             # Without it a provider may generate (and bill for) more than the
             # compaction reserved, only to have the text rejected afterwards.
             response = await with_output_limit(self.client, max_tokens).generate(
-                request, None
+                _summary_request(messages), None
             )
         except asyncio.CancelledError:
             # Cancellation is the caller's outcome, not a summary failure.
@@ -78,12 +71,26 @@ class LLMCompactionSummarizer:
             # No provider error text reaches the caller: a trace may record only
             # the fixed reason, never endpoint or credential detail.
             return SummaryResult.failed(FAILURE_MODEL_ERROR)
-        if response.tool_calls:
+        if response.tool_calls or response.truncated:
             return SummaryResult.failed(FAILURE_MODEL_ERROR, usage=response.usage)
         checked = check_summary(response.content or "", max_tokens=max_tokens)
         # A summarization is a real provider call; its usage must reach the turn
         # total whether or not the text passed validation.
         return replace(checked, usage=response.usage)
+
+
+def _summary_request(messages: list[Message]) -> list[Message]:
+    return [
+        Message(role="system", content=SUMMARY_POLICY),
+        *_as_quoted_history(messages),
+        Message(
+            role="user",
+            content=(
+                "Summarize the quoted conversation above using these sections: "
+                f"{SUMMARY_SECTIONS}. Reply with the summary text only."
+            ),
+        ),
+    ]
 
 
 def _as_quoted_history(messages: list[Message]) -> list[Message]:

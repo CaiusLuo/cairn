@@ -7,6 +7,7 @@ failure degrades to a usable view instead of ending the turn.
 
 import asyncio
 from collections.abc import Coroutine
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -68,6 +69,44 @@ def compactor(budget_tokens: int, *, keep_groups: int = 1) -> RequestCompactor:
 
 def run(coro: Coroutine[Any, Any, CompactionOutcome]) -> CompactionOutcome:
     return asyncio.run(coro)
+
+
+def test_overflow_does_not_resummarize_an_unchanged_prefix() -> None:
+    summarizer = StubSummarizer("keep")
+    messages = [
+        user("x" * 450),
+        assistant("y" * 450),
+        user("p" * 300),
+        assistant("q" * 300),
+        user("current " + "z" * 650),
+    ]
+    budget_tokens = 1_000
+    before = source(messages, budget_tokens=budget_tokens)
+    reducer = compactor(budget_tokens)
+    first = run(
+        compact(
+            source=before,
+            compactor=reducer,
+            summarizer=summarizer,
+            summarize_budget=100,
+        )
+    )
+    assert first.step is CompactionStep.SUMMARIZED
+    assert first.record is not None
+    assert first.tokens_after > reducer.budget.input_tokens
+
+    second = run(
+        compact(
+            source=replace(before, previous=first.record),
+            compactor=reducer,
+            summarizer=summarizer,
+            summarize_budget=100,
+        )
+    )
+
+    assert second.record is not None
+    assert second.record.summary == first.record.summary
+    assert len(summarizer.calls) == 1
 
 
 class TestDecisionOrder:

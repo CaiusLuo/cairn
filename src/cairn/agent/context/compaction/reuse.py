@@ -12,6 +12,7 @@ loses nothing but the work.
 """
 
 import hashlib
+import json
 from dataclasses import dataclass
 
 from cairn.agent.context.compaction.rules import CompactionRecord
@@ -128,6 +129,8 @@ def _fingerprint(messages: list[Message]) -> tuple[str, ...]:
     without retaining another copy of a potentially large conversation.
     """
     return tuple(
-        hashlib.sha256(message.model_dump_json().encode("utf-8")).hexdigest()
+        hashlib.sha256(
+            json.dumps(message.model_dump(mode="json"), sort_keys=True).encode("utf-8")
+        ).hexdigest()
         for message in messages
     )

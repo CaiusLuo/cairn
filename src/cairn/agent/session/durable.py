@@ -883,12 +883,24 @@ class DurableSession(Session):
                 ),
                 compaction=_stored_compaction(self.agent, self._store.sensitive_values),
             )
-            _, digest = encode_storage_checkpoint(
-                checkpoint,
-                self._receipt,
-                format_version=2 if self._store.schema_version >= 3 else 1,
-                sensitive_values=self._store.sensitive_values,
-            )
+            format_version = 2 if self._store.schema_version >= 3 else 1
+            try:
+                _, digest = encode_storage_checkpoint(
+                    checkpoint,
+                    self._receipt,
+                    format_version=format_version,
+                    sensitive_values=self._store.sensitive_values,
+                )
+            except SessionStoreError as exc:
+                if exc.code != "record_limit" or checkpoint.compaction is None:
+                    raise
+                checkpoint = checkpoint.model_copy(update={"compaction": None})
+                _, digest = encode_storage_checkpoint(
+                    checkpoint,
+                    self._receipt,
+                    format_version=format_version,
+                    sensitive_values=self._store.sensitive_values,
+                )
             self._expected_receipt = CheckpointReceipt(
                 revision=Revision(
                     session_id=str(self.session_id),

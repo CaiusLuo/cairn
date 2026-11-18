@@ -8,6 +8,8 @@ compaction failure never ends a turn.
 """
 
 import asyncio
+import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +18,7 @@ import pytest
 from cairn.agent.budget import BudgetReason, RunBudget, RunBudgetExceeded
 from cairn.agent.context.compaction import SUMMARY_PREFIX
 from cairn.agent.context.compaction.summarizer import FAILURE_MODEL_ERROR, SummaryResult
-from cairn.agent.context.window import ContextBudget, ContextBuilder
+from cairn.agent.context.window import ContextBudget, ContextBuilder, TokenCount
 from cairn.agent.harness import Agent
 from cairn.agent.models.messages import (
     LLMResponse,
@@ -25,7 +27,9 @@ from cairn.agent.models.messages import (
     ToolCall,
     ToolResult,
 )
+from cairn.agent.session import codec, durable
 from cairn.agent.session.durable import DurableSession
+from cairn.agent.session.models import CheckpointPayload, CheckpointReceipt
 from cairn.agent.tools.registry import ToolRegistry
 from cairn.agent.tracing.models import SpanStatus
 from cairn.agent.tracing.tracer import Tracer
@@ -43,9 +47,7 @@ from tests.support.runtime import (
 from tests.support.sessions import SESSION, store
 
 
-class ExplodingSummarizer:
-    policy_version = 1
-
+class ExplodingSummarizer(StubSummarizer):
     async def summarize(
         self, messages: list[Message], *, max_tokens: int
     ) -> SummaryResult:
@@ -354,10 +356,52 @@ def test_summary_usage_reaches_both_trace_and_budget() -> None:
     assert turn_span.attributes["output_tokens"] == usage.output_tokens
 
 
-def test_summary_spend_stops_the_turn_before_the_next_paid_request() -> None:
+@pytest.mark.parametrize(
+    "budget",
+    [
+        RunBudget(5, max_tokens=500),
+        RunBudget(
+            5, max_cost=0.0005, input_cost_per_million=1, output_cost_per_million=1
+        ),
+    ],
+)
+def test_unaffordable_summary_is_skipped_to_leave_room_for_the_answer(
+    budget: RunBudget,
+) -> None:
+    summarizer = StubSummarizer()
+    agent = build_agent(
+        [LLMResponse(content="done", usage=LLMUsage(input_tokens=30, output_tokens=5))],
+        summarizer=summarizer,
+        budget_tokens=1_200,
+    )
+    _settled_turns(agent)
+
+    assert asyncio.run(run_turn(agent, "continue", budget=budget)) == "done"
+    assert summarizer.calls == []
+    assert agent.last_budget_usage is not None
+    assert agent.last_budget_usage.total_tokens == 35
+
+
+@pytest.mark.parametrize(
+    ("budget", "reason"),
+    [
+        (RunBudget(5, max_tokens=1_200), BudgetReason.MAX_TOKENS),
+        (
+            RunBudget(
+                5, max_cost=0.0012, input_cost_per_million=1, output_cost_per_million=1
+            ),
+            BudgetReason.MAX_COST,
+        ),
+    ],
+)
+def test_summary_spend_stops_the_turn_before_the_next_paid_request(
+    budget: RunBudget,
+    reason: BudgetReason,
+) -> None:
     sink = RecordingSink()
+    # The provider reports more input than the local estimate at dispatch.
     summarizer = StubSummarizer(
-        "carry the constraint", usage=LLMUsage(input_tokens=500, output_tokens=50)
+        "carry the constraint", usage=LLMUsage(input_tokens=1_250, output_tokens=50)
     )
     agent = build_agent(
         [LLMResponse(content="never sent")],
@@ -368,19 +412,48 @@ def test_summary_spend_stops_the_turn_before_the_next_paid_request() -> None:
     _settled_turns(agent)
 
     with pytest.raises(RunBudgetExceeded) as error:
-        asyncio.run(run_turn(agent, "continue", budget=RunBudget(5, max_tokens=500)))
+        asyncio.run(run_turn(agent, "continue", budget=budget))
 
-    assert error.value.reason is BudgetReason.MAX_TOKENS
+    assert error.value.reason is reason
+    assert len(summarizer.calls) == 1
     assert isinstance(agent.llm, SequenceLLM)
-    assert agent.llm.calls == [], "the budget stop precedes the main request"
+    assert agent.llm.calls == []
     usage = agent.last_budget_usage
     turn_span = next(span for span in sink.spans if span.name == "agent.turn")
     assert usage is not None
-    # The trace and the budget now agree on the summary's cost.
-    assert usage.total_tokens == 550
-    assert usage.stop_reason == "max_tokens"
-    assert turn_span.attributes["input_tokens"] == 500
+    assert usage.total_tokens == 1_300
+    assert usage.stop_reason == reason.value
+    assert turn_span.attributes["input_tokens"] == 1_250
     assert turn_span.attributes["output_tokens"] == 50
+
+
+def test_summary_is_booked_even_if_measuring_the_replacement_fails() -> None:
+    class FailingCounter(CharacterCounter):
+        def count(
+            self, messages: list[Message], tools: list[dict[str, Any]]
+        ) -> TokenCount:
+            if any(
+                (message.content or "").startswith(SUMMARY_PREFIX)
+                for message in messages
+            ):
+                raise ValueError("cannot count replacement")
+            return super().count(messages, tools)
+
+    summarizer = StubSummarizer(
+        "keep", usage=LLMUsage(input_tokens=500, output_tokens=50)
+    )
+    agent = build_agent(
+        [LLMResponse(content="done", usage=LLMUsage(input_tokens=30, output_tokens=5))],
+        summarizer=summarizer,
+        budget_tokens=1_200,
+    )
+    agent.context_builder.counter = FailingCounter()
+    _settled_turns(agent)
+    assert asyncio.run(run_turn(agent, "continue", budget=TEST_BUDGET)) == "done"
+    assert len(summarizer.calls) == 1
+    assert agent.last_budget_usage is not None
+    assert agent.last_budget_usage.total_tokens == 585
+    assert agent.compaction is None
 
 
 def test_failed_summary_usage_is_unknown_not_zero() -> None:
@@ -399,11 +472,14 @@ def test_failed_summary_usage_is_unknown_not_zero() -> None:
     )
     _settled_turns(agent)
 
-    answer = asyncio.run(
-        run_turn(agent, "continue", budget=RunBudget(5, max_tokens=1_000_000))
-    )
+    with pytest.raises(RunBudgetExceeded) as error:
+        asyncio.run(
+            run_turn(agent, "continue", budget=RunBudget(5, max_tokens=1_000_000))
+        )
 
-    assert answer == "finished"
+    assert error.value.reason is BudgetReason.USAGE_UNKNOWN
+    assert isinstance(agent.llm, SequenceLLM)
+    assert agent.llm.calls == []
     assert len(summarizer.calls) == 1, "the failed attempt must still be visible"
     usage = agent.last_budget_usage
     turn_span = next(span for span in sink.spans if span.name == "agent.turn")
@@ -420,13 +496,18 @@ def test_a_summary_that_finishes_during_cancellation_still_counts() -> None:
     async def scenario() -> None:
         started = asyncio.Event()
         release = asyncio.Event()
+        cancelled = asyncio.Event()
 
         class BlockingSummarizer(StubSummarizer):
             async def summarize(
                 self, messages: list[Message], *, max_tokens: int
             ) -> SummaryResult:
                 started.set()
-                await release.wait()
+                try:
+                    await asyncio.Future[None]()
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    await release.wait()
                 return await super().summarize(messages, max_tokens=max_tokens)
 
         summarizer = BlockingSummarizer(
@@ -442,9 +523,11 @@ def test_a_summary_that_finishes_during_cancellation_still_counts() -> None:
         running = asyncio.create_task(run_turn(agent, "continue", budget=TEST_BUDGET))
         await asyncio.wait_for(started.wait(), 2)
         running.cancel("stop")
-        await asyncio.sleep(0)
-        assert not running.done(), "rollback must wait for the in-flight summary"
-        release.set()
+        try:
+            await asyncio.wait_for(cancelled.wait(), 2)
+            assert not running.done(), "rollback awaits the provider's cleanup"
+        finally:
+            release.set()
         with pytest.raises(asyncio.CancelledError):
             await running
 
@@ -457,8 +540,46 @@ def test_a_summary_that_finishes_during_cancellation_still_counts() -> None:
     asyncio.run(scenario())
 
 
+def test_cancelling_measurement_never_starts_a_paid_summary() -> None:
+    async def scenario() -> None:
+        measuring = asyncio.Event()
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+
+        class BlockingCounter(CharacterCounter):
+            def count(
+                self, messages: list[Message], tools: list[dict[str, Any]]
+            ) -> TokenCount:
+                loop.call_soon_threadsafe(measuring.set)
+                if not release.wait(5):
+                    raise TimeoutError("measurement was not released")
+                return super().count(messages, tools)
+
+        summarizer = StubSummarizer()
+        agent = build_agent([], summarizer=summarizer, budget_tokens=1_200)
+        agent.context_builder.counter = BlockingCounter()
+        _settled_turns(agent)
+        running = asyncio.create_task(run_turn(agent, "continue", budget=TEST_BUDGET))
+        try:
+            await asyncio.wait_for(measuring.wait(), 2)
+            running.cancel()
+            await asyncio.sleep(0)
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+        assert summarizer.calls == []
+        assert agent.last_budget_usage is not None
+        assert agent.last_budget_usage.requests == 0
+
+    asyncio.run(scenario())
+
+
 def _commit_a_summarized_turn(
-    tmp_path: Path, *, policy_version: int = 1
+    tmp_path: Path,
+    *,
+    policy_version: int = 1,
+    before_summary_commit: Callable[[], None] | None = None,
 ) -> tuple[Any, StubSummarizer]:
     """Build a session whose latest checkpoint carries an accepted summary.
 
@@ -475,10 +596,17 @@ def _commit_a_summarized_turn(
     agent = build_agent(
         [
             LLMResponse(
-                content=f"answer {index}",
-                usage=LLMUsage(input_tokens=10, output_tokens=5),
-            )
-            for index in range(4)
+                tool_calls=[
+                    ToolCall(id="seed-tool", name="big", arguments={"z": 1, "a": 2})
+                ]
+            ),
+            LLMResponse(content="answer 0"),
+            LLMResponse(
+                tool_calls=[
+                    ToolCall(id="latest-tool", name="big", arguments={"value": 1})
+                ]
+            ),
+            *[LLMResponse(content=f"answer {index}") for index in range(1, 4)],
         ],
         summarizer=summarizer,
         budget_tokens=100_000,
@@ -496,6 +624,8 @@ def _commit_a_summarized_turn(
             )
         outcome = asyncio.run(run_compaction(agent))
         assert outcome.record is not None
+        if before_summary_commit is not None:
+            before_summary_commit()
         assert (
             asyncio.run(
                 run_turn(
@@ -505,15 +635,58 @@ def _commit_a_summarized_turn(
             == "answer 3"
         )
         saved = api.inspect(SESSION)
-        assert saved.checkpoint.compaction is not None
-        assert saved.checkpoint.compaction.summary == "KEEP: the original constraint"
+        if before_summary_commit is None:
+            assert saved.checkpoint.compaction is not None
+            assert (
+                saved.checkpoint.compaction.summary == "KEEP: the original constraint"
+            )
     finally:
         session.close()
     return saved, summarizer
 
 
+def test_checkpoint_overflow_drops_only_the_summary_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    encode = codec.encode_storage_checkpoint
+
+    def encode_near_limit(
+        checkpoint: CheckpointPayload,
+        predecessor: CheckpointReceipt | None,
+        *,
+        format_version: int,
+        sensitive_values: tuple[str, ...] = (),
+    ) -> tuple[bytes, str]:
+        if checkpoint.compaction is not None:
+            plain = checkpoint.model_copy(update={"compaction": None})
+            raw, _ = codec.encode_checkpoint(plain, sensitive_values=sensitive_values)
+            monkeypatch.setattr(codec, "MAX_CHECKPOINT_BYTES", len(raw))
+        return encode(
+            checkpoint,
+            predecessor,
+            format_version=format_version,
+            sensitive_values=sensitive_values,
+        )
+
+    def before_summary_commit() -> None:
+        monkeypatch.setattr(durable, "encode_storage_checkpoint", encode_near_limit)
+
+    saved, _ = _commit_a_summarized_turn(
+        tmp_path, before_summary_commit=before_summary_commit
+    )
+    assert saved.checkpoint.compaction is None
+    assert saved.checkpoint.messages[-1].content == "answer 3"
+
+
 def test_durable_reopen_reuses_the_persisted_summary(tmp_path: Path) -> None:
     saved, _ = _commit_a_summarized_turn(tmp_path)
+    cached = saved.checkpoint.compaction
+    assert cached is not None
+    assert any(
+        call.id == "seed-tool"
+        for message in saved.checkpoint.messages[: cached.retained_from]
+        for call in message.tool_calls
+    )
     reuse = StubSummarizer("MUST NOT BE USED")
     fresh = build_agent(
         [

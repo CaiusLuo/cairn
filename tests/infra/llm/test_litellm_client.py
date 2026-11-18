@@ -97,6 +97,7 @@ class FakeMessage:
 @dataclass
 class FakeChoice:
     message: FakeMessage
+    finish_reason: str | None = None
 
 
 @dataclass
@@ -308,3 +309,28 @@ def test_generate_handles_plain_response_and_partial_usage(
     assert response.content == "plain response"
     assert response.tool_calls == []
     assert response.usage == expected_usage
+
+
+def test_generate_drops_a_truncated_tool_batch_but_keeps_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_acompletion(**_kwargs: Any) -> FakeResponse:
+        return FakeResponse(
+            choices=[
+                FakeChoice(
+                    message=FakeMessage(
+                        "partial", [FakeToolCall("a", FakeFunction("record", "{}"))]
+                    ),
+                    finish_reason="length",
+                )
+            ],
+            usage=FakeUsage(prompt_tokens=5, completion_tokens=3),
+        )
+
+    monkeypatch.setattr(litellm_module, "acompletion", fake_acompletion)
+    response = asyncio.run(LiteLLMClient(model="test-model").generate([]))
+
+    assert response.truncated
+    assert response.content == "partial"
+    assert response.usage == LLMUsage(input_tokens=5, output_tokens=3)
+    assert response.tool_calls == []

@@ -22,6 +22,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
+from cairn.agent.budget import RunBudgetExceeded
 from cairn.agent.context.compaction import (
     CompactionBoundary,
     CompactionPolicy,
@@ -34,9 +35,11 @@ from cairn.agent.context.compaction import (
     legal_cut_points,
     summarizer_reserve,
 )
-from cairn.agent.context.compaction.summarizer import Summarizer
+from cairn.agent.context.compaction.summarizer import Summarizer, SummaryResult
 from cairn.agent.context.window import ContextBudget, TokenCount, TokenCounter
-from cairn.agent.models.messages import LLMUsage, Message
+from cairn.agent.models.messages import Message
+from cairn.agent.turn.budget import TurnBudgetPolicy
+from cairn.shared.lifecycle import finish_cleanup, settle_owned
 
 
 def summarizer_policy_version(summarizer: Summarizer | None) -> int:
@@ -69,11 +72,6 @@ class CompactionOutcome:
     folded_messages: int = 0
     tokens_before: int = 0
     tokens_after: int = 0
-    usage: LLMUsage | None = None
-    #: Whether a summarization request was issued, even if it failed before
-    #: reporting usage. A caller that treats a missing usage as zero would hide
-    #: a real provider charge; this flag keeps the attempt visible.
-    summary_attempted: bool = False
 
     @property
     def changed(self) -> bool:
@@ -156,6 +154,7 @@ async def compact(
     summarizer: Summarizer | None,
     summarize_budget: int,
     forced: bool = False,
+    budget_policy: TurnBudgetPolicy | None = None,
 ) -> CompactionOutcome:
     """Run the two-stage reduction for one request and report what happened.
 
@@ -169,13 +168,20 @@ async def compact(
     conversation must not block the event loop that owns cancellation. The model
     summary remains async and runs on the caller's loop.
     """
-    plan = await asyncio.to_thread(
-        _prepare, source, compactor, summarizer is not None, summarize_budget, forced
+    plan = await finish_cleanup(
+        asyncio.to_thread(
+            _prepare,
+            source,
+            compactor,
+            summarizer is not None,
+            summarize_budget,
+            forced,
+        )
     )
     if isinstance(plan, CompactionOutcome):
         return plan
     assert summarizer is not None
-    return await _summarize(plan, summarizer)
+    return await _summarize(plan, summarizer, budget_policy)
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +229,15 @@ def _prepare(
     view = replace(view, tokens=_measure(compactor, source, effective))
     if not forced and not compactor.over_threshold(view.tokens):
         return view.outcome(measured)
-    if not has_summarizer or not _worth_summarizing(compactor, boundary):
+    if (
+        not has_summarizer
+        or not _worth_summarizing(compactor, boundary)
+        or (
+            not forced
+            and source.previous is not None
+            and boundary.retained_from <= source.previous.retained_from
+        )
+    ):
         return view.outcome(measured, status=CompactionStatus.EXHAUSTED)
     return _SummaryPlan(
         source=source,
@@ -250,6 +264,7 @@ def _worth_summarizing(
 async def _summarize(
     plan: _SummaryPlan,
     summarizer: Summarizer,
+    budget_policy: TurnBudgetPolicy | None,
 ) -> CompactionOutcome:
     """Replace the folded prefix with a model summary, or degrade to folding."""
     source = plan.source
@@ -257,18 +272,56 @@ async def _summarize(
     folded = plan.folded
     before = plan.before
     segment = folded.messages[: folded.boundary.retained_from]
+    allowance = plan.summarize_budget
+    if budget_policy is not None and budget_policy.has_spend_limit:
+
+        def measure_inputs() -> tuple[int, int]:
+            return (
+                summarizer.input_tokens(segment, compactor.counter),
+                _measure(compactor, source, source.messages[source.turn_start :]),
+            )
+
+        try:
+            input_tokens, next_input = await finish_cleanup(
+                asyncio.to_thread(measure_inputs)
+            )
+        except Exception:
+            return folded.degraded(before)
+        allowance = budget_policy.summary_output_limit(
+            input_tokens, next_input, allowance
+        )
+        if allowance < 1:
+            return folded.outcome(before, status=CompactionStatus.EXHAUSTED)
+
+    async def request() -> SummaryResult:
+        if budget_policy is not None:
+            budget_policy.check()
+            budget_policy.usage.summary_request()
+        result = await summarizer.summarize(segment, max_tokens=allowance)
+        if budget_policy is not None:
+            budget_policy.usage.summary_response(result.usage)
+        return result
+
+    summarizing = asyncio.create_task(request())
     try:
-        summary = await summarizer.summarize(segment, max_tokens=plan.summarize_budget)
+        summary = await asyncio.shield(summarizing)
     except asyncio.CancelledError:
-        # Cancellation keeps its existing owner: no record is written here.
+        await settle_owned(summarizing)
+        raise
+    except RunBudgetExceeded:
         raise
     except Exception:
-        return folded.degraded(before, attempted=True)
+        return folded.degraded(before)
     if not summary.ok:
-        return folded.degraded(before, summary.usage, attempted=True)
+        return folded.degraded(before)
 
     substituted = _substituted(folded.messages, folded.boundary, summary.text)
-    after = _measure(compactor, source, substituted)
+    try:
+        after = await finish_cleanup(
+            asyncio.to_thread(_measure, compactor, source, substituted)
+        )
+    except Exception:
+        return folded.degraded(before)
     record = CompactionRecord(
         retained_from=folded.boundary.retained_from,
         summary=summary.text,
@@ -281,15 +334,13 @@ async def _summarize(
     if record.is_gainless():
         # The summary did not shrink anything; keep the folded view rather than
         # pay for a replacement that makes the request no smaller.
-        return folded.degraded(before, summary.usage, attempted=True)
+        return folded.degraded(before)
     return CompactionOutcome(
         step=CompactionStep.SUMMARIZED,
         record=record,
         folded_messages=folded.count,
         tokens_before=before,
         tokens_after=after,
-        usage=summary.usage,
-        summary_attempted=True,
     )
 
 
@@ -317,13 +368,7 @@ class FoldedView:
             tokens_after=self.tokens,
         )
 
-    def degraded(
-        self,
-        before: int,
-        usage: LLMUsage | None = None,
-        *,
-        attempted: bool = False,
-    ) -> CompactionOutcome:
+    def degraded(self, before: int) -> CompactionOutcome:
         """Keep this view and report that no summary replaced it."""
         return CompactionOutcome(
             step=CompactionStep.FOLDED,
@@ -332,8 +377,6 @@ class FoldedView:
             folded_messages=self.count,
             tokens_before=before,
             tokens_after=self.tokens,
-            usage=usage,
-            summary_attempted=attempted,
         )
 
     def _record(self, before: int) -> CompactionRecord | None:
