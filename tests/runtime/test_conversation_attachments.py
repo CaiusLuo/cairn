@@ -17,6 +17,7 @@ from cairn.conversation.attachments import AttachmentStore
 from cairn.conversation.models import ConversationSource, RunStatus
 from cairn.conversation.service import ConversationService
 from cairn.conversation.store import DomainStore
+from cairn.development.catalogue import ChannelPrincipal
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
@@ -62,13 +63,14 @@ class AttachmentModel(OfflineDevelopmentModel):
 class PlainModel(OfflineDevelopmentModel):
     def __init__(self) -> None:
         self.seen_tools: list[list[str]] = []
+        self.seen_messages: list[list[Message]] = []
 
     async def generate(
         self,
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
-        del messages
+        self.seen_messages.append(list(messages))
         self.seen_tools.append(
             [item["function"]["name"] for item in tools or [] if "function" in item]
         )
@@ -305,6 +307,36 @@ def test_same_request_id_with_a_different_attachment_set_conflicts(
     asyncio.run(scenario())
 
 
+def test_deleting_a_conversation_removes_its_attachment_files(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path)
+    model = AttachmentModel("notes.txt")
+    app.state.execution.llm_factory = lambda: model
+    api = _client(app)
+
+    async def scenario() -> None:
+        async with app.router.lifespan_context(app):
+            conversation = await api.create_conversation("hello", source="cli")
+            upload = await api.upload_attachment(
+                "notes.txt", b"delete me", media_type="text/plain"
+            )
+            run = await api.send_conversation(
+                conversation["conversation_id"],
+                "read the attachment",
+                source="cli",
+                request_id="attachment-delete-1",
+                attachment_ids=(upload["attachment_id"],),
+            )
+            await _wait_terminal(api, run["run_id"])
+            stored = tmp_path / "state" / "attachments" / "runs" / run["run_id"]
+            assert (stored / "notes.txt").is_file()
+            app.state.conversations.delete_conversation(conversation["conversation_id"])
+            assert not stored.exists()
+
+    asyncio.run(scenario())
+
+
 def test_attachment_names_cannot_escape_the_run_directory(tmp_path: Path) -> None:
     app = _app(tmp_path)
     api = _client(app)
@@ -336,6 +368,78 @@ def test_oversized_attachment_is_rejected(
                     "big.txt", b"nine byte", media_type="text/plain"
                 )
             assert rejected.value.response.status_code == 413
+
+    asyncio.run(scenario())
+
+
+def test_attachment_access_is_owner_only(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    api = _client(app)
+
+    async def scenario() -> None:
+        async with app.router.lifespan_context(app):
+            guest_upload = await api.upload_attachment(
+                "guest-notes.txt", b"guest secret", media_type="text/plain"
+            )
+            guest = ChannelPrincipal(
+                connection_id="ch-1",
+                platform="telegram",
+                sender_id="guest-9",
+                role="allowed",
+                conversation_binding="guest-9",
+            )
+            guest_conversation = app.state.conversations.ensure_channel_conversation(
+                "telegram", "ch-1", "guest-9", "guest-9", "hello"
+            )
+            plain = PlainModel()
+            app.state.execution.llm_factory = lambda: plain
+            guest_run = app.state.conversations.submit(
+                guest_conversation.conversation_id,
+                "read the attachment",
+                ConversationSource.CHANNEL,
+                "attachment-guest-1",
+                attachment_ids=(guest_upload["attachment_id"],),
+                metadata={"channel_principal": guest.model_dump(mode="json")},
+            )
+            await asyncio.wait_for(app.state.conversations.queue.join(), WAIT_SECONDS)
+            settled = app.state.conversations.get_run(guest_run.run_id)
+            assert settled is not None and settled.status is RunStatus.COMPLETED
+            assert "read_attachment" not in plain.seen_tools[0]
+            system = next(
+                message
+                for message in plain.seen_messages[0]
+                if message.role == "system"
+            )
+            assert "guest-notes.txt" not in (system.content or "")
+
+            owner_upload = await api.upload_attachment(
+                "owner-notes.txt", b"owner secret", media_type="text/plain"
+            )
+            owner = ChannelPrincipal(
+                connection_id="ch-1",
+                platform="telegram",
+                sender_id="owner-1",
+                role="owner",
+                conversation_binding="owner-1",
+            )
+            owner_conversation = app.state.conversations.ensure_channel_conversation(
+                "telegram", "ch-1", "owner-1", "owner-1", "hello"
+            )
+            owner_model = AttachmentModel("owner-notes.txt")
+            app.state.execution.llm_factory = lambda: owner_model
+            owner_run = app.state.conversations.submit(
+                owner_conversation.conversation_id,
+                "read the attachment",
+                ConversationSource.CHANNEL,
+                "attachment-owner-1",
+                attachment_ids=(owner_upload["attachment_id"],),
+                metadata={"channel_principal": owner.model_dump(mode="json")},
+            )
+            await asyncio.wait_for(app.state.conversations.queue.join(), WAIT_SECONDS)
+            settled = app.state.conversations.get_run(owner_run.run_id)
+            assert settled is not None and settled.status is RunStatus.COMPLETED
+            assert "read_attachment" in owner_model.seen_tools[0]
+            assert "owner secret" in (settled.result or "")
 
     asyncio.run(scenario())
 

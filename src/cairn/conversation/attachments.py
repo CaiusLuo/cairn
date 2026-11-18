@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -160,6 +161,12 @@ class AttachmentStore:
 
     def directory(self, run_id: str) -> Path:
         return self.runs / run_id
+
+    def discard(self, run_id: str) -> None:
+        """Remove a deleted Run's private files; never leave a Run directory."""
+        directory = self.runs / run_id
+        if directory.parent == self.runs:
+            shutil.rmtree(directory, ignore_errors=True)
 
     def sweep(self) -> None:
         cutoff = time.time() - UPLOAD_TTL_SECONDS

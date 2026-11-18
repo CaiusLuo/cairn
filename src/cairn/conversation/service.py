@@ -533,6 +533,8 @@ class ConversationService:
         if self.store.list_tasks_for_conversation(conversation_id):
             raise ConversationProtected("Conversation owns development tasks")
         self.store.delete_conversation(conversation_id)
+        for run in runs:
+            self.attachments.discard(run.run_id)
 
     def get_run(self, run_id: str) -> Run | None:
         run = self.store.get_run(run_id)
