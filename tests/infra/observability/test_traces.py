@@ -354,30 +354,20 @@ def test_summary_requires_a_completed_root_span_and_consistent_timezones() -> No
         )
 
 
-def test_legacy_summary_sidecars_are_discarded_on_listing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_listing_keeps_legacy_summary_sidecars_untouched(tmp_path: Path) -> None:
     start = datetime(2026, 2, 1, tzinfo=UTC)
     roots = [_root(start + timedelta(minutes=index)) for index in range(3)]
     for item in roots:
         _write_detail(tmp_path, [item])
     summary_dir = tmp_path / "summaries"
     summary_dir.mkdir()
+    sidecars = {}
     for item in roots:
-        (summary_dir / f"{item.context.trace_id}.json").write_text(
-            TraceSummary.from_root(item).model_dump_json()
-        )
-    (summary_dir / "orphan-left-behind.json").write_text("{}")
-
-    readable_sources = {tmp_path / f"{item.context.trace_id}.jsonl" for item in roots}
-    real_exists = Path.exists
-
-    def forbid_readable_source_stat(path: Path) -> bool:
-        if path in readable_sources:
-            raise AssertionError("readable trace source was checked for existence")
-        return real_exists(path)
-
-    monkeypatch.setattr(Path, "exists", forbid_readable_source_stat)
+        sidecar = summary_dir / f"{item.context.trace_id}.json"
+        sidecar.write_text(TraceSummary.from_root(item).model_dump_json())
+        sidecars[sidecar] = sidecar.read_text()
+    orphan = summary_dir / "orphan-left-behind.json"
+    orphan.write_text("{}")
 
     result = TraceStore(tmp_path).list_traces()
 
@@ -385,8 +375,11 @@ def test_legacy_summary_sidecars_are_discarded_on_listing(
         item.context.trace_id for item in reversed(roots)
     ]
     assert result.diagnostics == []
-    # Sidecars are derived data now: they are removed, and so is the empty dir.
-    assert not summary_dir.exists()
+    # Listing is a read: legacy sidecars stay exactly as they were.
+    assert summary_dir.exists()
+    assert orphan.read_text() == "{}"
+    for sidecar, content in sidecars.items():
+        assert sidecar.read_text() == content
 
 
 def test_listing_preserves_stable_ties_and_slice_limit_semantics(
@@ -473,7 +466,7 @@ def test_legacy_sidecar_of_an_unreadable_trace_is_kept(tmp_path: Path) -> None:
 
     assert result.traces == []
     assert any("skipped incomplete trace" in item for item in result.diagnostics)
-    # Only sidecars known to be redundant are dropped.
+    # Listing never modifies stored sidecars, readable trace or not.
     assert sidecar.exists()
 
 

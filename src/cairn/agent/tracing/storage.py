@@ -2,8 +2,8 @@
 
 The JSONL file is the only persistent record of a trace. Listing metadata is
 read from the tail of each file (the final root span), so no summary sidecar has
-to be written or kept in sync. Legacy ``summaries/`` entries are derived data
-and are removed as they are encountered.
+to be written or kept in sync. Legacy ``summaries/`` entries are ignored: a read
+never changes stored files.
 """
 
 import heapq
@@ -47,17 +47,14 @@ class TraceStore:
 
     def list_traces(self, limit: int = DEFAULT_LIST_LIMIT) -> TraceListResult:
         result = TraceListResult()
-        readable: set[str] = set()
 
         for path in self._detail_paths():
             summary, diagnostic = self._summarize(path)
             if summary is None:
                 result.diagnostics.append(diagnostic or "")
                 continue
-            readable.add(path.stem)
             result.traces.append(summary)
 
-        self._discard_legacy_summaries(readable)
         if type(limit) is int and limit > 0 and limit * 10 < len(result.traces):
             # Select only a small requested prefix instead of sorting every trace.
             result.traces = heapq.nlargest(
@@ -200,16 +197,6 @@ class TraceStore:
         with suppress(OSError):
             (self.root / "summaries" / f"{stem}.json").unlink()
         (self.root / f"{stem}.jsonl").unlink()
-
-    def _discard_legacy_summaries(self, readable: set[str]) -> None:
-        """Remove legacy sidecars for readable traces and missing trace files."""
-        summary_root = self.root / "summaries"
-        for path in summary_root.glob("*.json"):
-            if path.stem in readable or not (self.root / f"{path.stem}.jsonl").exists():
-                with suppress(OSError):
-                    path.unlink()
-        with suppress(OSError):
-            summary_root.rmdir()
 
 
 def _tail_bytes(path: Path, size: int, window: int) -> bytes:

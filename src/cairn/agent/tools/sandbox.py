@@ -670,17 +670,3 @@ async def _terminate(
             reader.cancel()
     for reader in readers:
         await _await_quiet(reader, deadline)
-
-
-def require_isolation() -> None:
-    """Raise ``IsolationUnavailable`` unless a sandbox can run here.
-
-    Call this before any real eval that needs to execute generated code, so it is
-    blocked up front instead of discovered halfway through a paid run.
-    """
-    if not available():
-        raise IsolationUnavailable(
-            "generated-code evaluation requires an execution sandbox "
-            "(bubblewrap with working user namespaces); none is available. "
-            "Refusing to run generated code on the host."
-        )

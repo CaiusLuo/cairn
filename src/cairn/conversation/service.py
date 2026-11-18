@@ -105,6 +105,7 @@ class RunLedger:
         self.preview = ""
         self.visible_text = ""
         self.trace_ref: str | None = None
+        self.turn_id: str | None = None
         self.open_tools = 0
         self._session_id = session_id
         self._on_event = on_event
@@ -145,6 +146,10 @@ class RunLedger:
     ) -> RuntimeTask:
         updated = task.model_copy(update={"sequence": task.sequence + 1})
         self.task = updated
+        turn_id = data.get("turn_id") if data is not None else None
+        if isinstance(turn_id, str):
+            # Session events carry the exactly-admitted turn this Run owns.
+            self.turn_id = turn_id
         if kind == "model_text_delta":
             text = data.get("text") if data is not None else None
             if isinstance(text, str) and text:
@@ -716,14 +721,18 @@ class ConversationService:
             session_id=run.session_id,
         )
 
-    def _clean_receipt(self, session_id: str | None) -> dict[str, Any] | None:
-        if session_id is None:
+    def _clean_receipt(
+        self, session_id: str | None, turn_id: str | None
+    ) -> dict[str, Any] | None:
+        # A Session identity is shared by every Run in the conversation; only a
+        # receipt produced by this Run's turn proves this Run committed.
+        if session_id is None or turn_id is None:
             return None
         try:
             report = self.execution.store.inspect(session_id)
         except Exception:
             return None
-        if report.status != "clean":
+        if report.status != "clean" or report.receipt.turn_id != turn_id:
             return None
         return report.receipt.model_dump(mode="json")
 
@@ -734,7 +743,7 @@ class ConversationService:
         return {
             "budget": dict(ledger.task.metrics),
             "trace_ref": ledger.trace_ref,
-            "checkpoint_receipt": self._clean_receipt(session_id),
+            "checkpoint_receipt": self._clean_receipt(session_id, ledger.turn_id),
             "session_id": session_id,
         }
 
