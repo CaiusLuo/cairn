@@ -254,7 +254,11 @@ class ConversationService:
                     status=RunStatus.RECOVERY_REQUIRED,
                     error="process_interrupted",
                 )
-            elif run.status is RunStatus.QUEUED and run.run_id not in self.queued_ids:
+            elif (
+                run.status is RunStatus.QUEUED
+                and run.run_id not in self.queued_ids
+                and self._resume_attachment_claim(run)
+            ):
                 self.queued_ids.add(run.run_id)
                 self.queue.put_nowait(run.run_id)
         self.worker = asyncio.create_task(self._work())
@@ -615,6 +619,31 @@ class ConversationService:
             self.queued_ids.add(run.run_id)
             self.queue.put_nowait(run.run_id)
         return run
+
+    def _resume_attachment_claim(self, run: Run) -> bool:
+        """Finish a claim interrupted between admission and binding.
+
+        Without this, a crash in that window would run the turn without the
+        files the user attached, silently. Either the claim completes or the
+        Run fails before it executes.
+        """
+        attachment_ids = run.metadata.get("attachment_ids") or ()
+        if not attachment_ids or run.metadata.get("attachments"):
+            return True
+        try:
+            self._claim_attachments(
+                run.run_id, self.attachments.plan(tuple(attachment_ids))
+            )
+        except Exception:
+            with suppress(Exception):
+                self.store.update_run(
+                    run.run_id,
+                    status=RunStatus.FAILED,
+                    error="attachment_binding_failed",
+                    ended_at=utc_now(),
+                )
+            return False
+        return True
 
     def _claim_attachments(
         self, run_id: str, planned: tuple[AttachmentPlan, ...]

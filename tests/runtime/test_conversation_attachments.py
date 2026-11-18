@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -13,6 +13,10 @@ import pytest
 from cairn.agent.budget import RunBudget
 from cairn.agent.models.messages import LLMResponse, Message, ToolCall
 from cairn.agent.models.offline import OfflineDevelopmentModel
+from cairn.conversation.attachments import AttachmentStore
+from cairn.conversation.models import ConversationSource, RunStatus
+from cairn.conversation.service import ConversationService
+from cairn.conversation.store import DomainStore
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
@@ -227,6 +231,80 @@ def test_a_claimed_attachment_cannot_be_reused(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_lost_response_retry_returns_the_same_attachment_run(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path)
+    model = AttachmentModel("notes.txt")
+    app.state.execution.llm_factory = lambda: model
+    api = _client(app)
+
+    async def scenario() -> None:
+        async with app.router.lifespan_context(app):
+            conversation = await api.create_conversation("hello", source="cli")
+            upload = await api.upload_attachment(
+                "notes.txt", b"retry me", media_type="text/plain"
+            )
+            first = await api.send_conversation(
+                conversation["conversation_id"],
+                "read the attachment",
+                source="cli",
+                request_id="attachment-retry-1",
+                attachment_ids=(upload["attachment_id"],),
+            )
+            await _wait_terminal(api, first["run_id"])
+            # The client never saw the response and retries with the same ID.
+            # Admission already claimed the file, so a re-claim would 409.
+            retry = await api.send_conversation(
+                conversation["conversation_id"],
+                "read the attachment",
+                source="cli",
+                request_id="attachment-retry-1",
+                attachment_ids=(upload["attachment_id"],),
+            )
+            assert retry["run_id"] == first["run_id"]
+            assert [item["name"] for item in retry["attachments"]] == ["notes.txt"]
+
+    asyncio.run(scenario())
+
+
+def test_same_request_id_with_a_different_attachment_set_conflicts(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path)
+    model = AttachmentModel("notes.txt")
+    app.state.execution.llm_factory = lambda: model
+    api = _client(app)
+
+    async def scenario() -> None:
+        async with app.router.lifespan_context(app):
+            conversation = await api.create_conversation("hello", source="cli")
+            first = await api.upload_attachment(
+                "notes.txt", b"first", media_type="text/plain"
+            )
+            second = await api.upload_attachment(
+                "other.txt", b"second", media_type="text/plain"
+            )
+            await api.send_conversation(
+                conversation["conversation_id"],
+                "read the attachment",
+                source="cli",
+                request_id="attachment-conflict-1",
+                attachment_ids=(first["attachment_id"],),
+            )
+            with pytest.raises(httpx.HTTPStatusError) as rejected:
+                await api.send_conversation(
+                    conversation["conversation_id"],
+                    "read the attachment",
+                    source="cli",
+                    request_id="attachment-conflict-1",
+                    attachment_ids=(second["attachment_id"],),
+                )
+            assert rejected.value.response.status_code == 409
+
+    asyncio.run(scenario())
+
+
 def test_attachment_names_cannot_escape_the_run_directory(tmp_path: Path) -> None:
     app = _app(tmp_path)
     api = _client(app)
@@ -260,3 +338,87 @@ def test_oversized_attachment_is_rejected(
             assert rejected.value.response.status_code == 413
 
     asyncio.run(scenario())
+
+
+class RecordingExecution:
+    calls = 0
+
+    async def __call__(
+        self,
+        task: Any,
+        emit: Any,
+        *,
+        service: Any | None = None,
+        steering: Any | None = None,
+    ) -> str:
+        del task, emit, service, steering
+        self.calls += 1
+        return "ok"
+
+
+def _queued_run_with_attachment(
+    tmp_path: Path, attachment_id: str
+) -> tuple[DomainStore, Any]:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = DomainStore(tmp_path / "domain.sqlite3")
+    conversation = store.create_conversation(
+        workspace=workspace,
+        source=ConversationSource.CLI,
+        initial_prompt="resume claim",
+    )
+    run = store.accept_run(
+        conversation_id=conversation.conversation_id,
+        prompt="read the attachment",
+        source=ConversationSource.CLI,
+        request_id="resume-claim-1",
+        metadata={"attachment_ids": [attachment_id]},
+    )
+    return store, run
+
+
+def test_restart_completes_an_interrupted_attachment_claim(tmp_path: Path) -> None:
+    attachment_store = AttachmentStore(tmp_path / "attachments")
+    upload = attachment_store.stage("notes.txt", "text/plain", b"recovered")
+    store, run = _queued_run_with_attachment(tmp_path, upload.attachment_id)
+    execution = RecordingExecution()
+
+    async def scenario() -> None:
+        service = ConversationService(
+            store, cast(Any, execution), workspace=tmp_path / "workspace"
+        )
+        await service.start()
+        try:
+            await asyncio.wait_for(service.queue.join(), WAIT_SECONDS)
+        finally:
+            await service.close()
+
+    asyncio.run(scenario())
+    settled = store.get_run(run.run_id)
+    assert settled is not None and settled.status is RunStatus.COMPLETED
+    assert [item["name"] for item in settled.metadata["attachments"]] == ["notes.txt"]
+    assert execution.calls == 1
+    assert (
+        tmp_path / "attachments" / "runs" / run.run_id / "notes.txt"
+    ).read_bytes() == b"recovered"
+
+
+def test_restart_fails_a_run_whose_uploads_are_gone(tmp_path: Path) -> None:
+    store, run = _queued_run_with_attachment(tmp_path, "att-" + "1" * 32)
+    execution = RecordingExecution()
+
+    async def scenario() -> None:
+        service = ConversationService(
+            store, cast(Any, execution), workspace=tmp_path / "workspace"
+        )
+        await service.start()
+        try:
+            await asyncio.wait_for(service.queue.join(), WAIT_SECONDS)
+        finally:
+            await service.close()
+
+    asyncio.run(scenario())
+    settled = store.get_run(run.run_id)
+    assert settled is not None and settled.status is RunStatus.FAILED
+    assert settled.error == "attachment_binding_failed"
+    assert execution.calls == 0
