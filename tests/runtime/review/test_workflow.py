@@ -14,6 +14,7 @@ from cairn.agent.permissions import PermissionChoice, SessionPermissionHandler
 from cairn.agent.session.durable import DurableSession
 from cairn.agent.tracing.tracer import Tracer
 from cairn.agent.turn.events import Event
+from cairn.agent.turn.steering import SteerQueue
 from cairn.agent.workspace.workspace import Workspace
 from cairn.development.execution.models import TaskSpec, TaskStatus
 from cairn.development.execution.runner import CodingTaskRunner
@@ -302,6 +303,7 @@ def test_blocker_runs_fresh_fixer_then_verifies_new_tree_and_reviews_from_clean_
             cancellation_event: asyncio.Event | None = None,
             durable_session: DurableSession | None = None,
             selected_skills: Sequence[str] = (),
+            steering: SteerQueue | None = None,
         ) -> Any:
             specs.append(spec)
             return await super().run(
@@ -309,6 +311,7 @@ def test_blocker_runs_fresh_fixer_then_verifies_new_tree_and_reviews_from_clean_
                 cancellation_event=cancellation_event,
                 durable_session=durable_session,
                 selected_skills=selected_skills,
+                steering=steering,
             )
 
     monkeypatch.setattr(workflow_module, "CodingTaskRunner", RecordingRunner)

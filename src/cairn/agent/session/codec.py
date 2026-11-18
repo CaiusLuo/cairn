@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from collections.abc import Sequence
+from itertools import pairwise
 
 from pydantic import ValidationError
 
@@ -265,7 +266,14 @@ def validate_history(
     if tail_calls > MAX_INVOCATIONS:
         raise SessionStoreError("invocation_limit")
     tail = checkpoint.messages[start:]
-    if tail and (tail[0].role != "user" or any(m.role == "user" for m in tail[1:])):
+    # A turn begins with its user input; a steer may add later user messages, but
+    # only after a settled step. Two adjacent user messages have no turn producer.
+    if tail and tail[0].role != "user":
+        raise SessionStoreError("invalid_turn_range")
+    if any(
+        message.role == "user" and previous.role == "user"
+        for previous, message in pairwise(tail)
+    ):
         raise SessionStoreError("invalid_turn_range")
     if checkpoint.outcome == "completed" and (
         not tail or tail[-1].role != "assistant" or tail[-1].tool_calls

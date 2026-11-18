@@ -108,7 +108,10 @@ class RemoteChat:
         return self._set_run(run)
 
     async def wait(
-        self, observe: Callable[[Event], object] | None = None
+        self,
+        observe: Callable[[Event], object] | None = None,
+        *,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         assert self.task is not None
         run_id = self.task["run_id"]
@@ -116,6 +119,8 @@ class RemoteChat:
         while True:
             page = await self.api.run_events(run_id, after=cursor, wait=True)
             for item in page["events"]:
+                if on_event is not None:
+                    on_event(item)
                 if observe is not None and item["kind"] in get_args(EventType):
                     observe(Event(type=item["kind"], data=item["data"]))
             cursor = int(page["cursor"])
@@ -142,6 +147,10 @@ class RemoteChat:
         assert self.task is not None
         run = await self.api.cancel_run(self.task["run_id"])
         return self._set_run({**run, "cursor": self.task.get("cursor", 0)})
+
+    async def steer(self, prompt: str) -> dict[str, Any]:
+        assert self.task is not None
+        return dict(await self.api.steer_run(self.task["run_id"], prompt))
 
 
 class RemoteDevelopment:
@@ -325,7 +334,7 @@ async def main(
     ):
         frame = TranscriptView()
     if frame is not None:
-        frame.steering_enabled = False
+        frame.steering_enabled = True
     display = StreamingDisplay(
         live_factory=frame_live_region(frame) if frame else None,
         on_status=frame.observe_status if frame else None,
@@ -395,13 +404,48 @@ async def main(
             remote.task = await remote.refresh()
         return True
 
+    def note_steer(item: dict[str, Any]) -> None:
+        text = item["data"].get("text")
+        if item["kind"] == "steer_applied" and isinstance(text, str):
+            print(f"Steer applied · {text}")
+        elif item["kind"] == "steer_unapplied" and isinstance(text, str):
+            pending.append(text)
+            print(
+                "Steer arrived after the turn ended; queued for the next shared turn."
+            )
+
+    async def send_steer(line: str) -> None:
+        assert isinstance(remote, RemoteChat)
+        try:
+            receipt = await remote.steer(line)
+        except httpx.HTTPStatusError as error:
+            if not 400 <= error.response.status_code < 500:
+                print("Steer outcome unknown; it was not retried automatically.")
+                return
+            pending.append(line)
+            print("Run is no longer accepting steers; queued for the next shared turn.")
+        except ValueError:
+            pending.append(line)
+            print("Run is no longer accepting steers; queued for the next shared turn.")
+        except httpx.HTTPError:
+            print("Steer outcome unknown; it was not retried automatically.")
+        else:
+            print(
+                "Steer accepted · applies at the next step "
+                f"({receipt['pending']} pending)."
+            )
+
     async def follow() -> bool:
         display.reset()
         stopped = asyncio.Event()
         if frame:
             frame.set_running(True)
             frame.on_interrupt = stopped.set
-        waiting = asyncio.create_task(remote.wait(display.observe))
+        waiting = asyncio.create_task(
+            remote.wait(display.observe, on_event=note_steer)
+            if isinstance(remote, RemoteChat)
+            else remote.wait(display.observe)
+        )
         reading: asyncio.Task[str] | None = None
         cancelling = asyncio.create_task(stopped.wait())
         try:
@@ -435,6 +479,8 @@ async def main(
                         continue
                     if line.strip() == "/cancel":
                         stopped.set()
+                    elif isinstance(remote, RemoteChat):
+                        await send_steer(line)
                     else:
                         pending.append(line)
                         print("Queued for the next shared turn.")

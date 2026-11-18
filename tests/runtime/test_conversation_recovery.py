@@ -36,9 +36,14 @@ def test_startup_marks_running_recovery_and_schedules_queued(
 
         class FakeExecution:
             async def __call__(
-                self, task: Any, emit: Any, *, service: Any | None = None
+                self,
+                task: Any,
+                emit: Any,
+                *,
+                service: Any | None = None,
+                steering: Any | None = None,
             ) -> str:
-                del task, emit, service
+                del task, emit, service, steering
                 return "ok"
 
         service = ConversationService(store, FakeExecution(), workspace=workspace)  # type: ignore[arg-type]
@@ -71,9 +76,14 @@ def test_cancel_queued_run_before_worker_starts(tmp_path: Path) -> None:
 
         class FakeExecution:
             async def __call__(
-                self, task: Any, emit: Any, *, service: Any | None = None
+                self,
+                task: Any,
+                emit: Any,
+                *,
+                service: Any | None = None,
+                steering: Any | None = None,
             ) -> str:
-                del task, emit, service
+                del task, emit, service, steering
                 return "ok"
 
         service = ConversationService(store, FakeExecution(), workspace=workspace)  # type: ignore[arg-type]
