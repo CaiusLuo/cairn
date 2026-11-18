@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
 from typing import NoReturn
 from uuid import UUID
 
@@ -89,6 +90,7 @@ class DurableSession(Session):
         self._ordinal = 0
         self._committed: CheckpointReceipt | None = None
         self._expected_receipt: CheckpointReceipt | None = None
+        self._commit_timing: dict[str, object] | None = None
         self._task: TaskRecord | None = None
         self._task_started = False
         super().__init__(agent)
@@ -618,6 +620,7 @@ class DurableSession(Session):
         self._ordinal = 0
         self._reason = "storage_failed"
         self._committed = self._expected_receipt = None
+        self._commit_timing = None
         self._cleanup_settled = False
         try:
             self._intent = TurnIntent(
@@ -818,12 +821,14 @@ class DurableSession(Session):
                     error_code=summary.error_code,
                 ),
             )
-            _, digest = encode_storage_checkpoint(
+            encode_started = perf_counter()
+            raw, digest = encode_storage_checkpoint(
                 checkpoint,
                 self._receipt,
                 format_version=2 if self._store.schema_version >= 3 else 1,
                 sensitive_values=self._store.sensitive_values,
             )
+            encode_ms = round((perf_counter() - encode_started) * 1000, 3)
             self._expected_receipt = CheckpointReceipt(
                 revision=Revision(
                     session_id=str(self.session_id),
@@ -834,9 +839,17 @@ class DurableSession(Session):
                 sha256=digest,
                 outcome=value,
             )
+            commit_started = perf_counter()
             receipt = self._store.commit_turn(
                 self._revision, SettledTurn(checkpoint=checkpoint)
             )
+            persist_ms = round((perf_counter() - commit_started) * 1000, 3)
+            self._commit_timing = {
+                "encode_ms": encode_ms,
+                "persist_ms": persist_ms,
+                "checkpoint_bytes": len(raw),
+                "checkpoint_messages": len(checkpoint.messages),
+            }
             self._owned = False  # Store released only after its successful commit.
             if receipt != self._expected_receipt:
                 raise SessionDurabilityError()
@@ -876,15 +889,15 @@ class DurableSession(Session):
             self._notify_settled(outcome, trace_finalization_failed)
             if self._committed is not None:
                 try:
+                    committed_data: dict[str, object] = {
+                        "checkpoint_seq": self._committed.revision.head_seq,
+                        "revision": self._committed.revision.version,
+                        "outcome": self._committed.outcome,
+                    }
+                    if self._commit_timing is not None:
+                        committed_data.update(self._commit_timing)
                     self._notify_lifecycle(
-                        Event(
-                            type="turn_committed",
-                            data={
-                                "checkpoint_seq": self._committed.revision.head_seq,
-                                "revision": self._committed.revision.version,
-                                "outcome": self._committed.outcome,
-                            },
-                        )
+                        Event(type="turn_committed", data=committed_data)
                     )
                 except BaseException:
                     assert self._last_turn is not None

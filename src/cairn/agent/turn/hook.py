@@ -8,6 +8,7 @@ place that reads as one turn.
 """
 
 import asyncio
+from time import perf_counter
 from typing import Any
 
 from cairn.agent.context.compaction import (
@@ -126,6 +127,7 @@ async def compact_before_next_step(
     current turn's own message.
     """
     try:
+        started = perf_counter()
         outcome = await _reduce(
             agent,
             system_messages=system_messages,
@@ -140,7 +142,7 @@ async def compact_before_next_step(
     except Exception:
         # Compaction must never convert a usable turn into a failed one.
         return
-    trace.on_compaction(outcome)
+    trace.on_compaction(outcome, duration_ms=(perf_counter() - started) * 1000)
     remember(agent, outcome)
 
 

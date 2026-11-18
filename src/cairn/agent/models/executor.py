@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any
 
 from cairn.agent.context.compaction import CompactionRecord
@@ -54,10 +55,38 @@ async def _assemble_stream(
     stream = client.stream_generate(request.messages, tools)
     assembler = ResponseAssembler()
     primary: BaseException | None = None
+    started = perf_counter()
+    first_output = False
     try:
         _notify(observer, Event(type="model_stream_start", data=attribution))
         async for chunk in stream:
             assembler.add(chunk)
+            if not first_output and (
+                chunk.reasoning_text or chunk.text or chunk.tool_calls
+            ):
+                # The stream can be silent for a long time before its first
+                # token. Measuring that wait separately is what lets a slow Run
+                # distinguish a slow provider start from slow generation.
+                first_output = True
+                _notify(
+                    observer,
+                    Event(
+                        type="model_first_token",
+                        data={
+                            **attribution,
+                            "first_token_ms": round(
+                                (perf_counter() - started) * 1000, 3
+                            ),
+                            "output": (
+                                "reasoning"
+                                if chunk.reasoning_text
+                                else "text"
+                                if chunk.text
+                                else "tool_call"
+                            ),
+                        },
+                    ),
+                )
             if chunk.reasoning_text:
                 _notify(
                     observer,
@@ -191,7 +220,15 @@ class ModelExecutor:
         tools: list[dict[str, Any]],
         compaction: "CompactionRecord | None" = None,
         on_request: Callable[
-            [ContextRequest, ContextBudget, ModelConfig | None, str | None, int], None
+            [
+                ContextRequest,
+                ContextBudget,
+                ModelConfig | None,
+                str | None,
+                int,
+                float,
+            ],
+            None,
         ]
         | None = None,
         on_fallback: Callable[[Exception], None] | None = None,
@@ -224,6 +261,7 @@ class ModelExecutor:
                 # Admission failures are not provider failures and must not retry.
                 # Every candidate is admitted against the same substitution, so a
                 # fallback model reads the conversation the primary one would have.
+                build_started = perf_counter()
                 building = asyncio.create_task(
                     asyncio.to_thread(
                         builder.build,
@@ -241,9 +279,12 @@ class ModelExecutor:
                     # before run_turn may roll back the history it is reading.
                     await await_owned(building)
                     raise
+                prepare_ms = round((perf_counter() - build_started) * 1000, 3)
                 attempt += 1
                 if on_request is not None:
-                    on_request(request, builder.budget, model, model_id, attempt)
+                    on_request(
+                        request, builder.budget, model, model_id, attempt, prepare_ms
+                    )
                 streaming = isinstance(llm, StreamingLLMClient) and (
                     getattr(llm, "supports_streaming", True) is True
                 )
