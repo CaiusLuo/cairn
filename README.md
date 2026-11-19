@@ -149,14 +149,20 @@ Open **`/channels.html`** to configure connections and inspect their status.
 | WeChat | QR login; one server owns one WeChat session |
 | Telegram | Bot Token; private text messages |
 | Feishu | Self-built app ID and secret, WebSocket events (`im.message.receive_v1`); private text messages |
-| WeCom, QQ, Discord | Configuration only; adapters cannot start yet |
+| QQ | App ID and Client Secret, WebSocket-enabled QQ bot, private text messages |
+| Discord | Bot Token, Discord Gateway, private text messages |
+| WeCom | Configuration only |
 
 The QR-login account is the owner. Add trusted senders with `/wx allow USER_ID`
 or from Settings. A trusted sender can chat, but cannot create development tasks
-or read the owner's private knowledge or memory. Group chats and
-non-text messages are not supported by the Telegram and Feishu adapters. Run
-only one Feishu connection per server process, and do not run competing clients
-for the same messaging account or bot.
+or read the owner's private knowledge or memory. Telegram, Feishu, QQ and
+Discord accept private text messages. Use your QQ bot-scoped `user_openid` or
+numeric Discord user ID as the owner identity. For Discord, install the bot
+and allow direct messages from a shared server. For QQ, enable WebSocket and
+C2C events in QQ Open Platform. QQ replies use the original message's reply
+window. Long replies include a preview with the full result in Cairn Web.
+Run one Feishu connection per Server process and one client per messaging
+account or bot.
 
 ## Operation and usage tips
 

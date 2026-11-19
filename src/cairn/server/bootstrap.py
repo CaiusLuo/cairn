@@ -24,9 +24,11 @@ from cairn.agent.models.runtime import ProviderRuntime, build_provider_runtime
 from cairn.agent.tracing.tracer import Tracer
 from cairn.agent.workspace.lease import WorkspaceLease
 from cairn.channels.adapter import ChannelAdapterRegistry
+from cairn.channels.discord import discord_adapter_factory
 from cairn.channels.feishu import feishu_adapter_factory
 from cairn.channels.manager import ChannelManager
 from cairn.channels.models import ChannelPlatform
+from cairn.channels.qq import qq_adapter_factory
 from cairn.channels.replies import ChannelReplyCoordinator
 from cairn.channels.store import ChannelStore
 from cairn.channels.telegram import telegram_adapter_factory
@@ -159,6 +161,8 @@ def runtime_app(
         channel_adapters.register(
             ChannelPlatform.FEISHU, feishu_adapter_factory(channel_store)
         )
+        channel_adapters.register(ChannelPlatform.QQ, qq_adapter_factory(channel_store))
+        channel_adapters.register(ChannelPlatform.DISCORD, discord_adapter_factory())
         channel_manager = ChannelManager(
             store=channel_store,
             conversations=conversations,
