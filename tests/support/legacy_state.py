@@ -37,7 +37,7 @@ def _database(path: Path, version: int) -> Iterator[sqlite3.Connection]:
 def write_legacy_state(root: Path) -> Path:
     _write_domain(root / "runtime" / "domain.sqlite3")
     _write_sessions(root / "runtime" / "sessions" / "sessions.sqlite3")
-    _write_knowledge(root / "knowledge" / "knowledge.sqlite3")
+    _write_knowledge(root / "runtime" / "knowledge" / "knowledge.sqlite3")
     _write_channels(root / "channels" / "channels.sqlite3")
     _write_operations(root)
     return root
@@ -567,11 +567,10 @@ def _write_operations(root: Path) -> None:
         json.dumps({"job_id": "job-1", "status": "completed"}) + "\n",
         encoding="utf-8",
     )
-    (root / "knowledge").mkdir(parents=True, exist_ok=True)
-    (root / "knowledge" / "review-schedule.json").write_text(
+    (schedule / "review-schedule.json").write_text(
         json.dumps({"version": 1, "initialized": True}), encoding="utf-8"
     )
-    (root / "knowledge" / "weekly-review-schedule.json").write_text(
+    (schedule / "weekly-review-schedule.json").write_text(
         json.dumps({"version": 1}), encoding="utf-8"
     )
     runtime = root / "runtime"

@@ -777,7 +777,7 @@ def _operations(
             WEEKLY_SCHEDULE_VERSION,
         ),
     ):
-        payload = load_json(state / "knowledge" / filename, version=version, name=name)
+        payload = load_json(state / "schedule" / filename, version=version, name=name)
         if payload is not None:
             documents.append((name, payload))
 
@@ -993,10 +993,13 @@ def import_state(
         )
 
     try:
+        knowledge_path = root / "runtime" / "knowledge" / "knowledge.sqlite3"
+        if not knowledge_path.is_file():
+            knowledge_path = root / "knowledge" / "knowledge.sqlite3"
         sources = {
             "domain": root / "runtime" / "domain.sqlite3",
             "sessions": root / "runtime" / "sessions" / "sessions.sqlite3",
-            "knowledge": root / "knowledge" / "knowledge.sqlite3",
+            "knowledge": knowledge_path,
             "channel": root / "channels" / "channels.sqlite3",
         }
         for component, path in sources.items():
