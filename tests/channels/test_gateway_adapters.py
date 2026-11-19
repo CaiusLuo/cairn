@@ -29,6 +29,7 @@ from cairn.channels.qq import QQAdapter
 from cairn.channels.store import ChannelStore
 from tests.channels.support import FakeIntake
 from tests.support.control_runtime import control_runtime
+from tests.support.pg import database_for
 
 _OWNER = "100"
 _BOT = "200"
@@ -88,7 +89,7 @@ def test_gateway_reconnect_resumes_and_replies_without_resending_unknown_outcome
         pending = [first, resumed, restarted]
         attempts: list[dict[str, Any]] = []
         uncertain = False
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         intake = FakeIntake()
 
         @asynccontextmanager
@@ -150,7 +151,7 @@ def test_gateway_reconnect_resumes_and_replies_without_resending_unknown_outcome
 
         def build_manager() -> ChannelManager:
             return ChannelManager(
-                store=ChannelStore(store.root),
+                store=ChannelStore(store.db, store.root),
                 conversations=intake,
                 adapters=ChannelAdapterRegistry().register(platform, factory),
             )
