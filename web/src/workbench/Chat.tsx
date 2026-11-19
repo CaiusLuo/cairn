@@ -280,7 +280,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
           {config?.models.map(item => <option key={item} value={item}>{item}</option>)}
         </select></label>
         <label title={mode === "development" ? `Shell ${config?.development_shell ? "宿主已授权" : "关闭"} · 网络 ${config?.development_network ? "宿主已授权" : "关闭"}` : "对话中的项目文件只读"}><Icon name="lock" size={15}/><select aria-label="权限模式" value={mode} onChange={event => setMode(event.target.value as Submission["mode"])}>
-          <option value="conversation">对话 · 项目只读</option><option value="development">开发 · 独立工作树</option>
+          <option value="conversation">对话 · 项目只读</option><option value="development" disabled={uploading || attachments.length > 0}>开发 · 独立工作树</option>
         </select></label>
         <div className="composer-send">
           {active && <button className="composer-icon" type="button" aria-label="中断运行" title="中断运行" disabled={canceling} onClick={() => void cancel()}><Icon name="stop" size={17}/></button>}
