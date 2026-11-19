@@ -18,6 +18,7 @@ from cairn.agent.tools.attachments import MAX_ATTACHMENT_CHARS, ReadAttachmentTo
 from cairn.agent.tools.base import InvalidArguments
 from cairn.conversation import attachments as storage
 from cairn.conversation.attachments import AttachmentStore
+from cairn.shared import text_extract
 
 DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -105,7 +106,7 @@ def test_pdf_page_cap_is_reported(
 def test_workbook_row_cap_is_reported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(tools, "MAX_SHEET_ROWS", 2)
+    monkeypatch.setattr(text_extract, "MAX_SHEET_ROWS", 2)
     workbook = Workbook()
     sheet = workbook.active
     assert sheet is not None
@@ -129,7 +130,7 @@ def test_unparseable_office_file_reports_instead_of_raising(tmp_path: Path) -> N
 def test_office_expansion_is_bounded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(tools, "MAX_UNCOMPRESSED_BYTES", 10)
+    monkeypatch.setattr(text_extract, "MAX_UNCOMPRESSED_BYTES", 10)
     buffer = BytesIO()
     with ZipFile(buffer, "w") as archive:
         archive.writestr("word/document.xml", b"x" * 100)
@@ -212,7 +213,7 @@ def test_attachment_name_must_be_a_string(tmp_path: Path) -> None:
 def test_workbook_row_limit_counts_blank_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(tools, "MAX_SHEET_ROWS", 2)
+    monkeypatch.setattr(text_extract, "MAX_SHEET_ROWS", 2)
     workbook = Workbook()
     sheet = workbook.active
     assert sheet is not None
