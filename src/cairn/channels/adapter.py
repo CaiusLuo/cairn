@@ -30,12 +30,7 @@ AdapterFactory = Callable[
 
 
 class ChannelAdapterRegistry:
-    """Platform-to-factory registry.
-
-    Production starts empty and reports ``adapter_not_implemented`` for every
-    stored connection. Only tests inject the fake adapter explicitly; C1-C4
-    register real adapters here.
-    """
+    """Only registered adapters expose lifecycle controls."""
 
     def __init__(self) -> None:
         self._factories: dict[ChannelPlatform, AdapterFactory] = {}
