@@ -138,7 +138,7 @@ try {
       name: "离线附件.txt", mimeType: "text/plain", buffer: Buffer.from("offline fixture"),
     });
     await page.getByRole("button", { name: "移除 离线附件.txt" }).waitFor();
-    assert(await page.getByLabel("权限模式").locator('option[value="development"]').isDisabled());
+    assert(await page.getByLabel("权限模式").locator('option[value="development"]').evaluate(option => option.disabled));
     await send("Web-created conversation");
     await page.getByRole("heading", { name: "Web-created conversation" }).waitFor();
     await page.getByRole("img", { name: "Web" }).first().waitFor();

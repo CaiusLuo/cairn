@@ -198,7 +198,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
 
   function sendDraft() {
     const prompt = draft.trim();
-    if (!prompt || sending || steering || uploading || !config || (failed && mode === "conversation")) return;
+    if (!prompt || inFlight.current || sending || steering || uploading || !config || (failed && mode === "conversation")) return;
     if (pending) {
       sessionStorage.removeItem(key);
       setPending(null);
