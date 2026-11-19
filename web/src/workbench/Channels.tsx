@@ -50,17 +50,17 @@ const platformBlurb: Record<ChannelPlatform, string> = {
   wechat: "复用宿主登录会话，在私聊与群聊中收发消息。",
   feishu: "用企业自建应用接入飞书，通过长连接接收私聊消息。",
   wecom: "企业微信接入尚未集成，暂时只展示连接配置。",
-  qq: "配置 QQ 机器人连接，集中管理运行状态。",
+  qq: "用支持长连接的 QQ 机器人收发私聊文本。",
   telegram: "用 Bot Token 接入 Telegram，接收私聊消息。",
-  discord: "配置 Discord 机器人连接，集中管理运行状态。",
+  discord: "用 Bot Token 接入 Discord，收发机器人私信。",
 };
 const ownerPlaceholder: Record<ChannelPlatform, string> = {
   wechat: "平台侧的用户身份",
   feishu: "飞书用户 open_id（ou_…）",
   wecom: "企业微信用户身份",
-  qq: "QQ 机器人身份",
+  qq: "QQ 用户 user_openid（当前 Bot 下的身份）",
   telegram: "Telegram 用户或机器人身份",
-  discord: "Discord 用户或机器人身份",
+  discord: "Discord 用户数字 ID",
 };
 const sendersPlaceholder: Record<ChannelPlatform, string> = {
   wechat: "留空表示仅宿主所有者",
