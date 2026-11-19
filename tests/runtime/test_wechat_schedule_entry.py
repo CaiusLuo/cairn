@@ -16,6 +16,7 @@ from cairn.integrations.wechat.state import WechatAccount, WechatServeLock, Wech
 from cairn.scheduling.models import ScheduleJob, ScheduleKind
 from cairn.scheduling.store import ScheduleStore
 from tests.support.fake_ilink import FakeILink
+from tests.support.pg import database_for
 
 NOW = datetime.now(ZoneInfo("Asia/Shanghai"))
 
@@ -32,10 +33,10 @@ def _config(fake: FakeILink, workspace: Path, state_dir: Path) -> ServeConfig:
         ),
         approval=None,
         allowed_senders=frozenset({"owner"}),
-        schedule_store=state_dir / "schedule",
         schedule_poll_interval=0.05,
         max_polls=100,
         poll_interval=0.005,
+        database=database_for(state_dir),
     )
 
 
@@ -55,7 +56,7 @@ def test_serve_entry_runs_due_task_and_pushes_to_authorized_owner(
     state.mark(
         "msg:1", "completed", sender="owner", context_token="ctx-serve", updated=1.0
     )
-    schedule = ScheduleStore(state_dir / "schedule")
+    schedule = ScheduleStore(database_for(state_dir))
     schedule.save_jobs(
         (
             ScheduleJob(
@@ -118,7 +119,7 @@ def test_scheduler_does_not_start_when_account_state_mismatches(tmp_path: Path) 
             ilink_user_id="owner",
         )
     )
-    schedule = ScheduleStore(state_dir / "schedule")
+    schedule = ScheduleStore(database_for(state_dir))
     schedule.save_jobs(
         (
             ScheduleJob(
@@ -169,7 +170,7 @@ def test_scheduler_does_not_start_when_serve_lock_is_held(tmp_path: Path) -> Non
     workspace.mkdir()
     state_dir = tmp_path / "wechat"
     state = WechatState(state_dir)
-    schedule = ScheduleStore(state_dir / "schedule")
+    schedule = ScheduleStore(database_for(state_dir))
     schedule.save_jobs(
         (
             ScheduleJob(
@@ -268,6 +269,7 @@ def test_default_executor_does_not_read_credentials_before_approval(
         ),
         approval=None,
         allowed_senders=frozenset({"owner"}),
+        database=database_for(tmp_path),
     )
     reads: list[str] = []
 
@@ -292,7 +294,7 @@ def test_serve_default_executor_redacts_provider_secret_in_send_and_history(
     state.mark(
         "msg:1", "completed", sender="owner", context_token="ctx-provider", updated=1.0
     )
-    schedule = ScheduleStore(state_dir / "schedule")
+    schedule = ScheduleStore(database_for(state_dir))
     schedule.save_jobs(
         (
             ScheduleJob(
@@ -348,7 +350,7 @@ def test_serve_default_executor_redacts_provider_secret_in_error_history(
     workspace.mkdir()
     state_dir = tmp_path / "wechat"
     state = WechatState(state_dir)
-    schedule = ScheduleStore(state_dir / "schedule")
+    schedule = ScheduleStore(database_for(state_dir))
     schedule.save_jobs(
         (
             ScheduleJob(
@@ -404,7 +406,7 @@ def test_default_serve_distinguishes_scheduled_and_wechat_task_sources(
     state.mark(
         "seed", "completed", sender="owner", context_token="ctx-serve", updated=1.0
     )
-    schedule = ScheduleStore(state_dir / "schedule")
+    schedule = ScheduleStore(database_for(state_dir))
     schedule.save_jobs(
         (
             ScheduleJob(

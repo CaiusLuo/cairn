@@ -1,13 +1,13 @@
-"""Concrete, host-only SQLite store. Facts in this database never dispatch work."""
+"""Concrete, host-only PostgreSQL store. Facts in this database never dispatch work."""
 
 import hashlib
-import sqlite3
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Literal
 from uuid import UUID
+
+from psycopg import Error as PostgresError
 
 from cairn.agent.session.codec import (
     canonical,
@@ -21,12 +21,10 @@ from cairn.agent.session.codec import (
 from cairn.agent.session.ledger import TaskLedgerMixin
 from cairn.agent.session.models import (
     MAX_CHECKPOINT_BYTES,
-    MAX_DATABASE_BYTES,
     MAX_INTEGER,
     MAX_LISTED_SESSIONS,
     MAX_MESSAGES,
     MAX_RECORD_BYTES,
-    MAX_WAL_BYTES,
     SCHEMA_VERSION,
     AttemptDiagnostics,
     CheckpointDelta,
@@ -53,162 +51,8 @@ from cairn.agent.session.models import (
     utc_text,
     uuid4_text,
 )
-from cairn.agent.session.paths import StorePaths
-from cairn.agent.session.task_models import MAX_TASK_BYTES, TaskRevision
-from cairn.shared.sqlite_policy import (
-    UNVERIFIED_SQLITE_DECLARATION as UNVERIFIED_SQLITE_DECLARATION,
-)
-from cairn.shared.sqlite_policy import (
-    VERIFIED_SQLITE_VERSIONS as VERIFIED_SQLITE_VERSIONS,
-)
-
-# The WAL-reset judgement lives in one neutral module so Project Memory can
-# share it without importing this package. Re-exported explicitly (``X as X``)
-# because this module has long been the documented import site for the session
-# store's release gate, and existing callers and tests import it from here.
-from cairn.shared.sqlite_policy import (
-    AdmissionOptionError as AdmissionOptionError,
-)
-from cairn.shared.sqlite_policy import (
-    SqliteAdmission as SqliteAdmission,
-)
-from cairn.shared.sqlite_policy import (
-    sqlite_wal_fix_supported as sqlite_wal_fix_supported,
-)
-from cairn.shared.sqlite_policy import (
-    unverified_declared as unverified_declared,
-)
-from cairn.shared.sqlite_policy import (
-    wal_admission as _policy_wal_admission,
-)
-
-
-def wal_admission(
-    *, allow_unverified: bool = False, version: tuple[int, int, int] | None = None
-) -> SqliteAdmission:
-    """Session-store view of the shared policy.
-
-    Reuses the one version judgement while keeping this store's established error
-    contract: a non-boolean option is ``invalid_options`` here, not the policy's
-    neutral option error.
-    """
-    try:
-        return _policy_wal_admission(allow_unverified=allow_unverified, version=version)
-    except AdmissionOptionError:
-        raise SessionStoreError("invalid_options") from None
-
-
-_SCHEMA = (
-    """CREATE TABLE sessions (
-        session_id TEXT PRIMARY KEY,
-        version INTEGER NOT NULL CHECK(version >= 0),
-        head_seq INTEGER NOT NULL CHECK(head_seq >= 0),
-        state TEXT NOT NULL CHECK(state IN ('ready','executing','recovery_required')),
-        active_turn_id TEXT,
-        binding_json TEXT NOT NULL,
-        created_at_utc TEXT NOT NULL,
-        updated_at_utc TEXT NOT NULL,
-        CHECK((state='ready' AND active_turn_id IS NULL)
-            OR (state='executing' AND active_turn_id IS NOT NULL)
-            OR state='recovery_required'),
-        FOREIGN KEY(session_id,head_seq) REFERENCES checkpoints(session_id,seq)
-            DEFERRABLE INITIALLY DEFERRED,
-        FOREIGN KEY(session_id,active_turn_id) REFERENCES turns(session_id,turn_id)
-            DEFERRABLE INITIALLY DEFERRED
-    )""",
-    """CREATE TABLE turns (
-        session_id TEXT NOT NULL REFERENCES sessions(session_id),
-        turn_id TEXT NOT NULL,
-        base_seq INTEGER NOT NULL,
-        task_id TEXT,
-        state TEXT NOT NULL CHECK(state IN
-            ('executing','completed','interrupted','recovery_required','abandoned')),
-        input_digest TEXT NOT NULL,
-        started_at_utc TEXT NOT NULL,
-        ended_at_utc TEXT,
-        settled_seq INTEGER,
-        diagnostics_json TEXT NOT NULL,
-        PRIMARY KEY(session_id,turn_id),
-        CHECK((state IN ('completed','interrupted') AND settled_seq IS NOT NULL)
-            OR (state IN ('executing','recovery_required','abandoned') AND settled_seq IS NULL)),
-        FOREIGN KEY(session_id,base_seq) REFERENCES checkpoints(session_id,seq),
-        FOREIGN KEY(session_id,settled_seq) REFERENCES checkpoints(session_id,seq)
-            DEFERRABLE INITIALLY DEFERRED
-    )""",
-    """CREATE UNIQUE INDEX one_unresolved_turn ON turns(session_id)
-        WHERE state IN ('executing','recovery_required')""",
-    """CREATE TABLE checkpoints (
-        session_id TEXT NOT NULL REFERENCES sessions(session_id),
-        seq INTEGER NOT NULL CHECK(seq >= 0),
-        turn_id TEXT,
-        format_version INTEGER NOT NULL CHECK(format_version=1),
-        created_at_utc TEXT NOT NULL,
-        payload BLOB NOT NULL CHECK(length(payload) <= 8388608),
-        sha256 TEXT NOT NULL CHECK(length(sha256)=64),
-        PRIMARY KEY(session_id,seq),
-        UNIQUE(session_id,turn_id),
-        CHECK((seq=0 AND turn_id IS NULL) OR (seq>0 AND turn_id IS NOT NULL)),
-        FOREIGN KEY(session_id,turn_id) REFERENCES turns(session_id,turn_id)
-            DEFERRABLE INITIALLY DEFERRED
-    )""",
-)
-
-
-# Legacy SQL is retained verbatim for schema 1/2 validation. Schema 3 broadens
-# only the checkpoint format constraint; existing rows/receipts are unchanged.
-_CHECKPOINT_SCHEMA_V3 = (
-    _SCHEMA[-1]
-    .replace("CREATE TABLE checkpoints", 'CREATE TABLE "checkpoints"')
-    .replace("CHECK(format_version=1)", "CHECK(format_version IN (1,2))")
-)
-# SQLite appends rowid to this nonunique index, satisfying per-Session insertion
-# order without sorting all Turn records into a temporary B-tree on every read.
-_TURN_ORDER_INDEX = "CREATE INDEX session_turn_order ON turns(session_id)"
-_SCHEMA_V3 = (*_SCHEMA[:-1], _CHECKPOINT_SCHEMA_V3, _TURN_ORDER_INDEX)
-
-# Schema 4 moves every admitted fence out of `turns.diagnostics_json` into this
-# append-only table, so appending fence N inserts one row instead of re-encoding
-# the N-1 before it. The CHECK and UNIQUE constraints are the SQLite twins of the
-# Strict Codec's field bounds and `_validate_record`'s reference set; the parts a
-# CHECK cannot express (no control characters, timestamp monotonicity, ordinal
-# contiguity, the cumulative bound) stay in the codec and the append path.
-_TOOL_FENCE_SCHEMA = (
-    """CREATE TABLE tool_fences (
-        session_id TEXT NOT NULL,
-        turn_id TEXT NOT NULL,
-        ordinal INTEGER NOT NULL CHECK(ordinal BETWEEN 1 AND 256),
-        assistant_message_index INTEGER NOT NULL
-            CHECK(assistant_message_index >= 0 AND assistant_message_index < 10000),
-        call_id TEXT NOT NULL
-            CHECK(length(CAST(call_id AS BLOB)) BETWEEN 1 AND 1024),
-        tool_name TEXT NOT NULL
-            CHECK(length(CAST(tool_name AS BLOB)) BETWEEN 1 AND 1024),
-        observed_at_utc TEXT NOT NULL,
-        PRIMARY KEY(session_id,turn_id,ordinal),
-        UNIQUE(session_id,turn_id,assistant_message_index,call_id),
-        FOREIGN KEY(session_id,turn_id) REFERENCES turns(session_id,turn_id)
-    )""",
-)
-_SCHEMA_V4 = (*_SCHEMA_V3, *_TOOL_FENCE_SCHEMA)
-
-
-_TASK_SCHEMA = (
-    """CREATE TABLE tasks (
-        session_id TEXT NOT NULL REFERENCES sessions(session_id),
-        task_id TEXT NOT NULL,
-        version INTEGER NOT NULL CHECK(version >= 0),
-        phase TEXT NOT NULL CHECK(phase IN
-            ('running','turn_committed','inspecting','result_recorded')),
-        base_seq INTEGER NOT NULL CHECK(base_seq >= 0),
-        checkpoint_seq INTEGER,
-        record_json TEXT NOT NULL CHECK(length(CAST(record_json AS BLOB)) <= 4096),
-        PRIMARY KEY(session_id,task_id),
-        CHECK((phase='running' AND checkpoint_seq IS NULL)
-            OR (phase!='running' AND checkpoint_seq IS NOT NULL AND checkpoint_seq=base_seq+1)),
-        FOREIGN KEY(session_id,base_seq) REFERENCES checkpoints(session_id,seq),
-        FOREIGN KEY(session_id,checkpoint_seq) REFERENCES checkpoints(session_id,seq)
-    )""",
-)
+from cairn.agent.session.task_models import TaskRevision
+from cairn.shared.db import Database, DbConnection, Row
 
 
 class _SessionRow(StrictDTO):
@@ -222,21 +66,6 @@ class _SessionRow(StrictDTO):
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
-
-
-# The WAL-reset judgement lives in one neutral module so Project Memory can share
-# it without importing this package. Re-exported here because this module has long
-# been the documented import site for the session store's release gate.
-
-
-def _unverified_database_error(version: tuple[int, int, int]) -> SessionStoreError:
-    """Refuse an unverified runtime with the facts an operator needs."""
-    current = ".".join(str(part) for part in version)
-    return SessionStoreError(
-        "sqlite_wal_unverified",
-        f"current={current} requires={VERIFIED_SQLITE_VERSIONS}"
-        f" declare={UNVERIFIED_SQLITE_DECLARATION}=1",
-    )
 
 
 # Session state transitions
@@ -274,34 +103,19 @@ def _unverified_database_error(version: tuple[int, int, int]) -> SessionStoreErr
 class SessionStore(TaskLedgerMixin):
     def __init__(
         self,
-        directory: Path,
+        database: Database,
         *,
         mode: Literal["writer", "inspect"] = "writer",
-        forbidden_roots: tuple[Path, ...],
         sensitive_values: tuple[str, ...] = (),
-        allow_unverified: bool = False,
     ) -> None:
-        if (
-            mode not in ("writer", "inspect")
-            or any(type(s) is not str for s in sensitive_values)
-            or type(allow_unverified) is not bool
+        if mode not in ("writer", "inspect") or any(
+            type(s) is not str for s in sensitive_values
         ):
             raise SessionStoreError("invalid_options")
-        # Runtime admission precedes every path, lock and database effect. A
-        # runtime without the verified WAL-reset fix is never admitted silently;
-        # declaring it admits an unverified store that no caller may report as
-        # supported.
-        version = sqlite3.sqlite_version_info
-        admission = wal_admission(allow_unverified=allow_unverified, version=version)
-        if admission == "refused":
-            raise _unverified_database_error(version)
-        self.wal_admission: Literal["verified", "unverified"] = admission
+        self.db = database
         self.mode = mode
         self.sensitive_values = sensitive_values
-        self._connection: sqlite3.Connection | None = None
-        self._paths = StorePaths(directory, forbidden_roots, writer=mode == "writer")
-        self.directory = self._paths.directory
-        self.path = self._paths.path
+        self._connection: DbConnection | None = None
         self._fault = False
         self._fault_sessions: set[str] = set()
         self._recovery_sessions: set[str] = set()
@@ -311,154 +125,15 @@ class SessionStore(TaskLedgerMixin):
         self._inspected: dict[str, Revision] = {}
         self.maintenance_failed = False
         try:
-            with self._paths.access():
-                try:
-                    self._connection = self._open()
-                    if mode == "writer":
-                        self._maintain()
-                except BaseException:
-                    if self._connection is not None:
-                        self._connection.close()
-                        self._connection = None
-                    raise
-                finally:
-                    if mode == "inspect" and self._connection is not None:
-                        self._connection.close()
-                        self._connection = None
-        except SessionStoreError:
+            self._connection = database.dedicated("agent")
+        except PostgresError:
             self.close()
-            raise
-        except (sqlite3.Error, OSError, ValueError, TypeError, AttributeError):
-            self.close()
-            raise SessionStoreError() from None
+            raise SessionStoreError("invalid_or_unavailable_store") from None
 
-    def _open(self) -> sqlite3.Connection:
-        self._paths.check()
-        if self.mode == "inspect" and Path(str(self.path) + "-journal").exists():
-            raise SessionStoreError("inspection_unavailable")
-        # The caller holds the read/effect guard until this connection closes.
-        # Immutable is safe only for this pinned, WAL-absent epoch. It ignores WAL.
-        cold = self.mode == "inspect" and not Path(str(self.path) + "-wal").exists()
-        options = "?mode=rw"
-        if self.mode == "inspect":
-            options = "?mode=ro&immutable=1" if cold else "?mode=ro&vfs=unix-none"
-        conn = sqlite3.connect(
-            self.path.as_uri() + options,
-            uri=True,
-            timeout=2,
-            isolation_level=None,
-        )
-        try:
-            if self.mode == "inspect":
-                # The access guard excludes every Store SQLite effect. Heap WAL
-                # indexing reads committed WAL without touching SHM or treating
-                # an active WAL database as immutable.
-                conn.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
-                if not conn.getconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE):
-                    raise SessionStoreError("sqlite_configuration_unavailable")
-                if (
-                    conn.execute("PRAGMA locking_mode=EXCLUSIVE").fetchone()[0]
-                    != "exclusive"
-                ):
-                    raise SessionStoreError("sqlite_configuration_unavailable")
-                conn.execute("PRAGMA query_only=ON")
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA trusted_schema=OFF")
-            conn.execute("PRAGMA foreign_keys=ON")
-            conn.execute("PRAGMA busy_timeout=2000")
-            if self._paths.new_database:
-                if conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
-                    raise SessionStoreError("wal_unavailable")
-                conn.execute("PRAGMA synchronous=FULL")
-                conn.execute("BEGIN IMMEDIATE")
-                for statement in (*_SCHEMA_V4, *_TASK_SCHEMA):
-                    conn.execute(statement)
-                conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-                conn.commit()
-            self._schema(conn)
-            if not cold and conn.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
-                raise SessionStoreError("wal_unavailable")
-            if self.mode == "writer":
-                conn.execute("PRAGMA synchronous=FULL")
-                page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-                if (
-                    conn.execute(
-                        f"PRAGMA max_page_count={MAX_DATABASE_BYTES // page_size}"
-                    ).fetchone()[0]
-                    * page_size
-                    > MAX_DATABASE_BYTES
-                ):
-                    raise SessionStoreError("database_limit")
-                conn.execute("PRAGMA wal_autocheckpoint=0")
-            required = {"foreign_keys": 1, "trusted_schema": 0, "busy_timeout": 2000}
-            required["synchronous" if self.mode == "writer" else "query_only"] = (
-                2 if self.mode == "writer" else 1
-            )
-            for pragma, expected in required.items():
-                setting = conn.execute(f"PRAGMA {pragma}").fetchone()
-                if setting is None or setting[0] != expected:
-                    raise SessionStoreError("sqlite_configuration_unavailable")
-            self._paths.check()
-        except BaseException:
-            conn.close()
-            raise
-        return conn
-
-    def _conn(self) -> sqlite3.Connection:
+    def _conn(self) -> DbConnection:
         if self._connection is None:
             raise SessionStoreError("closed_store")
-        self._paths.check()
         return self._connection
-
-    def _schema(self, conn: sqlite3.Connection) -> None:
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        # Every schema this build can read: the legacy versions it can migrate
-        # from, and the one it writes.
-        if version not in (1, 2, 3, SCHEMA_VERSION):
-            raise SessionStoreError("schema_mismatch")
-        observed = {
-            " ".join(row[0].split())
-            for row in conn.execute(
-                "SELECT sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'"
-            )
-        }
-        expected = (
-            _SCHEMA
-            if version == 1
-            else (*_SCHEMA, *_TASK_SCHEMA)
-            if version == 2
-            else (*_SCHEMA_V3, *_TASK_SCHEMA)
-            if version == 3
-            else (*_SCHEMA_V4, *_TASK_SCHEMA)
-        )
-        if observed != {" ".join(s.split()) for s in expected}:
-            raise SessionStoreError("schema_mismatch")
-        if (
-            conn.execute("PRAGMA quick_check(1)").fetchone()[0] != "ok"
-            or conn.execute("PRAGMA foreign_key_check").fetchone() is not None
-        ):
-            raise SessionStoreError("database_integrity")
-        # Bound TEXT/BLOB retrieval too, rather than allocate an arbitrary hostile
-        # row and only then check its decoded size.
-        bounds: tuple[tuple[str, str, int, str], ...] = (
-            ("sessions", "binding_json", MAX_RECORD_BYTES, "text"),
-            ("turns", "diagnostics_json", MAX_RECORD_BYTES, "text"),
-            ("checkpoints", "payload", MAX_CHECKPOINT_BYTES, "blob"),
-        )
-        if version >= 2:
-            bounds += (("tasks", "record_json", MAX_TASK_BYTES, "text"),)
-        if version >= 4:
-            bounds += (("tool_fences", "call_id", 1024, "text"),)
-            bounds += (("tool_fences", "tool_name", 1024, "text"),)
-        for table, column, limit, sql_type in bounds:
-            if (
-                conn.execute(
-                    f"SELECT 1 FROM {table} WHERE typeof({column}) != ? OR length(CAST({column} AS BLOB)) > ? LIMIT 1",
-                    (sql_type, limit),
-                ).fetchone()
-                is not None
-            ):
-                raise SessionStoreError("record_limit")
 
     def _encode(
         self,
@@ -493,7 +168,7 @@ class SessionStore(TaskLedgerMixin):
         return diagnostics.model_copy(update={"fences": ()})
 
     def _diagnostics_for_json(
-        self, conn: sqlite3.Connection, diagnostics: AttemptDiagnostics
+        self, conn: DbConnection, diagnostics: AttemptDiagnostics
     ) -> AttemptDiagnostics:
         """The diagnostics this database stores in JSON.
 
@@ -525,71 +200,27 @@ class SessionStore(TaskLedgerMixin):
         # settled commit or explicit host release after cleanup drops ownership.
         self._inspected.clear()
 
-    def _maintain(self) -> None:
-        """Idle, bounded WAL housekeeping; its error never revokes a receipt."""
-        try:
-            conn = self._conn()
-            if self.mode == "writer":
-                result = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-                self.maintenance_failed = result[0] != 0
-                self._paths.check()
-        except (sqlite3.Error, OSError, SessionStoreError):
-            self.maintenance_failed = True
-
-    def _wal_size(self) -> int:
-        try:
-            return Path(str(self.path) + "-wal").stat().st_size
-        except FileNotFoundError:
-            return 0
-
     @contextmanager
     def _write(
         self,
         *,
         recovery: bool = False,
         idle_after: bool = False,
-        migration: bool = False,
-    ) -> Iterator[sqlite3.Connection]:
-        conn: sqlite3.Connection | None = None
+    ) -> Iterator[DbConnection]:
+        del idle_after
+        if self.mode != "writer":
+            raise SessionStoreError("read_only_store")
+        if self._fault and not recovery:
+            raise SessionStoreError("recovery_required")
+        conn = self._conn()
         committing = False
         try:
-            with self._paths.access():
-                try:
-                    if self.mode != "writer":
-                        raise SessionStoreError("read_only_store")
-                    if self._fault and not recovery:
-                        raise SessionStoreError("recovery_required")
-                    conn = self._conn()
-                    # A failed migration cleanup must never admit recovery writes
-                    # on a connection whose FK enforcement could not be restored.
-                    if conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
-                        raise SessionStoreError("sqlite_configuration_unavailable")
-                    if self._wal_size() >= MAX_WAL_BYTES:
-                        if not self._owned_turns or recovery:
-                            self._maintain()
-                        if self._wal_size() >= MAX_WAL_BYTES:
-                            raise SessionStoreError("wal_admission_limit")
-                    if migration:
-                        conn.execute("PRAGMA foreign_keys=OFF")
-                    conn.execute("BEGIN IMMEDIATE")
-                    self._schema(conn)
-                    yield conn
-                    self._paths.check()
-                    committing = True
-                    self._commit(conn)
-                except BaseException:
-                    if conn is not None:
-                        with suppress(sqlite3.Error):
-                            conn.rollback()
-                    raise
-                finally:
-                    if migration and conn is not None:
-                        conn.execute("PRAGMA foreign_keys=ON")
-                        if conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
-                            raise SessionStoreError("sqlite_configuration_unavailable")
-                if idle_after:
-                    self._maintain()
+            conn.execute("BEGIN")
+            yield conn
+            committing = True
+            self._commit(conn)
         except BaseException as exc:
+            conn.rollback()
             self._latch()
             if isinstance(exc, SessionStoreError):
                 raise
@@ -599,12 +230,14 @@ class SessionStore(TaskLedgerMixin):
                 ) from None
             raise
 
-    def _commit(self, conn: sqlite3.Connection) -> None:
+    @staticmethod
+    def _commit(conn: DbConnection) -> None:
+        """Commit seam so tests can exercise an uncertain outcome."""
         conn.commit()
 
-    def _row(self, conn: sqlite3.Connection, expected: Revision) -> _SessionRow:
+    def _row(self, conn: DbConnection, expected: Revision) -> _SessionRow:
         row = conn.execute(
-            "SELECT * FROM sessions WHERE session_id=?", (expected.session_id,)
+            "SELECT * FROM sessions WHERE session_id=%s", (expected.session_id,)
         ).fetchone()
         if row is None:
             raise SessionStoreError("session_missing")
@@ -639,7 +272,7 @@ class SessionStore(TaskLedgerMixin):
 
     def _cas(
         self,
-        conn: sqlite3.Connection,
+        conn: DbConnection,
         expected: Revision,
         *,
         state: SessionState,
@@ -655,7 +288,7 @@ class SessionStore(TaskLedgerMixin):
             head_seq=expected.head_seq if head is None else head,
         )
         result = conn.execute(
-            "UPDATE sessions SET version=?,head_seq=?,state=?,active_turn_id=?,binding_json=?,updated_at_utc=? WHERE session_id=? AND version=? AND head_seq=?",
+            "UPDATE sessions SET version=%s,head_seq=%s,state=%s,active_turn_id=%s,binding_json=%s,updated_at_utc=%s WHERE session_id=%s AND version=%s AND head_seq=%s",
             (
                 revision.version,
                 revision.head_seq,
@@ -672,12 +305,10 @@ class SessionStore(TaskLedgerMixin):
             raise VersionConflict()
         return revision
 
-    def _records(
-        self, conn: sqlite3.Connection, session_id: str
-    ) -> tuple[TurnRecord, ...]:
+    def _records(self, conn: DbConnection, session_id: str) -> tuple[TurnRecord, ...]:
         result: list[TurnRecord] = []
         for row in conn.execute(
-            "SELECT * FROM turns WHERE session_id=? ORDER BY rowid", (session_id,)
+            "SELECT * FROM turns WHERE session_id=%s ORDER BY seq", (session_id,)
         ):
             record = self._turn_record(conn, row)
             self._validate_record(record)
@@ -685,7 +316,7 @@ class SessionStore(TaskLedgerMixin):
         return tuple(result)
 
     def _turn_record(
-        self, conn: sqlite3.Connection, row: sqlite3.Row, *, with_fences: bool = True
+        self, conn: DbConnection, row: Row, *, with_fences: bool = True
     ) -> TurnRecord:
         """One TurnRecord, with its fences reassembled from `tool_fences`.
 
@@ -721,24 +352,19 @@ class SessionStore(TaskLedgerMixin):
         )
 
     @staticmethod
-    def _has_fence_table(conn: sqlite3.Connection) -> bool:
-        """Whether this database has the V4 fence table yet."""
-        return (
-            conn.execute(
-                "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='tool_fences'"
-            ).fetchone()
-            is not None
-        )
+    def _has_fence_table(conn: DbConnection) -> bool:
+        del conn
+        return True
 
     def _fences_for(
-        self, conn: sqlite3.Connection, session_id: str, turn_id: str
+        self, conn: DbConnection, session_id: str, turn_id: str
     ) -> tuple[ToolFence, ...]:
         # A legacy schema has no fence table; its fences are still in the JSON
         # column and `decode_record` above has already loaded them.
         if not self._has_fence_table(conn):
             return ()
         rows = conn.execute(
-            "SELECT * FROM tool_fences WHERE session_id=? AND turn_id=? ORDER BY ordinal",
+            "SELECT * FROM tool_fences WHERE session_id=%s AND turn_id=%s ORDER BY ordinal",
             (session_id, turn_id),
         ).fetchall()
         fences: list[ToolFence] = []
@@ -893,7 +519,7 @@ class SessionStore(TaskLedgerMixin):
                 raise SessionStoreError("invalid_fence")
             previous = (fence.assistant_message_index, position)
 
-    def _checkpoint_row(self, row: sqlite3.Row) -> CheckpointPayload | CheckpointDelta:
+    def _checkpoint_row(self, row: Row) -> CheckpointPayload | CheckpointDelta:
         """Decode one checkpoint row, enforcing its byte bound."""
         if (
             not isinstance(row["payload"], bytes)
@@ -955,9 +581,9 @@ class SessionStore(TaskLedgerMixin):
             if settled:
                 expected_base += 1
 
-    def _report(self, conn: sqlite3.Connection, session_id: str) -> RecoveryReport:
+    def _report(self, conn: DbConnection, session_id: str) -> RecoveryReport:
         raw = conn.execute(
-            "SELECT version,head_seq FROM sessions WHERE session_id=?", (session_id,)
+            "SELECT version,head_seq FROM sessions WHERE session_id=%s", (session_id,)
         ).fetchone()
         if raw is None:
             raise SessionStoreError("session_missing")
@@ -972,7 +598,7 @@ class SessionStore(TaskLedgerMixin):
         history: list[StoredMessage] = []
         history_bytes = 0
         for row in conn.execute(
-            "SELECT * FROM checkpoints WHERE session_id=? ORDER BY seq", (session_id,)
+            "SELECT * FROM checkpoints WHERE session_id=%s ORDER BY seq", (session_id,)
         ):
             checkpoint = self._checkpoint_row(row)
             # Validate row identity before following the checkpoint chain.
@@ -1138,35 +764,17 @@ class SessionStore(TaskLedgerMixin):
         self._validate_fenced_history(record, checkpoint)
 
     @contextmanager
-    def _read(self) -> Iterator[sqlite3.Connection]:
+    def _read(self) -> Iterator[DbConnection]:
+        conn = self._conn()
         try:
-            with self._paths.access():
-                try:
-                    if self.mode == "inspect":
-                        self._connection = self._open()
-                    conn = self._conn()
-                    conn.execute("BEGIN")
-                    try:
-                        self._schema(conn)
-                        yield conn
-                        self._paths.check()
-                    finally:
-                        conn.rollback()
-                finally:
-                    if self.mode == "inspect" and self._connection is not None:
-                        self._connection.close()
-                        self._connection = None
-        except SessionStoreError:
+            conn.execute("BEGIN READ ONLY" if self.mode == "inspect" else "BEGIN")
+            yield conn
+        except (SessionStoreError, VersionConflict):
             raise
-        except (
-            sqlite3.Error,
-            OSError,
-            ValueError,
-            TypeError,
-            KeyError,
-            AttributeError,
-        ):
+        except (PostgresError, ValueError, TypeError, KeyError, AttributeError):
             raise SessionStoreError("invalid_or_unavailable_store") from None
+        finally:
+            conn.rollback()
 
     def _snapshot(self, session_id: str) -> RecoveryReport:
         with self._read() as conn:
@@ -1193,7 +801,7 @@ class SessionStore(TaskLedgerMixin):
         with self._read() as conn:
             rows = conn.execute(
                 "SELECT session_id, state, created_at_utc, updated_at_utc, head_seq "
-                "FROM sessions ORDER BY updated_at_utc DESC, session_id ASC LIMIT ?",
+                "FROM sessions ORDER BY updated_at_utc DESC, session_id ASC LIMIT %s",
                 (limit,),
             ).fetchall()
             return [
@@ -1229,12 +837,12 @@ class SessionStore(TaskLedgerMixin):
             # the hyphens still means the same Session.
             canonical = str(UUID(digits))
             uuid4_text(canonical)
-            clause = "WHERE session_id = ?"
+            clause = "WHERE session_id = %s"
             parameters: tuple[str, ...] = (canonical,)
         else:
             # A partial identifier is matched against the stored form as typed,
             # and against its hyphenated form when the caller typed digits only.
-            clause = "WHERE session_id LIKE ? OR session_id LIKE ?"
+            clause = "WHERE session_id LIKE %s OR session_id LIKE %s"
             parameters = (f"{prefix}%", f"{digits}%")
         with self._read() as conn:
             rows = conn.execute(
@@ -1271,178 +879,7 @@ class SessionStore(TaskLedgerMixin):
 
     @property
     def schema_version(self) -> int:
-        with self._read() as conn:
-            return int(conn.execute("PRAGMA user_version").fetchone()[0])
-
-    def _logical_reports(
-        self, conn: sqlite3.Connection
-    ) -> dict[str, tuple[Revision, tuple[TurnRecord, ...], CheckpointReceipt]]:
-        """The Session state that must not change across a migration.
-
-        Fences move from `diagnostics_json` to `tool_fences`; their *content* is
-        what has to survive, so the reports are compared as the host sees them,
-        not as rows.
-        """
-        reports: dict[
-            str, tuple[Revision, tuple[TurnRecord, ...], CheckpointReceipt]
-        ] = {}
-        for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"):
-            report = self._report(conn, row[0])
-            reports[row[0]] = (report.revision, report.attempts, report.receipt)
-        return reports
-
-    def _validate_sessions(self, conn: sqlite3.Connection) -> None:
-        for row in conn.execute("SELECT session_id FROM sessions"):
-            self._report(conn, row[0])
-        if conn.execute("PRAGMA user_version").fetchone()[0] >= 2:
-            for row in conn.execute("SELECT session_id,task_id FROM tasks"):
-                self._task(conn, row[0], row[1])
-
-    def _backup_schema(self, conn: sqlite3.Connection) -> Path:
-        path = self._paths.create_backup(
-            conn.execute("PRAGMA user_version").fetchone()[0]
-        )
-        destination = sqlite3.connect(
-            path.as_uri() + "?mode=rw", uri=True, isolation_level=None
-        )
-        try:
-            destination.row_factory = sqlite3.Row
-            destination.execute("PRAGMA trusted_schema=OFF")
-            destination.execute("PRAGMA foreign_keys=ON")
-            destination.execute("PRAGMA synchronous=FULL")
-            # Backup reads the SQLite snapshot, including committed WAL pages.
-            # It must precede BEGIN IMMEDIATE on the source connection.
-            conn.backup(destination, pages=256, sleep=0)
-            if (
-                destination.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
-                != "delete"
-            ):
-                raise SessionStoreError("backup_failed")
-            self._schema(destination)
-            self._validate_sessions(destination)
-        finally:
-            destination.close()
-        self._paths.sync_backup(path)
-        return path
-
-    def _migrate_v1(self, conn: sqlite3.Connection) -> None:
-        for statement in _TASK_SCHEMA:
-            conn.execute(statement)
-        conn.execute("PRAGMA user_version=2")
-
-    def _migrate_v2(self, conn: sqlite3.Connection) -> None:
-        conn.execute(
-            _CHECKPOINT_SCHEMA_V3.replace('"checkpoints"', "checkpoints_upgrade", 1)
-        )
-        conn.execute("INSERT INTO checkpoints_upgrade SELECT * FROM checkpoints")
-        conn.execute("DROP TABLE checkpoints")
-        conn.execute("ALTER TABLE checkpoints_upgrade RENAME TO checkpoints")
-        conn.execute(_TURN_ORDER_INDEX)
-        conn.execute("PRAGMA user_version=3")
-
-    def _migrate_v3(self, conn: sqlite3.Connection) -> None:
-        """Move every fence from `turns.diagnostics_json` into `tool_fences`.
-
-        Runs inside the migration transaction after a verified backup. Fences are
-        copied in ordinal order with their identity intact; each `diagnostics_json`
-        is then rewritten without them. Anything that does not decode, does not
-        order contiguously, or repeats a reference aborts the whole step, leaving
-        the V3 database untouched.
-        """
-        for statement in _TOOL_FENCE_SCHEMA:
-            conn.execute(statement)
-        for row in conn.execute(
-            "SELECT session_id, turn_id, diagnostics_json FROM turns ORDER BY rowid"
-        ).fetchall():
-            diagnostics = decode_record(
-                AttemptDiagnostics,
-                row["diagnostics_json"].encode(),
-                sensitive_values=self.sensitive_values,
-            )
-            for expected_ordinal, fence_value in enumerate(diagnostics.fences, 1):
-                if (
-                    fence_value.ordinal != expected_ordinal
-                    or fence_value.session_id != row["session_id"]
-                    or fence_value.turn_id != row["turn_id"]
-                ):
-                    raise SessionStoreError("invalid_fence")
-                self._encode(fence_value, kind=ToolFence)
-                conn.execute(
-                    "INSERT INTO tool_fences VALUES (?,?,?,?,?,?,?)",
-                    (
-                        fence_value.session_id,
-                        fence_value.turn_id,
-                        fence_value.ordinal,
-                        fence_value.assistant_message_index,
-                        fence_value.call_id,
-                        fence_value.tool_name,
-                        fence_value.observed_at_utc,
-                    ),
-                )
-            stripped = self._without_fences(diagnostics)
-            raw = self._encode(stripped)
-            conn.execute(
-                "UPDATE turns SET diagnostics_json=? WHERE session_id=? AND turn_id=?",
-                (raw.decode(), row["session_id"], row["turn_id"]),
-            )
-        conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-
-    def upgrade_schema(self) -> Path:
-        """Explicit trusted-host upgrade to the current schema; keep a backup.
-
-        The lifetime writer lock is required. No locally owned Turn may be live.
-        Existing Session operations remain supported on v1 without this call.
-        """
-        self._mutation_session = "*"
-        try:
-            with self._paths.access():
-                if self.mode != "writer":
-                    raise SessionStoreError("read_only_store")
-                if self._owned_turns:
-                    raise SessionStoreError("turn_still_owned")
-                if self._owned_tasks:
-                    raise SessionStoreError("task_still_owned")
-                if self._fault:
-                    raise SessionStoreError("recovery_required")
-                conn = self._conn()
-                self._schema(conn)
-                version = conn.execute("PRAGMA user_version").fetchone()[0]
-                if version == SCHEMA_VERSION:
-                    raise SessionStoreError("schema_upgrade_not_required")
-                self._validate_sessions(conn)
-                # D4 step 1: fix the logical state before anything moves. The
-                # post-migration reports are compared with these, so a copy bug
-                # cannot commit a schema bump that silently lost fence evidence.
-                before = self._logical_reports(conn)
-                backup = self._backup_schema(conn)
-            with self._write(idle_after=True, migration=True) as conn:
-                if conn.execute("PRAGMA user_version").fetchone()[0] != version:
-                    raise SessionStoreError("schema_mismatch")
-                if version == 1:
-                    self._migrate_v1(conn)
-                if version <= 2:
-                    self._migrate_v2(conn)
-                self._migrate_v3(conn)
-                self._schema(conn)
-                self._validate_sessions(conn)
-                # D4 step 5: the same Sessions must read back identically.
-                if self._logical_reports(conn) != before:
-                    raise SessionStoreError("schema_upgrade_failed")
-            return backup
-        except SessionStoreError:
-            raise
-        except Exception:
-            self._latch()
-            raise SessionStoreError("schema_upgrade_failed") from None
-
-    def _tasks_supported(self, conn: sqlite3.Connection) -> None:
-        if conn.execute("PRAGMA user_version").fetchone()[0] < 2:
-            raise SessionStoreError("schema_upgrade_required")
-
-    def _fences_supported(self, conn: sqlite3.Connection) -> None:
-        """Fencing needs the fence table introduced at schema 4."""
-        if conn.execute("PRAGMA user_version").fetchone()[0] < 4:
-            raise SessionStoreError("schema_upgrade_required")
+        return SCHEMA_VERSION
 
     @contextmanager
     def _prepare(
@@ -1464,7 +901,7 @@ class SessionStore(TaskLedgerMixin):
             raise
 
     def _current(
-        self, conn: sqlite3.Connection, expected: Revision, prepared: RecoveryReport
+        self, conn: DbConnection, expected: Revision, prepared: RecoveryReport
     ) -> RecoveryReport:
         """Re-read the row inside the write transaction and confirm nothing moved.
 
@@ -1502,12 +939,8 @@ class SessionStore(TaskLedgerMixin):
             sensitive_values=self.sensitive_values,
         )
         with self._write(idle_after=True) as conn:
-            if format_version != (
-                2 if conn.execute("PRAGMA user_version").fetchone()[0] >= 3 else 1
-            ):
-                raise VersionConflict()
             conn.execute(
-                "INSERT INTO sessions VALUES (?,?,?,'ready',NULL,?,?,?)",
+                "INSERT INTO sessions VALUES (%s,%s,%s,'ready',NULL,%s,%s,%s)",
                 (
                     binding.session_id,
                     0,
@@ -1518,7 +951,7 @@ class SessionStore(TaskLedgerMixin):
                 ),
             )
             conn.execute(
-                "INSERT INTO checkpoints VALUES (?,0,NULL,?,?,?,?)",
+                "INSERT INTO checkpoints VALUES (%s,0,NULL,%s,%s,%s,%s)",
                 (
                     binding.session_id,
                     format_version,
@@ -1527,11 +960,6 @@ class SessionStore(TaskLedgerMixin):
                     digest,
                 ),
             )
-        try:
-            self._paths.sync_creation()
-        except (OSError, SessionStoreError):
-            self._latch()
-            raise SessionStoreError("create_acknowledgement_uncertain") from None
         return CheckpointReceipt(
             revision=Revision(session_id=binding.session_id, version=0, head_seq=0),
             turn_id=None,
@@ -1592,7 +1020,9 @@ class SessionStore(TaskLedgerMixin):
             ):
                 raise SessionStoreError("turn_admission_rejected")
             conn.execute(
-                "INSERT INTO turns VALUES (?,?,?,?, 'executing',?,?,NULL,NULL,?)",
+                "INSERT INTO turns (session_id,turn_id,base_seq,task_id,state,input_digest, "
+                "started_at_utc,ended_at_utc,settled_seq,diagnostics_json) "
+                "VALUES (%s,%s,%s,%s, 'executing',%s,%s,NULL,NULL,%s)",
                 (
                     intent.session_id,
                     intent.turn_id,
@@ -1629,7 +1059,6 @@ class SessionStore(TaskLedgerMixin):
         self._begin(expected, Revision)
         fence = decode_record(ToolFence, self._encode(fence, kind=ToolFence))
         with self._write() as conn:
-            self._fences_supported(conn)
             record = self._fence_target(conn, expected, fence.turn_id)
             previous = self._last_fence(conn, expected.session_id, fence.turn_id)
             self._check_fence_succession(conn, record, previous, fence)
@@ -1645,7 +1074,7 @@ class SessionStore(TaskLedgerMixin):
                 record.intent, self._without_fences(record.diagnostics)
             )
             conn.execute(
-                "INSERT INTO tool_fences VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO tool_fences VALUES (%s,%s,%s,%s,%s,%s,%s)",
                 (
                     fence.session_id,
                     fence.turn_id,
@@ -1666,7 +1095,7 @@ class SessionStore(TaskLedgerMixin):
         return revision
 
     def _fence_target(
-        self, conn: sqlite3.Connection, expected: Revision, turn_id: str
+        self, conn: DbConnection, expected: Revision, turn_id: str
     ) -> TurnRecord:
         """The locally-owned executing Turn this fence would extend.
 
@@ -1712,14 +1141,14 @@ class SessionStore(TaskLedgerMixin):
 
     def _turn_record_by_id(
         self,
-        conn: sqlite3.Connection,
+        conn: DbConnection,
         session_id: str,
         turn_id: str,
         *,
         with_fences: bool = True,
     ) -> TurnRecord | None:
         row = conn.execute(
-            "SELECT * FROM turns WHERE session_id=? AND turn_id=?",
+            "SELECT * FROM turns WHERE session_id=%s AND turn_id=%s",
             (session_id, turn_id),
         ).fetchone()
         if row is None:
@@ -1727,10 +1156,10 @@ class SessionStore(TaskLedgerMixin):
         return self._turn_record(conn, row, with_fences=with_fences)
 
     def _last_fence(
-        self, conn: sqlite3.Connection, session_id: str, turn_id: str
+        self, conn: DbConnection, session_id: str, turn_id: str
     ) -> ToolFence | None:
         row = conn.execute(
-            "SELECT * FROM tool_fences WHERE session_id=? AND turn_id=? "
+            "SELECT * FROM tool_fences WHERE session_id=%s AND turn_id=%s "
             "ORDER BY ordinal DESC LIMIT 1",
             (session_id, turn_id),
         ).fetchone()
@@ -1748,7 +1177,7 @@ class SessionStore(TaskLedgerMixin):
 
     def _check_fence_succession(
         self,
-        conn: sqlite3.Connection,
+        conn: DbConnection,
         record: TurnRecord,
         previous: ToolFence | None,
         fence: ToolFence,
@@ -1777,8 +1206,8 @@ class SessionStore(TaskLedgerMixin):
         if instant(fence.observed_at_utc) < instant(timestamp):
             raise SessionStoreError("invalid_fence")
         duplicate = conn.execute(
-            "SELECT 1 FROM tool_fences WHERE session_id=? AND turn_id=? "
-            "AND assistant_message_index=? AND call_id=? LIMIT 1",
+            "SELECT 1 FROM tool_fences WHERE session_id=%s AND turn_id=%s "
+            "AND assistant_message_index=%s AND call_id=%s LIMIT 1",
             (
                 fence.session_id,
                 fence.turn_id,
@@ -1840,12 +1269,8 @@ class SessionStore(TaskLedgerMixin):
             current = self._current(conn, expected, prepared)
             self._active(current, checkpoint.turn_id or "")
             diagnostic_raw = self._encode(self._diagnostics_for_json(conn, diagnostics))
-            if format_version != (
-                2 if conn.execute("PRAGMA user_version").fetchone()[0] >= 3 else 1
-            ):
-                raise VersionConflict()
             conn.execute(
-                "INSERT INTO checkpoints VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO checkpoints VALUES (%s,%s,%s,%s,%s,%s,%s)",
                 (
                     checkpoint.session_id,
                     checkpoint.seq,
@@ -1857,7 +1282,7 @@ class SessionStore(TaskLedgerMixin):
                 ),
             )
             conn.execute(
-                "UPDATE turns SET state=?,ended_at_utc=?,settled_seq=?,diagnostics_json=? WHERE session_id=? AND turn_id=? AND state='executing'",
+                "UPDATE turns SET state=%s,ended_at_utc=%s,settled_seq=%s,diagnostics_json=%s WHERE session_id=%s AND turn_id=%s AND state='executing'",
                 (
                     terminal.state,
                     terminal.ended_at_utc,
@@ -1903,7 +1328,7 @@ class SessionStore(TaskLedgerMixin):
                     record.diagnostics.model_copy(update={"reason": reason_code}),
                 )
                 conn.execute(
-                    "UPDATE turns SET state='recovery_required',diagnostics_json=? WHERE session_id=? AND turn_id=?",
+                    "UPDATE turns SET state='recovery_required',diagnostics_json=%s WHERE session_id=%s AND turn_id=%s",
                     (
                         self._encode(diagnostics).decode(),
                         expected.session_id,
@@ -2007,7 +1432,7 @@ class SessionStore(TaskLedgerMixin):
                     record.diagnostics.model_copy(update={"resolution": resolution}),
                 )
                 conn.execute(
-                    "UPDATE turns SET state='abandoned',ended_at_utc=?,diagnostics_json=? WHERE session_id=? AND turn_id=?",
+                    "UPDATE turns SET state='abandoned',ended_at_utc=%s,diagnostics_json=%s WHERE session_id=%s AND turn_id=%s",
                     (
                         resolution.resolved_at_utc,
                         self._encode(stored).decode(),
@@ -2030,16 +1455,5 @@ class SessionStore(TaskLedgerMixin):
         if self.mode == "writer" and self._owned_tasks:
             raise SessionStoreError("task_still_owned")
         if self._connection is not None:
-            try:
-                with self._paths.access(validate=False):
-                    try:
-                        self._connection.close()
-                    except sqlite3.Error:
-                        raise SessionStoreError("close_failed") from None
-                    finally:
-                        self._connection = None
-            finally:
-                if self._connection is None:
-                    self._paths.close()
-        else:
-            self._paths.close()
+            self._connection.close()
+            self._connection = None

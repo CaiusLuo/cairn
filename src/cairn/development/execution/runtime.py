@@ -54,6 +54,7 @@ from cairn.development.service import (
 )
 from cairn.development.worktree import WorktreeProvider
 from cairn.shared.credential_paths import protect_host_paths
+from cairn.shared.db import Database
 from cairn.shared.redaction import StreamRedactor, redact_text
 
 
@@ -83,6 +84,7 @@ class ServiceExecution:
         worktrees: Path,
         llm_factory: Callable[[], LLMClient],
         *,
+        database: Database,
         budget: RunBudget,
         allow_shell: bool = False,
         allow_network: bool = False,
@@ -94,6 +96,7 @@ class ServiceExecution:
     ) -> None:
         self.source = Workspace(source)
         self.state = state
+        self.database = database
         self.worktrees = worktrees.resolve()
         if self.worktrees == self.source.root or self.worktrees.is_relative_to(
             self.source.root
@@ -138,9 +141,7 @@ class ServiceExecution:
         # Open on the runtime owner thread, rather than an ASGI factory thread.
         if self._store is None:
             self._store = SessionStore(
-                self.state / "sessions",
-                forbidden_roots=(self.source.root, self.worktrees),
-                sensitive_values=self.sensitive_values,
+                self.database, sensitive_values=self.sensitive_values
             )
         return self._store
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sqlite3
 import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -12,6 +11,7 @@ from tempfile import TemporaryDirectory
 import httpx
 
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 from tests.support.server_process import ROOT, NativeClient, ServerProcess, wait_for
 
 REVIEW_TIMEZONE = "Asia/Shanghai"
@@ -42,7 +42,7 @@ def _seed_reviews(server: ServerProcess) -> None:
     from cairn.review.weekly import week_period
 
     zone = ZoneInfo(REVIEW_TIMEZONE)
-    store = ReviewStore(KnowledgeStore(server.state / "knowledge"))
+    store = ReviewStore(KnowledgeStore(database_for(server.root)))
 
     def source(source_id: str, text: str, occurred_at: datetime) -> SourceSnapshot:
         return SourceSnapshot(
@@ -430,13 +430,13 @@ def main() -> None:
                 # identity, and a newer Run points at a Session row that no
                 # longer exists.
                 server.stop()
-                with sqlite3.connect(server.state / "domain.sqlite3") as database:
+                with database_for(server.root).connect("core") as database:
                     database.execute(
-                        "UPDATE runs SET session_id = NULL WHERE conversation_id = ?",
+                        "UPDATE runs SET session_id = NULL WHERE conversation_id = %s",
                         (legacy["conversation_id"],),
                     )
                     database.execute(
-                        "UPDATE runs SET session_id = ? WHERE conversation_id = ?",
+                        "UPDATE runs SET session_id = %s WHERE conversation_id = %s",
                         (
                             "00000000-0000-4000-8000-000000000000",
                             missing["conversation_id"],

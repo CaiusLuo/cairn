@@ -18,6 +18,7 @@ from cairn.memory.service import PersonalMemoryService
 from cairn.memory.store import PersonalMemoryStore
 from cairn.server.config import Services
 from cairn.server.management import ServerControls
+from tests.support.pg import database_for
 
 
 class DummyTool:
@@ -131,7 +132,7 @@ def test_knowledge_tools_are_owner_only(tmp_path: Path) -> None:
     owner = controls()
     owner.services = Services(memory=False, schedule=False)
     owner.workspace = tmp_path
-    owner.knowledge_store = KnowledgeStore(tmp_path / "knowledge")
+    owner.knowledge_store = KnowledgeStore(database_for(tmp_path))
     owner.knowledge_store.create("PRIVATE-KNOWLEDGE-ONLY")
 
     owner_agent, owner_registry = agent_with_registry()
@@ -157,7 +158,7 @@ def test_knowledge_tools_are_owner_only(tmp_path: Path) -> None:
 
 
 def test_legacy_wechat_knowledge_tools_require_owner_binding(tmp_path: Path) -> None:
-    domain = DomainStore(tmp_path / "domain.sqlite3")
+    domain = DomainStore(database_for(tmp_path))
     owner_conversation = domain.get_or_create_wechat_conversation(
         workspace=tmp_path,
         account_id="bot-1",
@@ -173,7 +174,7 @@ def test_legacy_wechat_knowledge_tools_require_owner_binding(tmp_path: Path) -> 
     server = ServerControls.__new__(ServerControls)
     server.services = Services(memory=False, schedule=False)
     server.workspace = tmp_path
-    server.knowledge_store = KnowledgeStore(tmp_path / "knowledge")
+    server.knowledge_store = KnowledgeStore(database_for(tmp_path))
     server.knowledge_store.create("PRIVATE-WECHAT-KNOWLEDGE")
     server.service = cast(Any, SimpleNamespace(domain_store=domain))
     server.wechat = cast(
@@ -209,7 +210,7 @@ def test_legacy_wechat_knowledge_tools_require_owner_binding(tmp_path: Path) -> 
 def test_legacy_wechat_trusted_sender_has_no_private_capabilities(
     tmp_path: Path,
 ) -> None:
-    domain = DomainStore(tmp_path / "domain.sqlite3")
+    domain = DomainStore(database_for(tmp_path))
     owner_conversation = domain.get_or_create_wechat_conversation(
         workspace=tmp_path,
         account_id="bot-1",
@@ -226,7 +227,7 @@ def test_legacy_wechat_trusted_sender_has_no_private_capabilities(
     server.services = Services(memory=True, schedule=True)
     server.workspace = tmp_path
     server.schedules = cast(Any, SimpleNamespace(store=object()))
-    server.knowledge_store = KnowledgeStore(tmp_path / "knowledge")
+    server.knowledge_store = KnowledgeStore(database_for(tmp_path))
     server.knowledge_store.create("PRIVATE-WECHAT-KNOWLEDGE")
     server.memory = PersonalMemoryService(
         PersonalMemoryStore(tmp_path / "agent"), enabled=True

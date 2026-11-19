@@ -23,7 +23,6 @@ class WebConfig:
     """
 
     workspace: Path
-    sessions_dir: Path
     tasks_dir: Path
     knowledge_dir: Path | None = None
     host: str = DEFAULT_HOST
@@ -35,7 +34,6 @@ class WebConfig:
 
     def __post_init__(self) -> None:
         workspace = Path(self.workspace).expanduser().resolve()
-        sessions_dir = Path(self.sessions_dir).expanduser().resolve()
         tasks_dir = Path(self.tasks_dir).expanduser().resolve()
         knowledge_dir = (
             tasks_dir.parent / "knowledge"
@@ -43,7 +41,6 @@ class WebConfig:
             else Path(self.knowledge_dir).expanduser().resolve()
         )
         object.__setattr__(self, "workspace", workspace)
-        object.__setattr__(self, "sessions_dir", sessions_dir)
         object.__setattr__(self, "tasks_dir", tasks_dir)
         object.__setattr__(self, "knowledge_dir", knowledge_dir)
         if not workspace.is_dir():
@@ -55,7 +52,6 @@ class WebConfig:
         if self.refresh_seconds <= 0 or self.refresh_seconds > 60:
             raise ValueError("--refresh-seconds must be in (0, 60]")
         for label, state_root in (
-            ("--sessions-dir", sessions_dir),
             ("--tasks-dir", tasks_dir),
             ("--knowledge-dir", knowledge_dir),
         ):
@@ -63,10 +59,8 @@ class WebConfig:
                 raise ValueError(f"{label} must live outside --workspace")
             if workspace.is_relative_to(state_root):
                 raise ValueError(f"{label} must not contain --workspace")
-        if len({sessions_dir, tasks_dir, knowledge_dir}) != 3:
-            raise ValueError(
-                "--sessions-dir, --tasks-dir and --knowledge-dir must differ"
-            )
+        if len({tasks_dir, knowledge_dir}) != 2:
+            raise ValueError("--tasks-dir and --knowledge-dir must differ")
         if self.web_root is not None:
             object.__setattr__(
                 self, "web_root", Path(self.web_root).expanduser().resolve()

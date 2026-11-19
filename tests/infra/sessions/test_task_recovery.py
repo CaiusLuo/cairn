@@ -1,6 +1,5 @@
 """Host decisions preserve exact Task/Session facts and never dispatch work."""
 
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -11,6 +10,7 @@ from cairn.agent.session.models import (
     VersionConflict,
 )
 from cairn.agent.session.task_models import TaskResolution, TaskResultData
+from tests.support.pg import database_for
 from tests.support.sessions import SESSION, T4, binding, fence, intent, store
 from tests.support.task_ledger import INPUT_DIGEST, TASK, commit_task_checkpoint
 
@@ -24,7 +24,7 @@ def test_abandonment_preserves_unknown_effect_evidence_and_blocks_advancement(
         api.inspect(SESSION).revision, task_id=TASK, input_digest=INPUT_DIGEST
     )
     assert "resolution" not in task.model_dump()
-    with sqlite3.connect(api.path) as conn:
+    with database_for(tmp_path).connect("agent") as conn:
         assert (
             '"resolution"'
             not in conn.execute("SELECT record_json FROM tasks").fetchone()[0]

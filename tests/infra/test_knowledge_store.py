@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -17,10 +16,11 @@ from cairn.knowledge.models import (
     content_hash,
 )
 from cairn.knowledge.store import KnowledgeRequestConflict, KnowledgeStore
+from tests.support.pg import database_for
 
 
 def test_create_preserves_original_text_and_derives_hash(tmp_path: Path) -> None:
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     original = "  第一行\n\n```python\nprint('kept')\n```\n"
     clip, created = store.create(
         original,
@@ -40,7 +40,7 @@ def test_create_preserves_original_text_and_derives_hash(tmp_path: Path) -> None
 
 
 def test_create_is_idempotent_per_request_id(tmp_path: Path) -> None:
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     first, created = store.create("same payload", tags=["one"], request_id="stable")
     replay, replayed = store.create("same payload", tags=["one"], request_id="stable")
     assert created is True
@@ -57,7 +57,7 @@ def test_create_is_idempotent_per_request_id(tmp_path: Path) -> None:
 
 
 def test_concurrent_create_keeps_one_clip_per_request_id(tmp_path: Path) -> None:
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(
             pool.map(
@@ -71,7 +71,7 @@ def test_concurrent_create_keeps_one_clip_per_request_id(tmp_path: Path) -> None
 
 
 def test_update_recomputes_hash_and_archive_round_trips(tmp_path: Path) -> None:
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     clip, _ = store.create("original", request_id="update-1")
     updated = store.update(
         clip.clip_id,
@@ -98,7 +98,7 @@ def test_update_recomputes_hash_and_archive_round_trips(tmp_path: Path) -> None:
 
 
 def test_list_searches_content_and_tags_and_pages(tmp_path: Path) -> None:
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     first, _ = store.create("A needle in the text", tags=["rough"], request_id="a")
     second, _ = store.create("A different note", tags=["Needle-tag"], request_id="b")
     store.create("unrelated", request_id="c")
@@ -119,7 +119,7 @@ def test_list_searches_content_and_tags_and_pages(tmp_path: Path) -> None:
 
 
 def test_pages_cover_every_clip_once(tmp_path: Path) -> None:
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     created = [
         store.create(f"bulk {index:03d}", tags=["bulk"], request_id=f"bulk-{index}")[0]
         for index in range(120)
@@ -140,13 +140,15 @@ def test_pages_cover_every_clip_once(tmp_path: Path) -> None:
 
 def test_clips_survive_a_new_store_instance(tmp_path: Path) -> None:
     root = tmp_path / "knowledge"
-    clip, _ = KnowledgeStore(root).create("durable text", request_id="restart")
-    reopened = KnowledgeStore(root)
+    clip, _ = KnowledgeStore(database_for(root)).create(
+        "durable text", request_id="restart"
+    )
+    reopened = KnowledgeStore(database_for(root))
     assert reopened.get(clip.clip_id) == clip
 
 
 def test_store_rejects_invalid_input_at_the_boundaries(tmp_path: Path) -> None:
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     for content in ("", "   ", "\n\t"):
         with pytest.raises(ValueError):
             store.create(content)
@@ -177,11 +179,3 @@ def test_store_rejects_invalid_input_at_the_boundaries(tmp_path: Path) -> None:
         store.update(clip.clip_id)
     with pytest.raises(ValueError):
         store.update(clip.clip_id, content=" ")
-
-
-@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes only")
-def test_store_root_and_database_are_private(tmp_path: Path) -> None:
-    root = tmp_path / "knowledge"
-    store = KnowledgeStore(root)
-    assert root.stat().st_mode & 0o777 == 0o700
-    assert store.path.stat().st_mode & 0o777 == 0o600

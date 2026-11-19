@@ -9,6 +9,7 @@ import httpx
 from cairn.conversation.models import ConversationSource, RunStatus
 from cairn.conversation.store import DomainStore
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 from tests.support.server_process import ServerProcess, wait_for
 
 
@@ -20,7 +21,7 @@ def test_restart_resumes_persisted_handoff_intent(tmp_path: Path) -> None:
     try:
         server.start()
         token = (server.state / "runtime.token").read_text().strip()
-        store = DomainStore(server.state / "domain.sqlite3")
+        store = DomainStore(database_for(server.root))
         conversation = store.create_conversation(
             workspace=source,
             source=ConversationSource.CLI,

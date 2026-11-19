@@ -26,7 +26,7 @@ def test_precedence_paths_and_budget_do_not_depend_on_cwd(
     assert first.data_root == tmp_path / "state"
     assert first.worktrees_root == tmp_path / "state/worktrees"
     assert not first.services.schedule
-    assert first.paths.sessions == tmp_path / "state/runtime/sessions"
+    assert first.paths.runtime == tmp_path / "state/runtime"
     assert not first.data_root.exists()
 
 

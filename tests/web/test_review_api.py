@@ -32,6 +32,7 @@ from cairn.review.models import (
 )
 from cairn.review.service import DailyReviewService
 from cairn.review.store import ReviewStore
+from tests.support.pg import database_for
 
 PASSPHRASE = "review-passphrase"
 ORIGIN = "http://127.0.0.1"
@@ -152,7 +153,6 @@ def _config(tmp_path: Path, *, auth: bool = True) -> WebConfig:
     workspace.mkdir(exist_ok=True)
     return WebConfig(
         workspace=workspace,
-        sessions_dir=tmp_path / "sessions",
         tasks_dir=tmp_path / "tasks",
         knowledge_dir=tmp_path / "knowledge",
         web_root=None,
@@ -169,7 +169,7 @@ def _app(
     cutoff: wall_time | None = None,
     timezone: str | None = None,
 ) -> tuple[Starlette, DailyReviewService, KnowledgeStore]:
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     service = DailyReviewService(
         store=ReviewStore(store),
         collector=collector or FakeCollector(_review_input()),
@@ -184,6 +184,7 @@ def _app(
         reviews=service,
         review_cutoff=cutoff,
         review_timezone=timezone,
+        database=database_for(tmp_path),
     )
     web.state.review_delivery = SimpleNamespace(
         target=DeliveryTarget(account_id="bot-a", recipient="owner"),

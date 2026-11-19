@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from psycopg import Error as PostgresError
 
 from cairn.agent.tools.base import InvalidArguments, Tool
 from cairn.knowledge.store import KnowledgeStore
@@ -17,6 +17,7 @@ from cairn.knowledge.tools import (
     KnowledgeListTool,
     KnowledgeSearchTool,
 )
+from tests.support.pg import database_for
 
 
 def result(tool: Tool, args: dict[str, Any]) -> dict[str, Any]:
@@ -26,7 +27,7 @@ def result(tool: Tool, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def test_list_search_get_pagination_and_archived_filter(tmp_path: Path) -> None:
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     first, _ = store.create(
         "Cairn saved knowledge: blue-shape " + "x" * 9000,
         tags=["cairn"],
@@ -80,14 +81,14 @@ def test_list_search_get_pagination_and_archived_filter(tmp_path: Path) -> None:
         == "not_found"
     )
 
-    reopened = KnowledgeStore(tmp_path / "knowledge")
+    reopened = KnowledgeStore(database_for(tmp_path))
     assert (
         result(KnowledgeGetTool(reopened), {"clip_id": first.clip_id})["status"] == "ok"
     )
 
 
 def test_chinese_keyword_search_returns_citeable_clip(tmp_path: Path) -> None:
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     clip, _ = store.create("项目代号: 蓝石。下周与供应商确认交付时间。")
     outcome = result(KnowledgeSearchTool(store), {"query": "蓝石"})
     assert outcome["status"] == "ok"
@@ -96,7 +97,7 @@ def test_chinese_keyword_search_returns_citeable_clip(tmp_path: Path) -> None:
 
 
 def test_tools_validate_model_arguments(tmp_path: Path) -> None:
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     for tool, args in (
         (KnowledgeListTool(store), {"limit": True}),
         (KnowledgeListTool(store), {"limit": 0}),
@@ -125,11 +126,11 @@ def test_tools_validate_model_arguments(tmp_path: Path) -> None:
 def test_unavailable_store_is_distinct_from_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     clip, _ = store.create("needle")
 
     def unavailable(*args: object, **kwargs: object) -> None:
-        raise sqlite3.OperationalError("secret path /private/knowledge.sqlite3")
+        raise PostgresError("secret path /private/knowledge.sqlite3")
 
     for tool, args, method in (
         (KnowledgeSearchTool(store), {"query": "needle"}, "list_clips"),

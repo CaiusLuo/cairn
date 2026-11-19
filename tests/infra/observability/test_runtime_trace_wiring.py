@@ -4,6 +4,7 @@ from cairn.agent.budget import RunBudget
 from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.agent.tracing.models import SpanStatus
 from cairn.development.execution.runtime import ServiceExecution
+from tests.support.pg import database_for
 
 
 def test_dynamic_secrets_reach_the_default_trace_redactor(tmp_path: Path) -> None:
@@ -17,6 +18,7 @@ def test_dynamic_secrets_reach_the_default_trace_redactor(tmp_path: Path) -> Non
         budget=RunBudget(1),
         sensitive_values=("initial-secret",),
         trace_root=tmp_path / "traces",
+        database=database_for(tmp_path),
     )
 
     # Channel credentials are discovered after the Server has started.

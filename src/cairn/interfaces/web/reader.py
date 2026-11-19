@@ -15,10 +15,10 @@ from typing import Any
 
 from cairn.agent.session.models import SessionStoreError, SessionSummary
 from cairn.agent.session.store import SessionStore
-from cairn.agent.tools.bash import resolve_tmpdir, resolve_uv_cache_dir
 from cairn.development.board.models import TaskBoardItem
 from cairn.development.board.store import TaskBoardStore
 from cairn.shared.credential_env import SECRET_ENV_KEYS
+from cairn.shared.db import Database
 
 SNAPSHOT_VERSION = 1
 
@@ -42,11 +42,11 @@ class SnapshotReader:
         self,
         *,
         workspace: Path,
-        sessions_dir: Path,
+        database: Database,
         tasks_dir: Path,
     ) -> None:
         self.workspace = workspace
-        self.sessions_dir = sessions_dir
+        self.database = database
         self.tasks_dir = tasks_dir
         self._lock = threading.Lock()
         self._sequence = 0
@@ -54,22 +54,11 @@ class SnapshotReader:
         self._last_session_status = "ok"
         self._last_task_status = "ok"
 
-    def _forbidden_roots(self) -> tuple[Path, ...]:
-        env = dict(os.environ)
-        roots: list[Path] = [self.workspace]
-        for candidate in (resolve_tmpdir(env), resolve_uv_cache_dir(env)):
-            if candidate is not None:
-                roots.append(candidate)
-        return tuple(roots)
-
     def _session_rows(self) -> tuple[list[SessionSummary], str]:
-        if not self.sessions_dir.is_dir():
-            return [], "missing"
         try:
             store = SessionStore(
-                self.sessions_dir,
+                self.database,
                 mode="inspect",
-                forbidden_roots=self._forbidden_roots(),
                 sensitive_values=tuple(
                     value
                     for key, value in os.environ.items()
@@ -80,8 +69,8 @@ class SnapshotReader:
                 return store.list_sessions(), "ok"
             finally:
                 store.close()
-        except SessionStoreError as exc:
-            return [], "unavailable" if exc.code != "database_missing" else "missing"
+        except SessionStoreError:
+            return [], "unavailable"
         except (OSError, ValueError, RuntimeError):
             return [], "unavailable"
 
@@ -196,13 +185,10 @@ class SnapshotReader:
         }
 
     def session_detail(self, session_id: str) -> dict[str, Any] | None:
-        if not self.sessions_dir.is_dir():
-            return None
         try:
             store = SessionStore(
-                self.sessions_dir,
+                self.database,
                 mode="inspect",
-                forbidden_roots=self._forbidden_roots(),
                 sensitive_values=tuple(
                     value
                     for key, value in os.environ.items()

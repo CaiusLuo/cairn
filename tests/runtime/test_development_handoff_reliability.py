@@ -29,6 +29,7 @@ from cairn.development.service import TaskService
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 
 
 class _NoopExecution:
@@ -46,11 +47,8 @@ class _BadSessionStore:
 def _task_service(tmp_path: Path) -> tuple[Path, DomainStore, TaskService]:
     source = tmp_path / "source"
     source.mkdir()
-    store = DomainStore(tmp_path / "domain.sqlite3")
-    catalogue = RuntimeCatalogue(
-        tmp_path / "runtime",
-        forbidden_roots=(source, tmp_path / "worktrees"),
-    )
+    store = DomainStore(database_for(tmp_path))
+    catalogue = RuntimeCatalogue(database_for(tmp_path))
     tasks = TaskService(catalogue, _NoopExecution())
     tasks.worker = asyncio.create_task(asyncio.sleep(3600))
     return source, store, tasks
@@ -126,6 +124,7 @@ def test_handoff_exception_keeps_conversation_worker_alive(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = _HandoffModel
         async with app.router.lifespan_context(app):
@@ -183,10 +182,7 @@ def test_task_service_records_history_origins_before_worker_can_take_task(
     async def scenario() -> None:
         source = tmp_path / "source"
         source.mkdir()
-        catalogue = RuntimeCatalogue(
-            tmp_path / "runtime",
-            forbidden_roots=(source, tmp_path / "worktrees"),
-        )
+        catalogue = RuntimeCatalogue(database_for(tmp_path))
         seen: list[tuple[CheckpointReceipt, ...]] = []
 
         async def executor(task: RuntimeTask, emit: Any) -> str:
@@ -386,6 +382,7 @@ def test_handoff_review_adopt_is_versioned_and_idempotent(tmp_path: Path) -> Non
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         async with app.router.lifespan_context(app):
             conversation, run, _runtime, domain = _seed_handoff_review(app, source)
@@ -449,6 +446,7 @@ def test_handoff_review_abandon_keeps_task_identity_and_cancels_active_task(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         async with app.router.lifespan_context(app):
             _, run, runtime, _ = _seed_handoff_review(app, source)
@@ -486,6 +484,7 @@ def test_handoff_review_requires_operator_authorization(tmp_path: Path) -> None:
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         async with app.router.lifespan_context(app):
             _, run, _, _ = _seed_handoff_review(app, source)

@@ -8,9 +8,9 @@ in cleartext beyond the write-only credential field.
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections.abc import Awaitable, Callable
 
+from psycopg import Error as PostgresError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -210,7 +210,7 @@ def _write_error(exc: Exception) -> JSONResponse:
         return _error(502, "channel_adapter_error")
     if isinstance(exc, ValueError):
         return _error(422, "invalid_channel_request")
-    if isinstance(exc, (OSError, sqlite3.Error)):
+    if isinstance(exc, (OSError, PostgresError)):
         return _error(503, "channel_store_unavailable")
     return _error(500, "channel_internal_error")
 
@@ -249,7 +249,7 @@ def channel_routes(
         try:
             views = manager.list_connection_views(platform)
             summaries = manager.platform_summaries(platform)
-        except (OSError, sqlite3.Error):
+        except (OSError, PostgresError):
             return _error(503, "channel_store_unavailable")
         return JSONResponse(
             {
@@ -264,7 +264,7 @@ def channel_routes(
             rows = [
                 manager.platform_capabilities(platform) for platform in ALL_PLATFORMS
             ]
-        except (OSError, sqlite3.Error):
+        except (OSError, PostgresError):
             return _error(503, "channel_store_unavailable")
         return JSONResponse(
             {"platforms": [row.model_dump(mode="json") for row in rows]},
@@ -275,7 +275,7 @@ def channel_routes(
         request_id = request.path_params.get("request_id", "")
         try:
             receipt = manager.request_receipt(request_id)
-        except (OSError, sqlite3.Error):
+        except (OSError, PostgresError):
             return _error(503, "channel_store_unavailable")
         except RuntimeError:
             return _error(500, "channel_internal_error")
@@ -294,7 +294,7 @@ def channel_routes(
         run_id = request.path_params.get("run_id", "")
         try:
             reply = manager.reply_for_run(run_id)
-        except (OSError, sqlite3.Error):
+        except (OSError, PostgresError):
             return _error(503, "channel_store_unavailable")
         if reply is None:
             return _error(404, "channel_reply_not_found")
@@ -320,7 +320,7 @@ def channel_routes(
             return _error(422, "invalid_channel_request")
         try:
             views = manager.list_connection_views(platform)
-        except (OSError, sqlite3.Error):
+        except (OSError, PostgresError):
             return _error(503, "channel_store_unavailable")
         return JSONResponse(
             {
@@ -473,7 +473,7 @@ def channel_routes(
             runtime = manager.get_runtime_status(connection_id)
         except ChannelNotFound:
             return _error(404, "channel_not_found")
-        except (OSError, sqlite3.Error):
+        except (OSError, PostgresError):
             return _error(503, "channel_store_unavailable")
         return JSONResponse(runtime.model_dump(mode="json"), headers=_json_headers())
 

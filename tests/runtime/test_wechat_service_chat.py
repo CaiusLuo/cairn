@@ -30,6 +30,7 @@ from cairn.integrations.wechat.state import (
     WechatState,
 )
 from tests.support.fake_ilink import FakeILink
+from tests.support.pg import database_for
 from tests.support.wechat_service import (
     _client,
     _completed,
@@ -512,6 +513,7 @@ def test_default_conversation_executor_closes_durable_session(
         ),
         approval=None,
         allowed_senders=frozenset({"u1"}),
+        database=database_for(tmp_path),
     )
 
     closed: list[bool] = []
@@ -559,6 +561,7 @@ def test_task_holds_lease_while_running(
         ),
         approval=None,
         allowed_senders=frozenset({"u1"}),
+        database=database_for(tmp_path),
     )
     started = asyncio.Event()
     release = asyncio.Event()
@@ -634,6 +637,7 @@ def test_default_conversation_executor_reports_empty_response(
         ),
         approval=None,
         allowed_senders=frozenset({"u1"}),
+        database=database_for(tmp_path),
     )
 
     def factory(sender: str, active: list[object], *, purpose: str = "task") -> object:

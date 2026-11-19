@@ -11,10 +11,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import sqlite3
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from psycopg import Error as PostgresError
 
 from cairn.conversation.models import Run, RunStatus, workspace_id_for
 from cairn.conversation.store import DomainStore
@@ -246,7 +247,7 @@ class ReviewSourceCollector:
     ) -> tuple[list[SourceSnapshot], SourceCollectionStatus]:
         try:
             clips = self.knowledge.list_clips_touched_between(start_utc, end_utc)
-        except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
+        except (OSError, PostgresError, ValueError, TypeError) as exc:
             return [], _status(
                 "knowledge_clip",
                 SourceCollectionState.UNAVAILABLE,
@@ -273,7 +274,7 @@ class ReviewSourceCollector:
             tasks, runs = self.domain.review_activity_between(
                 workspace_id=self.workspace_id, start=start_utc, end=end_utc
             )
-        except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
+        except (OSError, PostgresError, ValueError, TypeError) as exc:
             return [], _status(
                 "development_task",
                 SourceCollectionState.UNAVAILABLE,
@@ -304,7 +305,7 @@ class ReviewSourceCollector:
             _, runs = self.domain.review_activity_between(
                 workspace_id=self.workspace_id, start=start_utc, end=end_utc
             )
-        except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
+        except (OSError, PostgresError, ValueError, TypeError) as exc:
             return [], _status(
                 "development_run",
                 SourceCollectionState.UNAVAILABLE,

@@ -15,10 +15,11 @@ from cairn.conversation.models import ConversationSource, RunEvent
 from cairn.conversation.service import RunLedger
 from cairn.conversation.store import DomainStore
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 
 
 def test_stream_deltas_are_batched_into_bounded_events(tmp_path: Path) -> None:
-    store = DomainStore(tmp_path / "domain.sqlite3")
+    store = DomainStore(database_for(tmp_path))
     conversation = store.create_conversation(
         workspace=tmp_path,
         source=ConversationSource.CLI,
@@ -71,6 +72,7 @@ def test_follow_wakes_on_intermediate_event(tmp_path: Path) -> None:
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = lambda: OneShot()
         api = RuntimeClient(
@@ -94,7 +96,7 @@ def test_follow_wakes_on_intermediate_event(tmp_path: Path) -> None:
 
 
 def test_event_pages_and_cursor_cover_all_events(tmp_path: Path) -> None:
-    store = DomainStore(tmp_path / "domain.sqlite3")
+    store = DomainStore(database_for(tmp_path))
     conversation = store.create_conversation(
         workspace=tmp_path,
         source=ConversationSource.CLI,
@@ -123,7 +125,7 @@ def test_event_pages_and_cursor_cover_all_events(tmp_path: Path) -> None:
 
 
 def test_only_persisted_events_wake_follow(tmp_path: Path) -> None:
-    store = DomainStore(tmp_path / "domain.sqlite3")
+    store = DomainStore(database_for(tmp_path))
     conversation = store.create_conversation(
         workspace=tmp_path,
         source=ConversationSource.CLI,
@@ -178,6 +180,7 @@ def test_shared_runtime_timeline_correlates_and_persists_a_trace(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = lambda: OneShot()
         api = RuntimeClient(
@@ -284,6 +287,7 @@ def test_diagnostic_failures_do_not_abort_a_run(
             budget=RunBudget(5),
             token="zzzz",
             tracer=Tracer(BrokenSink()),
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = lambda: OneShot()
         api = RuntimeClient(
@@ -328,7 +332,7 @@ def test_diagnostic_retention_preserves_lifecycle_and_event_cursor(
 ) -> None:
     import cairn.conversation.store as store_module
 
-    store = DomainStore(tmp_path / "domain.sqlite3")
+    store = DomainStore(database_for(tmp_path))
     conversation = store.create_conversation(
         workspace=tmp_path, source=ConversationSource.CLI, initial_prompt="retention"
     )
@@ -352,7 +356,7 @@ def test_diagnostic_retention_preserves_lifecycle_and_event_cursor(
     assert [row.sequence for row in store.list_run_events(run.run_id)] == [1, 4, 5, 6]
 
     # A restart must not resurrect pruned rows or reset the high-water cursor.
-    reopened = DomainStore(tmp_path / "domain.sqlite3")
+    reopened = DomainStore(database_for(tmp_path))
     assert [row.sequence for row in reopened.list_run_events(run.run_id)] == [
         1,
         4,

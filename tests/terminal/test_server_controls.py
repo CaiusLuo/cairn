@@ -951,11 +951,9 @@ def test_server_cleanup_finishes_after_repeated_cancellation(
         assert app.state.runtime.worker.done()
         assert app.state.controls.memory_journal.worker.done()
         from cairn.development.catalogue import RuntimeCatalogue
+        from tests.support.pg import database_for
 
-        reopened = RuntimeCatalogue(
-            tmp_path / "state",
-            forbidden_roots=(tmp_path / "source", tmp_path / "worktrees"),
-        )
+        reopened = RuntimeCatalogue(database_for(tmp_path))
         reopened.close()
 
     asyncio.run(scenario())

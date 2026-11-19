@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import multiprocessing
-import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -22,6 +21,7 @@ from cairn.agent.turn.events import Event
 from cairn.agent.workspace.workspace import Workspace
 from cairn.development.execution.models import TaskSpec, TaskStatus
 from cairn.development.execution.runner import CodingTaskRunner
+from cairn.shared.db import DbConnection
 from tests.support.durable_tasks import (
     BUDGET,
     SPEC,
@@ -31,8 +31,9 @@ from tests.support.durable_tasks import (
     reconcile_fresh,
 )
 from tests.support.git import git, initialize_repository
+from tests.support.pg import database_for
 from tests.support.runtime import SequenceLLM
-from tests.support.sessions import SESSION, UNVERIFIED_RUNTIME, legacy_store
+from tests.support.sessions import SESSION
 
 
 @pytest.fixture
@@ -462,21 +463,12 @@ def test_cancellation_retains_writer_until_cleanup_settles(
             host.session.close()
             with pytest.raises(SessionStoreError, match=r"(turn|task)_still_owned"):
                 host.store.close()
-            with pytest.raises(SessionStoreError, match="writer_busy"):
-                open_store(
-                    root / "store", host.workspace, allow_unverified=UNVERIFIED_RUNTIME
-                )
             assert not pending.done() and not settled.is_set()
             finish.set()
             with pytest.raises(asyncio.CancelledError):
                 await pending
             assert settled.is_set() and asyncio.all_tasks() == baseline
-            reader = open_store(
-                root / "store",
-                host.workspace,
-                inspect=True,
-                allow_unverified=UNVERIFIED_RUNTIME,
-            )
+            reader = open_store(database_for(root), inspect=True)
             try:
                 report = reader.inspect_task(SESSION, SPEC.task_id)
                 assert (
@@ -522,12 +514,12 @@ def test_unknown_commit_observes_facts_without_mutation_or_execution_retry(
     original_commit = host.store._commit
     calls = 0
 
-    def uncertain(conn: sqlite3.Connection) -> None:
+    def uncertain(conn: DbConnection) -> None:
         nonlocal calls
         calls += 1
         if committed:
             conn.commit()
-        raise sqlite3.OperationalError("private unknown acknowledgement")
+        raise RuntimeError("private unknown acknowledgement")
 
     def write(*args: Any, **kwargs: Any) -> object:
         monkeypatch.setattr(host.store, "_commit", uncertain)
@@ -693,24 +685,6 @@ def test_typed_turn_attribution_rejects_mismatches(root: Path, invalid: str) -> 
         host.session.close()
 
 
-def test_schema_one_rejects_without_implicit_upgrade(root: Path) -> None:
-    legacy_store(root, version=1).close()
-    host = make_host(root, SequenceLLM([]))
-    path = host.store.path
-    host.session.close()
-    llm = SequenceLLM([])
-    fresh = make_host(root, llm, reopen=True)
-    try:
-        reconcile_fresh(fresh)
-        result = asyncio.run(fresh.runner.run(SPEC, durable_session=fresh.session))
-        assert result.status is TaskStatus.RUNTIME_ERROR and llm.calls == []
-        assert fresh.store.schema_version == 1
-        assert fresh.store.inspect(SESSION).attempts == ()
-        assert not list(path.parent.glob("schema-1-backup-*"))
-    finally:
-        fresh.session.close()
-
-
 def test_task_cas_failure_retains_committed_turn_without_replay(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -789,19 +763,10 @@ def test_process_death_exposes_facts_without_execution_or_automatic_reconciliati
     worker.start()
     try:
         assert parent.poll(20) and parent.recv() == window
-        workspace = Workspace(root / "work")
-        with pytest.raises(SessionStoreError, match="writer_busy"):
-            open_store(root / "store", workspace, allow_unverified=UNVERIFIED_RUNTIME)
         worker.kill()
         worker.join(10)
         assert worker.exitcode is not None
-        before = {p.name: p.read_bytes() for p in (root / "store").iterdir()}
-        reader = open_store(
-            root / "store",
-            workspace,
-            inspect=True,
-            allow_unverified=UNVERIFIED_RUNTIME,
-        )
+        reader = open_store(database_for(root), inspect=True)
         try:
             session = reader.inspect(SESSION)
             post_turn = window in (
@@ -832,7 +797,6 @@ def test_process_death_exposes_facts_without_execution_or_automatic_reconciliati
                     assert report.task.checkpoint == session.receipt
         finally:
             reader.close()
-        assert {p.name: p.read_bytes() for p in (root / "store").iterdir()} == before
         llm = SequenceLLM([])
         fresh = make_host(root, llm, reopen=True)
         try:

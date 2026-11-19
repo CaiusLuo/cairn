@@ -22,9 +22,9 @@ conversations and tasks running when you close a client.
 
 ## Install and start
 
-Use Debian with systemd, Python 3.12+, [uv](https://docs.astral.sh/uv/), Node.js
-and pnpm. Development tasks also need Git 2.40+. Startup checks the SQLite
-library linked to Python.
+Use Debian with systemd, Python 3.12+, PostgreSQL 17 with the `vector` and
+`pg_trgm` extensions, [uv](https://docs.astral.sh/uv/), Node.js and pnpm.
+Development tasks also need Git 2.40+.
 
 ```sh
 git clone https://github.com/CaiusLuo/cairn.git
@@ -33,6 +33,20 @@ uv sync --locked --all-groups
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web build
 ```
+
+Create one database and role for Cairn, then point the server at it:
+
+```sh
+sudo apt install postgresql postgresql-17-pgvector
+sudo -u postgres psql -c "CREATE ROLE cairn LOGIN PASSWORD 'choose-a-password'"
+sudo -u postgres createdb -O cairn cairn
+sudo -u postgres psql -d cairn -c "CREATE EXTENSION IF NOT EXISTS vector"
+sudo -u postgres psql -d cairn -c "CREATE EXTENSION IF NOT EXISTS pg_trgm"
+```
+
+Add `CAIRN_DATABASE_URL=postgresql://cairn:...@localhost:5432/cairn` to `.env`.
+`CAIRN_DATABASE_NAMESPACE` (default `cairn`) selects the schema prefix, so one
+database can host several isolated Cairn instances.
 
 Create `.env` using [.env.example](.env.example), filling in your model, API key
 and endpoint. Existing `.cairn/models.toml` provider configurations are also
@@ -66,6 +80,25 @@ uv run cairn-cli --config /etc/cairn/config.toml
 ```
 
 ## Everyday use
+
+A host that ran a previous release keeps its legacy SQLite files until they are
+imported. Stop the service, rehearse the import, then publish it:
+
+```sh
+sudo systemctl stop cairn
+uv run cairn-pg-import --state ~/.local/state/cairn --dry-run
+uv run cairn-pg-import --state ~/.local/state/cairn
+sudo ./scripts/start.sh
+```
+
+Run the import with the same `CAIRN_DATABASE_URL` as the service, or pass
+`--database-url`. The import reads legacy files read-only, moves channel
+credentials into `<state>/channels/credentials`, compares every table by row
+count and sha256, and rolls back on any mismatch. Two rehearsals report the same
+tables and hashes. `--replace` overwrites an earlier import. Legacy files stay
+in place for rollback. If an older release left
+`runtime/sessions-chat/sessions.sqlite3`, resolve or archive it first; the import
+refuses to choose between separated chat histories.
 
 Chat normally for questions and personal assistance. Use `/develop GOAL` when
 you want a development task. Web and CLI can continue the same development task
@@ -129,6 +162,8 @@ for the same messaging account or bot.
 
 - Keep model credentials and the Web login token private. If you expose the Web
   listener remotely, put it behind a reverse proxy with TLS and restrict access.
+- Back up both halves of the state: `pg_dump --format=custom <database>` and
+  `data_root` (attachments, channel credentials and the runtime token).
 - Ordinary chat does not allocate a development worktree. Start development
   explicitly; shell and network access depend on host configuration.
 - Closing CLI or Web leaves the server running. Inspect recovery information

@@ -9,11 +9,12 @@ from cairn.scheduling.tools import (
     ScheduleListTool,
     ScheduleManageTool,
 )
+from tests.support.pg import database_for
 
 
 def _tool(tmp_path: Path) -> ScheduleCreateTool:
     return ScheduleCreateTool(
-        store=ScheduleStore(tmp_path / "schedule"),
+        store=ScheduleStore(database_for(tmp_path)),
         workspace=str(tmp_path / "ws"),
         recipient=lambda: "owner",
         account_id=lambda: "bot",

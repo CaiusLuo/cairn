@@ -16,6 +16,7 @@ from cairn.knowledge.models import Clip
 from cairn.knowledge.store import KnowledgeStore
 from cairn.server.bootstrap import runtime_app
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 
 TOKEN = "offline-scope-token"
 USAGE = LLMUsage(input_tokens=12, output_tokens=12)
@@ -98,11 +99,12 @@ def _app(source: Path, state: Path) -> Any:
         source.parent / "worktrees",
         budget=RunBudget(8),
         token=TOKEN,
+        database=database_for(state),
     )
 
 
 def _clip(state: Path, content: str) -> Clip:
-    clip, _ = KnowledgeStore(state / "knowledge").create(content)
+    clip, _ = KnowledgeStore(database_for(state)).create(content)
     return clip
 
 

@@ -11,12 +11,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
-import json
-import sqlite3
 from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
+
+from psycopg import Error as PostgresError
 
 from cairn.review.models import ReviewStatus, StoredReview
 from cairn.review.weekly import (
@@ -28,7 +28,6 @@ from cairn.review.weekly import (
     week_start,
 )
 from cairn.scheduling.store import ScheduleStore
-from cairn.shared.atomic_json import atomic_write
 
 REVIEW_WEEKLY_TIMEZONE = "Asia/Shanghai"
 REVIEW_WEEKLY_TIME = time(20, 40)
@@ -70,9 +69,6 @@ class WeeklyReviewScheduleCoordinator:
         self.poll_interval = max(0.05, poll_interval)
         self.settle_timeout = settle_timeout
         self.clock = clock or (lambda: datetime.now().astimezone())
-        self.path = store.root / "weekly-review-schedule.json"
-        if self.path.is_symlink():
-            raise ValueError("Weekly review schedule state cannot be a symlink")
         self._state: dict[str, Any] | None = None
         self._stop: asyncio.Event | None = None
         self._task: asyncio.Task[None] | None = None
@@ -85,16 +81,9 @@ class WeeklyReviewScheduleCoordinator:
         return self._state
 
     def _load(self) -> dict[str, Any]:
-        try:
-            raw = self.path.read_text(encoding="utf-8")
-        except FileNotFoundError:
+        payload = self.store.load_state("weekly-review-schedule")
+        if payload is None:
             return {"version": WEEKLY_SCHEDULE_VERSION}
-        except OSError:
-            raise ValueError("weekly review schedule state is unreadable") from None
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            raise ValueError("weekly review schedule state is not valid JSON") from None
         if (
             not isinstance(payload, dict)
             or payload.get("version") != WEEKLY_SCHEDULE_VERSION
@@ -107,7 +96,7 @@ class WeeklyReviewScheduleCoordinator:
         state.update(updates)
         state["version"] = WEEKLY_SCHEDULE_VERSION
         state["updated_at"] = self.clock().astimezone(ZoneInfo("UTC")).isoformat()
-        atomic_write(self.path, state)
+        self.store.save_state("weekly-review-schedule", state)
         self._state = state
 
     async def start(self) -> None:
@@ -252,7 +241,7 @@ class WeeklyReviewScheduleCoordinator:
             return
         try:
             review = await self.service.get_review(review_id)
-        except (OSError, sqlite3.Error):
+        except (OSError, PostgresError):
             self._reconciled = False
             return
         if review is None:
@@ -303,7 +292,7 @@ class WeeklyReviewScheduleCoordinator:
                     deliver=deliver,
                     reuse_completed=True,
                 )
-            except (OSError, sqlite3.Error) as exc:
+            except (OSError, PostgresError) as exc:
                 self._save(
                     last_error=f"{type(exc).__name__}: {exc}",
                     next_retry_at=(now + timedelta(seconds=RETRY_SECONDS)).isoformat(),

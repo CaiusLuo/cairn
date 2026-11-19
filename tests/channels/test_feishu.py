@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 import threading
 import time
 from dataclasses import dataclass
@@ -13,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from psycopg import Error as PostgresError
 
 from cairn.channels import feishu
 from cairn.channels.adapter import ChannelAdapterRegistry
@@ -37,6 +37,7 @@ from cairn.channels.models import (
 )
 from cairn.channels.store import ChannelStore, inbound_digest
 from tests.channels.support import FakeIntake
+from tests.support.pg import database_for
 
 APP_ID = "cli_aaaaaaaaaaaaaaaa"
 APP_ID_2 = "cli_bbbbbbbbbbbbbbbb"
@@ -409,7 +410,7 @@ def store_adapter(
     sink: Any,
     **kwargs: Any,
 ) -> tuple[FeishuAdapter, ChannelStore, str]:
-    store = ChannelStore(tmp_path / "channels")
+    store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
     options: dict[str, Any] = {
         "retry_seconds": 0.01,
         "window_seconds": 60.0,
@@ -792,7 +793,7 @@ async def manager_for(
     factory: ChannelFactory,
     intake: FakeIntake,
 ) -> tuple[ChannelManager, ChannelStore, str]:
-    store = ChannelStore(tmp_path / "channels")
+    store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
     registry = ChannelAdapterRegistry().register(
         ChannelPlatform.FEISHU,
         feishu_adapter_factory(
@@ -1016,7 +1017,7 @@ def test_admission_survives_a_transient_store_failure(
             nonlocal remaining
             if remaining:
                 remaining -= 1
-                raise sqlite3.OperationalError("database is locked")
+                raise PostgresError("database is locked")
             return original(event, **kwargs)
 
         monkeypatch.setattr(store, "claim_inbound", flaky)
@@ -1038,7 +1039,7 @@ def test_pre_ack_hook_persists_before_the_handler_and_recovers_after_exit(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         first_channel = FakeFeishuChannel(APP_ID, APP_SECRET)
         first_received: list[ChannelInboundEvent] = []
 
@@ -1190,7 +1191,7 @@ def test_stop_keeps_pending_envelopes_for_the_next_start(tmp_path: Path) -> None
     async def scenario() -> None:
         first_channel = FakeFeishuChannel(APP_ID, APP_SECRET)
         second_channel = FakeFeishuChannel(APP_ID, APP_SECRET)
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         allow = False
         received: list[ChannelInboundEvent] = []
 

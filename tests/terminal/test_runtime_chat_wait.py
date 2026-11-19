@@ -14,6 +14,7 @@ from cairn.interfaces.cli.runtime_chat import RemoteChat
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 
 
 def test_remote_chat_posts_a_steer_to_the_running_run() -> None:
@@ -58,6 +59,7 @@ def test_remote_chat_wait_surfaces_steer_status_events(tmp_path: Path) -> None:
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         store = app.state.conversations.store
         conversation = store.create_conversation(
@@ -111,6 +113,7 @@ def test_remote_chat_wait_drains_550_events_in_order(tmp_path: Path) -> None:
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         store = app.state.conversations.store
         conversation = store.create_conversation(

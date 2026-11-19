@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,6 +27,7 @@ from cairn.review.service import DailyReviewService
 from cairn.review.store import ReviewStore
 from cairn.scheduling.models import ScheduleJob, ScheduleKind
 from cairn.scheduling.store import ScheduleStore
+from tests.support.pg import database_for
 
 TZ = "Asia/Shanghai"
 AFTER_CUTOFF = datetime(2026, 1, 15, 20, 31, tzinfo=ZoneInfo(TZ))
@@ -150,8 +150,7 @@ def _seed_state(
     cursor: str | None = None,
     **fields: Any,
 ) -> ScheduleStore:
-    store = ScheduleStore(tmp_path / "schedules")
-    store.root.mkdir(parents=True, exist_ok=True)
+    store = ScheduleStore(database_for(tmp_path))
     payload: dict[str, Any] = {
         "version": 1,
         "initialized": True,
@@ -160,9 +159,7 @@ def _seed_state(
     if cursor is not None:
         payload["last_attempt_day"] = cursor
     payload.update(fields)
-    (store.root / "review-schedule.json").write_text(
-        json.dumps(payload), encoding="utf-8"
-    )
+    store.save_state("review-schedule", payload)
     return store
 
 
@@ -173,7 +170,7 @@ def _coordinator(
     clock: Any = AFTER_CUTOFF,
     on_settled: Any = None,
 ) -> tuple[ReviewScheduleCoordinator, ScheduleStore]:
-    store = ScheduleStore(tmp_path / "schedules")
+    store = ScheduleStore(database_for(tmp_path))
     coordinator = ReviewScheduleCoordinator(
         service=service,  # type: ignore[arg-type]
         store=store,
@@ -198,7 +195,7 @@ def test_cutoff_day_is_the_most_recent_2030_boundary(tmp_path: Path) -> None:
 
 
 def test_scheduled_review_completes_without_wechat_login(tmp_path: Path) -> None:
-    reviews = ReviewStore(KnowledgeStore(tmp_path / "knowledge"))
+    reviews = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     service = DailyReviewService(
         store=reviews,
         collector=EmptyCollector(),
@@ -207,7 +204,7 @@ def test_scheduled_review_completes_without_wechat_login(tmp_path: Path) -> None
     )
     coordinator = ReviewScheduleCoordinator(
         service=service,
-        store=ScheduleStore(tmp_path / "schedules"),
+        store=ScheduleStore(database_for(tmp_path)),
         clock=lambda: AFTER_CUTOFF,
         settle_timeout=1.0,
     )
@@ -222,7 +219,7 @@ def test_scheduled_review_completes_without_wechat_login(tmp_path: Path) -> None
 
 def test_generation_identity_includes_cutoff_and_timezone(tmp_path: Path) -> None:
     service = FakeService()
-    store = ScheduleStore(tmp_path / "schedules")
+    store = ScheduleStore(database_for(tmp_path))
     shanghai = ReviewScheduleCoordinator(
         service=service,  # type: ignore[arg-type]
         store=store,
@@ -291,18 +288,15 @@ def test_restart_uses_the_persisted_attempt_and_does_not_duplicate(
 
 def test_missed_cutoff_is_recovered_on_the_next_start(tmp_path: Path) -> None:
     service = FakeService()
-    store = ScheduleStore(tmp_path / "schedules")
-    store.root.mkdir(parents=True, exist_ok=True)
-    (store.root / "review-schedule.json").write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "initialized": True,
-                "enabled_at": "2026-01-14T19:00:00+08:00",
-                "last_attempt_day": "2026-01-14",
-            }
-        ),
-        encoding="utf-8",
+    store = ScheduleStore(database_for(tmp_path))
+    store.save_state(
+        "review-schedule",
+        {
+            "version": 1,
+            "initialized": True,
+            "enabled_at": "2026-01-14T19:00:00+08:00",
+            "last_attempt_day": "2026-01-14",
+        },
     )
     coordinator = ReviewScheduleCoordinator(
         service=service,  # type: ignore[arg-type]
@@ -400,10 +394,8 @@ def test_unreadable_state_does_not_kill_the_background_loop(
     tmp_path: Path,
 ) -> None:
     service = FakeService()
-    store = ScheduleStore(tmp_path / "schedules")
-    store.root.mkdir(parents=True, exist_ok=True)
-    path = store.root / "review-schedule.json"
-    path.write_text("{", encoding="utf-8")
+    store = ScheduleStore(database_for(tmp_path))
+    store.save_state("review-schedule", {"version": 99})
     coordinator = ReviewScheduleCoordinator(
         service=service,  # type: ignore[arg-type]
         store=store,
@@ -469,14 +461,13 @@ def test_policy_rejection_is_not_retried_in_a_loop(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_state_file_is_private_and_restart_readable(tmp_path: Path) -> None:
+def test_state_is_durable_and_restart_readable(tmp_path: Path) -> None:
     service = FakeService()
-    coordinator, store = _coordinator(tmp_path, service)
+    coordinator, _store = _coordinator(tmp_path, service)
     asyncio.run(coordinator.tick())
-    path = store.root / "review-schedule.json"
-    assert path.is_file()
-    assert path.stat().st_mode & 0o077 == 0
-    assert coordinator.state["last_attempt_day"] == "2026-01-15"
+    saved = ScheduleStore(database_for(tmp_path)).load_state("review-schedule")
+    assert saved is not None
+    assert saved["last_attempt_day"] == "2026-01-15"
 
 
 def test_three_day_outage_compensates_bounded_and_never_spams_wechat(

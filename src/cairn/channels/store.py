@@ -1,25 +1,24 @@
-"""Private SQLite state for channel connections and their audit facts.
+"""Private PostgreSQL state for channel connections and their audit facts.
 
-Credentials are write-only from the API's perspective: they live in this
-0600 database under the host data root and are loaded only to construct an
-adapter. Configuration rows and delivery audit rows deliberately have no
-foreign key relationship, so deleting a connection keeps its delivery history.
+Credentials are write-only from the API's perspective: they live in host-private
+files under the channel root and are loaded only to construct an adapter.
+Configuration rows and delivery audit rows deliberately have no foreign key
+relationship, so deleting a connection keeps its delivery history.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import secrets
-import sqlite3
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from cairn.channels.credentials import CredentialVault
 from cairn.channels.models import (
     ChannelConnection,
     ChannelDesiredState,
@@ -37,60 +36,10 @@ from cairn.channels.models import (
     validate_credentials,
     validate_metadata,
 )
+from cairn.shared.db import Database, DbConnection, Row
 
 SCHEMA_VERSION = 5
 REQUEST_RETENTION_DAYS = 30
-
-# One update ID is only unique inside the Bot/account that produced it, so the
-# inbound primary key includes the adapter identity that received the message.
-_INBOUND_TABLE_SQL = """
-            CREATE TABLE IF NOT EXISTS channel_inbound (
-                platform TEXT NOT NULL,
-                connection_id TEXT NOT NULL,
-                external_message_id TEXT NOT NULL,
-                event_digest TEXT NOT NULL,
-                state TEXT NOT NULL,
-                conversation_id TEXT,
-                run_id TEXT,
-                conversation_binding TEXT NOT NULL DEFAULT '',
-                sender_id TEXT NOT NULL DEFAULT '',
-                sender_role TEXT NOT NULL DEFAULT '',
-                adapter_identity TEXT NOT NULL DEFAULT '',
-                request_id TEXT NOT NULL DEFAULT '',
-                error TEXT,
-                received_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (connection_id, adapter_identity, external_message_id)
-            );
-            """
-
-# The inbox is written before admission, so an event acknowledged by the
-# platform is never represented only by adapter memory. Rows stay queryable
-# after a terminal state; only a retried pending row consumes attempts.
-_INBOX_TABLE_SQL = """
-            CREATE TABLE IF NOT EXISTS channel_inbound_inbox (
-                connection_id TEXT NOT NULL,
-                adapter_identity TEXT NOT NULL,
-                external_message_id TEXT NOT NULL,
-                platform TEXT NOT NULL,
-                event_digest TEXT NOT NULL,
-                sender_id TEXT NOT NULL,
-                conversation_binding TEXT NOT NULL,
-                text TEXT NOT NULL,
-                received_at TEXT NOT NULL,
-                state TEXT NOT NULL,
-                attempts INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT,
-                next_attempt_at REAL,
-                deadline_at REAL NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (connection_id, adapter_identity, external_message_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_channel_inbound_inbox_due
-                ON channel_inbound_inbox
-                (connection_id, adapter_identity, state, next_attempt_at);
-            """
 
 
 def _json(value: object) -> str:
@@ -105,13 +54,19 @@ def _payload_digest(target: str, message: str) -> str:
     return hashlib.sha256(f"{target}\0{message}".encode()).hexdigest()
 
 
-def _receipt_result(value: str | None) -> dict[str, Any] | None:
+def _loads(value: object) -> Any:
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(str(value))
+    except ValueError:
+        return None
+
+
+def _receipt_result(value: object | None) -> dict[str, Any] | None:
     if value is None:
         return None
-    try:
-        result = json.loads(value)
-    except ValueError:
-        raise RuntimeError("channel request receipt is corrupt") from None
+    result = _loads(value)
     if not isinstance(result, dict):
         raise RuntimeError("channel request receipt is corrupt")
     return result
@@ -238,206 +193,20 @@ class UnrepliedInbound:
 
 
 class ChannelStore:
-    """One private database; every mutation is a local transaction."""
+    """Shared PostgreSQL channel state; credentials stay in the host vault."""
 
-    def __init__(self, root: Path) -> None:
-        raw = root.expanduser()
-        if raw.is_symlink():
-            raise ValueError("Channel state cannot be a symlink")
-        self.root = raw.resolve()
-        if self.root.is_symlink():
-            raise ValueError("Channel state cannot be a symlink")
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with suppress(OSError):
-            self.root.chmod(0o700)
-        self.path = self.root / "channels.sqlite3"
-        if self.path.is_symlink():
-            raise ValueError("Channel store cannot be a symlink")
-        with self._connect() as connection:
-            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in (0, 1, 2, 3, 4, SCHEMA_VERSION):
-                raise ValueError("Unsupported channel store schema")
-            self._create_schema(connection)
-            columns = {
-                str(row["name"])
-                for row in connection.execute(
-                    "PRAGMA table_info(channel_connections)"
-                ).fetchall()
-            }
-            if "allowed_senders_json" not in columns:
-                connection.execute(
-                    "ALTER TABLE channel_connections ADD COLUMN "
-                    "allowed_senders_json TEXT NOT NULL DEFAULT '[]'"
-                )
-            self._migrate_inbound_identity(connection)
-            connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-        with suppress(OSError):
-            self.path.chmod(0o600)
+    def __init__(self, database: Database, root: Path) -> None:
+        self.db = database
+        self.vault = CredentialVault(root)
+        self.root = self.vault.root
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
-        try:
+    def _connect(self) -> Iterator[DbConnection]:
+        with self.db.connect("channel") as connection:
             yield connection
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     @staticmethod
-    def _create_schema(connection: sqlite3.Connection) -> None:
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS channel_connections (
-                connection_id TEXT PRIMARY KEY,
-                platform TEXT NOT NULL,
-                display_name TEXT NOT NULL,
-                enabled INTEGER NOT NULL,
-                desired_state TEXT NOT NULL,
-                credential_ref TEXT,
-                owner_identity TEXT,
-                allowed_senders_json TEXT NOT NULL DEFAULT '[]',
-                metadata_json TEXT NOT NULL,
-                revision INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS channel_credentials (
-                credential_ref TEXT PRIMARY KEY,
-                secret_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS channel_requests (
-                request_id TEXT PRIMARY KEY,
-                operation TEXT NOT NULL,
-                digest TEXT NOT NULL,
-                state TEXT NOT NULL,
-                result_json TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            """
-            + _INBOUND_TABLE_SQL
-            + _INBOX_TABLE_SQL
-            + """
-            CREATE TABLE IF NOT EXISTS channel_deliveries (
-                delivery_id TEXT PRIMARY KEY,
-                connection_id TEXT NOT NULL,
-                platform TEXT NOT NULL,
-                idempotency_key TEXT NOT NULL,
-                target_digest TEXT NOT NULL,
-                status TEXT NOT NULL,
-                error TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                UNIQUE (connection_id, idempotency_key)
-            );
-            CREATE TABLE IF NOT EXISTS channel_replies (
-                reply_id TEXT PRIMARY KEY,
-                connection_id TEXT NOT NULL,
-                conversation_id TEXT NOT NULL,
-                run_id TEXT NOT NULL UNIQUE,
-                target TEXT NOT NULL,
-                external_message_id TEXT NOT NULL,
-                sender_id TEXT NOT NULL DEFAULT '',
-                sender_role TEXT NOT NULL DEFAULT '',
-                adapter_identity TEXT NOT NULL DEFAULT '',
-                state TEXT NOT NULL,
-                attempts INTEGER NOT NULL DEFAULT 0,
-                error TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS channel_adapter_state (
-                connection_id TEXT NOT NULL,
-                key TEXT NOT NULL,
-                value_json TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (connection_id, key)
-            );
-            """
-        )
-
-    @staticmethod
-    def _migrate_inbound_identity(connection: sqlite3.Connection) -> None:
-        inbound_columns = {
-            str(row["name"])
-            for row in connection.execute(
-                "PRAGMA table_info(channel_inbound)"
-            ).fetchall()
-        }
-        for column in (
-            "conversation_binding",
-            "sender_id",
-            "sender_role",
-            "adapter_identity",
-            "request_id",
-        ):
-            if column not in inbound_columns:
-                connection.execute(
-                    f"ALTER TABLE channel_inbound ADD COLUMN "
-                    f"{column} TEXT NOT NULL DEFAULT ''"
-                )
-        reply_columns = {
-            str(row["name"])
-            for row in connection.execute(
-                "PRAGMA table_info(channel_replies)"
-            ).fetchall()
-        }
-        for column in ("sender_id", "sender_role", "adapter_identity"):
-            if column not in reply_columns:
-                connection.execute(
-                    f"ALTER TABLE channel_replies ADD COLUMN "
-                    f"{column} TEXT NOT NULL DEFAULT ''"
-                )
-        primary_key = {
-            str(row["name"])
-            for row in connection.execute(
-                "PRAGMA table_info(channel_inbound)"
-            ).fetchall()
-            if int(row["pk"]) > 0
-        }
-        if primary_key == {
-            "connection_id",
-            "adapter_identity",
-            "external_message_id",
-        }:
-            return
-        if (
-            connection.execute(
-                "SELECT 1 FROM sqlite_master "
-                "WHERE type = 'table' AND name = 'channel_inbound_legacy'"
-            ).fetchone()
-            is not None
-        ):
-            raise ValueError("channel store inbound migration is incomplete")
-        # Rebuild atomically: a crash leaves either the old table or the
-        # identity-scoped one, never a partially copied dedupe space.
-        connection.commit()
-        connection.execute("BEGIN IMMEDIATE")
-        connection.execute(
-            "ALTER TABLE channel_inbound RENAME TO channel_inbound_legacy"
-        )
-        connection.execute(_INBOUND_TABLE_SQL)
-        connection.execute(
-            "INSERT INTO channel_inbound "
-            "(platform, connection_id, external_message_id, event_digest, state, "
-            "conversation_id, run_id, conversation_binding, sender_id, sender_role, "
-            "adapter_identity, request_id, error, received_at, updated_at) "
-            "SELECT platform, connection_id, external_message_id, event_digest, "
-            "state, conversation_id, run_id, conversation_binding, sender_id, "
-            "sender_role, adapter_identity, request_id, error, received_at, "
-            "updated_at FROM channel_inbound_legacy"
-        )
-        connection.execute("DROP TABLE channel_inbound_legacy")
-
-    @staticmethod
-    def _connection(row: sqlite3.Row) -> ChannelConnection:
+    def _connection(row: Row) -> ChannelConnection:
         return ChannelConnection(
             connection_id=str(row["connection_id"]),
             platform=ChannelPlatform(str(row["platform"])),
@@ -454,15 +223,15 @@ class ChannelStore:
                 if row["owner_identity"] is not None
                 else None
             ),
-            allowed_senders=tuple(json.loads(str(row["allowed_senders_json"]))),
-            metadata=json.loads(str(row["metadata_json"])),
+            allowed_senders=tuple(_loads(row["allowed_senders_json"])),
+            metadata=_loads(row["metadata_json"]),
             revision=int(row["revision"]),
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
         )
 
     @staticmethod
-    def _reply(row: sqlite3.Row) -> ReplyRecord:
+    def _reply(row: Row) -> ReplyRecord:
         return ReplyRecord(
             reply_id=str(row["reply_id"]),
             connection_id=str(row["connection_id"]),
@@ -481,7 +250,7 @@ class ChannelStore:
         )
 
     @staticmethod
-    def _delivery(row: sqlite3.Row) -> DeliveryRecord:
+    def _delivery(row: Row) -> DeliveryRecord:
         return DeliveryRecord(
             delivery_id=str(row["delivery_id"]),
             connection_id=str(row["connection_id"]),
@@ -505,7 +274,7 @@ class ChannelStore:
                 ).fetchall()
             else:
                 rows = connection.execute(
-                    "SELECT * FROM channel_connections WHERE platform = ? "
+                    "SELECT * FROM channel_connections WHERE platform = %s "
                     "ORDER BY created_at, connection_id",
                     (platform.value,),
                 ).fetchall()
@@ -514,20 +283,20 @@ class ChannelStore:
     def get_connection(self, connection_id: str) -> ChannelConnection | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM channel_connections WHERE connection_id = ?",
+                "SELECT * FROM channel_connections WHERE connection_id = %s",
                 (connection_id,),
             ).fetchone()
         return None if row is None else self._connection(row)
 
     @staticmethod
     def _request(
-        connection: sqlite3.Connection,
+        connection: DbConnection,
         request_id: str,
         operation: str,
         digest: str,
     ) -> RequestClaim | None:
         row = connection.execute(
-            "SELECT * FROM channel_requests WHERE request_id = ?", (request_id,)
+            "SELECT * FROM channel_requests WHERE request_id = %s", (request_id,)
         ).fetchone()
         if row is None:
             return None
@@ -543,7 +312,7 @@ class ChannelStore:
 
     @staticmethod
     def _start_request(
-        connection: sqlite3.Connection,
+        connection: DbConnection,
         request_id: str,
         operation: str,
         digest: str,
@@ -552,27 +321,27 @@ class ChannelStore:
         connection.execute(
             "INSERT INTO channel_requests "
             "(request_id, operation, digest, state, created_at, updated_at) "
-            "VALUES (?, ?, ?, 'pending', ?, ?)",
+            "VALUES (%s, %s, %s, 'pending', %s, %s)",
             (request_id, operation, digest, now, now),
         )
 
     @staticmethod
     def _finish_request(
-        connection: sqlite3.Connection,
+        connection: DbConnection,
         request_id: str,
         result: dict[str, Any],
         now: str,
     ) -> None:
         connection.execute(
-            "UPDATE channel_requests SET state = 'completed', result_json = ?, "
-            "updated_at = ? WHERE request_id = ?",
+            "UPDATE channel_requests SET state = 'completed', result_json = %s, "
+            "updated_at = %s WHERE request_id = %s",
             (_json(result), now, request_id),
         )
         cutoff = (
             datetime.now(UTC) - timedelta(days=REQUEST_RETENTION_DAYS)
         ).isoformat()
         connection.execute(
-            "DELETE FROM channel_requests WHERE state = 'completed' AND updated_at < ?",
+            "DELETE FROM channel_requests WHERE state = 'completed' AND updated_at < %s",
             (cutoff,),
         )
 
@@ -620,63 +389,66 @@ class ChannelStore:
                 ),
             }
         )
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            replay = self._request(connection, request_id, "create", digest)
-            if replay is not None:
-                return CreateResult(
-                    connection=ChannelConnection.model_validate(replay.result),
-                    replayed=True,
-                )
-            self._start_request(connection, request_id, "create", digest, now)
-            credential_ref = (
-                None if checked_credentials is None else "cred-" + secrets.token_hex(16)
-            )
-            record = ChannelConnection(
-                connection_id=new_connection_id(),
-                platform=platform,
-                display_name=name,
-                enabled=enabled,
-                desired_state=ChannelDesiredState.STOPPED,
-                credential_ref=credential_ref,
-                owner_identity=owner,
-                allowed_senders=checked_senders,
-                metadata=checked_metadata,
-                revision=1,
-                created_at=now,
-                updated_at=now,
-            )
-            if credential_ref is not None and checked_credentials is not None:
+        credential_ref: str | None = None
+        try:
+            with self._connect() as connection:
                 connection.execute(
-                    "INSERT INTO channel_credentials "
-                    "(credential_ref, secret_json, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    (credential_ref, _json(checked_credentials), now, now),
+                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                    (f"channel-request:{request_id}",),
                 )
-            connection.execute(
-                "INSERT INTO channel_connections "
-                "(connection_id, platform, display_name, enabled, desired_state, "
-                "credential_ref, owner_identity, allowed_senders_json, metadata_json, "
-                "revision, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    record.connection_id,
-                    record.platform.value,
-                    record.display_name,
-                    int(record.enabled),
-                    record.desired_state.value,
-                    record.credential_ref,
-                    record.owner_identity,
-                    _json(list(record.allowed_senders)),
-                    _json(record.metadata),
-                    record.revision,
-                    record.created_at,
-                    record.updated_at,
-                ),
-            )
-            self._finish_request(
-                connection, request_id, record.model_dump(mode="json"), now
-            )
+                replay = self._request(connection, request_id, "create", digest)
+                if replay is not None:
+                    return CreateResult(
+                        connection=ChannelConnection.model_validate(replay.result),
+                        replayed=True,
+                    )
+                self._start_request(connection, request_id, "create", digest, now)
+                if checked_credentials is not None:
+                    credential_ref = self.vault.create(checked_credentials, now)
+                record = ChannelConnection(
+                    connection_id=new_connection_id(),
+                    platform=platform,
+                    display_name=name,
+                    enabled=enabled,
+                    desired_state=ChannelDesiredState.STOPPED,
+                    credential_ref=credential_ref,
+                    owner_identity=owner,
+                    allowed_senders=checked_senders,
+                    metadata=checked_metadata,
+                    revision=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+                connection.execute(
+                    "INSERT INTO channel_connections "
+                    "(connection_id, platform, display_name, enabled, desired_state, "
+                    "credential_ref, credential_created_at, owner_identity, "
+                    "allowed_senders_json, metadata_json, "
+                    "revision, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (
+                        record.connection_id,
+                        record.platform.value,
+                        record.display_name,
+                        int(record.enabled),
+                        record.desired_state.value,
+                        record.credential_ref,
+                        now if credential_ref is not None else None,
+                        record.owner_identity,
+                        _json(list(record.allowed_senders)),
+                        _json(record.metadata),
+                        record.revision,
+                        record.created_at,
+                        record.updated_at,
+                    ),
+                )
+                self._finish_request(
+                    connection, request_id, record.model_dump(mode="json"), now
+                )
+        except BaseException:
+            if credential_ref is not None:
+                self.vault.delete(credential_ref)
+            raise
         return CreateResult(connection=record, replayed=False)
 
     def update_connection(
@@ -742,84 +514,97 @@ class ChannelStore:
                 ),
             }
         )
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            replay = self._request(connection, request_id, "update", digest)
-            if replay is not None:
-                replay_result = replay.result or {}
-                record = ChannelConnection.model_validate(replay_result["connection"])
-                return UpdateResult(
-                    connection=record,
-                    replayed=True,
-                    credentials_replaced=bool(
-                        replay_result.get("credentials_replaced", False)
+        stale_ref: str | None = None
+        new_ref_created: str | None = None
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                    (f"channel-request:{request_id}",),
+                )
+                replay = self._request(connection, request_id, "update", digest)
+                if replay is not None:
+                    replay_result = replay.result or {}
+                    record = ChannelConnection.model_validate(
+                        replay_result["connection"]
+                    )
+                    return UpdateResult(
+                        connection=record,
+                        replayed=True,
+                        credentials_replaced=bool(
+                            replay_result.get("credentials_replaced", False)
+                        ),
+                    )
+                row = connection.execute(
+                    "SELECT * FROM channel_connections WHERE connection_id = %s "
+                    "FOR UPDATE",
+                    (connection_id,),
+                ).fetchone()
+                if row is None:
+                    raise ChannelNotFound(connection_id)
+                current = self._connection(row)
+                if current.revision != expected_revision:
+                    raise ChannelRevisionConflict(current.revision)
+                self._start_request(connection, request_id, "update", digest, now)
+                values = current.model_dump(mode="json")
+                values.update(clean)
+                if values["enabled"] is False:
+                    values["desired_state"] = ChannelDesiredState.STOPPED.value
+                new_ref = current.credential_ref
+                credential_created_at = (
+                    None if new_ref is None else self.vault.created_at(new_ref)
+                )
+                if replace_credentials and checked_credentials is not None:
+                    new_ref = self.vault.create(checked_credentials, now)
+                    new_ref_created = new_ref
+                    credential_created_at = now
+                values.update(
+                    {
+                        "credential_ref": new_ref,
+                        "revision": current.revision + 1,
+                        "updated_at": now,
+                    }
+                )
+                record = ChannelConnection.model_validate(values)
+                connection.execute(
+                    "UPDATE channel_connections SET platform = %s, display_name = %s, "
+                    "enabled = %s, desired_state = %s, credential_ref = %s, "
+                    "credential_created_at = %s, "
+                    "owner_identity = %s, allowed_senders_json = %s, metadata_json = %s, "
+                    "revision = %s, updated_at = %s WHERE connection_id = %s",
+                    (
+                        record.platform.value,
+                        record.display_name,
+                        int(record.enabled),
+                        record.desired_state.value,
+                        record.credential_ref,
+                        credential_created_at,
+                        record.owner_identity,
+                        _json(list(record.allowed_senders)),
+                        _json(record.metadata),
+                        record.revision,
+                        record.updated_at,
+                        connection_id,
                     ),
                 )
-            row = connection.execute(
-                "SELECT * FROM channel_connections WHERE connection_id = ?",
-                (connection_id,),
-            ).fetchone()
-            if row is None:
-                raise ChannelNotFound(connection_id)
-            current = self._connection(row)
-            if current.revision != expected_revision:
-                raise ChannelRevisionConflict(current.revision)
-            self._start_request(connection, request_id, "update", digest, now)
-            values = current.model_dump(mode="json")
-            values.update(clean)
-            if values["enabled"] is False:
-                values["desired_state"] = ChannelDesiredState.STOPPED.value
-            new_ref = current.credential_ref
-            if replace_credentials and checked_credentials is not None:
-                new_ref = "cred-" + secrets.token_hex(16)
-                connection.execute(
-                    "INSERT INTO channel_credentials "
-                    "(credential_ref, secret_json, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    (new_ref, _json(checked_credentials), now, now),
+                if new_ref != current.credential_ref:
+                    stale_ref = current.credential_ref
+                result = record.model_dump(mode="json")
+                self._finish_request(
+                    connection,
+                    request_id,
+                    {
+                        "connection": result,
+                        "credentials_replaced": replace_credentials,
+                    },
+                    now,
                 )
-            values.update(
-                {
-                    "credential_ref": new_ref,
-                    "revision": current.revision + 1,
-                    "updated_at": now,
-                }
-            )
-            record = ChannelConnection.model_validate(values)
-            connection.execute(
-                "UPDATE channel_connections SET platform = ?, display_name = ?, "
-                "enabled = ?, desired_state = ?, credential_ref = ?, "
-                "owner_identity = ?, allowed_senders_json = ?, metadata_json = ?, "
-                "revision = ?, updated_at = ? WHERE connection_id = ?",
-                (
-                    record.platform.value,
-                    record.display_name,
-                    int(record.enabled),
-                    record.desired_state.value,
-                    record.credential_ref,
-                    record.owner_identity,
-                    _json(list(record.allowed_senders)),
-                    _json(record.metadata),
-                    record.revision,
-                    record.updated_at,
-                    connection_id,
-                ),
-            )
-            if new_ref != current.credential_ref and current.credential_ref:
-                connection.execute(
-                    "DELETE FROM channel_credentials WHERE credential_ref = ?",
-                    (current.credential_ref,),
-                )
-            result = record.model_dump(mode="json")
-            self._finish_request(
-                connection,
-                request_id,
-                {
-                    "connection": result,
-                    "credentials_replaced": replace_credentials,
-                },
-                now,
-            )
+        except BaseException:
+            if new_ref_created is not None:
+                self.vault.delete(new_ref_created)
+            raise
+        if stale_ref is not None:
+            self.vault.delete(stale_ref)
         return UpdateResult(
             connection=record,
             replayed=False,
@@ -844,13 +629,17 @@ class ChannelStore:
                 "expected_revision": expected_revision,
             }
         )
+        removed_ref: str | None = None
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                (f"channel-request:{request_id}",),
+            )
             replay = self._request(connection, request_id, "delete", digest)
             if replay is not None:
                 return DeleteResult(connection_id=connection_id, replayed=True)
             row = connection.execute(
-                "SELECT * FROM channel_connections WHERE connection_id = ?",
+                "SELECT * FROM channel_connections WHERE connection_id = %s FOR UPDATE",
                 (connection_id,),
             ).fetchone()
             if row is None:
@@ -860,14 +649,10 @@ class ChannelStore:
                 raise ChannelRevisionConflict(current.revision)
             self._start_request(connection, request_id, "delete", digest, now)
             connection.execute(
-                "DELETE FROM channel_connections WHERE connection_id = ?",
+                "DELETE FROM channel_connections WHERE connection_id = %s",
                 (connection_id,),
             )
-            if current.credential_ref:
-                connection.execute(
-                    "DELETE FROM channel_credentials WHERE credential_ref = ?",
-                    (current.credential_ref,),
-                )
+            removed_ref = current.credential_ref
             self._finish_request(
                 connection,
                 request_id,
@@ -878,6 +663,8 @@ class ChannelStore:
                 },
                 now,
             )
+        if removed_ref is not None:
+            self.vault.delete(removed_ref)
         return DeleteResult(connection_id=connection_id, replayed=False)
 
     def set_desired_state(
@@ -886,14 +673,14 @@ class ChannelStore:
         now = utc_now()
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM channel_connections WHERE connection_id = ?",
+                "SELECT * FROM channel_connections WHERE connection_id = %s",
                 (connection_id,),
             ).fetchone()
             if row is None:
                 raise ChannelNotFound(connection_id)
             updated = connection.execute(
-                "UPDATE channel_connections SET desired_state = ?, updated_at = ? "
-                "WHERE connection_id = ?",
+                "UPDATE channel_connections SET desired_state = %s, updated_at = %s "
+                "WHERE connection_id = %s",
                 (desired_state.value, now, connection_id),
             )
             if updated.rowcount != 1:
@@ -911,7 +698,7 @@ class ChannelStore:
         """
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT state, result_json FROM channel_requests WHERE request_id = ?",
+                "SELECT state, result_json FROM channel_requests WHERE request_id = %s",
                 (request_id,),
             ).fetchone()
         if row is None:
@@ -928,7 +715,10 @@ class ChannelStore:
         digest = _digest(digest_value)
         now = utc_now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                (f"channel-request:{request_id}",),
+            )
             existing = self._request(connection, request_id, operation, digest)
             if existing is not None:
                 return existing
@@ -939,7 +729,7 @@ class ChannelStore:
         now = utc_now()
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT state FROM channel_requests WHERE request_id = ?",
+                "SELECT state FROM channel_requests WHERE request_id = %s FOR UPDATE",
                 (request_id,),
             ).fetchone()
             if row is None or str(row["state"]) != "pending":
@@ -960,11 +750,12 @@ class ChannelStore:
         now = utc_now()
         with self._connect() as connection:
             inserted = connection.execute(
-                "INSERT OR IGNORE INTO channel_inbound "
+                "INSERT INTO channel_inbound "
                 "(platform, connection_id, external_message_id, event_digest, "
                 "state, conversation_binding, sender_id, sender_role, "
                 "adapter_identity, request_id, received_at, updated_at) "
-                "VALUES (?, ?, ?, ?, 'claimed', ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, 'claimed', %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT DO NOTHING",
                 (
                     event.platform.value,
                     event.connection_id,
@@ -980,8 +771,8 @@ class ChannelStore:
                 ),
             )
             row = connection.execute(
-                "SELECT * FROM channel_inbound WHERE connection_id = ? "
-                "AND adapter_identity = ? AND external_message_id = ?",
+                "SELECT * FROM channel_inbound WHERE connection_id = %s "
+                "AND adapter_identity = %s AND external_message_id = %s",
                 (
                     event.connection_id,
                     adapter_identity,
@@ -1020,9 +811,9 @@ class ChannelStore:
     ) -> None:
         with self._connect() as connection:
             updated = connection.execute(
-                "UPDATE channel_inbound SET state = ?, conversation_id = ?, "
-                "run_id = ?, error = ?, updated_at = ? WHERE connection_id = ? "
-                "AND adapter_identity = ? AND external_message_id = ?",
+                "UPDATE channel_inbound SET state = %s, conversation_id = %s, "
+                "run_id = %s, error = %s, updated_at = %s WHERE connection_id = %s "
+                "AND adapter_identity = %s AND external_message_id = %s",
                 (
                     state,
                     conversation_id,
@@ -1058,13 +849,18 @@ class ChannelStore:
         digest = inbound_digest(event)
         timestamp = utc_now()
         with self._connect() as connection:
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                (f"channel-inbox:{event.connection_id}:{adapter_identity}",),
+            )
             inserted = connection.execute(
-                "INSERT OR IGNORE INTO channel_inbound_inbox "
+                "INSERT INTO channel_inbound_inbox "
                 "(connection_id, adapter_identity, external_message_id, platform, "
                 "event_digest, sender_id, conversation_binding, text, received_at, "
                 "state, attempts, last_error, next_attempt_at, deadline_at, "
                 "created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, NULL, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', 0, NULL, %s, %s, %s, %s) "
+                "ON CONFLICT DO NOTHING",
                 (
                     event.connection_id,
                     adapter_identity,
@@ -1083,8 +879,8 @@ class ChannelStore:
             )
             row = connection.execute(
                 "SELECT state, event_digest FROM channel_inbound_inbox "
-                "WHERE connection_id = ? AND adapter_identity = ? "
-                "AND external_message_id = ?",
+                "WHERE connection_id = %s AND adapter_identity = %s "
+                "AND external_message_id = %s",
                 (
                     event.connection_id,
                     adapter_identity,
@@ -1101,7 +897,7 @@ class ChannelStore:
             pending = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM channel_inbound_inbox "
-                    "WHERE connection_id = ? AND adapter_identity = ? "
+                    "WHERE connection_id = %s AND adapter_identity = %s "
                     "AND state = 'pending'",
                     (event.connection_id, adapter_identity),
                 ).fetchone()[0]
@@ -1109,9 +905,9 @@ class ChannelStore:
             if pending_limit > 0 and pending > pending_limit:
                 connection.execute(
                     "UPDATE channel_inbound_inbox SET state = 'failed', "
-                    "last_error = ?, next_attempt_at = NULL, updated_at = ? "
-                    "WHERE connection_id = ? AND adapter_identity = ? "
-                    "AND external_message_id = ? AND state = 'pending'",
+                    "last_error = %s, next_attempt_at = NULL, updated_at = %s "
+                    "WHERE connection_id = %s AND adapter_identity = %s "
+                    "AND external_message_id = %s AND state = 'pending'",
                     (
                         "inbound_pending_limit",
                         timestamp,
@@ -1135,10 +931,10 @@ class ChannelStore:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM channel_inbound_inbox "
-                "WHERE connection_id = ? AND adapter_identity = ? "
+                "WHERE connection_id = %s AND adapter_identity = %s "
                 "AND state = 'pending' "
-                "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) "
-                "ORDER BY created_at, rowid LIMIT ?",
+                "AND (next_attempt_at IS NULL OR next_attempt_at <= %s) "
+                "ORDER BY created_at, seq LIMIT %s",
                 (connection_id, adapter_identity, moment, limit),
             ).fetchall()
         return tuple(self._inbox_entry(row) for row in rows)
@@ -1149,7 +945,7 @@ class ChannelStore:
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT 1 FROM channel_inbound_inbox "
-                "WHERE connection_id = ? AND adapter_identity = ? "
+                "WHERE connection_id = %s AND adapter_identity = %s "
                 "AND state = 'pending' LIMIT 1",
                 (connection_id, adapter_identity),
             ).fetchone()
@@ -1169,9 +965,9 @@ class ChannelStore:
         with self._connect() as connection:
             connection.execute(
                 "UPDATE channel_inbound_inbox SET "
-                f"attempts = {attempts}, last_error = ?, next_attempt_at = ?, "
-                "updated_at = ? WHERE connection_id = ? AND adapter_identity = ? "
-                "AND external_message_id = ? AND state = 'pending'",
+                f"attempts = {attempts}, last_error = %s, next_attempt_at = %s, "
+                "updated_at = %s WHERE connection_id = %s AND adapter_identity = %s "
+                "AND external_message_id = %s AND state = 'pending'",
                 (
                     error[:300],
                     next_attempt_at,
@@ -1195,10 +991,10 @@ class ChannelStore:
             raise ValueError("invalid inbound inbox state")
         with self._connect() as connection:
             updated = connection.execute(
-                "UPDATE channel_inbound_inbox SET state = ?, last_error = ?, "
-                "next_attempt_at = NULL, updated_at = ? "
-                "WHERE connection_id = ? AND adapter_identity = ? "
-                "AND external_message_id = ? AND state = 'pending'",
+                "UPDATE channel_inbound_inbox SET state = %s, last_error = %s, "
+                "next_attempt_at = NULL, updated_at = %s "
+                "WHERE connection_id = %s AND adapter_identity = %s "
+                "AND external_message_id = %s AND state = 'pending'",
                 (
                     state,
                     error[:300] if error else None,
@@ -1208,7 +1004,7 @@ class ChannelStore:
                     external_message_id,
                 ),
             )
-        return updated.rowcount == 1
+        return int(updated.rowcount) == 1
 
     def fail_inbound_inbox_other_identity(
         self,
@@ -1221,12 +1017,12 @@ class ChannelStore:
         with self._connect() as connection:
             updated = connection.execute(
                 "UPDATE channel_inbound_inbox SET state = 'failed', "
-                "last_error = ?, next_attempt_at = NULL, updated_at = ? "
-                "WHERE connection_id = ? AND adapter_identity <> ? "
+                "last_error = %s, next_attempt_at = NULL, updated_at = %s "
+                "WHERE connection_id = %s AND adapter_identity <> %s "
                 "AND state = 'pending'",
                 (reason[:300], utc_now(), connection_id, adapter_identity),
             )
-        return updated.rowcount
+        return int(updated.rowcount)
 
     def inbound_inbox_entry(
         self,
@@ -1237,8 +1033,8 @@ class ChannelStore:
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT * FROM channel_inbound_inbox "
-                "WHERE connection_id = ? AND adapter_identity = ? "
-                "AND external_message_id = ?",
+                "WHERE connection_id = %s AND adapter_identity = %s "
+                "AND external_message_id = %s",
                 (connection_id, adapter_identity, external_message_id),
             ).fetchone()
         return self._inbox_entry(row) if row is not None else None
@@ -1248,11 +1044,11 @@ class ChannelStore:
     ) -> dict[str, int]:
         query = (
             "SELECT state, COUNT(*) AS count FROM channel_inbound_inbox "
-            "WHERE connection_id = ?"
+            "WHERE connection_id = %s"
         )
         parameters: list[object] = [connection_id]
         if adapter_identity is not None:
-            query += " AND adapter_identity = ?"
+            query += " AND adapter_identity = %s"
             parameters.append(adapter_identity)
         query += " GROUP BY state"
         with self._connect() as connection:
@@ -1262,7 +1058,7 @@ class ChannelStore:
         return summary
 
     @staticmethod
-    def _inbox_entry(row: sqlite3.Row) -> ChannelInboundInboxEntry:
+    def _inbox_entry(row: Row) -> ChannelInboundInboxEntry:
         return ChannelInboundInboxEntry(
             event=ChannelInboundEvent(
                 platform=ChannelPlatform(str(row["platform"])),
@@ -1297,11 +1093,8 @@ class ChannelStore:
             return 0
         with self._connect() as connection:
             credential = connection.execute(
-                "SELECT credentials.created_at AS created_at "
-                "FROM channel_connections AS connections "
-                "LEFT JOIN channel_credentials AS credentials "
-                "ON credentials.credential_ref = connections.credential_ref "
-                "WHERE connections.connection_id = ?",
+                "SELECT credential_created_at AS created_at "
+                "FROM channel_connections WHERE connection_id = %s",
                 (connection_id,),
             ).fetchone()
             if credential is None or credential["created_at"] is None:
@@ -1311,7 +1104,7 @@ class ChannelStore:
                 return 0
             rows = connection.execute(
                 "SELECT external_message_id, received_at FROM channel_inbound "
-                "WHERE connection_id = ? AND adapter_identity = ''",
+                "WHERE connection_id = %s AND adapter_identity = ''",
                 (connection_id,),
             ).fetchall()
             adopted = 0
@@ -1320,12 +1113,18 @@ class ChannelStore:
                 if received_at is None or received_at < cutoff:
                     continue
                 updated = connection.execute(
-                    "UPDATE OR IGNORE channel_inbound SET adapter_identity = ? "
-                    "WHERE connection_id = ? AND adapter_identity = '' "
-                    "AND external_message_id = ?",
+                    "UPDATE channel_inbound SET adapter_identity = %s "
+                    "WHERE connection_id = %s AND adapter_identity = '' "
+                    "AND external_message_id = %s AND NOT EXISTS ("
+                    "SELECT 1 FROM channel_inbound AS other "
+                    "WHERE other.connection_id = %s AND other.adapter_identity = %s "
+                    "AND other.external_message_id = %s)",
                     (
                         adapter_identity,
                         connection_id,
+                        row["external_message_id"],
+                        connection_id,
+                        adapter_identity,
                         row["external_message_id"],
                     ),
                 )
@@ -1334,10 +1133,10 @@ class ChannelStore:
             # it. Fill identities for replies whose inbound row is now bound;
             # replies from unproven history stay empty and fail closed.
             connection.execute(
-                "UPDATE channel_replies SET adapter_identity = ? "
-                "WHERE connection_id = ? AND adapter_identity = '' AND run_id IN ("
+                "UPDATE channel_replies SET adapter_identity = %s "
+                "WHERE connection_id = %s AND adapter_identity = '' AND run_id IN ("
                 "SELECT run_id FROM channel_inbound "
-                "WHERE connection_id = ? AND adapter_identity = ? "
+                "WHERE connection_id = %s AND adapter_identity = %s "
                 "AND run_id IS NOT NULL)",
                 (
                     adapter_identity,
@@ -1365,10 +1164,11 @@ class ChannelStore:
         now = utc_now()
         with self._connect() as connection:
             inserted = connection.execute(
-                "INSERT OR IGNORE INTO channel_deliveries "
+                "INSERT INTO channel_deliveries "
                 "(delivery_id, connection_id, platform, idempotency_key, "
                 "target_digest, status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, 'sending', ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, 'sending', %s, %s) "
+                "ON CONFLICT DO NOTHING",
                 (
                     delivery_id,
                     connection_id,
@@ -1380,7 +1180,7 @@ class ChannelStore:
                 ),
             )
             row = connection.execute(
-                "SELECT * FROM channel_deliveries WHERE delivery_id = ?",
+                "SELECT * FROM channel_deliveries WHERE delivery_id = %s",
                 (delivery_id,),
             ).fetchone()
             if row is None:
@@ -1397,14 +1197,14 @@ class ChannelStore:
     ) -> DeliveryRecord:
         with self._connect() as connection:
             updated = connection.execute(
-                "UPDATE channel_deliveries SET status = ?, error = ?, updated_at = ? "
-                "WHERE delivery_id = ?",
+                "UPDATE channel_deliveries SET status = %s, error = %s, updated_at = %s "
+                "WHERE delivery_id = %s",
                 (status.value, error, utc_now(), delivery_id),
             )
             if updated.rowcount != 1:
                 raise ChannelNotFound(delivery_id)
             row = connection.execute(
-                "SELECT * FROM channel_deliveries WHERE delivery_id = ?",
+                "SELECT * FROM channel_deliveries WHERE delivery_id = %s",
                 (delivery_id,),
             ).fetchone()
         if row is None:
@@ -1415,7 +1215,7 @@ class ChannelStore:
         with self._connect() as connection:
             updated = connection.execute(
                 "UPDATE channel_deliveries SET status = 'unknown', "
-                "error = 'process_interrupted', updated_at = ? "
+                "error = 'process_interrupted', updated_at = %s "
                 "WHERE status = 'sending'",
                 (utc_now(),),
             )
@@ -1431,7 +1231,7 @@ class ChannelStore:
                 ).fetchall()
             else:
                 rows = connection.execute(
-                    "SELECT * FROM channel_deliveries WHERE connection_id = ? "
+                    "SELECT * FROM channel_deliveries WHERE connection_id = %s "
                     "ORDER BY created_at, delivery_id",
                     (connection_id,),
                 ).fetchall()
@@ -1460,11 +1260,12 @@ class ChannelStore:
         now = utc_now()
         with self._connect() as connection:
             connection.execute(
-                "INSERT OR IGNORE INTO channel_replies "
+                "INSERT INTO channel_replies "
                 "(reply_id, connection_id, conversation_id, run_id, target, "
                 "external_message_id, sender_id, sender_role, adapter_identity, "
                 "state, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s) "
+                "ON CONFLICT DO NOTHING",
                 (
                     reply_id,
                     connection_id,
@@ -1480,13 +1281,13 @@ class ChannelStore:
                 ),
             )
             row = connection.execute(
-                "SELECT * FROM channel_replies WHERE reply_id = ?", (reply_id,)
+                "SELECT * FROM channel_replies WHERE reply_id = %s", (reply_id,)
             ).fetchone()
             if row is None:
                 # An intent written before identity-scoped IDs existed still
                 # owns this Run; keep it instead of inserting a second one.
                 row = connection.execute(
-                    "SELECT * FROM channel_replies WHERE run_id = ?", (run_id,)
+                    "SELECT * FROM channel_replies WHERE run_id = %s", (run_id,)
                 ).fetchone()
             if row is None:
                 raise RuntimeError("channel reply intent disappeared")
@@ -1498,14 +1299,14 @@ class ChannelStore:
     def reply_for_run(self, run_id: str) -> ReplyRecord | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM channel_replies WHERE run_id = ?", (run_id,)
+                "SELECT * FROM channel_replies WHERE run_id = %s", (run_id,)
             ).fetchone()
         return None if row is None else self._reply(row)
 
     def list_replies(self, *states: str) -> tuple[ReplyRecord, ...]:
         if not states:
             return ()
-        placeholders = ", ".join("?" for _ in states)
+        placeholders = ", ".join("%s" for _ in states)
         with self._connect() as connection:
             rows = connection.execute(
                 f"SELECT * FROM channel_replies WHERE state IN ({placeholders}) "
@@ -1518,17 +1319,17 @@ class ChannelStore:
         with self._connect() as connection:
             updated = connection.execute(
                 "UPDATE channel_replies SET state = 'sending', "
-                "attempts = attempts + 1, updated_at = ? "
-                "WHERE reply_id = ? AND state = 'pending'",
+                "attempts = attempts + 1, updated_at = %s "
+                "WHERE reply_id = %s AND state = 'pending'",
                 (utc_now(), reply_id),
             )
-            return updated.rowcount == 1
+            return int(updated.rowcount) == 1
 
     def defer_reply(self, reply_id: str, error: str) -> None:
         with self._connect() as connection:
             connection.execute(
-                "UPDATE channel_replies SET state = 'pending', error = ?, "
-                "updated_at = ? WHERE reply_id = ? "
+                "UPDATE channel_replies SET state = 'pending', error = %s, "
+                "updated_at = %s WHERE reply_id = %s "
                 "AND state IN ('pending', 'sending')",
                 (error, utc_now(), reply_id),
             )
@@ -1538,8 +1339,8 @@ class ChannelStore:
     ) -> None:
         with self._connect() as connection:
             updated = connection.execute(
-                "UPDATE channel_replies SET state = ?, error = ?, updated_at = ? "
-                "WHERE reply_id = ?",
+                "UPDATE channel_replies SET state = %s, error = %s, updated_at = %s "
+                "WHERE reply_id = %s",
                 (state, error, utc_now(), reply_id),
             )
             if updated.rowcount != 1:
@@ -1549,7 +1350,7 @@ class ChannelStore:
         with self._connect() as connection:
             updated = connection.execute(
                 "UPDATE channel_replies SET state = 'unknown', "
-                "error = 'process_interrupted', updated_at = ? "
+                "error = 'process_interrupted', updated_at = %s "
                 "WHERE state = 'sending'",
                 (utc_now(),),
             )
@@ -1586,15 +1387,12 @@ class ChannelStore:
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT value_json FROM channel_adapter_state "
-                "WHERE connection_id = ? AND key = ?",
+                "WHERE connection_id = %s AND key = %s",
                 (connection_id, key),
             ).fetchone()
         if row is None:
             return None
-        try:
-            value = json.loads(str(row["value_json"]))
-        except ValueError:
-            return None
+        value = _loads(row["value_json"])
         return value if isinstance(value, dict) else None
 
     def save_adapter_state(
@@ -1604,33 +1402,14 @@ class ChannelStore:
         with self._connect() as connection:
             connection.execute(
                 "INSERT INTO channel_adapter_state "
-                "(connection_id, key, value_json, updated_at) VALUES (?, ?, ?, ?) "
+                "(connection_id, key, value_json, updated_at) VALUES (%s, %s, %s, %s) "
                 "ON CONFLICT(connection_id, key) DO UPDATE SET "
                 "value_json = excluded.value_json, updated_at = excluded.updated_at",
                 (connection_id, key, _json(value), now),
             )
 
     def load_credentials(self, credential_ref: str | None) -> dict[str, str] | None:
-        if credential_ref is None:
-            return None
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT secret_json FROM channel_credentials WHERE credential_ref = ?",
-                (credential_ref,),
-            ).fetchone()
-        if row is None:
-            return None
-        try:
-            value = json.loads(str(row["secret_json"]))
-        except ValueError:
-            return None
-        if not isinstance(value, dict):
-            return None
-        return {
-            str(key): str(item)
-            for key, item in value.items()
-            if isinstance(key, str) and isinstance(item, str)
-        }
+        return self.vault.load(credential_ref)
 
 
 __all__ = [

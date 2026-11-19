@@ -21,6 +21,7 @@ from cairn.channels.models import (
 from cairn.channels.replies import ChannelReplyCoordinator
 from cairn.channels.store import ChannelStore, ReplyRecord
 from cairn.conversation.models import ConversationSource, Run, RunStatus
+from tests.support.pg import database_for
 
 
 class FakeReplyManager:
@@ -111,7 +112,7 @@ async def settle(tasks: set[asyncio.Task[None]]) -> None:
 
 def test_terminal_run_replies_once_even_when_settled_twice(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         manager = FakeReplyManager(connection())
         runs = Runs({"run-1": run()})
         replies = coordinator(store, manager, runs)
@@ -137,7 +138,7 @@ def test_terminal_run_replies_once_even_when_settled_twice(tmp_path: Path) -> No
 
 def test_queued_run_waits_until_it_becomes_terminal(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         manager = FakeReplyManager(connection())
         queued = run(status=RunStatus.RUNNING)
         runs = Runs({"run-1": queued})
@@ -169,7 +170,7 @@ def test_queued_run_waits_until_it_becomes_terminal(tmp_path: Path) -> None:
 
 def test_failed_run_replies_with_an_observable_status(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         manager = FakeReplyManager(connection())
         failed = run(status=RunStatus.FAILED, result=None)
         replies = coordinator(store, manager, Runs({"run-1": failed}))
@@ -192,7 +193,7 @@ def test_failed_run_replies_with_an_observable_status(tmp_path: Path) -> None:
 
 def test_unknown_send_is_not_replayed_after_restart(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         manager = FakeReplyManager(
             connection(), result=ChannelSendResult(status=ChannelSendStatus.UNKNOWN)
         )
@@ -226,7 +227,7 @@ def test_adapter_starting_keeps_the_intent_pending_for_retry(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         manager = FakeReplyManager(
             connection(), errors=[ChannelAdapterError("adapter is not running")]
         )
@@ -259,7 +260,7 @@ def test_adapter_starting_keeps_the_intent_pending_for_retry(
 
 def test_connection_still_starting_keeps_the_reply_pending(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         manager = FakeReplyManager(
             connection(), actual_state=ChannelActualState.CONNECTING
         )
@@ -287,7 +288,7 @@ def test_connection_still_starting_keeps_the_reply_pending(tmp_path: Path) -> No
 
 def test_stopped_connection_fails_the_reply_without_sending(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         stopped = connection().model_copy(
             update={"desired_state": ChannelDesiredState.STOPPED}
         )
@@ -318,7 +319,7 @@ def test_missing_run_fails_the_intent_instead_of_retrying_forever(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         manager = FakeReplyManager(connection())
         replies = coordinator(store, manager, Runs({}))
         store.claim_reply(
@@ -346,7 +347,7 @@ def test_startup_recreates_a_missing_intent_from_accepted_inbound(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         create = store.create_connection(
             platform=ChannelPlatform.TELEGRAM,
             display_name="Telegram",
@@ -410,7 +411,7 @@ def test_startup_recreates_a_missing_intent_from_accepted_inbound(
 
 def test_a_reply_without_trusted_identity_fails_closed(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         manager = FakeReplyManager(connection())
         terminal = run()
         replies = coordinator(store, manager, Runs({"run-1": terminal}))
@@ -436,7 +437,7 @@ def test_pending_reply_with_identity_survives_restart_and_is_sent_once(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         manager = FakeReplyManager(connection())
         terminal = run()
         store.claim_reply(

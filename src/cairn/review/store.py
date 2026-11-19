@@ -1,8 +1,8 @@
-"""SQLite authority for generated review reports and their request receipts.
+"""PostgreSQL authority for generated review reports and their request receipts.
 
-The tables live in the same ``knowledge.sqlite3`` file as K1 Clips.  A missing
-row is never confused with a failed model call: every creation records its
-source manifest before any provider request starts, and only a
+The tables live in the same knowledge schema as K1 Clips. A missing row is
+never confused with a failed model call: every creation records its source
+manifest before any provider request starts, and only a
 ``pending -> generating -> completed`` transition can produce a report.
 """
 
@@ -10,12 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date
-from pathlib import Path
 from typing import Any, cast
 
 from cairn.knowledge.models import utc_now
@@ -38,6 +36,7 @@ from cairn.review.models import (
     WeeklyReview,
     new_review_id,
 )
+from cairn.shared.db import DbConnection, Row
 
 MAX_LIST_LIMIT = 100
 DEFAULT_LIST_LIMIT = 20
@@ -63,37 +62,35 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _loads(value: str | None, default: Any) -> Any:
-    return default if not value else json.loads(value)
+def _loads(value: Any, default: Any) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    return json.loads(value)
+
+
+def _begin_write(connection: DbConnection) -> None:
+    """Take the store's write lock; SQLite's single writer provided this before."""
+    connection.execute("BEGIN IMMEDIATE")
+    connection.execute(
+        "SELECT pg_advisory_xact_lock(hashtext('cairn-review-store:' || current_schema()))"
+    )
 
 
 class ReviewStore:
-    """One connection per operation; SQLite provides the write serialization."""
+    """Review rows live in the knowledge schema beside their sources."""
 
-    def __init__(self, source: KnowledgeStore | Path) -> None:
-        self.knowledge = (
-            source if isinstance(source, KnowledgeStore) else KnowledgeStore(source)
-        )
-        self.path = self.knowledge.path
-        if self.path.is_symlink():
-            raise ValueError("Review store cannot be a symlink")
+    def __init__(self, knowledge: KnowledgeStore) -> None:
+        self.knowledge = knowledge
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
-        try:
+    def _connect(self) -> Iterator[DbConnection]:
+        with self.knowledge.db.connect("knowledge") as connection:
             yield connection
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     @staticmethod
-    def _review(row: sqlite3.Row) -> StoredReview:
+    def _review(row: Row) -> StoredReview:
         try:
             review_type = ReviewType(cast(str, row["review_type"]))
             status = ReviewStatus(cast(str, row["status"]))
@@ -118,16 +115,16 @@ class ReviewStore:
                     _loads(row["source_snapshots_json"], []),
                 )
             )
-            summary_json = cast(str | None, row["summary_json"])
+            summary_json = row["summary_json"]
             # Existing daily rows keep their original JSON shape; weekly rows
             # are parsed from the same column by their immutable review_type.
             summary = (
                 None
                 if summary_json is None
                 else (
-                    DailyReview.model_validate_json(summary_json)
+                    DailyReview.model_validate(_loads(summary_json, {}))
                     if review_type is ReviewType.DAILY
-                    else WeeklyReview.model_validate_json(summary_json)
+                    else WeeklyReview.model_validate(_loads(summary_json, {}))
                 )
             )
             return StoredReview(
@@ -157,7 +154,7 @@ class ReviewStore:
             raise ValueError("review store contains an invalid row") from exc
 
     @staticmethod
-    def _delivery(row: sqlite3.Row) -> StoredReviewDelivery:
+    def _delivery(row: Row) -> StoredReviewDelivery:
         try:
             return StoredReviewDelivery(
                 delivery_id=cast(str, row["delivery_id"]),
@@ -232,10 +229,10 @@ class ReviewStore:
         )
         now = utc_now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            _begin_write(connection)
             existing = connection.execute(
                 "SELECT fingerprint, review_id FROM review_requests "
-                "WHERE request_id = ?",
+                "WHERE request_id = %s",
                 (request_key,),
             ).fetchone()
             if existing is not None:
@@ -244,7 +241,7 @@ class ReviewStore:
                         "request_id was already used for a different review"
                     )
                 row = connection.execute(
-                    "SELECT * FROM reviews WHERE review_id = ?",
+                    "SELECT * FROM reviews WHERE review_id = %s",
                     (existing["review_id"],),
                 ).fetchone()
                 if row is None:
@@ -256,8 +253,8 @@ class ReviewStore:
                 )
 
             active = connection.execute(
-                "SELECT * FROM reviews WHERE review_type = ? "
-                "AND period_start = ? AND period_end = ? AND timezone = ? "
+                "SELECT * FROM reviews WHERE review_type = %s "
+                "AND period_start = %s AND period_end = %s AND timezone = %s "
                 "AND status IN ('pending', 'generating') "
                 "ORDER BY created_at DESC LIMIT 1",
                 (
@@ -270,7 +267,7 @@ class ReviewStore:
             if active is not None:
                 connection.execute(
                     "INSERT INTO review_requests(request_id, fingerprint, review_id) "
-                    "VALUES (?, ?, ?)",
+                    "VALUES (%s, %s, %s)",
                     (request_key, request_fingerprint, active["review_id"]),
                 )
                 return ReviewCreateResult(
@@ -280,8 +277,8 @@ class ReviewStore:
                 )
 
             completed = connection.execute(
-                "SELECT * FROM reviews WHERE review_type = ? "
-                "AND period_start = ? AND period_end = ? AND timezone = ? "
+                "SELECT * FROM reviews WHERE review_type = %s "
+                "AND period_start = %s AND period_end = %s AND timezone = %s "
                 "AND status = 'completed' "
                 "ORDER BY version DESC, created_at DESC LIMIT 1",
                 (
@@ -299,7 +296,7 @@ class ReviewStore:
                     )
                 connection.execute(
                     "INSERT INTO review_requests(request_id, fingerprint, review_id) "
-                    "VALUES (?, ?, ?)",
+                    "VALUES (%s, %s, %s)",
                     (request_key, request_fingerprint, completed["review_id"]),
                 )
                 return ReviewCreateResult(
@@ -309,8 +306,8 @@ class ReviewStore:
                 )
 
             latest = connection.execute(
-                "SELECT review_id, version FROM reviews WHERE review_type = ? "
-                "AND period_start = ? AND period_end = ? AND timezone = ? "
+                "SELECT review_id, version FROM reviews WHERE review_type = %s "
+                "AND period_start = %s AND period_end = %s AND timezone = %s "
                 "ORDER BY version DESC, created_at DESC LIMIT 1",
                 (
                     review_type.value,
@@ -330,8 +327,8 @@ class ReviewStore:
                      source_snapshots_json, input_fingerprint, summary_json,
                      summary_markdown, model_id, generation_attempts, created_at,
                      updated_at, completed_at, error, version, supersedes_review_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?,
-                        NULL, NULL, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, NULL, 0, %s, %s,
+                        NULL, NULL, %s, %s)
                 """,
                 (
                     review_id,
@@ -357,11 +354,11 @@ class ReviewStore:
             )
             connection.execute(
                 "INSERT INTO review_requests(request_id, fingerprint, review_id) "
-                "VALUES (?, ?, ?)",
+                "VALUES (%s, %s, %s)",
                 (request_key, request_fingerprint, review_id),
             )
             row = connection.execute(
-                "SELECT * FROM reviews WHERE review_id = ?", (review_id,)
+                "SELECT * FROM reviews WHERE review_id = %s", (review_id,)
             ).fetchone()
             if row is None:
                 raise ValueError("new review could not be read back")
@@ -372,7 +369,7 @@ class ReviewStore:
     def get(self, review_id: str) -> StoredReview | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM reviews WHERE review_id = ?", (review_id,)
+                "SELECT * FROM reviews WHERE review_id = %s", (review_id,)
             ).fetchone()
         return None if row is None else self._review(row)
 
@@ -391,10 +388,10 @@ class ReviewStore:
         clauses: list[str] = []
         params: list[object] = []
         if review_type is not None:
-            clauses.append("review_type = ?")
+            clauses.append("review_type = %s")
             params.append(review_type.value)
         if day is not None:
-            clauses.append("review_date = ?")
+            clauses.append("review_date = %s")
             params.append(day.isoformat())
         where = "" if not clauses else " WHERE " + " AND ".join(clauses)
         params.extend((limit, offset))
@@ -402,7 +399,7 @@ class ReviewStore:
             rows = connection.execute(
                 "SELECT * FROM reviews"
                 + where
-                + " ORDER BY created_at DESC, review_id DESC LIMIT ? OFFSET ?",
+                + " ORDER BY created_at DESC, review_id DESC LIMIT %s OFFSET %s",
                 params,
             ).fetchall()
         return tuple(self._review(row) for row in rows)
@@ -418,8 +415,8 @@ class ReviewStore:
         """The newest completed version for one exact period, if any."""
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM reviews WHERE review_type = ? "
-                "AND period_start = ? AND period_end = ? AND timezone = ? "
+                "SELECT * FROM reviews WHERE review_type = %s "
+                "AND period_start = %s AND period_end = %s AND timezone = %s "
                 "AND status = 'completed' "
                 "ORDER BY version DESC, created_at DESC LIMIT 1",
                 (review_type.value, period_start, period_end, timezone),
@@ -430,18 +427,18 @@ class ReviewStore:
         """Claim a pending review; a second caller observes the same attempt."""
         now = utc_now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            _begin_write(connection)
             row = connection.execute(
-                "SELECT * FROM reviews WHERE review_id = ?", (review_id,)
+                "SELECT * FROM reviews WHERE review_id = %s", (review_id,)
             ).fetchone()
             if row is None:
                 raise KeyError(review_id)
             current = self._review(row)
             if current.status is ReviewStatus.PENDING:
                 connection.execute(
-                    "UPDATE reviews SET status = ?, model_id = ?, "
-                    "generation_attempts = generation_attempts + 1, updated_at = ? "
-                    "WHERE review_id = ? AND status = 'pending'",
+                    "UPDATE reviews SET status = %s, model_id = %s, "
+                    "generation_attempts = generation_attempts + 1, updated_at = %s "
+                    "WHERE review_id = %s AND status = 'pending'",
                     (
                         ReviewStatus.GENERATING.value,
                         model_id,
@@ -450,7 +447,7 @@ class ReviewStore:
                     ),
                 )
                 row = connection.execute(
-                    "SELECT * FROM reviews WHERE review_id = ?", (review_id,)
+                    "SELECT * FROM reviews WHERE review_id = %s", (review_id,)
                 ).fetchone()
                 if row is None:
                     raise ValueError("review disappeared while generating")
@@ -477,9 +474,9 @@ class ReviewStore:
         """
         now = utc_now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            _begin_write(connection)
             row = connection.execute(
-                "SELECT * FROM reviews WHERE review_id = ?", (review_id,)
+                "SELECT * FROM reviews WHERE review_id = %s", (review_id,)
             ).fetchone()
             if row is None:
                 raise KeyError(review_id)
@@ -491,10 +488,10 @@ class ReviewStore:
                     )
                 return current
             connection.execute(
-                "UPDATE reviews SET status = ?, summary_json = ?, "
-                "summary_markdown = ?, model_id = COALESCE(?, model_id), "
-                "completed_at = ?, updated_at = ?, error = NULL "
-                "WHERE review_id = ? AND status = 'generating'",
+                "UPDATE reviews SET status = %s, summary_json = %s, "
+                "summary_markdown = %s, model_id = COALESCE(%s, model_id), "
+                "completed_at = %s, updated_at = %s, error = NULL "
+                "WHERE review_id = %s AND status = 'generating'",
                 (
                     ReviewStatus.COMPLETED.value,
                     summary.model_dump_json(),
@@ -506,7 +503,7 @@ class ReviewStore:
                 ),
             )
             row = connection.execute(
-                "SELECT * FROM reviews WHERE review_id = ?", (review_id,)
+                "SELECT * FROM reviews WHERE review_id = %s", (review_id,)
             ).fetchone()
             if row is None:
                 raise ValueError("completed review could not be read back")
@@ -518,20 +515,20 @@ class ReviewStore:
 
     def _ensure_delivery_unlocked(
         self,
-        connection: sqlite3.Connection,
+        connection: DbConnection,
         review_id: str,
         now: str,
         target: DeliveryTarget | None,
     ) -> StoredReviewDelivery:
         review = connection.execute(
-            "SELECT status, version FROM reviews WHERE review_id = ?", (review_id,)
+            "SELECT status, version FROM reviews WHERE review_id = %s", (review_id,)
         ).fetchone()
         if review is None:
             raise KeyError(review_id)
         if review["status"] != ReviewStatus.COMPLETED.value:
             raise ValueError("only a completed review can be delivered")
         existing = connection.execute(
-            "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
+            "SELECT * FROM review_deliveries WHERE review_id = %s", (review_id,)
         ).fetchone()
         if existing is not None:
             return self._delivery(existing)
@@ -544,8 +541,8 @@ class ReviewStore:
             "INSERT INTO review_deliveries(delivery_id, review_id, "
             "review_version, channel, account_id, recipient, status, attempt_id, "
             "attempts, context_token, last_error, created_at, attempted_at, "
-            "completed_at, updated_at) VALUES (?, ?, ?, 'wechat', ?, ?, ?, '', "
-            "0, '', NULL, ?, NULL, NULL, ?)",
+            "completed_at, updated_at) VALUES (%s, %s, %s, 'wechat', %s, %s, %s, '', "
+            "0, '', NULL, %s, NULL, NULL, %s)",
             (
                 delivery_id,
                 review_id,
@@ -558,7 +555,7 @@ class ReviewStore:
             ),
         )
         row = connection.execute(
-            "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
+            "SELECT * FROM review_deliveries WHERE review_id = %s", (review_id,)
         ).fetchone()
         if row is None:
             raise ValueError("review delivery could not be read back")
@@ -573,13 +570,13 @@ class ReviewStore:
         """Create the pending delivery row if it is missing; never reset state."""
         now = utc_now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            _begin_write(connection)
             return self._ensure_delivery_unlocked(connection, review_id, now, target)
 
     def get_delivery(self, review_id: str) -> StoredReviewDelivery | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
+                "SELECT * FROM review_deliveries WHERE review_id = %s", (review_id,)
             ).fetchone()
         return None if row is None else self._delivery(row)
 
@@ -610,9 +607,9 @@ class ReviewStore:
             raise ValueError("delivery requires an exact account and recipient")
         now = utc_now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            _begin_write(connection)
             row = connection.execute(
-                "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
+                "SELECT * FROM review_deliveries WHERE review_id = %s", (review_id,)
             ).fetchone()
             if row is None:
                 raise KeyError(review_id)
@@ -644,8 +641,8 @@ class ReviewStore:
                 )
             if current.account_id and current.account_id != account_id:
                 connection.execute(
-                    "UPDATE review_deliveries SET status = ?, last_error = ?, "
-                    "completed_at = ?, updated_at = ? WHERE review_id = ?",
+                    "UPDATE review_deliveries SET status = %s, last_error = %s, "
+                    "completed_at = %s, updated_at = %s WHERE review_id = %s",
                     (
                         ReviewDeliveryStatus.FAILED_PERMANENT.value,
                         "delivery identity changed",
@@ -655,7 +652,7 @@ class ReviewStore:
                     ),
                 )
                 row = connection.execute(
-                    "SELECT * FROM review_deliveries WHERE review_id = ?",
+                    "SELECT * FROM review_deliveries WHERE review_id = %s",
                     (review_id,),
                 ).fetchone()
                 if row is None:
@@ -667,10 +664,10 @@ class ReviewStore:
                 )
             attempt_id = uuid.uuid4().hex
             connection.execute(
-                "UPDATE review_deliveries SET status = ?, account_id = ?, "
-                "recipient = ?, context_token = ?, attempt_id = ?, "
-                "attempts = attempts + 1, last_error = NULL, attempted_at = ?, "
-                "completed_at = NULL, updated_at = ? WHERE review_id = ?",
+                "UPDATE review_deliveries SET status = %s, account_id = %s, "
+                "recipient = %s, context_token = %s, attempt_id = %s, "
+                "attempts = attempts + 1, last_error = NULL, attempted_at = %s, "
+                "completed_at = NULL, updated_at = %s WHERE review_id = %s",
                 (
                     ReviewDeliveryStatus.SENDING.value,
                     account_id,
@@ -683,7 +680,7 @@ class ReviewStore:
                 ),
             )
             row = connection.execute(
-                "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
+                "SELECT * FROM review_deliveries WHERE review_id = %s", (review_id,)
             ).fetchone()
             if row is None:
                 raise ValueError("review delivery could not be read back")
@@ -693,9 +690,9 @@ class ReviewStore:
         """The upstream accepted the message; this does not imply it was read."""
         now = utc_now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            _begin_write(connection)
             row = connection.execute(
-                "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
+                "SELECT * FROM review_deliveries WHERE review_id = %s", (review_id,)
             ).fetchone()
             if row is None:
                 raise KeyError(review_id)
@@ -705,12 +702,12 @@ class ReviewStore:
             if current.status is not ReviewDeliveryStatus.SENDING:
                 raise ValueError("review delivery must be sending before accepted")
             connection.execute(
-                "UPDATE review_deliveries SET status = ?, last_error = NULL, "
-                "completed_at = ?, updated_at = ? WHERE review_id = ?",
+                "UPDATE review_deliveries SET status = %s, last_error = NULL, "
+                "completed_at = %s, updated_at = %s WHERE review_id = %s",
                 (ReviewDeliveryStatus.ACCEPTED.value, now, now, review_id),
             )
             row = connection.execute(
-                "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
+                "SELECT * FROM review_deliveries WHERE review_id = %s", (review_id,)
             ).fetchone()
             if row is None:
                 raise ValueError("review delivery could not be read back")
@@ -722,9 +719,9 @@ class ReviewStore:
         """The send may have happened; it must never be retried automatically."""
         now = utc_now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            _begin_write(connection)
             row = connection.execute(
-                "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
+                "SELECT * FROM review_deliveries WHERE review_id = %s", (review_id,)
             ).fetchone()
             if row is None:
                 raise KeyError(review_id)
@@ -734,8 +731,8 @@ class ReviewStore:
             if current.status is not ReviewDeliveryStatus.SENDING:
                 return current
             connection.execute(
-                "UPDATE review_deliveries SET status = ?, last_error = ?, "
-                "completed_at = ?, updated_at = ? WHERE review_id = ?",
+                "UPDATE review_deliveries SET status = %s, last_error = %s, "
+                "completed_at = %s, updated_at = %s WHERE review_id = %s",
                 (
                     ReviewDeliveryStatus.DELIVERY_UNKNOWN.value,
                     (error or "delivery result unknown")[:500],
@@ -745,7 +742,7 @@ class ReviewStore:
                 ),
             )
             row = connection.execute(
-                "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
+                "SELECT * FROM review_deliveries WHERE review_id = %s", (review_id,)
             ).fetchone()
             if row is None:
                 raise ValueError("review delivery could not be read back")
@@ -755,9 +752,9 @@ class ReviewStore:
         """A definite non-send: stay retryable until a fresh context arrives."""
         now = utc_now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            _begin_write(connection)
             row = connection.execute(
-                "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
+                "SELECT * FROM review_deliveries WHERE review_id = %s", (review_id,)
             ).fetchone()
             if row is None:
                 raise KeyError(review_id)
@@ -767,8 +764,8 @@ class ReviewStore:
             if current.status is not ReviewDeliveryStatus.SENDING:
                 raise ValueError("only a sending delivery can be deferred")
             connection.execute(
-                "UPDATE review_deliveries SET status = ?, last_error = ?, "
-                "completed_at = NULL, updated_at = ? WHERE review_id = ?",
+                "UPDATE review_deliveries SET status = %s, last_error = %s, "
+                "completed_at = NULL, updated_at = %s WHERE review_id = %s",
                 (
                     ReviewDeliveryStatus.BLOCKED_OFFLINE.value,
                     error[:500],
@@ -777,7 +774,7 @@ class ReviewStore:
                 ),
             )
             row = connection.execute(
-                "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
+                "SELECT * FROM review_deliveries WHERE review_id = %s", (review_id,)
             ).fetchone()
             if row is None:
                 raise ValueError("review delivery could not be read back")
@@ -794,9 +791,9 @@ class ReviewStore:
         if target is not None and not target.recipient:
             raise ValueError("a rebound delivery requires an authorized recipient")
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            _begin_write(connection)
             row = connection.execute(
-                "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
+                "SELECT * FROM review_deliveries WHERE review_id = %s", (review_id,)
             ).fetchone()
             if row is None:
                 raise KeyError(review_id)
@@ -820,7 +817,7 @@ class ReviewStore:
 
     @staticmethod
     def _requeue_unlocked(
-        connection: sqlite3.Connection,
+        connection: DbConnection,
         review_id: str,
         current: StoredReviewDelivery,
         *,
@@ -828,10 +825,10 @@ class ReviewStore:
         now: str,
     ) -> StoredReviewDelivery:
         connection.execute(
-            "UPDATE review_deliveries SET status = ?, account_id = ?, "
-            "recipient = ?, context_token = ?, attempt_id = '', "
-            "last_error = NULL, completed_at = NULL, updated_at = ? "
-            "WHERE review_id = ?",
+            "UPDATE review_deliveries SET status = %s, account_id = %s, "
+            "recipient = %s, context_token = %s, attempt_id = '', "
+            "last_error = NULL, completed_at = NULL, updated_at = %s "
+            "WHERE review_id = %s",
             (
                 ReviewDeliveryStatus.PENDING.value,
                 current.account_id if target is None else target.account_id[:200],
@@ -842,7 +839,7 @@ class ReviewStore:
             ),
         )
         row = connection.execute(
-            "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
+            "SELECT * FROM review_deliveries WHERE review_id = %s", (review_id,)
         ).fetchone()
         if row is None:
             raise ValueError("review delivery could not be read back")
@@ -850,7 +847,7 @@ class ReviewStore:
 
     @staticmethod
     def _record_delivery_request(
-        connection: sqlite3.Connection,
+        connection: DbConnection,
         *,
         request_id: str,
         review_id: str,
@@ -863,7 +860,7 @@ class ReviewStore:
         connection.execute(
             "INSERT INTO review_delivery_requests(request_id, review_id, "
             "delivery_id, action, rebind, outcome, error, created_at) "
-            "VALUES (?, ?, ?, 'resend', ?, ?, ?, ?)",
+            "VALUES (%s, %s, %s, 'resend', %s, %s, %s, %s)",
             (
                 request_id,
                 review_id,
@@ -898,13 +895,13 @@ class ReviewStore:
             raise ValueError("a rebound delivery requires an authorized recipient")
         now = utc_now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            _begin_write(connection)
             existing = connection.execute(
-                "SELECT * FROM review_delivery_requests WHERE request_id = ?",
+                "SELECT * FROM review_delivery_requests WHERE request_id = %s",
                 (request_key,),
             ).fetchone()
             row = connection.execute(
-                "SELECT * FROM review_deliveries WHERE review_id = ?", (review_id,)
+                "SELECT * FROM review_deliveries WHERE review_id = %s", (review_id,)
             ).fetchone()
             if existing is not None:
                 if (
@@ -1001,14 +998,14 @@ class ReviewStore:
         """A sending row is in the unknown window; never resend it automatically."""
         now = utc_now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            _begin_write(connection)
             rows = connection.execute(
                 "SELECT review_id FROM review_deliveries WHERE status = 'sending'"
             ).fetchall()
             for row in rows:
                 connection.execute(
-                    "UPDATE review_deliveries SET status = ?, last_error = ?, "
-                    "completed_at = ?, updated_at = ? WHERE review_id = ? "
+                    "UPDATE review_deliveries SET status = %s, last_error = %s, "
+                    "completed_at = %s, updated_at = %s WHERE review_id = %s "
                     "AND status = 'sending'",
                     (
                         ReviewDeliveryStatus.DELIVERY_UNKNOWN.value,
@@ -1024,9 +1021,9 @@ class ReviewStore:
         """Record an explicit failure only while the review is not completed."""
         now = utc_now()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            _begin_write(connection)
             row = connection.execute(
-                "SELECT * FROM reviews WHERE review_id = ?", (review_id,)
+                "SELECT * FROM reviews WHERE review_id = %s", (review_id,)
             ).fetchone()
             if row is None:
                 return None
@@ -1037,8 +1034,8 @@ class ReviewStore:
             }:
                 return current
             connection.execute(
-                "UPDATE reviews SET status = ?, error = ?, updated_at = ? "
-                "WHERE review_id = ? AND status IN ('pending', 'generating')",
+                "UPDATE reviews SET status = %s, error = %s, updated_at = %s "
+                "WHERE review_id = %s AND status IN ('pending', 'generating')",
                 (
                     ReviewStatus.FAILED.value,
                     error[:200],
@@ -1047,7 +1044,7 @@ class ReviewStore:
                 ),
             )
             row = connection.execute(
-                "SELECT * FROM reviews WHERE review_id = ?", (review_id,)
+                "SELECT * FROM reviews WHERE review_id = %s", (review_id,)
             ).fetchone()
             return None if row is None else self._review(row)
 
@@ -1056,7 +1053,7 @@ class ReviewStore:
         now = utc_now()
         with self._connect() as connection:
             result = connection.execute(
-                "UPDATE reviews SET status = ?, error = ?, updated_at = ? "
+                "UPDATE reviews SET status = %s, error = %s, updated_at = %s "
                 "WHERE status IN ('pending', 'generating')",
                 (ReviewStatus.FAILED.value, error[:200], now),
             )

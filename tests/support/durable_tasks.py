@@ -1,7 +1,6 @@
 """Fresh offline task hosts and native process-death barriers."""
 
 import asyncio
-import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from multiprocessing.connection import Connection
@@ -26,9 +25,11 @@ from cairn.agent.turn.events import EventHandler
 from cairn.agent.workspace.workspace import Workspace
 from cairn.development.execution.models import TaskSpec
 from cairn.development.execution.runner import CodingTaskRunner
+from cairn.shared.db import DbConnection
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 from tests.support.runtime import SequenceLLM
-from tests.support.sessions import SESSION, UNVERIFIED_RUNTIME
+from tests.support.sessions import SESSION
 
 SPEC = TaskSpec(task_id="durable-task", prompt="Update tracked.txt")
 BUDGET = RunBudget(max_steps=3)
@@ -85,12 +86,7 @@ def make_host(
         event_handler=event_handler,
         tracer=None,
     )
-    api = open_store(
-        root / "store",
-        workspace,
-        sensitive_values=sensitive_values,
-        allow_unverified=UNVERIFIED_RUNTIME,
-    )
+    api = open_store(database_for(root), sensitive_values=sensitive_values)
 
     def observe() -> SessionBinding:
         return SessionBinding(
@@ -180,7 +176,7 @@ def crash_task_writer(root_text: str, window: str, barrier: Connection) -> None:
         def before_write(*args: Any, **kwargs: Any) -> object:
             if window == "result_commit":
 
-                def unknown(conn: sqlite3.Connection) -> None:
+                def unknown(conn: DbConnection) -> None:
                     conn.commit()
                     stop()
 

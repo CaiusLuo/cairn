@@ -9,6 +9,7 @@ from typing import Any
 from cairn.conversation.models import ConversationSource, RunStatus
 from cairn.conversation.service import ConversationService
 from cairn.conversation.store import DomainStore
+from tests.support.pg import database_for
 
 
 def test_startup_marks_running_recovery_and_schedules_queued(
@@ -17,7 +18,7 @@ def test_startup_marks_running_recovery_and_schedules_queued(
     async def scenario() -> None:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        store = DomainStore(tmp_path / "domain.sqlite3")
+        store = DomainStore(database_for(tmp_path))
         conversation = store.create_conversation(
             workspace=workspace,
             source=ConversationSource.CLI,
@@ -46,7 +47,12 @@ def test_startup_marks_running_recovery_and_schedules_queued(
                 del task, emit, service, steering
                 return "ok"
 
-        service = ConversationService(store, FakeExecution(), workspace=workspace)  # type: ignore[arg-type]
+        service = ConversationService(
+            store,
+            FakeExecution(),  # type: ignore[arg-type]
+            workspace=workspace,
+            attachments_root=tmp_path / "attachments",
+        )
         await service.start()
         try:
             await asyncio.wait_for(service.queue.join(), 5)
@@ -62,7 +68,7 @@ def test_cancel_queued_run_before_worker_starts(tmp_path: Path) -> None:
     async def scenario() -> None:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        store = DomainStore(tmp_path / "domain.sqlite3")
+        store = DomainStore(database_for(tmp_path))
         conversation = store.create_conversation(
             workspace=workspace,
             source=ConversationSource.CLI,
@@ -86,7 +92,12 @@ def test_cancel_queued_run_before_worker_starts(tmp_path: Path) -> None:
                 del task, emit, service, steering
                 return "ok"
 
-        service = ConversationService(store, FakeExecution(), workspace=workspace)  # type: ignore[arg-type]
+        service = ConversationService(
+            store,
+            FakeExecution(),  # type: ignore[arg-type]
+            workspace=workspace,
+            attachments_root=tmp_path / "attachments",
+        )
         cancelled = await service.cancel(run.run_id)
         assert cancelled.status is RunStatus.CANCELLED
         await service.start()

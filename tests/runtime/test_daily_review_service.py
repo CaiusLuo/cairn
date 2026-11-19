@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -29,6 +28,7 @@ from cairn.review.models import (
 )
 from cairn.review.service import NO_SOURCE_MESSAGES, DailyReviewService
 from cairn.review.store import ReviewPeriodCompleted, ReviewStore
+from tests.support.pg import database_for
 
 DAY = date(2026, 1, 15)
 TZ = "Asia/Shanghai"
@@ -160,7 +160,7 @@ def _service(
     sensitive_values: tuple[str, ...] = (),
 ) -> DailyReviewService:
     return DailyReviewService(
-        store=ReviewStore(tmp_path / "knowledge"),
+        store=ReviewStore(KnowledgeStore(database_for(tmp_path))),
         collector=FakeCollector(review_input or _input()),
         llm=llm,
         model_id=MODEL_ID,
@@ -225,16 +225,16 @@ def test_real_clip_flows_from_collector_to_cited_report(tmp_path: Path) -> None:
     async def scenario() -> None:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        knowledge = KnowledgeStore(tmp_path / "knowledge")
+        knowledge = KnowledgeStore(database_for(tmp_path))
         clip, _ = knowledge.create(
             "SQLite WAL reset notes",
             source="web",
             tags=["database"],
             request_id="real-clip",
         )
-        with sqlite3.connect(knowledge.path) as connection:
+        with knowledge.db.connect("knowledge") as connection:
             connection.execute(
-                "UPDATE clips SET created_at = ?, updated_at = ? WHERE clip_id = ?",
+                "UPDATE clips SET created_at = %s, updated_at = %s WHERE clip_id = %s",
                 (
                     "2026-01-15T02:00:00+00:00",
                     "2026-01-15T02:00:00+00:00",
@@ -291,16 +291,16 @@ def test_report_source_snapshots_survive_clip_edits_and_archiving(
     async def scenario() -> None:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        knowledge = KnowledgeStore(tmp_path / "knowledge")
+        knowledge = KnowledgeStore(database_for(tmp_path))
         clip, _ = knowledge.create(
             "original wording",
             source="web",
             tags=["test"],
             request_id="snapshot-clip",
         )
-        with sqlite3.connect(knowledge.path) as connection:
+        with knowledge.db.connect("knowledge") as connection:
             connection.execute(
-                "UPDATE clips SET created_at = ?, updated_at = ? WHERE clip_id = ?",
+                "UPDATE clips SET created_at = %s, updated_at = %s WHERE clip_id = %s",
                 (
                     "2026-01-15T02:00:00+00:00",
                     "2026-01-15T02:00:00+00:00",
@@ -343,9 +343,9 @@ def test_report_source_snapshots_survive_clip_edits_and_archiving(
             original_snapshot = completed.source_snapshots[0].snapshot
 
             knowledge.update(clip.clip_id, content="edited wording")
-            with sqlite3.connect(knowledge.path) as connection:
+            with knowledge.db.connect("knowledge") as connection:
                 connection.execute(
-                    "UPDATE clips SET updated_at = ? WHERE clip_id = ?",
+                    "UPDATE clips SET updated_at = %s WHERE clip_id = %s",
                     ("2026-01-15T02:00:00+00:00", clip.clip_id),
                 )
             replay = await service.generate_daily_review(
@@ -503,16 +503,16 @@ def test_lost_response_retry_returns_the_accepted_review_after_clip_changes(
     async def scenario() -> None:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        knowledge = KnowledgeStore(tmp_path / "knowledge")
+        knowledge = KnowledgeStore(database_for(tmp_path))
         clip, _ = knowledge.create(
             "first clip text",
             source="web",
             tags=["test"],
             request_id="first-clip",
         )
-        with sqlite3.connect(knowledge.path) as connection:
+        with knowledge.db.connect("knowledge") as connection:
             connection.execute(
-                "UPDATE clips SET created_at = ?, updated_at = ? WHERE clip_id = ?",
+                "UPDATE clips SET created_at = %s, updated_at = %s WHERE clip_id = %s",
                 (
                     "2026-01-15T02:00:00+00:00",
                     "2026-01-15T02:00:00+00:00",
@@ -772,7 +772,7 @@ def test_completed_report_is_readable_after_restart_and_stale_rows_fail(
         await service.close()
         assert completed.summary is not None
 
-        stale_store = ReviewStore(tmp_path / "knowledge")
+        stale_store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
         second_day = date(2026, 1, 16)
         stale_input = _input(day=second_day)
         stale = stale_store.create_or_get(
@@ -790,7 +790,7 @@ def test_completed_report_is_readable_after_restart_and_stale_rows_fail(
         ).review
 
         restarted = DailyReviewService(
-            store=ReviewStore(tmp_path / "knowledge"),
+            store=ReviewStore(KnowledgeStore(database_for(tmp_path))),
             collector=FakeCollector(_input()),
             llm=None,
             model_id=MODEL_ID,
@@ -871,7 +871,7 @@ def test_cutoff_is_forwarded_to_the_collector(tmp_path: Path) -> None:
     llm = FakeLLM()
     collector = FakeCollector(_input())
     service = DailyReviewService(
-        store=ReviewStore(tmp_path / "knowledge"),
+        store=ReviewStore(KnowledgeStore(database_for(tmp_path))),
         collector=collector,
         llm=llm,
         model_id=MODEL_ID,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, date, time
 from pathlib import Path
 
@@ -15,6 +14,7 @@ from cairn.knowledge.store import KnowledgeStore
 from cairn.memory.store import PersonalMemoryStore
 from cairn.review.collector import ReviewSourceCollector
 from cairn.review.models import SourceCollectionState, SourceTrust
+from tests.support.pg import database_for
 
 DAY = date(2026, 1, 15)
 TZ = "Asia/Shanghai"
@@ -39,16 +39,16 @@ def _clip_at(
     clip, _ = store.create(content, source="web", tags=["test"], request_id=request_id)
     if archived:
         store.set_archived(clip.clip_id, archived=True)
-    with sqlite3.connect(store.path) as connection:
+    with store.db.connect("knowledge") as connection:
         connection.execute(
-            "UPDATE clips SET created_at = ?, updated_at = ? WHERE clip_id = ?",
+            "UPDATE clips SET created_at = %s, updated_at = %s WHERE clip_id = %s",
             (updated_at, updated_at, clip.clip_id),
         )
     return clip.clip_id
 
 
 def _domain(tmp_path: Path, workspace: Path) -> tuple[DomainStore, str]:
-    domain = DomainStore(tmp_path / "domain.sqlite3")
+    domain = DomainStore(database_for(tmp_path))
     conversation = domain.create_conversation(
         workspace=workspace,
         source=ConversationSource.CLI,
@@ -81,7 +81,7 @@ def test_utc_window_is_half_open_and_archived_clips_are_excluded(
     tmp_path: Path,
 ) -> None:
     workspace = _workspace(tmp_path)
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     before = _clip_at(
         store,
         "before",
@@ -149,7 +149,7 @@ def test_utc_window_is_half_open_and_archived_clips_are_excluded(
 
 def test_archived_clip_is_restored_inside_the_window(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     clip_id = _clip_at(
         store,
         "archive and restore",
@@ -163,9 +163,9 @@ def test_archived_clip_is_restored_inside_the_window(tmp_path: Path) -> None:
     }
 
     store.set_archived(clip_id, archived=False)
-    with sqlite3.connect(store.path) as connection:
+    with store.db.connect("knowledge") as connection:
         connection.execute(
-            "UPDATE clips SET updated_at = ? WHERE clip_id = ?",
+            "UPDATE clips SET updated_at = %s WHERE clip_id = %s",
             ("2026-01-15T02:00:00+00:00", clip_id),
         )
     restored = collector.collect_daily(DAY, TZ)
@@ -175,7 +175,7 @@ def test_archived_clip_is_restored_inside_the_window(tmp_path: Path) -> None:
 
 def test_failed_and_completed_task_runs_are_not_confused(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     domain, conversation_id = _domain(tmp_path, workspace)
 
     domain.create_task(
@@ -223,9 +223,9 @@ def test_failed_and_completed_task_runs_are_not_confused(tmp_path: Path) -> None
         created_at="2026-01-14T15:00:00+00:00",
         metadata={"execution_status": "completed"},
     )
-    with sqlite3.connect(domain.path) as connection:
+    with domain.db.connect("core") as connection:
         connection.execute(
-            "UPDATE tasks SET updated_at = ? WHERE task_id = 'task-updated'",
+            "UPDATE tasks SET updated_at = %s WHERE task_id = 'task-updated'",
             ("2026-01-14T20:00:00+00:00",),
         )
     domain.create_task(
@@ -304,7 +304,7 @@ def test_failed_and_completed_task_runs_are_not_confused(tmp_path: Path) -> None
 
 def test_memory_entries_keep_local_time_and_explicit_trust(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     memory = PersonalMemoryStore(tmp_path / "agent")
     memory.write_daily(
         DAY,
@@ -382,7 +382,7 @@ def test_budget_omissions_stay_in_manifest_with_original_identity(
     tmp_path: Path,
 ) -> None:
     workspace = _workspace(tmp_path)
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     first = _clip_at(
         store,
         "newest " + "x" * 400,
@@ -451,7 +451,7 @@ def test_input_fingerprint_is_deterministic_and_tracks_changes(
     tmp_path: Path,
 ) -> None:
     workspace = _workspace(tmp_path)
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     clip_id = _clip_at(
         store,
         "first content",
@@ -467,9 +467,9 @@ def test_input_fingerprint_is_deterministic_and_tracks_changes(
     ]
 
     store.update(clip_id, content="changed content", source="web", tags=["test"])
-    with sqlite3.connect(store.path) as connection:
+    with store.db.connect("knowledge") as connection:
         connection.execute(
-            "UPDATE clips SET updated_at = ? WHERE clip_id = ?",
+            "UPDATE clips SET updated_at = %s WHERE clip_id = %s",
             ("2026-01-15T11:00:00+00:00", clip_id),
         )
     changed = collector.collect_daily(DAY, TZ)
@@ -481,7 +481,7 @@ def test_empty_day_reports_each_source_family_without_fabrication(
     tmp_path: Path,
 ) -> None:
     workspace = _workspace(tmp_path)
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     domain, _ = _domain(tmp_path, workspace)
     memory = PersonalMemoryStore(tmp_path / "agent")
 
@@ -502,7 +502,7 @@ def test_empty_day_reports_each_source_family_without_fabrication(
 
 def test_invalid_timezone_is_rejected(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     collector = _collector(store, workspace)
     with pytest.raises(ValueError):
         collector.collect_daily(DAY, "Mars/Olympus")
@@ -514,7 +514,7 @@ def test_cutoff_window_is_contiguous_and_carries_late_sources_forward(
     tmp_path: Path,
 ) -> None:
     workspace = _workspace(tmp_path)
-    store = KnowledgeStore(tmp_path / "knowledge")
+    store = KnowledgeStore(database_for(tmp_path))
     memory = PersonalMemoryStore(tmp_path / "agent")
     previous_late = _clip_at(
         store,

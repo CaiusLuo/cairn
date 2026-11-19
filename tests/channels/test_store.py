@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -20,10 +19,11 @@ from cairn.channels.models import (
 from cairn.channels.store import ChannelStore, inbound_digest
 from cairn.conversation.models import ConversationSource
 from cairn.conversation.store import DomainStore
+from tests.support.pg import database_for
 
 
 def _store(path: Path) -> ChannelStore:
-    return ChannelStore(path / "channels")
+    return ChannelStore(database_for(path), path / "channels")
 
 
 def _create(
@@ -68,7 +68,6 @@ def test_store_is_private_and_credentials_are_not_in_connection_rows(
 ) -> None:
     store = _store(tmp_path)
     assert store.root.stat().st_mode & 0o777 == 0o700
-    assert store.path.stat().st_mode & 0o777 == 0o600
     connection_id = _create(store, credentials={"token": "super-secret"})
     connection = store.get_connection(connection_id)
     assert connection is not None
@@ -137,15 +136,14 @@ def test_request_receipt_survives_reopen_and_exposes_pending_state(
 
 def test_request_receipt_rejects_corrupt_results(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    with sqlite3.connect(store.path) as database:
-        database.executemany(
+    # JSONB cannot hold invalid JSON, so corruption is a valid value of the
+    # wrong shape.
+    with database_for(tmp_path).connect("channel") as db:
+        db.execute(
             "INSERT INTO channel_requests "
             "(request_id, operation, digest, state, result_json, created_at, updated_at) "
-            "VALUES (?, 'update', 'digest', 'completed', ?, '', '')",
-            [("corrupt-json", "{not-json"), ("corrupt-shape", "[]")],
+            "VALUES ('corrupt-shape', 'update', 'digest', 'completed', '[]', '', '')"
         )
-    with pytest.raises(RuntimeError):
-        store.request_receipt("corrupt-json")
     with pytest.raises(RuntimeError):
         store.request_receipt("corrupt-shape")
 
@@ -156,9 +154,9 @@ def test_completed_request_receipts_are_pruned_only_after_retention(
     store = _store(tmp_path)
     store.claim_request("retained", operation="update", digest_value={"probe": 1})
     store.complete_request("retained", {"connection": {"revision": 1}})
-    with sqlite3.connect(store.path) as database:
-        database.execute(
-            "UPDATE channel_requests SET updated_at = ? WHERE request_id = ?",
+    with database_for(tmp_path).connect("channel") as connection:
+        connection.execute(
+            "UPDATE channel_requests SET updated_at = %s WHERE request_id = %s",
             ("2000-01-01T00:00:00+00:00", "retained"),
         )
     store.claim_request("fresh", operation="update", digest_value={"probe": 2})
@@ -321,9 +319,9 @@ def test_inbound_identity_separates_colliding_message_ids_from_different_bots(
     repeated = store.claim_inbound(second)
     assert repeated.created is False
     assert repeated.run_id == "run-b"
-    with sqlite3.connect(store.path) as database:
-        count = database.execute(
-            "SELECT COUNT(*) FROM channel_inbound WHERE connection_id = ?",
+    with database_for(tmp_path).connect("channel") as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM channel_inbound WHERE connection_id = %s",
             (connection_id,),
         ).fetchone()[0]
     assert count == 2
@@ -359,10 +357,10 @@ def test_adoption_binds_only_inbound_rows_after_the_current_credential(
         state="accepted",
         run_id="run-older",
     )
-    with sqlite3.connect(store.path) as database:
-        database.execute(
-            "UPDATE channel_inbound SET received_at = ? "
-            "WHERE connection_id = ? AND external_message_id = ?",
+    with database_for(tmp_path).connect("channel") as connection:
+        connection.execute(
+            "UPDATE channel_inbound SET received_at = %s "
+            "WHERE connection_id = %s AND external_message_id = %s",
             ("2000-01-01T00:00:00+00:00", connection_id, "7:41"),
         )
 
@@ -426,7 +424,7 @@ def test_credentials_reject_urls_and_metadata_rejects_secret_keys() -> None:
 def test_channel_binding_reuses_one_conversation_and_survives_delete(
     tmp_path: Path,
 ) -> None:
-    store = DomainStore(tmp_path / "domain.sqlite3")
+    store = DomainStore(database_for(tmp_path))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     first = store.get_or_create_channel_conversation(
@@ -496,35 +494,6 @@ def test_allowed_senders_round_trip_and_are_validated(tmp_path: Path) -> None:
             request_id="senders-invalid",
             changes={"allowed_senders": [1]},
         )
-
-
-def test_schema_v1_store_migrates_the_allowed_senders_column(tmp_path: Path) -> None:
-    root = tmp_path / "channels"
-    root.mkdir()
-    with sqlite3.connect(root / "channels.sqlite3") as database:
-        database.executescript(
-            """
-            CREATE TABLE channel_connections (
-                connection_id TEXT PRIMARY KEY,
-                platform TEXT NOT NULL,
-                display_name TEXT NOT NULL,
-                enabled INTEGER NOT NULL,
-                desired_state TEXT NOT NULL,
-                credential_ref TEXT,
-                owner_identity TEXT,
-                metadata_json TEXT NOT NULL,
-                revision INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            PRAGMA user_version=1;
-            """
-        )
-    store = ChannelStore(root)
-    connection_id = _create(store, request_id="migrate-create")
-    connection = store.get_connection(connection_id)
-    assert connection is not None
-    assert connection.allowed_senders == ()
 
 
 def test_reply_intents_are_idempotent_and_conflict_by_run(tmp_path: Path) -> None:
@@ -638,75 +607,6 @@ def test_unreplied_inbound_lists_only_accepted_runs_without_an_intent(
     assert store.unreplied_inbound() == ()
 
 
-def test_schema_v2_rows_gain_empty_identity_columns(tmp_path: Path) -> None:
-    root = tmp_path / "channels"
-    root.mkdir()
-    with sqlite3.connect(root / "channels.sqlite3") as database:
-        database.executescript(
-            """
-            CREATE TABLE channel_inbound (
-                platform TEXT NOT NULL,
-                connection_id TEXT NOT NULL,
-                external_message_id TEXT NOT NULL,
-                event_digest TEXT NOT NULL,
-                state TEXT NOT NULL,
-                conversation_id TEXT,
-                run_id TEXT,
-                conversation_binding TEXT NOT NULL DEFAULT '',
-                error TEXT,
-                received_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (connection_id, external_message_id)
-            );
-            CREATE TABLE channel_replies (
-                reply_id TEXT PRIMARY KEY,
-                connection_id TEXT NOT NULL,
-                conversation_id TEXT NOT NULL,
-                run_id TEXT NOT NULL UNIQUE,
-                target TEXT NOT NULL,
-                external_message_id TEXT NOT NULL,
-                state TEXT NOT NULL,
-                attempts INTEGER NOT NULL DEFAULT 0,
-                error TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            INSERT INTO channel_replies VALUES (
-                'reply-old', 'ch-1', 'conv-old', 'run-old', 'chat', 'm-old',
-                'pending', 0, NULL, '', ''
-            );
-            INSERT INTO channel_inbound VALUES (
-                'telegram', 'ch-1', 'm-new', 'digest', 'accepted', 'conv-new',
-                'run-new', 'chat', NULL, '', ''
-            );
-            PRAGMA user_version=2;
-            """
-        )
-    store = ChannelStore(root)
-    old = store.reply_for_run("run-old")
-    assert old is not None
-    assert (old.sender_id, old.sender_role, old.adapter_identity) == ("", "", "")
-    pending = store.unreplied_inbound()
-    assert len(pending) == 1
-    assert (pending[0].sender_id, pending[0].sender_role) == ("", "")
-    assert pending[0].adapter_identity == ""
-    with sqlite3.connect(store.path) as database:
-        assert database.execute("PRAGMA user_version").fetchone()[0] == 5
-        primary_key = [
-            row[1]
-            for row in sorted(
-                database.execute("PRAGMA table_info(channel_inbound)"),
-                key=lambda row: row[5],
-            )
-            if row[5] > 0
-        ]
-        assert primary_key == [
-            "connection_id",
-            "adapter_identity",
-            "external_message_id",
-        ]
-
-
 def test_adapter_state_roundtrips_and_ignores_corrupt_json(tmp_path: Path) -> None:
     store = _store(tmp_path)
     connection_id = _create(store)
@@ -716,10 +616,10 @@ def test_adapter_state_roundtrips_and_ignores_corrupt_json(tmp_path: Path) -> No
     store.save_adapter_state(connection_id, "telegram", {"offset": 43})
     assert store.load_adapter_state(connection_id, "telegram") == {"offset": 43}
 
-    with sqlite3.connect(store.path) as database:
-        database.execute(
-            "UPDATE channel_adapter_state SET value_json = 'not json' "
-            "WHERE connection_id = ?",
+    with database_for(tmp_path).connect("channel") as connection:
+        connection.execute(
+            "UPDATE channel_adapter_state SET value_json = '[]' "
+            "WHERE connection_id = %s",
             (connection_id,),
         )
     assert store.load_adapter_state(connection_id, "telegram") is None
@@ -796,25 +696,3 @@ def test_inbound_inbox_pending_limit_is_an_explicit_failure(tmp_path: Path) -> N
     assert failed is not None
     assert failed.last_error == "inbound_pending_limit"
     assert store.due_inbound_inbox(connection_id, "bot-a")[0].event.text == "hi"
-
-
-def test_schema_v4_store_adds_the_durable_inbound_inbox(tmp_path: Path) -> None:
-    root = tmp_path / "channels"
-    root.mkdir()
-    with sqlite3.connect(root / "channels.sqlite3") as database:
-        database.execute("PRAGMA user_version=4")
-    store = ChannelStore(root)
-    with sqlite3.connect(store.path) as database:
-        assert database.execute("PRAGMA user_version").fetchone()[0] == 5
-        table = database.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type = 'table' AND name = 'channel_inbound_inbox'"
-        ).fetchone()
-        assert table is not None
-    connection_id = _create(store)
-    created, state = store.enqueue_inbound_inbox(
-        _event(connection_id, "m-v4", adapter_identity="bot-a"),
-        pending_limit=10,
-        window_seconds=60.0,
-    )
-    assert created is True and state == "pending"

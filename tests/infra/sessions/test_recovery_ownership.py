@@ -1,6 +1,4 @@
 import asyncio
-import os
-import sqlite3
 from pathlib import Path
 from typing import Literal
 
@@ -11,13 +9,13 @@ from cairn.agent.session.models import (
     SessionStoreError,
     VersionConflict,
 )
+from cairn.shared.db import DbConnection
 from cairn.shared.lifecycle import await_owned, settle_owned
 from tests.support.sessions import (
     OTHER_TURN,
     SESSION,
     T4,
     TURN,
-    assert_competing_writer,
     binding,
     fence,
     intent,
@@ -57,7 +55,6 @@ def test_rejected_live_reconciliation_keeps_turn_executable(tmp_path: Path) -> N
     finally:
         api.close()
     api.close()  # ordinary idempotent close after terminal commit
-    assert_competing_writer(tmp_path, "writer_acquired")
 
 
 @pytest.mark.parametrize("fault", [False, True, "storage"])
@@ -95,8 +92,8 @@ def test_inspect_reconcile_cannot_bypass_work_or_repeated_cancel_cleanup(
             await entered.wait()
             if fault == "storage":
 
-                def failed_commit(conn: sqlite3.Connection) -> None:
-                    raise sqlite3.OperationalError("opaque storage failure")
+                def failed_commit(conn: DbConnection) -> None:
+                    raise RuntimeError("opaque storage failure")
 
                 with monkeypatch.context() as injection:
                     injection.setattr(api, "_commit", failed_commit)
@@ -110,10 +107,6 @@ def test_inspect_reconcile_cannot_bypass_work_or_repeated_cancel_cleanup(
                 connection = api._connection
                 ownership = api._owned_turns.copy()
                 inspected = api._inspected.copy()
-                descriptors = (api._paths.lock_fd, api._paths.access_fd)
-                identities = tuple(
-                    (os.fstat(fd).st_dev, os.fstat(fd).st_ino) for fd in descriptors
-                )
                 with pytest.raises(
                     SessionStoreError, match=r"^Session store: turn_still_owned$"
                 ):
@@ -121,15 +114,7 @@ def test_inspect_reconcile_cannot_bypass_work_or_repeated_cancel_cleanup(
                 assert api._connection is connection and connection is not None
                 assert api._owned_turns == ownership
                 assert api._inspected == inspected
-                assert (api._paths.lock_fd, api._paths.access_fd) == descriptors
-                assert (
-                    tuple(
-                        (os.fstat(fd).st_dev, os.fstat(fd).st_ino) for fd in descriptors
-                    )
-                    == identities
-                )
                 assert api.inspect(SESSION) == before  # no new fault or row mutation
-                assert_competing_writer(tmp_path, "writer_busy")
                 with pytest.raises(SessionStoreError, match="turn_still_owned"):
                     api.reconcile(
                         before.revision,
@@ -170,7 +155,6 @@ def test_inspect_reconcile_cannot_bypass_work_or_repeated_cancel_cleanup(
             assert report.local_fault  # releasing ownership does not clear the fault
             api.close()  # close is safe now, before any host reconciliation
             api.close()
-            assert_competing_writer(tmp_path, "writer_acquired")
             api = store(tmp_path)
             reopened = api.inspect(SESSION)
             assert reopened.revision == report.revision
@@ -218,10 +202,10 @@ def test_uncertain_commit_keeps_ownership_until_exact_faulted_release(
         active = api.begin_turn(initial, turn)
         original_commit = api._commit
 
-        def uncertain(conn: sqlite3.Connection) -> None:
+        def uncertain(conn: DbConnection) -> None:
             if committed:
                 conn.commit()
-            raise sqlite3.OperationalError("uncertain")
+            raise RuntimeError("uncertain")
 
         monkeypatch.setattr(api, "_commit", uncertain)
         with pytest.raises(SessionStoreError, match="commit_uncertain"):
@@ -291,8 +275,8 @@ def test_persisted_recovery_is_local_but_storage_fault_still_blocks_all_sessions
                 api.create(other_binding.model_copy(update={"session_id": "invalid"}))
         else:
 
-            def failed_commit(conn: sqlite3.Connection) -> None:
-                raise sqlite3.OperationalError("opaque transaction failure")
+            def failed_commit(conn: DbConnection) -> None:
+                raise RuntimeError("opaque transaction failure")
 
             with monkeypatch.context() as injection:
                 injection.setattr(api, "_commit", failed_commit)

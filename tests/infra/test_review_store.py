@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
 
 import pytest
 
-from cairn.knowledge.models import content_hash
 from cairn.knowledge.store import KnowledgeStore
 from cairn.review.models import (
     DailyReview,
@@ -31,6 +29,7 @@ from cairn.review.store import (
     ReviewRequestConflict,
     ReviewStore,
 )
+from tests.support.pg import database_for
 
 DAY = date(2026, 1, 15)
 TZ = "Asia/Shanghai"
@@ -115,150 +114,10 @@ def _complete(store: ReviewStore, review_id: str, summary: DailyReview) -> None:
     )
 
 
-def test_k1_database_upgrades_without_losing_clips(tmp_path: Path) -> None:
-    root = tmp_path / "knowledge"
-    root.mkdir()
-    path = root / "knowledge.sqlite3"
-    original = "  原文保持\ncode\n"
-    digest = content_hash(original)
-    connection = sqlite3.connect(path)
-    connection.executescript(
-        """
-        CREATE TABLE clips (
-            clip_id TEXT PRIMARY KEY,
-            content TEXT NOT NULL,
-            source TEXT NOT NULL,
-            tags_json TEXT NOT NULL,
-            content_hash TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            archived_at TEXT
-        );
-        CREATE TABLE clip_requests (
-            request_id TEXT PRIMARY KEY,
-            fingerprint TEXT NOT NULL,
-            clip_id TEXT NOT NULL REFERENCES clips(clip_id) ON DELETE CASCADE
-        );
-        """
-    )
-    connection.execute(
-        "INSERT INTO clips VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
-        (
-            "clip-k1",
-            original,
-            "web",
-            '["kept"]',
-            digest,
-            "2026-01-14T16:00:00+00:00",
-            "2026-01-14T16:00:00+00:00",
-        ),
-    )
-    connection.execute("PRAGMA user_version=1")
-    connection.commit()
-    connection.close()
-
-    store = KnowledgeStore(root)
-    assert store.get("clip-k1") is not None
-    assert store.get("clip-k1").content == original  # type: ignore[union-attr]
-
-    with sqlite3.connect(path) as check:
-        version = check.execute("PRAGMA user_version").fetchone()[0]
-        tables = {
-            row[0]
-            for row in check.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
-        }
-    assert version == 5
-    assert {
-        "clips",
-        "clip_requests",
-        "reviews",
-        "review_requests",
-        "review_deliveries",
-        "review_delivery_requests",
-    } <= tables
-
-    reviews = ReviewStore(store)
-    result = _create(reviews)
-    assert result.review.status is ReviewStatus.PENDING
-
-
-def test_v2_reviews_upgrade_without_losing_existing_reports(tmp_path: Path) -> None:
-    root = tmp_path / "knowledge"
-    root.mkdir()
-    path = root / "knowledge.sqlite3"
-    connection = sqlite3.connect(path)
-    connection.executescript(
-        """
-        CREATE TABLE reviews (
-            review_id TEXT PRIMARY KEY,
-            review_type TEXT NOT NULL,
-            review_date TEXT NOT NULL,
-            period_start TEXT NOT NULL,
-            period_end TEXT NOT NULL,
-            timezone TEXT NOT NULL,
-            status TEXT NOT NULL,
-            source_manifest_json TEXT NOT NULL,
-            collection_status_json TEXT NOT NULL,
-            input_fingerprint TEXT NOT NULL,
-            summary_json TEXT,
-            summary_markdown TEXT,
-            model_id TEXT,
-            generation_attempts INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            completed_at TEXT,
-            error TEXT,
-            version INTEGER NOT NULL DEFAULT 1,
-            supersedes_review_id TEXT REFERENCES reviews(review_id)
-        );
-        """
-    )
-    connection.execute(
-        "INSERT INTO reviews VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, "
-        "NULL, 0, ?, ?, NULL, ?, 1, NULL)",
-        (
-            "review-v2",
-            "daily",
-            DAY.isoformat(),
-            START,
-            END,
-            TZ,
-            "failed",
-            "[]",
-            "[]",
-            FINGERPRINT,
-            "2026-01-15T00:00:00+00:00",
-            "2026-01-15T00:01:00+00:00",
-            "interrupted_by_restart",
-        ),
-    )
-    connection.execute("PRAGMA user_version=2")
-    connection.commit()
-    connection.close()
-
-    store = KnowledgeStore(root)
-    reviews = ReviewStore(store)
-    preserved = reviews.get("review-v2")
-    assert preserved is not None
-    assert preserved.status is ReviewStatus.FAILED
-    assert preserved.source_snapshots == ()
-
-    with sqlite3.connect(path) as check:
-        version = check.execute("PRAGMA user_version").fetchone()[0]
-        columns = {
-            row[1] for row in check.execute("PRAGMA table_info(reviews)").fetchall()
-        }
-    assert version == 5
-    assert "source_snapshots_json" in columns
-    assert _create(reviews, request_id="after-upgrade").created is True
-
-
 def test_request_replay_survives_source_changes_but_not_intent_changes(
     tmp_path: Path,
 ) -> None:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     first = _create(store, request_id="same-request")
     assert first.created is True
     assert first.reason == "created"
@@ -299,7 +158,7 @@ def test_request_replay_survives_source_changes_but_not_intent_changes(
 
 
 def test_source_snapshots_are_persisted_with_the_report(tmp_path: Path) -> None:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     snapshot = SourceSnapshot(
         source_type="knowledge_clip",
         source_id="clip-1",
@@ -320,7 +179,7 @@ def test_source_snapshots_are_persisted_with_the_report(tmp_path: Path) -> None:
 
 
 def test_concurrent_distinct_requests_reuse_one_active_review(tmp_path: Path) -> None:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(
             pool.map(
@@ -336,7 +195,7 @@ def test_concurrent_distinct_requests_reuse_one_active_review(tmp_path: Path) ->
 def test_completed_reviews_are_immutable_and_regeneration_versions(
     tmp_path: Path,
 ) -> None:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     created = _create(store, request_id="first").review
     _complete(store, created.review_id, _summary(text="first report"))
 
@@ -382,7 +241,7 @@ def test_completed_reviews_are_immutable_and_regeneration_versions(
 
 
 def test_attempts_recovery_and_failure_states(tmp_path: Path) -> None:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     pending = _create(store, request_id="pending").review
     generating = store.mark_generating(pending.review_id, "test-model")
     assert generating.status is ReviewStatus.GENERATING
@@ -418,7 +277,7 @@ def test_attempts_recovery_and_failure_states(tmp_path: Path) -> None:
 
 
 def test_list_filters_type_and_pages(tmp_path: Path) -> None:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     first = _create(store, request_id="daily").review
     _complete(store, first.review_id, _summary())
     weekly = store.create_or_get(
@@ -449,7 +308,7 @@ def test_list_filters_type_and_pages(tmp_path: Path) -> None:
 
 
 def test_list_filters_one_exact_period_day(tmp_path: Path) -> None:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     first = _create(store, request_id="day-1").review
     _complete(store, first.review_id, _summary())
     other_day = date(2026, 1, 16)
@@ -486,7 +345,7 @@ def _complete_with_delivery(
 
 
 def test_completed_review_creates_one_pending_delivery(tmp_path: Path) -> None:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     created = _create(store, request_id="delivery-created").review
     _complete_with_delivery(store, created.review_id)
 
@@ -508,7 +367,7 @@ def test_completed_review_creates_one_pending_delivery(tmp_path: Path) -> None:
 def test_delivery_identity_is_bound_before_send_and_switch_is_refused(
     tmp_path: Path,
 ) -> None:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     created = _create(store, request_id="delivery-identity").review
     _complete_with_delivery(store, created.review_id)
 
@@ -545,7 +404,7 @@ def test_delivery_identity_is_bound_before_send_and_switch_is_refused(
 def test_requeue_with_rebind_is_the_only_way_to_change_delivery_identity(
     tmp_path: Path,
 ) -> None:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     created = _create(store, request_id="delivery-rebind").review
     _complete_with_delivery(store, created.review_id)
     first_attempt = store.begin_delivery(
@@ -569,7 +428,7 @@ def test_requeue_with_rebind_is_the_only_way_to_change_delivery_identity(
 def test_delivery_requires_an_authorized_recipient_at_creation(
     tmp_path: Path,
 ) -> None:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     created = _create(store, request_id="delivery-unbound").review
     store.mark_generating(created.review_id, "test-model")
     with pytest.raises(ValueError, match="authorized recipient"):
@@ -585,7 +444,7 @@ def test_delivery_requires_an_authorized_recipient_at_creation(
 def test_different_logged_in_user_is_not_an_identity_change(
     tmp_path: Path,
 ) -> None:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     created = _create(store, request_id="delivery-other-user").review
     _complete_with_delivery(store, created.review_id)
 
@@ -614,7 +473,7 @@ def test_different_logged_in_user_is_not_an_identity_change(
 def test_sending_delivery_recovers_as_unknown_without_resend(
     tmp_path: Path,
 ) -> None:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     created = _create(store, request_id="delivery-recovery").review
     _complete_with_delivery(store, created.review_id)
     store.begin_delivery(created.review_id, account_id="bot-a", sender_id="owner")
@@ -635,7 +494,7 @@ def test_sending_delivery_recovers_as_unknown_without_resend(
 def test_a_definite_rejection_returns_the_delivery_to_blocked_offline(
     tmp_path: Path,
 ) -> None:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     created = _create(store, request_id="delivery-defer").review
     _complete_with_delivery(store, created.review_id)
     store.begin_delivery(created.review_id, account_id="bot-a", sender_id="owner")
@@ -657,7 +516,7 @@ def test_a_definite_rejection_returns_the_delivery_to_blocked_offline(
 
 
 def test_sent_delivery_cannot_be_requeued_or_unconfirmed(tmp_path: Path) -> None:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     created = _create(store, request_id="delivery-terminal").review
     _complete_with_delivery(store, created.review_id)
     store.begin_delivery(created.review_id, account_id="bot-a", sender_id="owner")
@@ -671,7 +530,7 @@ def test_sent_delivery_cannot_be_requeued_or_unconfirmed(tmp_path: Path) -> None
 
 
 def test_manual_resend_receipt_is_durable_and_idempotent(tmp_path: Path) -> None:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     created = _create(store, request_id="delivery-resend").review
     _complete_with_delivery(store, created.review_id)
     store.begin_delivery(created.review_id, account_id="bot-a", sender_id="owner")
@@ -688,7 +547,7 @@ def test_manual_resend_receipt_is_durable_and_idempotent(tmp_path: Path) -> None
     store.mark_delivery_unknown(created.review_id, "send_unconfirmed")
 
     # The HTTP client retries the same confirmation after losing the response.
-    replay = ReviewStore(KnowledgeStore(tmp_path / "knowledge")).resend_delivery(
+    replay = ReviewStore(KnowledgeStore(database_for(tmp_path))).resend_delivery(
         created.review_id, request_id="manual-1"
     )
     assert replay.accepted is True
@@ -724,7 +583,7 @@ def test_manual_resend_receipt_is_durable_and_idempotent(tmp_path: Path) -> None
 def test_concurrent_duplicate_resend_requests_transition_once(
     tmp_path: Path,
 ) -> None:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     created = _create(store, request_id="delivery-resend-race").review
     _complete_with_delivery(store, created.review_id)
     store.begin_delivery(created.review_id, account_id="bot-a", sender_id="owner")
@@ -741,39 +600,12 @@ def test_concurrent_duplicate_resend_requests_transition_once(
         )
     assert all(result.accepted for result in results)
     assert sum(not result.replayed for result in results) == 1
-    with sqlite3.connect(store.path) as connection:
+    with store.knowledge.db.connect("knowledge") as connection:
         receipts = connection.execute(
-            "SELECT COUNT(*) FROM review_delivery_requests "
+            "SELECT COUNT(*) AS total FROM review_delivery_requests "
             "WHERE request_id = 'duplicate'"
-        ).fetchone()[0]
+        ).fetchone()["total"]
     assert receipts == 1
-
-
-def test_v4_delivery_ledger_upgrades_without_losing_rows(tmp_path: Path) -> None:
-    root = tmp_path / "knowledge"
-    store = ReviewStore(KnowledgeStore(root))
-    created = _create(store, request_id="delivery-v4").review
-    _complete_with_delivery(store, created.review_id)
-
-    with sqlite3.connect(store.path) as connection:
-        connection.execute("DROP TABLE review_delivery_requests")
-        connection.execute("PRAGMA user_version=4")
-        connection.commit()
-
-    upgraded = ReviewStore(KnowledgeStore(root))
-    delivery = upgraded.get_delivery(created.review_id)
-    assert delivery is not None
-    assert delivery.recipient == "owner"
-    with sqlite3.connect(store.path) as check:
-        version = check.execute("PRAGMA user_version").fetchone()[0]
-        tables = {
-            row[0]
-            for row in check.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
-        }
-    assert version == 5
-    assert "review_delivery_requests" in tables
 
 
 def _weekly_summary() -> WeeklyReview:
@@ -793,7 +625,7 @@ def test_weekly_summary_round_trips_and_old_daily_rows_stay_readable(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "knowledge"
-    store = ReviewStore(KnowledgeStore(root))
+    store = ReviewStore(KnowledgeStore(database_for(root)))
     daily = _create(store, request_id="daily-before-weekly").review
     _complete(store, daily.review_id, _summary())
     weekly = _create(
@@ -812,7 +644,7 @@ def test_weekly_summary_round_trips_and_old_daily_rows_stay_readable(
         model_id="test-model",
     )
 
-    reopened = ReviewStore(KnowledgeStore(root))
+    reopened = ReviewStore(KnowledgeStore(database_for(root)))
     old_daily = reopened.get(daily.review_id)
     assert old_daily is not None
     assert isinstance(old_daily.summary, DailyReview)
@@ -826,7 +658,7 @@ def test_weekly_summary_round_trips_and_old_daily_rows_stay_readable(
 def test_latest_completed_returns_the_newest_version_for_exact_period(
     tmp_path: Path,
 ) -> None:
-    store = ReviewStore(KnowledgeStore(tmp_path / "knowledge"))
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     first = _create(store, request_id="latest-v1").review
     _complete(store, first.review_id, _summary())
     second = _create(

@@ -27,6 +27,7 @@ from cairn.memory.store import PersonalMemoryStore
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 from tests.support.wechat_service import TOKEN as WECHAT_TOKEN
 
 RUNTIME_TOKEN = "test-runtime-token"
@@ -49,6 +50,7 @@ def _build(tmp_path: Path) -> Any:
         tmp_path / "worktrees",
         budget=RunBudget(5),
         token=RUNTIME_TOKEN,
+        database=database_for(tmp_path),
     )
 
 
@@ -265,6 +267,7 @@ def test_standalone_wechat_scope_follows_the_bound_owner(
         account=_account(),
         approval=None,
         allowed_senders=frozenset({"owner", "trusted"}),
+        database=database_for(tmp_path),
     )
 
     async def scenario() -> None:

@@ -47,6 +47,7 @@ from cairn.interfaces.web.reader import SnapshotReader
 from cairn.interfaces.web.reviews import review_routes
 from cairn.knowledge.store import KnowledgeStore
 from cairn.review.service import DailyReviewService
+from cairn.shared.db import Database
 
 if TYPE_CHECKING:
     from cairn.channels.manager import ChannelManager
@@ -148,6 +149,7 @@ def create_app(
     conversations: Any | None = None,
     runtime_token: str | None = None,
     session_file: Path | None = None,
+    database: Database | None = None,
     knowledge_store: KnowledgeStore | None = None,
     reviews: DailyReviewService | None = None,
     review_cutoff: time | None = None,
@@ -158,21 +160,27 @@ def create_app(
         raise ValueError("Runtime routes require authenticated host configuration")
     if channels is not None and (not config.auth_passphrase or not runtime_token):
         raise ValueError("Channel routes require authenticated host configuration")
-    reader = reader or SnapshotReader(
-        workspace=config.workspace,
-        sessions_dir=config.sessions_dir,
-        tasks_dir=config.tasks_dir,
-    )
+    if reader is None:
+        if database is None:
+            raise ValueError("A shared database is required for session history")
+        reader = SnapshotReader(
+            workspace=config.workspace,
+            database=database,
+            tasks_dir=config.tasks_dir,
+        )
 
     task_service = TaskBoardService(TaskBoardStore(config.tasks_dir))
     # Knowledge writes are operator state, so the route only exists alongside
     # the cookie/bearer guard; the read-only snapshot mode stays read-only.
     assert config.knowledge_dir is not None
-    clip_store = (
-        (knowledge_store or KnowledgeStore(config.knowledge_dir))
-        if config.auth_passphrase
-        else None
-    )
+    clip_store = None
+    if config.auth_passphrase:
+        if knowledge_store is not None:
+            clip_store = knowledge_store
+        elif database is not None:
+            clip_store = KnowledgeStore(database)
+        else:
+            raise ValueError("A shared database is required for knowledge writes")
 
     auth_sessions = AuthSessions(
         config.username, config.auth_passphrase, path=session_file

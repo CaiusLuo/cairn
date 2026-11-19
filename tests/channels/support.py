@@ -21,6 +21,7 @@ from cairn.channels.models import (
 )
 from cairn.channels.store import ChannelStore
 from cairn.conversation.models import ConversationSource
+from tests.support.pg import database_for
 
 
 @dataclass
@@ -139,7 +140,7 @@ def make_manager(
     sleep: Any = None,
     secret_sink: Any = None,
 ) -> tuple[ChannelManager, ChannelStore, FakeIntake, CapturingFactory]:
-    store = ChannelStore(root)
+    store = ChannelStore(database_for(root), root)
     intake = intake or FakeIntake()
     factory = factory or CapturingFactory()
     registry = ChannelAdapterRegistry()

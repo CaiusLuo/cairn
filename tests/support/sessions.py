@@ -1,9 +1,9 @@
-"""Deterministic host facts and SQLite fault/process fixtures (no providers)."""
+"""Deterministic host facts and PostgreSQL crash fixtures (no providers)."""
 
 import hashlib
 import multiprocessing
 import os
-import sqlite3
+import time
 from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Literal
@@ -23,6 +23,8 @@ from cairn.agent.session.models import (
     WorkspaceBinding,
 )
 from cairn.agent.session.store import SessionStore
+from cairn.shared.db import Database
+from tests.support.pg import database_for
 
 SESSION = "00000000-0000-4000-8000-000000000001"
 TURN = "00000000-0000-4000-8000-000000000002"
@@ -49,30 +51,18 @@ def binding(root: Path, *, session_id: str = SESSION) -> SessionBinding:
     )
 
 
-#: The suite's one declaration that the development runtime may be unverified.
-#: Production keeps the fail-closed default; this exists so the real
-#: WAL/CAS/lock/crash regressions still run on a development interpreter.
-UNVERIFIED_RUNTIME = True
-
-
 def store(
     root: Path,
     *,
+    database: Database | None = None,
     mode: Literal["writer", "inspect"] = "writer",
     sensitive_values: tuple[str, ...] = (),
-    allow_unverified: bool = UNVERIFIED_RUNTIME,
 ) -> SessionStore:
-    """Build a store for the suite, declaring the local runtime if needed."""
+    """Build a store against the PostgreSQL namespace for this host path."""
     return SessionStore(
-        root.resolve() / "store",
+        database or database_for(root),
         mode=mode,
-        forbidden_roots=(
-            root.resolve() / "work",
-            root.resolve() / "tmp",
-            root.resolve() / "cache",
-        ),
         sensitive_values=sensitive_values,
-        allow_unverified=allow_unverified,
     )
 
 
@@ -156,7 +146,7 @@ def settled(
 
 
 def crash_writer(root_text: str, window: str, barrier: Connection) -> None:
-    """Parent kills only after an explicit SQL/API barrier, never a timed sleep."""
+    """Parent kills after an explicit API barrier or while PostgreSQL blocks it."""
     root = Path(root_text)
     bind = binding(root)
     api = store(root)
@@ -180,174 +170,117 @@ def crash_writer(root_text: str, window: str, barrier: Connection) -> None:
         output.write("one effect\n")
         output.flush()
         os.fsync(output.fileno())
-    assert api._connection is not None
-    if window in ("checkpoint_insert", "attempt_update", "before_commit"):
-        blocked = "turns" if window == "checkpoint_insert" else "sessions"
-
-        def authorize(
-            action: int,
-            table: str | None,
-            column: str | None,
-            database: str | None,
-            source: str | None,
-        ) -> int:
-            if (
-                window != "before_commit"
-                and action == sqlite3.SQLITE_UPDATE
-                and table == blocked
-            ) or (
-                window == "before_commit"
-                and action == sqlite3.SQLITE_TRANSACTION
-                and table == "COMMIT"
-            ):
-                stop(window)
-            return sqlite3.SQLITE_OK
-
-        api._connection.set_authorizer(authorize)
+    # For checkpoint_insert/attempt_update/before_commit the parent has installed
+    # a blocking trigger, so this call never returns: the parent kills us while
+    # the transaction is mid-write and PostgreSQL rolls it back.
     api.commit_turn(active, settled(turn))
     stop("committed")
+
+
+def _barrier_key(root: Path) -> int:
+    digest = hashlib.sha256(f"{root.resolve()}:crash".encode()).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
+
+
+def _barrier_table(window: str) -> str | None:
+    return {
+        "checkpoint_insert": "checkpoints",
+        "attempt_update": "sessions",
+        "before_commit": "sessions",
+    }.get(window)
+
+
+def _install_barrier(
+    database: Database,
+    key: int,
+    table: str,
+    *,
+    events: str = "INSERT OR UPDATE",
+    when: str = "",
+) -> None:
+    schema = database.schema("agent")
+    connection = database.dedicated("agent")
+    try:
+        connection.execute(
+            f"CREATE OR REPLACE FUNCTION {schema}.crash_barrier() "
+            "RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+            f"PERFORM pg_advisory_lock({key}); RETURN NEW; END $$"
+        )
+        connection.execute(f"DROP TRIGGER IF EXISTS crash_barrier ON {schema}.{table}")
+        connection.execute(
+            f"CREATE TRIGGER crash_barrier BEFORE {events} ON "
+            f"{schema}.{table} FOR EACH ROW {when} "
+            f"EXECUTE FUNCTION {schema}.crash_barrier()"
+        )
+    finally:
+        connection.close()
+
+
+def _drop_barrier(database: Database, table: str) -> None:
+    schema = database.schema("agent")
+    connection = database.dedicated("agent")
+    try:
+        connection.execute(f"DROP TRIGGER IF EXISTS crash_barrier ON {schema}.{table}")
+        connection.execute(f"DROP FUNCTION IF EXISTS {schema}.crash_barrier()")
+    finally:
+        connection.close()
+
+
+def _waiter_present(database: Database, key: int) -> bool:
+    high = (key >> 32) & 0xFFFFFFFF
+    low = key & 0xFFFFFFFF
+    with database.connect("agent") as connection:
+        row = connection.execute(
+            "SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
+            "AND classid = %s AND objid = %s AND objsubid = 1 "
+            "AND NOT granted LIMIT 1",
+            (high, low),
+        ).fetchone()
+    return row is not None
 
 
 def crash_at(root: Path, window: str) -> None:
     """Terminate an owned writer at the existing crash barrier, not by close()."""
     context = multiprocessing.get_context("spawn")
     parent, child = context.Pipe()
+    database = database_for(root)
+    key = _barrier_key(root)
+    table = _barrier_table(window)
+    blocker = None
+    if table is not None:
+        # Only the terminal CAS advances head_seq; session writes before it
+        # (begin, fence) must pass so the crash lands at commit time.
+        if table == "sessions":
+            _install_barrier(
+                database,
+                key,
+                table,
+                events="UPDATE",
+                when="WHEN (NEW.head_seq IS DISTINCT FROM OLD.head_seq)",
+            )
+        else:
+            _install_barrier(database, key, table)
+        blocker = database.dedicated("agent")
+        blocker.execute("SELECT pg_advisory_lock(%s)", (key,))
     worker = context.Process(target=crash_writer, args=(str(root), window, child))
-    worker.start()
-    child.close()
     try:
-        assert parent.poll(15), f"missing barrier; child exit={worker.exitcode}"
-        assert parent.recv() == window
+        worker.start()
+        child.close()
+        if table is not None:
+            deadline = time.monotonic() + 15
+            while not _waiter_present(database, key):
+                assert time.monotonic() < deadline, f"missing blocked {window}"
+                time.sleep(0.02)
+        else:
+            assert parent.poll(15), f"missing barrier; child exit={worker.exitcode}"
+            assert parent.recv() == window
     finally:
         worker.kill()
         worker.join(10)
+        if blocker is not None:
+            blocker.execute("SELECT pg_advisory_unlock(%s)", (key,))
+            blocker.close()
+        if table is not None:
+            _drop_barrier(database, table)
         parent.close()
     assert worker.exitcode == -9
-
-
-def competing_writer(root_text: str, barrier: Connection) -> None:
-    from cairn.agent.session.models import SessionStoreError
-
-    try:
-        api = store(Path(root_text))
-    except SessionStoreError as error:
-        barrier.send(error.code)
-    else:
-        try:
-            api.create(binding(Path(root_text), session_id=OTHER_TURN))
-            barrier.send("writer_acquired")
-        finally:
-            api.close()
-
-
-def assert_competing_writer(
-    root: Path, expected: Literal["writer_busy", "writer_acquired"]
-) -> None:
-    """Probe the actual lifetime flock in a fresh process, never a timed race."""
-    context = multiprocessing.get_context("spawn")
-    parent, child = context.Pipe()
-    worker = context.Process(target=competing_writer, args=(str(root), child))
-    worker.start()
-    child.close()
-    try:
-        assert parent.poll(15), f"missing writer probe; child exit={worker.exitcode}"
-        assert parent.recv() == expected
-    finally:
-        worker.join(10)
-        if worker.is_alive():
-            worker.kill()
-            worker.join(10)
-        parent.close()
-    assert worker.exitcode == 0
-
-
-def inspection_writer(
-    root_text: str, barrier: Connection, settle_before_probe: bool = False
-) -> None:
-    """A live writer paused before COMMIT or commanded while a reader owns SH."""
-    from cairn.agent.session.models import SessionStoreError
-
-    root = Path(root_text)
-    bind = binding(root)
-    api = store(root)
-    try:
-        initial = api.inspect(SESSION).revision
-        turn = intent(bind, initial)
-        active = api.fence_tool(api.begin_turn(initial, turn), fence(bind))
-        if settle_before_probe:
-            active = api.commit_turn(active, settled(turn)).revision
-        barrier.send(("ready" if settle_before_probe else "active", active.version))
-        command = barrier.recv()
-        if command == "commit":
-            assert api._connection is not None
-
-            def authorize(
-                action: int,
-                table: str | None,
-                column: str | None,
-                database: str | None,
-                source: str | None,
-            ) -> int:
-                if action == sqlite3.SQLITE_TRANSACTION and table == "COMMIT":
-                    barrier.send("before_commit")
-                    assert barrier.recv() == "release"
-                return sqlite3.SQLITE_OK
-
-            api._connection.set_authorizer(authorize)
-            receipt = api.commit_turn(active, settled(turn))
-            api._connection.set_authorizer(None)
-            barrier.send(("committed", receipt.revision.version))
-        else:
-            assert command in ("fence", "close_attempt")
-            try:
-                if command == "fence":
-                    api.fence_tool(active, fence(bind, ordinal=2, call_id="call-2"))
-                else:
-                    api.close()
-            except SessionStoreError as error:
-                barrier.send(error.code)
-            else:
-                barrier.send("unexpected_mutation")
-        assert barrier.recv() == "close"
-        if command == "fence":
-            # The probe has finished all its work; guard contention faulted this
-            # Turn. Explicitly release it before gracefully closing the writer.
-            api.release_turn(active, turn.turn_id)
-    finally:
-        api.close()
-    barrier.send("closed")
-
-
-def legacy_store(root: Path, *, version: int = 2) -> SessionStore:
-    """Seed an EMPTY historical schema, before any checkpoint is written.
-
-    Never relabel or rewrite V2 facts as V1 fixtures. Production has no downgrade.
-    """
-    from cairn.agent.session.store import (
-        _CHECKPOINT_SCHEMA_V3,
-        _SCHEMA,
-        _TURN_ORDER_INDEX,
-    )
-
-    api = store(root)
-    api.close()
-    with sqlite3.connect(api.path) as conn:
-        assert conn.execute("SELECT count(*) FROM checkpoints").fetchone()[0] == 0
-        conn.execute("DROP TABLE checkpoints")
-        conn.execute("DROP INDEX session_turn_order")
-        # Version 3 broadens only the checkpoint format constraint and adds the
-        # Turn order index; versions 1/2 keep the original checkpoint DDL.
-        if version >= 3:
-            conn.execute(_CHECKPOINT_SCHEMA_V3)
-            conn.execute(_TURN_ORDER_INDEX)
-        else:
-            conn.execute(_SCHEMA[-1])
-        # A store created by this build starts at V4 and therefore already has
-        # `tool_fences`; a fixture for an earlier version must not carry a table
-        # that version never defined, or the exact-schema check rejects it.
-        if version < 4:
-            conn.execute("DROP TABLE IF EXISTS tool_fences")
-        if version == 1:
-            conn.execute("DROP TABLE tasks")
-        conn.execute(f"PRAGMA user_version={version}")
-    return store(root)

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from psycopg import Error as PostgresError
 
 from cairn.agent.budget import RunBudget
 from cairn.agent.models.messages import LLMResponse, LLMUsage, Message, ToolCall
@@ -22,6 +22,7 @@ from cairn.knowledge.store import KnowledgeStore
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 
 TOKEN = "knowledge-chat-test-token"
 USAGE = LLMUsage(input_tokens=12, output_tokens=12)
@@ -146,6 +147,7 @@ def _app(source: Path, state: Path, worktrees: Path) -> Any:
         worktrees,
         budget=RunBudget(8),
         token=TOKEN,
+        database=database_for(state),
     )
 
 
@@ -211,7 +213,7 @@ def _tool_payloads(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _clip(tmp_path: Path, content: str) -> Clip:
-    clip, _ = KnowledgeStore(tmp_path / "state" / "knowledge").create(content)
+    clip, _ = KnowledgeStore(database_for(tmp_path / "state")).create(content)
     return clip
 
 
@@ -306,7 +308,7 @@ def test_multiple_search_hits_cite_the_clip_whose_content_was_read(
 ) -> None:
     async def scenario() -> None:
         source = _source(tmp_path)
-        store = KnowledgeStore(tmp_path / "state" / "knowledge")
+        store = KnowledgeStore(database_for(tmp_path / "state"))
         first, _ = store.create("shared-keyword A-MARKER alpha")
         second, _ = store.create("shared-keyword B-MARKER beta")
         model = TwoHitModel("B-MARKER")
@@ -336,7 +338,7 @@ def test_multiple_search_hits_cite_the_clip_whose_content_was_read(
 def test_archived_clip_is_hidden_from_list_search_and_get(tmp_path: Path) -> None:
     async def scenario() -> None:
         source = _source(tmp_path)
-        store = KnowledgeStore(tmp_path / "state" / "knowledge")
+        store = KnowledgeStore(database_for(tmp_path / "state"))
         archived, _ = store.create("ARCHIVED-MARKER: hidden body 928374")
         store.set_archived(archived.clip_id, archived=True)
         model = ScriptedModel(
@@ -435,7 +437,7 @@ def test_unavailable_store_reports_error_without_private_paths(
         app = _app(source, tmp_path / "state", tmp_path / "worktrees")
 
         def unavailable(*args: object, **kwargs: object) -> None:
-            raise sqlite3.OperationalError("secret path /private/knowledge.sqlite3")
+            raise PostgresError("secret path /private/knowledge.sqlite3")
 
         monkeypatch.setattr(
             app.state.controls.knowledge_store, "list_clips", unavailable

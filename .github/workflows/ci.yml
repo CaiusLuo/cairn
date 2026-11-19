@@ -56,6 +56,22 @@ jobs:
     if: needs.scope.outputs.docs_only == 'false'
     runs-on: ubuntu-22.04
     timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: cairn_ci
+          POSTGRES_DB: cairn_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cairn_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      CAIRN_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/cairn_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
@@ -63,6 +79,12 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - run: uv sync --locked --all-groups
+      - name: Prepare PostgreSQL extensions
+        run: >-
+          uv run --no-sync python -c
+          "import psycopg; c = psycopg.connect('${{ env.CAIRN_TEST_DATABASE_URL }}', autocommit=True);
+          c.execute('CREATE EXTENSION IF NOT EXISTS vector');
+          c.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm'); c.close()"
       - name: Install Linux sandbox
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6

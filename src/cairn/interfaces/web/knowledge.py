@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 
+from psycopg import Error as PostgresError
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -238,7 +238,7 @@ def knowledge_routes(
             return _error(422, "invalid_knowledge_request")
         except ValueError:
             return _error(422, "invalid_knowledge_request")
-        except (OSError, sqlite3.Error):
+        except (OSError, PostgresError):
             return _error(503, "knowledge_store_unavailable")
 
     return [

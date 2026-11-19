@@ -13,13 +13,12 @@ from cairn.development.catalogue import (
     RuntimeTask,
 )
 from cairn.development.service import TaskService
+from tests.support.pg import database_for
 
 
 def test_one_owner_queue_and_cursor(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = RuntimeCatalogue(tmp_path / "state", forbidden_roots=())
-        with pytest.raises(RuntimeError, match="Another runtime"):
-            RuntimeCatalogue(tmp_path / "state", forbidden_roots=())
+        store = RuntimeCatalogue(database_for(tmp_path))
         started = asyncio.Event()
         release = asyncio.Event()
         calls: list[str] = []
@@ -55,8 +54,7 @@ def test_one_owner_queue_and_cursor(tmp_path: Path) -> None:
 
 def test_restart_preserves_interruption_without_replay(tmp_path: Path) -> None:
     async def scenario() -> None:
-        root = tmp_path / "state"
-        store = RuntimeCatalogue(root, forbidden_roots=())
+        store = RuntimeCatalogue(database_for(tmp_path))
         task = store.record(
             RuntimeTask(
                 prompt="edit",
@@ -75,7 +73,7 @@ def test_restart_preserves_interruption_without_replay(tmp_path: Path) -> None:
             calls.append(task.task_id)
             return "unexpected"
 
-        service = TaskService(RuntimeCatalogue(root, forbidden_roots=()), execute)
+        service = TaskService(RuntimeCatalogue(database_for(tmp_path)), execute)
         await service.start()
         record = service.inspect(task.task_id)
         assert record.status == "recovery_required"
@@ -91,7 +89,6 @@ def test_restart_preserves_interruption_without_replay(tmp_path: Path) -> None:
 
 def test_input_receipt_redacts_before_truncating_and_reloads(tmp_path: Path) -> None:
     async def scenario() -> None:
-        root = tmp_path / "state"
         marker = "secretmarker"
         secret = marker + "s3cr3t-boundary-s3cr3t"
         payload = "x" * 990 + secret + "y" * 100
@@ -102,7 +99,7 @@ def test_input_receipt_redacts_before_truncating_and_reloads(tmp_path: Path) -> 
             return payload
 
         service = TaskService(
-            RuntimeCatalogue(root, forbidden_roots=(), sensitive_values=(secret,)),
+            RuntimeCatalogue(database_for(tmp_path), sensitive_values=(secret,)),
             execute,
         )
         await service.start()
@@ -129,7 +126,7 @@ def test_input_receipt_redacts_before_truncating_and_reloads(tmp_path: Path) -> 
         assert receipt.result_truncated is True
         await service.close()
 
-        reopened = RuntimeCatalogue(root, forbidden_roots=())
+        reopened = RuntimeCatalogue(database_for(tmp_path))
         try:
             assert reopened.data.tasks[first.task_id].inputs == completed.inputs
         finally:
@@ -139,15 +136,20 @@ def test_input_receipt_redacts_before_truncating_and_reloads(tmp_path: Path) -> 
 
 
 def test_bad_state_is_not_silently_replaced(tmp_path: Path) -> None:
-    root = tmp_path / "state"
-    root.mkdir()
-    (root / "runtime.json").write_text("broken")
+    database = database_for(tmp_path)
+    with database.connect("ops") as conn:
+        conn.execute(
+            "INSERT INTO runtime_state(key, payload) VALUES ('catalogue', %s)",
+            ('"broken"',),
+        )
     with pytest.raises(ValueError):
-        RuntimeCatalogue(root, forbidden_roots=())
-    assert (root / "runtime.json").read_text() == "broken"
-    with pytest.raises(ValueError, match="outside"):
-        RuntimeCatalogue(
-            tmp_path / "agent" / "state", forbidden_roots=(tmp_path / "agent",)
+        RuntimeCatalogue(database)
+    with database.connect("ops") as conn:
+        assert (
+            conn.execute(
+                "SELECT payload FROM runtime_state WHERE key='catalogue'"
+            ).fetchone()["payload"]
+            == "broken"
         )
 
 
@@ -160,9 +162,7 @@ def test_slow_subscriber_is_bounded_and_cannot_block_execution(tmp_path: Path) -
                 emit("model_text_delta", {"text": "transient"})
             return "done"
 
-        service = TaskService(
-            RuntimeCatalogue(tmp_path / "state", forbidden_roots=()), execute
-        )
+        service = TaskService(RuntimeCatalogue(database_for(tmp_path)), execute)
         await service.start()
         task = service.submit("stream", "cli")
         async with service.subscribe(task.task_id) as queue:
@@ -189,7 +189,7 @@ def test_conversation_runs_are_not_projected_as_task_board_cards(
             return "done"
 
         service = TaskService(
-            RuntimeCatalogue(tmp_path / "state", forbidden_roots=()),
+            RuntimeCatalogue(database_for(tmp_path)),
             execute,
             board=board,
         )

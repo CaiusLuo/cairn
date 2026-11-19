@@ -9,6 +9,7 @@ from cairn.integrations.wechat.ilink import ILinkClient
 from cairn.integrations.wechat.serve import ConversationDecision, ServeConfig
 from cairn.integrations.wechat.state import WechatAccount
 from tests.support.fake_ilink import FakeILink
+from tests.support.pg import database_for
 
 TOKEN = "secret-bot-token-do-not-leak"
 
@@ -65,6 +66,7 @@ def _config(
         allowed_senders=frozenset({"u1"}),
         max_polls=max_polls,
         poll_interval=0.0,
+        database=database_for(state_dir),
     )
 
 

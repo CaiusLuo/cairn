@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +16,7 @@ from cairn.conversation.service import HISTORY_CONTEXT_LIMIT
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 
 
 class ChatModel(OfflineDevelopmentModel):
@@ -67,6 +67,7 @@ def test_conversation_runs_are_independent_and_do_not_create_tasks(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = ChatModel
         api = RuntimeClient(
@@ -121,6 +122,7 @@ def test_duplicate_request_id_returns_the_same_run(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = ChatModel
         api = RuntimeClient(
@@ -196,6 +198,7 @@ def test_read_only_tool_chat_creates_no_task_or_worktree(tmp_path: Path) -> None
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = ReadModel
         api = RuntimeClient(
@@ -257,6 +260,7 @@ def test_second_request_while_run_is_active_returns_conflict(tmp_path: Path) -> 
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = lambda: SlowModel()
         api = RuntimeClient(
@@ -312,6 +316,7 @@ def test_history_reads_durable_run_facts_without_a_session(tmp_path: Path) -> No
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         api = RuntimeClient(
             "http://127.0.0.1:8777",
@@ -366,6 +371,7 @@ def test_history_returns_the_initial_prompt_before_any_run(tmp_path: Path) -> No
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         api = RuntimeClient(
             "http://127.0.0.1:8777",
@@ -397,6 +403,7 @@ def test_history_prepends_legacy_run_facts_before_the_session_transcript(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = ChatModel
         api = RuntimeClient(
@@ -459,6 +466,7 @@ def test_history_keeps_a_sessionless_run_after_the_session_transcript(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = ChatModel
         api = RuntimeClient(
@@ -520,6 +528,7 @@ def test_history_orders_a_sessionless_run_between_session_runs(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = ChatModel
         api = RuntimeClient(
@@ -580,6 +589,12 @@ def test_history_orders_a_sessionless_run_between_session_runs(
     asyncio.run(scenario())
 
 
+def _lose_sessions(root: Path) -> None:
+    with database_for(root).connect("agent") as db:
+        for table in ("tool_fences", "turns", "checkpoints", "sessions"):
+            db.execute(f"DELETE FROM {table}")
+
+
 def test_history_reads_run_facts_when_the_session_store_is_missing(
     tmp_path: Path,
 ) -> None:
@@ -591,7 +606,14 @@ def test_history_reads_run_facts_when_the_session_store_is_missing(
         initialize_repository(source)
         state = tmp_path / "state"
         worktrees = tmp_path / "worktrees"
-        first = runtime_app(source, state, worktrees, budget=RunBudget(5), token="zzzz")
+        first = runtime_app(
+            source,
+            state,
+            worktrees,
+            budget=RunBudget(5),
+            token="zzzz",
+            database=database_for(tmp_path),
+        )
         first.state.execution.llm_factory = ChatModel
         first_api = RuntimeClient(
             "http://127.0.0.1:8777",
@@ -616,10 +638,15 @@ def test_history_reads_run_facts_when_the_session_store_is_missing(
             assert current["status"] == "completed", current
             assert current["session_id"] is not None
 
-        shutil.rmtree(state / "sessions")
+        _lose_sessions(tmp_path)
 
         second = runtime_app(
-            source, state, worktrees, budget=RunBudget(5), token="zzzz"
+            source,
+            state,
+            worktrees,
+            budget=RunBudget(5),
+            token="zzzz",
+            database=database_for(tmp_path),
         )
         second.state.execution.llm_factory = ChatModel
         second_api = RuntimeClient(
@@ -657,6 +684,7 @@ def test_legacy_run_facts_are_given_to_the_next_model_call(tmp_path: Path) -> No
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = lambda: recording
         api = RuntimeClient(
@@ -733,6 +761,7 @@ def test_quote_heavy_legacy_history_stays_within_task_bounds(tmp_path: Path) -> 
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = lambda: recording
         api = RuntimeClient(
@@ -786,6 +815,7 @@ def test_setup_failure_settles_observers_and_fails_the_run(tmp_path: Path) -> No
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = lambda: ChatModel()
         api = RuntimeClient(
@@ -840,6 +870,7 @@ def test_legacy_history_context_is_bounded_to_recent_turns(tmp_path: Path) -> No
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = lambda: recording
         api = RuntimeClient(
@@ -902,7 +933,14 @@ def test_missing_session_continues_in_a_new_session_after_restart(
         initialize_repository(source)
         state = tmp_path / "state"
         worktrees = tmp_path / "worktrees"
-        first = runtime_app(source, state, worktrees, budget=RunBudget(5), token="zzzz")
+        first = runtime_app(
+            source,
+            state,
+            worktrees,
+            budget=RunBudget(5),
+            token="zzzz",
+            database=database_for(tmp_path),
+        )
         first.state.execution.llm_factory = ChatModel
         first_api = RuntimeClient(
             "http://127.0.0.1:8777",
@@ -928,11 +966,16 @@ def test_missing_session_continues_in_a_new_session_after_restart(
             old_session = current["session_id"]
             assert old_session is not None
 
-        shutil.rmtree(state / "sessions")
+        _lose_sessions(tmp_path)
 
         recording = RecordingModel()
         second = runtime_app(
-            source, state, worktrees, budget=RunBudget(5), token="zzzz"
+            source,
+            state,
+            worktrees,
+            budget=RunBudget(5),
+            token="zzzz",
+            database=database_for(tmp_path),
         )
         second.state.execution.llm_factory = lambda: recording
         second_api = RuntimeClient(
@@ -1000,6 +1043,7 @@ def test_a_run_claims_only_a_receipt_committed_by_its_own_turn(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = ChatModel
         api = RuntimeClient(
@@ -1069,6 +1113,7 @@ def test_partial_usage_reaches_the_run_budget_projection(tmp_path: Path) -> None
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = InputOnlyModel
         api = RuntimeClient(

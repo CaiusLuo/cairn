@@ -12,6 +12,7 @@ from cairn.integrations.wechat.runtime import WechatConversationAdapter
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 
 
 def test_wechat_normal_chat_returns_only_final_content(tmp_path: Path) -> None:
@@ -25,6 +26,7 @@ def test_wechat_normal_chat_returns_only_final_content(tmp_path: Path) -> None:
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         api = RuntimeClient(
             "http://127.0.0.1:8777",

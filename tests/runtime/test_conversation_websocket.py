@@ -11,6 +11,7 @@ from cairn.agent.budget import RunBudget
 from cairn.conversation.models import ConversationSource, RunStatus
 from cairn.server.bootstrap import runtime_app
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 
 
 def _seed_events(app: Any, source: Path) -> str:
@@ -42,6 +43,7 @@ def test_websocket_replays_all_pages_and_reconnects_from_cursor(tmp_path: Path) 
         tmp_path / "worktrees",
         budget=RunBudget(5),
         token="zzzz",
+        database=database_for(tmp_path),
     )
     run_id = _seed_events(app, source)
     headers = {"Authorization": "Bearer zzzz", "host": "127.0.0.1:8777"}
@@ -85,6 +87,7 @@ def test_http_event_pages_and_run_cursor_cover_backlog(tmp_path: Path) -> None:
         tmp_path / "worktrees",
         budget=RunBudget(5),
         token="zzzz",
+        database=database_for(tmp_path),
     )
     run_id = _seed_events(app, source)
     headers = {"Authorization": "Bearer zzzz", "host": "127.0.0.1:8777"}

@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import json
-import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -30,6 +29,7 @@ from cairn.agent.tools.registry import ToolRegistry
 from cairn.agent.tracing.tracer import Tracer
 from cairn.agent.turn.events import Event
 from cairn.agent.turn.loop import run_turn
+from cairn.shared.db import DbConnection
 from cairn.shared.lifecycle import await_owned
 from tests.support.durable_sessions import create_session, resolution
 from tests.support.git import git, initialize_repository
@@ -45,7 +45,6 @@ from tests.support.runtime import (
 )
 from tests.support.sessions import (
     SESSION,
-    assert_competing_writer,
     binding,
     crash_at,
     store,
@@ -123,7 +122,6 @@ def test_cancel_stream_preserves_only_accepted_facts_and_holds_writer_through_cl
                     session.reconcile(report, host_resolution=resolution(report))
                 with pytest.raises(SessionStoreError, match="turn_still_owned"):
                     api.close()
-                assert_competing_writer(tmp_path, "writer_busy")
                 assert not any(
                     e.type in ("turn_settled", "turn_committed") for e in events
                 )
@@ -160,7 +158,6 @@ def test_cancel_stream_preserves_only_accepted_facts_and_holds_writer_through_cl
                     reader.close()
             if close:
                 assert session.state is SessionState.CLOSED
-                assert_competing_writer(tmp_path, "writer_acquired")
             assert not [
                 other
                 for other in asyncio.all_tasks()
@@ -238,7 +235,6 @@ def test_cancel_tool_cleanup_releases_only_after_delivery(
             assert not task.done() and not observations
             with pytest.raises(SessionStoreError, match="turn_still_owned"):
                 api.close()
-            assert_competing_writer(tmp_path, "writer_busy")
             release.set()
             with pytest.raises(asyncio.CancelledError) as error:
                 await task
@@ -274,7 +270,6 @@ def test_cancel_tool_cleanup_releases_only_after_delivery(
                 task.cancel()
                 await await_owned(task)
             session.close()
-        assert_competing_writer(tmp_path, "writer_acquired")
 
     asyncio.run(scenario())
 
@@ -389,12 +384,12 @@ def test_uncertain_checkpoint_commit_inspects_exact_receipt_without_retry(
         original = api._commit
         commits = 0
 
-        def uncertain(conn: sqlite3.Connection) -> None:
+        def uncertain(conn: DbConnection) -> None:
             nonlocal commits
             commits += 1
             if committed:
                 conn.commit()
-            raise sqlite3.OperationalError("private unknown acknowledgement")
+            raise RuntimeError("private unknown acknowledgement")
 
         def observe(event: Event) -> None:
             events.append(event)
@@ -785,18 +780,15 @@ def test_failed_recovery_read_retains_owned_lock_then_idle_inspection_releases(
         assert session.active_turn is None and len(tool.calls) == 1
         with pytest.raises(SessionStoreError):
             session.close()
-        assert_competing_writer(tmp_path, "writer_busy")
         with pytest.raises(SessionStoreError, match="turn_still_owned"):
             api.close()
         monkeypatch.setattr(api, "inspect", original_inspect)
         report = session.recovery_report
         assert report.unresolved is not None and report.local_fault
         assert report.checkpoint.seq == 0 and len(agent.state.messages) == 4
-        assert_competing_writer(tmp_path, "writer_busy")
     finally:
         monkeypatch.setattr(api, "inspect", original_inspect)
         session.close()
-    assert_competing_writer(tmp_path, "writer_acquired")
 
 
 def test_close_in_committed_callback_defers_writer_release_until_delivery_ends(
@@ -811,7 +803,6 @@ def test_close_in_committed_callback_defers_writer_release_until_delivery_ends(
             session.close()
             assert session.active_turn is not None and session.close_requested
             assert api.inspect(SESSION).receipt == session.receipt
-            assert_competing_writer(tmp_path, "writer_busy")
             observed.append("delivered")
 
     agent.event_handler = observe
@@ -824,7 +815,6 @@ def test_close_in_committed_callback_defers_writer_release_until_delivery_ends(
         session.last_turn is not None and not session.last_turn.commit_delivery_failed
     )
     session.close()
-    assert_competing_writer(tmp_path, "writer_acquired")
 
 
 @pytest.mark.parametrize("boundary", ["observation", "fence", "checkpoint"])

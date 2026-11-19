@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 from datetime import date, time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from psycopg import Error as PostgresError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -348,7 +348,7 @@ def review_routes(
             return _error(409, "review_period_completed")
         except ValueError:
             return _error(422, "invalid_review_request")
-        except (OSError, sqlite3.Error):
+        except (OSError, PostgresError):
             return _error(503, "review_store_unavailable")
         return JSONResponse(
             _summary_payload(record), status_code=202, headers=_json_headers()
@@ -382,7 +382,7 @@ def review_routes(
             return _error(409, "review_period_completed")
         except ValueError:
             return _error(422, "invalid_review_request")
-        except (OSError, sqlite3.Error):
+        except (OSError, PostgresError):
             return _error(503, "review_store_unavailable")
         return JSONResponse(
             _summary_payload(record), status_code=202, headers=_json_headers()
@@ -410,7 +410,7 @@ def review_routes(
             )
         except ValueError:
             return _error(422, "invalid_review_request")
-        except (OSError, sqlite3.Error):
+        except (OSError, PostgresError):
             return _error(503, "review_store_unavailable")
         return JSONResponse(
             {"reviews": [_summary_payload(record) for record in records]},
@@ -422,7 +422,7 @@ def review_routes(
         try:
             record = await service.get_review(review_id)
             delivery = await asyncio.to_thread(service.store.get_delivery, review_id)
-        except (OSError, sqlite3.Error):
+        except (OSError, PostgresError):
             return _error(503, "review_store_unavailable")
         if record is None:
             return _error(404, "review_not_found")
@@ -436,7 +436,7 @@ def review_routes(
             weekly = _failed_schedule_entries(
                 getattr(request.app.state, "weekly_review_schedule", None), "week_id"
             )
-        except (ValueError, OSError, sqlite3.Error):
+        except (ValueError, OSError, PostgresError):
             return _error(503, "review_store_unavailable")
         return JSONResponse({"daily": daily, "weekly": weekly}, headers=_json_headers())
 
@@ -461,7 +461,7 @@ def review_routes(
             return _error(503, "review_schedule_busy")
         except ValueError:
             return _error(409, "retry_request_conflict")
-        except (OSError, sqlite3.Error):
+        except (OSError, PostgresError):
             return _error(503, "review_store_unavailable")
         if record is None:
             return _error(409, "review_day_not_failed")
@@ -492,7 +492,7 @@ def review_routes(
             return _error(503, "review_schedule_busy")
         except ValueError:
             return _error(409, "retry_request_conflict")
-        except (OSError, sqlite3.Error):
+        except (OSError, PostgresError):
             return _error(503, "review_store_unavailable")
         if record is None:
             return _error(409, "review_week_not_failed")
@@ -516,7 +516,7 @@ def review_routes(
             return _error(422, "invalid_review_request")
         try:
             current = await asyncio.to_thread(service.store.get_delivery, review_id)
-        except (OSError, sqlite3.Error):
+        except (OSError, PostgresError):
             return _error(503, "review_store_unavailable")
         if (
             current is not None
@@ -542,7 +542,7 @@ def review_routes(
             return _error(404, "review_delivery_not_found")
         except ValueError:
             return _error(422, "invalid_review_request")
-        except (OSError, sqlite3.Error):
+        except (OSError, PostgresError):
             return _error(503, "review_store_unavailable")
         if not result.accepted:
             return _error(409, result.error or "review_delivery_not_retryable")

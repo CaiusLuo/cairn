@@ -32,6 +32,7 @@ from cairn.review.models import (
 from cairn.review.service import DailyReviewService
 from cairn.review.store import ReviewStore
 from cairn.review.weekly import WeeklyReviewService, week_period
+from tests.support.pg import database_for
 
 PASSPHRASE = "weekly-passphrase"
 ORIGIN = "http://127.0.0.1"
@@ -127,7 +128,7 @@ def _app(
         ),
         budget_chars=200_000,
     )
-    knowledge = KnowledgeStore(tmp_path / "knowledge")
+    knowledge = KnowledgeStore(database_for(tmp_path))
     store = ReviewStore(knowledge)
     daily = DailyReviewService(
         store=store,
@@ -146,13 +147,17 @@ def _app(
     workspace.mkdir(exist_ok=True)
     config = WebConfig(
         workspace=workspace,
-        sessions_dir=tmp_path / "sessions",
         tasks_dir=tmp_path / "tasks",
         knowledge_dir=tmp_path / "knowledge",
         web_root=None,
         auth_passphrase=PASSPHRASE,
     )
-    web = create_app(config, runtime_token="host-token", knowledge_store=knowledge)
+    web = create_app(
+        config,
+        runtime_token="host-token",
+        knowledge_store=knowledge,
+        database=database_for(tmp_path),
+    )
     web.router.routes[0:0] = review_routes(daily, "host-token", weekly)
     return web, weekly, store
 

@@ -21,6 +21,7 @@ from tests.channels.support import (
     FakeIntake,
     make_manager,
 )
+from tests.support.pg import database_for
 
 PASSPHRASE = "channel-passphrase"
 ORIGIN = "http://127.0.0.1"
@@ -34,7 +35,6 @@ def _config(tmp_path: Path) -> WebConfig:
     workspace.mkdir()
     return WebConfig(
         workspace=workspace,
-        sessions_dir=tmp_path / "sessions",
         tasks_dir=tmp_path / "tasks",
         knowledge_dir=tmp_path / "knowledge",
         web_root=None,
@@ -50,6 +50,7 @@ def _app(
         _config(tmp_path),
         runtime_token=TOKEN,
         channels=manager,
+        database=database_for(tmp_path),
     )
     return web, manager
 
@@ -148,7 +149,7 @@ def test_feishu_is_runnable_while_wecom_is_declared_unsupported(
 ) -> None:
     factory = CapturingFactory()
     manager = ChannelManager(
-        store=ChannelStore(tmp_path / "channels"),
+        store=ChannelStore(database_for(tmp_path), tmp_path / "channels"),
         conversations=FakeIntake(),
         adapters=ChannelAdapterRegistry().register(ChannelPlatform.FEISHU, factory),
     )
@@ -156,6 +157,7 @@ def test_feishu_is_runnable_while_wecom_is_declared_unsupported(
         _config(tmp_path),
         runtime_token=TOKEN,
         channels=manager,
+        database=database_for(tmp_path),
     )
     with TestClient(web, base_url=ORIGIN) as client:
         _login(client)
@@ -682,7 +684,7 @@ def test_missing_production_adapter_is_explicit_and_config_stays_editable(
     tmp_path: Path,
 ) -> None:
     manager = ChannelManager(
-        store=ChannelStore(tmp_path / "channels"),
+        store=ChannelStore(database_for(tmp_path), tmp_path / "channels"),
         conversations=FakeIntake(),
         adapters=ChannelAdapterRegistry(),
     )
@@ -690,6 +692,7 @@ def test_missing_production_adapter_is_explicit_and_config_stays_editable(
         _config(tmp_path),
         runtime_token=TOKEN,
         channels=manager,
+        database=database_for(tmp_path),
     )
     with TestClient(web, base_url=ORIGIN) as client:
         _login(client)

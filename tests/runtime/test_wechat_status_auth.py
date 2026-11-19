@@ -20,6 +20,7 @@ from cairn.integrations.wechat.state import WechatAccount, WechatState
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 
 
 class FakeClient:
@@ -92,6 +93,7 @@ def test_legacy_task_commands_check_ownership_in_runtime(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="runtime-token",
+            database=database_for(tmp_path),
         )
         service: TaskService = app.state.runtime
         app.state.controls._save(trusted_senders=("owner-b",))

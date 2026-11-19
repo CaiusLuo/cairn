@@ -12,6 +12,7 @@ from cairn.integrations.wechat.serve import (
 )
 from cairn.integrations.wechat.state import WechatAccount, WechatState
 from cairn.scheduling.store import ScheduleStore
+from tests.support.pg import database_for
 
 
 class Client:
@@ -37,7 +38,7 @@ async def _scenario(tmp_path: Path) -> None:
     state.save_account(account)
     state.record_received("msg:1", sender="owner", context_token="ctx", text="hello")
     state.mark("msg:1", "received", received_at=received_at)
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     called: list[str] = []
 
     async def execute(
@@ -58,7 +59,7 @@ async def _scenario(tmp_path: Path) -> None:
             account=account,
             approval=None,
             allowed_senders=frozenset({"owner"}),
-            schedule_store=tmp_path / "schedule",
+            database=database_for(tmp_path),
         ),
         state=state,
         client=client,  # type: ignore[arg-type]

@@ -26,6 +26,7 @@ from cairn.development.catalogue import ChannelPrincipal
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 
 WAIT_SECONDS = 5.0
 
@@ -92,6 +93,7 @@ def _app(tmp_path: Path) -> Any:
         tmp_path / "worktrees",
         budget=RunBudget(5),
         token="zzzz",
+        database=database_for(tmp_path),
     )
 
 
@@ -544,7 +546,7 @@ def _queued_run_with_attachment(
 ) -> tuple[DomainStore, Any]:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    store = DomainStore(tmp_path / "domain.sqlite3")
+    store = DomainStore(database_for(tmp_path))
     conversation = store.create_conversation(
         workspace=workspace,
         source=ConversationSource.CLI,
@@ -568,7 +570,10 @@ def test_restart_completes_an_interrupted_attachment_claim(tmp_path: Path) -> No
 
     async def scenario() -> None:
         service = ConversationService(
-            store, cast(Any, execution), workspace=tmp_path / "workspace"
+            store,
+            cast(Any, execution),
+            workspace=tmp_path / "workspace",
+            attachments_root=tmp_path / "attachments",
         )
         await service.start()
         try:
@@ -599,7 +604,10 @@ def test_restart_uses_the_manifest_after_a_crash_mid_claim(
 
     async def scenario() -> None:
         service = ConversationService(
-            store, cast(Any, execution), workspace=tmp_path / "workspace"
+            store,
+            cast(Any, execution),
+            workspace=tmp_path / "workspace",
+            attachments_root=tmp_path / "attachments",
         )
         await service.start()
         try:
@@ -641,7 +649,10 @@ def test_restart_finishes_claim_after_only_one_file_moved(
     async def scenario() -> None:
         execution = RecordingExecution()
         service = ConversationService(
-            store, cast(Any, execution), workspace=tmp_path / "workspace"
+            store,
+            cast(Any, execution),
+            workspace=tmp_path / "workspace",
+            attachments_root=attachments.root,
         )
         orphan = attachments.runs / ("run-" + "a" * 32)
         orphan.mkdir()
@@ -669,7 +680,10 @@ def test_restart_fails_a_run_whose_uploads_are_gone(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         service = ConversationService(
-            store, cast(Any, execution), workspace=tmp_path / "workspace"
+            store,
+            cast(Any, execution),
+            workspace=tmp_path / "workspace",
+            attachments_root=tmp_path / "attachments",
         )
         await service.start()
         try:

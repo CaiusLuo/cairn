@@ -17,6 +17,7 @@ from cairn.development.catalogue import RuntimeCatalogue
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 
 
 class ExplodingTool:
@@ -87,6 +88,7 @@ def test_unknown_effect_still_requires_recovery_when_timeline_write_fails(
         tmp_path / "worktrees",
         budget=RunBudget(5),
         token="zzzz",
+        database=database_for(tmp_path),
     )
     model = UnknownEffectModel()
     app.state.execution.llm_factory = lambda: model

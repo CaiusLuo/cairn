@@ -10,6 +10,7 @@ from cairn.interfaces.web.app import create_app
 from cairn.interfaces.web.auth import COOKIE_NAME, AuthSessions
 from cairn.interfaces.web.config import WebConfig
 from cairn.interfaces.web.management import management_routes
+from tests.support.pg import database_for
 
 
 def _app(tmp_path: Path) -> Starlette:
@@ -17,11 +18,10 @@ def _app(tmp_path: Path) -> Starlette:
     workspace.mkdir()
     config = WebConfig(
         workspace=workspace,
-        sessions_dir=tmp_path / "sessions",
         tasks_dir=tmp_path / "tasks",
         web_root=None,
     )
-    return create_app(config)
+    return create_app(config, database=database_for(tmp_path))
 
 
 def _auth_app(tmp_path: Path, session_file: Path | None = None) -> Starlette:
@@ -29,12 +29,13 @@ def _auth_app(tmp_path: Path, session_file: Path | None = None) -> Starlette:
     workspace.mkdir(exist_ok=True)
     config = WebConfig(
         workspace=workspace,
-        sessions_dir=tmp_path / "sessions",
         tasks_dir=tmp_path / "tasks",
         web_root=None,
         auth_passphrase="correct-horse",
     )
-    return create_app(config, session_file=session_file)
+    return create_app(
+        config, session_file=session_file, database=database_for(tmp_path)
+    )
 
 
 class _BusyControls:
@@ -115,11 +116,13 @@ def test_task_status_update_is_persisted_with_revision_guard(tmp_path: Path) -> 
     task = store.create(title="W1 move me", source=TaskSource.WEB)
     config = WebConfig(
         workspace=workspace,
-        sessions_dir=tmp_path / "sessions",
         tasks_dir=tasks,
         web_root=None,
     )
-    client = TestClient(create_app(config), base_url="http://127.0.0.1")
+    client = TestClient(
+        create_app(config, database=database_for(tmp_path)),
+        base_url="http://127.0.0.1",
+    )
     before = client.get("/api/snapshot").json()
     response = client.patch(
         f"/api/tasks/{task.task_id}",
@@ -150,11 +153,13 @@ def test_task_status_update_validates_status_and_content_type(tmp_path: Path) ->
     task = TaskBoardStore(tasks).create(title="W1 validation")
     config = WebConfig(
         workspace=workspace,
-        sessions_dir=tmp_path / "sessions",
         tasks_dir=tasks,
         web_root=None,
     )
-    client = TestClient(create_app(config), base_url="http://127.0.0.1")
+    client = TestClient(
+        create_app(config, database=database_for(tmp_path)),
+        base_url="http://127.0.0.1",
+    )
     assert (
         client.patch(
             f"/api/tasks/{task.task_id}",

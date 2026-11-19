@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from cairn.development.execution.headless import HeadlessResult, HeadlessStatus
 from cairn.scheduling.commands import ScheduleController
 from cairn.scheduling.store import ScheduleStore
+from tests.support.pg import database_for
 
 NOW = datetime(2026, 11, 1, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -29,7 +30,7 @@ def _controller(tmp_path: Path) -> ScheduleController:
 
     return ScheduleController(
         workspace=tmp_path,
-        store=ScheduleStore(tmp_path / "schedule"),
+        store=ScheduleStore(database_for(tmp_path)),
         executor=executor,
         deliver=deliver,
         recipient=lambda: "owner",

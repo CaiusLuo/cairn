@@ -6,7 +6,6 @@ locking and transaction helpers defined there; it never opens its own
 connection and never dispatches work.
 """
 
-import sqlite3
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
 from typing import Literal
@@ -32,6 +31,7 @@ from cairn.agent.session.task_models import (
     TaskResultData,
     TaskRevision,
 )
+from cairn.shared.db import DbConnection
 
 # Task phase transitions
 # ---------------------------------------------------------------------------
@@ -106,30 +106,27 @@ class TaskLedgerMixin:
     def _latch(self) -> None:
         raise NotImplementedError
 
-    def _read(self) -> AbstractContextManager[sqlite3.Connection]:
+    def _read(self) -> AbstractContextManager[DbConnection]:
         raise NotImplementedError
 
-    def _report(self, conn: sqlite3.Connection, session_id: str) -> RecoveryReport:
+    def _report(self, conn: DbConnection, session_id: str) -> RecoveryReport:
         raise NotImplementedError
 
-    def _row(self, conn: sqlite3.Connection, expected: Revision) -> object:
-        raise NotImplementedError
-
-    def _tasks_supported(self, conn: sqlite3.Connection) -> None:
+    def _row(self, conn: DbConnection, expected: Revision) -> object:
         raise NotImplementedError
 
     def _write(
         self, *, recovery: bool = False, idle_after: bool = False
-    ) -> AbstractContextManager[sqlite3.Connection]:
+    ) -> AbstractContextManager[DbConnection]:
         raise NotImplementedError
 
     def _receipt_at(
-        self, conn: sqlite3.Connection, session: RecoveryReport, seq: int
+        self, conn: DbConnection, session: RecoveryReport, seq: int
     ) -> CheckpointReceipt:
         # _report has already verified the entire Session history in this same
         # transaction. Receipts can be historical, but never fabricated heads.
         row = conn.execute(
-            "SELECT payload,sha256,format_version FROM checkpoints WHERE session_id=? AND seq=?",
+            "SELECT payload,sha256,format_version FROM checkpoints WHERE session_id=%s AND seq=%s",
             (session.revision.session_id, seq),
         ).fetchone()
         if row is None:
@@ -156,7 +153,7 @@ class TaskLedgerMixin:
         )
 
     def _validate_task(
-        self, conn: sqlite3.Connection, task: TaskRecord, session: RecoveryReport
+        self, conn: DbConnection, task: TaskRecord, session: RecoveryReport
     ) -> None:
         base = self._receipt_at(conn, session, task.base_revision.head_seq)
         if (
@@ -191,12 +188,11 @@ class TaskLedgerMixin:
                 raise SessionStoreError("task_turn_mismatch")
 
     def _task(
-        self, conn: sqlite3.Connection, session_id: str, task_id: str
+        self, conn: DbConnection, session_id: str, task_id: str
     ) -> tuple[TaskRecord, RecoveryReport]:
-        self._tasks_supported(conn)
         session = self._report(conn, session_id)
         row = conn.execute(
-            "SELECT * FROM tasks WHERE session_id=? AND task_id=?",
+            "SELECT * FROM tasks WHERE session_id=%s AND task_id=%s",
             (session_id, task_id),
         ).fetchone()
         if row is None:
@@ -258,7 +254,7 @@ class TaskLedgerMixin:
         )
 
     def _task_recovery_current(
-        self, conn: sqlite3.Connection, expected: TaskRecoveryReport
+        self, conn: DbConnection, expected: TaskRecoveryReport
     ) -> tuple[TaskRecord, RecoveryReport]:
         task, session = self._task(
             conn, expected.task.revision.session_id, expected.task.revision.task_id
@@ -382,18 +378,17 @@ class TaskLedgerMixin:
             raise SessionStoreError("invalid_record") from None
         raw = self._encode(task, limit=MAX_TASK_BYTES, kind=TaskRecord)
         with self._write() as conn:
-            self._tasks_supported(conn)
             self._row(conn, expected)
             session = self._report(conn, expected.session_id)
             if session.status != "clean":
                 raise SessionStoreError("task_session_not_ready")
             if conn.execute(
-                "SELECT 1 FROM tasks WHERE session_id=? AND task_id=?",
+                "SELECT 1 FROM tasks WHERE session_id=%s AND task_id=%s",
                 (expected.session_id, task_id),
             ).fetchone():
                 raise SessionStoreError("task_exists")
             conn.execute(
-                "INSERT INTO tasks VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO tasks VALUES (%s,%s,%s,%s,%s,%s,%s)",
                 (
                     expected.session_id,
                     task_id,
@@ -430,7 +425,7 @@ class TaskLedgerMixin:
             self._owned_tasks.remove(key)
 
     def _task_current(
-        self, conn: sqlite3.Connection, expected: TaskRevision, phase: TaskPhase
+        self, conn: DbConnection, expected: TaskRevision, phase: TaskPhase
     ) -> tuple[TaskRecord, RecoveryReport]:
         task, session = self._task(conn, expected.session_id, expected.task_id)
         if task.revision != expected:
@@ -442,7 +437,7 @@ class TaskLedgerMixin:
         return task, session
 
     def _save_task(
-        self, conn: sqlite3.Connection, task: TaskRecord, session: RecoveryReport
+        self, conn: DbConnection, task: TaskRecord, session: RecoveryReport
     ) -> TaskRecord:
         expected = task.revision
         task = task.model_copy(
@@ -456,8 +451,8 @@ class TaskLedgerMixin:
         task = decode_record(TaskRecord, raw, limit=MAX_TASK_BYTES)
         self._validate_task(conn, task, session)
         changed = conn.execute(
-            "UPDATE tasks SET version=?,phase=?,checkpoint_seq=?,record_json=? "
-            "WHERE session_id=? AND task_id=? AND version=?",
+            "UPDATE tasks SET version=%s,phase=%s,checkpoint_seq=%s,record_json=%s "
+            "WHERE session_id=%s AND task_id=%s AND version=%s",
             (
                 task.revision.version,
                 task.phase,

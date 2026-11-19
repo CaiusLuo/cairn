@@ -1,4 +1,3 @@
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -12,6 +11,8 @@ from cairn.agent.session.models import (
     ToolFence,
     VersionConflict,
 )
+from cairn.shared.db import DbConnection
+from tests.support.pg import database_for
 from tests.support.sessions import (
     OTHER_TURN,
     SESSION,
@@ -396,33 +397,40 @@ def test_terminal_transaction_failure_rolls_back_every_row(
         active = api.begin_turn(initial, turn)
         assert api._connection is not None
 
-        def authorize(
-            action: int,
-            table: str | None,
-            column: str | None,
-            database: str | None,
-            source: str | None,
-        ) -> int:
-            blocked = "turns" if after == "checkpoint" else "sessions"
-            return (
-                sqlite3.SQLITE_DENY
-                if action == sqlite3.SQLITE_UPDATE and table == blocked
-                else sqlite3.SQLITE_OK
+        blocked = "turns" if after == "checkpoint" else "sessions"
+        database = database_for(tmp_path)
+        schema = database.schema("agent")
+        with database.connect("agent") as conn:
+            conn.execute(
+                f"CREATE OR REPLACE FUNCTION {schema}.deny_update() RETURNS trigger "
+                "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'denied'; END $$"
             )
-
-        api._connection.set_authorizer(authorize)
-        with pytest.raises(SessionStoreError, match="storage_failed"):
-            api.commit_turn(active, settled(turn))
-        api._connection.set_authorizer(None)
+            conn.execute(
+                f"CREATE TRIGGER deny_update BEFORE UPDATE ON {schema}.{blocked} "
+                f"FOR EACH ROW EXECUTE FUNCTION {schema}.deny_update()"
+            )
+        try:
+            with pytest.raises(SessionStoreError, match="storage_failed"):
+                api.commit_turn(active, settled(turn))
+        finally:
+            with database.connect("agent") as conn:
+                conn.execute(
+                    f"DROP TRIGGER IF EXISTS deny_update ON {schema}.{blocked}"
+                )
+                conn.execute(f"DROP FUNCTION IF EXISTS {schema}.deny_update()")
         report = api.inspect(SESSION)
         assert report.revision == active
         assert report.checkpoint.seq == 0
         assert report.unresolved is not None and report.unresolved.state == "executing"
-        with sqlite3.connect(api.path) as conn:
-            assert conn.execute("SELECT count(*) FROM checkpoints").fetchone() == (1,)
-            assert conn.execute(
-                "SELECT settled_seq,ended_at_utc FROM turns"
-            ).fetchone() == (None, None)
+        with database.connect("agent") as conn:
+            assert (
+                conn.execute("SELECT count(*) AS total FROM checkpoints").fetchone()[
+                    "total"
+                ]
+                == 1
+            )
+            row = conn.execute("SELECT settled_seq,ended_at_utc FROM turns").fetchone()
+            assert (row["settled_seq"], row["ended_at_utc"]) == (None, None)
         with pytest.raises(SessionStoreError, match="recovery_required"):
             api.commit_turn(active, settled(turn))
         api.release_turn(active, turn.turn_id)
@@ -441,10 +449,10 @@ def test_uncertain_commit_is_only_confirmed_by_exact_inspected_receipt(
         turn = intent(bind, initial)
         active = api.begin_turn(initial, turn)
 
-        def uncertain(conn: sqlite3.Connection) -> None:
+        def uncertain(conn: DbConnection) -> None:
             if committed:
                 conn.commit()
-            raise sqlite3.OperationalError("provider-secret-and-sql-payload")
+            raise RuntimeError("provider-secret-and-sql-payload")
 
         monkeypatch.setattr(api, "_commit", uncertain)
         with pytest.raises(SessionStoreError, match="commit_uncertain") as error:
@@ -490,75 +498,43 @@ def test_sensitive_and_oversize_rejected_before_begin_and_absent_from_db_wal(
         turn = intent(bind, report.revision, turn_id=OTHER_TURN, time=T4)
         active = api.begin_turn(report.revision, turn)
         for text in ("opaque-sensitive-哨兵", "x" * (1024 * 1024 + 1)):
-            assert api._connection is not None
-            statements: list[str] = []
-            api._connection.set_trace_callback(statements.append)
             history = [
                 Message(role="user", content="hello"),
                 Message(role="assistant", content=text),
             ]
             with pytest.raises(SessionStoreError):
                 api.commit_turn(active, settled(turn, history=history))
-            api._connection.set_trace_callback(None)
-            assert not any(s.startswith("BEGIN") for s in statements)
-        for path in api.directory.iterdir():
-            assert "opaque-sensitive-哨兵".encode() not in path.read_bytes()
-            assert b"x" * 4096 not in path.read_bytes()
+        with database_for(tmp_path).connect("agent") as conn:
+            turns = conn.execute("SELECT diagnostics_json FROM turns").fetchall()
+            payloads = conn.execute("SELECT payload FROM checkpoints").fetchall()
+        assert all(
+            "opaque-sensitive-哨兵" not in row["diagnostics_json"] for row in turns
+        )
+        assert all(b"x" * 4096 not in bytes(row["payload"]) for row in payloads)
         assert api.inspect(SESSION).revision == active
         api.release_turn(active, turn.turn_id)
     finally:
         api.close()
 
 
-def test_busy_transaction_has_bounded_timeout_and_rolls_back(tmp_path: Path) -> None:
-    bind = binding(tmp_path)
-    api = store(tmp_path)
-    blocker = sqlite3.connect(api.path, isolation_level=None)
-    try:
-        initial = api.create(bind).revision
-        assert api._connection is not None
-        assert api._connection.execute("PRAGMA busy_timeout").fetchone()[0] == 2000
-        assert api._connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-        assert api._connection.execute("PRAGMA trusted_schema").fetchone()[0] == 0
-        assert api._connection.execute("PRAGMA synchronous").fetchone()[0] == 2
-        api._connection.execute(
-            "PRAGMA busy_timeout=1"
-        )  # same deterministic busy path, quick test
-        blocker.execute("BEGIN IMMEDIATE")
-        with pytest.raises(SessionStoreError, match="storage_failed"):
-            api.begin_turn(initial, intent(bind, initial))
-        blocker.rollback()
-        report = api.inspect(SESSION)
-        assert report.revision == initial and report.attempts == ()
-    finally:
-        blocker.close()
-        api.close()
-
-
-def test_sqlite_full_rejects_terminal_insert_without_partial_state(
+def test_concurrent_update_has_bounded_lock_timeout_and_rolls_back(
     tmp_path: Path,
 ) -> None:
     bind = binding(tmp_path)
     api = store(tmp_path)
+    initial = api.create(bind).revision
+    database = database_for(tmp_path)
+    blocker = database.dedicated("agent")
     try:
-        initial = api.create(bind).revision
-        turn = intent(bind, initial)
-        active = api.begin_turn(initial, turn)
-        assert api._connection is not None
-        pages = api._connection.execute("PRAGMA page_count").fetchone()[0]
-        api._connection.execute(f"PRAGMA max_page_count={pages}")
-        history = [
-            Message(role="user", content="hello"),
-            Message(role="assistant", content="x" * 500_000),
-        ]
+        blocker.execute("BEGIN")
+        blocker.execute("SELECT * FROM sessions FOR UPDATE")
         with pytest.raises(SessionStoreError, match="storage_failed"):
-            api.commit_turn(active, settled(turn, history=history))
-        report = api.inspect(SESSION)
-        assert report.revision == active
-        assert report.checkpoint.seq == 0 and report.unresolved is not None
-        assert report.unresolved.settled_seq is None
-        api.release_turn(active, turn.turn_id)
+            api.begin_turn(initial, intent(bind, initial))
     finally:
+        blocker.rollback()
+        blocker.close()
+        report = api.inspect(SESSION)
+        assert report.revision == initial and report.attempts == ()
         api.close()
 
 
@@ -579,7 +555,13 @@ def test_revalidation_on_read_rejects_newly_known_credentials(tmp_path: Path) ->
         with pytest.raises(SessionStoreError, match="sensitive_record") as error:
             reader.inspect(SESSION)
         assert "newly-known-opaque-credential" not in str(error.value)
-        assert reader.path.exists()
+        with database_for(tmp_path).connect("agent") as conn:
+            assert (
+                conn.execute("SELECT count(*) AS total FROM sessions").fetchone()[
+                    "total"
+                ]
+                == 1
+            )
     finally:
         reader.close()
 

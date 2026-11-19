@@ -13,6 +13,7 @@ from cairn.development.board.store import TaskBoardStore
 from cairn.development.catalogue import RuntimeCatalogue, RuntimeTask
 from cairn.development.models import TaskStatus
 from cairn.development.service import TaskService
+from tests.support.pg import database_for
 
 
 async def _executor(_task: RuntimeTask, _emit: object) -> str:
@@ -24,11 +25,9 @@ async def _service(tmp_path: Path) -> tuple[TaskService, DomainStore, TaskBoardS
     source.mkdir()
     worktrees = tmp_path / "worktrees"
     worktrees.mkdir()
-    catalogue = RuntimeCatalogue(
-        tmp_path / "catalogue", forbidden_roots=(source, worktrees)
-    )
+    catalogue = RuntimeCatalogue(database_for(tmp_path))
     board_store = TaskBoardStore(tmp_path / "board")
-    domain = DomainStore(tmp_path / "domain.sqlite3")
+    domain = DomainStore(database_for(tmp_path))
     service = TaskService(
         catalogue,
         _executor,
@@ -243,7 +242,7 @@ def test_projection_preserves_concurrent_user_closed_and_metadata(
 
 
 def test_concurrent_user_close_and_projection_keep_closed(tmp_path: Path) -> None:
-    domain = DomainStore(tmp_path / "domain.sqlite3")
+    domain = DomainStore(database_for(tmp_path))
     conversation = domain.create_conversation(
         workspace=tmp_path,
         source=ConversationSource.CLI,

@@ -165,6 +165,8 @@ class ServerProcess:
     def start(self) -> None:
         import httpx
 
+        from tests.support.pg import namespace_for, test_database_url
+
         with self.log.open("ab") as log:
             self.process = subprocess.Popen(
                 [
@@ -181,6 +183,8 @@ class ServerProcess:
                 env={
                     **os.environ,
                     "CAIRN_TEST_GATES": str(self.gates),
+                    "CAIRN_DATABASE_URL": test_database_url(),
+                    "CAIRN_DATABASE_NAMESPACE": namespace_for(self.root),
                     "XDG_STATE_HOME": str(self.state / "host-state"),
                     "CAIRN_AGENT_HOME": str(self.state / "agent"),
                     # The FakeILink acceptance server is loopback HTTP.

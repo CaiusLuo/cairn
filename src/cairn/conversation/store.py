@@ -1,17 +1,15 @@
-"""SQLite-backed authority for Conversations, Tasks and Runs.
+"""PostgreSQL-backed authority for Conversations, Tasks and Runs.
 
-This is deliberately a small local store, not a PostgreSQL repository
-abstraction.  SQLite transactions give the three identities one writer while
-avoiding another full-document JSON rewrite for every state transition.
+One PostgreSQL database gives the three identities one writer while avoiding
+another full-document JSON rewrite for every state transition.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -35,6 +33,7 @@ from cairn.development.models import (
     TaskStatus,
     new_task_id,
 )
+from cairn.shared.db import Database, DbConnection, Row
 
 SCHEMA_VERSION = 1
 
@@ -43,8 +42,12 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _loads(value: str | None, default: Any) -> Any:
-    return default if not value else json.loads(value)
+def _loads(value: Any, default: Any) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    return json.loads(value)
 
 
 def channel_binding_digest(
@@ -58,184 +61,13 @@ def channel_binding_digest(
 class DomainStore:
     """The only mutating owner of the Conversation/Task/Run tables."""
 
-    def __init__(self, path: Path) -> None:
-        raw = path.expanduser()
-        if raw.is_symlink():
-            raise ValueError("Domain store cannot be a symlink")
-        self.path = raw.resolve()
-        if self.path.is_symlink():
-            raise ValueError("Domain store cannot be a symlink")
-        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with suppress(OSError):
-            self.path.parent.chmod(0o700)
-        with self._connect() as connection:
-            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in (0, SCHEMA_VERSION):
-                raise ValueError("Unsupported domain store schema")
-            self._create_schema(connection)
-            connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+    def __init__(self, database: Database) -> None:
+        self.db = database
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
-        try:
+    def _connect(self) -> Iterator[DbConnection]:
+        with self.db.connect("core") as connection:
             yield connection
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
-
-    @staticmethod
-    def _create_schema(connection: sqlite3.Connection) -> None:
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS conversations (
-                conversation_id TEXT PRIMARY KEY,
-                workspace_id TEXT NOT NULL,
-                source TEXT NOT NULL,
-                initial_prompt TEXT NOT NULL,
-                title TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                archived_at TEXT,
-                metadata_json TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS wechat_bindings (
-                workspace_id TEXT NOT NULL,
-                account_digest TEXT NOT NULL,
-                sender_digest TEXT NOT NULL,
-                conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (workspace_id, account_digest, sender_digest)
-            );
-            CREATE TABLE IF NOT EXISTS channel_bindings (
-                workspace_id TEXT NOT NULL,
-                connection_id TEXT NOT NULL,
-                platform TEXT NOT NULL,
-                binding_digest TEXT NOT NULL,
-                conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (workspace_id, connection_id, binding_digest)
-            );
-            CREATE TABLE IF NOT EXISTS tasks (
-                task_id TEXT PRIMARY KEY,
-                conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
-                workspace_id TEXT NOT NULL,
-                title TEXT NOT NULL,
-                goal TEXT NOT NULL,
-                status TEXT NOT NULL,
-                issue_url TEXT,
-                worktree TEXT,
-                branch TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                metadata_json TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS tasks_conversation_idx
-                ON tasks(conversation_id);
-            CREATE TABLE IF NOT EXISTS runs (
-                run_id TEXT PRIMARY KEY,
-                conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
-                task_id TEXT REFERENCES tasks(task_id),
-                workspace_id TEXT NOT NULL,
-                status TEXT NOT NULL,
-                error TEXT,
-                budget_json TEXT NOT NULL,
-                trace_ref TEXT,
-                session_id TEXT,
-                checkpoint_receipt_json TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                ended_at TEXT,
-                metadata_json TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS runs_conversation_idx
-                ON runs(conversation_id);
-            CREATE INDEX IF NOT EXISTS runs_task_idx ON runs(task_id);
-            CREATE TABLE IF NOT EXISTS run_events (
-                run_id TEXT NOT NULL REFERENCES runs(run_id),
-                sequence INTEGER NOT NULL,
-                kind TEXT NOT NULL,
-                data_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                PRIMARY KEY (run_id, sequence)
-            );
-            CREATE TABLE IF NOT EXISTS conversation_requests (
-                workspace_id TEXT NOT NULL,
-                request_id TEXT NOT NULL,
-                conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
-                fingerprint TEXT NOT NULL,
-                PRIMARY KEY (workspace_id, request_id)
-            );
-            CREATE TABLE IF NOT EXISTS run_requests (
-                conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
-                request_id TEXT NOT NULL,
-                run_id TEXT NOT NULL REFERENCES runs(run_id),
-                fingerprint TEXT NOT NULL,
-                PRIMARY KEY (conversation_id, request_id)
-            );
-            CREATE TABLE IF NOT EXISTS development_handoffs (
-                run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
-                conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id),
-                request_id TEXT NOT NULL UNIQUE,
-                status TEXT NOT NULL,
-                runtime_task_id TEXT,
-                domain_task_id TEXT,
-                prompt TEXT NOT NULL,
-                source TEXT NOT NULL,
-                diagnostic TEXT,
-                history_origins_json TEXT NOT NULL DEFAULT '[]',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                metadata_json TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS development_handoffs_status_idx
-                ON development_handoffs(status);
-            CREATE TABLE IF NOT EXISTS handoff_reviews (
-                request_id TEXT PRIMARY KEY,
-                run_id TEXT NOT NULL REFERENCES development_handoffs(run_id),
-                action TEXT NOT NULL,
-                expected_updated_at TEXT NOT NULL,
-                note TEXT NOT NULL,
-                status TEXT NOT NULL,
-                result_status TEXT,
-                diagnostic TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS handoff_reviews_run_idx
-                ON handoff_reviews(run_id);
-            CREATE TABLE IF NOT EXISTS domain_meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            """
-        )
-        columns = {
-            str(row[1])
-            for row in connection.execute("PRAGMA table_info(conversations)").fetchall()
-        }
-        if "archived_at" not in columns:
-            connection.execute("ALTER TABLE conversations ADD COLUMN archived_at TEXT")
-        if "title" not in columns:
-            connection.execute("ALTER TABLE conversations ADD COLUMN title TEXT")
-        columns = {
-            str(row[1])
-            for row in connection.execute(
-                "PRAGMA table_info(development_handoffs)"
-            ).fetchall()
-        }
-        if "history_origins_json" not in columns:
-            connection.execute(
-                "ALTER TABLE development_handoffs "
-                "ADD COLUMN history_origins_json TEXT NOT NULL DEFAULT '[]'"
-            )
 
     # -- Conversation -----------------------------------------------------
 
@@ -256,11 +88,15 @@ class DomainStore:
         ).hexdigest()
         with self._connect() as connection:
             if request_id is not None:
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                    (f"conversation-request:{workspace_id}:{request_id}",),
+                )
                 existing = connection.execute(
                     "SELECT conversation_requests.fingerprint, conversations.* "
                     "FROM conversation_requests JOIN conversations USING(conversation_id) "
-                    "WHERE conversation_requests.workspace_id = ? "
-                    "AND conversation_requests.request_id = ?",
+                    "WHERE conversation_requests.workspace_id = %s "
+                    "AND conversation_requests.request_id = %s",
                     (workspace_id, request_id),
                 ).fetchone()
                 if existing is not None:
@@ -283,7 +119,7 @@ class DomainStore:
                 INSERT INTO conversations
                     (conversation_id, workspace_id, source, initial_prompt,
                      created_at, updated_at, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     conversation.conversation_id,
@@ -299,7 +135,7 @@ class DomainStore:
                 connection.execute(
                     "INSERT INTO conversation_requests"
                     "(workspace_id, request_id, conversation_id, fingerprint) "
-                    "VALUES (?, ?, ?, ?)",
+                    "VALUES (%s, %s, %s, %s)",
                     (
                         workspace_id,
                         request_id,
@@ -312,7 +148,7 @@ class DomainStore:
     def get_conversation(self, conversation_id: str) -> Conversation | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM conversations WHERE conversation_id = ?",
+                "SELECT * FROM conversations WHERE conversation_id = %s",
                 (conversation_id,),
             ).fetchone()
         return None if row is None else self._conversation(row)
@@ -335,9 +171,9 @@ class DomainStore:
             row = connection.execute(
                 "SELECT conversations.* FROM wechat_bindings "
                 "JOIN conversations USING(conversation_id) "
-                "WHERE wechat_bindings.workspace_id = ? "
-                "AND wechat_bindings.account_digest = ? "
-                "AND wechat_bindings.sender_digest = ?",
+                "WHERE wechat_bindings.workspace_id = %s "
+                "AND wechat_bindings.account_digest = %s "
+                "AND wechat_bindings.sender_digest = %s",
                 (workspace_id, account_digest, sender_digest),
             ).fetchone()
         return self._conversation(row) if row is not None else None
@@ -360,8 +196,8 @@ class DomainStore:
         account_digest, sender_digest = self._wechat_digests(account_id, sender_id)
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT 1 FROM wechat_bindings WHERE conversation_id = ? "
-                "AND account_digest = ? AND sender_digest = ? LIMIT 1",
+                "SELECT 1 FROM wechat_bindings WHERE conversation_id = %s "
+                "AND account_digest = %s AND sender_digest = %s LIMIT 1",
                 (conversation_id, account_digest, sender_digest),
             ).fetchone()
         return row is not None
@@ -386,9 +222,9 @@ class DomainStore:
             row = connection.execute(
                 "SELECT conversations.* FROM wechat_bindings "
                 "JOIN conversations USING(conversation_id) "
-                "WHERE wechat_bindings.workspace_id = ? "
-                "AND wechat_bindings.account_digest = ? "
-                "AND wechat_bindings.sender_digest = ?",
+                "WHERE wechat_bindings.workspace_id = %s "
+                "AND wechat_bindings.account_digest = %s "
+                "AND wechat_bindings.sender_digest = %s",
                 (workspace_id, account_digest, sender_digest),
             ).fetchone()
             if row is not None:
@@ -404,7 +240,7 @@ class DomainStore:
                 "INSERT INTO conversations "
                 "(conversation_id, workspace_id, source, initial_prompt, "
                 "created_at, updated_at, metadata_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (
                     conversation.conversation_id,
                     conversation.workspace_id,
@@ -416,9 +252,10 @@ class DomainStore:
                 ),
             )
             inserted = connection.execute(
-                "INSERT OR IGNORE INTO wechat_bindings "
+                "INSERT INTO wechat_bindings "
                 "(workspace_id, account_digest, sender_digest, conversation_id, "
-                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                "created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT DO NOTHING",
                 (
                     workspace_id,
                     account_digest,
@@ -430,15 +267,15 @@ class DomainStore:
             )
             if inserted.rowcount == 0:
                 connection.execute(
-                    "DELETE FROM conversations WHERE conversation_id = ?",
+                    "DELETE FROM conversations WHERE conversation_id = %s",
                     (conversation.conversation_id,),
                 )
                 row = connection.execute(
                     "SELECT conversations.* FROM wechat_bindings "
                     "JOIN conversations USING(conversation_id) "
-                    "WHERE wechat_bindings.workspace_id = ? "
-                    "AND wechat_bindings.account_digest = ? "
-                    "AND wechat_bindings.sender_digest = ?",
+                    "WHERE wechat_bindings.workspace_id = %s "
+                    "AND wechat_bindings.account_digest = %s "
+                    "AND wechat_bindings.sender_digest = %s",
                     (workspace_id, account_digest, sender_digest),
                 ).fetchone()
                 if row is None:
@@ -465,9 +302,9 @@ class DomainStore:
             row = connection.execute(
                 "SELECT conversations.* FROM channel_bindings "
                 "JOIN conversations USING(conversation_id) "
-                "WHERE channel_bindings.workspace_id = ? "
-                "AND channel_bindings.connection_id = ? "
-                "AND channel_bindings.binding_digest = ?",
+                "WHERE channel_bindings.workspace_id = %s "
+                "AND channel_bindings.connection_id = %s "
+                "AND channel_bindings.binding_digest = %s",
                 (workspace_id, connection_id, digest),
             ).fetchone()
         return self._conversation(row) if row is not None else None
@@ -496,9 +333,9 @@ class DomainStore:
             row = connection.execute(
                 "SELECT conversations.* FROM channel_bindings "
                 "JOIN conversations USING(conversation_id) "
-                "WHERE channel_bindings.workspace_id = ? "
-                "AND channel_bindings.connection_id = ? "
-                "AND channel_bindings.binding_digest = ?",
+                "WHERE channel_bindings.workspace_id = %s "
+                "AND channel_bindings.connection_id = %s "
+                "AND channel_bindings.binding_digest = %s",
                 (workspace_id, connection_id, digest),
             ).fetchone()
             if row is not None:
@@ -518,7 +355,7 @@ class DomainStore:
                 "INSERT INTO conversations "
                 "(conversation_id, workspace_id, source, initial_prompt, "
                 "created_at, updated_at, metadata_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (
                     conversation.conversation_id,
                     conversation.workspace_id,
@@ -530,10 +367,10 @@ class DomainStore:
                 ),
             )
             inserted = connection.execute(
-                "INSERT OR IGNORE INTO channel_bindings "
+                "INSERT INTO channel_bindings "
                 "(workspace_id, connection_id, platform, binding_digest, "
                 "conversation_id, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
                 (
                     workspace_id,
                     connection_id,
@@ -546,15 +383,15 @@ class DomainStore:
             )
             if inserted.rowcount == 0:
                 connection.execute(
-                    "DELETE FROM conversations WHERE conversation_id = ?",
+                    "DELETE FROM conversations WHERE conversation_id = %s",
                     (conversation.conversation_id,),
                 )
                 row = connection.execute(
                     "SELECT conversations.* FROM channel_bindings "
                     "JOIN conversations USING(conversation_id) "
-                    "WHERE channel_bindings.workspace_id = ? "
-                    "AND channel_bindings.connection_id = ? "
-                    "AND channel_bindings.binding_digest = ?",
+                    "WHERE channel_bindings.workspace_id = %s "
+                    "AND channel_bindings.connection_id = %s "
+                    "AND channel_bindings.binding_digest = %s",
                     (workspace_id, connection_id, digest),
                 ).fetchone()
                 if row is None:
@@ -567,17 +404,17 @@ class DomainStore:
     ) -> Conversation:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM conversations WHERE conversation_id = ?",
+                "SELECT * FROM conversations WHERE conversation_id = %s",
                 (conversation_id,),
             ).fetchone()
             if row is None:
                 raise KeyError(conversation_id)
             connection.execute(
-                "UPDATE conversations SET archived_at = ? WHERE conversation_id = ?",
+                "UPDATE conversations SET archived_at = %s WHERE conversation_id = %s",
                 (utc_now() if archived else None, conversation_id),
             )
             row = connection.execute(
-                "SELECT * FROM conversations WHERE conversation_id = ?",
+                "SELECT * FROM conversations WHERE conversation_id = %s",
                 (conversation_id,),
             ).fetchone()
         assert row is not None
@@ -588,17 +425,17 @@ class DomainStore:
     ) -> Conversation:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM conversations WHERE conversation_id = ?",
+                "SELECT * FROM conversations WHERE conversation_id = %s",
                 (conversation_id,),
             ).fetchone()
             if row is None:
                 raise KeyError(conversation_id)
             connection.execute(
-                "UPDATE conversations SET title = ? WHERE conversation_id = ?",
+                "UPDATE conversations SET title = %s WHERE conversation_id = %s",
                 (title, conversation_id),
             )
             row = connection.execute(
-                "SELECT * FROM conversations WHERE conversation_id = ?",
+                "SELECT * FROM conversations WHERE conversation_id = %s",
                 (conversation_id,),
             ).fetchone()
         assert row is not None
@@ -612,51 +449,51 @@ class DomainStore:
         """
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT 1 FROM conversations WHERE conversation_id = ?",
+                "SELECT 1 FROM conversations WHERE conversation_id = %s",
                 (conversation_id,),
             ).fetchone()
             if row is None:
                 raise KeyError(conversation_id)
             if connection.execute(
-                "SELECT 1 FROM tasks WHERE conversation_id = ? LIMIT 1",
+                "SELECT 1 FROM tasks WHERE conversation_id = %s LIMIT 1",
                 (conversation_id,),
             ).fetchone():
                 raise ValueError("Conversation owns development tasks")
             connection.execute(
                 "DELETE FROM handoff_reviews WHERE run_id IN "
-                "(SELECT run_id FROM development_handoffs WHERE conversation_id = ?)",
+                "(SELECT run_id FROM development_handoffs WHERE conversation_id = %s)",
                 (conversation_id,),
             )
             connection.execute(
-                "DELETE FROM development_handoffs WHERE conversation_id = ?",
+                "DELETE FROM development_handoffs WHERE conversation_id = %s",
                 (conversation_id,),
             )
             connection.execute(
                 "DELETE FROM run_events WHERE run_id IN "
-                "(SELECT run_id FROM runs WHERE conversation_id = ?)",
+                "(SELECT run_id FROM runs WHERE conversation_id = %s)",
                 (conversation_id,),
             )
             connection.execute(
-                "DELETE FROM run_requests WHERE conversation_id = ?",
+                "DELETE FROM run_requests WHERE conversation_id = %s",
                 (conversation_id,),
             )
             connection.execute(
-                "DELETE FROM runs WHERE conversation_id = ?", (conversation_id,)
+                "DELETE FROM runs WHERE conversation_id = %s", (conversation_id,)
             )
             connection.execute(
-                "DELETE FROM wechat_bindings WHERE conversation_id = ?",
+                "DELETE FROM wechat_bindings WHERE conversation_id = %s",
                 (conversation_id,),
             )
             connection.execute(
-                "DELETE FROM channel_bindings WHERE conversation_id = ?",
+                "DELETE FROM channel_bindings WHERE conversation_id = %s",
                 (conversation_id,),
             )
             connection.execute(
-                "DELETE FROM conversation_requests WHERE conversation_id = ?",
+                "DELETE FROM conversation_requests WHERE conversation_id = %s",
                 (conversation_id,),
             )
             connection.execute(
-                "DELETE FROM conversations WHERE conversation_id = ?",
+                "DELETE FROM conversations WHERE conversation_id = %s",
                 (conversation_id,),
             )
 
@@ -666,7 +503,7 @@ class DomainStore:
         conditions: list[str] = []
         parameters: list[str] = []
         if workspace_id is not None:
-            conditions.append("workspace_id = ?")
+            conditions.append("workspace_id = %s")
             parameters.append(workspace_id)
         if not include_archived:
             conditions.append("archived_at IS NULL")
@@ -720,7 +557,7 @@ class DomainStore:
                 INSERT INTO tasks
                     (task_id, conversation_id, workspace_id, title, goal, status,
                      issue_url, worktree, branch, created_at, updated_at, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     task.task_id,
@@ -742,7 +579,7 @@ class DomainStore:
     def get_task(self, task_id: str) -> Task | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+                "SELECT * FROM tasks WHERE task_id = %s", (task_id,)
             ).fetchone()
         return None if row is None else self._task(row)
 
@@ -754,7 +591,7 @@ class DomainStore:
                 ).fetchall()
             else:
                 rows = connection.execute(
-                    "SELECT * FROM tasks WHERE workspace_id = ? "
+                    "SELECT * FROM tasks WHERE workspace_id = %s "
                     "ORDER BY created_at, task_id",
                     (workspace_id,),
                 ).fetchall()
@@ -763,7 +600,7 @@ class DomainStore:
     def list_tasks_for_conversation(self, conversation_id: str) -> tuple[Task, ...]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM tasks WHERE conversation_id = ? ORDER BY created_at, task_id",
+                "SELECT * FROM tasks WHERE conversation_id = %s ORDER BY created_at, task_id",
                 (conversation_id,),
             ).fetchall()
         return tuple(self._task(row) for row in rows)
@@ -821,8 +658,8 @@ class DomainStore:
         with self._connect() as connection:
             connection.execute(
                 """
-                UPDATE tasks SET title=?, goal=?, status=?, issue_url=?, worktree=?,
-                    branch=?, updated_at=?, metadata_json=? WHERE task_id=?
+                UPDATE tasks SET title=%s, goal=%s, status=%s, issue_url=%s, worktree=%s,
+                    branch=%s, updated_at=%s, metadata_json=%s WHERE task_id=%s
                 """,
                 (
                     updated.title,
@@ -859,7 +696,7 @@ class DomainStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+                "SELECT * FROM tasks WHERE task_id = %s FOR UPDATE", (task_id,)
             ).fetchone()
             if row is None:
                 return None
@@ -897,8 +734,8 @@ class DomainStore:
             )
             connection.execute(
                 """
-                UPDATE tasks SET status=?, worktree=?, branch=?, updated_at=?,
-                    metadata_json=? WHERE task_id=?
+                UPDATE tasks SET status=%s, worktree=%s, branch=%s, updated_at=%s,
+                    metadata_json=%s WHERE task_id=%s
                 """,
                 (
                     updated.status.value,
@@ -974,7 +811,7 @@ class DomainStore:
                     (run_id, conversation_id, task_id, workspace_id, status, error,
                      budget_json, trace_ref, session_id, checkpoint_receipt_json,
                      created_at, updated_at, ended_at, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     run.run_id,
@@ -996,7 +833,7 @@ class DomainStore:
                 ),
             )
             connection.execute(
-                "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
+                "UPDATE conversations SET updated_at = %s WHERE conversation_id = %s",
                 (run.created_at, conversation_id),
             )
         return run
@@ -1004,7 +841,7 @@ class DomainStore:
     def get_run(self, run_id: str) -> Run | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+                "SELECT * FROM runs WHERE run_id = %s", (run_id,)
             ).fetchone()
         return None if row is None else self._run(row)
 
@@ -1016,7 +853,7 @@ class DomainStore:
                 ).fetchall()
             else:
                 rows = connection.execute(
-                    "SELECT * FROM runs WHERE workspace_id = ? ORDER BY created_at, run_id",
+                    "SELECT * FROM runs WHERE workspace_id = %s ORDER BY created_at, run_id",
                     (workspace_id,),
                 ).fetchall()
         return tuple(self._run(row) for row in rows)
@@ -1024,7 +861,7 @@ class DomainStore:
     def recent_runs(self, workspace_id: str) -> tuple[Run, ...]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM runs WHERE workspace_id = ? "
+                "SELECT * FROM runs WHERE workspace_id = %s "
                 "ORDER BY created_at DESC, run_id DESC LIMIT 100",
                 (workspace_id,),
             ).fetchall()
@@ -1049,17 +886,17 @@ class DomainStore:
             raise ValueError("activity window is invalid")
         with self._connect() as connection:
             task_rows = connection.execute(
-                "SELECT * FROM tasks WHERE workspace_id = ? "
-                "AND ((created_at >= ? AND created_at < ?) "
-                "OR (updated_at >= ? AND updated_at < ?)) "
+                "SELECT * FROM tasks WHERE workspace_id = %s "
+                "AND ((created_at >= %s AND created_at < %s) "
+                "OR (updated_at >= %s AND updated_at < %s)) "
                 "ORDER BY updated_at, task_id",
                 (workspace_id, start, end, start, end),
             ).fetchall()
             run_rows = connection.execute(
-                "SELECT * FROM runs WHERE workspace_id = ? "
-                "AND ((created_at >= ? AND created_at < ?) "
-                "OR (updated_at >= ? AND updated_at < ?) "
-                "OR (ended_at >= ? AND ended_at < ?)) "
+                "SELECT * FROM runs WHERE workspace_id = %s "
+                "AND ((created_at >= %s AND created_at < %s) "
+                "OR (updated_at >= %s AND updated_at < %s) "
+                "OR (ended_at >= %s AND ended_at < %s)) "
                 "ORDER BY created_at, run_id",
                 (workspace_id, start, end, start, end, start, end),
             ).fetchall()
@@ -1072,7 +909,7 @@ class DomainStore:
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT runs.* FROM run_requests JOIN runs USING(run_id) "
-                "WHERE run_requests.conversation_id = ? AND run_requests.request_id = ?",
+                "WHERE run_requests.conversation_id = %s AND run_requests.request_id = %s",
                 (conversation_id, request_id),
             ).fetchone()
         return None if row is None else self._run(row)
@@ -1103,38 +940,43 @@ class DomainStore:
             _json_module.dumps(request_facts, ensure_ascii=False).encode()
         ).hexdigest()
         with self._connect() as connection:
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                (f"run-request:{conversation_id}:{request_id}",),
+            )
             existing = connection.execute(
                 "SELECT runs.*, run_requests.fingerprint FROM run_requests "
-                "JOIN runs USING(run_id) WHERE run_requests.conversation_id = ? "
-                "AND run_requests.request_id = ?",
+                "JOIN runs USING(run_id) WHERE run_requests.conversation_id = %s "
+                "AND run_requests.request_id = %s",
                 (conversation_id, request_id),
             ).fetchone()
             if existing is not None:
                 if existing["fingerprint"] != fingerprint:
                     raise ValueError("Request ID belongs to a different input")
                 return self._run(existing)
+            conversation = connection.execute(
+                "SELECT workspace_id FROM conversations WHERE conversation_id = %s "
+                "FOR UPDATE",
+                (conversation_id,),
+            ).fetchone()
+            if conversation is None:
+                raise ValueError("Run requires an existing Conversation")
             recovery = connection.execute(
-                "SELECT 1 FROM runs WHERE conversation_id = ? AND status = ? LIMIT 1",
+                "SELECT 1 FROM runs WHERE conversation_id = %s AND status = %s LIMIT 1",
                 (conversation_id, RunStatus.RECOVERY_REQUIRED.value),
             ).fetchone()
             if recovery is not None:
                 raise ValueError("Conversation has a Run requiring recovery review")
             active = connection.execute(
-                "SELECT 1 FROM runs WHERE conversation_id = ? "
+                "SELECT 1 FROM runs WHERE conversation_id = %s "
                 "AND status IN ('queued', 'running') LIMIT 1",
                 (conversation_id,),
             ).fetchone()
             if active is not None:
                 raise ValueError("Conversation already has an active Run")
-            conversation = connection.execute(
-                "SELECT workspace_id FROM conversations WHERE conversation_id = ?",
-                (conversation_id,),
-            ).fetchone()
-            if conversation is None:
-                raise ValueError("Run requires an existing Conversation")
             if task_id is not None:
                 task = connection.execute(
-                    "SELECT conversation_id FROM tasks WHERE task_id = ?", (task_id,)
+                    "SELECT conversation_id FROM tasks WHERE task_id = %s", (task_id,)
                 ).fetchone()
                 if task is None or task["conversation_id"] != conversation_id:
                     raise ValueError("Run task must belong to its Conversation")
@@ -1162,7 +1004,7 @@ class DomainStore:
                     (run_id, conversation_id, task_id, workspace_id, status, error,
                      budget_json, trace_ref, session_id, checkpoint_receipt_json,
                      created_at, updated_at, ended_at, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     run.run_id,
@@ -1183,7 +1025,7 @@ class DomainStore:
             )
             connection.execute(
                 "INSERT INTO run_requests(conversation_id, request_id, run_id, fingerprint) "
-                "VALUES (?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s)",
                 (conversation_id, request_id, run.run_id, fingerprint),
             )
         return run
@@ -1191,7 +1033,7 @@ class DomainStore:
     def list_runs_for_conversation(self, conversation_id: str) -> tuple[Run, ...]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM runs WHERE conversation_id = ? ORDER BY created_at, run_id",
+                "SELECT * FROM runs WHERE conversation_id = %s ORDER BY created_at, run_id",
                 (conversation_id,),
             ).fetchall()
         return tuple(self._run(row) for row in rows)
@@ -1199,7 +1041,7 @@ class DomainStore:
     def list_runs_for_task(self, task_id: str) -> tuple[Run, ...]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM runs WHERE task_id = ? ORDER BY created_at, run_id",
+                "SELECT * FROM runs WHERE task_id = %s ORDER BY created_at, run_id",
                 (task_id,),
             ).fetchall()
         return tuple(self._run(row) for row in rows)
@@ -1215,7 +1057,7 @@ class DomainStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+                "SELECT * FROM runs WHERE run_id = %s FOR UPDATE", (run_id,)
             ).fetchone()
             if row is None:
                 raise KeyError(run_id)
@@ -1228,8 +1070,8 @@ class DomainStore:
                 update={"session_id": session_id, "updated_at": utc_now()}
             )
             connection.execute(
-                "UPDATE runs SET session_id = ?, updated_at = ? "
-                "WHERE run_id = ? AND session_id IS NULL",
+                "UPDATE runs SET session_id = %s, updated_at = %s "
+                "WHERE run_id = %s AND session_id IS NULL",
                 (session_id, updated.updated_at, run_id),
             )
             return updated
@@ -1284,9 +1126,9 @@ class DomainStore:
         with self._connect() as connection:
             connection.execute(
                 """
-                UPDATE runs SET status=?, error=?, task_id=?, budget_json=?, trace_ref=?,
-                    session_id=?, checkpoint_receipt_json=?, updated_at=?, ended_at=?,
-                    metadata_json=? WHERE run_id=?
+                UPDATE runs SET status=%s, error=%s, task_id=%s, budget_json=%s, trace_ref=%s,
+                    session_id=%s, checkpoint_receipt_json=%s, updated_at=%s, ended_at=%s,
+                    metadata_json=%s WHERE run_id=%s
                 """,
                 (
                     updated.status.value,
@@ -1312,13 +1154,13 @@ class DomainStore:
         with self._connect() as connection:
             if (
                 connection.execute(
-                    "SELECT 1 FROM runs WHERE run_id = ?", (run_id,)
+                    "SELECT 1 FROM runs WHERE run_id = %s", (run_id,)
                 ).fetchone()
                 is None
             ):
                 raise ValueError("Run not found")
             row = connection.execute(
-                "SELECT COALESCE(MAX(sequence), 0) FROM run_events WHERE run_id = ?",
+                "SELECT COALESCE(MAX(sequence), 0) FROM run_events WHERE run_id = %s",
                 (run_id,),
             ).fetchone()
             sequence = int(row[0]) + 1
@@ -1331,7 +1173,7 @@ class DomainStore:
             )
             connection.execute(
                 "INSERT INTO run_events(run_id, sequence, kind, data_json, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s)",
                 (run_id, sequence, kind, _json(event.data), event.created_at),
             )
         return event
@@ -1340,15 +1182,15 @@ class DomainStore:
         self, *, kinds: tuple[str, ...], before: str, keep: int
     ) -> None:
         """Drop old diagnostic rows without changing any Run's high-water cursor."""
-        placeholders = ", ".join("?" for _ in kinds)
+        placeholders = ", ".join("%s" for _ in kinds)
         with self._connect() as connection:
             connection.execute(
                 f"""
-                DELETE FROM run_events WHERE rowid IN (
+                DELETE FROM run_events WHERE id IN (
                     SELECT event_row FROM (
-                        SELECT event.rowid AS event_row, event.created_at,
+                        SELECT event.id AS event_row, event.created_at,
                             ROW_NUMBER() OVER (
-                                ORDER BY event.created_at DESC, event.rowid DESC
+                                ORDER BY event.created_at DESC, event.id DESC
                             ) AS recency
                         FROM run_events AS event
                         WHERE event.kind IN ({placeholders})
@@ -1356,7 +1198,7 @@ class DomainStore:
                               SELECT MAX(tail.sequence) FROM run_events AS tail
                               WHERE tail.run_id = event.run_id
                           )
-                    ) WHERE created_at < ? OR recency > ?
+                    ) AS pruned WHERE created_at < %s OR recency > %s
                 )
                 """,
                 (*kinds, before, keep),
@@ -1365,7 +1207,7 @@ class DomainStore:
     def run_event_cursor(self, run_id: str) -> int:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT COALESCE(MAX(sequence), 0) FROM run_events WHERE run_id = ?",
+                "SELECT COALESCE(MAX(sequence), 0) FROM run_events WHERE run_id = %s",
                 (run_id,),
             ).fetchone()
         return int(row[0])
@@ -1375,8 +1217,8 @@ class DomainStore:
     ) -> tuple[RunEvent, ...]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM run_events WHERE run_id = ? AND sequence > ? "
-                "ORDER BY sequence LIMIT ?",
+                "SELECT * FROM run_events WHERE run_id = %s AND sequence > %s "
+                "ORDER BY sequence LIMIT %s",
                 (run_id, after, limit),
             ).fetchall()
         return tuple(
@@ -1420,14 +1262,14 @@ class DomainStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             run_row = connection.execute(
-                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+                "SELECT * FROM runs WHERE run_id = %s FOR UPDATE", (run_id,)
             ).fetchone()
             if run_row is None:
                 raise KeyError(run_id)
             if run_row["conversation_id"] != conversation_id:
                 raise ValueError("Handoff Run belongs to another Conversation")
             existing = connection.execute(
-                "SELECT * FROM development_handoffs WHERE run_id = ?", (run_id,)
+                "SELECT * FROM development_handoffs WHERE run_id = %s", (run_id,)
             ).fetchone()
             if existing is not None:
                 current = self._handoff(existing)
@@ -1442,8 +1284,8 @@ class DomainStore:
                     if not current.history_origins and history_origins:
                         now = utc_now()
                         connection.execute(
-                            "UPDATE development_handoffs SET history_origins_json=?, "
-                            "updated_at=? WHERE run_id=?",
+                            "UPDATE development_handoffs SET history_origins_json=%s, "
+                            "updated_at=%s WHERE run_id=%s",
                             (_json(list(history_origins)), now, run_id),
                         )
                         current = current.model_copy(
@@ -1471,7 +1313,7 @@ class DomainStore:
                     (run_id, conversation_id, request_id, status, runtime_task_id,
                      domain_task_id, prompt, source, diagnostic,
                      history_origins_json, created_at, updated_at, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     record.run_id,
@@ -1494,7 +1336,7 @@ class DomainStore:
     def get_handoff(self, run_id: str) -> HandoffRecord | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM development_handoffs WHERE run_id = ?", (run_id,)
+                "SELECT * FROM development_handoffs WHERE run_id = %s", (run_id,)
             ).fetchone()
         return None if row is None else self._handoff(row)
 
@@ -1502,7 +1344,7 @@ class DomainStore:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM development_handoffs "
-                "WHERE status NOT IN (?, ?) ORDER BY created_at, run_id",
+                "WHERE status NOT IN (%s, %s) ORDER BY created_at, run_id",
                 (HandoffStatus.COMPLETED.value, HandoffStatus.ABANDONED.value),
             ).fetchall()
         return tuple(self._handoff(row) for row in rows)
@@ -1521,7 +1363,8 @@ class DomainStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT * FROM development_handoffs WHERE run_id = ?", (run_id,)
+                "SELECT * FROM development_handoffs WHERE run_id = %s FOR UPDATE",
+                (run_id,),
             ).fetchone()
             if row is None:
                 raise KeyError(run_id)
@@ -1565,10 +1408,10 @@ class DomainStore:
             )
             connection.execute(
                 """
-                UPDATE development_handoffs SET status=?, runtime_task_id=?,
-                    domain_task_id=?, diagnostic=?, history_origins_json=?,
-                    updated_at=?, metadata_json=?
-                WHERE run_id=?
+                UPDATE development_handoffs SET status=%s, runtime_task_id=%s,
+                    domain_task_id=%s, diagnostic=%s, history_origins_json=%s,
+                    updated_at=%s, metadata_json=%s
+                WHERE run_id=%s
                 """,
                 (
                     updated.status.value,
@@ -1597,13 +1440,14 @@ class DomainStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             handoff_row = connection.execute(
-                "SELECT * FROM development_handoffs WHERE run_id = ?", (run_id,)
+                "SELECT * FROM development_handoffs WHERE run_id = %s FOR UPDATE",
+                (run_id,),
             ).fetchone()
             if handoff_row is None:
                 raise KeyError(run_id)
             current = self._handoff(handoff_row)
             review_row = connection.execute(
-                "SELECT * FROM handoff_reviews WHERE request_id = ?", (request_id,)
+                "SELECT * FROM handoff_reviews WHERE request_id = %s", (request_id,)
             ).fetchone()
             if review_row is not None:
                 review = self._handoff_review(review_row)
@@ -1631,8 +1475,8 @@ class DomainStore:
             if current.updated_at != expected_updated_at:
                 raise ValueError("handoff_version_conflict")
             cursor = connection.execute(
-                "UPDATE development_handoffs SET status=?, updated_at=? "
-                "WHERE run_id=? AND status=? AND updated_at=?",
+                "UPDATE development_handoffs SET status=%s, updated_at=%s "
+                "WHERE run_id=%s AND status=%s AND updated_at=%s",
                 (
                     HandoffStatus.REVIEWING.value,
                     now,
@@ -1661,7 +1505,7 @@ class DomainStore:
                 INSERT INTO handoff_reviews
                     (request_id, run_id, action, expected_updated_at, note, status,
                      result_status, diagnostic, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     review.request_id,
@@ -1690,13 +1534,13 @@ class DomainStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             review_row = connection.execute(
-                "SELECT * FROM handoff_reviews WHERE request_id = ?", (request_id,)
+                "SELECT * FROM handoff_reviews WHERE request_id = %s", (request_id,)
             ).fetchone()
             if review_row is None:
                 raise KeyError(request_id)
             review = self._handoff_review(review_row)
             handoff_row = connection.execute(
-                "SELECT * FROM development_handoffs WHERE run_id = ?", (run_id,)
+                "SELECT * FROM development_handoffs WHERE run_id = %s", (run_id,)
             ).fetchone()
             if handoff_row is None:
                 raise KeyError(run_id)
@@ -1721,8 +1565,8 @@ class DomainStore:
                 }
             )
             cursor = connection.execute(
-                "UPDATE development_handoffs SET status=?, updated_at=?, "
-                "metadata_json=? WHERE run_id=? AND status=?",
+                "UPDATE development_handoffs SET status=%s, updated_at=%s, "
+                "metadata_json=%s WHERE run_id=%s AND status=%s",
                 (
                     updated.status.value,
                     updated.updated_at,
@@ -1734,8 +1578,8 @@ class DomainStore:
             if cursor.rowcount != 1:
                 raise ValueError("handoff_review_state_conflict")
             connection.execute(
-                "UPDATE handoff_reviews SET status=?, result_status=?, updated_at=? "
-                "WHERE request_id=?",
+                "UPDATE handoff_reviews SET status=%s, result_status=%s, updated_at=%s "
+                "WHERE request_id=%s",
                 (
                     HandoffReviewStatus.COMPLETED.value,
                     final_status.value,
@@ -1751,13 +1595,13 @@ class DomainStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             review_row = connection.execute(
-                "SELECT * FROM handoff_reviews WHERE request_id = ?", (request_id,)
+                "SELECT * FROM handoff_reviews WHERE request_id = %s", (request_id,)
             ).fetchone()
             if review_row is None:
                 raise KeyError(request_id)
             review = self._handoff_review(review_row)
             handoff_row = connection.execute(
-                "SELECT * FROM development_handoffs WHERE run_id = ?", (run_id,)
+                "SELECT * FROM development_handoffs WHERE run_id = %s", (run_id,)
             ).fetchone()
             if handoff_row is None:
                 raise KeyError(run_id)
@@ -1777,8 +1621,8 @@ class DomainStore:
                 }
             )
             cursor = connection.execute(
-                "UPDATE development_handoffs SET status=?, diagnostic=?, updated_at=? "
-                "WHERE run_id=? AND status=?",
+                "UPDATE development_handoffs SET status=%s, diagnostic=%s, updated_at=%s "
+                "WHERE run_id=%s AND status=%s",
                 (
                     updated.status.value,
                     updated.diagnostic,
@@ -1790,8 +1634,8 @@ class DomainStore:
             if cursor.rowcount != 1:
                 raise ValueError("handoff_review_state_conflict")
             connection.execute(
-                "UPDATE handoff_reviews SET status=?, diagnostic=?, updated_at=? "
-                "WHERE request_id=?",
+                "UPDATE handoff_reviews SET status=%s, diagnostic=%s, updated_at=%s "
+                "WHERE request_id=%s",
                 (
                     HandoffReviewStatus.FAILED.value,
                     diagnostic,
@@ -1807,13 +1651,13 @@ class DomainStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
-                "SELECT * FROM handoff_reviews WHERE status = ?",
+                "SELECT * FROM handoff_reviews WHERE status = %s",
                 (HandoffReviewStatus.IN_PROGRESS.value,),
             ).fetchall()
             for row in rows:
                 review = self._handoff_review(row)
                 handoff_row = connection.execute(
-                    "SELECT * FROM development_handoffs WHERE run_id = ?",
+                    "SELECT * FROM development_handoffs WHERE run_id = %s",
                     (review.run_id,),
                 ).fetchone()
                 if handoff_row is None:
@@ -1823,8 +1667,8 @@ class DomainStore:
                     continue
                 now = utc_now()
                 connection.execute(
-                    "UPDATE development_handoffs SET status=?, diagnostic=?, "
-                    "updated_at=? WHERE run_id=? AND status=?",
+                    "UPDATE development_handoffs SET status=%s, diagnostic=%s, "
+                    "updated_at=%s WHERE run_id=%s AND status=%s",
                     (
                         HandoffStatus.NEEDS_REVIEW.value,
                         "review_interrupted",
@@ -1834,8 +1678,8 @@ class DomainStore:
                     ),
                 )
                 connection.execute(
-                    "UPDATE handoff_reviews SET status=?, diagnostic=?, updated_at=? "
-                    "WHERE request_id=?",
+                    "UPDATE handoff_reviews SET status=%s, diagnostic=%s, updated_at=%s "
+                    "WHERE request_id=%s",
                     (
                         HandoffReviewStatus.FAILED.value,
                         "review_interrupted",
@@ -1860,13 +1704,13 @@ class DomainStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             conversation = connection.execute(
-                "SELECT * FROM conversations WHERE conversation_id = ?",
+                "SELECT * FROM conversations WHERE conversation_id = %s FOR UPDATE",
                 (conversation_id,),
             ).fetchone()
             if conversation is None:
                 raise KeyError(conversation_id)
             existing = connection.execute(
-                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+                "SELECT * FROM tasks WHERE task_id = %s", (task_id,)
             ).fetchone()
             if existing is not None:
                 task = self._task(existing)
@@ -1887,7 +1731,7 @@ class DomainStore:
                 INSERT INTO tasks
                     (task_id, conversation_id, workspace_id, title, goal, status,
                      issue_url, worktree, branch, created_at, updated_at, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     task.task_id,
@@ -1911,7 +1755,7 @@ class DomainStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+                "SELECT * FROM runs WHERE run_id = %s FOR UPDATE", (run_id,)
             ).fetchone()
             if row is None:
                 raise KeyError(run_id)
@@ -1921,7 +1765,7 @@ class DomainStore:
                     raise ValueError("Run is already associated with another Task")
                 return current
             task_row = connection.execute(
-                "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+                "SELECT * FROM tasks WHERE task_id = %s", (task_id,)
             ).fetchone()
             if task_row is None:
                 raise KeyError(task_id)
@@ -1931,8 +1775,8 @@ class DomainStore:
                 update={"task_id": task_id, "updated_at": utc_now()}
             )
             connection.execute(
-                "UPDATE runs SET task_id=?, updated_at=? "
-                "WHERE run_id=? AND task_id IS NULL",
+                "UPDATE runs SET task_id=%s, updated_at=%s "
+                "WHERE run_id=%s AND task_id IS NULL",
                 (task_id, updated.updated_at, run_id),
             )
             return updated
@@ -1962,15 +1806,18 @@ class DomainStore:
     ) -> None:
         with self._connect() as connection:
             connection.execute(
-                "INSERT OR REPLACE INTO domain_meta(key, value) VALUES(?, ?)",
+                "INSERT INTO domain_meta(key, value) VALUES(%s, %s) "
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
                 ("source_sha256", source_sha256),
             )
             connection.execute(
-                "INSERT OR REPLACE INTO domain_meta(key, value) VALUES(?, ?)",
+                "INSERT INTO domain_meta(key, value) VALUES(%s, %s) "
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
                 ("taskboard_sha256", taskboard_sha256 or ""),
             )
             connection.execute(
-                "INSERT OR REPLACE INTO domain_meta(key, value) VALUES(?, ?)",
+                "INSERT INTO domain_meta(key, value) VALUES(%s, %s) "
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
                 ("source", source),
             )
 
@@ -1991,7 +1838,7 @@ class DomainStore:
             }
 
     @staticmethod
-    def _conversation(row: sqlite3.Row) -> Conversation:
+    def _conversation(row: Row) -> Conversation:
         return Conversation(
             conversation_id=cast(str, row["conversation_id"]),
             workspace_id=cast(str, row["workspace_id"]),
@@ -2005,7 +1852,7 @@ class DomainStore:
         )
 
     @staticmethod
-    def _task(row: sqlite3.Row) -> Task:
+    def _task(row: Row) -> Task:
         return Task(
             task_id=cast(str, row["task_id"]),
             conversation_id=cast(str, row["conversation_id"]),
@@ -2022,7 +1869,7 @@ class DomainStore:
         )
 
     @staticmethod
-    def _handoff(row: sqlite3.Row) -> HandoffRecord:
+    def _handoff(row: Row) -> HandoffRecord:
         return HandoffRecord(
             run_id=cast(str, row["run_id"]),
             conversation_id=cast(str, row["conversation_id"]),
@@ -2042,7 +1889,7 @@ class DomainStore:
         )
 
     @staticmethod
-    def _handoff_review(row: sqlite3.Row) -> HandoffReviewRecord:
+    def _handoff_review(row: Row) -> HandoffReviewRecord:
         return HandoffReviewRecord(
             request_id=cast(str, row["request_id"]),
             run_id=cast(str, row["run_id"]),
@@ -2057,7 +1904,7 @@ class DomainStore:
         )
 
     @staticmethod
-    def _run(row: sqlite3.Row) -> Run:
+    def _run(row: Row) -> Run:
         metadata = cast(dict[str, Any], _loads(row["metadata_json"], {}))
         raw_source = metadata.get("source")
         source = (
