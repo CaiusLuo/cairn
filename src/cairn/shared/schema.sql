@@ -363,6 +363,8 @@ CREATE TABLE IF NOT EXISTS __KNOWLEDGE__.review_delivery_requests (
 CREATE INDEX IF NOT EXISTS review_delivery_requests_review_idx
     ON __KNOWLEDGE__.review_delivery_requests(review_id, created_at);
 
+-- Document ingestion status and graph tables come from
+-- migrations/0002_knowledge_rag.sql, which upgrades existing databases.
 CREATE TABLE IF NOT EXISTS __KNOWLEDGE__.documents (
     document_id text PRIMARY KEY,
     owner text NOT NULL,
