@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from cairn.shared import db as db_module
 from cairn.shared.db import Database
 from tests.support import pg
@@ -24,14 +26,15 @@ def _columns(database: Database, table: str) -> set[str]:
 def _tables(database: Database) -> set[str]:
     with database.connect("knowledge") as connection:
         rows = connection.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = %s",
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = %s",
             (database.schema("knowledge"),),
         ).fetchall()
     return {str(row["table_name"]) for row in rows}
 
 
-def test_0002_upgrades_an_existing_0001_database(tmp_path: Path, monkeypatch) -> None:
+def test_0002_upgrades_an_existing_0001_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     database = Database(pg.test_database_url(), namespace=pg.namespace_for(tmp_path))
     original = db_module._MIGRATIONS
     database.drop_schemas()

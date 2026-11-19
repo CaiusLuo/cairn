@@ -17,6 +17,8 @@ from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.conversation.models import ConversationSource, Run, RunStatus
 from cairn.development.catalogue import ChannelPrincipal
 from cairn.integrations.wechat.state import WechatAccount, WechatState
+from cairn.knowledge.document_store import DocumentStore
+from cairn.knowledge.ingest import IngestionWorker
 from cairn.knowledge.models import Clip
 from cairn.knowledge.store import KnowledgeStore
 from cairn.server.bootstrap import runtime_app
@@ -26,7 +28,12 @@ from tests.support.pg import database_for
 
 TOKEN = "knowledge-chat-test-token"
 USAGE = LLMUsage(input_tokens=12, output_tokens=12)
-KNOWLEDGE_TOOLS = {"knowledge_list", "knowledge_search", "knowledge_get"}
+KNOWLEDGE_TOOLS = {
+    "knowledge_list",
+    "knowledge_search",
+    "knowledge_get",
+    "document_read",
+}
 ANY_SENTINEL = "CAIRN-KNOWLEDGE-SENTINEL"
 
 
@@ -299,6 +306,54 @@ def test_owner_searches_chinese_keyword_then_gets_matching_clip(tmp_path: Path) 
             assert "蓝石" in payloads[1]["clips"][0]["preview"]
             assert "周五" in payloads[2]["content"]
             assert payloads[2]["total_chars"] == len(clip.content)
+
+    asyncio.run(scenario())
+
+
+def test_owner_searches_and_reads_an_uploaded_document(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        source = _source(tmp_path)
+        state = tmp_path / "state"
+        library = DocumentStore(database_for(state), state / "knowledge" / "documents")
+        document, _ = library.create_upload(
+            "runbook.md",
+            "text/markdown",
+            "# 部署\n\nDOCUMENT-SENTINEL: 数据库备份在停机前完成。".encode(),
+        )
+        await IngestionWorker(library).process_one()
+
+        model = ScriptedModel(
+            [
+                ("knowledge_search", {"query": "DOCUMENT-SENTINEL"}),
+                (
+                    "document_read",
+                    {"document_id": document.document_id, "max_chars": 20},
+                ),
+            ],
+            f"备份在停机前完成。来源 {document.document_id}",
+        )
+        app = _app(source, state, tmp_path / "worktrees")
+        async with app.router.lifespan_context(app):
+            result, history = await _cli_chat(
+                app,
+                model,
+                "上传的部署文档里备份怎么安排?",
+                source="cli",
+                request_id="knowledge-chat-document",
+            )
+            assert document.document_id in result["result"]
+            payloads = _tool_payloads(history)
+            assert payloads[0]["status"] == "ok"
+            assert payloads[0]["clips"] == []
+            assert payloads[0]["semantic"] == "disabled"
+            found = payloads[0]["documents"][0]
+            assert found["document_id"] == document.document_id
+            assert found["title"] == "runbook.md"
+            assert "DOCUMENT-SENTINEL" in found["excerpt"]
+            assert payloads[1]["document"]["document_id"] == document.document_id
+            assert payloads[1]["content"]
+            assert payloads[1]["untrusted_reference"] is True
+            assert KNOWLEDGE_TOOLS.issubset(model.turns[0])
 
     asyncio.run(scenario())
 

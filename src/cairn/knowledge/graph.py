@@ -85,7 +85,10 @@ class LLMGraphExtractor:
         max_entities: int = MAX_ENTITIES,
         max_relations: int = MAX_RELATIONS,
     ) -> None:
-        self.llm = llm.with_output_limit(1_500)
+        # Offline and test models may not support output limits; graph
+        # extraction is optional, so degrade instead of failing startup.
+        limited = getattr(llm, "with_output_limit", None)
+        self.llm = limited(1_500) if callable(limited) else llm
         self.max_chars = max_chars
         self.max_entities = max_entities
         self.max_relations = max_relations

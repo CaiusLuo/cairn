@@ -144,6 +144,21 @@ def test_llm_extractor_sends_chunks_and_parses_the_answer() -> None:
     assert [entity.name for entity in payload.entities] == ["Cairn", "PostgreSQL"]
 
 
+class _PlainLLM:
+    """An offline model without with_output_limit, as in provider-free runs."""
+
+    async def generate(self, messages: list[Message]) -> LLMResponse:
+        return LLMResponse(content='{"entities":[{"name":"甲","chunks":[0]}]}')
+
+
+def test_llm_extractor_accepts_a_model_without_output_limits() -> None:
+    extractor = LLMGraphExtractor(cast(Any, _PlainLLM()))
+
+    payload = asyncio.run(extractor.extract([(0, "甲 是测试实体")]))
+
+    assert [entity.name for entity in payload.entities] == ["甲"]
+
+
 def test_llm_extractor_returns_nothing_for_no_chunks() -> None:
     llm = _FakeLLM("{}")
     extractor = LLMGraphExtractor(cast(Any, llm))

@@ -152,15 +152,15 @@ def runtime_app(
         knowledge_store = KnowledgeStore(database)
         document_store: DocumentStore | None = None
         knowledge_worker: IngestionWorker | None = None
+        knowledge_embedder: LiteLLMEmbeddingClient | None = None
         if knowledge.enabled:
             document_store = DocumentStore(
                 database,
                 state / "knowledge" / "documents",
                 max_upload_bytes=knowledge.max_upload_bytes,
             )
-            embedder = None
             if provider_runtime is not None and knowledge.embedding_model:
-                embedder = LiteLLMEmbeddingClient(
+                knowledge_embedder = LiteLLMEmbeddingClient(
                     knowledge.embedding_model,
                     api_key=_embedding_key(knowledge, provider_runtime),
                     api_base=knowledge.embedding_base_url or None,
@@ -174,7 +174,7 @@ def runtime_app(
                 )
             knowledge_worker = IngestionWorker(
                 document_store,
-                embedder=embedder,
+                embedder=knowledge_embedder,
                 graph=graph,
                 settings=IngestionSettings(
                     chunk_chars=knowledge.chunk_chars,
@@ -255,6 +255,8 @@ def runtime_app(
             schedule_state=schedule_state or state / "schedules",
             channels_state=channel_root,
             knowledge_store=knowledge_store,
+            document_store=document_store,
+            knowledge_embedder=knowledge_embedder,
             services=services,
             review=review,
             config_file=config_file,

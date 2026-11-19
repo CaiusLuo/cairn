@@ -108,7 +108,7 @@ def _document(row: Row) -> Document:
     )
 
 
-def _vector_literal(vector: Sequence[float]) -> str:
+def vector_literal(vector: Sequence[float]) -> str:
     return "[" + ",".join(format(float(value), ".9g") for value in vector) + "]"
 
 
@@ -431,7 +431,7 @@ class DocumentStore:
                     "UPDATE chunks SET embedding = %s::vector, embedding_model = %s, "
                     "embedding_sha = %s, embedded_at = now() WHERE chunk_id = %s",
                     (
-                        _vector_literal(item.vector),
+                        vector_literal(item.vector),
                         model,
                         hashlib.sha256(item.text.encode("utf-8")).hexdigest(),
                         item.chunk_id,
@@ -567,4 +567,5 @@ __all__ = [
     "EntityRecord",
     "MissingChunk",
     "RelationRecord",
+    "vector_literal",
 ]
