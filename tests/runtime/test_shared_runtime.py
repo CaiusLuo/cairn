@@ -15,6 +15,7 @@ from cairn.integrations.wechat.runtime import (
 from cairn.integrations.wechat.state import WechatAccount, WechatState
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
+from tests.support.pg import database_for
 
 
 def repository(root: Path) -> Path:
@@ -57,6 +58,7 @@ def test_cli_web_wechat_share_real_execution_and_worktree(tmp_path: Path) -> Non
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="test-runtime-token",
+            database=database_for(tmp_path),
         )
         started, release = asyncio.Event(), asyncio.Event()
 
@@ -146,6 +148,7 @@ def test_safe_continue_uses_same_id_history_and_worktree(tmp_path: Path) -> None
             tmp_path / "worktrees",
             budget=RunBudget(1),
             token="test-token",
+            database=database_for(tmp_path),
         )
         api = RuntimeClient(
             "http://127.0.0.1:8777",
@@ -185,6 +188,7 @@ def test_runtime_http_requires_authentication_and_rejects_authority_arguments(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="test-token",
+            database=database_for(tmp_path),
         )
         transport = httpx.ASGITransport(app=app)
         async with (
@@ -233,6 +237,7 @@ def test_wechat_service_forwards_after_sender_admission(tmp_path: Path) -> None:
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="test-token",
+            database=database_for(tmp_path),
         )
         api = RuntimeClient(
             "http://127.0.0.1:8777",
@@ -320,6 +325,7 @@ def test_deadline_requires_review_and_never_replays_write(
             tmp_path / "worktrees",
             budget=RunBudget(5, max_seconds=5.0),
             token="test-token",
+            database=database_for(tmp_path),
         )
         api = RuntimeClient(
             "http://127.0.0.1:8777",
@@ -377,6 +383,7 @@ def test_pause_survives_service_restart_with_usage_and_original_worktree(
                 tmp_path / "worktrees",
                 budget=RunBudget(1),
                 token="test-token",
+                database=database_for(tmp_path),
             )
 
         app = build()
@@ -419,6 +426,7 @@ def test_agent_cannot_read_runtime_private_state(tmp_path: Path) -> None:
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="private-runtime-value",
+            database=database_for(tmp_path),
         )
         private = state / "ordinary.txt"
         private.write_text("private-runtime-value")
@@ -491,6 +499,7 @@ def test_unknown_tool_effect_stops_before_another_model_request(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="test-token",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = CountModel
         async with app.router.lifespan_context(app):
@@ -519,6 +528,7 @@ def test_websocket_stream_is_transient_and_reconnects_from_cursor(
         tmp_path / "worktrees",
         budget=RunBudget(5),
         token="test-runtime-token",
+        database=database_for(tmp_path),
     )
     entered, release = asyncio.Event(), asyncio.Event()
     model = ScriptedStreamLLM(
@@ -603,6 +613,7 @@ def test_approved_provider_runtime_is_reused_without_api_calls(tmp_path: Path) -
             token="test-token",
             provider_runtime=profile,
             secret_env_keys=frozenset({"TEST_ONLY_KEY"}),
+            database=database_for(tmp_path),
         )
         async with app.router.lifespan_context(app):
             task = app.state.runtime.submit("Create", "cli")
@@ -635,6 +646,7 @@ def test_full_wechat_bridge_startup_does_not_initialize_legacy_agent(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="test-token",
+            database=database_for(tmp_path),
         )
         api = RuntimeClient(
             "http://127.0.0.1:8777",
@@ -676,7 +688,6 @@ def test_full_wechat_bridge_startup_does_not_initialize_legacy_agent(
                     allowed_senders=frozenset({"owner", "u1"}),
                     runtime_url="http://127.0.0.1:8777",
                     runtime_client=api,
-                    schedule_store=tmp_path / "legacy-schedule",
                 )
                 from cairn.integrations.wechat.state import WechatState
 
@@ -728,6 +739,7 @@ def test_cli_web_cli_continue_the_same_task_and_committed_history(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="test-token",
+            database=database_for(tmp_path),
         )
         api = RuntimeClient(
             "http://127.0.0.1:8777",
@@ -806,6 +818,7 @@ def test_interactive_input_can_return_after_a_web_turn(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="test-token",
+            database=database_for(tmp_path),
         )
         api = RuntimeClient(
             "http://127.0.0.1:8777",
@@ -903,6 +916,7 @@ def test_plain_chat_shares_history_without_git_worktree_or_repository_context(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="test-token",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = ChatModel
         api = RuntimeClient(
@@ -986,6 +1000,7 @@ def test_agent_requests_development_with_checked_history_and_same_task_id(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="test-token",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = AdaptiveModel
         api = RuntimeClient(
@@ -1037,6 +1052,7 @@ def test_agent_requests_development_with_checked_history_and_same_task_id(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="test-token",
+            database=database_for(tmp_path),
         )
         reopened_api = RuntimeClient(
             "http://127.0.0.1:8777",
@@ -1113,6 +1129,7 @@ def test_chat_cannot_write_or_grant_shell_before_worktree_transition(
             budget=RunBudget(5),
             token="test-token",
             allow_shell=True,
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = NoAuthorityModel
         async with app.router.lifespan_context(app):
@@ -1137,6 +1154,7 @@ def test_wechat_plain_messages_reuse_the_same_server_conversation(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="test-token",
+            database=database_for(tmp_path),
         )
         api = RuntimeClient(
             "http://127.0.0.1:8777",
@@ -1227,6 +1245,7 @@ def test_automatic_handoff_cannot_reset_the_host_budget(tmp_path: Path) -> None:
             tmp_path / "worktrees",
             budget=RunBudget(1),
             token="test-token",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = TransitionModel
         async with app.router.lifespan_context(app):
@@ -1278,6 +1297,7 @@ def test_cancelled_chat_requires_review_and_can_continue_without_worktree(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="test-token",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = ChatModel
         api = RuntimeClient(
@@ -1325,6 +1345,7 @@ def test_chat_accepts_a_non_git_workspace_without_creating_worktree(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="test-token",
+            database=database_for(tmp_path),
         )
         async with app.router.lifespan_context(app):
             task = app.state.runtime.submit("Hello", "web", mode="conversation")
@@ -1347,6 +1368,7 @@ def test_workspace_identity_is_authenticated_and_checked_before_admission(
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="test-token",
+            database=database_for(tmp_path),
         )
         transport = httpx.ASGITransport(app=app)
         right = RuntimeClient(

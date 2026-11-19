@@ -32,6 +32,8 @@ EFFECT_IMPORTS = {
     "litellm",
     "multiprocessing",
     "prompt_toolkit",
+    "psycopg",
+    "psycopg_pool",
     "rich",
     "shutil",
     "smtplib",

@@ -1,16 +1,17 @@
-"""Single-writer task admission/catalogue; durable execution stays in SessionStore."""
+"""Shared task admission/catalogue; durable execution stays in SessionStore."""
 
 from __future__ import annotations
 
-from pathlib import Path
+import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from cairn.agent.session.models import CheckpointReceipt
-from cairn.agent.workspace.lease import WorkspaceLease
-from cairn.shared.atomic_json import atomic_write
+from cairn.shared.db import Database, DbConnection
 from cairn.shared.redaction import redact_text, redact_value
 
 RuntimeSource = Literal["cli", "web", "wechat", "channel", "schedule"]
@@ -131,6 +132,10 @@ class RuntimeEvent(BaseModel):
     data: dict[str, Any]
 
 
+def _json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 class CatalogueData(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: Literal[1] = 1
@@ -141,45 +146,49 @@ class CatalogueData(BaseModel):
 class RuntimeCatalogue:
     def __init__(
         self,
-        root: Path,
+        database: Database,
         *,
-        forbidden_roots: tuple[Path, ...],
         sensitive_values: tuple[str, ...] = (),
     ) -> None:
+        self.db = database
         self.sensitive_values = tuple(s for s in sensitive_values if s)
-        raw = root.absolute()
-        if raw != raw.resolve() or any(
-            raw == p.resolve()
-            or raw.is_relative_to(p.resolve())
-            or p.resolve().is_relative_to(raw)
-            for p in forbidden_roots
-        ):
-            raise ValueError("Runtime state must be private and outside writable roots")
-        root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        root.chmod(0o700)
-        self.path = root / "runtime.json"
-        if self.path.is_symlink() or (root / "owner.lock").is_symlink():
-            raise ValueError("Runtime state cannot use symlinks")
-        self.lease = WorkspaceLease(root / "owner.lock")
-        if not self.lease.acquire():
-            raise RuntimeError("Another runtime owns this state directory")
-        try:
-            self.data = (
-                CatalogueData.model_validate_json(self.path.read_bytes())
-                if self.path.exists()
-                else CatalogueData()
+        with self.db.connect("ops") as connection:
+            self.data = self._load_unlocked(connection)
+
+    @contextmanager
+    def _locked(self) -> Iterator[DbConnection]:
+        with self.db.connect("ops") as connection:
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                ("cairn-runtime-catalogue",),
             )
-            for key, task in self.data.tasks.items():
-                events = self.data.events.get(key, [])
-                if (
-                    key != task.task_id
-                    or [e.sequence for e in events] != list(range(1, task.sequence + 1))
-                    or any(e.task_id != key for e in events)
-                ):
-                    raise ValueError("Invalid runtime event history")
-        except BaseException:
-            self.lease.release()
-            raise
+            yield connection
+
+    def _load_unlocked(self, connection: DbConnection) -> CatalogueData:
+        row = connection.execute(
+            "SELECT payload FROM runtime_state WHERE key = 'catalogue'"
+        ).fetchone()
+        data = (
+            CatalogueData()
+            if row is None
+            else CatalogueData.model_validate(row["payload"])
+        )
+        for key, task in data.tasks.items():
+            events = data.events.get(key, [])
+            if (
+                key != task.task_id
+                or [e.sequence for e in events] != list(range(1, task.sequence + 1))
+                or any(e.task_id != key for e in events)
+            ):
+                raise ValueError("Invalid runtime event history")
+        return data
+
+    def _save_unlocked(self, connection: DbConnection, data: CatalogueData) -> None:
+        connection.execute(
+            "INSERT INTO runtime_state(key, payload) VALUES ('catalogue', %s) "
+            "ON CONFLICT (key) DO UPDATE SET payload = excluded.payload",
+            (_json(data.model_dump(mode="json")),),
+        )
 
     def record(
         self, task: RuntimeTask, kind: str, data: dict[str, Any] | None = None
@@ -229,35 +238,37 @@ class RuntimeCatalogue:
         task = task.model_copy(
             update={"metrics": redact_value(task.metrics, self.sensitive_values)}
         )
-        previous = self.data.tasks.get(task.task_id)
-        seq = 1 if previous is None else previous.sequence + 1
-        if (
-            seq > 10000
-            and kind
-            not in {
-                "interrupted",
-                "failed",
-                "paused",
-                "completed",
-                "reconciled",
-                "cancelled",
-            }
-        ) or (previous is None and len(self.data.tasks) >= 1000):
-            raise RuntimeError("Runtime catalogue capacity reached")
-        updated = task.model_copy(update={"sequence": seq})
-        candidate = self.data.model_copy(deep=True)
-        candidate.tasks[task.task_id] = updated
-        candidate.events.setdefault(task.task_id, []).append(
-            RuntimeEvent(
-                task_id=task.task_id,
-                sequence=seq,
-                kind=kind,
-                data=redact_value(data or {}, self.sensitive_values),
+        with self._locked() as connection:
+            current = self._load_unlocked(connection)
+            previous = current.tasks.get(task.task_id)
+            seq = 1 if previous is None else previous.sequence + 1
+            if (
+                seq > 10000
+                and kind
+                not in {
+                    "interrupted",
+                    "failed",
+                    "paused",
+                    "completed",
+                    "reconciled",
+                    "cancelled",
+                }
+            ) or (previous is None and len(current.tasks) >= 1000):
+                raise RuntimeError("Runtime catalogue capacity reached")
+            updated = task.model_copy(update={"sequence": seq})
+            candidate = current.model_copy(deep=True)
+            candidate.tasks[task.task_id] = updated
+            candidate.events.setdefault(task.task_id, []).append(
+                RuntimeEvent(
+                    task_id=task.task_id,
+                    sequence=seq,
+                    kind=kind,
+                    data=redact_value(data or {}, self.sensitive_values),
+                )
             )
-        )
-        atomic_write(self.path, candidate.model_dump(mode="json"))
-        self.data = candidate
+            self._save_unlocked(connection, candidate)
+            self.data = candidate
         return updated
 
     def close(self) -> None:
-        self.lease.release()
+        pass

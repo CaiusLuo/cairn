@@ -14,13 +14,14 @@ from cairn.conversation.service import (
     ConversationService,
 )
 from cairn.conversation.store import DomainStore
+from tests.support.pg import database_for
 
 
 def test_cancel_during_tool_call_requires_recovery(tmp_path: Path) -> None:
     async def scenario() -> None:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        store = DomainStore(tmp_path / "domain.sqlite3")
+        store = DomainStore(database_for(tmp_path))
         conversation = store.create_conversation(
             workspace=workspace,
             source=ConversationSource.CLI,
@@ -46,6 +47,7 @@ def test_cancel_during_tool_call_requires_recovery(tmp_path: Path) -> None:
             store,
             ToolExecution(),  # type: ignore[arg-type]
             workspace=workspace,
+            attachments_root=tmp_path / "attachments",
         )
         await service.start()
         try:

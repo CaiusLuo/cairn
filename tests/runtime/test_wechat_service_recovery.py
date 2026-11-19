@@ -27,6 +27,7 @@ from cairn.integrations.wechat.state import (
     WechatState,
 )
 from tests.support.fake_ilink import FakeILink
+from tests.support.pg import database_for
 from tests.support.runtime import SequenceLLM
 from tests.support.wechat_service import (
     TOKEN,
@@ -282,7 +283,15 @@ def test_cancel_during_ack_marks_cancelled_not_started(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         service = _Service(
-            config=type("C", (), {"redact_text": None, "schedule_store": None})(),
+            config=type(
+                "C",
+                (),
+                {
+                    "redact_text": None,
+                    "schedule_store": None,
+                    "database": database_for(tmp_path),
+                },
+            )(),
             state=state,
             client=SlowAckClient(),  # type: ignore[arg-type]
             executor=executor,
@@ -330,7 +339,15 @@ def test_cancel_before_coroutine_starts_is_persisted_cancelled(tmp_path: Path) -
 
     async def scenario() -> None:
         service = _Service(
-            config=type("C", (), {"redact_text": None, "schedule_store": None})(),
+            config=type(
+                "C",
+                (),
+                {
+                    "redact_text": None,
+                    "schedule_store": None,
+                    "database": database_for(tmp_path),
+                },
+            )(),
             state=state,
             client=Client(),  # type: ignore[arg-type]
             executor=executor,
@@ -406,6 +423,7 @@ def test_default_wechat_executor_restores_durable_history_after_restart(
         ),
         approval=None,
         allowed_senders=frozenset({"u1"}),
+        database=database_for(tmp_path),
     )
 
     async def flow() -> None:
@@ -523,6 +541,7 @@ def test_configured_wechat_restores_tool_facts_after_service_restart(
                 max_polls=100,
                 poll_interval=0.02,
                 trace_dir=root / "traces",
+                database=database_for(root),
             )
 
             async def exchange(message: dict[str, object], cursor: str) -> None:
@@ -593,6 +612,7 @@ def test_wechat_repeated_cancellation_settles_before_close_retry(
             approval=None,
             allowed_senders=frozenset({"u1"}),
             max_steps=20,
+            database=database_for(root),
         )
         started = asyncio.Event()
         settled = asyncio.Event()
@@ -836,6 +856,7 @@ def test_queued_work_starts_while_poll_is_blocked(tmp_path: Path) -> None:
             approval=None,
             allowed_senders=frozenset({"u1"}),
             max_polls=None,
+            database=database_for(tmp_path),
         )
         service = asyncio.create_task(
             serve_wechat(
@@ -1198,7 +1219,15 @@ def test_poll_updates_cancels_owned_poll_and_stop_waiter(tmp_path: Path) -> None
         client = PollClient()
         stop = asyncio.Event()
         service = _Service(
-            config=type("C", (), {"poll_timeout_ms": None, "schedule_store": None})(),
+            config=type(
+                "C",
+                (),
+                {
+                    "poll_timeout_ms": None,
+                    "schedule_store": None,
+                    "database": database_for(tmp_path),
+                },
+            )(),
             state=WechatState(tmp_path / "state"),
             client=client,  # type: ignore[arg-type]
             executor=lambda *args: None,  # type: ignore[arg-type]

@@ -47,10 +47,6 @@ class ServerPaths:
         return self.data_root / "runtime"
 
     @property
-    def sessions(self) -> Path:
-        return self.runtime / "sessions"
-
-    @property
     def board(self) -> Path:
         return self.runtime / "board"
 
@@ -70,11 +66,6 @@ class ServerPaths:
     @property
     def channels(self) -> Path:
         return self.data_root / "channels"
-
-    @property
-    def domain(self) -> Path:
-        """Authoritative Conversation/Task/Run store for P0-B2/B3."""
-        return self.runtime / "domain.sqlite3"
 
     @property
     def token(self) -> Path:

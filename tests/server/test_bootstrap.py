@@ -11,6 +11,7 @@ import pytest
 
 from cairn.integrations.wechat.state import WechatServeLock
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 from tests.support.server_process import ROOT, ServerProcess
 
 
@@ -90,8 +91,10 @@ def test_custom_root_web_api_and_restart_share_persistent_state(tmp_path: Path) 
             assert json.loads(command.stdout) == []
             assert api.get("/api/health").status_code == 200
         assert (server.data_root / "agent/AGENT.md").is_file()
-        assert (server.data_root / "schedule/schedule.lock").is_file()
-        assert (server.state / "sessions/sessions.sqlite3").is_file()
+        with database_for(server.root).connect("ops") as db:
+            assert db.execute("SELECT COUNT(*) FROM schedule_state").fetchone()[0] == 0
+        with database_for(server.root).connect("agent") as db:
+            assert db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
         assert not (server.state / "host-state").exists()
         assert not (server.state / "agent").exists()
         marker = server.data_root / "agent/MEMORY.md"
@@ -105,7 +108,7 @@ def test_custom_root_web_api_and_restart_share_persistent_state(tmp_path: Path) 
 
 
 @pytest.mark.parametrize(
-    "problem", ["port", "assets", "provider", "key", "toml", "wechat", "schedule"]
+    "problem", ["port", "assets", "provider", "key", "toml", "wechat"]
 )
 def test_startup_refuses_invalid_or_unavailable_dependencies(
     tmp_path: Path, problem: str
@@ -152,10 +155,6 @@ def test_startup_refuses_invalid_or_unavailable_dependencies(
             (server.state / "controls.json").write_text(
                 json.dumps({"version": 1, "wechat_enabled": True})
             )
-        elif problem == "schedule":
-            root = server.data_root / "schedule"
-            root.mkdir(parents=True)
-            (root / "jobs.json").write_text("damaged")
         server.config.write_text(text)
         result = invoke(server)
         assert result.returncode != 0, result.stdout + result.stderr

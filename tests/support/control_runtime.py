@@ -9,6 +9,7 @@ from cairn.agent.budget import RunBudget
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 
 
 def control_runtime(root: Path) -> tuple[Any, RuntimeClient]:
@@ -22,6 +23,7 @@ def control_runtime(root: Path) -> tuple[Any, RuntimeClient]:
         root / "worktrees",
         budget=RunBudget(8),
         token="private-test-token",
+        database=database_for(root),
     )
     return app, RuntimeClient(
         "http://127.0.0.1:8777",

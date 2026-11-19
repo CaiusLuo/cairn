@@ -17,6 +17,8 @@ dependencies = [
     "mcp>=2.3.0,<3",
     "openpyxl>=3.1.5",
     "prompt-toolkit>=3.0.53",
+    "psycopg-pool>=3.2,<4",
+    "psycopg[binary]>=3.2,<4",
     "pydantic>=2.13.5",
     "pypdf>=7.1.1",
     "python-docx>=1.2.0",
@@ -36,6 +38,7 @@ dependencies = [
 [project.scripts]
 cairn = "cairn.server.bootstrap:main"
 cairn-cli = "cairn.interfaces.cli.client:app"
+cairn-pg-import = "cairn.server.pg_import:main"
 
 [build-system]
 requires = ["uv_build>=0.11.3,<0.12.0"]

@@ -17,6 +17,7 @@ from cairn.development.execution.models import TaskSpec
 from cairn.development.execution.runner import CodingTaskRunner
 from tests.support.durable_tasks import BUDGET
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 from tests.support.runtime import SequenceLLM
 
 
@@ -38,11 +39,7 @@ def test_runner_durable_factory_restores_messages() -> None:
         sessions = []
 
         def factory(agent):  # type: ignore[no-untyped-def]
-            store = (
-                stores[0]
-                if stores
-                else SessionStore(root, forbidden_roots=(workspace.root,))
-            )
+            store = stores[0] if stores else SessionStore(database_for(root))
             if not stores:
                 stores.append(store)
             binding = SessionBinding(

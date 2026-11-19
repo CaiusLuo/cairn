@@ -6,6 +6,8 @@ Run from the repository root after `uv sync --locked --all-groups`.
 - [end.sh](end.sh) reports and stops the selected systemd service.
 - [ci/check_server_wheel.py](ci/check_server_wheel.py) installs a built wheel in
   a temporary environment and checks bundled Web/API startup outside the checkout.
-  It uses an offline model and removes its isolated state after a clean stop.
+  It uses an offline model, a `wheelcheck` schema namespace in the database from
+  `CAIRN_TEST_DATABASE_URL` (default `postgresql:///cairn_test`), and removes its
+  isolated state after a clean stop.
 
 Keep credentials in host configuration; do not include tokens in command text or reports.

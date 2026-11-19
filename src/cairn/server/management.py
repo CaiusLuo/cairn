@@ -45,6 +45,7 @@ from cairn.scheduling.tools import (
 from cairn.server.client import RuntimeClient
 from cairn.server.config import DEFAULT_REVIEW, DEFAULT_SERVICES, ReviewConfig, Services
 from cairn.shared.atomic_json import atomic_write
+from cairn.shared.db import Database
 from cairn.shared.lifecycle import await_owned, settle_owned
 from cairn.shared.redaction import redact_value
 
@@ -73,6 +74,7 @@ class ServerControls:
         execution: ServiceExecution,
         workspace: Path,
         state: Path,
+        database: Database,
         token: str,
         web: Any,
         port: int,
@@ -158,7 +160,7 @@ class ServerControls:
         )
         self.schedules = ScheduleController(
             workspace=workspace,
-            store=ScheduleStore(schedule_state),
+            store=ScheduleStore(database),
             executor=self._scheduled,
             deliver=self.wechat.deliver,
             deliver_for_account=self.wechat.deliver_for_account_result,

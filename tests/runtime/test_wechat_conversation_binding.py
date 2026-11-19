@@ -6,11 +6,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from cairn.conversation.store import DomainStore
+from tests.support.pg import database_for
 
 
-def _bind(store: DomainStore, account: str, sender: str) -> str:
+def _bind(store: DomainStore, workspace: Path, account: str, sender: str) -> str:
     return store.get_or_create_wechat_conversation(
-        workspace=store.path.parent,
+        workspace=workspace,
         account_id=account,
         sender_id=sender,
         initial_prompt="first message",
@@ -20,20 +21,20 @@ def _bind(store: DomainStore, account: str, sender: str) -> str:
 def test_wechat_binding_reuses_identity_and_isolates_accounts_and_senders(
     tmp_path: Path,
 ) -> None:
-    store = DomainStore(tmp_path / "domain.sqlite3")
-    first = _bind(store, "bot-1", "owner")
-    assert _bind(store, "bot-1", "owner") == first
-    assert _bind(store, "bot-1", "other") != first
-    assert _bind(store, "bot-2", "owner") != first
+    store = DomainStore(database_for(tmp_path))
+    first = _bind(store, tmp_path, "bot-1", "owner")
+    assert _bind(store, tmp_path, "bot-1", "owner") == first
+    assert _bind(store, tmp_path, "bot-1", "other") != first
+    assert _bind(store, tmp_path, "bot-2", "owner") != first
 
 
 def test_wechat_first_message_concurrency_creates_one_conversation(
     tmp_path: Path,
 ) -> None:
-    store = DomainStore(tmp_path / "domain.sqlite3")
+    store = DomainStore(database_for(tmp_path))
 
     def bind(_: int) -> str:
-        return _bind(store, "bot-1", "owner")
+        return _bind(store, tmp_path, "bot-1", "owner")
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(bind, range(2)))
@@ -42,8 +43,8 @@ def test_wechat_first_message_concurrency_creates_one_conversation(
 
 
 def test_wechat_binding_verifies_exact_account_and_sender(tmp_path: Path) -> None:
-    store = DomainStore(tmp_path / "domain.sqlite3")
-    conversation = _bind(store, "bot-1", "owner")
+    store = DomainStore(database_for(tmp_path))
+    conversation = _bind(store, tmp_path, "bot-1", "owner")
 
     assert store.is_wechat_binding(conversation, account_id="bot-1", sender_id="owner")
     assert not store.is_wechat_binding(

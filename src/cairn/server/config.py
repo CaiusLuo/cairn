@@ -59,6 +59,8 @@ class ServerConfig:
     workspace: Path | None
     data_root: Path
     worktrees_root: Path
+    database_url: str = "postgresql:///cairn"
+    database_namespace: str = "cairn"
     host: str = "127.0.0.1"
     port: int = 8777
     web_root: Path | None = None
@@ -158,10 +160,11 @@ def parse_server_config(
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError:
         raise ValueError("Invalid Server TOML configuration") from None
-    sections = {"server", "budget", "services", "review", "logging"}
+    sections = {"server", "database", "budget", "services", "review", "logging"}
     if set(data) - sections or any(not isinstance(v, dict) for v in data.values()):
         raise ValueError(
-            "Expected only [server], [budget], [services], [review], [logging]"
+            "Expected only [server], [database], [budget], [services], "
+            "[review], [logging]"
         )
     server_fields = {
         "workspace",
@@ -178,6 +181,7 @@ def parse_server_config(
     budget_fields = {f.name for f in fields(RunBudget)}
     allowed = {
         "server": server_fields,
+        "database": {"url", "namespace"},
         "budget": budget_fields,
         "services": {f.name for f in fields(Services)},
         "review": {f.name for f in fields(ReviewConfig)},
@@ -236,6 +240,18 @@ def parse_server_config(
             if key in path_fields
             else value
         )
+    database_group = dict(data.get("database", {}))
+    for key, env in (
+        ("url", os.environ.get("CAIRN_DATABASE_URL")),
+        ("namespace", os.environ.get("CAIRN_DATABASE_NAMESPACE")),
+    ):
+        if env is not None:
+            database_group[key] = env
+    for key, value in database_group.items():
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"database.{key} must be a nonempty string")
+    values["database_url"] = database_group.get("url", "postgresql:///cairn").strip()
+    values["database_namespace"] = database_group.get("namespace", "cairn").strip()
     if "data_root" not in values:
         values["data_root"] = default_data_root()
     values.setdefault("worktrees_root", values["data_root"] / "worktrees")

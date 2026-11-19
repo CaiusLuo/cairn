@@ -12,6 +12,7 @@ from cairn.agent.models.client import LLMStreamChunk
 from cairn.agent.models.messages import LLMUsage
 from cairn.server.bootstrap import runtime_app
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 from tests.support.streaming import ScriptedStreamLLM, StreamBarrier
 
 
@@ -35,6 +36,7 @@ def test_ten_thousand_character_stream_survives_reconnect(tmp_path: Path) -> Non
         tmp_path / "worktrees",
         budget=RunBudget(5),
         token="zzzz",
+        database=database_for(tmp_path),
     )
     app.state.execution.llm_factory = lambda: model
     headers = {"Authorization": "Bearer zzzz", "host": "127.0.0.1:8777"}
@@ -134,6 +136,7 @@ def test_websocket_disconnect_mid_stream_resumes_without_duplicate_text(
         tmp_path / "worktrees",
         budget=RunBudget(5),
         token="zzzz",
+        database=database_for(tmp_path),
     )
     app.state.execution.llm_factory = lambda: model
     headers = {"Authorization": "Bearer zzzz", "host": "127.0.0.1:8777"}

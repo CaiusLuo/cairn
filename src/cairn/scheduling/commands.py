@@ -20,7 +20,7 @@ from cairn.scheduling.runner import (
     TaskExecutor,
     current_time,
 )
-from cairn.scheduling.store import ScheduleStore, ensure_outside_workspace
+from cairn.scheduling.store import ScheduleStore
 from cairn.shared.action import Action, correction, note
 from cairn.shared.lifecycle import await_owned
 
@@ -73,7 +73,6 @@ class ScheduleController:
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
-        ensure_outside_workspace(self.store.root, self.workspace)
         self._stop = asyncio.Event()
         self._task = asyncio.create_task(self.runner.run(self._stop))
         # Let an already-due job claim the shared task gate before the first

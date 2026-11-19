@@ -26,9 +26,16 @@ from cairn.integrations.wechat.serve import (
     default_task_executor,
 )
 from cairn.integrations.wechat.state import WechatAccount
+from cairn.shared.db import Database
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 from tests.support.runtime import SequenceLLM
 from tests.support.sessions import intent, settled
+
+
+def _database(config: ServeConfig) -> Database:
+    assert config.database is not None
+    return config.database
 
 
 def _session_id(config: ServeConfig, purpose: str | None) -> str:
@@ -105,6 +112,7 @@ def configured(
         allowed_senders=frozenset({"u1"}),
         max_steps=150,
         trace_dir=tmp_path / "traces",
+        database=database_for(tmp_path),
     )
     yield config, llm
 
@@ -127,9 +135,7 @@ def test_chat_uses_same_host_configured_step_binding_as_task(
 
     asyncio.run(scenario())
     assert len(llm.calls) == 2
-    reader = open_store(
-        config.state_dir / "sessions", Workspace(config.workspace), inspect=True
-    )
+    reader = open_store(_database(config), inspect=True)
     try:
         task_report = reader.inspect(_session_id(config, "task"))
         chat_report = reader.inspect(_session_id(config, "chat"))
@@ -147,7 +153,7 @@ def test_unknown_task_is_not_abandoned_and_does_not_block_chat(
 ) -> None:
     config, llm = configured
     task_id = _session_id(config, None if legacy else "task")
-    store = open_store(config.state_dir / "sessions", Workspace(config.workspace))
+    store = open_store(_database(config))
     binding = SessionBinding(
         session_id=task_id,
         workspace=observe_workspace(Workspace(config.workspace), frozenset()),
@@ -216,9 +222,7 @@ def test_unknown_task_is_not_abandoned_and_does_not_block_chat(
 
     asyncio.run(scenario())
     assert len(llm.calls) == 1
-    reader = open_store(
-        config.state_dir / "sessions", Workspace(config.workspace), inspect=True
-    )
+    reader = open_store(_database(config), inspect=True)
     try:
         after = reader.inspect(task_id)
         assert after.revision == before.revision
@@ -228,36 +232,6 @@ def test_unknown_task_is_not_abandoned_and_does_not_block_chat(
         assert after.unresolved.diagnostics.fences[0].call_id == "unknown-write"
     finally:
         reader.close()
-
-
-def test_existing_separate_chat_store_requires_explicit_migration(
-    configured: tuple[ServeConfig, SequenceLLM],
-) -> None:
-    config, llm = configured
-    separate = config.state_dir / "sessions-chat"
-    separate.mkdir(parents=True)
-    original = b"retained chat database; do not overwrite"
-    (separate / "sessions.sqlite3").write_bytes(original)
-    llm.responses = [LLMResponse(content="task works")]
-    task = default_task_executor(config)
-    chat = default_conversation_executor(config, task.durable_factory)  # type: ignore[attr-defined]
-
-    async def scenario() -> None:
-        from cairn.integrations.wechat.serve import ConversationExecutionError
-
-        try:
-            with pytest.raises(
-                ConversationExecutionError, match="chat_store_migration_required"
-            ):
-                await chat("hello", "u1", "")
-            result = await task("task", asyncio.Event(), "one", sender="u1")  # type: ignore[call-arg]
-            assert result.status is HeadlessStatus.COMPLETED
-        finally:
-            task.close()  # type: ignore[attr-defined]
-
-    asyncio.run(scenario())
-    assert (separate / "sessions.sqlite3").read_bytes() == original
-    assert len(llm.calls) == 1
 
 
 def test_chat_can_finish_while_task_owns_same_store_writer(
@@ -410,7 +384,7 @@ def test_service_settles_failed_cleanup_before_closing_shared_writer(
         assert client.closed
         # A new real writer can acquire only after the service closed the old
         # borrowed Store. The committed result survives the injected close error.
-        writer = open_store(config.state_dir / "sessions", Workspace(config.workspace))
+        writer = open_store(_database(config))
         try:
             assert writer.inspect(_session_id(config, "task")).checkpoint.seq == 1
         finally:
@@ -476,7 +450,7 @@ def test_chat_primary_failure_keeps_cleanup_note_and_retained_writer(
     asyncio.run(scenario())
     assert closes == 2
     # The retained close was retried by the same host; its writer is now free.
-    store = open_store(config.state_dir / "sessions", Workspace(config.workspace))
+    store = open_store(_database(config))
     try:
         assert store.inspect(_session_id(config, "chat")).checkpoint.seq == 1
     finally:

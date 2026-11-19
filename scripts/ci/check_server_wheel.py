@@ -71,7 +71,9 @@ def main() -> None:
             check=True,
             timeout=15,
         )
-        assert Path(probe.stdout.strip()).is_relative_to(env_root), probe.stdout
+        assert (
+            Path(probe.stdout.strip()).resolve().is_relative_to(env_root.resolve())
+        ), probe.stdout
         source = root / "workspace"
         source.mkdir()
         with socket.socket() as sock:
@@ -79,6 +81,24 @@ def main() -> None:
             port = sock.getsockname()[1]
         config = root / "config.toml"
         data = root / "data"
+        database_url = (
+            os.environ.get("CAIRN_TEST_DATABASE_URL")
+            or os.environ.get("CAIRN_DATABASE_URL")
+            or "postgresql:///cairn_test"
+        )
+        namespace = "wheelcheck"
+        drop = (
+            "import sys\n"
+            "from cairn.shared.db import Database\n"
+            "database = Database(sys.argv[1], namespace=sys.argv[2])\n"
+            "database.drop_schemas()\n"
+            "database.close()\n"
+        )
+        subprocess.run(
+            [str(python), "-c", drop, database_url, namespace],
+            check=True,
+            timeout=60,
+        )
         config.write_text(
             "[server]\nworkspace = "
             + json.dumps(str(source))
@@ -86,8 +106,13 @@ def main() -> None:
             + json.dumps(str(data))
             + "\noffline = true\nport = "
             + str(port)
+            + "\n[database]\nurl = "
+            + json.dumps(database_url)
+            + "\nnamespace = "
+            + json.dumps(namespace)
             + "\n"
         )
+        config.chmod(0o600)
         environment = {
             key: value
             for key, value in os.environ.items()

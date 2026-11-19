@@ -13,6 +13,7 @@ from cairn.agent.budget import RunBudget
 from cairn.conversation.models import Conversation, ConversationSource, RunStatus
 from cairn.conversation.service import ConversationService
 from cairn.conversation.store import DomainStore
+from tests.support.pg import database_for
 
 
 def _conversation(store: DomainStore, workspace: Path) -> Conversation:
@@ -26,7 +27,7 @@ def _conversation(store: DomainStore, workspace: Path) -> Conversation:
 def test_bind_run_session_is_idempotent_and_immutable(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    store = DomainStore(tmp_path / "domain.sqlite3")
+    store = DomainStore(database_for(tmp_path))
     conversation = _conversation(store, workspace)
     run = store.create_run(
         conversation_id=conversation.conversation_id,
@@ -77,9 +78,14 @@ def test_run_persists_session_before_execution_finishes(tmp_path: Path) -> None:
     async def scenario() -> None:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        store = DomainStore(tmp_path / "domain.sqlite3")
+        store = DomainStore(database_for(tmp_path))
         execution = BlockingExecution()
-        service = ConversationService(store, execution, workspace=workspace)  # type: ignore[arg-type]
+        service = ConversationService(
+            store,
+            execution,  # type: ignore[arg-type]
+            workspace=workspace,
+            attachments_root=tmp_path / "attachments",
+        )
         await service.start()
         try:
             conversation = _conversation(store, workspace)
@@ -118,7 +124,7 @@ def test_missing_session_recovery_requires_explicit_auditable_abandon(
     async def scenario() -> None:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        store = DomainStore(tmp_path / "domain.sqlite3")
+        store = DomainStore(database_for(tmp_path))
         conversation = _conversation(store, workspace)
         run = store.create_run(
             conversation_id=conversation.conversation_id,
@@ -131,6 +137,7 @@ def test_missing_session_recovery_requires_explicit_auditable_abandon(
             store,
             UnusedExecution(),  # type: ignore[arg-type]
             workspace=workspace,
+            attachments_root=tmp_path / "attachments",
         )
         report = service.recovery(run.run_id)
         assert report["missing_session"] is True
@@ -193,6 +200,7 @@ def test_missing_session_recovery_is_exposed_over_http(tmp_path: Path) -> None:
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         conversation = _conversation(app.state.conversations.store, source)
         run = app.state.conversations.store.create_run(

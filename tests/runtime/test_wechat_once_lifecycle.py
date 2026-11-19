@@ -25,6 +25,7 @@ from cairn.integrations.wechat.state import WechatAccount, WechatState
 from cairn.scheduling.models import ScheduleJob
 from cairn.scheduling.store import ScheduleStore
 from cairn.shared.lifecycle import settle_owned
+from tests.support.pg import database_for
 from tests.support.wechat_service import _msg
 
 
@@ -124,11 +125,11 @@ def harness(tmp_path: Path) -> Harness:
         ),
         approval=None,
         allowed_senders=frozenset({"owner"}),
-        schedule_store=tmp_path / "schedule",
         poll_interval=0.0,
+        database=database_for(tmp_path),
     )
     return Harness(
-        config, WechatState(config.state_dir), ScheduleStore(tmp_path / "schedule")
+        config, WechatState(config.state_dir), ScheduleStore(database_for(tmp_path))
     )
 
 
@@ -216,7 +217,7 @@ def test_service_shutdown_waits_for_slow_schedule_store_without_blocking_status(
         stop = asyncio.Event()
         client = Client(messages=[_msg("十分钟后提醒我喝水", sender="owner")])
         service = harness.service(
-            store=BlockingStore(harness.store.root), client=client, stop=stop
+            store=BlockingStore(harness.store.db), client=client, stop=stop
         )
         running = asyncio.create_task(service.run())
         try:
@@ -274,7 +275,7 @@ def test_storage_failure_is_observed_and_reported_per_message(harness: Harness) 
 
     async def scenario() -> None:
         client = Client()
-        service = harness.service(store=FailedStore(harness.store.root), client=client)
+        service = harness.service(store=FailedStore(harness.store.db), client=client)
         unhandled: list[dict[str, Any]] = []
         loop = asyncio.get_running_loop()
         previous_handler = loop.get_exception_handler()
@@ -357,7 +358,7 @@ def test_cancelled_creation_preserves_primary_when_storage_also_fails(
             raise OSError("private-storage-detail")
 
     async def scenario() -> None:
-        service = harness.service(store=FailedAfterStop(harness.store.root))
+        service = harness.service(store=FailedAfterStop(harness.store.db))
         await service._handle(harness.inbound())
         try:
             assert await asyncio.to_thread(entered.wait, 1)

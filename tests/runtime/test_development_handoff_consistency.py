@@ -16,6 +16,7 @@ from cairn.development.catalogue import RuntimeCatalogue, RuntimeTask
 from cairn.development.handoff import DevelopmentHandoff
 from cairn.development.models import HandoffStatus, TaskStatus
 from cairn.development.service import TaskService
+from tests.support.pg import database_for
 
 
 class _NoopExecution:
@@ -28,11 +29,8 @@ class _NoopExecution:
 def _setup(tmp_path: Path) -> tuple[Path, DomainStore, TaskService, DevelopmentHandoff]:
     source = tmp_path / "source"
     source.mkdir()
-    store = DomainStore(tmp_path / "domain.sqlite3")
-    catalogue = RuntimeCatalogue(
-        tmp_path / "runtime",
-        forbidden_roots=(source, tmp_path / "worktrees"),
-    )
+    store = DomainStore(database_for(tmp_path))
+    catalogue = RuntimeCatalogue(database_for(tmp_path))
     tasks = TaskService(catalogue, _NoopExecution())
     tasks.worker = asyncio.create_task(asyncio.sleep(3600))
     handoff = DevelopmentHandoff(store, _NoopExecution(), tasks)  # type: ignore[arg-type]
@@ -322,6 +320,7 @@ def test_conversation_start_resumes_incomplete_handoff_before_scan(
                 store,
                 _NoopExecution(),  # type: ignore[arg-type]
                 workspace=source,
+                attachments_root=tmp_path / "attachments",
                 legacy_service=tasks,
             )
             await service.start()

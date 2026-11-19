@@ -57,6 +57,12 @@ uv run pytest -n 2 --dist loadfile --max-worker-restart=0 \
   --cov=cairn --cov-report=term-missing --durations=30
 ```
 
+Tests need a local PostgreSQL 17 role that can create schemas and extensions.
+They connect to `postgresql:///cairn_test` by default; set
+`CAIRN_TEST_DATABASE_URL` to use another database. Each test host path gets its
+own namespace (`t_<hash>`) and is dropped after the run, so parallel workers and
+concurrent checkouts do not share tables.
+
 Two worker processes run different files concurrently; each file stays together
 in one worker. Every test is still collected and the existing branch-coverage
 threshold applies to their combined coverage. Per-test temporary state remains

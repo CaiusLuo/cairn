@@ -10,6 +10,7 @@ from starlette.testclient import TestClient
 
 from cairn.interfaces.web.app import create_app
 from cairn.interfaces.web.config import WebConfig
+from tests.support.pg import database_for
 
 PASSPHRASE = "knowledge-passphrase"
 ORIGIN = "http://127.0.0.1"
@@ -20,13 +21,12 @@ def _configured(tmp_path: Path, token: str | None = "host-token") -> Starlette:
     workspace.mkdir(exist_ok=True)
     config = WebConfig(
         workspace=workspace,
-        sessions_dir=tmp_path / "sessions",
         tasks_dir=tmp_path / "tasks",
         knowledge_dir=tmp_path / "knowledge",
         web_root=None,
         auth_passphrase=PASSPHRASE,
     )
-    return create_app(config, runtime_token=token)
+    return create_app(config, runtime_token=token, database=database_for(tmp_path))
 
 
 def _client(tmp_path: Path, token: str | None = "host-token") -> TestClient:
@@ -248,12 +248,13 @@ def test_read_only_snapshot_mode_exposes_no_knowledge_writes(tmp_path: Path) -> 
     workspace.mkdir()
     config = WebConfig(
         workspace=workspace,
-        sessions_dir=tmp_path / "sessions",
         tasks_dir=tmp_path / "tasks",
         knowledge_dir=tmp_path / "knowledge",
         web_root=None,
     )
-    client = TestClient(create_app(config), base_url=ORIGIN)
+    client = TestClient(
+        create_app(config, database=database_for(tmp_path)), base_url=ORIGIN
+    )
     assert client.get("/api/knowledge/clips").status_code == 404
     assert not (tmp_path / "knowledge").exists()
 

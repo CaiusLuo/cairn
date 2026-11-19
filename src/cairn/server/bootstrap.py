@@ -66,6 +66,7 @@ from cairn.server.config import (
 )
 from cairn.server.lifecycle import running_runtime
 from cairn.server.management import ServerControls
+from cairn.shared.db import Database
 
 app = typer.Typer(
     pretty_exceptions_show_locals=False,
@@ -78,6 +79,7 @@ def runtime_app(
     state: Path,
     worktrees: Path,
     *,
+    database: Database,
     budget: RunBudget,
     token: str,
     web_root: Path | None = None,
@@ -98,11 +100,7 @@ def runtime_app(
     protected_paths: tuple[Path, ...] = (),
     tracer: Tracer | None = None,
 ) -> Any:
-    catalogue = RuntimeCatalogue(
-        state,
-        forbidden_roots=(workspace, worktrees),
-        sensitive_values=(token, *sensitive_values),
-    )
+    catalogue = RuntimeCatalogue(database, sensitive_values=(token, *sensitive_values))
     try:
         execution = ServiceExecution(
             workspace,
@@ -111,6 +109,7 @@ def runtime_app(
             OfflineDevelopmentModel
             if provider_runtime is None
             else lambda: provider_runtime.llm,
+            database=database,
             budget=budget,
             provider_runtime=provider_runtime,
             secret_env_keys=secret_env_keys,
@@ -128,17 +127,21 @@ def runtime_app(
         execution,
         board=TaskBoardService(TaskBoardStore(state / "board"), project=str(workspace)),
     )
-    domain_store = DomainStore(state / "domain.sqlite3")
+    domain_store = DomainStore(database)
     service.domain_store = domain_store
     conversations = ConversationService(
-        domain_store, execution, workspace=workspace, legacy_service=service
+        domain_store,
+        execution,
+        workspace=workspace,
+        attachments_root=state / "attachments",
+        legacy_service=service,
     )
     execution.service = service
     service.history_reader = execution.history
     service.recovery_reader = execution.recovery
     service.reconciler = execution.reconcile
     try:
-        knowledge_store = KnowledgeStore(state / "knowledge")
+        knowledge_store = KnowledgeStore(database)
         channel_root = (channels_state or state / "channels").expanduser()
         channel_resolved = channel_root.resolve()
         for writable in (workspace.resolve(), worktrees.resolve()):
@@ -150,7 +153,7 @@ def runtime_app(
                 raise ValueError(
                     "Channel state must be private and outside writable roots"
                 )
-        channel_store = ChannelStore(channel_root)
+        channel_store = ChannelStore(database, channel_root)
         channel_adapters = ChannelAdapterRegistry()
         channel_adapters.register(
             ChannelPlatform.TELEGRAM, telegram_adapter_factory(channel_store)
@@ -173,7 +176,6 @@ def runtime_app(
         web = create_app(
             WebConfig(
                 workspace=workspace,
-                sessions_dir=state / "sessions",
                 tasks_dir=state / "board",
                 knowledge_dir=state / "knowledge",
                 host=host,
@@ -185,6 +187,7 @@ def runtime_app(
             conversations=conversations,
             runtime_token=token,
             session_file=state / "web-sessions.json",
+            database=database,
             knowledge_store=knowledge_store,
             channels=channel_manager,
         )
@@ -199,6 +202,7 @@ def runtime_app(
             execution=execution,
             workspace=workspace,
             state=state,
+            database=database,
             token=token,
             web=web,
             port=port,
@@ -438,10 +442,13 @@ def run_server(config: ServerConfig) -> None:
             with os.fdopen(fd, "w") as stream:
                 stream.write(secrets.token_urlsafe(32))
         token = read_token(paths.token)
+        database = Database(config.database_url, namespace=config.database_namespace)
+        database.migrate()
         web = runtime_app(
             paths.workspace,
             paths.runtime,
             paths.worktrees,
+            database=database,
             budget=config.budget,
             token=token,
             web_root=web_root,
@@ -585,62 +592,6 @@ def check_running(
             "Running Server uses different paths; no service was stopped"
         )
     typer.echo("Running Server matches the selected configuration")
-
-
-@app.command("import-state")
-def import_existing_state(
-    ctx: typer.Context,
-    source_root: Annotated[Path, typer.Option()],
-    backup_root: Annotated[Path, typer.Option()],
-    component: Annotated[list[str] | None, typer.Option("--component")] = None,
-    runtime_source: Path | None = None,
-) -> None:
-    """Back up and import stopped legacy state into empty configured directories."""
-    from cairn.server.state_import import COMPONENTS, import_state
-
-    settings: ServerConfig = ctx.obj
-    backup = import_state(
-        settings.paths,
-        source_root,
-        backup_root,
-        components=tuple(component) if component else COMPONENTS,
-        runtime_source=runtime_source,
-    )
-    typer.echo(f"State imported and verified. Original data retained. Backup: {backup}")
-
-
-@app.command("migrate-domain")
-def migrate_domain_command(
-    ctx: typer.Context,
-    source: Annotated[
-        Path, typer.Option(help="Legacy runtime directory containing runtime.json")
-    ],
-    target: Annotated[Path | None, typer.Option()] = None,
-    backup_root: Annotated[Path | None, typer.Option()] = None,
-    taskboard: Annotated[Path | None, typer.Option()] = None,
-    apply: Annotated[
-        bool,
-        typer.Option(
-            "--apply", help="Publish the verified migration; default is dry-run"
-        ),
-    ] = False,
-) -> None:
-    """Dry-run or apply offline migration into the Conversation/Task/Run store."""
-    from cairn.server.domain_migration import migrate_domain
-
-    settings: ServerConfig = ctx.obj
-    paths = settings.paths
-    report = migrate_domain(
-        source.expanduser().resolve(),
-        paths.workspace,
-        target=(target or paths.runtime / "domain.sqlite3").expanduser().resolve(),
-        backup_root=(backup_root or paths.data_root / "migration-backups")
-        .expanduser()
-        .resolve(),
-        taskboard_path=None if taskboard is None else taskboard.expanduser().resolve(),
-        dry_run=not apply,
-    )
-    typer.echo(report.model_dump_json(indent=2))
 
 
 def main() -> None:

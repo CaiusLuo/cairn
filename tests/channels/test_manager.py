@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -37,6 +36,7 @@ from tests.channels.support import (
     inbound,
     make_manager,
 )
+from tests.support.pg import database_for
 
 PLATFORMS = {
     ChannelPlatform.WECHAT,
@@ -840,7 +840,7 @@ def test_production_without_an_adapter_stays_silent_and_keeps_configuration(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         manager = ChannelManager(
             store=store,
             conversations=FakeIntake(),
@@ -893,7 +893,7 @@ def test_restart_without_an_adapter_never_reports_running(tmp_path: Path) -> Non
 
     async def second(connection_id: str) -> None:
         manager = ChannelManager(
-            store=ChannelStore(root),
+            store=ChannelStore(database_for(root), root),
             conversations=FakeIntake(),
             adapters=ChannelAdapterRegistry(),
         )
@@ -920,8 +920,8 @@ def test_duplicate_delivery_recreates_a_missing_reply_intent(tmp_path: Path) -> 
         assert first.run_id is not None
         assert store.reply_for_run(first.run_id) is not None
 
-        with sqlite3.connect(store.path) as database:
-            database.execute("DELETE FROM channel_replies")
+        with database_for(tmp_path / "channels").connect("channel") as db:
+            db.execute("DELETE FROM channel_replies")
         assert store.reply_for_run(first.run_id) is None
 
         duplicate = await manager.accept_inbound(

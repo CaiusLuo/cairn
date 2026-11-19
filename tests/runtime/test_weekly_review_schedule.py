@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +25,7 @@ from cairn.review.store import ReviewStore
 from cairn.review.weekly import WeeklyReviewService, week_period
 from cairn.review.weekly_schedule import WeeklyReviewScheduleCoordinator
 from cairn.scheduling.store import ScheduleStore
+from tests.support.pg import database_for
 
 TZ = "Asia/Shanghai"
 AFTER_BOUNDARY = datetime(2026, 1, 18, 20, 41, tzinfo=ZoneInfo(TZ))
@@ -98,7 +98,7 @@ def _coordinator(
     store: ScheduleStore | None = None,
     on_settled: Any = None,
 ) -> tuple[WeeklyReviewScheduleCoordinator, ScheduleStore]:
-    schedule_store = store or ScheduleStore(tmp_path / "schedules")
+    schedule_store = store or ScheduleStore(database_for(tmp_path))
     coordinator = WeeklyReviewScheduleCoordinator(
         service=service,  # type: ignore[arg-type]
         store=schedule_store,
@@ -110,17 +110,14 @@ def _coordinator(
 
 
 def _seed_state(tmp_path: Path, **fields: Any) -> ScheduleStore:
-    store = ScheduleStore(tmp_path / "schedules")
-    store.root.mkdir(parents=True, exist_ok=True)
+    store = ScheduleStore(database_for(tmp_path))
     payload: dict[str, Any] = {
         "version": 1,
         "initialized": True,
         "enabled_at": "2026-01-01T12:00:00+08:00",
     }
     payload.update(fields)
-    (store.root / "weekly-review-schedule.json").write_text(
-        json.dumps(payload), encoding="utf-8"
-    )
+    store.save_state("weekly-review-schedule", payload)
     return store
 
 
@@ -322,17 +319,13 @@ def test_weekly_schedule_state_is_separate_from_the_daily_schedule(
     tmp_path: Path,
 ) -> None:
     store = _seed_state(tmp_path)
-    daily_path = store.root / "review-schedule.json"
-    daily_path.write_text(
-        '{"version":1,"last_attempt_day":"2026-01-17"}', encoding="utf-8"
-    )
+    daily_state = {"version": 1, "last_attempt_day": "2026-01-17"}
+    store.save_state("review-schedule", daily_state)
     coordinator, _ = _coordinator(tmp_path, FakeWeeklyService(), store=store)
 
     async def scenario() -> None:
         await coordinator.tick()
-        assert daily_path.read_text(encoding="utf-8") == (
-            '{"version":1,"last_attempt_day":"2026-01-17"}'
-        )
+        assert store.load_state("review-schedule") == daily_state
 
     asyncio.run(scenario())
 
@@ -362,7 +355,7 @@ class EmptyWeeklyCollector:
 def test_scheduled_weekly_review_completes_without_wechat_login(
     tmp_path: Path,
 ) -> None:
-    reviews = ReviewStore(KnowledgeStore(tmp_path / "knowledge"))
+    reviews = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     service = WeeklyReviewService(
         store=reviews,
         collector=EmptyWeeklyCollector(),
@@ -371,7 +364,7 @@ def test_scheduled_weekly_review_completes_without_wechat_login(
     )
     coordinator = WeeklyReviewScheduleCoordinator(
         service=service,
-        store=ScheduleStore(tmp_path / "schedules"),
+        store=ScheduleStore(database_for(tmp_path)),
         clock=lambda: AFTER_BOUNDARY,
         settle_timeout=1.0,
     )
@@ -387,7 +380,7 @@ def test_scheduled_weekly_review_completes_without_wechat_login(
 def test_schedule_delivers_a_manual_report_created_before_the_tick(
     tmp_path: Path,
 ) -> None:
-    reviews = ReviewStore(KnowledgeStore(tmp_path / "knowledge"))
+    reviews = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     service = WeeklyReviewService(
         store=reviews,
         collector=EmptyWeeklyCollector(),
@@ -401,7 +394,7 @@ def test_schedule_delivers_a_manual_report_created_before_the_tick(
 
     coordinator = WeeklyReviewScheduleCoordinator(
         service=service,
-        store=ScheduleStore(tmp_path / "schedules"),
+        store=ScheduleStore(database_for(tmp_path)),
         clock=lambda: AFTER_BOUNDARY,
         settle_timeout=1.0,
     )

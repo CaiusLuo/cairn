@@ -9,12 +9,13 @@ from cairn.conversation.store import DomainStore
 from cairn.development.board.models import TaskBoardItem, TaskBoardStatus, TaskSource
 from cairn.development.board.store import TaskBoardStore
 from cairn.development.models import TaskStatus
+from tests.support.pg import database_for
 
 
 def store(tmp_path: Path) -> tuple[DomainStore, Path]:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    return DomainStore(tmp_path / "domain.sqlite3"), workspace
+    return DomainStore(database_for(tmp_path)), workspace
 
 
 def test_ids_are_distinct_and_relationships_are_many_to_many(tmp_path: Path) -> None:
@@ -146,16 +147,6 @@ def test_run_terminal_states_are_independent_of_task_status(
     domain.update_run(run.run_id, status=status)
     current = domain.get_task(task.task_id)
     assert current is not None and current.status is TaskStatus.TODO
-
-
-def test_domain_store_rejects_symlink_before_resolving(tmp_path: Path) -> None:
-    target = tmp_path / "real.sqlite3"
-    target.write_text("not actually sqlite")
-    link = tmp_path / "domain-link.sqlite3"
-    link.symlink_to(target)
-    with pytest.raises(ValueError, match="symlink"):
-        DomainStore(link)
-    assert link.is_symlink()
 
 
 def test_accept_run_is_atomic_and_idempotent(tmp_path: Path) -> None:

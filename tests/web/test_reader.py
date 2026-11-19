@@ -3,11 +3,11 @@ from pathlib import Path
 import pytest
 
 from cairn.agent.models.messages import Message
-from cairn.agent.session.store import SessionStore
 from cairn.development.board.models import TaskBoardStatus, TaskSource
 from cairn.development.board.store import TaskBoardStore
 from cairn.interfaces.web.config import WebConfig
 from cairn.interfaces.web.reader import SnapshotReader
+from tests.support.pg import database_for
 from tests.support.sessions import SESSION, binding, intent, settled, store
 
 
@@ -31,7 +31,7 @@ def _seed_session(root: Path) -> None:
 def _reader(root: Path) -> SnapshotReader:
     return SnapshotReader(
         workspace=root / "work",
-        sessions_dir=root / "store",
+        database=database_for(root),
         tasks_dir=root / "tasks",
     )
 
@@ -80,10 +80,10 @@ def test_session_detail_returns_committed_messages(tmp_path: Path) -> None:
 def test_missing_roots_are_explicit_not_exceptions(tmp_path: Path) -> None:
     snapshot = SnapshotReader(
         workspace=tmp_path,
-        sessions_dir=tmp_path / "missing-sessions",
+        database=database_for(tmp_path),
         tasks_dir=tmp_path / "missing-tasks",
     ).snapshot()
-    assert snapshot["source_status"] == {"sessions": "missing", "tasks": "missing"}
+    assert snapshot["source_status"] == {"sessions": "ok", "tasks": "missing"}
     assert snapshot["sessions"] == []
     assert snapshot["tasks"] == []
 
@@ -94,7 +94,7 @@ def test_malformed_task_board_reports_unavailable(tmp_path: Path) -> None:
     (tasks / "tasks.json").write_text("{not-json", encoding="utf-8")
     snapshot = SnapshotReader(
         workspace=tmp_path,
-        sessions_dir=tmp_path / "missing-sessions",
+        database=database_for(tmp_path),
         tasks_dir=tasks,
     ).snapshot()
     assert snapshot["source_status"]["tasks"] == "unavailable"
@@ -106,33 +106,23 @@ def test_web_config_rejects_unsafe_roots_and_non_loopback_host(tmp_path: Path) -
     with pytest.raises(ValueError):
         WebConfig(
             workspace=workspace,
-            sessions_dir=workspace / "sessions",
-            tasks_dir=tmp_path / "tasks",
-        )
-    with pytest.raises(ValueError):
-        WebConfig(
-            workspace=workspace,
-            sessions_dir=tmp_path / "sessions",
             tasks_dir=workspace / "tasks",
         )
     with pytest.raises(ValueError):
         WebConfig(
             workspace=workspace,
-            sessions_dir=tmp_path / "sessions",
             tasks_dir=tmp_path / "tasks",
             knowledge_dir=workspace / "knowledge",
         )
     with pytest.raises(ValueError):
         WebConfig(
             workspace=workspace,
-            sessions_dir=tmp_path / "sessions",
             tasks_dir=tmp_path / "tasks",
             knowledge_dir=tmp_path / "tasks",
         )
     with pytest.raises(ValueError):
         WebConfig(
             workspace=workspace,
-            sessions_dir=tmp_path / "sessions",
             tasks_dir=tmp_path / "tasks",
             host="0.0.0.0",
         )
@@ -145,38 +135,16 @@ def test_sequence_advances_when_source_status_changes_with_empty_lists(
     workspace.mkdir()
     reader = SnapshotReader(
         workspace=workspace,
-        sessions_dir=tmp_path / "sessions",
+        database=database_for(tmp_path),
         tasks_dir=tmp_path / "tasks",
     )
     first = reader.snapshot()
-    assert first["source_status"] == {"sessions": "missing", "tasks": "missing"}
+    assert first["source_status"] == {"sessions": "ok", "tasks": "missing"}
 
-    # Create an invalid store file: the source is present but cannot be read.
-    sessions = tmp_path / "sessions"
-    sessions.mkdir()
-    (sessions / "sessions.sqlite3").write_bytes(b"not a sqlite database")
-    unavailable = reader.snapshot()
-    assert unavailable["source_status"] == {
-        "sessions": "unavailable",
-        "tasks": "missing",
-    }
-    assert unavailable["sessions"] == []
-    assert unavailable["sequence"] > first["sequence"]
-
-    # A valid but empty SessionStore is an "ok" source with no rows; the
-    # sequence must still change because the source status is part of the state.
-    (sessions / "sessions.sqlite3").unlink()
-    sessions.rmdir()
-    work = tmp_path / "work"
-    work.mkdir(exist_ok=True)
-    api = SessionStore(
-        sessions,
-        forbidden_roots=(workspace, tmp_path / "tmp", tmp_path / "cache"),
-        allow_unverified=True,
-    )
-    api.close()
-
+    # An empty but readable board is an "ok" source with no rows; the sequence
+    # must still change because the source status is part of the state.
+    (tmp_path / "tasks").mkdir()
     second = reader.snapshot()
-    assert second["source_status"] == {"sessions": "ok", "tasks": "missing"}
+    assert second["source_status"] == {"sessions": "ok", "tasks": "ok"}
     assert second["sessions"] == []
-    assert second["sequence"] > unavailable["sequence"]
+    assert second["sequence"] > first["sequence"]

@@ -48,6 +48,7 @@ from cairn.channels.telegram import (
     telegram_adapter_factory,
 )
 from tests.channels.support import FakeIntake
+from tests.support.pg import database_for
 
 TOKEN = "123456:" + "a" * 35
 OTHER_TOKEN = "654321:" + "b" * 35
@@ -224,7 +225,7 @@ def test_split_message_respects_utf16_limit_and_prefers_newlines() -> None:
 
 def test_invalid_and_missing_tokens_never_touch_the_network(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         for credentials, expected in (
             (None, "telegram_token_missing"),
             ({"bot_token": "not-a-token"}, "telegram_token_invalid"),
@@ -246,7 +247,7 @@ def test_invalid_and_missing_tokens_never_touch_the_network(tmp_path: Path) -> N
 
 def test_unauthorized_token_is_reported_without_echoing_it(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         session = FakeSession()
         session.me_error = TelegramUnauthorizedError(GetMe(), "Unauthorized")
         adapter = adapter_with(session, store, ignore)
@@ -261,7 +262,7 @@ def test_unauthorized_token_is_reported_without_echoing_it(tmp_path: Path) -> No
 
 def test_duplicate_token_cannot_open_a_second_poller(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         first_session = FakeSession()
         second_session = FakeSession()
         first = adapter_with(first_session, store, ignore)
@@ -283,7 +284,7 @@ def test_private_update_is_persisted_before_the_offset_advances(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         events: list[str] = []
         seen: list[ChannelInboundEvent] = []
 
@@ -319,7 +320,7 @@ def test_group_bot_and_self_messages_are_acknowledged_without_intake(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         seen: list[ChannelInboundEvent] = []
 
         async def sink(event: ChannelInboundEvent) -> None:
@@ -352,7 +353,7 @@ def test_definite_rejection_advances_and_uncertain_redelivery_reuses_the_update(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         calls = 0
 
         async def rejecting(event: ChannelInboundEvent) -> None:
@@ -378,7 +379,7 @@ def test_definite_rejection_advances_and_uncertain_redelivery_reuses_the_update(
             if calls == 1:
                 raise ChannelInboundUncertain("admission interrupted")
 
-        store = ChannelStore(tmp_path / "second")
+        store = ChannelStore(database_for(tmp_path / "second"), tmp_path / "second")
         adapter = adapter_with(FakeSession(), store, uncertain_then_ok)
         await adapter.start()
         assert adapter._bot is not None
@@ -402,7 +403,7 @@ def test_definite_rejection_advances_and_uncertain_redelivery_reuses_the_update(
 
 def test_restart_resumes_from_the_persisted_offset(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         store.save_adapter_state(
             "ch-telegram", "telegram", {"bot_id": str(BOT_ID), "offset": 77}
         )
@@ -418,7 +419,7 @@ def test_restart_resumes_from_the_persisted_offset(tmp_path: Path) -> None:
 
 def test_legacy_state_without_a_bot_id_discards_the_offset(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         store.save_adapter_state("ch-telegram", "telegram", {"offset": 77})
         session = FakeSession()
         adapter = adapter_with(session, store, ignore)
@@ -438,7 +439,7 @@ def test_start_binds_provably_legacy_inbound_rows_to_the_current_bot(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         created = store.create_connection(
             platform=ChannelPlatform.TELEGRAM,
             display_name="Telegram",
@@ -501,7 +502,7 @@ def test_start_binds_provably_legacy_inbound_rows_to_the_current_bot(
 
 def test_a_different_bot_never_reuses_the_previous_offset(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         store.save_adapter_state(
             "ch-telegram", "telegram", {"bot_id": "111", "offset": 77}
         )
@@ -521,7 +522,7 @@ def test_a_different_bot_never_reuses_the_previous_offset(tmp_path: Path) -> Non
 
 def test_send_splits_long_text_and_falls_back_from_markdown(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         session = FakeSession()
         adapter = adapter_with(session, store, ignore)
         await adapter.start()
@@ -538,7 +539,7 @@ def test_send_splits_long_text_and_falls_back_from_markdown(tmp_path: Path) -> N
 
 def test_markdown_parse_error_retries_as_plain_text(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         session = FakeSession()
         adapter = adapter_with(session, store, ignore)
         await adapter.start()
@@ -557,7 +558,7 @@ def test_markdown_parse_error_retries_as_plain_text(tmp_path: Path) -> None:
 
 def test_rate_limit_is_retried_after_the_advertised_delay(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         session = FakeSession()
         adapter = adapter_with(session, store, ignore)
         await adapter.start()
@@ -577,7 +578,7 @@ def test_rate_limit_is_retried_after_the_advertised_delay(tmp_path: Path) -> Non
 
 def test_partial_send_is_never_reported_as_accepted(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         session = FakeSession()
         adapter = adapter_with(session, store, ignore)
         await adapter.start()
@@ -595,7 +596,7 @@ def test_partial_send_is_never_reported_as_accepted(tmp_path: Path) -> None:
 
 def test_send_requires_a_running_adapter(tmp_path: Path) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         adapter = adapter_with(FakeSession(), store, ignore)
         with pytest.raises(ChannelAdapterError):
             await adapter.send("42", "hello", "key-5")
@@ -607,7 +608,7 @@ def test_poll_loop_turns_a_token_conflict_into_observable_error(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         session = FakeSession()
         session.get_updates_error = TelegramConflictError(GetUpdates(), "Conflict")
         adapter = adapter_with(session, store, ignore)
@@ -625,7 +626,7 @@ def test_network_loss_reconnects_without_stopping_the_adapter(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         session = FakeSession()
         session.get_updates_error = TelegramNetworkError(GetUpdates(), "disconnected")
         adapter = adapter_with(session, store, ignore, sleep=yield_sleep)
@@ -725,7 +726,7 @@ def test_aiogram_http_boundary_round_trip(tmp_path: Path) -> None:
             port = server.sockets[0].getsockname()[1]
             api = TelegramAPIServer.from_base(f"http://127.0.0.1:{port}")
             session = AiohttpSession(api=api)
-            store = ChannelStore(tmp_path / "channels")
+            store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
             seen: list[ChannelInboundEvent] = []
 
             async def sink(event: ChannelInboundEvent) -> None:
@@ -771,7 +772,7 @@ def test_manager_admits_an_owner_once_and_rejects_another_sender(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        store = ChannelStore(tmp_path / "channels")
+        store = ChannelStore(database_for(tmp_path), tmp_path / "channels")
         intake = FakeIntake()
         session = FakeSession()
         registry = ChannelAdapterRegistry().register(

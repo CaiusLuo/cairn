@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -18,6 +19,7 @@ from cairn.scheduling.models import (
 from cairn.scheduling.runner import ScheduleRunner
 from cairn.scheduling.store import ScheduleStore
 from cairn.shared.delivery import ProactiveSendOutcome, ProactiveSendResult
+from tests.support.pg import database_for
 
 NOW = datetime(2026, 11, 1, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -61,7 +63,7 @@ def test_initial_next_run_daily_and_interval() -> None:
 
 
 def test_runner_runs_due_once_and_does_not_replay_after_restart(tmp_path: Path) -> None:
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(),))
     calls: list[tuple[str, str]] = []
     sent: list[tuple[str, str]] = []
@@ -89,7 +91,7 @@ def test_runner_runs_due_once_and_does_not_replay_after_restart(tmp_path: Path) 
         assert sent and sent[0][0] == "owner" and "done" in sent[0][1]
         # Reload to model a restart: the advanced next_run is durable.
         runner2 = ScheduleRunner(
-            store=ScheduleStore(tmp_path / "schedule"),
+            store=ScheduleStore(database_for(tmp_path)),
             executor=executor,
             deliver=deliver,
             recipient=lambda: "owner",
@@ -105,7 +107,7 @@ def test_runner_runs_due_once_and_does_not_replay_after_restart(tmp_path: Path) 
 
 
 def test_runner_marks_delivery_failure_without_claiming_success(tmp_path: Path) -> None:
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(),))
 
     async def executor(
@@ -131,7 +133,7 @@ def test_runner_marks_delivery_failure_without_claiming_success(tmp_path: Path) 
 
 
 def test_interval_job_advances_and_remains_due_later(tmp_path: Path) -> None:
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     job = _job(
         kind=ScheduleKind.INTERVAL,
         at=None,
@@ -169,7 +171,7 @@ def test_interval_job_advances_and_remains_due_later(tmp_path: Path) -> None:
 
 
 def test_job_added_during_execution_is_not_overwritten(tmp_path: Path) -> None:
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(),))
     started = asyncio.Event()
     release = asyncio.Event()
@@ -211,7 +213,7 @@ def test_job_added_during_execution_is_not_overwritten(tmp_path: Path) -> None:
 
 
 def test_two_sessions_do_not_claim_same_due_job(tmp_path: Path) -> None:
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(),))
     started = asyncio.Event()
     release = asyncio.Event()
@@ -245,7 +247,7 @@ def test_two_sessions_do_not_claim_same_due_job(tmp_path: Path) -> None:
             clock=lambda: NOW,
         )
         second = ScheduleRunner(
-            store=ScheduleStore(tmp_path / "schedule"),
+            store=ScheduleStore(database_for(tmp_path)),
             executor=second_executor,
             deliver=deliver,
             recipient=lambda: "owner",
@@ -264,7 +266,7 @@ def test_two_sessions_do_not_claim_same_due_job(tmp_path: Path) -> None:
 
 
 def test_claimed_unstarted_job_is_replayed_after_restart(tmp_path: Path) -> None:
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(),))
     claimed = store.claim_due(NOW)
     assert claimed is not None
@@ -282,7 +284,7 @@ def test_claimed_unstarted_job_is_replayed_after_restart(tmp_path: Path) -> None
 
     async def scenario() -> None:
         runner = ScheduleRunner(
-            store=ScheduleStore(tmp_path / "schedule"),
+            store=ScheduleStore(database_for(tmp_path)),
             executor=executor,
             deliver=deliver,
             recipient=lambda: "owner",
@@ -299,7 +301,7 @@ def test_claimed_unstarted_job_is_replayed_after_restart(tmp_path: Path) -> None
 
 
 def test_recovery_does_not_mark_another_owner_interrupted(tmp_path: Path) -> None:
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs(
         (_job(workspace="/workspace-a", recipient="alice", account_id="bot-a"),)
     )
@@ -335,7 +337,7 @@ def test_recovery_does_not_mark_another_owner_interrupted(tmp_path: Path) -> Non
 def test_delivery_is_not_redirected_when_account_or_recipient_changes(
     tmp_path: Path,
 ) -> None:
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(recipient="alice", account_id="bot-B"),))
     sent: list[tuple[str, str, str]] = []
     state = {"account": "bot-B", "recipient": "alice"}
@@ -379,7 +381,7 @@ def test_delivery_is_not_redirected_when_account_or_recipient_changes(
 
 
 def test_failed_delivery_keeps_bounded_result_in_history(tmp_path: Path) -> None:
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(recipient="owner"),))
 
     async def executor(
@@ -414,7 +416,7 @@ def test_failed_delivery_keeps_bounded_result_in_history(tmp_path: Path) -> None
 def test_delivery_cancellation_reports_unconfirmed_and_keeps_task_fact(
     tmp_path: Path,
 ) -> None:
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(recipient="owner"),))
     emits: list[str] = []
 
@@ -458,7 +460,7 @@ def test_controller_close_cancels_waiting_for_execution_lock(tmp_path: Path) -> 
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(),))
     holder = store.try_execution_lock()
     assert holder is not None
@@ -502,7 +504,7 @@ def test_controller_close_retains_started_job_without_replay(
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(workspace=str(workspace), account_id="bot-test"),))
     started = asyncio.Event()
 
@@ -549,7 +551,7 @@ def test_controller_close_retains_started_job_without_replay(
 
     async def late_run() -> None:
         runner = ScheduleRunner(
-            store=ScheduleStore(tmp_path / "schedule"),
+            store=ScheduleStore(database_for(tmp_path)),
             executor=late_executor,
             deliver=deliver,
             recipient=lambda: "owner",
@@ -570,7 +572,7 @@ def test_controller_close_propagates_late_cancellation_after_cleanup(
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(workspace=str(workspace), account_id="bot-test"),))
     started = asyncio.Event()
     cleaning = asyncio.Event()
@@ -621,7 +623,7 @@ def test_waiting_for_execution_lock_cancels_without_waiting_for_holder(
 
     import pytest
 
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(),))
     holder = store.try_execution_lock()
     assert holder is not None
@@ -661,7 +663,7 @@ def test_waiting_for_execution_lock_cancels_without_waiting_for_holder(
 
 
 def test_waiting_for_lock_rechecks_identity_before_claim(tmp_path: Path) -> None:
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(recipient="alice", account_id="bot-A"),))
     holder = store.try_execution_lock()
     assert holder is not None
@@ -700,7 +702,7 @@ def test_waiting_for_lock_rechecks_identity_before_claim(tmp_path: Path) -> None
 def test_executor_error_redacts_known_secrets_from_job_and_history(
     tmp_path: Path,
 ) -> None:
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(),))
     secret = "FAKE-SCHEDULE-EXCEPTION-SECRET"
     messages: list[str] = []
@@ -728,8 +730,10 @@ def test_executor_error_redacts_known_secrets_from_job_and_history(
     asyncio.run(scenario())
     assert store.load_jobs()[0].last_status == "failed"
     assert "[REDACTED]" in str(store.load_runs()[0]["error"])
-    assert secret not in store.jobs_path.read_text(encoding="utf-8")
-    assert secret not in store.runs_path.read_text(encoding="utf-8")
+    stored = "".join(job.model_dump_json() for job in store.load_jobs()) + str(
+        store.load_runs()
+    )
+    assert secret not in stored
     assert all(secret not in message for message in messages)
 
 
@@ -737,7 +741,7 @@ def test_executor_error_redacts_known_secrets_from_job_and_history(
 def test_recovery_keeps_a_persisted_terminal_fact_after_job_write_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal_status: str
 ) -> None:
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(),))
     claim = store.claim_due(NOW)
     assert claim is not None
@@ -745,7 +749,7 @@ def test_recovery_keeps_a_persisted_terminal_fact_after_job_write_failure(
     assert store.mark_execution_started("job-1")
     original_save = store._save_jobs_unlocked
 
-    def fail_save(jobs: tuple[ScheduleJob, ...]) -> None:
+    def fail_save(connection: Any, jobs: tuple[ScheduleJob, ...]) -> None:
         raise OSError("simulated crash before job-status write")
 
     async def executor(
@@ -798,7 +802,7 @@ def test_recovery_keeps_a_persisted_terminal_fact_after_job_write_failure(
 
 
 def test_runner_supports_async_emit_callback(tmp_path: Path) -> None:
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(),))
     emitted: list[str] = []
 
@@ -830,7 +834,7 @@ def test_runner_supports_async_emit_callback(tmp_path: Path) -> None:
 
 
 def test_runner_delivers_reminder_without_invoking_model(tmp_path: Path) -> None:
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(reminder=True, prompt="check deploy"),))
     calls: list[str] = []
     sent: list[tuple[str, str]] = []
@@ -865,7 +869,7 @@ def test_schedule_create_uses_trusted_message_and_is_idempotent(tmp_path: Path) 
     from cairn.agent.tools.base import ToolExecutionContext
     from cairn.scheduling.tools import ScheduleCreateTool
 
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     tool = ScheduleCreateTool(
         store=store,
         workspace="/workspace",
@@ -904,7 +908,7 @@ def test_schedule_create_uses_trusted_message_and_is_idempotent(tmp_path: Path) 
 def test_waiting_host_gate_is_retryable_without_entering_executor(
     tmp_path: Path,
 ) -> None:
-    store = ScheduleStore(tmp_path / "schedule")
+    store = ScheduleStore(database_for(tmp_path))
     store.save_jobs((_job(),))
     calls: list[str] = []
 
@@ -945,7 +949,7 @@ def test_waiting_host_gate_is_retryable_without_entering_executor(
                 with pytest.raises(asyncio.CancelledError):
                     await pending
         restarted = ScheduleRunner(
-            store=ScheduleStore(tmp_path / "schedule"),
+            store=ScheduleStore(database_for(tmp_path)),
             executor=executor,
             deliver=deliver,
             recipient=lambda: "owner",
@@ -979,7 +983,7 @@ def test_background_execution_failure_is_observed_and_reported(
             stop.set()
 
         runner = ScheduleRunner(
-            store=ScheduleStore(tmp_path / "schedule"),
+            store=ScheduleStore(database_for(tmp_path)),
             executor=executor,
             deliver=deliver,
             recipient=lambda: "owner",

@@ -1,5 +1,3 @@
-import os
-import sqlite3
 from contextlib import suppress
 from pathlib import Path
 
@@ -10,7 +8,6 @@ from cairn.agent.models.messages import Message, ToolCall
 from cairn.agent.session.codec import canonical, encode_record, restore_messages
 from cairn.agent.session.models import (
     MAX_RECORD_BYTES,
-    MAX_WAL_BYTES,
     AttemptDiagnostics,
     HostResolution,
     SessionStoreError,
@@ -123,48 +120,6 @@ def test_256_fenced_invocations_and_terminal_commit(tmp_path: Path) -> None:
         api.close()
 
 
-@pytest.mark.parametrize("extra_bytes", [0, 1])
-def test_wal_admission_at_threshold_blocks_live_fences(
-    tmp_path: Path, extra_bytes: int
-) -> None:
-    bind = binding(tmp_path)
-    api = store(tmp_path)
-    try:
-        initial = api.create(bind).revision
-        turn = intent(bind, initial)
-        active = api.begin_turn(initial, turn)
-        wal = Path(str(api.path) + "-wal")
-        assert wal.stat().st_size > 0
-        # Preserve committed frames and pad only the unused physical tail. This
-        # tests the real file-byte admission boundary, not a fake SQL receipt.
-        os.truncate(wal, MAX_WAL_BYTES + extra_bytes)
-        with pytest.raises(SessionStoreError, match="wal_admission_limit"):
-            api.fence_tool(active, fence(bind))
-        report = api.inspect(SESSION)
-        assert report.revision == active
-        assert (
-            report.unresolved is not None and report.unresolved.diagnostics.fences == ()
-        )
-        # Idle host reconciliation may reclaim WAL. It abandons, never permits
-        # the old invocation or creates an invented tool message.
-        api.release_turn(report.revision, turn.turn_id)  # no owned work in this test
-        report = api.inspect(SESSION)
-        ready = api.reconcile(
-            report.revision,
-            HostResolution(
-                session_id=SESSION,
-                turn_id=turn.turn_id,
-                actor="host",
-                resolved_at_utc=T4,
-                binding=bind,
-            ),
-        )
-        assert api.inspect(SESSION).checkpoint.messages == ()
-        assert ready.head_seq == 0 and wal.stat().st_size == 0
-    finally:
-        api.close()
-
-
 def test_fencing_keeps_resolution_capacity_in_the_diagnostics_record(
     tmp_path: Path,
 ) -> None:
@@ -198,91 +153,6 @@ def test_fencing_keeps_resolution_capacity_in_the_diagnostics_record(
         # Turn is the expected shutdown behaviour here.
         with suppress(SessionStoreError):
             api.close()
-
-
-def test_wal_maintenance_failure_keeps_successful_receipt(tmp_path: Path) -> None:
-    bind = binding(tmp_path)
-    api = store(tmp_path)
-    try:
-        initial = api.create(bind).revision
-        turn = intent(bind, initial)
-        active = api.begin_turn(initial, turn)
-        assert api._connection is not None
-
-        def authorize(
-            action: int,
-            name: str | None,
-            value: str | None,
-            database: str | None,
-            source: str | None,
-        ) -> int:
-            return (
-                sqlite3.SQLITE_DENY
-                if action == sqlite3.SQLITE_PRAGMA and name == "wal_checkpoint"
-                else sqlite3.SQLITE_OK
-            )
-
-        api._connection.set_authorizer(authorize)
-        receipt = api.commit_turn(active, settled(turn))
-        assert api.maintenance_failed
-        api._connection.set_authorizer(None)
-        report = api.inspect(SESSION)
-        assert report.receipt == receipt and report.status == "clean"
-        assert not report.local_fault
-    finally:
-        api.close()
-
-
-def test_retained_reader_blocks_wal_reclamation_until_idle(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    bind = binding(tmp_path)
-    api = store(tmp_path)
-    reader = sqlite3.connect(api.path, isolation_level=None)
-    try:
-        initial = api.create(bind).revision
-        reader.execute("BEGIN")
-        reader.execute("SELECT version FROM sessions").fetchone()
-        assert api._connection is not None
-        api._connection.execute("PRAGMA busy_timeout=1")
-        turn = intent(bind, initial)
-        active = api.begin_turn(initial, turn)
-        receipt = api.commit_turn(active, settled(turn))
-        assert api.maintenance_failed
-        wal = Path(str(api.path) + "-wal")
-        monkeypatch.setattr(
-            "cairn.agent.session.store.MAX_WAL_BYTES", wal.stat().st_size
-        )
-        report = api.inspect(SESSION)
-        with pytest.raises(SessionStoreError, match="wal_admission_limit"):
-            api.begin_turn(
-                receipt.revision,
-                intent(
-                    report.binding,
-                    receipt.revision,
-                    turn_id=OTHER_TURN,
-                    start=4,
-                    time=T4,
-                ),
-            )
-        assert api.inspect(SESSION).receipt == receipt
-        reader.rollback()
-        report = api.inspect(SESSION)
-        ready = api.reconcile(
-            report.revision,
-            HostResolution(
-                session_id=SESSION,
-                turn_id=None,
-                actor="host",
-                resolved_at_utc=T4,
-                binding=report.binding,
-            ),
-        )
-        assert ready.head_seq == 1 and wal.stat().st_size == 0
-        assert not api.maintenance_failed
-    finally:
-        reader.close()
-        api.close()
 
 
 def test_fault_in_one_session_cannot_be_cleared_by_reconciling_another(

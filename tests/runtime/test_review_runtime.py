@@ -4,23 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 from starlette.testclient import TestClient
 
 from cairn.agent.budget import RunBudget
 from cairn.review.service import NO_SOURCE_MESSAGES
 from cairn.server.bootstrap import runtime_app
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 
 
 def test_runtime_bootstrap_exposes_reviews_and_finishes_empty_days(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Review collection needs no WAL store, but the full runtime lifespan opens
-    # the session store. Local development SQLite builds use the same explicit
-    # declaration as the other focused runtime tests.
-    monkeypatch.setenv("CAIRN_ALLOW_UNVERIFIED_SQLITE", "1")
     source = tmp_path / "source"
     source.mkdir()
     initialize_repository(source)
@@ -30,6 +25,7 @@ def test_runtime_bootstrap_exposes_reviews_and_finishes_empty_days(
         tmp_path / "worktrees",
         budget=RunBudget(5),
         token="review-runtime-token",
+        database=database_for(tmp_path),
     )
     assert app.state.reviews is not None
     assert app.state.weekly_reviews is not None

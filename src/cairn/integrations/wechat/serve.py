@@ -19,9 +19,10 @@ import sys
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -95,14 +96,12 @@ from cairn.scheduling.requests import (
     parse_once_request,
 )
 from cairn.scheduling.runner import ScheduleRunner
-from cairn.scheduling.store import ScheduleStore, default_schedule_dir
-from cairn.scheduling.store import (
-    ensure_outside_workspace as ensure_schedule_outside_workspace,
-)
+from cairn.scheduling.store import ScheduleStore
 from cairn.scheduling.tools import (
     ScheduleListTool,
     ScheduleManageTool,
 )
+from cairn.shared.db import Database
 from cairn.shared.lifecycle import await_owned, settle_owned
 from cairn.shared.state_paths import default_agent_home
 
@@ -173,6 +172,19 @@ PROJECT_LEASE_FILENAME = "project-write.lock"
 CLASSIFIER_TIMEOUT_SECONDS = 8.0
 
 
+def database_for(config: ServeConfig) -> Database:
+    if config.database is not None:
+        return config.database
+    return _shared_database(config.database_url, config.database_namespace)
+
+
+@lru_cache(maxsize=8)
+def _shared_database(url: str, namespace: str) -> Database:
+    database = Database(url, namespace=namespace)
+    database.migrate()
+    return database
+
+
 @dataclass(frozen=True, slots=True)
 class ServeConfig:
     workspace: Path
@@ -192,8 +204,16 @@ class ServeConfig:
     poll_timeout_ms: int | None = None
     poll_interval: float = 0.0
     max_polls: int | None = None
-    schedule_store: Path | None = None
     schedule_poll_interval: float = 1.0
+    database_url: str = field(
+        default_factory=lambda: os.environ.get(
+            "CAIRN_DATABASE_URL", "postgresql:///cairn"
+        )
+    )
+    database_namespace: str = field(
+        default_factory=lambda: os.environ.get("CAIRN_DATABASE_NAMESPACE", "cairn")
+    )
+    database: Database | None = None
     redact_text: Callable[[str], str] | None = None
     runtime_url: str | None = None
     runtime_token_file: Path | None = None
@@ -348,7 +368,7 @@ def default_task_executor(
         )
 
     wechat_task_tools = board_tools(task_board)
-    schedule_store = ScheduleStore(config.schedule_store or default_schedule_dir())
+    schedule_store = ScheduleStore(database_for(config))
     schedule_tools = (
         ScheduleListTool(
             store=schedule_store,
@@ -372,10 +392,6 @@ def default_task_executor(
         if on_secrets_resolved is not None:
             on_secrets_resolved(values)
 
-    session_root = config.state_dir / "sessions"
-    chat_session_root = config.state_dir / "sessions-chat"
-    ensure_outside_workspace(session_root, config.workspace)
-    ensure_outside_workspace(chat_session_root, config.workspace)
     shared_store: SessionStore | None = None
     retained_sessions: list[DurableSession] = []
     history_notices: dict[str, str] = {}
@@ -471,18 +487,9 @@ def default_task_executor(
         def build(agent: Agent) -> DurableSession:
             nonlocal shared_store, session_id
             close_sessions(active_sessions)
-            chat_database = chat_session_root / "sessions.sqlite3"
-            if purpose == "chat" and (
-                chat_database.exists() or chat_database.is_symlink()
-            ):
-                # A prior release created another durable owner. Never overwrite
-                # it or silently choose one of two potentially diverged histories.
-                raise SessionStoreError("chat_store_migration_required")
             if shared_store is None:
                 shared_store = open_store(
-                    session_root,
-                    Workspace(config.workspace),
-                    secret_env_keys=secret_keys(agent),
+                    database_for(config),
                     sensitive_values=tuple(known_secret_values),
                 )
             store = shared_store
@@ -749,7 +756,7 @@ def default_conversation_executor(
         TaskTodoTool(task_board),
         TaskUseTool(task_board),
     )
-    schedule_store = ScheduleStore(config.schedule_store or default_schedule_dir())
+    schedule_store = ScheduleStore(database_for(config))
     schedule_tools = (
         ScheduleListTool(
             store=schedule_store,
@@ -892,8 +899,7 @@ class _Service:
         self._conversation_classifier = conversation_classifier
         self._progress_provider = progress_provider
         self._schedule_store = (
-            schedule_store
-            or (ScheduleStore(config.schedule_store) if config.schedule_store else None)
+            schedule_store or ScheduleStore(database_for(config))
             if self._runtime_adapter is None
             else None
         )
@@ -2222,8 +2228,7 @@ async def serve_wechat(
     scheduler_task: asyncio.Task[object] | None = None
     scheduler_stop: asyncio.Event | None = None
     scheduler_runner: ScheduleRunner | None = None
-    if config.schedule_store is not None and not config.runtime_url:
-        ensure_schedule_outside_workspace(config.schedule_store, config.workspace)
+    if not config.runtime_url:
 
         async def deliver_scheduled(sender: str, text: str) -> bool:
             if sender not in config.allowed_senders:
@@ -2258,7 +2263,7 @@ async def serve_wechat(
         )
 
         scheduler_runner = ScheduleRunner(
-            store=ScheduleStore(config.schedule_store),
+            store=ScheduleStore(database_for(config)),
             executor=scheduled_executor,
             execution_gate=task_gate,
             deliver=deliver_scheduled,

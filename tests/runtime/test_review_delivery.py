@@ -9,6 +9,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from cairn.integrations.wechat.session import ProactiveSendOutcome
+from cairn.knowledge.store import KnowledgeStore
 from cairn.review.delivery import (
     ReviewDeliveryCoordinator,
     format_review_message,
@@ -25,13 +26,14 @@ from cairn.review.models import (
     WeeklyReview,
 )
 from cairn.review.store import ReviewStore
+from tests.support.pg import database_for
 
 DAY = date(2026, 1, 15)
 TZ = "Asia/Shanghai"
 
 
 def _store(tmp_path: Path) -> ReviewStore:
-    return ReviewStore(tmp_path / "knowledge")
+    return ReviewStore(KnowledgeStore(database_for(tmp_path)))
 
 
 def _completed_review(store: ReviewStore, request_id: str = "review-1") -> Any:
@@ -442,7 +444,7 @@ def test_polling_delivers_pending_review_when_readiness_returns(
 def test_message_is_plain_text_mobile_sized_and_truncated(
     tmp_path: Path,
 ) -> None:
-    real = ReviewStore(tmp_path / "knowledge")
+    real = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     review = _completed_review(real)
     text = format_review_message(review)
     assert "##" not in text and "**" not in text and "`" not in text

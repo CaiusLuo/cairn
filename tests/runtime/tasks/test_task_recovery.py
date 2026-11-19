@@ -3,7 +3,6 @@
 import asyncio
 import multiprocessing
 import os
-import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -19,6 +18,7 @@ from cairn.agent.session.access import open_store
 from cairn.agent.session.models import SCHEMA_VERSION, SessionStoreError
 from cairn.agent.session.task_models import TaskRecoveryReport, TaskResolution
 from cairn.agent.workspace.workspace import Workspace
+from cairn.shared.db import DbConnection
 from tests.support.durable_tasks import (
     SPEC,
     DurableTaskHost,
@@ -32,8 +32,9 @@ from tests.support.git import (
     git,
     initialize_repository,
 )
+from tests.support.pg import database_for
 from tests.support.runtime import SequenceLLM
-from tests.support.sessions import SESSION, UNVERIFIED_RUNTIME
+from tests.support.sessions import SESSION
 
 
 @pytest.fixture
@@ -331,12 +332,12 @@ def test_uncertain_result_commit_reads_actual_facts_without_retry(
     commit = host.store._commit
     writes = 0
 
-    def uncertain(conn: sqlite3.Connection) -> None:
+    def uncertain(conn: DbConnection) -> None:
         nonlocal writes
         writes += 1
         if committed:
             conn.commit()
-        raise sqlite3.OperationalError("private-unknown-reply")
+        raise RuntimeError("private-unknown-reply")
 
     def record(*args: Any, **kwargs: Any) -> object:
         monkeypatch.setattr(host.store, "_commit", uncertain)
@@ -396,21 +397,12 @@ def test_cancellation_holds_session_and_writer_through_repeated_cleanup(
             host.session.close()
             with pytest.raises(SessionStoreError, match="task_still_owned"):
                 host.store.close()
-            with pytest.raises(SessionStoreError, match="writer_busy"):
-                open_store(
-                    root / "store", host.workspace, allow_unverified=UNVERIFIED_RUNTIME
-                )
             assert not pending.done() and not settled.is_set()
             finish.set()
             with pytest.raises(asyncio.CancelledError):
                 await pending
             assert settled.is_set() and asyncio.all_tasks() == baseline
-            reader = open_store(
-                root / "store",
-                host.workspace,
-                inspect=True,
-                allow_unverified=UNVERIFIED_RUNTIME,
-            )
+            reader = open_store(database_for(root), inspect=True)
             try:
                 after = reader.inspect_task(SESSION, SPEC.task_id)
                 assert (

@@ -25,6 +25,7 @@ from cairn.interfaces.cli.runtime_chat import RemoteConversation
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 
 
 class _SlowModel(OfflineDevelopmentModel):
@@ -50,6 +51,7 @@ def _app(tmp_path: Path) -> Any:
         tmp_path / "worktrees",
         budget=RunBudget(5),
         token="handoff-token",
+        database=database_for(tmp_path),
     )
 
 
@@ -329,12 +331,8 @@ def test_uncertain_effect_settles_the_input_and_blocks_replay(tmp_path: Path) ->
 
 
 def test_appended_input_evidence_is_redacted_and_reloads(tmp_path: Path) -> None:
-    state = tmp_path / "state"
-    forbidden = (tmp_path / "source", tmp_path / "worktrees")
     secret = "{{SECRET_1npazs7q}}"
-    catalogue = RuntimeCatalogue(
-        state, forbidden_roots=forbidden, sensitive_values=(secret,)
-    )
+    catalogue = RuntimeCatalogue(database_for(tmp_path), sensitive_values=(secret,))
     try:
         task = RuntimeTask(
             prompt="goal",
@@ -359,7 +357,7 @@ def test_appended_input_evidence_is_redacted_and_reloads(tmp_path: Path) -> None
         catalogue.close()
 
     # A growing redaction replacement must not leave state that fails reload.
-    reopened = RuntimeCatalogue(state, forbidden_roots=forbidden)
+    reopened = RuntimeCatalogue(database_for(tmp_path))
     try:
         assert reopened.data.tasks[task.task_id].inputs == recorded.inputs
     finally:

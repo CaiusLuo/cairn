@@ -1,18 +1,16 @@
-"""SQLite authority for private knowledge clips.
+"""PostgreSQL authority for private knowledge clips.
 
-The database lives in a host-selected directory outside the Agent workspace.
-Nothing here is read by an Agent turn, Memory store or prompt builder; callers
-must go through this store's explicit API.
+The knowledge schema lives in the shared Cairn database, outside the Agent
+workspace. Nothing here is read by an Agent turn, Memory store or prompt
+builder; callers must go through this store's explicit API.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
-from pathlib import Path
+from contextlib import contextmanager
 from typing import Any, cast
 from uuid import uuid4
 
@@ -26,7 +24,7 @@ from cairn.knowledge.models import (
     normalize_tags,
     utc_now,
 )
-from cairn.knowledge.schema import SCHEMA_VERSION, create_schema
+from cairn.shared.db import Database, DbConnection, Row
 
 DEFAULT_LIST_LIMIT = 50
 MAX_LIST_LIMIT = 200
@@ -43,51 +41,19 @@ def _json(value: Any) -> str:
 class KnowledgeStore:
     """One private SQLite file; every mutation is local and transactional."""
 
-    def __init__(self, root: Path) -> None:
-        raw = root.expanduser()
-        if raw.is_symlink():
-            raise ValueError("Knowledge directory cannot be a symlink")
-        self.root = raw.resolve()
-        if self.root.is_symlink():
-            raise ValueError("Knowledge directory cannot be a symlink")
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with suppress(OSError):
-            self.root.chmod(0o700)
-        self.path = self.root / "knowledge.sqlite3"
-        if self.path.is_symlink():
-            raise ValueError("Knowledge store cannot be a symlink")
-        with self._connect() as connection:
-            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            # Older Clip/Review schemas are upgraded additively by
-            # ``create_schema``; no export or rebuild is required.
-            if version not in (0, 1, 2, 3, 4, SCHEMA_VERSION):
-                raise ValueError("Unsupported knowledge store schema")
-            self._create_schema(connection)
-            connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-        with suppress(OSError):
-            self.path.chmod(0o600)
+    def __init__(self, database: Database) -> None:
+        self.db = database
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
-        try:
+    def _connect(self) -> Iterator[DbConnection]:
+        with self.db.connect("knowledge") as connection:
             yield connection
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
 
     @staticmethod
-    def _create_schema(connection: sqlite3.Connection) -> None:
-        create_schema(connection)
-
-    @staticmethod
-    def _clip(row: sqlite3.Row) -> Clip:
-        tags = json.loads(cast(str, row["tags_json"]))
+    def _clip(row: Row) -> Clip:
+        tags = row["tags_json"]
+        if isinstance(tags, str):
+            tags = json.loads(tags)
         if not isinstance(tags, list):
             raise ValueError("knowledge store contains invalid tags")
         return Clip(
@@ -140,8 +106,12 @@ class KnowledgeStore:
         now = utc_now()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                (f"clip-request:{request_key}",),
+            )
             existing = connection.execute(
-                "SELECT fingerprint, clip_id FROM clip_requests WHERE request_id = ?",
+                "SELECT fingerprint, clip_id FROM clip_requests WHERE request_id = %s",
                 (request_key,),
             ).fetchone()
             if existing is not None:
@@ -150,7 +120,7 @@ class KnowledgeStore:
                         "request_id was already used for different content"
                     )
                 row = connection.execute(
-                    "SELECT * FROM clips WHERE clip_id = ?",
+                    "SELECT * FROM clips WHERE clip_id = %s",
                     (existing["clip_id"],),
                 ).fetchone()
                 if row is None:
@@ -168,7 +138,7 @@ class KnowledgeStore:
             connection.execute(
                 "INSERT INTO clips (clip_id, content, source, tags_json, "
                 "content_hash, created_at, updated_at, archived_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, NULL)",
                 (
                     clip.clip_id,
                     clip.content,
@@ -181,7 +151,7 @@ class KnowledgeStore:
             )
             connection.execute(
                 "INSERT INTO clip_requests (request_id, fingerprint, clip_id) "
-                "VALUES (?, ?, ?)",
+                "VALUES (%s, %s, %s)",
                 (request_key, request_fingerprint, clip.clip_id),
             )
             return clip, True
@@ -189,7 +159,7 @@ class KnowledgeStore:
     def get(self, clip_id: str) -> Clip | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM clips WHERE clip_id = ?", (clip_id,)
+                "SELECT * FROM clips WHERE clip_id = %s", (clip_id,)
             ).fetchone()
         return None if row is None else self._clip(row)
 
@@ -214,8 +184,8 @@ class KnowledgeStore:
             if len(needle) > 500:
                 raise ValueError("query must be at most 500 characters")
             where.append(
-                "(instr(lower(content), lower(?)) > 0 "
-                "OR instr(lower(tags_json), lower(?)) > 0)"
+                "(strpos(lower(content), lower(%s)) > 0 "
+                "OR strpos(lower(tags_json::text), lower(%s)) > 0)"
             )
             params.extend((needle, needle))
         clause = " WHERE " + " AND ".join(where) if where else ""
@@ -224,7 +194,7 @@ class KnowledgeStore:
             rows = connection.execute(
                 "SELECT * FROM clips"
                 + clause
-                + " ORDER BY updated_at DESC, clip_id DESC LIMIT ? OFFSET ?",
+                + " ORDER BY updated_at DESC, clip_id DESC LIMIT %s OFFSET %s",
                 params,
             ).fetchall()
         return tuple(self._clip(row) for row in rows)
@@ -253,7 +223,7 @@ class KnowledgeStore:
         archived_filter = "" if include_archived else "AND archived_at IS NULL "
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM clips WHERE updated_at >= ? AND updated_at < ? "
+                "SELECT * FROM clips WHERE updated_at >= %s AND updated_at < %s "
                 + archived_filter
                 + "ORDER BY updated_at, clip_id",
                 (start, end),
@@ -273,7 +243,7 @@ class KnowledgeStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT * FROM clips WHERE clip_id = ?", (clip_id,)
+                "SELECT * FROM clips WHERE clip_id = %s FOR UPDATE", (clip_id,)
             ).fetchone()
             if row is None:
                 raise KeyError(clip_id)
@@ -291,8 +261,8 @@ class KnowledgeStore:
                 archived_at=current.archived_at,
             )
             connection.execute(
-                "UPDATE clips SET content = ?, source = ?, tags_json = ?, "
-                "content_hash = ?, updated_at = ? WHERE clip_id = ?",
+                "UPDATE clips SET content = %s, source = %s, tags_json = %s, "
+                "content_hash = %s, updated_at = %s WHERE clip_id = %s",
                 (
                     updated.content,
                     updated.source,
@@ -308,7 +278,7 @@ class KnowledgeStore:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT * FROM clips WHERE clip_id = ?", (clip_id,)
+                "SELECT * FROM clips WHERE clip_id = %s FOR UPDATE", (clip_id,)
             ).fetchone()
             if row is None:
                 raise KeyError(clip_id)
@@ -322,7 +292,7 @@ class KnowledgeStore:
                 }
             )
             connection.execute(
-                "UPDATE clips SET archived_at = ?, updated_at = ? WHERE clip_id = ?",
+                "UPDATE clips SET archived_at = %s, updated_at = %s WHERE clip_id = %s",
                 (updated.archived_at, updated.updated_at, updated.clip_id),
             )
             return updated

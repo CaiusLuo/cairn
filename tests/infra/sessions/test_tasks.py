@@ -1,8 +1,6 @@
 """Task facts are separate from committed conversation and never replay work."""
 
 import json
-import multiprocessing
-import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal, cast
@@ -22,15 +20,40 @@ from cairn.agent.session.task_models import (
     TaskRepositoryObservation,
     TaskResultData,
 )
+from cairn.shared.db import DbConnection
+from tests.support.pg import database_for
 from tests.support.sessions import OTHER_TURN, SESSION, binding, store
 from tests.support.task_ledger import (
     INPUT_DIGEST,
     TASK,
     commit_task_checkpoint,
-    task_crash_writer,
+    task_crash_at,
 )
 
 OTHER_SESSION = "00000000-0000-4000-8000-000000000004"
+
+
+def rows(tmp_path: Path) -> dict[str, list[tuple[object, ...]]]:
+    with database_for(tmp_path).connect("agent") as conn:
+        return {
+            table: [
+                tuple(row.values())
+                for row in conn.execute(
+                    f"SELECT * FROM {table} ORDER BY 1, 2"
+                ).fetchall()
+            ]
+            for table in ("sessions", "turns", "checkpoints", "tasks", "tool_fences")
+        }
+
+
+def stored_text(tmp_path: Path) -> str:
+    with database_for(tmp_path).connect("agent") as conn:
+        return "\n".join(
+            str(value)
+            for table in ("sessions", "turns", "checkpoints", "tasks", "tool_fences")
+            for row in conn.execute(f"SELECT * FROM {table}").fetchall()
+            for value in row.values()
+        )
 
 
 @pytest.fixture
@@ -98,14 +121,14 @@ def test_lifecycle_independent_revisions_and_historical_result(
     assert report.session_checkpoint == later_receipt
     assert report.status == "result_recorded"
     api.close()
-    before = {p.name: p.read_bytes() for p in api.directory.iterdir()}
+    before = rows(tmp_path)
     reader = store(tmp_path, mode="inspect")
     try:
         assert reader.inspect_task(SESSION, TASK) == report
         assert reader.inspect_task(SESSION, "task-2").task.result is None
     finally:
         reader.close()
-    assert {p.name: p.read_bytes() for p in api.directory.iterdir()} == before
+    assert rows(tmp_path) == before
 
 
 @pytest.mark.parametrize(
@@ -312,7 +335,7 @@ def test_read_only_task_api_rejects_mutations_without_changing_files(
     task = at_phase(api, "inspecting")
     session = api.inspect(SESSION)
     api.close()
-    before = {p.name: p.read_bytes() for p in api.directory.iterdir()}
+    before = rows(tmp_path)
     reader = store(tmp_path, mode="inspect")
     try:
         with pytest.raises(SessionStoreError, match="read_only_store"):
@@ -334,7 +357,7 @@ def test_read_only_task_api_rejects_mutations_without_changing_files(
         assert reader.inspect_task(SESSION, TASK).task == task
     finally:
         reader.close()
-    assert {p.name: p.read_bytes() for p in api.directory.iterdir()} == before
+    assert rows(tmp_path) == before
 
 
 @pytest.mark.parametrize("committed", [False, True])
@@ -343,10 +366,10 @@ def test_task_commit_uncertainty_inspects_exact_facts_without_retry(
 ) -> None:
     task = at_phase(api, "turn_committed")
 
-    def uncertain(conn: sqlite3.Connection) -> None:
+    def uncertain(conn: DbConnection) -> None:
         if committed:
             conn.commit()
-        raise sqlite3.OperationalError("credential-and-provider-content")
+        raise RuntimeError("credential-and-provider-content")
 
     monkeypatch.setattr(api, "_commit", uncertain)
     with pytest.raises(SessionStoreError, match="commit_uncertain") as error:
@@ -364,7 +387,7 @@ def test_unexpected_interruption_rolls_back_task_update(
 ) -> None:
     task = at_phase(api, "turn_committed")
 
-    def interrupt(conn: sqlite3.Connection) -> None:
+    def interrupt(conn: DbConnection) -> None:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(api, "_commit", interrupt)
@@ -387,9 +410,7 @@ def test_task_input_metadata_rejects_sensitive_or_unbounded_values(
             api.create_task(receipt.revision, task_id=value, input_digest=INPUT_DIGEST)
         assert value not in str(error.value)
         api.close()
-        assert all(
-            value.encode() not in p.read_bytes() for p in api.directory.iterdir()
-        )
+        assert value not in stored_text(tmp_path)
     finally:
         api.close()
 
@@ -398,7 +419,7 @@ def test_task_input_metadata_rejects_sensitive_or_unbounded_values(
     "field", ["error", "final_response", "prompt", "trace_id", "repository"]
 )
 def test_results_never_serialize_untrusted_content(
-    api: SessionStore, field: str
+    api: SessionStore, tmp_path: Path, field: str
 ) -> None:
     task = at_phase(api, "inspecting")
     sensitive = "provider-secret-untrusted-output"
@@ -408,9 +429,7 @@ def test_results_never_serialize_untrusted_content(
     assert sensitive not in str(error.value)
     assert api.inspect_task(SESSION, TASK).task == task
     api.close()
-    assert all(
-        sensitive.encode() not in p.read_bytes() for p in api.directory.iterdir()
-    )
+    assert sensitive not in stored_text(tmp_path)
 
 
 def test_valid_result_shape_still_rejects_known_secret_values(tmp_path: Path) -> None:
@@ -426,14 +445,14 @@ def test_valid_result_shape_still_rejects_known_secret_values(tmp_path: Path) ->
         assert sensitive not in str(error.value)
         assert api.inspect_task(SESSION, TASK).task == task
         api.close()
-        assert all(
-            sensitive.encode() not in p.read_bytes() for p in api.directory.iterdir()
-        )
+        assert sensitive not in stored_text(tmp_path)
     finally:
         api.close()
 
 
-def test_recovery_diagnostic_never_serializes_exception_text(api: SessionStore) -> None:
+def test_recovery_diagnostic_never_serializes_exception_text(
+    api: SessionStore, tmp_path: Path
+) -> None:
     task = at_phase(api, "running")
     sensitive = "credential-containing-exception"
     with pytest.raises(SessionStoreError, match="invalid_record") as error:
@@ -441,21 +460,18 @@ def test_recovery_diagnostic_never_serializes_exception_text(api: SessionStore) 
     assert sensitive not in str(error.value)
     assert api.inspect_task(SESSION, TASK).task == task
     api.close()
-    assert all(
-        sensitive.encode() not in p.read_bytes() for p in api.directory.iterdir()
-    )
+    assert sensitive not in stored_text(tmp_path)
 
 
 @pytest.mark.parametrize(
-    "damage", ["revision", "phase", "checkpoint", "input", "json", "oversize", "secret"]
+    "damage", ["revision", "phase", "checkpoint", "input", "json", "secret"]
 )
 def test_task_corruption_fails_closed_without_rewriting(
     api: SessionStore, tmp_path: Path, damage: str
 ) -> None:
     at_phase(api, "turn_committed")
-    path = api.path
     api.close()
-    with sqlite3.connect(path) as conn:
+    with database_for(tmp_path).connect("agent") as conn:
         if damage == "revision":
             conn.execute("UPDATE tasks SET version=version+1")
         elif damage == "phase":
@@ -474,11 +490,8 @@ def test_task_corruption_fails_closed_without_rewriting(
             )
             if damage == "json":
                 changed = "{"
-            elif damage == "oversize":
-                conn.execute("PRAGMA ignore_check_constraints=ON")
-                changed = "x" * 4097
-            conn.execute("UPDATE tasks SET record_json=?", (changed,))
-    before = {p.name: p.read_bytes() for p in api.directory.iterdir()}
+            conn.execute("UPDATE tasks SET record_json=%s", (changed,))
+    before = rows(tmp_path)
     reader: SessionStore | None = None
     try:
         with pytest.raises(SessionStoreError):
@@ -487,7 +500,7 @@ def test_task_corruption_fails_closed_without_rewriting(
     finally:
         if reader is not None:
             reader.close()
-    assert {p.name: p.read_bytes() for p in api.directory.iterdir()} == before
+    assert rows(tmp_path) == before
 
 
 @pytest.mark.parametrize(
@@ -503,54 +516,36 @@ def test_sigkill_retains_incomplete_task_and_exact_committed_session(
     api = store(tmp_path)
     api.create(binding(tmp_path))
     api.close()
-    ctx = multiprocessing.get_context("spawn")
-    parent, child = ctx.Pipe()
-    worker = ctx.Process(
-        target=task_crash_writer, args=(str(tmp_path), SESSION, window, child)
-    )
-    worker.start()
+    task_crash_at(tmp_path, SESSION, window)
+    before = rows(tmp_path)
+    reader = store(tmp_path, mode="inspect")
     try:
-        assert parent.poll(15) and parent.recv() == window
-        with pytest.raises(SessionStoreError, match="writer_busy"):
-            store(tmp_path)
-        worker.kill()
-        worker.join(15)
-        assert worker.exitcode is not None
-        before = {p.name: p.read_bytes() for p in api.directory.iterdir()}
-        reader = store(tmp_path, mode="inspect")
-        try:
-            report = reader.inspect_task(SESSION, TASK)
-            assert report.status == "incomplete" and report.task.result is None
-            expected_phase = (
-                "running"
-                if window in ("running", "fenced", "checkpoint")
-                else "inspecting"
-                if window == "inspecting"
-                else "turn_committed"
-            )
-            assert report.task.phase == expected_phase
-            assert report.session_checkpoint.revision.head_seq == int(
-                window not in ("running", "fenced")
-            )
-            assert report.external_effects_may_have_occurred == (window != "running")
-            if window == "fenced":
-                assert reader.inspect(SESSION).status == "effects_unknown"
-        finally:
-            reader.close()
-        assert {p.name: p.read_bytes() for p in api.directory.iterdir()} == before
-        reopened = store(tmp_path)
-        try:
-            assert reopened.inspect_task(SESSION, TASK) == report
-            assert reopened.inspect(SESSION).receipt == report.session_checkpoint
-        finally:
-            reopened.close()
-        effect_path = tmp_path / "work" / "effect.log"
-        assert effect_path.exists() == (window != "running")
-        if effect_path.exists():
-            assert effect_path.read_bytes() == b"effect\n"
+        report = reader.inspect_task(SESSION, TASK)
+        assert report.status == "incomplete" and report.task.result is None
+        expected_phase = (
+            "running"
+            if window in ("running", "fenced", "checkpoint")
+            else "inspecting"
+            if window == "inspecting"
+            else "turn_committed"
+        )
+        assert report.task.phase == expected_phase
+        assert report.session_checkpoint.revision.head_seq == int(
+            window not in ("running", "fenced")
+        )
+        assert report.external_effects_may_have_occurred == (window != "running")
+        if window == "fenced":
+            assert reader.inspect(SESSION).status == "effects_unknown"
     finally:
-        if worker.is_alive():
-            worker.kill()
-        worker.join(15)
-        parent.close()
-        child.close()
+        reader.close()
+    assert rows(tmp_path) == before
+    reopened = store(tmp_path)
+    try:
+        assert reopened.inspect_task(SESSION, TASK) == report
+        assert reopened.inspect(SESSION).receipt == report.session_checkpoint
+    finally:
+        reopened.close()
+    effect_path = tmp_path / "work" / "effect.log"
+    assert effect_path.exists() == (window != "running")
+    if effect_path.exists():
+        assert effect_path.read_bytes() == b"effect\n"

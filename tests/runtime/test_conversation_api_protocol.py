@@ -21,6 +21,7 @@ from cairn.conversation.models import ConversationSource, RunStatus
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 
 
 class ChatModel(OfflineDevelopmentModel):
@@ -61,6 +62,7 @@ def _app(tmp_path: Path) -> Any:
         tmp_path / "worktrees",
         budget=RunBudget(5),
         token="zzzz",
+        database=database_for(tmp_path),
     )
 
 

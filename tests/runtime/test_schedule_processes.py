@@ -13,6 +13,7 @@ from cairn.development.execution.headless import HeadlessResult, HeadlessStatus
 from cairn.scheduling.models import ScheduleJob, ScheduleKind
 from cairn.scheduling.runner import ScheduleRunner
 from cairn.scheduling.store import ScheduleStore
+from tests.support.pg import database_for
 
 NOW = datetime(2026, 11, 1, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -58,7 +59,7 @@ def _worker(
 
     async def run() -> None:
         runner = ScheduleRunner(
-            store=ScheduleStore(Path(store_root)),
+            store=ScheduleStore(database_for(Path(store_root))),
             executor=executor,
             deliver=deliver,
             recipient=lambda: "owner",
@@ -77,10 +78,10 @@ def _lines(path: Path) -> list[str]:
 
 
 def test_two_processes_execute_different_jobs_serially(tmp_path: Path) -> None:
-    ctx = multiprocessing.get_context("fork")
+    ctx = multiprocessing.get_context("spawn")
     root = str(tmp_path / "schedule")
     log = tmp_path / "events.txt"
-    store = ScheduleStore(Path(root))
+    store = ScheduleStore(database_for(Path(root)))
     store.save_jobs((_job("first"), _job("second")))
     release = ctx.Event()
     first = ctx.Process(target=_worker, args=(root, "first", str(log), release))
@@ -104,10 +105,10 @@ def test_two_processes_execute_different_jobs_serially(tmp_path: Path) -> None:
 
 
 def test_killed_executor_is_reported_interrupted_without_replay(tmp_path: Path) -> None:
-    ctx = multiprocessing.get_context("fork")
+    ctx = multiprocessing.get_context("spawn")
     root = str(tmp_path / "schedule")
     log = tmp_path / "events.txt"
-    store = ScheduleStore(Path(root))
+    store = ScheduleStore(database_for(Path(root)))
     store.save_jobs((_job("first"),))
     release = ctx.Event()
     first = ctx.Process(target=_worker, args=(root, "first", str(log), release))
@@ -131,7 +132,7 @@ def test_killed_executor_is_reported_interrupted_without_replay(tmp_path: Path) 
 
         async def recover() -> None:
             runner = ScheduleRunner(
-                store=ScheduleStore(Path(root)),
+                store=ScheduleStore(database_for(Path(root))),
                 executor=executor,
                 deliver=deliver,
                 recipient=lambda: "owner",

@@ -9,6 +9,7 @@ from typing import Any
 
 from cairn.integrations.wechat.session import WechatSessionController
 from cairn.integrations.wechat.state import WechatAccount, WechatState
+from cairn.knowledge.store import KnowledgeStore
 from cairn.review.delivery import ReviewDeliveryCoordinator
 from cairn.review.models import (
     DailyReview,
@@ -21,6 +22,7 @@ from cairn.review.models import (
 )
 from cairn.review.store import ReviewStore
 from tests.support.fake_ilink import FakeILink
+from tests.support.pg import database_for
 
 DAY = date(2026, 1, 15)
 TZ = "Asia/Shanghai"
@@ -109,7 +111,7 @@ def _coordinator(
     controller: WechatSessionController,
     target: DeliveryTarget,
 ) -> tuple[ReviewDeliveryCoordinator, ReviewStore]:
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     return (
         ReviewDeliveryCoordinator(
             store=store,

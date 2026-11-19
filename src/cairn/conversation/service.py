@@ -195,12 +195,13 @@ class ConversationService:
         execution: ServiceExecution,
         *,
         workspace: Path,
+        attachments_root: Path,
         queue_size: int = 64,
         legacy_service: TaskService | None = None,
     ) -> None:
         self.store = store
         self.execution = execution
-        self.attachments = AttachmentStore(Path(store.path).parent / "attachments")
+        self.attachments = AttachmentStore(attachments_root)
         self.development_handoff = DevelopmentHandoff(store, execution, legacy_service)
         self.workspace = workspace.resolve()
         self.workspace_id = workspace_id_for(self.workspace)

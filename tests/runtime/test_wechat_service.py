@@ -30,6 +30,7 @@ from cairn.integrations.wechat.state import (
     WechatState,
 )
 from tests.support.fake_ilink import FakeILink
+from tests.support.pg import database_for
 from tests.support.runtime import SequenceLLM
 from tests.support.wechat_service import (
     TOKEN,
@@ -188,6 +189,7 @@ def test_login_then_first_serve_start(tmp_path: Path) -> None:
             approval=None,
             allowed_senders=frozenset({"u1"}),
             max_polls=1,
+            database=database_for(tmp_path),
         )
         report = asyncio.run(
             serve_wechat(
@@ -515,7 +517,15 @@ def test_ack_failure_does_not_lose_task_or_claim_ack(
 
     async def scenario() -> None:
         service = _Service(
-            config=type("C", (), {"redact_text": None, "schedule_store": None})(),
+            config=type(
+                "C",
+                (),
+                {
+                    "redact_text": None,
+                    "schedule_store": None,
+                    "database": database_for(tmp_path),
+                },
+            )(),
             state=state,
             client=FailingClient(),  # type: ignore[arg-type]
             executor=executor,
@@ -576,7 +586,15 @@ def test_ack_never_echoes_input_before_provider_secrets_are_resolved(
 
     async def scenario() -> None:
         service = _Service(
-            config=type("C", (), {"redact_text": None, "schedule_store": None})(),
+            config=type(
+                "C",
+                (),
+                {
+                    "redact_text": None,
+                    "schedule_store": None,
+                    "database": database_for(tmp_path),
+                },
+            )(),
             state=state,
             client=Client(),  # type: ignore[arg-type]
             executor=executor,
@@ -635,7 +653,15 @@ def test_lost_ack_response_is_not_retried(tmp_path: Path) -> None:
 
     async def scenario() -> None:
         service = _Service(
-            config=type("C", (), {"redact_text": None, "schedule_store": None})(),
+            config=type(
+                "C",
+                (),
+                {
+                    "redact_text": None,
+                    "schedule_store": None,
+                    "database": database_for(tmp_path),
+                },
+            )(),
             state=state,
             client=LostAckClient(),  # type: ignore[arg-type]
             executor=executor,
@@ -701,6 +727,7 @@ def test_default_wechat_executor_exposes_shared_task_tools(
         ),
         approval=None,
         allowed_senders=frozenset({"u1"}),
+        database=database_for(tmp_path),
     )
     monkeypatch.setenv(
         "CAIRN_AGENT_HOME", str(tmp_path.parent / (tmp_path.name + "-agent"))
@@ -745,6 +772,7 @@ def test_default_wechat_executor_rejects_task_board_inside_workspace(
         ),
         approval=None,
         allowed_senders=frozenset({"u1"}),
+        database=database_for(tmp_path),
     )
     monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(tmp_path / "tasks"))
     with pytest.raises(ValueError):
@@ -755,80 +783,6 @@ def test_default_wechat_executor_rejects_task_board_inside_workspace(
     monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(link))
     with pytest.raises(ValueError):
         default_task_executor(config)
-
-
-@pytest.mark.parametrize(
-    ("variable", "through_symlink"),
-    [
-        ("TMPDIR", False),
-        ("TMPDIR", True),
-        ("UV_CACHE_DIR", False),
-        ("UV_CACHE_DIR", True),
-    ],
-)
-def test_wechat_session_refuses_agent_writable_storage(
-    monkeypatch: pytest.MonkeyPatch, variable: str, through_symlink: bool
-) -> None:
-    from tempfile import TemporaryDirectory
-
-    from cairn.integrations.wechat.serve import default_task_executor
-    from tests.support.git import initialize_repository
-
-    with TemporaryDirectory(
-        prefix="cairn-wechat-writable-", dir=Path.home()
-    ) as root_text:
-        root = Path(root_text)
-        workspace = root / "workspace"
-        workspace.mkdir()
-        initialize_repository(workspace)
-        writable = root / "writable"
-        writable.mkdir()
-        state_parent = writable
-        if through_symlink:
-            state_parent = root / "alias"
-            state_parent.symlink_to(writable, target_is_directory=True)
-        monkeypatch.setenv(variable, str(writable))
-        monkeypatch.setenv("CAIRN_AGENT_HOME", str(root / "agent"))
-        monkeypatch.setenv("CAIRN_TASK_BOARD_DIR", str(root / "board"))
-        llm = SequenceLLM([LLMResponse(content="should not run")])
-        config = ServeConfig(
-            workspace=workspace,
-            state_dir=state_parent / "state",
-            account=WechatAccount(
-                bot_token="fake-bot-token-very-long",
-                ilink_bot_id="bot",
-                base_url="https://example.test",
-                ilink_user_id="u1",
-            ),
-            approval=None,
-            allowed_senders=frozenset({"u1"}),
-            max_steps=20,
-        )
-
-        async def fake_run(**kwargs: object) -> HeadlessResult:
-            return await run_headless_task(
-                workspace=workspace,
-                prompt=str(kwargs["prompt"]),
-                task_id=str(kwargs["task_id"]),
-                grant_workspace_trust=True,
-                grant_shell=False,
-                llm=llm,
-                budget=RunBudget(max_steps=20),
-                durable_session_factory=kwargs["durable_session_factory"],  # type: ignore[arg-type]
-            )
-
-        monkeypatch.setattr(
-            "cairn.integrations.wechat.serve._run_via_config_async", fake_run
-        )
-
-        async def flow() -> HeadlessResult:
-            execute = default_task_executor(config)
-            return await execute("hello", asyncio.Event(), "first", sender="u1")  # type: ignore[call-arg]
-
-        result = asyncio.run(flow())
-        assert result.status is HeadlessStatus.RUNTIME_ERROR
-        assert llm.calls == []
-        assert not (writable / "state" / "sessions").exists()
 
 
 def test_wechat_workspace_observation_uses_current_secret_names(
@@ -876,6 +830,7 @@ def test_wechat_workspace_observation_uses_current_secret_names(
             approval=None,
             allowed_senders=frozenset({"u1"}),
             max_steps=20,
+            database=database_for(root),
         )
 
         async def fake_run(**kwargs: object) -> HeadlessResult:
@@ -987,6 +942,7 @@ def test_wechat_durable_session_respects_explicit_capabilities(
             allow_network=allowed if capability == "network" else capability == "mcp",
             allow_mcp=allowed if capability == "mcp" else capability == "shell",
             max_steps=20,
+            database=database_for(root),
         )
 
         async def fake_run(**kwargs: object) -> HeadlessResult:
@@ -1072,6 +1028,7 @@ def test_wechat_durable_failed_check_can_repair_and_recheck(
             max_steps=20,
             allow_shell=True,
             check_command="test -f repaired",
+            database=database_for(root),
         )
 
         async def fake_run(**kwargs: object) -> HeadlessResult:
@@ -1153,6 +1110,7 @@ def test_wechat_session_close_failure_retains_owner_and_primary(
             approval=None,
             allowed_senders=frozenset({"u1"}),
             max_steps=20,
+            database=database_for(root),
         )
         original_close = DurableSession.close
         failures = 0
@@ -1244,6 +1202,7 @@ def test_wechat_reopen_failure_releases_attached_session_owner(
             approval=None,
             allowed_senders=frozenset({"u1"}),
             max_steps=20,
+            database=database_for(root),
         )
         original_inspect = DurableSession.inspect
         original_close = DurableSession.close
@@ -1332,6 +1291,7 @@ def test_wechat_attachment_failure_keeps_writer_for_host_close_retry(
             approval=None,
             allowed_senders=frozenset({"u1"}),
             max_steps=20,
+            database=database_for(root),
         )
         observations = 0
         closes = 0
@@ -1468,6 +1428,7 @@ def test_wechat_tasks_link_to_their_persistent_sender_session(
                 max_steps=20,
                 max_polls=70,
                 poll_interval=0.02,
+                database=database_for(root),
             )
 
             async def exchange(
@@ -1508,9 +1469,7 @@ def test_wechat_tasks_link_to_their_persistent_sender_session(
         assert all(task.source is TaskSource.WECHAT for task in tasks.values())
         assert tasks["A first"].session_id == tasks["A later"].session_id
 
-        store = SessionStore(
-            state_dir / "sessions", mode="inspect", forbidden_roots=(workspace,)
-        )
+        store = SessionStore(database_for(root), mode="inspect")
         try:
             session_ids = {summary.session_id for summary in store.list_sessions()}
         finally:

@@ -14,6 +14,7 @@ from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
+from tests.support.pg import database_for
 
 
 class HandoffModel(OfflineDevelopmentModel):
@@ -62,6 +63,7 @@ def test_chat_begin_development_handoff_preserves_conversation_and_creates_one_t
             tmp_path / "worktrees",
             budget=RunBudget(5),
             token="zzzz",
+            database=database_for(tmp_path),
         )
         app.state.execution.llm_factory = HandoffModel
         api = RuntimeClient(

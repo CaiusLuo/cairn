@@ -14,6 +14,7 @@ import pytest
 
 from cairn.agent.models.messages import LLMResponse
 from cairn.knowledge.models import Clip, content_hash
+from cairn.knowledge.store import KnowledgeStore
 from cairn.review.collector import WeeklySourceCollector
 from cairn.review.models import (
     DailyReview,
@@ -36,6 +37,7 @@ from cairn.review.weekly import (
     week_period_for_end,
     week_start,
 )
+from tests.support.pg import database_for
 
 TZ = "Asia/Shanghai"
 WEEK = "2026-W03"
@@ -240,7 +242,9 @@ def test_weekly_collector_accepts_a_dst_transition_week(tmp_path: Path) -> None:
     period = week_period("2026-W10", timezone=zone)
     span = period.period_end.astimezone(UTC) - period.period_start.astimezone(UTC)
     assert span == timedelta(hours=167)
-    collector = _collector(tmp_path, ReviewStore(tmp_path / "knowledge"))
+    collector = _collector(
+        tmp_path, ReviewStore(KnowledgeStore(database_for(tmp_path)))
+    )
     review_input = collector.collect_weekly(period, zone)
     assert review_input.period_start == period.period_start
     assert review_input.period_end == period.period_end
@@ -253,7 +257,7 @@ def test_collector_counts_each_daily_once_and_dedupes_original_sources(
     tmp_path: Path,
 ) -> None:
     period = week_period(WEEK, timezone=TZ)
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     shared = _task_source("task-1")
     end_days = [
         (period.period_start + timedelta(days=offset + 1)).date() for offset in range(7)
@@ -318,7 +322,7 @@ def test_budget_omitted_manifest_identity_is_not_completion_evidence(
     tmp_path: Path,
 ) -> None:
     period = week_period(WEEK, timezone=TZ)
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     day = (period.period_start + timedelta(days=1)).date()
     entry = _task_source("task-omitted").manifest_entry()
     _seed_manifest_daily(store, day, entry)
@@ -370,7 +374,7 @@ def test_weekly_collector_keeps_the_latest_task_state_without_double_counting(
     tmp_path: Path,
 ) -> None:
     period = week_period(WEEK, timezone=TZ)
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     end_days = [
         (period.period_start + timedelta(days=offset + 1)).date() for offset in range(7)
     ]
@@ -424,7 +428,7 @@ def test_weekly_collector_never_reuses_an_older_done_after_reopen(
     tmp_path: Path,
 ) -> None:
     period = week_period(WEEK, timezone=TZ)
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     end_days = [
         (period.period_start + timedelta(days=offset + 1)).date() for offset in range(7)
     ]
@@ -456,7 +460,7 @@ def test_weekly_collector_uses_the_last_occurrence_when_a_hash_repeats(
     tmp_path: Path,
 ) -> None:
     period = week_period(WEEK, timezone=TZ)
-    store = ReviewStore(tmp_path / "knowledge")
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     end_days = [
         (period.period_start + timedelta(days=offset + 1)).date() for offset in range(7)
     ]
@@ -579,7 +583,7 @@ def _service(
     if clock is not None:
         kwargs["clock"] = clock
     service = WeeklyReviewService(
-        store=ReviewStore(tmp_path / "knowledge"),
+        store=ReviewStore(KnowledgeStore(database_for(tmp_path))),
         collector=collector,
         llm=llm or FakeLLM(_payload(week_period(WEEK, timezone=TZ))),
         model_id=MODEL_ID,
@@ -620,7 +624,7 @@ def test_weekly_service_persists_a_cited_report_and_never_enables_tools(
 
     replay = asyncio.run(
         WeeklyReviewService(
-            store=ReviewStore(tmp_path / "knowledge"),
+            store=ReviewStore(KnowledgeStore(database_for(tmp_path))),
             collector=collector,
             llm=llm,
             model_id=MODEL_ID,

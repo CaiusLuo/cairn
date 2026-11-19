@@ -8,9 +8,10 @@ management API credentials. Clip text remains lower-trust reference data.
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections.abc import Sequence
 from typing import Any
+
+from psycopg import Error as PostgresError
 
 from cairn.agent.models.messages import ToolResult
 from cairn.agent.tools.base import InvalidArguments, Tool, ToolExecutionContext
@@ -87,7 +88,7 @@ class _KnowledgeTool:
 
     @staticmethod
     def _unavailable() -> ToolResult:
-        # Deliberately omit filesystem paths, private content and raw SQLite errors.
+        # Deliberately omit filesystem paths, private content and raw database errors.
         return _json_result(
             {"status": "unavailable", "error": "knowledge_store_unavailable"},
             ok=False,
@@ -136,7 +137,7 @@ class KnowledgeListTool(_KnowledgeTool):
         offset = _bounded_int(arguments, "offset", 0, 1000000)
         try:
             clips = self.store.list_clips(limit=limit + 1, offset=offset)
-        except (OSError, sqlite3.Error, ValueError):
+        except (OSError, PostgresError, ValueError):
             return self._unavailable()
         return _page_result(
             clips, limit=limit, offset=offset, preview_chars=LIST_PREVIEW_CHARS
@@ -194,7 +195,7 @@ class KnowledgeSearchTool(_KnowledgeTool):
         offset = _bounded_int(arguments, "offset", 0, 1000000)
         try:
             clips = self.store.list_clips(query=query, limit=limit + 1, offset=offset)
-        except (OSError, sqlite3.Error, ValueError):
+        except (OSError, PostgresError, ValueError):
             return self._unavailable()
         return _page_result(
             clips, limit=limit, offset=offset, preview_chars=PREVIEW_CHARS
@@ -253,7 +254,7 @@ class KnowledgeGetTool(_KnowledgeTool):
         )
         try:
             clip = self.store.get(clip_id)
-        except (OSError, sqlite3.Error, ValueError):
+        except (OSError, PostgresError, ValueError):
             return self._unavailable()
         if clip is None or clip.archived_at is not None:
             return _json_result({"status": "not_found", "clip_id": clip_id})
