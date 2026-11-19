@@ -238,7 +238,7 @@ def test_aged_upload_is_rejected_and_live_sweep_removes_it(
         os.utime(store.uploads / name, (cutoff, cutoff))
     with pytest.raises(ValueError, match="no longer available"):
         store.plan((old.attachment_id,))
-    monkeypatch.setattr(storage.time, "monotonic", lambda: now + 3700)
+    monkeypatch.setattr(time, "monotonic", lambda: now + 3700)
     store.stage("new.txt", "text/plain", b"new")
     assert not (store.uploads / old.attachment_id).exists()
     assert not (store.uploads / (old.attachment_id + ".json")).exists()
