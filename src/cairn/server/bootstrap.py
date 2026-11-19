@@ -652,6 +652,33 @@ def check_running(
     typer.echo("Running Server matches the selected configuration")
 
 
+@app.command("knowledge-probe")
+def knowledge_probe(ctx: typer.Context) -> None:
+    """Embed one short text with the configured model; never prints the key."""
+    from cairn.knowledge.embeddings import LiteLLMEmbeddingClient
+
+    settings: ServerConfig = ctx.obj
+    knowledge = settings.knowledge
+    if not knowledge.embedding_model:
+        raise ValueError("knowledge.embedding_model is not configured")
+    provider_runtime, _names, _values = _load_provider(settings)
+    if provider_runtime is None:
+        raise ValueError("An approved provider is required for a knowledge probe")
+    client = LiteLLMEmbeddingClient(
+        knowledge.embedding_model,
+        api_key=_embedding_key(knowledge, provider_runtime),
+        api_base=knowledge.embedding_base_url or None,
+        dims=knowledge.embedding_dims,
+    )
+
+    async def probe() -> list[float]:
+        vectors = await client.embed(["Cairn knowledge embedding probe"])
+        return vectors[0]
+
+    vector = asyncio.run(probe())
+    typer.echo(f"Embedding OK: model={client.model} dims={len(vector)}")
+
+
 def main() -> None:
     try:
         app()

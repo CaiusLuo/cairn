@@ -121,6 +121,31 @@ The owner's Agent reads clips on demand and cites their IDs; archived clips are
 excluded. Clips are not automatically added to every conversation or personal
 memory, and other senders do not gain access to your private knowledge.
 
+Knowledge also accepts uploaded documents. Open **Knowledge → 文档** and upload
+PDF, Word, Excel, PowerPoint, HTML, Markdown or plain text (25 MiB per file).
+Cairn extracts the text, splits it into citeable chunks, and builds a hybrid
+index: PostgreSQL full-text, Chinese-friendly trigram matching, and optional
+vectors. The owner's Agent searches documents with `knowledge_search` and reads
+them with `document_read`, citing `document_id` and `chunk_id`. Uploads are only
+visible to the owner. Deleting a document removes its chunks, graph rows and
+original file. Duplicate uploads are recognized by content hash.
+
+Vector search needs an embedding model. Without one, lexical search still works:
+
+```toml
+[knowledge]
+embedding_model = "qwen3.7-text-embedding-flash"
+embedding_base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+# Empty reuses the approved provider's API key; or name an env var here.
+embedding_key_env = ""
+```
+
+After a restart, `sudo -u cairn cairn knowledge-probe` (using the same host
+configuration) verifies the credential and prints the model dimension without
+revealing the key. A small graph extraction with the current chat model links
+entities across documents; if that or embedding fails, the document stays
+searchable lexically and the failure is recorded per document.
+
 Daily and weekly reviews can run on a schedule. To enable both, add this to
 `/etc/cairn/config.toml`, set your authorized WeChat recipient and restart:
 
