@@ -190,6 +190,7 @@ class RuntimeClient:
         *,
         source: str = "cli",
         request_id: str,
+        attachment_ids: tuple[str, ...] = (),
         wechat_account: str | None = None,
         wechat_sender: str | None = None,
     ) -> dict[str, Any]:
@@ -198,6 +199,8 @@ class RuntimeClient:
             "source": source,
             "request_id": request_id,
         }
+        if attachment_ids:
+            body["attachment_ids"] = list(attachment_ids)
         if wechat_account is not None and wechat_sender is not None:
             body["wechat_account"] = wechat_account
             body["wechat_sender"] = wechat_sender
@@ -208,6 +211,32 @@ class RuntimeClient:
                 body,
             )
         )
+
+    async def upload_attachment(
+        self,
+        name: str,
+        data: bytes,
+        *,
+        media_type: str = "text/plain",
+    ) -> dict[str, Any]:
+        headers = {
+            "Authorization": "Bearer " + self.token,
+            "X-Cairn-Filename": quote(name, safe=""),
+            "Content-Type": media_type,
+        }
+        if self.workspace is not None:
+            headers["X-Cairn-Workspace"] = self.workspace.as_uri()
+        async with httpx.AsyncClient(
+            base_url=self.url,
+            headers=headers,
+            timeout=20,
+            transport=self.transport,
+            trust_env=False,
+            follow_redirects=False,
+        ) as client:
+            response = await client.post("/api/runtime/attachments", content=data)
+            response.raise_for_status()
+            return dict(response.json())
 
     async def get_conversation(self, conversation_id: str) -> dict[str, Any]:
         return dict(await self.request("GET", f"conversations/{conversation_id}"))

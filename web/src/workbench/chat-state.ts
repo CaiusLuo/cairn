@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { RuntimeError, runtimeApi } from "../runtime-api";
+import { RuntimeError, runtimeApi, type UploadedAttachment } from "../runtime-api";
 import { isActive, type Conversation, type ExecutionEvent, type Run, type Task } from "./data";
 
 export type Submission = {
@@ -8,6 +8,8 @@ export type Submission = {
   conversation: string;
   mode: "conversation" | "development";
   model?: string;
+  attachment_ids?: string[];
+  attachments?: UploadedAttachment[];
 };
 
 export function readSubmission(key: string): Submission | null {
@@ -56,6 +58,7 @@ export async function sendSubmission(submission: Submission, key: string) {
   const run = await runtimeApi<Run>(`conversations/${encodeURIComponent(submission.conversation)}/messages`, {
     prompt: submission.prompt, source: "web", request_id: submission.id,
     ...(submission.model ? { model_id: submission.model } : {}),
+    ...(submission.attachment_ids?.length ? { attachment_ids: submission.attachment_ids } : {}),
   });
   sessionStorage.removeItem(key);
   return { run };

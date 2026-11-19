@@ -10,6 +10,9 @@ conversations and tasks running when you close a client.
 
 - **Chat and develop:** keep conversation history, follow progress, and start
   explicit development tasks in separate Git worktrees.
+- **Attach files:** in Web chat, attach text, PDF, Word, Excel, PowerPoint or
+  HTML files to one turn; the Agent reads them through a tool scoped to that
+  turn.
 - **Keep knowledge and memory:** save private knowledge clips, ask the owner
   Agent to list or search them, and manage personal memory in Settings.
 - **Schedule and review:** create reminders and generate daily or weekly reviews
@@ -48,7 +51,9 @@ from `[server]`. Offline mode makes no paid model requests.
 Open **http://127.0.0.1:8777/chat.html**. Sign in as `cairn`, using the contents
 of `data_root/runtime/runtime.token` as the password (`data_root` is in the
 server configuration). For remote use, put the listener behind a reverse proxy
-with TLS, or connect through an SSH tunnel:
+with TLS. If you use nginx, allow a 10 MiB request body for
+`/api/runtime/attachments` to match Cairn's per-file limit. You can also
+connect through an SSH tunnel:
 
 ```sh
 ssh -N -L 8777:127.0.0.1:8777 YOUR_SERVER

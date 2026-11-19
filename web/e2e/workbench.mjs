@@ -134,6 +134,11 @@ try {
     await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
 
     await page.getByRole("link", { name: "对话", exact: true }).click();
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "离线附件.txt", mimeType: "text/plain", buffer: Buffer.from("offline fixture"),
+    });
+    await page.getByRole("button", { name: "移除 离线附件.txt" }).waitFor();
+    assert(await page.getByLabel("权限模式").locator('option[value="development"]').evaluate(option => option.disabled));
     await send("Web-created conversation");
     await page.getByRole("heading", { name: "Web-created conversation" }).waitFor();
     await page.getByRole("img", { name: "Web" }).first().waitFor();
@@ -142,6 +147,9 @@ try {
     await page.reload();
     await page.locator(".wb-message.user").filter({ hasText: "Web-created conversation" }).waitFor();
     await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
+    await page.getByText("本轮附件：离线附件.txt", { exact: true }).waitFor();
+    const attachedRun = (await read("conversations/" + createdId)).runs[0];
+    assert.equal(attachedRun.attachments[0].name, "离线附件.txt");
     await (await conversationLink(new RegExp(cliPrompt))).click();
     await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
 

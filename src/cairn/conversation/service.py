@@ -18,6 +18,7 @@ from typing import Any
 
 from cairn.agent.session.models import CheckpointReceipt, SessionStoreError
 from cairn.agent.turn.steering import PendingMessage, SteerQueue
+from cairn.conversation.attachments import AttachmentPlan, AttachmentStore
 from cairn.conversation.models import (
     Conversation,
     ConversationSource,
@@ -28,7 +29,11 @@ from cairn.conversation.models import (
     workspace_id_for,
 )
 from cairn.conversation.store import DomainStore
-from cairn.development.catalogue import ChannelPrincipal, RuntimeTask
+from cairn.development.catalogue import (
+    ChannelPrincipal,
+    RuntimeAttachment,
+    RuntimeTask,
+)
 from cairn.development.execution.runtime import ServiceExecution
 from cairn.development.execution.timeline import (
     DIAGNOSTIC_EVENTS,
@@ -98,6 +103,10 @@ class RunLedger:
             input_prompt=run.prompt or None,
             model_id=run.metadata.get("model_id"),
             channel_principal=channel_principal,
+            attachments=tuple(
+                RuntimeAttachment.model_validate(item)
+                for item in run.metadata.get("attachments", ())
+            ),
             session_id=session_id,
             history_origins=history_origins,
             historical_context=historical_context,
@@ -191,6 +200,7 @@ class ConversationService:
     ) -> None:
         self.store = store
         self.execution = execution
+        self.attachments = AttachmentStore(Path(store.path).parent / "attachments")
         self.development_handoff = DevelopmentHandoff(store, execution, legacy_service)
         self.workspace = workspace.resolve()
         self.workspace_id = workspace_id_for(self.workspace)
@@ -233,7 +243,10 @@ class ConversationService:
         # an existing RuntimeTask.
         self.development_handoff.recover_incomplete()
         self._prune_diagnostics()
-        for run in self.store.list_runs():
+        runs = self.store.list_runs()
+        with suppress(OSError):
+            self.attachments.sweep_orphan_runs({run.run_id for run in runs})
+        for run in runs:
             if run.workspace_id != self.workspace_id:
                 continue
             if run.status is RunStatus.RUNNING:
@@ -242,9 +255,15 @@ class ConversationService:
                     status=RunStatus.RECOVERY_REQUIRED,
                     error="process_interrupted",
                 )
-            elif run.status is RunStatus.QUEUED and run.run_id not in self.queued_ids:
+            elif (
+                run.status is RunStatus.QUEUED
+                and run.run_id not in self.queued_ids
+                and self._resume_attachment_claim(run)
+            ):
                 self.queued_ids.add(run.run_id)
                 self.queue.put_nowait(run.run_id)
+        with suppress(OSError):
+            self.attachments.sweep()
         self.worker = asyncio.create_task(self._work())
 
     def create_conversation(
@@ -517,6 +536,8 @@ class ConversationService:
         if self.store.list_tasks_for_conversation(conversation_id):
             raise ConversationProtected("Conversation owns development tasks")
         self.store.delete_conversation(conversation_id)
+        for run in runs:
+            self.attachments.discard(run.run_id)
 
     def get_run(self, run_id: str) -> Run | None:
         run = self.store.get_run(run_id)
@@ -546,6 +567,7 @@ class ConversationService:
         *,
         model_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        attachment_ids: tuple[str, ...] = (),
     ) -> Run:
         if self.stopping or self.worker is None or self.worker.done():
             raise RuntimeError("Conversation runtime is not accepting runs")
@@ -568,6 +590,15 @@ class ConversationService:
                 )
             if any(run.status in {RunStatus.QUEUED, RunStatus.RUNNING} for run in runs):
                 raise ConversationBusy("Conversation already has an active Run")
+        planned: tuple[AttachmentPlan, ...] = ()
+        request_metadata = dict(metadata or {})
+        if attachment_ids:
+            # The IDs, not the staged files, make the request fingerprint. A
+            # retry after a lost response must match even though admission has
+            # already claimed those files.
+            request_metadata["attachment_ids"] = list(attachment_ids)
+            if existing is None:
+                planned = self.attachments.plan(attachment_ids)
         if existing is None and self.queue.full():
             raise asyncio.QueueFull
         try:
@@ -577,7 +608,7 @@ class ConversationService:
                 source=source,
                 request_id=request_id,
                 model_id=model_id,
-                metadata=metadata,
+                metadata=request_metadata or None,
             )
         except ValueError as exc:
             message = str(exc)
@@ -586,10 +617,85 @@ class ConversationService:
             if "active Run" in message:
                 raise ConversationBusy(message) from exc
             raise
+        if existing is None and planned:
+            self._claim_attachments(run.run_id, planned)
+            run = self.store.get_run(run.run_id) or run
         if existing is None and run.run_id not in self.queued_ids:
             self.queued_ids.add(run.run_id)
             self.queue.put_nowait(run.run_id)
         return run
+
+    def _resume_attachment_claim(self, run: Run) -> bool:
+        """Finish a claim interrupted between admission and binding.
+
+        Without this, a crash in that window would run the turn without the
+        files the user attached, silently. Either the claim completes or the
+        Run fails before it executes.
+        """
+        attachment_ids = run.metadata.get("attachment_ids") or ()
+        if not attachment_ids or run.metadata.get("attachments"):
+            return True
+        try:
+            ids = tuple(attachment_ids)
+            planned = self.attachments.prepared_claim(run.run_id, ids)
+            if not planned:
+                planned = self.attachments.plan(ids, admitted=True)
+        except Exception:
+            # A crash can land after bind() moved the files but before the
+            # metadata write. The manifest it left is the durable receipt.
+            recovered = self.attachments.manifest(run.run_id)
+            if recovered is None:
+                self._fail_attachment_claim(run.run_id)
+                return False
+            with suppress(Exception):
+                self.store.update_run(
+                    run.run_id,
+                    metadata={**run.metadata, "attachments": recovered},
+                )
+                return True
+            self._fail_attachment_claim(run.run_id)
+            return False
+        try:
+            self._claim_attachments(run.run_id, planned)
+        except Exception:
+            return False
+        return True
+
+    def _fail_attachment_claim(self, run_id: str) -> None:
+        with suppress(Exception):
+            self.store.update_run(
+                run_id,
+                status=RunStatus.FAILED,
+                error="attachment_binding_failed",
+                ended_at=utc_now(),
+            )
+
+    def _claim_attachments(
+        self, run_id: str, planned: tuple[AttachmentPlan, ...]
+    ) -> None:
+        try:
+            self.attachments.bind(run_id, planned)
+            run = self.store.get_run(run_id)
+            if run is None:
+                raise ValueError("Run disappeared during attachment admission")
+            self.store.update_run(
+                run_id,
+                metadata={
+                    **run.metadata,
+                    "attachments": [
+                        {
+                            "name": plan.name,
+                            "media_type": plan.media_type,
+                            "size": plan.size,
+                            "sha256": plan.sha256,
+                        }
+                        for plan in planned
+                    ],
+                },
+            )
+        except Exception:
+            self._fail_attachment_claim(run_id)
+            raise
 
     def steer(self, run_id: str, prompt: str) -> dict[str, Any]:
         """Join a running turn at its next step boundary.

@@ -804,3 +804,9 @@ def test_compaction_keeps_a_constraint_an_action_and_an_open_question() -> None:
         if (message.content or "").startswith(SUMMARY_PREFIX)
     )
     assert all(fact in (summary_message.content or "") for fact in facts)
+    # The folded turns are gone from the request, so a fact the summarizer
+    # dropped could not reach the next decision through a surviving copy.
+    outside_summary = "\n".join(
+        message.content or "" for message in sent if message is not summary_message
+    )
+    assert all(fact not in outside_summary for fact in facts)

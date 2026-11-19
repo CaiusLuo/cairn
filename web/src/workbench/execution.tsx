@@ -204,6 +204,40 @@ export function Runs({ runs, id, navigate, error }: { runs: Run[]; id: string; n
   </div>;
 }
 
+const budgetLimitLabels: Record<string, string> = {
+  max_tokens: "Token 预算", max_cost: "费用预算", max_seconds: "时长预算",
+  no_progress: "停滞步数", output_limit: "输出上限", usage_unknown: "用量未知",
+  max_steps: "步数预算", checkpoint_capacity: "检查点容量", context_budget: "上下文预算",
+};
+
+// The budget fact is one of four outcomes; they are not interchangeable.
+function budgetNarrative(run: Run): string {
+  const budget = run.budget ?? {};
+  const stop = typeof budget.stop_reason === "string" ? budget.stop_reason : "";
+  if (!stop) {
+    if (budget.requests === 0) return "本轮未产生模型请求。";
+    if (typeof budget.requests !== "number") return "本轮未记录模型请求次数。";
+    return typeof budget.total_tokens === "number" ? "本轮在预算内结束。" : "供应商未返回完整用量；本轮未触发预算停止。";
+  }
+  const limit = budgetLimitLabels[stop] ?? stop;
+  if (stop === "usage_unknown") return run.status === "paused"
+    ? "供应商未返回完整用量，任务已暂停，可确认后继续。"
+    : "供应商未返回完整用量，无法核对预算消耗。";
+  if (stop === "output_limit") return "回复达到输出上限，结果可能被截断。";
+  if (run.status === "paused") return `触发${limit}，任务已暂停，可确认后继续。`;
+  return `触发${limit}，本轮结束，已记录的结果和用量保留。`;
+}
+
+function budgetRows(budget: Record<string, unknown>): [string, string][] {
+  const count = (value: unknown) => typeof value === "number" ? value.toLocaleString() : "未知";
+  const cost = typeof budget.estimated_cost === "number" ? `$${budget.estimated_cost.toFixed(4)}` : "未知";
+  return [
+    ["步骤", count(budget.steps)], ["模型请求", count(budget.requests)], ["工具尝试", count(budget.tool_attempts)],
+    ["输入 Token", count(budget.input_tokens)], ["输出 Token", count(budget.output_tokens)],
+    ["总 Token", count(budget.total_tokens)], ["估算费用", cost],
+  ];
+}
+
 function RunDetail({ id, navigate }: { id: string; navigate: (path: string) => void }) {
   const resource = `runs/${encodeURIComponent(id)}`;
   const info = useResource<Run>(resource, 1400);
@@ -234,7 +268,11 @@ function RunDetail({ id, navigate }: { id: string; navigate: (path: string) => v
       </div>
       <section className="wb-card"><h2>执行时间线</h2><ErrorText value={events.error}/><Timeline events={events.rows}/></section>
       {run.result && <section className="wb-card"><h2>运行结果</h2><Markdown text={run.result}/></section>}
-      {run.budget && Object.keys(run.budget).length > 0 && <section className="wb-card"><h2>执行指标</h2><pre>{JSON.stringify(run.budget, null, 2)}</pre></section>}
+      {run.budget && Object.keys(run.budget).length > 0 && <section className="wb-card"><h2>执行指标</h2>
+        <p className="wb-muted">{budgetNarrative(run)}</p>
+        <dl className="wb-budget">{budgetRows(run.budget).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+        <details><summary>原始预算数据</summary><pre>{JSON.stringify(run.budget, null, 2)}</pre></details>
+      </section>}
       {drawer && <Drawer title="运行产物" close={() => setDrawer(false)}><Outputs result={run.result} history={[]}/></Drawer>}
     </>}
   </div>;

@@ -77,6 +77,16 @@ class ChannelPrincipal(BaseModel):
     conversation_binding: str = Field(min_length=1, max_length=200)
 
 
+class RuntimeAttachment(BaseModel):
+    """A host-stored file bound to exactly one Run's model context."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    name: str = Field(min_length=1, max_length=200)
+    media_type: str = Field(min_length=1, max_length=200)
+    size: int = Field(ge=0, le=25 * 1024 * 1024)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class RuntimeTask(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     task_id: str = Field(default_factory=lambda: "task-" + uuid4().hex)
@@ -89,6 +99,7 @@ class RuntimeTask(BaseModel):
     mode: Literal["conversation", "development"] = "development"
     conversation_key: str | None = Field(default=None, max_length=200)
     development_prompt: str | None = Field(default=None, min_length=1, max_length=32000)
+    attachments: tuple[RuntimeAttachment, ...] = Field(default=(), max_length=5)
     history_origins: tuple[CheckpointReceipt, ...] = Field(default=(), max_length=8)
     # Bounded, permissionless text recovered from durable Run facts when no
     # Session transcript covers those turns. The host supplies it; prompt text

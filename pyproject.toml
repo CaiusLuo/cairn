@@ -15,9 +15,13 @@ dependencies = [
     "lark-oapi>=1.8,<2",
     "litellm>=1.101.0",
     "mcp>=2.3.0,<3",
+    "openpyxl>=3.1.5",
     "prompt-toolkit>=3.0.53",
     "pydantic>=2.13.5",
+    "pypdf>=7.1.1",
+    "python-docx>=1.2.0",
     "python-dotenv>=1.2.3",
+    "python-pptx>=1.0.2",
     "pyyaml>=6",
     "qrcode>=8.2",
     "referencing>=0.36",
@@ -45,6 +49,7 @@ dev = [
     "pytest-xdist>=3.8.0",
     "ruff>=0.16.7",
     "types-jsonschema>=4.26.0.20261006",
+    "types-openpyxl>=3.1.5.20261017",
     "types-pyyaml>=6.0.12.20260906",
 ]
 

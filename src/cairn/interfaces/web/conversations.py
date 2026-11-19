@@ -11,6 +11,7 @@ import secrets
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import unquote
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from starlette.requests import Request
@@ -18,6 +19,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from cairn.conversation.attachments import MAX_ATTACHMENT_BYTES
 from cairn.conversation.models import ConversationSource
 from cairn.conversation.service import (
     ConversationBusy,
@@ -71,6 +73,7 @@ class ConversationMessage(BaseModel):
     source: ConversationSource = ConversationSource.CLI
     request_id: str = Field(min_length=1, max_length=200)
     model_id: str | None = Field(default=None, min_length=1, max_length=200)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     # The WeChat bridge supplies the exact identity that admitted this message.
     # The Host uses it only to scope durable history; tool authorization still
     # comes from the stored conversation binding.
@@ -139,6 +142,7 @@ def conversation_routes(
             "cursor": service.cursor(run_id),
             "trace_id": run.trace_ref,
             "budget": run.budget,
+            "attachments": run.metadata.get("attachments", []),
             "checkpoint_receipt": run.checkpoint_receipt,
             "result": run.result,
             "error": run.error,
@@ -334,6 +338,7 @@ def conversation_routes(
                     message_body.source,
                     message_body.request_id,
                     model_id=message_body.model_id,
+                    attachment_ids=tuple(message_body.attachment_ids),
                     metadata=(
                         {
                             "wechat_account": message_body.wechat_account,
@@ -432,7 +437,10 @@ def conversation_routes(
                     {
                         "conversation": current_conversation.model_dump(mode="json"),
                         "runs": [
-                            run.model_dump(mode="json")
+                            {
+                                **run.model_dump(mode="json"),
+                                "attachments": run.metadata.get("attachments", []),
+                            }
                             for run in service.runs_for_conversation(conversation_id)
                         ],
                     },
@@ -580,7 +588,41 @@ def conversation_routes(
             with suppress(RuntimeError, WebSocketDisconnect):
                 await websocket.close()
 
+    async def upload(request: Request) -> JSONResponse:
+        """Stage one file for a later message; admission binds it to the Run."""
+        if not operator_request(request, runtime_token):
+            return JSONResponse({"error": "invalid_origin"}, 403)
+        try:
+            if not workspace_ok(request):
+                return JSONResponse({"error": "workspace_mismatch"}, 409)
+            body = bytearray()
+            async for chunk in request.stream():
+                if len(body) + len(chunk) > MAX_ATTACHMENT_BYTES:
+                    return JSONResponse({"error": "attachment_too_large"}, 413)
+                body.extend(chunk)
+            staged = service.attachments.stage(
+                unquote(request.headers.get("X-Cairn-Filename", "")),
+                request.headers.get("content-type", "application/octet-stream"),
+                bytes(body),
+            )
+        except ValueError as exc:
+            return JSONResponse(
+                {"error": "invalid_attachment", "message": str(exc)}, status_code=400
+            )
+        return JSONResponse(
+            {
+                "attachment_id": staged.attachment_id,
+                "name": staged.name,
+                "media_type": staged.media_type,
+                "size": staged.size,
+                "sha256": staged.sha256,
+            },
+            status_code=201,
+            headers={"Cache-Control": "no-store"},
+        )
+
     return [
+        Route("/api/runtime/attachments", upload, methods=["POST"]),
         Route(
             "/api/runtime/wechat/conversations",
             handle,
