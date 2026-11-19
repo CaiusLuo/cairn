@@ -185,11 +185,26 @@ def test_steer_accepted_before_cancellation_is_reported_unapplied(
             assert settled["status"] in {"cancelled", "recovery_required"}, settled
 
             events = (await api.run_events(run["run_id"]))["events"]
-            assert any(
-                event["kind"] == "steer_unapplied"
-                and event["data"].get("text") == "never applied"
+            # A reconnecting client replays durable events from the start; an
+            # accepted steer that never reached a step boundary must never be
+            # replayed as applied.
+            assert [
+                (event["kind"], event["data"].get("text"))
                 for event in events
+                if event["kind"].startswith("steer_")
+            ] == [
+                ("steer_accepted", "never applied"),
+                ("steer_unapplied", "never applied"),
+            ]
+            accepted = next(
+                event for event in events if event["kind"] == "steer_accepted"
             )
+            replay = (await api.run_events(run["run_id"], after=accepted["sequence"]))[
+                "events"
+            ]
+            assert [
+                event["kind"] for event in replay if event["kind"].startswith("steer_")
+            ] == ["steer_unapplied"]
             assert model.calls == [["start"]]
 
     asyncio.run(scenario())

@@ -272,6 +272,10 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .wb-card dl, .flow-inspector dl { display: grid; grid-template-columns: minmax(58px, max-content) minmax(0,1fr); gap: 6px 12px; font-size: 13px; }
 .wb-card dt { color: var(--hui-muted); }
 .wb-card dd { margin: 0; }
+.wb-budget { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px 16px; margin: 10px 0; }
+.wb-budget div { display: flex; flex-direction: column; gap: 2px; }
+.wb-budget dt { font-size: 11px; }
+.wb-budget dd { font-size: 15px; font-variant-numeric: tabular-nums; }
 .task-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(250px, 100%), 1fr)); gap: 11px; }
 .task-card { display: flex; flex-direction: column; min-width: 0; gap: 10px; }
 .task-card:hover, .wb-run-list > a:hover { border-color: var(--hui-border-strong); background: var(--hui-canvas); }
