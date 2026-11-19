@@ -243,9 +243,10 @@ class ConversationService:
         # an existing RuntimeTask.
         self.development_handoff.recover_incomplete()
         self._prune_diagnostics()
-        with suppress(Exception):
-            self.attachments.sweep()
-        for run in self.store.list_runs():
+        runs = self.store.list_runs()
+        with suppress(OSError):
+            self.attachments.sweep_orphan_runs({run.run_id for run in runs})
+        for run in runs:
             if run.workspace_id != self.workspace_id:
                 continue
             if run.status is RunStatus.RUNNING:
@@ -261,6 +262,8 @@ class ConversationService:
             ):
                 self.queued_ids.add(run.run_id)
                 self.queue.put_nowait(run.run_id)
+        with suppress(OSError):
+            self.attachments.sweep()
         self.worker = asyncio.create_task(self._work())
 
     def create_conversation(
@@ -633,7 +636,10 @@ class ConversationService:
         if not attachment_ids or run.metadata.get("attachments"):
             return True
         try:
-            planned = self.attachments.plan(tuple(attachment_ids))
+            ids = tuple(attachment_ids)
+            planned = self.attachments.prepared_claim(run.run_id, ids)
+            if not planned:
+                planned = self.attachments.plan(ids, admitted=True)
         except Exception:
             # A crash can land after bind() moved the files but before the
             # metadata write. The manifest it left is the durable receipt.

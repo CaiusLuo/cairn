@@ -51,7 +51,9 @@ from `[server]`. Offline mode makes no paid model requests.
 Open **http://127.0.0.1:8777/chat.html**. Sign in as `cairn`, using the contents
 of `data_root/runtime/runtime.token` as the password (`data_root` is in the
 server configuration). For remote use, put the listener behind a reverse proxy
-with TLS, or connect through an SSH tunnel:
+with TLS. If you use nginx, allow a 10 MiB request body for
+`/api/runtime/attachments` to match Cairn's per-file limit. You can also
+connect through an SSH tunnel:
 
 ```sh
 ssh -N -L 8777:127.0.0.1:8777 YOUR_SERVER

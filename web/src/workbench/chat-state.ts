@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { RuntimeError, runtimeApi } from "../runtime-api";
+import { RuntimeError, runtimeApi, type UploadedAttachment } from "../runtime-api";
 import { isActive, type Conversation, type ExecutionEvent, type Run, type Task } from "./data";
 
 export type Submission = {
@@ -9,6 +9,7 @@ export type Submission = {
   mode: "conversation" | "development";
   model?: string;
   attachment_ids?: string[];
+  attachments?: UploadedAttachment[];
 };
 
 export function readSubmission(key: string): Submission | null {

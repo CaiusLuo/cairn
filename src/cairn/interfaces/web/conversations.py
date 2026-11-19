@@ -437,7 +437,10 @@ def conversation_routes(
                     {
                         "conversation": current_conversation.model_dump(mode="json"),
                         "runs": [
-                            run.model_dump(mode="json")
+                            {
+                                **run.model_dump(mode="json"),
+                                "attachments": run.metadata.get("attachments", []),
+                            }
                             for run in service.runs_for_conversation(conversation_id)
                         ],
                     },
@@ -587,6 +590,8 @@ def conversation_routes(
 
     async def upload(request: Request) -> JSONResponse:
         """Stage one file for a later message; admission binds it to the Run."""
+        if not operator_request(request, runtime_token):
+            return JSONResponse({"error": "invalid_origin"}, 403)
         try:
             if not workspace_ok(request):
                 return JSONResponse({"error": "workspace_mismatch"}, 409)

@@ -15,6 +15,7 @@ from openpyxl import Workbook
 
 from cairn.agent.tools import attachments as tools
 from cairn.agent.tools.attachments import MAX_ATTACHMENT_CHARS, ReadAttachmentTool
+from cairn.agent.tools.base import InvalidArguments
 from cairn.conversation import attachments as storage
 from cairn.conversation.attachments import AttachmentStore
 
@@ -184,3 +185,60 @@ def test_claim_manifest_requires_its_files(tmp_path: Path) -> None:
     assert store.manifest("run-1") is not None
     (store.runs / "run-1" / "notes.txt").unlink()
     assert store.manifest("run-1") is None
+
+
+def test_long_unicode_filenames_keep_extensions_and_unique_paths(
+    tmp_path: Path,
+) -> None:
+    store = AttachmentStore(tmp_path / "attachments")
+    name = "报告" * 120 + ".pdf"
+    files = [store.stage(name, "application/pdf", data) for data in (b"one", b"two")]
+    plans = store.plan(tuple(item.attachment_id for item in files))
+    store.bind("run-1", plans)
+    assert len({plan.name for plan in plans}) == 2
+    assert all(plan.name.endswith(".pdf") for plan in plans)
+    assert [(store.runs / "run-1" / plan.name).read_bytes() for plan in plans] == [
+        b"one",
+        b"two",
+    ]
+
+
+def test_attachment_name_must_be_a_string(tmp_path: Path) -> None:
+    tool = _tool(tmp_path, "notes.txt", "text/plain", b"notes")
+    with pytest.raises(InvalidArguments):
+        tool.validate({"name": ["notes.txt"]})
+
+
+def test_workbook_row_limit_counts_blank_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tools, "MAX_SHEET_ROWS", 2)
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet["A1"] = "within limit"
+    sheet["A5"] = "after blank rows"
+    buffer = BytesIO()
+    workbook.save(buffer)
+    tool = _tool(tmp_path, "sparse.xlsx", XLSX_MEDIA, buffer.getvalue())
+    result = asyncio.run(tool.execute({"name": "sparse.xlsx"}))
+    assert "within limit" in result.stdout
+    assert "after blank rows" not in result.stdout
+
+
+def test_aged_upload_is_rejected_and_live_sweep_removes_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = time.monotonic()
+    store = AttachmentStore(tmp_path / "attachments")
+    old = store.stage("old.txt", "text/plain", b"old")
+    cutoff = time.time() - storage.UPLOAD_TTL_SECONDS - 60
+    for name in (old.attachment_id, old.attachment_id + ".json"):
+        os.utime(store.uploads / name, (cutoff, cutoff))
+    with pytest.raises(ValueError, match="no longer available"):
+        store.plan((old.attachment_id,))
+    monkeypatch.setattr(storage.time, "monotonic", lambda: now + 3700)
+    store.stage("new.txt", "text/plain", b"new")
+    assert not (store.uploads / old.attachment_id).exists()
+    assert not (store.uploads / (old.attachment_id + ".json")).exists()

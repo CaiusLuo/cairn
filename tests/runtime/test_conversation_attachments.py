@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
@@ -539,7 +540,7 @@ class RecordingExecution:
 
 
 def _queued_run_with_attachment(
-    tmp_path: Path, attachment_id: str
+    tmp_path: Path, *attachment_ids: str
 ) -> tuple[DomainStore, Any]:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -554,7 +555,7 @@ def _queued_run_with_attachment(
         prompt="read the attachment",
         source=ConversationSource.CLI,
         request_id="resume-claim-1",
-        metadata={"attachment_ids": [attachment_id]},
+        metadata={"attachment_ids": list(attachment_ids)},
     )
     return store, run
 
@@ -611,6 +612,55 @@ def test_restart_uses_the_manifest_after_a_crash_mid_claim(
     assert settled is not None and settled.status is RunStatus.COMPLETED
     assert [item["name"] for item in settled.metadata["attachments"]] == ["notes.txt"]
     assert execution.calls == 1
+
+
+def test_restart_finishes_claim_after_only_one_file_moved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attachments = AttachmentStore(tmp_path / "attachments")
+    files = (
+        attachments.stage("one.txt", "text/plain", b"one"),
+        attachments.stage("two.txt", "text/plain", b"two"),
+    )
+    ids = tuple(item.attachment_id for item in files)
+    store, run = _queued_run_with_attachment(tmp_path, *ids)
+    plans = attachments.plan(ids)
+    move = os.replace
+
+    def interrupt_second_file(source: Path, target: Path) -> None:
+        if source.name == ids[1]:
+            raise OSError("interrupted before second move")
+        move(source, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", interrupt_second_file)
+        with pytest.raises(OSError, match="second move"):
+            attachments.bind(run.run_id, plans)
+
+    async def scenario() -> None:
+        execution = RecordingExecution()
+        service = ConversationService(
+            store, cast(Any, execution), workspace=tmp_path / "workspace"
+        )
+        orphan = attachments.runs / ("run-" + "a" * 32)
+        orphan.mkdir()
+        await service.start()
+        try:
+            await asyncio.wait_for(service.queue.join(), WAIT_SECONDS)
+        finally:
+            await service.close()
+        assert execution.calls == 1
+        assert not orphan.exists()
+
+    asyncio.run(scenario())
+    settled = store.get_run(run.run_id)
+    assert settled is not None and settled.status is RunStatus.COMPLETED
+    assert [item["name"] for item in settled.metadata["attachments"]] == [
+        "one.txt",
+        "two.txt",
+    ]
+    assert (attachments.runs / run.run_id / "two.txt").read_bytes() == b"two"
 
 
 def test_restart_fails_a_run_whose_uploads_are_gone(tmp_path: Path) -> None:

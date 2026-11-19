@@ -207,23 +207,25 @@ export function Runs({ runs, id, navigate, error }: { runs: Run[]; id: string; n
 const budgetLimitLabels: Record<string, string> = {
   max_tokens: "Token 预算", max_cost: "费用预算", max_seconds: "时长预算",
   no_progress: "停滞步数", output_limit: "输出上限", usage_unknown: "用量未知",
-  context_budget: "上下文预算",
+  max_steps: "步数预算", checkpoint_capacity: "检查点容量", context_budget: "上下文预算",
 };
 
 // The budget fact is one of four outcomes; they are not interchangeable.
 function budgetNarrative(run: Run): string {
   const budget = run.budget ?? {};
   const stop = typeof budget.stop_reason === "string" ? budget.stop_reason : "";
-  const requests = typeof budget.requests === "number" ? budget.requests : 0;
   if (!stop) {
-    if (!requests) return "本轮未产生模型请求。";
+    if (budget.requests === 0) return "本轮未产生模型请求。";
+    if (typeof budget.requests !== "number") return "本轮未记录模型请求次数。";
     return typeof budget.total_tokens === "number" ? "本轮在预算内结束。" : "供应商未返回完整用量；本轮未触发预算停止。";
   }
   const limit = budgetLimitLabels[stop] ?? stop;
-  if (stop === "usage_unknown") return "供应商未返回 Token 用量，无法核对预算消耗；本轮未被自动重试。";
+  if (stop === "usage_unknown") return run.status === "paused"
+    ? "供应商未返回完整用量，任务已暂停，可确认后继续。"
+    : "供应商未返回完整用量，无法核对预算消耗。";
   if (stop === "output_limit") return "回复达到输出上限，结果可能被截断。";
-  if (run.status === "paused") return `${limit}已在发起下一次模型请求前用尽；任务暂停，可确认后继续。`;
-  return `最后一次模型请求使${limit}达到上限；本轮结果保留，未再发起请求。`;
+  if (run.status === "paused") return `触发${limit}，任务已暂停，可确认后继续。`;
+  return `触发${limit}，本轮结束，已记录的结果和用量保留。`;
 }
 
 function budgetRows(budget: Record<string, unknown>): [string, string][] {

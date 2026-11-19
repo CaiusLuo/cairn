@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from html.parser import HTMLParser
 from io import BytesIO
+from itertools import islice
 from pathlib import Path
 from typing import Any, Protocol
 from zipfile import ZipFile
@@ -21,6 +23,7 @@ from cairn.agent.tools.base import InvalidArguments, ToolExecutionContext
 MAX_ATTACHMENT_CHARS = 32_000
 MAX_PDF_PAGES = 50
 MAX_SHEET_ROWS = 2_000
+MAX_SHEET_COLUMNS = 128
 # OOXML files are zip containers; a small upload must not expand without bound.
 MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
 _DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -106,7 +109,8 @@ class ReadAttachmentTool:
 
     def validate(self, arguments: dict[str, Any]) -> None:
         reject_unknown_keys(arguments, {"name"}, tool_label="attachment tool")
-        if arguments.get("name") not in self.attachments:
+        name = arguments.get("name")
+        if not isinstance(name, str) or name not in self.attachments:
             raise InvalidArguments("Attachment name is not part of this turn")
 
     async def execute(
@@ -121,7 +125,7 @@ class ReadAttachmentTool:
         path = (self.root / attachment.name).resolve()
         if not path.is_relative_to(self.root) or not path.is_file():
             raise FileNotFoundError("Attachment is no longer available")
-        text = _extract(path, attachment)
+        text = await asyncio.to_thread(_extract, path, attachment)
         if len(text) > MAX_ATTACHMENT_CHARS:
             text = (
                 text[:MAX_ATTACHMENT_CHARS]
@@ -227,15 +231,24 @@ def _xlsx_text(data: bytes) -> str:
         rows = 0
         for sheet in workbook.worksheets:
             parts.append(f"[Sheet: {sheet.title}]")
-            for values in sheet.iter_rows(values_only=True):
+            values_iter = sheet.iter_rows(
+                max_col=min(sheet.max_column or MAX_SHEET_COLUMNS, MAX_SHEET_COLUMNS),
+                values_only=True,
+            )
+            if sheet.max_column is None or sheet.max_column > MAX_SHEET_COLUMNS:
+                parts.append(f"[only the first {MAX_SHEET_COLUMNS} columns were read]")
+            for values in islice(values_iter, MAX_SHEET_ROWS - rows + 1):
+                if rows == MAX_SHEET_ROWS:
+                    parts.append("[workbook truncated]")
+                    return "\n".join(parts)
+                rows += 1
                 cells = ["" if value is None else str(value) for value in values]
                 line = "\t".join(cells).rstrip("\t")
                 if not line:
                     continue
                 parts.append(line)
                 characters += len(line) + 1
-                rows += 1
-                if characters > MAX_ATTACHMENT_CHARS or rows > MAX_SHEET_ROWS:
+                if characters > MAX_ATTACHMENT_CHARS:
                     parts.append("[workbook truncated]")
                     return "\n".join(parts)
         return "\n".join(parts)

@@ -42,7 +42,7 @@ function useSteerAnimation(ref: RefObject<HTMLDivElement | null>, phase: SteerPh
   }, [ref, phase]);
 }
 
-type Queued = { id: string; prompt: string; model?: string; attachment_ids?: string[] };
+type Queued = Pick<Submission, "id" | "prompt" | "model" | "attachment_ids" | "attachments">;
 
 const sizeLabel = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MiB` : `${Math.max(1, Math.round(bytes / 1024))} KiB`;
 const attachmentNames = (items?: { name: string }[]) => items?.map(item => item.name).join(" · ");
@@ -117,7 +117,6 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
       onSubmit();
       if (!mounted.current) return;
       setPending(null);
-      setAttachments([]);
       if ("task" in result && result.task) {
         navigate(href("tasks", { task: result.task.task_id }));
       } else if (result.run) {
@@ -129,7 +128,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
       if (reason instanceof RuntimeError && reason.status === 409 && reason.message === "conversation_busy") {
         sessionStorage.removeItem(key);
         setPending(null);
-        setQueue(rows => rows.some(row => row.id === next.id) ? rows : [...rows, { id: next.id, prompt: next.prompt, model: next.model, attachment_ids: next.attachment_ids }]);
+        setQueue(rows => rows.some(row => row.id === next.id) ? rows : [...rows, next]);
         retryAt.current = Date.now() + 1200;
         window.setTimeout(() => { if (mounted.current) setRetryTick(value => value + 1); }, 1300);
       } else {
@@ -142,6 +141,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   }
 
   function sendQueued(item: Queued) {
+    if (inFlight.current || pending || !config) return;
     setQueue(rows => rows.filter(row => row.id !== item.id));
     void submit({ ...item, conversation: id, mode: "conversation" });
   }
@@ -150,22 +150,23 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
     if (!files?.length || mode === "development") return;
     setUploading(true);
     setError("");
+    const uploaded: UploadedAttachment[] = [];
     try {
       const room = Math.max(0, 5 - attachments.length);
-      const chosen = Array.from(files).slice(0, room);
-      const uploaded: UploadedAttachment[] = [];
-      for (const file of chosen) uploaded.push(await uploadAttachment(file));
-      if (mounted.current) setAttachments(current => [...current, ...uploaded].slice(0, 5));
+      for (const file of Array.from(files).slice(0, room)) uploaded.push(await uploadAttachment(file));
     } catch (reason) {
       if (mounted.current) setError(String(reason));
     } finally {
       if (fileInput.current) fileInput.current.value = "";
-      if (mounted.current) setUploading(false);
+      if (mounted.current) {
+        if (uploaded.length) setAttachments(current => [...current, ...uploaded]);
+        setUploading(false);
+      }
     }
   }
 
   useEffect(() => {
-    if (auto && queue[0] && run?.status === "completed" && !sending && config && Date.now() >= retryAt.current) sendQueued(queue[0]);
+    if (auto && queue[0] && run?.status === "completed" && !sending && !pending && config && Date.now() >= retryAt.current) sendQueued(queue[0]);
   });
 
   async function steerPrompt(prompt: string) {
@@ -203,14 +204,16 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
       setPending(null);
     }
     const attachment_ids = attachments.map(item => item.attachment_id);
-    const next = { id: newRequestId(), prompt, model: mode === "conversation" && model ? model : undefined, ...(attachment_ids.length ? { attachment_ids } : {}) };
+    const next = {
+      id: newRequestId(), prompt, model: mode === "conversation" && model ? model : undefined,
+      ...(attachment_ids.length ? { attachment_ids, attachments } : {}),
+    };
     setDraft("");
+    setAttachments([]);
     stickToBottom.current = true;
     if (steerable) void steerPrompt(prompt);
-    else if (active && mode === "conversation") {
-      setQueue(rows => [...rows, next]);
-      setAttachments([]);
-    } else void submit({ ...next, conversation: id, mode });
+    else if (active && mode === "conversation") setQueue(rows => [...rows, next]);
+    else void submit({ ...next, conversation: id, mode });
   }
 
   async function cancel() {
@@ -240,9 +243,15 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
     {!!queue.length && <div className="queued-tray">
       {!auto && <p className="wb-muted">排队消息已暂停自动发送。</p>}
       {queue.map(item => <div key={item.id} className="queued-line">
-        <Icon name="queue" size={15}/><span>{item.prompt}</span>
+        <Icon name="queue" size={15}/><span>{item.prompt}{item.attachments?.length ? ` · ${attachmentNames(item.attachments)}` : ""}</span>
         <button disabled={active || sending || !!pending || failed} onClick={() => sendQueued(item)}>发送</button>
-        <button onClick={() => { setDraft(item.prompt); setQueue(rows => rows.filter(row => row.id !== item.id)); }}>编辑</button>
+        <button disabled={!!draft.trim() || uploading || !!attachments.length || (!!item.attachment_ids?.length && !item.attachments)} onClick={() => {
+          setDraft(item.prompt);
+          setMode("conversation");
+          setModel(item.model ?? "");
+          setAttachments(item.attachments ?? []);
+          setQueue(rows => rows.filter(row => row.id !== item.id));
+        }}>编辑</button>
         <button aria-label="删除排队消息" onClick={() => setQueue(rows => rows.filter(row => row.id !== item.id))}><Icon name="trash" size={14}/></button>
       </div>)}
     </div>}
