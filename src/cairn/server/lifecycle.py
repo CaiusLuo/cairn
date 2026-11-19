@@ -11,6 +11,7 @@ from cairn.conversation.service import ConversationService
 from cairn.development.execution.runtime import ServiceExecution
 from cairn.development.service import TaskService
 from cairn.integrations.wechat.delivery import WechatDeliveryCoordinator
+from cairn.knowledge.ingest import IngestionWorker
 from cairn.review.delivery import ReviewDeliveryCoordinator
 from cairn.review.schedule import ReviewScheduleCoordinator
 from cairn.review.service import DailyReviewService
@@ -34,12 +35,15 @@ async def running_runtime(
     channel_replies: ChannelReplyCoordinator | None = None,
     weekly_reviews: WeeklyReviewService | None = None,
     weekly_review_schedule: WeeklyReviewScheduleCoordinator | None = None,
+    knowledge_worker: IngestionWorker | None = None,
 ) -> AsyncIterator[None]:
     try:
         _ = execution.store
         await service.start()
         await conversations.start()
         await controls.start()
+        if knowledge_worker is not None:
+            knowledge_worker.start()
         if channels is not None:
             await channels.start()
         if channel_replies is not None:
@@ -61,46 +65,50 @@ async def running_runtime(
 
         async def cleanup() -> None:
             try:
-                if weekly_review_schedule is not None:
-                    await weekly_review_schedule.close()
+                if knowledge_worker is not None:
+                    await knowledge_worker.close()
             finally:
                 try:
-                    if review_schedule is not None:
-                        await review_schedule.close()
+                    if weekly_review_schedule is not None:
+                        await weekly_review_schedule.close()
                 finally:
                     try:
-                        if review_delivery is not None:
-                            await review_delivery.close()
+                        if review_schedule is not None:
+                            await review_schedule.close()
                     finally:
                         try:
-                            await delivery.close()
+                            if review_delivery is not None:
+                                await review_delivery.close()
                         finally:
                             try:
-                                if weekly_reviews is not None:
-                                    await weekly_reviews.close()
+                                await delivery.close()
                             finally:
                                 try:
-                                    if reviews is not None:
-                                        await reviews.close()
+                                    if weekly_reviews is not None:
+                                        await weekly_reviews.close()
                                 finally:
                                     try:
-                                        if channel_replies is not None:
-                                            await channel_replies.close()
+                                        if reviews is not None:
+                                            await reviews.close()
                                     finally:
                                         try:
-                                            if channels is not None:
-                                                await channels.close()
+                                            if channel_replies is not None:
+                                                await channel_replies.close()
                                         finally:
                                             try:
-                                                await controls.close()
+                                                if channels is not None:
+                                                    await channels.close()
                                             finally:
                                                 try:
-                                                    await conversations.close()
+                                                    await controls.close()
                                                 finally:
                                                     try:
-                                                        await service.close()
+                                                        await conversations.close()
                                                     finally:
-                                                        execution.close()
+                                                        try:
+                                                            await service.close()
+                                                        finally:
+                                                            execution.close()
 
         owned = asyncio.create_task(cleanup())
         late = await await_owned(owned)

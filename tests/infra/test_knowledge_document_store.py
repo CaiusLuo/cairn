@@ -220,6 +220,21 @@ def test_owners_are_isolated(tmp_path: Path) -> None:
     assert bob.delete(document.document_id) is False
 
 
+def test_concurrent_claims_are_disjoint(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    documents = [
+        store.create_upload(
+            f"note-{index}.txt", "text/plain", f"text {index}".encode()
+        )[0]
+        for index in range(2)
+    ]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claimed = list(pool.map(lambda _: store.claim_next(), range(2)))
+    assert {item.document_id for item in claimed if item is not None} == {
+        document.document_id for document in documents
+    }
+
+
 def test_recover_requeues_claims_and_removes_orphan_files(tmp_path: Path) -> None:
     store = _store(tmp_path)
     document, _ = store.create_upload("a.txt", "text/plain", b"hello")

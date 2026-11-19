@@ -59,6 +59,21 @@ class MissingChunk:
     text: str
 
 
+@dataclass(frozen=True, slots=True)
+class EntityRecord:
+    name: str
+    kind: str
+    chunk_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RelationRecord:
+    source: str
+    target: str
+    relation: str
+    chunk_id: int | None
+
+
 def _iso(value: object) -> str:
     if isinstance(value, datetime):
         return value.astimezone(UTC).isoformat()
@@ -95,6 +110,10 @@ def _document(row: Row) -> Document:
 
 def _vector_literal(vector: Sequence[float]) -> str:
     return "[" + ",".join(format(float(value), ".9g") for value in vector) + "]"
+
+
+def _normalized(name: str) -> str:
+    return " ".join(name.casefold().split())
 
 
 class DocumentStore:
@@ -419,6 +438,61 @@ class DocumentStore:
                     ),
                 )
 
+    def save_graph(
+        self,
+        document_id: str,
+        entities: Sequence[EntityRecord],
+        relations: Sequence[RelationRecord],
+    ) -> None:
+        """Replace this document's entity mentions and relations."""
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM chunk_entities WHERE chunk_id IN "
+                "(SELECT chunk_id FROM chunks WHERE document_id = %s)",
+                (document_id,),
+            )
+            entity_ids: dict[str, int] = {}
+            for entity in entities:
+                normalized = _normalized(entity.name)
+                if not normalized or not entity.chunk_ids:
+                    continue
+                row = connection.execute(
+                    "INSERT INTO entities (owner, name, normalized_name, kind) "
+                    "VALUES (%s, %s, %s, %s) "
+                    "ON CONFLICT (owner, normalized_name, kind) DO UPDATE "
+                    "SET name = EXCLUDED.name RETURNING entity_id",
+                    (self.owner, entity.name, normalized, entity.kind),
+                ).fetchone()
+                assert row is not None
+                entity_id = int(row["entity_id"])
+                entity_ids.setdefault(normalized, entity_id)
+                for chunk_id in entity.chunk_ids:
+                    connection.execute(
+                        "INSERT INTO chunk_entities (chunk_id, entity_id, weight) "
+                        "VALUES (%s, %s, 1) ON CONFLICT DO NOTHING",
+                        (chunk_id, entity_id),
+                    )
+            for relation in relations:
+                source_id = entity_ids.get(_normalized(relation.source))
+                target_id = entity_ids.get(_normalized(relation.target))
+                if source_id is None or target_id is None or source_id == target_id:
+                    continue
+                connection.execute(
+                    "INSERT INTO relations (owner, source_entity_id, "
+                    "target_entity_id, relation, document_id, chunk_id, weight) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, 1) "
+                    "ON CONFLICT (document_id, source_entity_id, target_entity_id, "
+                    "relation) DO NOTHING",
+                    (
+                        self.owner,
+                        source_id,
+                        target_id,
+                        relation.relation,
+                        document_id,
+                        relation.chunk_id,
+                    ),
+                )
+
     def register_embedding_space(self, model: str, dims: int) -> str:
         if dims < 1:
             raise ValueError("embedding dimensions must be positive")
@@ -490,5 +564,7 @@ __all__ = [
     "DocumentStore",
     "EmbeddedChunk",
     "EmbeddingSpaceMismatch",
+    "EntityRecord",
     "MissingChunk",
+    "RelationRecord",
 ]

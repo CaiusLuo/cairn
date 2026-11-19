@@ -50,6 +50,12 @@ def test_precedence_paths_and_budget_do_not_depend_on_cwd(
         "[budget]\nmax_steps = 0",
         '[server]\nhost = "0.0.0.0"',
         '[secrets]\nkey = "private"',
+        '[knowledge]\nenabled = "yes"',
+        "[knowledge]\nchunk_overlap = 1200",
+        '[knowledge]\nembedding_base_url = "ftp://example.invalid"',
+        '[knowledge]\nembedding_key_env = "bad name"',
+        "[knowledge]\nembedding_batch_size = 0",
+        "[knowledge]\nunknown_option = true",
     ],
 )
 def test_invalid_config_is_rejected(tmp_path: Path, text: str) -> None:
@@ -110,6 +116,41 @@ def test_env_data_root_wins_over_toml(
 def test_explicit_missing_file_never_falls_back(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         load_server_config(tmp_path / "missing.toml")
+
+
+def test_knowledge_defaults_and_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("")
+    default = load_server_config(path)
+    assert default.knowledge.enabled
+    assert default.knowledge.embedding_model == ""
+    assert default.knowledge.graph_enabled
+    assert default.knowledge.chunk_chars == 1200
+    assert default.knowledge.chunk_overlap == 150
+    assert default.knowledge.max_upload_bytes == 25 * 1024 * 1024
+    assert (
+        default.knowledge.embedding_base_url
+        == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    )
+
+    path.write_text(
+        "[knowledge]\n"
+        'embedding_model = "qwen3.7-text-embedding-flash"\n'
+        "embedding_dims = 1024\n"
+        "graph_enabled = false\n"
+    )
+    configured = load_server_config(path)
+    assert configured.knowledge.embedding_model == "qwen3.7-text-embedding-flash"
+    assert configured.knowledge.embedding_dims == 1024
+    assert not configured.knowledge.graph_enabled
+
+    monkeypatch.setenv("CAIRN_KNOWLEDGE_GRAPH_ENABLED", "true")
+    monkeypatch.setenv("CAIRN_KNOWLEDGE_CHUNK_CHARS", "2000")
+    overridden = load_server_config(path)
+    assert overridden.knowledge.graph_enabled
+    assert overridden.knowledge.chunk_chars == 2000
 
 
 @pytest.mark.parametrize("location", ["workspace", "worktrees", "symlink"])
