@@ -233,6 +233,7 @@ def runtime_app(
             session_file=state / "web-sessions.json",
             database=database,
             knowledge_store=knowledge_store,
+            documents=document_store,
             channels=channel_manager,
         )
     except BaseException:

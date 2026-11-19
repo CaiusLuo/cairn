@@ -382,6 +382,26 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
 .knowledge-tabs { margin-bottom: 14px; }
 
+.documents-upload { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.documents-upload > div { flex: 1 1 320px; min-width: 0; }
+.documents-upload strong { font-size: 14px; }
+.documents-upload p { margin: 4px 0 0; font-size: 12px; line-height: 1.6; }
+.documents-upload > button { display: inline-flex; align-items: center; gap: 5px; }
+.documents-list { display: grid; gap: 10px; }
+.documents-row { display: flex; flex-direction: column; margin: 0; padding: 0; }
+.documents-main { display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: 5px 10px; align-items: center; padding: 13px 15px; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.documents-main:hover { background: var(--hui-soft); }
+.documents-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.documents-title strong { overflow-wrap: anywhere; font-size: 14px; }
+.documents-status { padding: 2px 8px; border-radius: 999px; font-size: 11px; background: var(--hui-canvas); color: var(--hui-secondary); }
+.documents-status.is-ready { background: color-mix(in srgb, var(--hui-accent) 14%, transparent); color: var(--hui-accent); }
+.documents-status.is-pending, .documents-status.is-processing { background: color-mix(in srgb, var(--hui-warn) 14%, transparent); color: var(--hui-warn); }
+.documents-status.is-failed { background: color-mix(in srgb, var(--hui-error) 12%, transparent); color: var(--hui-error); }
+.documents-meta { grid-column: 1 / -1; color: var(--hui-muted); font-size: 11px; }
+.documents-error { grid-column: 1 / -1; color: var(--hui-error); font-size: 12px; overflow-wrap: anywhere; }
+.documents-row footer { display: flex; justify-content: flex-end; gap: 8px; padding: 9px 15px; border-top: 1px solid var(--hui-border); }
+.documents-row footer button { padding: 4px 9px; border: 1px solid var(--hui-border-strong); border-radius: 7px; background: var(--hui-surface); font-size: 12px; }
+
 .reviews { display: grid; gap: 12px; }
 .review-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .review-tabs { display: flex; gap: 4px; padding: 3px; border: 1px solid var(--hui-border); border-radius: 9px; background: var(--hui-canvas); }
