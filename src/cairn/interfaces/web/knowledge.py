@@ -14,13 +14,14 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
 from cairn.interfaces.web.auth import operator_request
 from cairn.knowledge.document_store import DocumentStore
-from cairn.knowledge.documents import Document
+from cairn.knowledge.documents import MAX_DOCUMENT_TEXT_CHARS, Document
 from cairn.knowledge.models import (
     CLIP_CONTENT_MAX_LENGTH,
     CLIP_REQUEST_ID_MAX_LENGTH,
@@ -273,7 +274,8 @@ def document_routes(
             path = request.url.path
             if path == "/api/knowledge/documents":
                 if request.method == "GET":
-                    documents = store.list_documents(
+                    documents = await run_in_threadpool(
+                        store.list_documents,
                         limit=_integer(
                             request, "limit", DEFAULT_LIST_LIMIT, 1, MAX_LIST_LIMIT
                         ),
@@ -306,7 +308,9 @@ def document_routes(
                     body.extend(chunk)
                 if not body:
                     return _error(422, "invalid_document_upload")
-                document, created = store.create_upload(name, media_type, bytes(body))
+                document, created = await run_in_threadpool(
+                    store.create_upload, name, media_type, bytes(body)
+                )
                 return JSONResponse(
                     {
                         "document": document_payload(document),
@@ -318,11 +322,7 @@ def document_routes(
             action = request.path_params.get("action")
             if request.method == "GET":
                 if action == "text":
-                    stored = store.document_text(document_id)
-                    if stored is None:
-                        return _error(404, "document_not_found")
-                    document, text = stored
-                    offset = _integer(request, "offset", 0, 0, 50_000_000)
+                    offset = _integer(request, "offset", 0, 0, MAX_DOCUMENT_TEXT_CHARS)
                     max_chars = _integer(
                         request,
                         "max_chars",
@@ -330,20 +330,27 @@ def document_routes(
                         1,
                         MAX_DOCUMENT_READ_CHARS,
                     )
-                    end = min(offset + max_chars, len(text))
+                    page = await run_in_threadpool(
+                        store.document_text,
+                        document_id,
+                        offset=offset,
+                        max_chars=max_chars,
+                    )
+                    if page is None:
+                        return _error(404, "document_not_found")
                     return JSONResponse(
                         {
-                            "document": document_payload(document),
-                            "content": text[offset:end],
-                            "offset": offset,
-                            "total_chars": len(text),
-                            "next_offset": end if end < len(text) else None,
+                            "document": document_payload(page.document),
+                            "content": page.content,
+                            "offset": page.offset,
+                            "total_chars": page.total_chars,
+                            "next_offset": page.next_offset,
                         },
                         headers=_json_headers(),
                     )
                 if action is not None:
                     return _error(405, "method_not_allowed")
-                found = store.get(document_id)
+                found = await run_in_threadpool(store.get, document_id)
                 if found is None:
                     return _error(404, "document_not_found")
                 return JSONResponse(
@@ -355,7 +362,7 @@ def document_routes(
                     return _error(405, "method_not_allowed")
                 if not operator_request(request, runtime_token):
                     return _error(403, "invalid_origin")
-                if not store.delete(document_id):
+                if not await run_in_threadpool(store.delete, document_id):
                     return _error(404, "document_not_found")
                 return JSONResponse({"deleted": True}, headers=_json_headers())
             if request.method != "POST":
@@ -363,7 +370,7 @@ def document_routes(
             if not operator_request(request, runtime_token):
                 return _error(403, "invalid_origin")
             if action == "retry":
-                retried = store.retry(document_id)
+                retried = await run_in_threadpool(store.retry, document_id)
                 if retried is None:
                     # Missing or already processing; retrying cannot race it.
                     return _error(404, "document_not_found")

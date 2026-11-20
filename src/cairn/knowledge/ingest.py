@@ -15,6 +15,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from psycopg import Error as PostgresError
+
 from cairn.knowledge.document_store import (
     DocumentStore,
     EmbeddedChunk,
@@ -32,7 +34,11 @@ from cairn.knowledge.documents import (
     TextChunk,
     chunk_text,
 )
-from cairn.knowledge.embeddings import EmbeddingClient, EmbeddingError
+from cairn.knowledge.embeddings import (
+    DEFAULT_EMBEDDING_BATCH_SIZE,
+    EmbeddingClient,
+    EmbeddingError,
+)
 from cairn.knowledge.graph import GraphExtractor, GraphPayload
 from cairn.shared.text_extract import ExtractionUnavailable, extract_bytes
 
@@ -49,7 +55,7 @@ class IngestionSettings:
     max_chunks: int = 400
     extraction_max_chars: int = 2_000_000
     max_pdf_pages: int = 500
-    embedding_batch_size: int = 32
+    embedding_batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE
     graph_max_chunks: int = 12
 
 
@@ -149,6 +155,7 @@ class IngestionWorker:
                 document.media_type,
                 document.size_bytes,
                 data,
+                max_chars=self.settings.extraction_max_chars,
                 max_pdf_pages=self.settings.max_pdf_pages,
             )
         except ExtractionUnavailable as error:
@@ -160,7 +167,7 @@ class IngestionWorker:
             )
             return
 
-        text = extracted.text
+        text = extracted.text.replace("\x00", "�")  # PostgreSQL text cannot store NUL.
         if len(text) > self.settings.extraction_max_chars:
             text = text[: self.settings.extraction_max_chars]
         chunks = chunk_text(
@@ -189,7 +196,12 @@ class IngestionWorker:
             try:
                 await self._embed(document.document_id)
                 embedding_status = STEP_READY
-            except (EmbeddingError, EmbeddingSpaceMismatch, ValueError) as error:
+            except (
+                EmbeddingError,
+                EmbeddingSpaceMismatch,
+                PostgresError,
+                ValueError,
+            ) as error:
                 embedding_status = STEP_FAILED
                 LOGGER.warning(
                     "knowledge embedding failed for %s: %s",

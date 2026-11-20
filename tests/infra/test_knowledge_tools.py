@@ -109,7 +109,7 @@ def test_tools_validate_model_arguments(tmp_path: Path) -> None:
         (KnowledgeListTool(store), {"limit": 0}),
         (KnowledgeListTool(store), {"limit": 21}),
         (KnowledgeListTool(store), {"offset": -1}),
-        (KnowledgeListTool(store), {"offset": 1_000_001}),
+        (KnowledgeListTool(store), {"offset": 50_000_001}),
         (KnowledgeListTool(store), {"include_archived": True}),
         (KnowledgeListTool(store), {"path": "/private/state/domain.sqlite3"}),
         (KnowledgeSearchTool(store), {"query": " "}),
@@ -161,6 +161,7 @@ def test_search_includes_document_chunks_and_read_paginates(tmp_path: Path) -> N
     detail = result(reader, {"document_id": document_id, "max_chars": 10})
     assert detail["status"] == "ok"
     assert detail["document"]["title"] == "runbook.md"
+    assert detail["document"]["parser"] == "text"
     assert len(detail["content"]) == 10
     assert detail["next_offset"] == 10
     rest = result(reader, {"document_id": document_id, "offset": 10})
@@ -187,7 +188,7 @@ def test_document_tool_arguments_are_validated(tmp_path: Path) -> None:
     for args in (
         {"document_id": ""},
         {"document_id": "doc-1", "offset": -1},
-        {"document_id": "doc-1", "offset": 1_000_001},
+        {"document_id": "doc-1", "offset": 50_000_001},
         {"document_id": "doc-1", "max_chars": 0},
         {"document_id": "doc-1", "max_chars": 5000},
         {"document_id": "doc-1", "path": "/etc/passwd"},
@@ -247,3 +248,24 @@ def test_unavailable_store_is_distinct_from_empty(
         assert "knowledge_store_unavailable" in outcome.stderr
         assert "/private/" not in outcome.stderr
         assert outcome.stdout == ""
+
+
+def test_document_tool_can_follow_a_cursor_past_one_million_chars(
+    tmp_path: Path,
+) -> None:
+    store = DocumentStore(database_for(tmp_path), tmp_path / "library")
+    text = "字" * 1_000_000 + "🧭尾"
+    document, _ = store.create_upload("large.txt", "text/plain", text.encode())
+    store.save_extraction(document.document_id, text, "text", "1", [])
+    reader = DocumentReadTool(store)
+
+    first = result(
+        reader, {"document_id": document.document_id, "offset": 999_999, "max_chars": 2}
+    )
+    assert first["content"] == "字🧭"
+    assert first["next_offset"] == 1_000_001
+    last = result(
+        reader, {"document_id": document.document_id, "offset": first["next_offset"]}
+    )
+    assert last["content"] == "尾"
+    assert last["next_offset"] is None

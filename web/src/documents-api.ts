@@ -63,12 +63,9 @@ async function request<T>(path: string, init?: RequestInit, signal?: AbortSignal
   return value as T;
 }
 
-export function listDocuments(signal?: AbortSignal) {
-  return request<{ documents: KnowledgeDocument[] }>("?limit=200", undefined, signal);
-}
-
-export function getDocument(documentId: string, signal?: AbortSignal) {
-  return request<{ document: KnowledgeDocument }>(`/${encodeURIComponent(documentId)}`, undefined, signal);
+export function listDocuments(limit: number, offset: number, signal?: AbortSignal) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  return request<{ documents: KnowledgeDocument[] }>("?" + params, undefined, signal);
 }
 
 export function documentText(documentId: string, offset = 0, maxChars = 20_000, signal?: AbortSignal) {

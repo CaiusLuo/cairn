@@ -11,11 +11,13 @@ import math
 from collections.abc import Sequence
 from typing import Any, Protocol
 
-import litellm
-
 from cairn.shared.redaction import redact_text
 
 MAX_ERROR_CHARS = 300
+EMBEDDING_TIMEOUT_SECONDS = 15
+DEFAULT_EMBEDDING_BATCH_SIZE = 10
+MAX_VECTOR_DIMS = 16_000
+_MAX_FLOAT32 = 3.4028234663852886e38
 DEFAULT_EMBEDDING_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 
@@ -30,8 +32,8 @@ class EmbeddingClient(Protocol):
 
 
 def litellm_model(model: str) -> str:
-    """Route a bare model id through the OpenAI-compatible client."""
-    return model if "/" in model else "openai/" + model
+    """Treat provider-style model IDs as names on the configured endpoint."""
+    return model if model.startswith("openai/") else "openai/" + model
 
 
 class LiteLLMEmbeddingClient:
@@ -40,7 +42,7 @@ class LiteLLMEmbeddingClient:
         model: str,
         *,
         api_key: str | None,
-        api_base: str | None = DEFAULT_EMBEDDING_BASE_URL,
+        api_base: str = DEFAULT_EMBEDDING_BASE_URL,
         dims: int = 0,
     ) -> None:
         self.model = model
@@ -51,8 +53,14 @@ class LiteLLMEmbeddingClient:
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         if not texts:
             return []
+        if not self.api_base:
+            raise EmbeddingError("embedding endpoint is not configured")
         if not self.api_key:
-            raise EmbeddingError("embedding credential is not configured")
+            raise EmbeddingError(
+                "embedding credential is not configured for this endpoint"
+            )
+        import litellm
+
         options: dict[str, Any] = {}
         if self.dims:
             options["dimensions"] = self.dims
@@ -63,6 +71,7 @@ class LiteLLMEmbeddingClient:
                 api_key=self.api_key,
                 api_base=self.api_base,
                 max_retries=0,
+                timeout=EMBEDDING_TIMEOUT_SECONDS,
                 **options,
             )
         except Exception as error:
@@ -90,22 +99,30 @@ def parse_vectors(
     if not isinstance(data, (list, tuple)) or len(data) != expected:
         raise EmbeddingError("embedding response did not match the request")
     vectors: list[list[float]] = []
+    indexes: list[object] = []
     size: int | None = None
     for item in data:
+        indexes.append(
+            item.get("index")
+            if isinstance(item, dict)
+            else getattr(item, "index", None)
+        )
         raw = (
             item.get("embedding")
             if isinstance(item, dict)
             else getattr(item, "embedding", None)
         )
-        if not isinstance(raw, (list, tuple)) or not raw:
+        if not isinstance(raw, (list, tuple)) or not 1 <= len(raw) <= MAX_VECTOR_DIMS:
             raise EmbeddingError("embedding response contained no vector")
         try:
             vector = [float(value) for value in raw]
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             raise EmbeddingError(
                 "embedding response contained a non-numeric value"
             ) from None
-        if any(not math.isfinite(value) for value in vector):
+        if any(
+            not math.isfinite(value) or abs(value) > _MAX_FLOAT32 for value in vector
+        ):
             raise EmbeddingError("embedding response contained a non-finite value")
         if size is None:
             size = len(vector)
@@ -116,7 +133,19 @@ def parse_vectors(
         elif len(vector) != size:
             raise EmbeddingError("embedding response mixed vector dimensions")
         vectors.append(vector)
-    return vectors
+    if all(index is None for index in indexes):
+        return vectors
+    indexed: dict[int, list[float]] = {}
+    for index, vector in zip(indexes, vectors, strict=True):
+        if (
+            not isinstance(index, int)
+            or isinstance(index, bool)
+            or not 0 <= index < expected
+            or index in indexed
+        ):
+            raise EmbeddingError("embedding response contained an invalid input index")
+        indexed[index] = vector
+    return [indexed[index] for index in range(expected)]
 
 
 __all__ = [

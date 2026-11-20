@@ -14,6 +14,7 @@ import os
 from contextlib import suppress
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from uuid import uuid4
 
 
 def atomic_write_text(destination: Path, text: str) -> None:
@@ -45,3 +46,22 @@ def atomic_write_text(destination: Path, text: str) -> None:
             with suppress(OSError):
                 temporary.unlink(missing_ok=True)
         raise
+
+
+def atomic_write_private_bytes(path: Path, data: bytes) -> None:
+    """Replace a file with 0600 content and sync its directory entry."""
+    temporary = path.with_name(path.name + ".tmp-" + uuid4().hex)
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)

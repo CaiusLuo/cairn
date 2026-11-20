@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from cairn.knowledge.document_store import DocumentStore
+from cairn.knowledge.document_store import DocumentStore, EntityRecord, RelationRecord
+from cairn.knowledge.documents import chunk_text
 from cairn.knowledge.embeddings import EmbeddingClient
 from cairn.knowledge.graph import (
     GraphEntity,
@@ -152,3 +153,61 @@ def test_search_is_owner_scoped(tmp_path: Path) -> None:
 
     assert alice_hits.hits
     assert bob_hits.hits == ()
+
+
+def test_graph_expansion_keeps_a_slot_when_direct_hits_fill_the_page(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    graph = FakeGraphExtractor(
+        GraphPayload(
+            entities=(
+                GraphEntity("Quasar", "concept", (0,)),
+                GraphEntity("Beacon", "project", (0,)),
+            ),
+            relations=(GraphRelation("Quasar", "Beacon", "guides", 0),),
+        )
+    )
+    direct = _ingest(store, "Quasar observations and tracking", graph=graph)
+    _ingest(store, "Quasar observations at midnight")
+    expanded = _ingest(store, "Beacon contains the research plan", graph=graph)
+
+    result = asyncio.run(DocumentSearcher(store).search("Quasar", limit=2))
+
+    assert {hit.document_id for hit in result.hits} == {direct, expanded}
+    assert result.hits[-1].matched_by == ("graph",)
+
+
+def test_unready_graph_edge_cannot_influence_search(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    target = _ingest(
+        store,
+        "Quasar observations",
+        graph=FakeGraphExtractor(
+            GraphPayload(entities=(GraphEntity("Quasar", "concept", (0,)),))
+        ),
+    )
+    _ingest(
+        store,
+        "Beacon research plan",
+        graph=FakeGraphExtractor(
+            GraphPayload(entities=(GraphEntity("Beacon", "project", (0,)),))
+        ),
+    )
+    document, _ = store.create_upload("edge.txt", "text/plain", b"Provenance")
+    claim = store.claim_next()
+    assert claim is not None and claim.document_id == document.document_id
+    chunk_ids = store.save_extraction(
+        document.document_id, "Provenance", "text", "1", chunk_text("Provenance")
+    )
+    store.save_graph(
+        document.document_id,
+        [
+            EntityRecord("Quasar", "concept", chunk_ids),
+            EntityRecord("Beacon", "project", chunk_ids),
+        ],
+        [RelationRecord("Quasar", "Beacon", "guides", chunk_ids[0])],
+    )
+
+    result = asyncio.run(DocumentSearcher(store).search("Quasar"))
+    assert {hit.document_id for hit in result.hits} == {target}

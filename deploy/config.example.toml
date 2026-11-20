@@ -37,10 +37,11 @@ memory = true
 enabled = true
 embedding_model = "qwen3.7-text-embedding-flash"
 embedding_base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-# Empty reuses the approved provider's key. Or name an environment variable.
+# Empty reuses the approved provider key when the base URLs match.
 embedding_key_env = ""
 embedding_dims = 0
-embedding_batch_size = 32
+# Set to a batch size supported by the selected embedding model.
+embedding_batch_size = 10
 graph_enabled = true
 max_upload_bytes = 26214400
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -149,8 +150,8 @@ def test_extraction_chunks_and_embeddings_round_trip(tmp_path: Path) -> None:
 
     stored = store.document_text(document.document_id)
     assert stored is not None
-    assert stored[0].document_id == document.document_id
-    assert stored[1] == text
+    assert stored.document.document_id == document.document_id
+    assert stored.content == text
 
     # Re-ingestion replaces chunks rather than duplicating them.
     rewritten = chunk_text("短文本。", chunk_chars=100, overlap=0)
@@ -242,8 +243,56 @@ def test_recover_requeues_claims_and_removes_orphan_files(tmp_path: Path) -> Non
     orphan = store.root / ("0" * 64)
     orphan.write_bytes(b"left by a crashed upload")
 
+    unrelated = store.root / "keep.txt"
+    unrelated.write_text("not managed by the document store")
+
     assert store.recover() == 1
     assert not orphan.exists()
+    assert unrelated.read_text() == "not managed by the document store"
     requeued = store.get(document.document_id)
     assert requeued is not None
     assert requeued.status == DOCUMENT_PENDING
+
+
+def test_reupload_survives_concurrent_delete_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+    document, _ = store.create_upload("note.txt", "text/plain", b"hello")
+    original = store.original_path(document.document_id)
+    assert original is not None
+    unlink = Path.unlink
+    deleting = Event()
+    release = Event()
+
+    def wait_before_unlink(path: Path, *, missing_ok: bool = False) -> None:
+        if path == original:
+            deleting.set()
+            assert release.wait(5)
+        unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", wait_before_unlink)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        deleted = pool.submit(store.delete, document.document_id)
+        try:
+            assert deleting.wait(5)
+            replacement, created = store.create_upload(
+                "note.txt", "text/plain", b"hello"
+            )
+        finally:
+            release.set()
+        assert deleted.result(timeout=5)
+    assert created and replacement.document_id != document.document_id
+    new_path = store.original_path(replacement.document_id)
+    assert new_path is not None and new_path.read_bytes() == b"hello"
+
+
+def test_deleting_one_owners_copy_keeps_the_other_original(tmp_path: Path) -> None:
+    alice = _store(tmp_path, owner="alice")
+    bob = DocumentStore(alice.db, alice.root, owner="bob")
+    first, _ = alice.create_upload("note.txt", "text/plain", b"same bytes")
+    second, _ = bob.create_upload("note.txt", "text/plain", b"same bytes")
+
+    assert alice.delete(first.document_id)
+    original = bob.original_path(second.document_id)
+    assert original is not None and original.read_bytes() == b"same bytes"

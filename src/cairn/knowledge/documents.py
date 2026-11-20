@@ -30,6 +30,7 @@ STEP_SKIPPED = "skipped"
 CHUNK_CHARS = 1200
 CHUNK_OVERLAP = 150
 MAX_CHUNKS = 400
+MAX_DOCUMENT_TEXT_CHARS = 50_000_000
 
 _CJK = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
 _WORD = re.compile(r"[A-Za-z0-9]+")

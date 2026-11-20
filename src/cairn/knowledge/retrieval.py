@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from psycopg import Error as PostgresError
+
 from cairn.knowledge.document_store import DocumentStore, vector_literal
 from cairn.knowledge.embeddings import EmbeddingClient
 from cairn.shared.db import Row
@@ -75,11 +77,19 @@ class DocumentSearcher:
         hits = [
             _hit(row, needle, score, matched) for row, score, matched in fused[:limit]
         ]
-        if hits:
-            graph_rows = await asyncio.to_thread(
-                self._graph, [hit.chunk_id for hit in hits[:GRAPH_SEED_CHUNKS]]
-            )
-            hits.extend(_hit(row, needle, 0.0, ("graph",)) for row in graph_rows)
+        if hits and limit > 1:
+            try:
+                graph_rows = await asyncio.to_thread(
+                    self._graph,
+                    [hit.chunk_id for hit in hits[: min(GRAPH_SEED_CHUNKS, limit - 1)]],
+                    [hit.chunk_id for hit in hits],
+                )
+            except PostgresError:
+                graph_rows = ()
+            if graph_rows:
+                # Keep the highest-ranked direct hits and make room for expansion.
+                hits = hits[: limit - 1]
+                hits.extend(_hit(row, needle, 0.0, ("graph",)) for row in graph_rows)
         return DocumentSearchResult(tuple(hits[:limit]), semantic)
 
     def _lexical(self, query: str) -> tuple[Row, ...]:
@@ -136,23 +146,31 @@ class DocumentSearcher:
                 ).fetchall()
             )
 
-    def _graph(self, seed_chunk_ids: list[int]) -> tuple[Row, ...]:
+    def _graph(
+        self, seed_chunk_ids: list[int], direct_chunk_ids: list[int]
+    ) -> tuple[Row, ...]:
         if not seed_chunk_ids:
             return ()
         with self.store.db.connect("knowledge") as connection:
             return tuple(
                 connection.execute(
                     "WITH seeds AS ("
-                    "SELECT DISTINCT entity_id FROM chunk_entities "
-                    "WHERE chunk_id = ANY(%s)), "
+                    "SELECT DISTINCT ce.entity_id FROM chunk_entities ce "
+                    "JOIN chunks c USING (chunk_id) "
+                    "JOIN documents d USING (document_id) "
+                    "WHERE c.chunk_id = ANY(%s) AND d.owner = %s "
+                    "AND d.status = 'ready' AND d.graph_status = 'ready'), "
+                    "edges AS ("
+                    "SELECT r.source_entity_id, r.target_entity_id FROM relations r "
+                    "JOIN documents d USING (document_id) "
+                    "WHERE r.owner = %s AND d.owner = r.owner AND d.status = 'ready' "
+                    "AND d.graph_status = 'ready'), "
                     "related AS ("
-                    "SELECT target_entity_id AS entity_id FROM relations "
-                    "WHERE owner = %s AND source_entity_id IN "
-                    "(SELECT entity_id FROM seeds) "
+                    "SELECT target_entity_id AS entity_id FROM edges "
+                    "WHERE source_entity_id IN (SELECT entity_id FROM seeds) "
                     "UNION "
-                    "SELECT source_entity_id AS entity_id FROM relations "
-                    "WHERE owner = %s AND target_entity_id IN "
-                    "(SELECT entity_id FROM seeds)) "
+                    "SELECT source_entity_id AS entity_id FROM edges "
+                    "WHERE target_entity_id IN (SELECT entity_id FROM seeds)) "
                     "SELECT DISTINCT c.chunk_id, c.document_id, c.ordinal, "
                     "c.text, c.heading_path, d.title "
                     "FROM chunk_entities ce "
@@ -160,13 +178,14 @@ class DocumentSearcher:
                     "JOIN chunks c ON c.chunk_id = ce.chunk_id "
                     "JOIN documents d ON d.document_id = c.document_id "
                     "WHERE d.owner = %s AND d.status = 'ready' "
-                    "AND NOT (c.chunk_id = ANY(%s)) LIMIT %s",
+                    "AND d.graph_status = 'ready' AND NOT (c.chunk_id = ANY(%s)) "
+                    "ORDER BY c.chunk_id LIMIT %s",
                     (
                         seed_chunk_ids,
                         self.store.owner,
                         self.store.owner,
                         self.store.owner,
-                        seed_chunk_ids,
+                        direct_chunk_ids,
                         GRAPH_LIMIT,
                     ),
                 ).fetchall()

@@ -11,6 +11,12 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cairn.agent.budget import DEFAULT_MAX_STEPS, RunBudget
+from cairn.knowledge.documents import MAX_DOCUMENT_TEXT_CHARS
+from cairn.knowledge.embeddings import (
+    DEFAULT_EMBEDDING_BASE_URL,
+    DEFAULT_EMBEDDING_BATCH_SIZE,
+    MAX_VECTOR_DIMS,
+)
 from cairn.server.paths import ServerPaths, default_data_root
 
 DEFAULT_CONFIG = Path("/etc/cairn/config.toml")
@@ -32,11 +38,11 @@ class KnowledgeConfig:
     enabled: bool = True
     # Empty embedding_model disables vectors; lexical search still works.
     embedding_model: str = ""
-    embedding_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    # Empty key env reuses the approved provider's llm.api_key.
+    embedding_base_url: str = DEFAULT_EMBEDDING_BASE_URL
+    # Empty key env reuses the approved provider key when endpoints match.
     embedding_key_env: str = ""
     embedding_dims: int = 0  # 0 discovers the provider's dimension
-    embedding_batch_size: int = 32
+    embedding_batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE
     graph_enabled: bool = True
     max_upload_bytes: int = 25 * 1024 * 1024
     chunk_chars: int = 1200
@@ -54,13 +60,13 @@ _KNOWLEDGE_STRINGS = frozenset(
     {"embedding_model", "embedding_base_url", "embedding_key_env"}
 )
 _KNOWLEDGE_INTS = {
-    "embedding_dims": (0, 100_000),
+    "embedding_dims": (0, MAX_VECTOR_DIMS),
     "embedding_batch_size": (1, 512),
     "max_upload_bytes": (1, 100 * 1024 * 1024),
     "chunk_chars": (64, 20_000),
     "chunk_overlap": (0, 19_999),
     "max_chunks": (1, 2_000),
-    "extraction_max_chars": (1_000, 50_000_000),
+    "extraction_max_chars": (1_000, MAX_DOCUMENT_TEXT_CHARS),
     "max_pdf_pages": (1, 5_000),
     "graph_max_chunks": (1, 100),
     "graph_max_chars": (100, 100_000),

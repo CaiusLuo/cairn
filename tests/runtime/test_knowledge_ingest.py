@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
-from cairn.knowledge.document_store import DocumentStore
+import pytest
+from openpyxl import Workbook
+from psycopg import DataError
+
+from cairn.knowledge.document_store import DocumentStore, EmbeddedChunk
 from cairn.knowledge.documents import (
     DOCUMENT_FAILED,
     DOCUMENT_READY,
@@ -15,7 +20,7 @@ from cairn.knowledge.documents import (
     STEP_SKIPPED,
 )
 from cairn.knowledge.graph import GraphEntity, GraphPayload, GraphRelation
-from cairn.knowledge.ingest import IngestionWorker
+from cairn.knowledge.ingest import IngestionSettings, IngestionWorker
 from tests.support.knowledge_fakes import (
     FailingEmbedder,
     FailingGraphExtractor,
@@ -198,3 +203,73 @@ def test_start_recovers_interrupted_claims_and_ingests_new_uploads(
     first = store.get(interrupted.document_id)
     assert first is not None
     assert first.attempts == 2
+
+
+def test_restart_keeps_a_committed_embedding_batch(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    text = "\n\n".join(f"Paragraph {i:02d}: " + "more words " * 5 for i in range(12))
+    document, _ = store.create_upload("notes.txt", "text/plain", text.encode())
+    settings = IngestionSettings(
+        chunk_chars=64, chunk_overlap=0, embedding_batch_size=2
+    )
+
+    class InterruptedEmbedder(FakeEmbedder):
+        async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+            if self.calls:
+                raise asyncio.CancelledError
+            return await super().embed(texts)
+
+    before = InterruptedEmbedder()
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            IngestionWorker(store, embedder=before, settings=settings).process_one()
+        )
+    missing = store.missing_embeddings(document.document_id, before.model, limit=100)
+    assert missing and len(before.calls[0]) == 2
+
+    assert store.recover() == 1
+    after = FakeEmbedder()
+    asyncio.run(IngestionWorker(store, embedder=after, settings=settings).process_one())
+
+    assert [text for batch in after.calls for text in batch] == [
+        item.text for item in missing
+    ]
+    assert store.missing_embeddings(document.document_id, after.model, limit=100) == ()
+    stored = store.get(document.document_id)
+    assert stored is not None and stored.status == DOCUMENT_READY
+
+
+def test_vector_storage_error_leaves_lexical_document_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+
+    def reject_vectors(model: str, items: Sequence[EmbeddedChunk]) -> None:
+        raise DataError("unusable vector")
+
+    monkeypatch.setattr(store, "save_embeddings", reject_vectors)
+    document, _ = store.create_upload("note.txt", "text/plain", b"some content")
+    asyncio.run(IngestionWorker(store, embedder=FakeEmbedder()).process_one())
+
+    stored = store.get(document.document_id)
+    assert stored is not None and stored.status == DOCUMENT_READY
+    assert stored.embedding_status == STEP_FAILED
+
+
+def test_spreadsheet_uses_the_library_extraction_budget(tmp_path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    for _ in range(50):
+        sheet.append(["x" * 1000])
+    sheet.append(["spreadsheet last row"])
+    path = tmp_path / "data.xlsx"
+    workbook.save(path)
+    workbook.close()
+    store = _store(tmp_path)
+    document, _ = store.create_upload("data.xlsx", "", path.read_bytes())
+
+    asyncio.run(IngestionWorker(store).process_one())
+
+    page = store.document_text(document.document_id, offset=49_999, max_chars=2000)
+    assert page is not None and "spreadsheet last row" in page.content

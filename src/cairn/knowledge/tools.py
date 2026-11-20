@@ -7,6 +7,7 @@ management API credentials. Clip text remains lower-trust reference data.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Sequence
 from typing import Any
@@ -16,6 +17,7 @@ from psycopg import Error as PostgresError
 from cairn.agent.models.messages import ToolResult
 from cairn.agent.tools.base import InvalidArguments, Tool, ToolExecutionContext
 from cairn.knowledge.document_store import DocumentStore
+from cairn.knowledge.documents import MAX_DOCUMENT_TEXT_CHARS
 from cairn.knowledge.embeddings import EmbeddingClient
 from cairn.knowledge.models import Clip
 from cairn.knowledge.retrieval import DocumentHit, DocumentSearcher
@@ -345,7 +347,11 @@ class DocumentReadTool:
                             "minLength": 1,
                             "maxLength": 100,
                         },
-                        "offset": {"type": "integer", "minimum": 0, "maximum": 1000000},
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": MAX_DOCUMENT_TEXT_CHARS,
+                        },
                         "max_chars": {
                             "type": "integer",
                             "minimum": 1,
@@ -369,7 +375,7 @@ class DocumentReadTool:
             raise InvalidArguments(
                 "document_id must be a nonblank ID of at most 100 characters"
             )
-        _bounded_int(arguments, "offset", 0, 1_000_000)
+        _bounded_int(arguments, "offset", 0, MAX_DOCUMENT_TEXT_CHARS)
         _bounded_int(arguments, "max_chars", READ_CHARS, READ_CHARS, lower=1)
 
     async def execute(
@@ -377,19 +383,22 @@ class DocumentReadTool:
     ) -> ToolResult:
         self.validate(arguments)
         document_id = str(arguments["document_id"]).strip()
-        offset = _bounded_int(arguments, "offset", 0, 1_000_000)
+        offset = _bounded_int(arguments, "offset", 0, MAX_DOCUMENT_TEXT_CHARS)
         max_chars = _bounded_int(
             arguments, "max_chars", READ_CHARS, READ_CHARS, lower=1
         )
         try:
-            stored = self.store.document_text(document_id)
+            page = await asyncio.to_thread(
+                self.store.document_text,
+                document_id,
+                offset=offset,
+                max_chars=max_chars,
+            )
         except (OSError, PostgresError, RuntimeError, ValueError):
             return _unavailable()
-        if stored is None:
+        if page is None:
             return _json_result({"status": "not_found", "document_id": document_id})
-        document, text = stored
-        total_chars = len(text)
-        end = min(offset + max_chars, total_chars)
+        document = page.document
         return _json_result(
             {
                 "status": "ok",
@@ -397,13 +406,15 @@ class DocumentReadTool:
                     "document_id": document.document_id,
                     "title": document.title,
                     "media_type": document.media_type,
+                    "parser": page.parser,
+                    "parser_version": page.parser_version,
                     "status": document.status,
                     "created_at": document.created_at,
                 },
-                "content": text[offset:end],
-                "offset": offset,
-                "total_chars": total_chars,
-                "next_offset": end if end < total_chars else None,
+                "content": page.content,
+                "offset": page.offset,
+                "total_chars": page.total_chars,
+                "next_offset": page.next_offset,
                 "untrusted_reference": True,
             }
         )

@@ -108,6 +108,11 @@ def runtime_app(
     protected_paths: tuple[Path, ...] = (),
     tracer: Tracer | None = None,
 ) -> Any:
+    if knowledge.embedding_key_env:
+        secret_env_keys |= {knowledge.embedding_key_env}
+        embedding_key = os.environ.get(knowledge.embedding_key_env)
+        if embedding_key:
+            sensitive_values = (*sensitive_values, embedding_key)
     catalogue = RuntimeCatalogue(database, sensitive_values=(token, *sensitive_values))
     try:
         execution = ServiceExecution(
@@ -154,18 +159,18 @@ def runtime_app(
         knowledge_worker: IngestionWorker | None = None
         knowledge_embedder: LiteLLMEmbeddingClient | None = None
         if knowledge.enabled:
+            originals = state.resolve() / "knowledge" / "documents"
+            if originals.resolve() != originals or originals.parent.is_symlink():
+                raise ValueError(
+                    "document originals directory must be inside runtime state"
+                )
             document_store = DocumentStore(
                 database,
-                state / "knowledge" / "documents",
+                originals,
                 max_upload_bytes=knowledge.max_upload_bytes,
             )
             if provider_runtime is not None and knowledge.embedding_model:
-                knowledge_embedder = LiteLLMEmbeddingClient(
-                    knowledge.embedding_model,
-                    api_key=_embedding_key(knowledge, provider_runtime),
-                    api_base=knowledge.embedding_base_url or None,
-                    dims=knowledge.embedding_dims,
-                )
+                knowledge_embedder = _embedding_client(knowledge, provider_runtime)
             graph = None
             if provider_runtime is not None and knowledge.graph_enabled:
                 graph = LLMGraphExtractor(
@@ -428,13 +433,21 @@ def validate_config(config: ServerConfig) -> Path:
     return require_web_assets(config.web_root or default_web_root())
 
 
-def _embedding_key(
+def _embedding_client(
     knowledge: KnowledgeConfig, provider_runtime: ProviderRuntime
-) -> str | None:
-    """The configured env var, else the approved provider's per-call key."""
+) -> LiteLLMEmbeddingClient:
+    base_url = knowledge.embedding_base_url.rstrip("/")
+    key = None
     if knowledge.embedding_key_env:
-        return os.environ.get(knowledge.embedding_key_env)
-    return cast(str | None, getattr(provider_runtime.llm, "api_key", None))
+        key = os.environ.get(knowledge.embedding_key_env)
+    elif base_url and base_url == provider_runtime.provider.config.base_url.rstrip("/"):
+        key = cast(str | None, getattr(provider_runtime.llm, "api_key", None))
+    return LiteLLMEmbeddingClient(
+        knowledge.embedding_model,
+        api_key=key,
+        api_base=base_url,
+        dims=knowledge.embedding_dims,
+    )
 
 
 def _load_provider(
@@ -655,8 +668,6 @@ def check_running(
 @app.command("knowledge-probe")
 def knowledge_probe(ctx: typer.Context) -> None:
     """Embed one short text with the configured model; never prints the key."""
-    from cairn.knowledge.embeddings import LiteLLMEmbeddingClient
-
     settings: ServerConfig = ctx.obj
     knowledge = settings.knowledge
     if not knowledge.embedding_model:
@@ -664,12 +675,7 @@ def knowledge_probe(ctx: typer.Context) -> None:
     provider_runtime, _names, _values = _load_provider(settings)
     if provider_runtime is None:
         raise ValueError("An approved provider is required for a knowledge probe")
-    client = LiteLLMEmbeddingClient(
-        knowledge.embedding_model,
-        api_key=_embedding_key(knowledge, provider_runtime),
-        api_base=knowledge.embedding_base_url or None,
-        dims=knowledge.embedding_dims,
-    )
+    client = _embedding_client(knowledge, provider_runtime)
 
     async def probe() -> list[float]:
         vectors = await client.embed(["Cairn knowledge embedding probe"])

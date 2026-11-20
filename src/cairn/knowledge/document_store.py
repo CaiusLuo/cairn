@@ -10,14 +10,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
+import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
-from uuid import uuid4
 
 from cairn.conversation.attachments import safe_attachment_name
 from cairn.knowledge.documents import (
@@ -26,10 +25,12 @@ from cairn.knowledge.documents import (
     DOCUMENT_PENDING,
     DOCUMENT_PROCESSING,
     DOCUMENT_READY,
+    MAX_DOCUMENT_TEXT_CHARS,
     STEP_PENDING,
     Document,
     TextChunk,
 )
+from cairn.shared.artifacts import atomic_write_private_bytes
 from cairn.shared.db import Database, DbConnection, Row
 from cairn.shared.text_extract import is_supported
 
@@ -40,10 +41,28 @@ DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 # Terminal statuses record when ingestion finished; pending/processing do not.
 _TERMINAL = frozenset({DOCUMENT_READY, DOCUMENT_FAILED})
+_ORIGINAL_NAME = re.compile(
+    r"[0-9a-f]{64}(?:-doc-[0-9a-f]{32}|\.[^/]+)?(?:\.tmp-[0-9a-f]{32})?"
+)
 
 
 class EmbeddingSpaceMismatch(RuntimeError):
     """The configured model returned a different dimension than before."""
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentTextPage:
+    document: Document
+    content: str
+    parser: str
+    parser_version: str
+    offset: int
+    total_chars: int
+
+    @property
+    def next_offset(self) -> int | None:
+        end = self.offset + len(self.content)
+        return end if end < self.total_chars else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,7 +153,10 @@ class DocumentStore:
         self.db = database
         self.owner = owner
         self.max_upload_bytes = max_upload_bytes
-        self.root = root.expanduser().resolve()
+        root = root.expanduser()
+        if root.is_symlink():
+            raise ValueError("document originals directory cannot be a symlink")
+        self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.root.chmod(0o700)
 
@@ -162,77 +184,65 @@ class DocumentStore:
         if not is_supported(name, media):
             raise ValueError("Unsupported document type")
         digest = hashlib.sha256(data).hexdigest()
-        suffix = Path(name).suffix.lower()
-        stored_name = digest + suffix
-        path = self.root / stored_name
-        written = False
-        try:
-            with self._connect() as connection:
-                # Serialize duplicate uploads of the same bytes before deciding
-                # which row (and display title) wins.
-                connection.execute(
-                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
-                    (f"document-upload:{self.owner}:{digest}",),
-                )
-                existing = connection.execute(
-                    "SELECT * FROM documents WHERE owner = %s AND sha256 = %s",
-                    (self.owner, digest),
-                ).fetchone()
-                if existing is not None:
-                    existing_path = self._path(cast(str, existing["storage_path"]))
-                    if existing_path is not None and not existing_path.is_file():
-                        # The row is authoritative; restore a lost original.
-                        self._write_private(existing_path, data)
-                    return _document(existing), False
-                self._write_private(path, data)
-                written = True
-                document = Document(
-                    owner=self.owner,
-                    kind=DOCUMENT_KIND_UPLOAD,
-                    title=name,
-                    media_type=media,
-                    sha256=digest,
-                    size_bytes=len(data),
-                    metadata={"original_name": name},
-                )
-                connection.execute(
-                    "INSERT INTO documents (document_id, owner, kind, title, "
-                    "media_type, sha256, size_bytes, source_url, metadata, status, "
-                    "embedding_status, graph_status, storage_path, created_at, "
-                    "updated_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, "
-                    "%s, %s, %s)",
-                    (
-                        document.document_id,
-                        document.owner,
-                        document.kind,
-                        document.title,
-                        document.media_type,
-                        document.sha256,
-                        document.size_bytes,
-                        source_url,
-                        json.dumps(document.metadata, ensure_ascii=False),
-                        document.status,
-                        document.embedding_status,
-                        document.graph_status,
-                        stored_name,
-                        document.created_at,
-                        document.updated_at,
-                    ),
-                )
-                return document, True
-        except Exception:
-            if written and not self._exists(digest):
-                path.unlink(missing_ok=True)
-            raise
-
-    def _exists(self, digest: str) -> bool:
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT 1 FROM documents WHERE owner = %s AND sha256 = %s",
+            # Keep startup cleanup out of the interval before the row commits.
+            connection.execute(
+                "SELECT pg_advisory_xact_lock_shared(hashtextextended(%s, 0))",
+                (f"document-originals:{self.root}",),
+            )
+            # Serialize duplicate uploads of the same bytes before deciding
+            # which row (and display title) wins.
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                (f"document-upload:{self.owner}:{digest}",),
+            )
+            existing = connection.execute(
+                "SELECT * FROM documents WHERE owner = %s AND sha256 = %s FOR UPDATE",
                 (self.owner, digest),
             ).fetchone()
-        return row is not None
+            if existing is not None:
+                existing_path = self._path(cast(str, existing["storage_path"]))
+                if existing_path is not None and not existing_path.is_file():
+                    # The row is authoritative; restore a lost original.
+                    atomic_write_private_bytes(existing_path, data)
+                return _document(existing), False
+            document = Document(
+                owner=self.owner,
+                kind=DOCUMENT_KIND_UPLOAD,
+                title=name,
+                media_type=media,
+                sha256=digest,
+                size_bytes=len(data),
+                metadata={"original_name": name},
+            )
+            stored_name = f"{digest}-{document.document_id}"
+            atomic_write_private_bytes(self.root / stored_name, data)
+            connection.execute(
+                "INSERT INTO documents (document_id, owner, kind, title, "
+                "media_type, sha256, size_bytes, source_url, metadata, status, "
+                "embedding_status, graph_status, storage_path, created_at, "
+                "updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, "
+                "%s, %s, %s)",
+                (
+                    document.document_id,
+                    document.owner,
+                    document.kind,
+                    document.title,
+                    document.media_type,
+                    document.sha256,
+                    document.size_bytes,
+                    source_url,
+                    json.dumps(document.metadata, ensure_ascii=False),
+                    document.status,
+                    document.embedding_status,
+                    document.graph_status,
+                    stored_name,
+                    document.created_at,
+                    document.updated_at,
+                ),
+            )
+            return document, True
 
     def get(self, document_id: str) -> Document | None:
         with self._connect() as connection:
@@ -280,8 +290,14 @@ class DocumentStore:
                 "OR relation.target_entity_id = entity.entity_id)",
                 (self.owner,),
             )
-        path = self._path(cast(str, row["storage_path"]))
-        if path is not None:
+            stored_name = cast(str, row["storage_path"])
+            # Older rows may share their hash-only original with another owner.
+            still_referenced = connection.execute(
+                "SELECT 1 FROM documents WHERE storage_path = %s LIMIT 1",
+                (stored_name,),
+            ).fetchone()
+        path = self._path(stored_name)
+        if path is not None and still_referenced is None:
             path.unlink(missing_ok=True)
         return True
 
@@ -323,24 +339,30 @@ class DocumentStore:
         with self._connect() as connection:
             rows = connection.execute(
                 "UPDATE documents SET status = %s, claimed_at = NULL, "
-                "updated_at = now() WHERE status = %s RETURNING document_id",
-                (DOCUMENT_PENDING, DOCUMENT_PROCESSING),
+                "updated_at = now() WHERE status = %s AND owner = %s "
+                "RETURNING document_id",
+                (DOCUMENT_PENDING, DOCUMENT_PROCESSING, self.owner),
             ).fetchall()
         return len(rows)
 
     def recover(self) -> int:
         """Requeue interrupted work and remove files no row references."""
         requeued = self.requeue_stale()
-        referenced = self._referenced_files()
-        for path in self.root.iterdir():
-            if path.is_file() and path.name not in referenced:
-                path.unlink(missing_ok=True)
-        return requeued
-
-    def _referenced_files(self) -> set[str]:
         with self._connect() as connection:
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"document-originals:{self.root}",),
+            )
             rows = connection.execute("SELECT storage_path FROM documents").fetchall()
-        return {str(row["storage_path"]) for row in rows}
+            referenced = {row["storage_path"] for row in rows}
+            for path in self.root.iterdir():
+                if (
+                    _ORIGINAL_NAME.fullmatch(path.name)
+                    and path.name not in referenced
+                    and path.is_file()
+                ):
+                    path.unlink(missing_ok=True)
+        return requeued
 
     def original_path(self, document_id: str) -> Path | None:
         with self._connect() as connection:
@@ -351,15 +373,31 @@ class DocumentStore:
             ).fetchone()
         return None if row is None else self._path(cast(str, row["storage_path"]))
 
-    def document_text(self, document_id: str) -> tuple[Document, str] | None:
+    def document_text(
+        self,
+        document_id: str,
+        *,
+        offset: int = 0,
+        max_chars: int = MAX_DOCUMENT_TEXT_CHARS,
+    ) -> DocumentTextPage | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT documents.*, document_texts.text FROM documents "
-                "JOIN document_texts USING (document_id) "
-                "WHERE documents.owner = %s AND documents.document_id = %s",
-                (self.owner, document_id),
+                "SELECT d.*, substring(t.text FROM %s FOR %s) AS content, "
+                "char_length(t.text) AS total_chars, t.parser, t.parser_version "
+                "FROM documents d JOIN document_texts t USING (document_id) "
+                "WHERE d.owner = %s AND d.document_id = %s",
+                (offset + 1, max_chars, self.owner, document_id),
             ).fetchone()
-        return None if row is None else (_document(row), cast(str, row["text"]))
+        if row is None:
+            return None
+        return DocumentTextPage(
+            document=_document(row),
+            content=cast(str, row["content"]),
+            parser=cast(str, row["parser"]),
+            parser_version=cast(str, row["parser_version"]),
+            offset=offset,
+            total_chars=int(row["total_chars"]),
+        )
 
     def save_extraction(
         self,
@@ -369,8 +407,31 @@ class DocumentStore:
         parser_version: str,
         chunks: Sequence[TextChunk],
     ) -> tuple[int, ...]:
-        """Replace extracted text and chunks; old index rows are rebuilt."""
+        """Keep the chunk IDs and embeddings when extraction is unchanged."""
         with self._connect() as connection:
+            unchanged = connection.execute(
+                "SELECT 1 FROM document_texts WHERE document_id = %s AND text = %s "
+                "AND parser = %s AND parser_version = %s",
+                (document_id, text, parser, parser_version),
+            ).fetchone()
+            if unchanged is not None:
+                existing = connection.execute(
+                    "SELECT chunk_id, text, token_count, heading_path, locator "
+                    "FROM chunks WHERE document_id = %s ORDER BY ordinal",
+                    (document_id,),
+                ).fetchall()
+                if len(existing) == len(chunks) and all(
+                    row["text"] == chunk.text
+                    and row["token_count"] == chunk.token_count
+                    and tuple(row["heading_path"] or ()) == (chunk.heading_path or ())
+                    and row["locator"]
+                    == {
+                        "char_start": chunk.char_start,
+                        "char_end": chunk.char_end,
+                    }
+                    for row, chunk in zip(existing, chunks, strict=True)
+                ):
+                    return tuple(int(row["chunk_id"]) for row in existing)
             connection.execute(
                 "DELETE FROM relations WHERE document_id = %s", (document_id,)
             )
@@ -446,6 +507,9 @@ class DocumentStore:
     ) -> None:
         """Replace this document's entity mentions and relations."""
         with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM relations WHERE document_id = %s", (document_id,)
+            )
             connection.execute(
                 "DELETE FROM chunk_entities WHERE chunk_id IN "
                 "(SELECT chunk_id FROM chunks WHERE document_id = %s)",
@@ -540,22 +604,10 @@ class DocumentStore:
             )
 
     def _path(self, stored_name: str) -> Path | None:
-        if not stored_name or Path(stored_name).name != stored_name:
+        if not _ORIGINAL_NAME.fullmatch(stored_name):
             return None
-        return self.root / stored_name
-
-    @staticmethod
-    def _write_private(path: Path, data: bytes) -> None:
-        temporary = path.with_name(path.name + ".tmp-" + uuid4().hex)
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        path = self.root / stored_name
+        return None if path.is_symlink() else path
 
 
 __all__ = [

@@ -23,6 +23,7 @@ def test_bare_model_ids_are_routed_through_openai_compatible_client() -> None:
         == "openai/qwen3.7-text-embedding-flash"
     )
     assert litellm_model("openai/custom") == "openai/custom"
+    assert litellm_model("publisher/custom") == "openai/publisher/custom"
 
 
 def test_parse_vectors_accepts_objects_and_dicts() -> None:
@@ -154,3 +155,17 @@ def test_fake_embedder_is_deterministic_and_semantic() -> None:
 def test_failing_embedder_is_explicit() -> None:
     with pytest.raises(EmbeddingError, match="provider is down"):
         asyncio.run(FailingEmbedder().embed(["x"]))
+
+
+def test_indexed_vectors_follow_request_order() -> None:
+    response = {
+        "data": [
+            {"embedding": [2], "index": 1},
+            {"embedding": [1], "index": 0},
+        ]
+    }
+    assert parse_vectors(response, expected=2) == [[1.0], [2.0]]
+
+    response["data"][1]["index"] = 1
+    with pytest.raises(EmbeddingError, match="invalid input index"):
+        parse_vectors(response, expected=2)
