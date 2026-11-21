@@ -83,7 +83,7 @@ module = ["lark_oapi", "lark_oapi.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["pypdfium2", "pypdfium2.*", "rapidocr", "rapidocr.*"]
+module = ["cv2", "pypdfium2", "pypdfium2.*", "rapidocr", "rapidocr.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
