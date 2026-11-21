@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { taskStatus } from "../runtime-api";
@@ -80,10 +80,11 @@ export function Outputs({ result, history }: { result?: string | null; history: 
 
 export function Drawer({ title, close, children }: { title: string; close: () => void; children: React.ReactNode }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
   useEffect(() => { dialog.current?.showModal(); }, []);
-  return <dialog ref={dialog} className="wb-drawer" aria-label={title} onCancel={event => { event.preventDefault(); close(); }} onClick={event => { if (event.target === event.currentTarget) close(); }}>
+  return <dialog ref={dialog} className="wb-drawer" aria-labelledby={titleId} onClose={close} onClick={event => { if (event.target === event.currentTarget) event.currentTarget.close(); }}>
     <div className="wb-drawer-inner">
-      <header><h2>{title}</h2><button aria-label="关闭抽屉" onClick={close}><Icon name="close" size={16}/></button></header>
+      <header><h2 id={titleId}>{title}</h2><form method="dialog"><button type="submit" aria-label="关闭抽屉"><Icon name="close" size={16}/></button></form></header>
       {children}
     </div>
   </dialog>;

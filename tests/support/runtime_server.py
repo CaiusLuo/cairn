@@ -23,6 +23,26 @@ class GatedModel(OfflineDevelopmentModel):
             while gate.exists():
                 await asyncio.sleep(0.02)
         names = {tool["function"]["name"] for tool in tools or ()}
+        last_user = next(
+            (message for message in reversed(messages) if message.role == "user"), None
+        )
+        if (
+            "knowledge_search" in names
+            and last_user is not None
+            and last_user.content == "A2UI browser knowledge fixture"
+        ):
+            if messages[-1].role == "tool":
+                return LLMResponse(content="备份依据请见下方来源。")
+            return LLMResponse(
+                tool_calls=[
+                    ToolCall(
+                        id="e2e-knowledge-search",
+                        name="knowledge_search",
+                        arguments={"query": "数据库备份"},
+                    )
+                ],
+                usage=LLMUsage(input_tokens=5, output_tokens=2),
+            )
         if (
             os.environ.get("CAIRN_TEST_CHAT_TOOL") == "1"
             and "read_file" in names

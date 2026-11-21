@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, existsSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { chromium, request } from "playwright";
 import { checkDocumentLibrary } from "./documents.mjs";
+import { checkKnowledgeSources } from "./knowledge-sources.mjs";
 
 const url = process.env.CAIRN_WEB_E2E_URL;
 const tokenPath = process.env.CAIRN_WEB_E2E_TOKEN_FILE;
@@ -107,7 +108,7 @@ try {
     }
 
     let failHistory = true;
-    await page.route("**/history", async route => {
+    await page.route("**/history?include=knowledge", async route => {
       if (!failHistory) return route.continue();
       await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "internal_error" }) });
     });
@@ -117,7 +118,7 @@ try {
     failHistory = false;
     await page.getByRole("button", { name: "重试" }).click();
     await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
-    await page.unroute("**/history");
+    await page.unroute("**/history?include=knowledge");
 
     await page.goto(new URL("/chat.html?conversation=conv-missing", url).href);
     await page.getByRole("alert").waitFor();
@@ -1564,6 +1565,7 @@ try {
       assert(!remaining.some(item => item.conversation_id === renameId), "Deleting removes the conversation");
       console.log("Conversation tree ordering, rename and delete passed.");
     }
+    await checkKnowledgeSources(page, api);
     console.log("Workbench browser E2E passed.");
   }
   assert.deepEqual(errors, []);

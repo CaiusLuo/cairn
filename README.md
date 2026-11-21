@@ -131,6 +131,11 @@ visible to the owner. Deleting a document removes its chunks, graph rows and
 original file. Duplicate uploads are recognized by content hash. The configured
 extraction and chunk limits can make search cover less text than the preview.
 
+In Web chat, completed replies that searched the document library can show up
+to three sources below the answer. Open a source to read its exact chunk. Use
+**用此片段追问** to add the source to your draft, then send it when ready. A source
+becomes unavailable if its document or chunk no longer exists.
+
 Scanned PDFs have no text layer. Install the optional OCR extra and enable it
 when those pages matter:
 
@@ -150,9 +155,9 @@ Only pages without a usable text layer are rendered and recognized locally with
 RapidOCR; normal PDFs never load the model. OCR uses two CPU threads and the
 model is released after each document. Very large page dimensions are rendered
 at a reduced resolution so one page cannot exhaust server memory. Pages above
-the per-document page limit or time budget are reported in the extracted text. Without the extra,
-`ocr_enabled = true` fails the document with a clear error instead of calling a
-provider.
+the per-document page limit or time budget are reported in the extracted text.
+Without the extra, `ocr_enabled = true` fails the document with a clear error
+instead of calling a provider.
 
 Vector search needs an embedding model. Without one, lexical search still works:
 

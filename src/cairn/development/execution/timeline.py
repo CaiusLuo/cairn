@@ -18,7 +18,10 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from pydantic import ValidationError
+
 from cairn.agent.turn.events import Event, SessionEvent
+from cairn.knowledge.documents import MAX_KNOWLEDGE_SOURCES, DocumentReference
 from cairn.shared.redaction import redact_value
 
 ARGUMENT_PREVIEW_CHARS = 4096
@@ -180,7 +183,10 @@ FIELDS: Mapping[str, tuple[str, ...]] = {
 
 
 def project_event(
-    event: Event, *, sensitive_values: tuple[str, ...] = ()
+    event: Event,
+    *,
+    sensitive_values: tuple[str, ...] = (),
+    include_knowledge_sources: bool = False,
 ) -> dict[str, Any]:
     """Return the public diagnostic fields for one Runtime event."""
     if event.type == "tool_call":
@@ -188,6 +194,16 @@ def project_event(
         data.update(_argument_summary(event.data.get("arguments"), sensitive_values))
     else:
         data = _selected_fields(event.data, FIELDS.get(event.type, ()))
+
+    if (
+        include_knowledge_sources
+        and event.type == "tool_result"
+        and event.data.get("tool") == "knowledge_search"
+        and event.data.get("exit_code") == 0
+    ):
+        references = _knowledge_references(event.data.get("stdout"))
+        if references:
+            data["knowledge_sources"] = references
 
     if event.type == "agent_finish":
         content = event.data.get("content")
@@ -199,6 +215,37 @@ def project_event(
         data.setdefault("session_id", str(event.session_id))
         data.setdefault("turn_id", str(event.turn_id))
     return {key: redact_value(value, sensitive_values) for key, value in data.items()}
+
+
+def _knowledge_references(stdout: object) -> list[dict[str, str | int]]:
+    if not isinstance(stdout, str) or len(stdout) > 65_536:
+        return []
+    try:
+        payload = json.loads(stdout)
+    except (ValueError, RecursionError):
+        return []
+    if not isinstance(payload, dict) or payload.get("status") != "ok":
+        return []
+    documents = payload.get("documents")
+    if not isinstance(documents, list):
+        return []
+    references: dict[str, DocumentReference] = {}
+    for document in documents:
+        if not isinstance(document, dict):
+            continue
+        try:
+            ref = DocumentReference.model_validate(
+                {key: document.get(key) for key in ("document_id", "chunk_id")}
+            )
+        except ValidationError:
+            continue
+        references.setdefault(ref.document_id, ref)
+        if len(references) == MAX_KNOWLEDGE_SOURCES:
+            break
+    return [
+        {"document_id": ref.document_id, "chunk_id": ref.chunk_id}
+        for ref in references.values()
+    ]
 
 
 def _selected_fields(

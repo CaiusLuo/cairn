@@ -113,11 +113,24 @@ export type Task = {
   metrics: Record<string, unknown>;
 };
 
+export type KnowledgeSource = {
+  document_id: string;
+  chunk_id: number;
+  title: string | null;
+  heading: string;
+};
+
+export type KnowledgeCard = {
+  run_id: string;
+  sources: KnowledgeSource[];
+};
+
 export type Message = {
   role: string;
   content?: string | null;
   tool_call_id?: string | null;
   tool_calls?: { id: string; name: string }[] | null;
+  knowledge?: KnowledgeCard;
 };
 
 export type ExecutionEvent = {

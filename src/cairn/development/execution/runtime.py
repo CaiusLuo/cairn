@@ -446,7 +446,16 @@ class ServiceExecution:
                 # executed facts. Stop before another model/tool request can replay.
                 raise TaskNeedsRecovery()
             emit(
-                event.type, project_event(event, sensitive_values=self.sensitive_values)
+                event.type,
+                project_event(
+                    event,
+                    sensitive_values=self.sensitive_values,
+                    include_knowledge_sources=(
+                        task.mode == "conversation"
+                        and task.source == "web"
+                        and owner_principal(task.channel_principal)
+                    ),
+                ),
             )
 
         attachment_manifest = ""

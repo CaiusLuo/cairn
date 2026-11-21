@@ -21,7 +21,12 @@ from starlette.routing import BaseRoute, Route
 
 from cairn.interfaces.web.auth import operator_request
 from cairn.knowledge.document_store import DocumentStore
-from cairn.knowledge.documents import MAX_DOCUMENT_TEXT_CHARS, Document
+from cairn.knowledge.documents import (
+    MAX_DOCUMENT_CHUNK_ID,
+    MAX_DOCUMENT_TEXT_CHARS,
+    Document,
+    DocumentReference,
+)
 from cairn.knowledge.models import (
     CLIP_CONTENT_MAX_LENGTH,
     CLIP_REQUEST_ID_MAX_LENGTH,
@@ -321,6 +326,19 @@ def document_routes(
             document_id = request.path_params.get("document_id", "")
             action = request.path_params.get("action")
             if request.method == "GET":
+                if action == "chunk":
+                    reference = DocumentReference(
+                        document_id=document_id,
+                        chunk_id=_integer(
+                            request, "chunk_id", 0, 1, MAX_DOCUMENT_CHUNK_ID
+                        ),
+                    )
+                    source_chunk = await run_in_threadpool(
+                        store.document_chunk, reference
+                    )
+                    if source_chunk is None:
+                        return _error(404, "document_source_not_found")
+                    return JSONResponse(source_chunk, headers=_json_headers())
                 if action == "text":
                     offset = _integer(request, "offset", 0, 0, MAX_DOCUMENT_TEXT_CHARS)
                     max_chars = _integer(
