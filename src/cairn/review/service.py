@@ -25,7 +25,11 @@ from cairn.review.models import (
 from cairn.review.store import ReviewStore
 from cairn.shared.redaction import redact_text
 
-TIMEOUT_SECONDS = 120.0
+# Report generation is non-interactive; a reasoning model can take close to two
+# minutes on a full day's evidence, and the schedule waits five minutes for it.
+# Keep enough headroom that a slow but successful generation is not marked
+# failed, while still bounding a genuinely stalled provider.
+TIMEOUT_SECONDS = 240.0
 MAX_MODEL_OUTPUT_CHARS = 100_000
 MAX_MARKDOWN_CHARS = 40_000
 
