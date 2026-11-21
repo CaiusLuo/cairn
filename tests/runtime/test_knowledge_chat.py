@@ -684,3 +684,110 @@ def test_legacy_wechat_owner_reads_but_trusted_sender_cannot(
             assert "无权" in (guest_final.result or "")
 
     asyncio.run(scenario())
+
+
+def test_web_knowledge_sources_keep_their_answer_and_recheck_document(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        source = _source(tmp_path)
+        state = tmp_path / "state"
+        worktrees = tmp_path / "worktrees"
+        library = DocumentStore(database_for(state), state / "knowledge" / "documents")
+        data = "# Backup\n\nA2UIFixture is required before maintenance."
+        document, _ = library.create_upload("backup.md", "text/markdown", data.encode())
+        await IngestionWorker(library).process_one()
+        app = _app(source, state, worktrees)
+        model = ScriptedModel(
+            [("knowledge_search", {"query": "A2UIFixture"})],
+            "Check the backup guide.",
+        )
+
+        def http(app: Any, *, authenticated: bool = True) -> httpx.AsyncClient:
+            return httpx.AsyncClient(
+                base_url="http://127.0.0.1:8777",
+                transport=httpx.ASGITransport(app=app),
+                headers={"Authorization": "Bearer " + TOKEN} if authenticated else {},
+            )
+
+        async with app.router.lifespan_context(app), http(app) as browser:
+            run, original = await _cli_chat(
+                app,
+                model,
+                "Check our backup procedure",
+                source="web",
+                request_id="first",
+            )
+            history_path = (
+                f"/api/runtime/conversations/{run['conversation_id']}/history"
+            )
+            assert all("knowledge" not in message for message in original)
+            displayed = (
+                (await browser.get(history_path, params={"include": "knowledge"}))
+                .raise_for_status()
+                .json()
+            )
+            reply = next(message for message in displayed if "knowledge" in message)
+            assert reply["role"] == "assistant" and reply["content"] == run["result"]
+            card = reply["knowledge"]
+            assert card["run_id"] == run["run_id"]
+            (ref,) = card["sources"]
+            assert ref["title"] == "backup.md"
+            assert ref["document_id"] == document.document_id
+
+            preview_path = f"/api/knowledge/documents/{document.document_id}/chunk"
+            params = {"chunk_id": ref["chunk_id"]}
+            snippet = (
+                (await browser.get(preview_path, params=params))
+                .raise_for_status()
+                .json()
+            )
+            assert snippet["content"] == data
+            assert snippet["offset"] == 0
+            wrong_document = preview_path.replace(
+                document.document_id, "doc-" + "0" * 32
+            )
+            assert (await browser.get(wrong_document, params=params)).status_code == 404
+            async with http(app, authenticated=False) as anonymous:
+                assert (
+                    await anonymous.get(preview_path, params=params)
+                ).status_code == 401
+
+            await _direct_run(
+                app,
+                ScriptedModel([], run["result"]),
+                run["conversation_id"],
+                "A separate question",
+                source=ConversationSource.WEB,
+                request_id="second",
+            )
+
+        reopened = _app(source, state, worktrees)
+        async with (
+            reopened.router.lifespan_context(reopened),
+            http(reopened) as browser,
+        ):
+            messages = (
+                (await browser.get(history_path, params={"include": "knowledge"}))
+                .raise_for_status()
+                .json()
+            )
+            answers = [
+                message for message in messages if message["content"] == run["result"]
+            ]
+            assert len(answers) == 2
+            assert answers[0]["knowledge"] == card
+            assert "knowledge" not in answers[1]
+            assert library.delete(document.document_id)
+            assert (await browser.get(preview_path, params=params)).status_code == 404
+            messages = (
+                (await browser.get(history_path, params={"include": "knowledge"}))
+                .raise_for_status()
+                .json()
+            )
+            (gone,) = [
+                message["knowledge"] for message in messages if "knowledge" in message
+            ]
+            assert gone["sources"] == [{**ref, "title": None, "heading": ""}]
+
+    asyncio.run(scenario())

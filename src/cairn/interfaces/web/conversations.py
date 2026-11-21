@@ -14,6 +14,7 @@ from typing import Any, Literal
 from urllib.parse import unquote
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route, WebSocketRoute
@@ -30,7 +31,9 @@ from cairn.conversation.service import (
 )
 from cairn.development.handoff import HandoffReviewConflict, HandoffReviewFailed
 from cairn.interfaces.web.auth import operator_request
+from cairn.interfaces.web.knowledge_sources import label_knowledge_sources
 from cairn.interfaces.web.runtime import request_body
+from cairn.knowledge.document_store import DocumentStore
 from cairn.shared.lifecycle import settle_owned
 
 
@@ -112,7 +115,11 @@ class WechatConversationCreate(BaseModel):
 
 
 def conversation_routes(
-    service: ConversationService, workspace: Path, runtime_token: str | None = None
+    service: ConversationService,
+    workspace: Path,
+    runtime_token: str | None = None,
+    *,
+    documents: DocumentStore | None = None,
 ) -> list[BaseRoute]:
     def workspace_ok(request: Any) -> bool:
         requested = request.headers.get("X-Cairn-Workspace")
@@ -429,10 +436,20 @@ def conversation_routes(
                 if current_conversation is None:
                     return JSONResponse({"error": "conversation_not_found"}, 404)
                 if action == "history":
-                    return JSONResponse(
-                        service.history(conversation_id),
-                        headers={"Cache-Control": "no-store"},
+                    include_sources = (
+                        documents is not None
+                        and request.query_params.get("include") == "knowledge"
                     )
+                    messages = await run_in_threadpool(
+                        service.history,
+                        conversation_id,
+                        include_knowledge_sources=include_sources,
+                    )
+                    if include_sources and documents is not None:
+                        await run_in_threadpool(
+                            label_knowledge_sources, messages, documents
+                        )
+                    return JSONResponse(messages, headers={"Cache-Control": "no-store"})
                 return JSONResponse(
                     {
                         "conversation": current_conversation.model_dump(mode="json"),

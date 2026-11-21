@@ -31,6 +31,8 @@ CHUNK_CHARS = 1200
 CHUNK_OVERLAP = 150
 MAX_CHUNKS = 400
 MAX_DOCUMENT_TEXT_CHARS = 50_000_000
+MAX_KNOWLEDGE_SOURCES = 3
+MAX_DOCUMENT_CHUNK_ID = 9_007_199_254_740_991
 
 _CJK = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
 _WORD = re.compile(r"[A-Za-z0-9]+")
@@ -41,6 +43,14 @@ _BOUNDARIES = ("\n\n", "。", "！", "？", "；", ". ", "! ", "? ", "; ", "\n")
 
 def new_document_id() -> str:
     return "doc-" + uuid4().hex
+
+
+class DocumentReference(BaseModel):
+    """An exact document chunk identity, safe to keep without copied content."""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+    document_id: str = Field(pattern=r"^doc-[0-9a-f]{32}$")
+    chunk_id: int = Field(gt=0, le=MAX_DOCUMENT_CHUNK_ID)
 
 
 def utc_now() -> str:

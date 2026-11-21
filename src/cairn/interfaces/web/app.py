@@ -396,7 +396,12 @@ def create_app(
         from cairn.interfaces.web.conversations import conversation_routes
 
         routes.extend(
-            conversation_routes(conversations, config.workspace, runtime_token)
+            conversation_routes(
+                conversations,
+                config.workspace,
+                runtime_token,
+                documents=documents if config.auth_passphrase else None,
+            )
         )
     web_root = config.web_root
     if web_root is not None and (web_root / "index.html").is_file():

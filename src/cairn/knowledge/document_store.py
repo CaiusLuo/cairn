@@ -28,6 +28,7 @@ from cairn.knowledge.documents import (
     MAX_DOCUMENT_TEXT_CHARS,
     STEP_PENDING,
     Document,
+    DocumentReference,
     TextChunk,
 )
 from cairn.shared.artifacts import atomic_write_private_bytes
@@ -372,6 +373,60 @@ class DocumentStore:
                 (self.owner, document_id),
             ).fetchone()
         return None if row is None else self._path(cast(str, row["storage_path"]))
+
+    def document_source_labels(
+        self, references: Sequence[DocumentReference]
+    ) -> dict[DocumentReference, dict[str, object]]:
+        if not references:
+            return {}
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT d.document_id, c.chunk_id, d.title, c.heading_path "
+                "FROM unnest(%s::text[], %s::bigint[]) AS ref(document_id, chunk_id) "
+                "JOIN chunks c USING (document_id, chunk_id) "
+                "JOIN documents d ON d.document_id = c.document_id "
+                "WHERE d.owner = %s AND d.status = %s",
+                (
+                    [ref.document_id for ref in references],
+                    [ref.chunk_id for ref in references],
+                    self.owner,
+                    DOCUMENT_READY,
+                ),
+            ).fetchall()
+        return {
+            DocumentReference(
+                document_id=row["document_id"], chunk_id=row["chunk_id"]
+            ): {
+                "title": row["title"],
+                "heading": " / ".join(
+                    part[:160] for part in (row["heading_path"] or [])[-3:]
+                ),
+            }
+            for row in rows
+        }
+
+    def document_chunk(self, reference: DocumentReference) -> dict[str, object] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT d.title, c.heading_path, c.text, c.locator "
+                "FROM chunks c JOIN documents d USING (document_id) "
+                "WHERE d.owner = %s AND d.status = %s AND d.document_id = %s "
+                "AND c.chunk_id = %s",
+                (self.owner, DOCUMENT_READY, reference.document_id, reference.chunk_id),
+            ).fetchone()
+        if row is None or not isinstance(row["locator"], dict):
+            return None
+        offset = row["locator"].get("char_start")
+        if type(offset) is not int or offset < 0:
+            return None
+        return {
+            "title": row["title"],
+            "heading": " / ".join(
+                part[:160] for part in (row["heading_path"] or [])[-3:]
+            ),
+            "content": row["text"],
+            "offset": offset,
+        }
 
     def document_text(
         self,

@@ -29,7 +29,15 @@ export type DocumentText = {
   next_offset: number | null;
 };
 
+export type DocumentChunk = {
+  title: string;
+  heading: string;
+  content: string;
+  offset: number;
+};
+
 function failureText(status: number, error?: string) {
+  if (error === "document_source_not_found") return "来源已不可用。文档可能已删除或重新处理。";
   if (error === "document_not_found") return "文档不存在或已被删除。";
   if (error === "unsupported_document_type") return "暂不支持该文件类型，请上传 PDF、Office、HTML、Markdown 或纯文本。";
   if (error === "document_too_large") return "文件超过上传大小上限。";
@@ -71,6 +79,11 @@ export function listDocuments(limit: number, offset: number, signal?: AbortSigna
 export function documentText(documentId: string, offset = 0, maxChars = 20_000, signal?: AbortSignal) {
   const params = new URLSearchParams({ offset: String(offset), max_chars: String(maxChars) });
   return request<DocumentText>(`/${encodeURIComponent(documentId)}/text?${params}`, undefined, signal);
+}
+
+export function documentChunk(documentId: string, chunkId: number, signal?: AbortSignal) {
+  const params = new URLSearchParams({ chunk_id: String(chunkId) });
+  return request<DocumentChunk>("/" + encodeURIComponent(documentId) + "/chunk?" + params, undefined, signal);
 }
 
 // The filename header is latin-1, so UTF-8 names travel percent-encoded.

@@ -48,6 +48,7 @@ from cairn.development.service import (
     TaskPaused,
     TaskService,
 )
+from cairn.knowledge.documents import MAX_KNOWLEDGE_SOURCES
 from cairn.shared.lifecycle import settle_owned
 
 LOGGER = logging.getLogger(__name__)
@@ -116,6 +117,8 @@ class RunLedger:
         self.trace_ref: str | None = None
         self.turn_id: str | None = None
         self.open_tools = 0
+        self.knowledge_sources: dict[str, dict[str, Any]] = {}
+        self.checkpoint_messages: int | None = None
         self._session_id = session_id
         self._on_event = on_event
         self._on_session_bound = on_session_bound
@@ -177,6 +180,14 @@ class RunLedger:
             self.open_tools += 1
         elif kind in {"tool_result", "tool_error", "tool_denied"}:
             self.open_tools = max(0, self.open_tools - 1)
+            for reference in (data or {}).get("knowledge_sources", ()):
+                if len(self.knowledge_sources) == MAX_KNOWLEDGE_SOURCES:
+                    break
+                self.knowledge_sources.setdefault(reference["document_id"], reference)
+        elif kind == "turn_committed" and data is not None:
+            count = data.get("checkpoint_messages")
+            if type(count) is int and count > 0:
+                self.checkpoint_messages = count
         elif kind == "trace_finish" and data is not None:
             trace_id = data.get("trace_id")
             if isinstance(trace_id, str) and trace_id:
@@ -761,7 +772,9 @@ class ConversationService:
             await asyncio.wait_for(self.changed.wait(), 15)
         return self.events(run_id, after)
 
-    def history(self, conversation_id: str) -> list[dict[str, Any]]:
+    def history(
+        self, conversation_id: str, *, include_knowledge_sources: bool = False
+    ) -> list[dict[str, Any]]:
         """Read the durable transcript without requiring a live Session.
 
         Runs written before Session identity existed have no checkpoint to
@@ -801,21 +814,50 @@ class ConversationService:
                 ):
                     # A Run outside the latest Session cannot be placed
                     # against its transcript, so use the durable Run order.
-                    return self._run_fact_messages(runs)
+                    return self._run_fact_messages(runs, include_knowledge_sources)
+                if include_knowledge_sources:
+                    for run in runs[first_latest_index:]:
+                        offset = run.metadata.get("knowledge_message_offset")
+                        if type(offset) is int and 0 <= offset < len(messages):
+                            message = messages[offset]
+                            if (
+                                message["role"] == "assistant"
+                                and not message.get("tool_calls")
+                                and message.get("content") == run.result
+                            ):
+                                self._add_knowledge_sources(message, run)
                 return [
-                    *self._run_fact_messages(runs[:first_latest_index]),
+                    *self._run_fact_messages(
+                        runs[:first_latest_index], include_knowledge_sources
+                    ),
                     *messages,
                 ]
-        return self._run_fact_messages(runs)
+        return self._run_fact_messages(runs, include_knowledge_sources)
 
     @staticmethod
-    def _run_fact_messages(runs: tuple[Run, ...]) -> list[dict[str, Any]]:
+    def _add_knowledge_sources(message: dict[str, Any], run: Run) -> None:
+        refs = run.metadata.get("knowledge_sources")
+        if (
+            run.status is RunStatus.COMPLETED
+            and run.source is ConversationSource.WEB
+            and isinstance(refs, list)
+            and refs
+        ):
+            message["knowledge"] = {"run_id": run.run_id, "references": refs}
+
+    @staticmethod
+    def _run_fact_messages(
+        runs: tuple[Run, ...], include_knowledge_sources: bool = False
+    ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
         for run in runs:
             if run.prompt:
                 messages.append({"role": "user", "content": run.prompt})
             if run.result:
-                messages.append({"role": "assistant", "content": run.result})
+                reply: dict[str, Any] = {"role": "assistant", "content": run.result}
+                if include_knowledge_sources:
+                    ConversationService._add_knowledge_sources(reply, run)
+                messages.append(reply)
         return messages
 
     def _runtime_task(self, run: Run) -> RuntimeTask:
@@ -1316,11 +1358,24 @@ class ConversationService:
                 ledger.task, emit, service=ledger, steering=steering
             )
             ledger.flush_preview()
+            evidence = self._evidence(ledger)
+            if ledger.knowledge_sources and result:
+                current = self.store.get_run(run_id)
+                assert current is not None
+                evidence["metadata"] = {
+                    **current.metadata,
+                    "knowledge_sources": list(ledger.knowledge_sources.values()),
+                    "knowledge_message_offset": (
+                        ledger.checkpoint_messages - 1
+                        if ledger.checkpoint_messages is not None
+                        else None
+                    ),
+                }
             self.store.update_run(
                 run_id,
                 status=RunStatus.COMPLETED,
                 result=result,
-                **self._evidence(ledger),
+                **evidence,
                 ended_at=utc_now(),
             )
         except TaskPaused as exc:

@@ -699,3 +699,47 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   .channels-platform-note { flex-basis: 100%; }
   .channels-page .channels-platform .channel-state { align-self: flex-start; }
 }
+
+.wb-message-with-sources { flex: 1; }
+.wb-knowledge-sources {
+  margin-block-start: 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--hui-border);
+  border-radius: 9px;
+  background: var(--hui-surface);
+}
+.wb-knowledge-sources h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 5px;
+  font-size: 13px;
+}
+.wb-knowledge-sources ul { margin: 0; padding: 0; list-style: none; }
+.wb-knowledge-sources li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 14px;
+  border-block-start: 1px solid var(--hui-border);
+  padding-block: 5px;
+  font-size: 13px;
+}
+.wb-knowledge-sources li > div { min-width: 0; }
+.wb-knowledge-sources small { display: block; color: var(--hui-secondary); }
+.wb-knowledge-sources button {
+  border: 1px solid var(--hui-border-strong);
+  border-radius: 7px;
+  background: var(--hui-surface);
+  padding: 3px 9px;
+  min-block-size: 30px;
+  white-space: nowrap;
+}
+.wb-knowledge-sources button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.wb-source-preview pre { overscroll-behavior: contain; }
+.wb-drawer:modal { overscroll-behavior: contain; }
+.wb-drawer::backdrop { overflow: hidden; overscroll-behavior: contain; }
+@media (pointer: coarse) {
+  .wb-knowledge-sources button { min-block-size: 44px; }
+}

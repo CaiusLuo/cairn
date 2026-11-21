@@ -131,6 +131,11 @@ visible to the owner. Deleting a document removes its chunks, graph rows and
 original file. Duplicate uploads are recognized by content hash. The configured
 extraction and chunk limits can make search cover less text than the preview.
 
+In Web chat, completed replies that searched the document library can show up
+to three sources below the answer. Open a source to read its exact chunk. Use
+**用此片段追问** to add the source to your draft, then send it when ready. A source
+becomes unavailable if its document or chunk no longer exists.
+
 Vector search needs an embedding model. Without one, lexical search still works:
 
 ```toml

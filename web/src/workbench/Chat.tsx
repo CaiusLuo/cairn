@@ -2,10 +2,11 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { newRequestId } from "../ids";
 import { RuntimeError, runtimeApi, uploadAttachment, type UploadedAttachment } from "../runtime-api";
 import { readSubmission, sendSubmission, useRunStream, type Submission } from "./chat-state";
-import { conversationTitle, isActive, sourceLabel, useResource, type Conversation, type Message, type Run, type WorkbenchConfig } from "./data";
+import { conversationTitle, isActive, sourceLabel, useResource, type Conversation, type KnowledgeSource, type Message, type Run, type WorkbenchConfig } from "./data";
 import { Badge, Drawer, Markdown, Outputs, Timeline } from "./evidence";
 import { CairnMark } from "./Brand";
 import { Icon } from "./Icon";
+import { KnowledgeSources } from "./KnowledgeSources";
 import { BrandIntro, shortcuts } from "./Home";
 import { href } from "./Shell";
 import { useEventLog } from "./execution";
@@ -57,9 +58,11 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   const run = acknowledged && observed?.run_id !== acknowledged.run_id &&
     (!observed?.created_at || (acknowledged.created_at ?? "") > observed.created_at) ? acknowledged : observed;
   const active = Boolean(run && isActive(run.status));
-  const history = useResource<Message[]>(id ? `conversations/${encodeURIComponent(id)}/history` : null);
+  const history = useResource<Message[]>(id ? `conversations/${encodeURIComponent(id)}/history?include=knowledge` : null);
   const stream = useRunStream(run);
   const [draft, setDraft] = useState("");
+  const [draftSource, setDraftSource] = useState<(KnowledgeSource & { offset: number }) | null>(null);
+  const composerInput = useRef<HTMLTextAreaElement>(null);
   const [pending, setPending] = useState<Submission | null>(null);
   const [model, setModel] = useState("");
   const [mode, setMode] = useState<Submission["mode"]>(initialMode);
@@ -86,7 +89,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => { setPending(readSubmission(key)); }, [key]);
-  useEffect(() => { setSteer(null); }, [id]);
+  useEffect(() => { setSteer(null); setDraftSource(null); }, [id]);
   useEffect(() => {
     if (!steer || steer.phase === "queued" || steer.phase === "applied") return;
     const match = [...stream.events].reverse().find(event =>
@@ -197,8 +200,16 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   }
 
   function sendDraft() {
-    const prompt = draft.trim();
-    if (!prompt || inFlight.current || sending || steering || uploading || !config || (failed && mode === "conversation")) return;
+    const text = draft.trim();
+    if (!text || inFlight.current || sending || steering || uploading || !config || (failed && mode === "conversation")) return;
+    const prompt = draftSource
+      ? text + "\n\n引用资料（请用 document_read 核对）：document_id=" + draftSource.document_id
+        + "，chunk_id=" + draftSource.chunk_id + "，offset=" + draftSource.offset
+      : text;
+    if (prompt.length > 32000) {
+      setError("请缩短消息，给来源引用留出空间。");
+      return;
+    }
     if (pending) {
       sessionStorage.removeItem(key);
       setPending(null);
@@ -209,11 +220,19 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
       ...(attachment_ids.length ? { attachment_ids, attachments } : {}),
     };
     setDraft("");
+    setDraftSource(null);
     setAttachments([]);
     stickToBottom.current = true;
     if (steerable) void steerPrompt(prompt);
     else if (active && mode === "conversation") setQueue(rows => [...rows, next]);
     else void submit({ ...next, conversation: id, mode });
+  }
+
+  function askAboutSource(source: KnowledgeSource & { offset: number }) {
+    setMode("conversation");
+    setDraftSource(source);
+    setDraft(current => current.trim() ? current : "请解释这段资料，并给出具体建议。");
+    composerInput.current?.focus();
   }
 
   async function cancel() {
@@ -232,7 +251,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   }
 
   const failed = run?.status === "recovery_required";
-  const steerable = active && run?.status === "running" && mode === "conversation" && attachments.length === 0;
+  const steerable = active && run?.status === "running" && mode === "conversation" && attachments.length === 0 && !draftSource;
   const degraded = (detail.data?.runs ?? [])
     .map(item => item.metadata?.history_degraded)
     .filter((value): value is string => typeof value === "string")
@@ -247,6 +266,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
         <button disabled={active || sending || !!pending || failed} onClick={() => sendQueued(item)}>发送</button>
         <button disabled={!!draft.trim() || uploading || !!attachments.length || (!!item.attachment_ids?.length && !item.attachments)} onClick={() => {
           setDraft(item.prompt);
+          setDraftSource(null);
           setMode("conversation");
           setModel(item.model ?? "");
           setAttachments(item.attachments ?? []);
@@ -264,13 +284,19 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
       {!error && <button type="button" onClick={() => { detail.refresh(); history.refresh(); }}>重试</button>}
     </p>}
     <form className="wb-composer" onSubmit={event => { event.preventDefault(); sendDraft(); }}>
+      {draftSource && <div className="attachment-tray">
+        <span className="attachment-chip">
+          <Icon name="doc" size={14}/><span>引用 {draftSource.title}</span>
+          <button type="button" aria-label="移除知识库引用" onClick={() => setDraftSource(null)}><Icon name="close" size={12}/></button>
+        </span>
+      </div>}
       {!!attachments.length && <div className="attachment-tray">
         {attachments.map(item => <span className="attachment-chip" key={item.attachment_id}>
           <Icon name="doc" size={14}/><span title={item.name}>{item.name}</span><small>{sizeLabel(item.size)}</small>
           <button type="button" aria-label={`移除 ${item.name}`} onClick={() => setAttachments(rows => rows.filter(row => row.attachment_id !== item.attachment_id))}><Icon name="close" size={12}/></button>
         </span>)}
       </div>}
-      <textarea aria-label="消息" placeholder={mode === "development" ? "描述要完成的开发目标…" : steerable ? "输入以引导当前运行…" : "问 Cairn，或交给它一项工作…"} value={draft} maxLength={32000} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); sendDraft(); } }}/>
+      <textarea ref={composerInput} aria-label="消息" placeholder={mode === "development" ? "描述要完成的开发目标…" : steerable ? "输入以引导当前运行…" : "问 Cairn，或交给它一项工作…"} value={draft} maxLength={32000} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); sendDraft(); } }}/>
       <div className="composer-controls">
         <span className="composer-harness"><Icon name="sparkles" size={15}/>Cairn Agent</span>
         <input ref={fileInput} type="file" multiple hidden onChange={event => void attachFiles(event.target.files)}/>
@@ -280,7 +306,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
           {config?.models.map(item => <option key={item} value={item}>{item}</option>)}
         </select></label>
         <label title={mode === "development" ? `Shell ${config?.development_shell ? "宿主已授权" : "关闭"} · 网络 ${config?.development_network ? "宿主已授权" : "关闭"}` : "对话中的项目文件只读"}><Icon name="lock" size={15}/><select aria-label="权限模式" value={mode} onChange={event => setMode(event.target.value as Submission["mode"])}>
-          <option value="conversation">对话 · 项目只读</option><option value="development" disabled={uploading || attachments.length > 0}>开发 · 独立工作树</option>
+          <option value="conversation">对话 · 项目只读</option><option value="development" disabled={uploading || attachments.length > 0 || !!draftSource}>开发 · 独立工作树</option>
         </select></label>
         <div className="composer-send">
           {active && <button className="composer-icon" type="button" aria-label="中断运行" title="中断运行" disabled={canceling} onClick={() => void cancel()}><Icon name="stop" size={17}/></button>}
@@ -300,8 +326,12 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
     <div className="wb-transcript" ref={transcript} onScroll={() => { const element = transcript.current; if (element) stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 160; }}>
       <div className="wb-transcript-inner">
         {!detail.data && !detail.error && <p className="wb-muted">正在读取对话…</p>}
-        {messages.map((message, index) => <article key={index} className={`wb-message ${message.role}`}>
-          {message.role === "assistant" && <CairnMark size={22}/>}<Markdown text={message.content!}/>
+        {messages.map((message, index) => <article key={message.knowledge?.run_id ?? index} className={`wb-message ${message.role}`}>
+          {message.role === "assistant" && <CairnMark size={22}/>}
+          {message.knowledge ? <div className="wb-message-with-sources">
+            <Markdown text={message.content!}/>
+            <KnowledgeSources card={message.knowledge} onAsk={askAboutSource}/>
+          </div> : <Markdown text={message.content!}/>}
         </article>)}
         {active && run?.prompt && (messages.at(-1)?.role !== "user" || messages.at(-1)?.content !== run.prompt) && <article className="wb-message user"><Markdown text={run.prompt}/>{!!run.attachments?.length && <p className="wb-muted">附件：{attachmentNames(run.attachments)}</p>}</article>}
         {active && <article className="wb-message assistant" aria-live="polite"><CairnMark size={22}/><div>
