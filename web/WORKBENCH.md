@@ -33,6 +33,8 @@ Paths below `/api/runtime/` in the table use that same prefix. Knowledge paths l
 
 Knowledge clips and documents are untrusted reference material. The owner can retrieve them through the Agent's read-only tools. Records and search indexes live in PostgreSQL. Private originals live under the Server runtime directory, outside the Agent workspace.
 
+The Chat icon returns from other views to the last conversation opened in the current browser tab, even after a reload. If the tab has no remembered conversation or the Server reports it missing, the icon opens a blank chat. Clicking it in an existing conversation also opens a blank chat. Clicking it again in the blank composer keeps the draft. The sidebar's **新对话** button opens the blank composer from any view.
+
 The former execution-graph page and its React Flow dependency were removed. Old `?view=workflow` links now land on the Development Task list, preserving their `task` parameter. LangGraph execution, Task/Run events, the execution timeline and recovery flows are unchanged.
 
 ## Browser verification

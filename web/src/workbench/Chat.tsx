@@ -123,8 +123,9 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
       if ("task" in result && result.task) {
         navigate(href("tasks", { task: result.task.task_id }));
       } else if (result.run) {
-        if (result.run.conversation_id !== id) navigate(href("chat", { conversation: result.run.conversation_id }));
-        else { setAcknowledged(result.run); detail.refresh(); }
+        if (result.run.conversation_id !== id) {
+          navigate(href("chat", { conversation: result.run.conversation_id }));
+        } else { setAcknowledged(result.run); detail.refresh(); }
       }
     } catch (reason) {
       if (!mounted.current) return;

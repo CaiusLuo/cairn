@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, request } from "playwright";
+import { checkChatReturn } from "./chat-return.mjs";
 import { checkDocumentLibrary } from "./documents.mjs";
 import { checkKnowledgeSources } from "./knowledge-sources.mjs";
 
@@ -103,6 +104,9 @@ try {
       await freshPage.locator(".wb-chat").waitFor();
       assert.equal(new URL(freshPage.url()).pathname, "/chat.html");
       assert.equal(new URL(freshPage.url()).searchParams.get("conversation"), cli.conversation_id);
+      const chatReturnPage = await fresh.newPage();
+      chatReturnPage.setDefaultTimeout(20000);
+      await checkChatReturn(chatReturnPage, api, url);
     } finally {
       await fresh.close();
     }
