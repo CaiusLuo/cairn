@@ -7,6 +7,7 @@ from collections.abc import Callable
 import pytest
 
 from cairn.knowledge.ocr import OCR_PARSER, OcrSettings, PdfOcrExtractor
+from cairn.knowledge.ocr_rapid import MAX_PAGE_PIXELS, render_scale
 from cairn.shared.text_extract import (
     ExtractionUnavailable,
     PdfExtraction,
@@ -164,6 +165,12 @@ def test_zero_page_limit_does_not_load_the_backend() -> None:
         _extractor(pdf, factory, settings=OcrSettings(max_pages=0)).extract(
             "scan.pdf", b"%PDF", max_pdf_pages=10
         )
+
+
+def test_oversized_pages_are_rendered_within_the_pixel_cap() -> None:
+    scale = render_scale(14_400, 14_400, 200)
+    assert 14_400 * 14_400 * scale * scale <= MAX_PAGE_PIXELS
+    assert render_scale(595, 842, 200) == pytest.approx(200 / 72)
 
 
 def test_pdf_without_pages_is_rejected() -> None:

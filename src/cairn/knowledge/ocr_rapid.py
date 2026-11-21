@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 # Leave the other cores to chat, API requests and the rest of ingestion.
 OCR_THREADS = 2
+# A PDF can declare a huge page; cap the bitmap so OCR cannot exhaust server RAM.
+MAX_PAGE_PIXELS = 20_000_000
+
+
+def render_scale(width: float, height: float, dpi: int) -> float:
+    scale = dpi / 72
+    area = width * height
+    if area * scale * scale > MAX_PAGE_PIXELS:
+        scale = math.sqrt(MAX_PAGE_PIXELS / area)
+    return scale
 
 
 class RapidOcrRecognizer:
@@ -28,7 +39,10 @@ class RapidOcrRecognizer:
     def recognize(self, page_index: int) -> str:
         page = self._pdf[page_index]
         try:
-            bitmap = page.render(scale=self._dpi / 72)
+            width, height = page.get_size()
+            if width <= 0 or height <= 0:
+                return ""
+            bitmap = page.render(scale=render_scale(width, height, self._dpi))
             try:
                 image = bitmap.to_numpy().copy()
             finally:

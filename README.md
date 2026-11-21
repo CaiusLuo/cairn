@@ -148,8 +148,9 @@ ocr_max_seconds = 120
 
 Only pages without a usable text layer are rendered and recognized locally with
 RapidOCR; normal PDFs never load the model. OCR uses two CPU threads and the
-model is released after each document. Pages above the per-document page limit
-or time budget are reported in the extracted text. Without the extra,
+model is released after each document. Very large page dimensions are rendered
+at a reduced resolution so one page cannot exhaust server memory. Pages above
+the per-document page limit or time budget are reported in the extracted text. Without the extra,
 `ocr_enabled = true` fails the document with a clear error instead of calling a
 provider.
 
