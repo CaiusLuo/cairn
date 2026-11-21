@@ -48,7 +48,9 @@ Return exactly one JSON object and no other text. It must have these keys:
   "date": "YYYY-MM-DD",
   "overview": "string",
   "completed_activities": [{"text": "string", "source_refs": ["source-id"]}],
+  "conversation_highlights": [{"text": "string", "source_refs": ["source-id"]}],
   "knowledge_insights": [{"text": "string", "source_refs": ["source-id"]}],
+  "knowledge_recall": [{"text": "string", "source_refs": ["source-id"]}],
   "problems": [{"text": "string", "source_refs": ["source-id"]}],
   "recommendations": [{"text": "string", "source_refs": ["source-id"]}],
   "source_refs": ["source-id"],
@@ -65,16 +67,27 @@ Hard rules:
   may_prove_completion=true. Otherwise return an empty completed_activities.
   Describe executed but unaccepted work as executed or attempted in
   knowledge_insights or problems, not as a completed activity.
-- Every completed_activities, knowledge_insights and problems item must cite at
-  least one source_id supplied in the user message. Recommendations may cite
-  sources but do not have to.
+- conversation_highlights summarizes only valuable human/assistant exchanges
+  from source_type=conversation: decisions, findings, unresolved questions,
+  useful follow-ups and concrete next steps. Skip greetings, small talk and
+  repetitive status chatter. A conversation turn proves what was discussed, not
+  that any task was completed. Cite the conversation source_id.
+- knowledge_insights covers general insights that do not fit the conversation
+  or recall sections.
+- knowledge_recall connects relevant knowledge to the day's work. Distinguish
+  newly added knowledge (knowledge_document, knowledge_clip) from recalled
+  background (knowledge_recall). Do not present recalled material as newly
+  created or as proof of activity. Cite the exact source_id.
+- Every completed_activities, conversation_highlights, knowledge_insights,
+  knowledge_recall and problems item must cite at least one source_id supplied
+  in the user message. Recommendations may cite sources but do not have to.
 - Never invent source IDs. A source_refs value must be copied exactly from a
   supplied source_id.
 - If evidence is insufficient, say so plainly in overview and
   confidence_notes, and leave the unsupported arrays empty. Do not add
   motivational filler.
-- Maximum counts: completed_activities 5, knowledge_insights 3, problems 3,
-  recommendations 3.
+- Maximum counts: completed_activities 5, conversation_highlights 5,
+  knowledge_insights 3, knowledge_recall 5, problems 3, recommendations 3.
 - Write in the language used by the source material. Do not output Markdown
   fences or tool calls.
 """
@@ -472,7 +485,13 @@ class DailyReviewService(ReviewServiceBase):
         included = review_input.included_source_ids
         completion = review_input.completion_source_ids
 
-        for field in ("completed_activities", "knowledge_insights", "problems"):
+        for field in (
+            "completed_activities",
+            "conversation_highlights",
+            "knowledge_insights",
+            "knowledge_recall",
+            "problems",
+        ):
             for item in getattr(summary, field):
                 if not item.source_refs:
                     raise ReviewGenerationError("missing_source_reference")
@@ -491,7 +510,9 @@ class DailyReviewService(ReviewServiceBase):
         refs: list[str] = list(summary.source_refs)
         for field in (
             "completed_activities",
+            "conversation_highlights",
             "knowledge_insights",
+            "knowledge_recall",
             "problems",
             "recommendations",
         ):
@@ -515,8 +536,14 @@ class DailyReviewService(ReviewServiceBase):
                 "completed_activities": tuple(
                     redact_item(item) for item in summary.completed_activities
                 ),
+                "conversation_highlights": tuple(
+                    redact_item(item) for item in summary.conversation_highlights
+                ),
                 "knowledge_insights": tuple(
                     redact_item(item) for item in summary.knowledge_insights
+                ),
+                "knowledge_recall": tuple(
+                    redact_item(item) for item in summary.knowledge_recall
                 ),
                 "problems": tuple(redact_item(item) for item in summary.problems),
                 "recommendations": tuple(
@@ -573,7 +600,9 @@ def render_markdown(summary: DailyReview, review_input: ReviewInput) -> str:
             lines.append(f"- {item.text}" + (f" (来源: {refs})" if refs else ""))
 
     section("今日进展", summary.completed_activities, "无已验证的完成记录。")
+    section("对话亮点", summary.conversation_highlights, "无值得复盘的新对话。")
     section("知识收获", summary.knowledge_insights, "无足够证据。")
+    section("知识召回", summary.knowledge_recall, "无相关召回内容。")
     section("主要问题", summary.problems, "无记录。")
     section("明日建议", summary.recommendations, "无足够依据提出建议。")
     lines.extend(["", "## 来源"])

@@ -92,6 +92,35 @@ class DocumentSearcher:
                 hits.extend(_hit(row, needle, 0.0, ("graph",)) for row in graph_rows)
         return DocumentSearchResult(tuple(hits[:limit]), semantic)
 
+    def recall(self, query: str, *, limit: int = 8) -> tuple[DocumentHit, ...]:
+        """Synchronous local recall for review collection.
+
+        Review generation runs collection in a worker thread and must stay
+        deterministic. This uses the same lexical, trigram and graph paths as
+        interactive search but deliberately skips the embedding provider.
+        """
+        needle = query.strip()
+        if not needle or limit < 1:
+            return ()
+        lexical = self._lexical(needle)
+        trigram = self._trigram(needle)
+        fused = _fuse((("lexical", lexical), ("trigram", trigram)))
+        hits = [
+            _hit(row, needle, score, matched) for row, score, matched in fused[:limit]
+        ]
+        if hits and limit > 1:
+            try:
+                graph_rows = self._graph(
+                    [hit.chunk_id for hit in hits[: min(GRAPH_SEED_CHUNKS, limit - 1)]],
+                    [hit.chunk_id for hit in hits],
+                )
+            except PostgresError:
+                graph_rows = ()
+            if graph_rows:
+                hits = hits[: limit - 1]
+                hits.extend(_hit(row, needle, 0.0, ("graph",)) for row in graph_rows)
+        return tuple(hits[:limit])
+
     def _lexical(self, query: str) -> tuple[Row, ...]:
         with self.store.db.connect("knowledge") as connection:
             return tuple(

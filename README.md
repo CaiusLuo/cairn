@@ -190,11 +190,23 @@ timezone = "Asia/Shanghai"
 recipient = "YOUR_WECHAT_USER_ID"
 ```
 
-Weekly reviews run on Sunday. WeChat delivery needs the configured recipient to
-be logged in and a usable inbound reply context; send the bot a message if that
-context has expired. Check report or reminder delivery status separately from
-whether generation or execution succeeded. An unknown send outcome is not
-retried automatically.
+Each report covers the period's valuable Conversation content, newly added
+knowledge Clips and ready documents, and related older knowledge recalled from
+the document library. Conversation highlights and recalled knowledge are cited
+separately from verified completion, so background information is not presented
+as new work. Weekly reviews reuse the period's daily reports and fill missing
+days from raw records.
+
+Weekly reviews run on Sunday. Scheduled reports are pushed to every enabled,
+running IM connection that has an owner identity and a previously accepted
+private conversation: the report goes back to that exact conversation. WeChat
+uses the outbox and needs the configured recipient to be logged in with a usable
+inbound reply context; send the bot a message if that context has expired. Other
+channels need their bot started and at least one accepted owner message before
+the first scheduled push. A channel that is stopped, unconfigured or without an
+owner is skipped rather than sent to a guessed target. Check report delivery
+status separately from whether generation succeeded. An unknown send outcome is
+not retried automatically.
 
 ## Messaging channels
 

@@ -73,7 +73,9 @@ def format_review_message(
             lines.append(line)
 
     section("今日进展", summary.completed_activities)
+    section("对话亮点", summary.conversation_highlights)
     section("知识收获", summary.knowledge_insights)
+    section("知识召回", summary.knowledge_recall)
     section("主要问题", summary.problems)
     section("明日建议", summary.recommendations)
 
@@ -133,7 +135,9 @@ def _format_weekly_message(
 
     section("重要事件", summary.major_events)
     section("本周进展", summary.progress)
+    section("对话亮点", summary.conversation_highlights)
     section("知识收获", summary.knowledge_insights)
+    section("知识召回", summary.knowledge_recall)
     section("反复出现的问题", summary.recurring_problems)
     section("下周优先事项", summary.next_week_priorities)
 

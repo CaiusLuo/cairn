@@ -52,10 +52,12 @@ from cairn.knowledge.embeddings import LiteLLMEmbeddingClient
 from cairn.knowledge.graph import LLMGraphExtractor
 from cairn.knowledge.ingest import IngestionSettings, IngestionWorker
 from cairn.knowledge.ocr import OcrSettings, PdfOcrExtractor, rapidocr_recognizer
+from cairn.knowledge.retrieval import DocumentSearcher
 from cairn.knowledge.store import KnowledgeStore
+from cairn.review.channel_delivery import ReviewChannelDispatcher
 from cairn.review.collector import ReviewSourceCollector, WeeklySourceCollector
 from cairn.review.delivery import ReviewDeliveryCoordinator
-from cairn.review.models import DeliveryTarget
+from cairn.review.models import DeliveryTarget, StoredReview
 from cairn.review.schedule import ReviewScheduleCoordinator
 from cairn.review.service import DailyReviewService
 from cairn.review.store import ReviewStore
@@ -296,6 +298,9 @@ def runtime_app(
         if provider_runtime is None
         else provider_runtime.model_manager.current_model_id()
     )
+    review_searcher = (
+        DocumentSearcher(document_store) if document_store is not None else None
+    )
     try:
         reviews = DailyReviewService(
             store=review_store,
@@ -303,6 +308,8 @@ def runtime_app(
                 knowledge=knowledge_store,
                 workspace=workspace,
                 domain=domain_store,
+                documents=document_store,
+                searcher=review_searcher,
                 memory=controls.memory.store,
                 memory_enabled=controls.memory.enabled,
                 sensitive_values=execution.sensitive_values,
@@ -319,6 +326,8 @@ def runtime_app(
                 knowledge=knowledge_store,
                 workspace=workspace,
                 domain=domain_store,
+                documents=document_store,
+                searcher=review_searcher,
                 memory=controls.memory.store,
                 memory_enabled=controls.memory.enabled,
                 sensitive_values=execution.sensitive_values,
@@ -361,15 +370,21 @@ def runtime_app(
     )
     web.state.review_delivery = review_delivery
     controls.review_delivery = review_delivery
+    review_channel_delivery = ReviewChannelDispatcher(
+        store=review_store, channels=channel_manager
+    )
+    web.state.review_channel_delivery = review_channel_delivery
+
+    async def review_settled(review: StoredReview) -> None:
+        if review_delivery is not None:
+            review_delivery.rescan()
+        await review_channel_delivery.dispatch(review)
+
     review_schedule = (
         ReviewScheduleCoordinator(
             service=reviews,
             store=controls.schedules.store,
-            on_settled=(
-                (lambda _review: review_delivery.rescan())
-                if review_delivery is not None
-                else None
-            ),
+            on_settled=review_settled,
             timezone=review.timezone,
             cutoff=wall_time.fromisoformat(review.time),
         )
@@ -382,11 +397,7 @@ def runtime_app(
         WeeklyReviewScheduleCoordinator(
             service=weekly_reviews,
             store=controls.schedules.store,
-            on_settled=(
-                (lambda _review: review_delivery.rescan())
-                if review_delivery is not None
-                else None
-            ),
+            on_settled=review_settled,
             timezone=review.timezone,
             cutoff=wall_time.fromisoformat(review.time),
             scheduled_time=wall_time.fromisoformat(review.weekly_time),

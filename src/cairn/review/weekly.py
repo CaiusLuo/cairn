@@ -58,7 +58,9 @@ Return exactly one JSON object and no other text. It must have these keys:
   "overview": "string",
   "major_events": [{"text": "string", "source_refs": ["source-id"]}],
   "progress": [{"text": "string", "source_refs": ["source-id"]}],
+  "conversation_highlights": [{"text": "string", "source_refs": ["source-id"]}],
   "knowledge_insights": [{"text": "string", "source_refs": ["source-id"]}],
+  "knowledge_recall": [{"text": "string", "source_refs": ["source-id"]}],
   "recurring_problems": [{"text": "string", "source_refs": ["source-id"]}],
   "next_week_priorities": [{"text": "string", "source_refs": ["source-id"]}],
   "source_refs": ["source-id"],
@@ -77,16 +79,25 @@ Hard rules:
 - A progress item is allowed only when at least one cited source has
   may_prove_completion=true. Otherwise leave progress empty and describe the
   work as attempted in major_events or knowledge_insights.
-- Every major_events, progress, knowledge_insights and recurring_problems item
-  must cite at least one source_id supplied in the user message.
-  next_week_priorities may cite sources but does not have to.
+- conversation_highlights summarizes the week's valuable exchanges from
+  source_type=conversation: decisions, findings, recurring questions and
+  concrete next steps. Skip greetings and repetitive status chatter. A
+  conversation turn is not completion evidence.
+- knowledge_recall connects the week's work to the knowledge base. Distinguish
+  newly added documents or clips from recalled background. Never present
+  recalled material as new or as proof of activity.
+- Every major_events, progress, conversation_highlights, knowledge_insights,
+  knowledge_recall and recurring_problems item must cite at least one
+  source_id supplied in the user message. next_week_priorities may cite
+  sources but does not have to.
 - Never invent source IDs. A source_refs value must be copied exactly from a
   supplied source_id.
 - Copy week_id and the exact period_start/period_end from the user message.
 - If evidence is insufficient, say so plainly in overview and confidence_notes,
   and leave the unsupported arrays empty. Do not add motivational filler.
-- Maximum counts: major_events 6, progress 6, knowledge_insights 5,
-  recurring_problems 5, next_week_priorities 5.
+- Maximum counts: major_events 6, progress 6, conversation_highlights 6,
+  knowledge_insights 5, knowledge_recall 6, recurring_problems 5,
+  next_week_priorities 5.
 - Write in the language used by the source material. Do not output Markdown
   fences or tool calls.
 """
@@ -336,7 +347,9 @@ class WeeklyReviewService(ReviewServiceBase):
         for field in (
             "major_events",
             "progress",
+            "conversation_highlights",
             "knowledge_insights",
+            "knowledge_recall",
             "recurring_problems",
         ):
             for item in getattr(summary, field):
@@ -358,7 +371,9 @@ class WeeklyReviewService(ReviewServiceBase):
         for field in (
             "major_events",
             "progress",
+            "conversation_highlights",
             "knowledge_insights",
+            "knowledge_recall",
             "recurring_problems",
             "next_week_priorities",
         ):
@@ -384,7 +399,11 @@ class WeeklyReviewService(ReviewServiceBase):
                 "overview": redact_text(summary.overview, self.sensitive_values),
                 "major_events": redact_items(summary.major_events),
                 "progress": redact_items(summary.progress),
+                "conversation_highlights": redact_items(
+                    summary.conversation_highlights
+                ),
                 "knowledge_insights": redact_items(summary.knowledge_insights),
+                "knowledge_recall": redact_items(summary.knowledge_recall),
                 "recurring_problems": redact_items(summary.recurring_problems),
                 "next_week_priorities": redact_items(summary.next_week_priorities),
                 "confidence_notes": tuple(
@@ -456,7 +475,9 @@ def render_weekly_markdown(summary: WeeklyReview, review_input: ReviewInput) -> 
 
     section("重要事件", summary.major_events, "无足够证据。")
     section("本周进展", summary.progress, "无已验证的完成记录。")
+    section("对话亮点", summary.conversation_highlights, "无值得复盘的新对话。")
     section("知识收获", summary.knowledge_insights, "无足够证据。")
+    section("知识召回", summary.knowledge_recall, "无相关召回内容。")
     section("反复出现的问题", summary.recurring_problems, "无记录。")
     section("下周优先事项", summary.next_week_priorities, "无足够依据提出建议。")
     lines.extend(["", "## 来源"])

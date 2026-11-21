@@ -59,6 +59,26 @@ def _source(
     )
 
 
+def _extra_source(
+    source_type: str,
+    source_id: str,
+    snapshot: str,
+    *,
+    trust: SourceTrust = SourceTrust.USER_PROVIDED,
+    verification: str = "test",
+) -> SourceSnapshot:
+    return SourceSnapshot(
+        source_type=source_type,
+        source_id=source_id,
+        content_hash=_hash(snapshot),
+        occurred_at="2026-01-15T10:00:00+08:00",
+        trust=trust,
+        may_prove_completion=False,
+        verification=verification,
+        snapshot=snapshot,
+    )
+
+
 def _input(
     sources: tuple[SourceSnapshot, ...] | None = None,
     *,
@@ -215,6 +235,79 @@ def test_valid_report_is_persisted_with_citations_and_no_tools(tmp_path: Path) -
             assert "run-1" in user
             assert "may_prove_completion" in user
             assert "sekret" not in user
+        finally:
+            await service.close()
+
+    asyncio.run(scenario())
+
+
+def test_conversation_highlights_and_recall_are_cited_and_rendered(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        conversation = _extra_source(
+            "conversation",
+            "run-conv",
+            '{"prompt":"How do we back up PostgreSQL?",'
+            '"result":"Use pg_dump nightly."}',
+            trust=SourceTrust.SYSTEM_RECEIPT,
+            verification="conversation_turn; run_status=completed",
+        )
+        recall = _extra_source(
+            "knowledge_recall",
+            "recall-doc-1-7",
+            '{"document_id":"doc-1","chunk_id":7,'
+            '"excerpt":"The runbook uses pg_dump."}',
+            verification="knowledge_recall; matched_by=lexical",
+        )
+        llm = FakeLLM(
+            [
+                LLMResponse(
+                    content=_payload(
+                        conversation_highlights=[
+                            {
+                                "text": "Decided on a nightly backup window.",
+                                "source_refs": ["run-conv"],
+                            }
+                        ],
+                        knowledge_recall=[
+                            {
+                                "text": "The old runbook documents pg_dump.",
+                                "source_refs": ["recall-doc-1-7"],
+                            }
+                        ],
+                    )
+                )
+            ]
+        )
+        service = _service(
+            tmp_path,
+            llm=llm,
+            review_input=_input(sources=(_source(), conversation, recall)),
+        )
+        try:
+            created = await service.generate_daily_review(
+                DAY, "conversation-recall", timezone=TZ
+            )
+            stored = await service.wait_for_review(created.review_id)
+            assert stored.status is ReviewStatus.COMPLETED
+            assert stored.summary is not None
+            assert stored.summary.conversation_highlights[0].source_refs == (
+                "run-conv",
+            )
+            assert stored.summary.knowledge_recall[0].source_refs == ("recall-doc-1-7",)
+            assert stored.summary.source_refs == (
+                "run-1",
+                "run-conv",
+                "recall-doc-1-7",
+            )
+            markdown = stored.summary_markdown or ""
+            assert "## 对话亮点" in markdown
+            assert "## 知识召回" in markdown
+            assert "Decided on a nightly backup window." in markdown
+            assert "The old runbook documents pg_dump." in markdown
+            assert "`run-conv`" in markdown
+            assert "`recall-doc-1-7`" in markdown
         finally:
             await service.close()
 
@@ -689,6 +782,38 @@ def test_missing_provider_is_an_explicit_failure(tmp_path: Path) -> None:
                     LLMResponse(
                         content=_payload(
                             knowledge_insights=[
+                                {"text": "No evidence.", "source_refs": []}
+                            ]
+                        )
+                    )
+                ]
+            ),
+            None,
+            "missing_source_reference",
+        ),
+        (
+            "missing_conversation_ref",
+            FakeLLM(
+                [
+                    LLMResponse(
+                        content=_payload(
+                            conversation_highlights=[
+                                {"text": "No evidence.", "source_refs": []}
+                            ]
+                        )
+                    )
+                ]
+            ),
+            None,
+            "missing_source_reference",
+        ),
+        (
+            "missing_recall_ref",
+            FakeLLM(
+                [
+                    LLMResponse(
+                        content=_payload(
+                            knowledge_recall=[
                                 {"text": "No evidence.", "source_refs": []}
                             ]
                         )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, time
 from pathlib import Path
 
@@ -10,6 +11,13 @@ import pytest
 from cairn.conversation.models import ConversationSource, RunStatus
 from cairn.conversation.store import DomainStore
 from cairn.development.models import TaskStatus
+from cairn.knowledge.document_store import DocumentStore
+from cairn.knowledge.documents import (
+    DOCUMENT_READY,
+    STEP_SKIPPED,
+    chunk_text,
+)
+from cairn.knowledge.retrieval import DocumentSearcher
 from cairn.knowledge.store import KnowledgeStore
 from cairn.memory.store import PersonalMemoryStore
 from cairn.review.collector import ReviewSourceCollector
@@ -58,11 +66,46 @@ def _domain(tmp_path: Path, workspace: Path) -> tuple[DomainStore, str]:
     return domain, conversation.conversation_id
 
 
+def _ready_document(
+    documents: DocumentStore,
+    title: str,
+    text: str,
+    *,
+    created_at: str,
+) -> str:
+    document, _ = documents.create_upload(
+        title, "text/markdown", f"# {title}\n\n{text}\n".encode()
+    )
+    documents.save_extraction(
+        document.document_id,
+        text,
+        "text",
+        "1",
+        chunk_text(text, chunk_chars=400, overlap=0),
+    )
+    documents.finish(
+        document.document_id,
+        status=DOCUMENT_READY,
+        error=None,
+        embedding_status=STEP_SKIPPED,
+        graph_status=STEP_SKIPPED,
+    )
+    with documents.db.connect("knowledge") as connection:
+        connection.execute(
+            "UPDATE documents SET created_at = %s, updated_at = %s "
+            "WHERE document_id = %s",
+            (created_at, created_at, document.document_id),
+        )
+    return document.document_id
+
+
 def _collector(
     knowledge: KnowledgeStore,
     workspace: Path,
     *,
     domain: DomainStore | None = None,
+    documents: DocumentStore | None = None,
+    searcher: DocumentSearcher | None = None,
     memory: PersonalMemoryStore | None = None,
     memory_enabled: bool = True,
     max_chars: int = 60_000,
@@ -71,6 +114,8 @@ def _collector(
         knowledge=knowledge,
         workspace=workspace,
         domain=domain,
+        documents=documents,
+        searcher=searcher,
         memory=memory,
         memory_enabled=memory_enabled,
         max_chars=max_chars,
@@ -252,6 +297,15 @@ def test_failed_and_completed_task_runs_are_not_confused(tmp_path: Path) -> None
         error="provider_error",
         created_at="2026-01-14T22:00:00+00:00",
     )
+    domain.create_run(
+        conversation_id=conversation_id,
+        status=RunStatus.COMPLETED,
+        run_id="run-development",
+        mode="development",
+        prompt="implement the change",
+        result="changed the code",
+        created_at="2026-01-14T23:00:00+00:00",
+    )
 
     review_input = _collector(store, workspace, domain=domain).collect_daily(DAY, TZ)
     by_id = {source.source_id: source for source in review_input.sources}
@@ -288,11 +342,18 @@ def test_failed_and_completed_task_runs_are_not_confused(tmp_path: Path) -> None
     assert "task-outside" not in by_id
 
     assert by_id["run-completed"].may_prove_completion is False
+    assert by_id["run-completed"].source_type == "conversation"
     assert by_id["run-completed"].verification == (
+        "conversation_turn; run_status=completed"
+    )
+    assert "wrote the report" in by_id["run-completed"].snapshot
+    assert by_id["run-failed"].may_prove_completion is False
+    assert by_id["run-failed"].source_type == "conversation"
+    assert by_id["run-failed"].verification == "conversation_turn; run_status=failed"
+    assert by_id["run-development"].source_type == "development_run"
+    assert by_id["run-development"].verification == (
         "run_status=completed; execution_only"
     )
-    assert by_id["run-failed"].may_prove_completion is False
-    assert by_id["run-failed"].verification == "run_status=failed"
     assert review_input.completion_source_ids == {
         "task-done-only",
         "task-accepted-executed",
@@ -300,6 +361,112 @@ def test_failed_and_completed_task_runs_are_not_confused(tmp_path: Path) -> None
 
     assert domain.get_task("task-failed").metadata["execution_status"] == "failed"  # type: ignore[union-attr]
     assert domain.get_run("run-failed").status is RunStatus.FAILED  # type: ignore[union-attr]
+
+
+def test_conversations_new_documents_and_recall_are_collected(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    knowledge = KnowledgeStore(database_for(tmp_path))
+    domain, conversation_id = _domain(tmp_path, workspace)
+    documents = DocumentStore(database_for(tmp_path), tmp_path / "library")
+
+    domain.create_run(
+        conversation_id=conversation_id,
+        status=RunStatus.COMPLETED,
+        run_id="run-conversation",
+        prompt="PostgreSQL backup",
+        result="nightly dump",
+        source=ConversationSource.WEB,
+        created_at="2026-01-14T17:00:00+00:00",
+    )
+    domain.create_run(
+        conversation_id=conversation_id,
+        status=RunStatus.QUEUED,
+        run_id="run-queued",
+        prompt="still waiting",
+        source=ConversationSource.WEB,
+        created_at="2026-01-14T17:10:00+00:00",
+    )
+    domain.create_run(
+        conversation_id=conversation_id,
+        status=RunStatus.COMPLETED,
+        run_id="run-scheduled",
+        prompt="scheduled prompt",
+        source=ConversationSource.SCHEDULE,
+        created_at="2026-01-14T17:20:00+00:00",
+    )
+
+    old_document = _ready_document(
+        documents,
+        "Old operations notes",
+        "PostgreSQL backup ops notebook uses a nightly dump.",
+        created_at="2026-01-13T00:00:00+00:00",
+    )
+    new_document = _ready_document(
+        documents,
+        "PostgreSQL ops notebook",
+        "New backup checklist for the team.",
+        created_at="2026-01-14T18:00:00+00:00",
+    )
+
+    review_input = _collector(
+        knowledge,
+        workspace,
+        domain=domain,
+        documents=documents,
+        searcher=DocumentSearcher(documents),
+    ).collect_daily(DAY, TZ)
+    by_id = {source.source_id: source for source in review_input.sources}
+
+    assert "run-queued" not in by_id
+    assert "run-scheduled" not in by_id
+    conversation = by_id["run-conversation"]
+    assert conversation.source_type == "conversation"
+    assert conversation.trust is SourceTrust.SYSTEM_RECEIPT
+    assert conversation.may_prove_completion is False
+    snapshot = json.loads(conversation.snapshot)
+    assert snapshot["prompt"] == "PostgreSQL backup"
+    assert snapshot["result"] == "nightly dump"
+    assert snapshot["conversation_title"] == "review sources"
+    assert snapshot["source"] == ConversationSource.WEB.value
+
+    document_ids = {
+        source.source_id
+        for source in review_input.sources
+        if source.source_type == "knowledge_document"
+    }
+    assert document_ids == {new_document}
+    assert old_document not in document_ids
+    new_source = by_id[new_document]
+    assert new_source.trust is SourceTrust.USER_PROVIDED
+    assert new_source.may_prove_completion is False
+    assert "New backup checklist for the team." in new_source.snapshot
+    assert json.loads(new_source.snapshot)["status"] == DOCUMENT_READY
+
+    recall_sources = tuple(
+        source
+        for source in review_input.sources
+        if source.source_type == "knowledge_recall"
+    )
+    assert len(recall_sources) == 1
+    recalled = recall_sources[0]
+    assert recalled.source_id.startswith(f"recall-{old_document}-")
+    assert recalled.trust is SourceTrust.USER_PROVIDED
+    assert recalled.may_prove_completion is False
+    recall_payload = json.loads(recalled.snapshot)
+    assert recall_payload["document_id"] == old_document
+    assert recall_payload["matched_by"]
+    assert recall_payload["query"].startswith("PostgreSQL backup")
+    assert "Old operations notes" in recalled.snapshot
+
+    status_by_type = {
+        status.source_type: status for status in review_input.collection_status
+    }
+    assert status_by_type["conversation"].discovered == 1
+    assert status_by_type["knowledge_document"].discovered == 1
+    assert status_by_type["knowledge_recall"].discovered == 1
+    assert status_by_type["knowledge_recall"].status is SourceCollectionState.OK
 
 
 def test_memory_entries_keep_local_time_and_explicit_trust(tmp_path: Path) -> None:

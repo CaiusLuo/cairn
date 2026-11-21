@@ -17,10 +17,18 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from psycopg import Error as PostgresError
 
-from cairn.conversation.models import Run, RunStatus, workspace_id_for
+from cairn.conversation.models import (
+    ConversationSource,
+    Run,
+    RunStatus,
+    workspace_id_for,
+)
 from cairn.conversation.store import DomainStore
 from cairn.development.models import Task, TaskStatus
+from cairn.knowledge.document_store import DocumentStore
+from cairn.knowledge.documents import DOCUMENT_READY, Document
 from cairn.knowledge.models import Clip
+from cairn.knowledge.retrieval import DocumentSearcher
 from cairn.knowledge.store import KnowledgeStore
 from cairn.memory.store import PersonalMemoryStore
 from cairn.review.models import (
@@ -43,7 +51,16 @@ MAX_WEEKLY_INPUT_CHARS = 100_000
 MAX_SOURCE_CHARS = 8_000
 CLIP_CONTENT_CHARS = 6_000
 MEMORY_ENTRY_CHARS = 4_000
+CONVERSATION_PROMPT_CHARS = 2_000
+CONVERSATION_RESULT_CHARS = 4_000
+DOCUMENT_TEXT_CHARS = 6_000
+RECALL_LIMIT = 5
+RECALL_QUERY_CHARS = 600
 WEEKLY_WINDOW_DAYS = 7
+
+_SETTLED_CONVERSATION_STATUSES = frozenset(
+    {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}
+)
 
 _MEMORY_HEADING = re.compile(r"^##\s+(\d{1,2}):(\d{2})\b")
 
@@ -93,6 +110,8 @@ class ReviewSourceCollector:
         knowledge: KnowledgeStore,
         workspace: Path | str,
         domain: DomainStore | None = None,
+        documents: DocumentStore | None = None,
+        searcher: DocumentSearcher | None = None,
         memory: PersonalMemoryStore | None = None,
         memory_enabled: bool = True,
         sensitive_values: tuple[str, ...] = (),
@@ -102,6 +121,8 @@ class ReviewSourceCollector:
         self.workspace = Path(workspace).expanduser().resolve()
         self.workspace_id = workspace_id_for(self.workspace)
         self.domain = domain
+        self.documents = documents
+        self.searcher = searcher
         self.memory = memory
         self.memory_enabled = memory_enabled
         self.sensitive_values = tuple(value for value in sensitive_values if value)
@@ -147,16 +168,9 @@ class ReviewSourceCollector:
 
         sources: list[SourceSnapshot] = []
         statuses: list[SourceCollectionStatus] = []
-        grouping: dict[str, list[SourceSnapshot]] = {
-            "knowledge_clip": [],
-            "development_task": [],
-            "development_run": [],
-            "personal_memory": [],
-        }
 
         clips, clip_status = self._collect_clips(start_utc, end_utc)
         sources.extend(clips)
-        grouping["knowledge_clip"].extend(clips)
         statuses.append(clip_status)
         statuses.append(
             _status(
@@ -170,14 +184,21 @@ class ReviewSourceCollector:
             )
         )
 
+        documents, document_status = self._collect_documents(start_utc, end_utc)
+        sources.extend(documents)
+        statuses.append(document_status)
+
         tasks, task_status = self._collect_tasks(start_utc, end_utc)
         sources.extend(tasks)
-        grouping["development_task"].extend(tasks)
         statuses.append(task_status)
         runs, run_status = self._collect_runs(start_utc, end_utc)
         sources.extend(runs)
-        grouping["development_run"].extend(runs)
         statuses.append(run_status)
+        conversations, conversation_status = self._collect_conversations(
+            start_utc, end_utc
+        )
+        sources.extend(conversations)
+        statuses.append(conversation_status)
 
         memory, memory_status = self._collect_memory(
             day,
@@ -187,15 +208,23 @@ class ReviewSourceCollector:
             end_local=end_local,
         )
         sources.extend(memory)
-        grouping["personal_memory"].extend(memory)
         statuses.append(memory_status)
+
+        recall, recall_status = self._collect_recall(
+            sources, occurred_at=end_local.isoformat(), limit=RECALL_LIMIT
+        )
+        sources.extend(recall)
+        statuses.append(recall_status)
 
         sources = self._apply_budget(sources)
         final_by_type: dict[str, list[SourceSnapshot]] = {
             "knowledge_clip": [],
+            "knowledge_document": [],
             "development_task": [],
             "development_run": [],
+            "conversation": [],
             "personal_memory": [],
+            "knowledge_recall": [],
         }
         for source in sources:
             final_by_type[source.source_type].append(source)
@@ -311,11 +340,84 @@ class ReviewSourceCollector:
                 SourceCollectionState.UNAVAILABLE,
                 notes=(f"Task/Run store unavailable ({type(exc).__name__}).",),
             )
-        snapshots = [self._run_source(run) for run in runs]
+        development_runs = tuple(
+            run for run in runs if run.mode == "development" or run.task_id is not None
+        )
+        snapshots = [self._run_source(run) for run in development_runs]
         return snapshots, _status(
             "development_run",
             SourceCollectionState.OK if snapshots else SourceCollectionState.EMPTY,
             discovered=len(snapshots),
+        )
+
+    def _collect_conversations(
+        self, start_utc: str, end_utc: str
+    ) -> tuple[list[SourceSnapshot], SourceCollectionStatus]:
+        if self.domain is None:
+            return [], _status(
+                "conversation",
+                SourceCollectionState.UNAVAILABLE,
+                notes=("DomainStore was not configured.",),
+            )
+        try:
+            _, runs = self.domain.review_activity_between(
+                workspace_id=self.workspace_id, start=start_utc, end=end_utc
+            )
+        except (OSError, PostgresError, ValueError, TypeError) as exc:
+            return [], _status(
+                "conversation",
+                SourceCollectionState.UNAVAILABLE,
+                notes=(f"Conversation store unavailable ({type(exc).__name__}).",),
+            )
+        snapshots = [
+            self._conversation_source(run)
+            for run in runs
+            if run.mode == "conversation"
+            and run.task_id is None
+            and run.source is not ConversationSource.SCHEDULE
+            and run.status in _SETTLED_CONVERSATION_STATUSES
+            and (run.prompt.strip() or (run.result or "").strip())
+        ]
+        return snapshots, _status(
+            "conversation",
+            SourceCollectionState.OK if snapshots else SourceCollectionState.EMPTY,
+            discovered=len(snapshots),
+            notes=(
+                "Only settled Conversation Runs are included; queued, running "
+                "and recovery-required turns are excluded.",
+                "Conversation text is a transcript, not proof that a task was "
+                "completed.",
+            ),
+        )
+
+    def _collect_documents(
+        self, start_utc: str, end_utc: str
+    ) -> tuple[list[SourceSnapshot], SourceCollectionStatus]:
+        if self.documents is None:
+            return [], _status(
+                "knowledge_document",
+                SourceCollectionState.UNAVAILABLE,
+                notes=("Document library was not configured.",),
+            )
+        try:
+            documents = self.documents.list_documents_touched_between(
+                start_utc, end_utc
+            )
+        except (OSError, PostgresError, ValueError, TypeError) as exc:
+            return [], _status(
+                "knowledge_document",
+                SourceCollectionState.UNAVAILABLE,
+                notes=(f"Document library unavailable ({type(exc).__name__}).",),
+            )
+        snapshots = [self._document_source(document) for document in documents]
+        return snapshots, _status(
+            "knowledge_document",
+            SourceCollectionState.OK if snapshots else SourceCollectionState.EMPTY,
+            discovered=len(snapshots),
+            notes=(
+                "Documents created or updated in this window are included; "
+                "only ready documents contribute extracted text.",
+            ),
         )
 
     def _collect_memory(
@@ -453,6 +555,141 @@ class ReviewSourceCollector:
             notes=tuple(notes),
         )
 
+    def _collect_recall(
+        self, sources: list[SourceSnapshot], *, occurred_at: str, limit: int
+    ) -> tuple[list[SourceSnapshot], SourceCollectionStatus]:
+        if self.searcher is None:
+            return [], _status(
+                "knowledge_recall",
+                SourceCollectionState.UNAVAILABLE,
+                notes=("Knowledge retrieval was not configured.",),
+            )
+        query = self._recall_query(sources)
+        if not query:
+            return [], _status(
+                "knowledge_recall",
+                SourceCollectionState.EMPTY,
+                notes=(
+                    "No conversation or new knowledge text was available to "
+                    "recall against.",
+                ),
+            )
+        try:
+            hits = self.searcher.recall(query, limit=limit)
+        except (OSError, PostgresError, ValueError, TypeError) as exc:
+            return [], _status(
+                "knowledge_recall",
+                SourceCollectionState.UNAVAILABLE,
+                notes=(f"Knowledge retrieval unavailable ({type(exc).__name__}).",),
+            )
+        new_document_ids = {
+            source.source_id
+            for source in sources
+            if source.source_type == "knowledge_document"
+        }
+        snapshots: list[SourceSnapshot] = []
+        skipped_new = 0
+        for hit in hits:
+            if hit.document_id in new_document_ids:
+                # The complete document is already a new-knowledge source.
+                skipped_new += 1
+                continue
+            payload = {
+                "document_id": hit.document_id,
+                "chunk_id": hit.chunk_id,
+                "title": hit.title,
+                "heading": " / ".join(hit.heading_path or ()),
+                "excerpt": hit.excerpt,
+                "matched_by": list(hit.matched_by),
+                "score": hit.score,
+                "query": query,
+                "recall_policy": "lexical+trigram+graph; embedding skipped",
+            }
+            full = _json(payload)
+            raw_hash = _sha256(full)
+            snapshot, truncated = _truncate(
+                redact_text(full, self.sensitive_values), MAX_SOURCE_CHARS
+            )
+            matched = ",".join(hit.matched_by) or "unknown"
+            snapshots.append(
+                SourceSnapshot(
+                    source_type="knowledge_recall",
+                    source_id=f"recall-{hit.document_id}-{hit.chunk_id}",
+                    content_hash=raw_hash,
+                    occurred_at=occurred_at,
+                    trust=SourceTrust.USER_PROVIDED,
+                    may_prove_completion=False,
+                    verification=(f"knowledge_recall; matched_by={matched}")[:80],
+                    snapshot=snapshot,
+                    truncated=truncated,
+                )
+            )
+        notes = [
+            "Retrieved from the existing knowledge base using this period's "
+            "conversation text and new knowledge titles.",
+            "Recalled content is related background, not evidence of new "
+            "activity or completion.",
+        ]
+        if skipped_new:
+            notes.append(
+                f"{skipped_new} recalled chunk(s) belonged to newly added "
+                "documents already included as new knowledge."
+            )
+        return snapshots, _status(
+            "knowledge_recall",
+            SourceCollectionState.OK if snapshots else SourceCollectionState.EMPTY,
+            discovered=len(snapshots),
+            notes=tuple(notes),
+        )
+
+    @staticmethod
+    def _recall_query(sources: list[SourceSnapshot]) -> str:
+        """Build one compact query from recent conversations and new knowledge."""
+        parts: list[str] = []
+        used = 0
+        conversations = sorted(
+            (source for source in sources if source.source_type == "conversation"),
+            key=lambda source: source.occurred_at,
+            reverse=True,
+        )
+        for source in conversations[:12]:
+            try:
+                data = json.loads(source.snapshot)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            for key in ("prompt", "result"):
+                value = data.get(key)
+                if not isinstance(value, str) or not value.strip():
+                    continue
+                addition = " ".join(value.split())
+                remaining = RECALL_QUERY_CHARS - used
+                if remaining <= 0:
+                    return " ".join(parts).strip()
+                parts.append(addition[:remaining])
+                used += len(parts[-1]) + 1
+                if used >= RECALL_QUERY_CHARS:
+                    return " ".join(parts).strip()
+        for source in sources:
+            if source.source_type not in {"knowledge_document", "knowledge_clip"}:
+                continue
+            try:
+                data = json.loads(source.snapshot)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            title = data.get("title")
+            if not isinstance(title, str) or not title.strip():
+                continue
+            remaining = RECALL_QUERY_CHARS - used
+            if remaining <= 0:
+                break
+            parts.append(title.strip()[:remaining])
+            used += len(parts[-1]) + 1
+        return " ".join(parts).strip()[:RECALL_QUERY_CHARS]
+
     @staticmethod
     def _journal_field(block: str, name: str) -> str:
         prefix = f"- {name}:"
@@ -463,6 +700,94 @@ class ReviewSourceCollector:
         return ""
 
     # -- snapshots --------------------------------------------------------
+
+    def _conversation_source(self, run: Run) -> SourceSnapshot:
+        title: str | None = None
+        if self.domain is not None:
+            try:
+                conversation = self.domain.get_conversation(run.conversation_id)
+            except (OSError, PostgresError, ValueError, TypeError):
+                conversation = None
+            if conversation is not None:
+                title, _ = _truncate(
+                    conversation.title or conversation.initial_prompt, 200
+                )
+        prompt, prompt_truncated = _truncate(
+            redact_text(run.prompt, self.sensitive_values), CONVERSATION_PROMPT_CHARS
+        )
+        result, result_truncated = _truncate(
+            redact_text(run.result or "", self.sensitive_values),
+            CONVERSATION_RESULT_CHARS,
+        )
+        payload = {
+            "conversation_id": run.conversation_id,
+            "conversation_title": title,
+            "run_id": run.run_id,
+            "source": None if run.source is None else run.source.value,
+            "status": run.status.value,
+            "prompt": prompt,
+            "result": result,
+            "error": redact_text(run.error or "", self.sensitive_values)[:500],
+            "created_at": run.created_at,
+            "ended_at": run.ended_at,
+        }
+        full = _json(payload)
+        raw_hash = _sha256(full)
+        snapshot, truncated = _truncate(
+            redact_text(full, self.sensitive_values), MAX_SOURCE_CHARS
+        )
+        return SourceSnapshot(
+            source_type="conversation",
+            source_id=run.run_id,
+            content_hash=raw_hash,
+            occurred_at=run.ended_at or run.updated_at,
+            trust=SourceTrust.SYSTEM_RECEIPT,
+            may_prove_completion=False,
+            verification=f"conversation_turn; run_status={run.status.value}"[:80],
+            snapshot=snapshot,
+            truncated=prompt_truncated or result_truncated or truncated,
+        )
+
+    def _document_source(self, document: Document) -> SourceSnapshot:
+        excerpt = ""
+        excerpt_truncated = False
+        if document.status == DOCUMENT_READY and self.documents is not None:
+            try:
+                page = self.documents.document_text(
+                    document.document_id, max_chars=DOCUMENT_TEXT_CHARS
+                )
+            except (OSError, PostgresError, ValueError, TypeError):
+                page = None
+            if page is not None:
+                excerpt = page.content
+                excerpt_truncated = page.next_offset is not None
+        payload = {
+            "document_id": document.document_id,
+            "title": document.title,
+            "media_type": document.media_type,
+            "status": document.status,
+            "size_bytes": document.size_bytes,
+            "error": document.error,
+            "created_at": document.created_at,
+            "updated_at": document.updated_at,
+            "excerpt": excerpt,
+        }
+        full = _json(payload)
+        raw_hash = _sha256(full)
+        snapshot, truncated = _truncate(
+            redact_text(full, self.sensitive_values), MAX_SOURCE_CHARS
+        )
+        return SourceSnapshot(
+            source_type="knowledge_document",
+            source_id=document.document_id,
+            content_hash=raw_hash,
+            occurred_at=document.updated_at,
+            trust=SourceTrust.USER_PROVIDED,
+            may_prove_completion=False,
+            verification=f"knowledge_document_status={document.status}"[:80],
+            snapshot=snapshot,
+            truncated=excerpt_truncated or truncated,
+        )
 
     def _clip_source(self, clip: Clip) -> SourceSnapshot:
         content, content_truncated = _truncate(
@@ -579,8 +904,11 @@ class ReviewSourceCollector:
         priority = {
             "development_task": 0,
             "development_run": 0,
-            "knowledge_clip": 1,
-            "personal_memory": 2,
+            "conversation": 1,
+            "knowledge_document": 2,
+            "knowledge_clip": 3,
+            "knowledge_recall": 4,
+            "personal_memory": 5,
         }
         ordered = sorted(sources, key=lambda item: item.occurred_at, reverse=True)
         ordered.sort(key=lambda item: priority.get(item.source_type, 9))
@@ -621,6 +949,8 @@ class WeeklySourceCollector(ReviewSourceCollector):
         knowledge: KnowledgeStore,
         workspace: Path | str,
         domain: DomainStore | None = None,
+        documents: DocumentStore | None = None,
+        searcher: DocumentSearcher | None = None,
         memory: PersonalMemoryStore | None = None,
         memory_enabled: bool = True,
         sensitive_values: tuple[str, ...] = (),
@@ -631,6 +961,8 @@ class WeeklySourceCollector(ReviewSourceCollector):
             knowledge=knowledge,
             workspace=workspace,
             domain=domain,
+            documents=documents,
+            searcher=searcher,
             memory=memory,
             memory_enabled=memory_enabled,
             sensitive_values=sensitive_values,
@@ -708,7 +1040,10 @@ class WeeklySourceCollector(ReviewSourceCollector):
                 "daily_review",
                 "development_task",
                 "development_run",
+                "conversation",
+                "knowledge_document",
                 "knowledge_clip",
+                "knowledge_recall",
                 "personal_memory",
             )
         }
@@ -787,8 +1122,14 @@ class WeeklySourceCollector(ReviewSourceCollector):
             "completed_activities": [
                 item.model_dump(mode="json") for item in summary.completed_activities
             ],
+            "conversation_highlights": [
+                item.model_dump(mode="json") for item in summary.conversation_highlights
+            ],
             "knowledge_insights": [
                 item.model_dump(mode="json") for item in summary.knowledge_insights
+            ],
+            "knowledge_recall": [
+                item.model_dump(mode="json") for item in summary.knowledge_recall
             ],
             "problems": [item.model_dump(mode="json") for item in summary.problems],
             "recommendations": [
@@ -941,8 +1282,11 @@ class WeeklySourceCollector(ReviewSourceCollector):
             "daily_review": 0,
             "development_task": 1,
             "development_run": 2,
-            "knowledge_clip": 3,
-            "personal_memory": 4,
+            "conversation": 3,
+            "knowledge_document": 4,
+            "knowledge_clip": 5,
+            "knowledge_recall": 6,
+            "personal_memory": 7,
         }
         ordered = sorted(sources, key=lambda item: item.occurred_at, reverse=True)
         ordered.sort(key=lambda item: priority.get(item.source_type, 9))

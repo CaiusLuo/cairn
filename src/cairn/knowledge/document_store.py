@@ -281,6 +281,30 @@ class DocumentStore:
             ).fetchall()
         return tuple(_document(row) for row in rows)
 
+    def list_documents_touched_between(
+        self, start: str, end: str
+    ) -> tuple[Document, ...]:
+        """Documents created or updated in one explicit UTC half-open window.
+
+        Review collection uses this read-only projection; it never changes a
+        document, its ingestion state or its stored original.
+        """
+        if not isinstance(start, str) or not isinstance(end, str):
+            raise ValueError("review window bounds must be strings")
+        if not start or not end or start >= end:
+            raise ValueError("review window is invalid")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM documents WHERE owner = %s "
+                "AND ((created_at >= %s::timestamptz "
+                "AND created_at < %s::timestamptz) "
+                "OR (updated_at >= %s::timestamptz "
+                "AND updated_at < %s::timestamptz)) "
+                "ORDER BY updated_at, document_id",
+                (self.owner, start, end, start, end),
+            ).fetchall()
+        return tuple(_document(row) for row in rows)
+
     def delete(self, document_id: str) -> bool:
         """Delete the row, its chunks/index and the stored original."""
         with self._connect() as connection:

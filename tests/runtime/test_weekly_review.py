@@ -19,6 +19,7 @@ from cairn.review.collector import WeeklySourceCollector
 from cairn.review.models import (
     DailyReview,
     ReviewInput,
+    ReviewItem,
     ReviewStatus,
     ReviewType,
     SourceCollectionState,
@@ -84,6 +85,7 @@ def _seed_daily(
     sources: tuple[SourceSnapshot, ...],
     *,
     version: int = 1,
+    summary: DailyReview | None = None,
 ) -> str:
     zone = ZoneInfo(TZ)
     start = datetime.combine(day - timedelta(days=1), time(20, 30), tzinfo=zone)
@@ -111,7 +113,8 @@ def _seed_daily(
     store.mark_generating(result.review.review_id, MODEL_ID)
     store.complete(
         result.review.review_id,
-        summary=DailyReview(
+        summary=summary
+        or DailyReview(
             date=day,
             overview=f"Daily summary for {day.isoformat()}.",
         ),
@@ -316,6 +319,42 @@ def test_collector_counts_each_daily_once_and_dedupes_original_sources(
     assert (status.discovered, status.included, status.omitted) == (7, 6, 1)
     assert any(missing_day.isoformat() in note for note in status.notes)
     assert any("去重" in note for note in status.notes)
+
+
+def test_weekly_daily_source_carries_conversation_and_recall(
+    tmp_path: Path,
+) -> None:
+    period = week_period(WEEK, timezone=TZ)
+    store = ReviewStore(KnowledgeStore(database_for(tmp_path)))
+    day = (period.period_start + timedelta(days=1)).date()
+    summary = DailyReview(
+        date=day,
+        overview="A day with a valuable conversation.",
+        conversation_highlights=(
+            ReviewItem(text="Chose the nightly backup window.", source_refs=("run-1",)),
+        ),
+        knowledge_recall=(
+            ReviewItem(
+                text="The old runbook documents pg_dump.", source_refs=("recall-1",)
+            ),
+        ),
+    )
+    _seed_daily(store, day, (_task_source("run-1"),), summary=summary)
+
+    review_input = _collector(tmp_path, store).collect_weekly(period, TZ)
+    daily = next(
+        source
+        for source in review_input.sources
+        if source.source_type == "daily_review"
+    )
+    payload = json.loads(daily.snapshot)
+    assert payload["conversation_highlights"] == [
+        {"text": "Chose the nightly backup window.", "source_refs": ["run-1"]}
+    ]
+    assert payload["knowledge_recall"] == [
+        {"text": "The old runbook documents pg_dump.", "source_refs": ["recall-1"]}
+    ]
+    assert daily.may_prove_completion is False
 
 
 def test_budget_omitted_manifest_identity_is_not_completion_evidence(
@@ -634,6 +673,44 @@ def test_weekly_service_persists_a_cited_report_and_never_enables_tools(
     assert replay.version == 1
 
 
+def test_weekly_conversation_highlights_and_recall_are_cited(
+    tmp_path: Path,
+) -> None:
+    period = week_period(WEEK, timezone=TZ)
+    source = _task_source("task-1")
+    payload = _payload(
+        period,
+        conversation_highlights=[
+            {"text": "Agreed on the release checklist.", "source_refs": ["task-1"]}
+        ],
+        knowledge_recall=[
+            {"text": "The runbook explains the rollback.", "source_refs": ["task-1"]}
+        ],
+    )
+    service, _ = _service(
+        tmp_path, _weekly_input(period, (source,)), llm=FakeLLM(payload)
+    )
+
+    async def scenario() -> Any:
+        created = await service.generate_weekly_review(
+            WEEK, "weekly-conversation-recall", timezone=TZ
+        )
+        settled = await service.wait_for_review(created.review_id)
+        await service.close()
+        return settled
+
+    settled = asyncio.run(scenario())
+    assert settled.status is ReviewStatus.COMPLETED
+    assert settled.summary is not None
+    assert settled.summary.conversation_highlights[0].source_refs == ("task-1",)
+    assert settled.summary.knowledge_recall[0].source_refs == ("task-1",)
+    markdown = settled.summary_markdown or ""
+    assert "## 对话亮点" in markdown
+    assert "## 知识召回" in markdown
+    assert "Agreed on the release checklist." in markdown
+    assert "The runbook explains the rollback." in markdown
+
+
 def test_progress_without_original_completion_evidence_fails(tmp_path: Path) -> None:
     period = week_period(WEEK, timezone=TZ)
     daily = SourceSnapshot(
@@ -834,6 +911,29 @@ def test_weekly_citations_must_reference_supplied_sources(tmp_path: Path) -> Non
     settled = asyncio.run(scenario())
     assert settled.status is ReviewStatus.FAILED
     assert settled.error == "invalid_source_reference"
+
+
+@pytest.mark.parametrize("field", ["conversation_highlights", "knowledge_recall"])
+def test_weekly_new_sections_require_citations(tmp_path: Path, field: str) -> None:
+    period = week_period(WEEK, timezone=TZ)
+    payload = _payload(period, **{field: [{"text": "No evidence.", "source_refs": []}]})
+    service, _ = _service(
+        tmp_path,
+        _weekly_input(period, (_task_source("task-1"),)),
+        llm=FakeLLM(payload),
+    )
+
+    async def scenario() -> Any:
+        created = await service.generate_weekly_review(
+            WEEK, f"weekly-missing-{field}", timezone=TZ
+        )
+        settled = await service.wait_for_review(created.review_id)
+        await service.close()
+        return settled
+
+    settled = asyncio.run(scenario())
+    assert settled.status is ReviewStatus.FAILED
+    assert settled.error == "missing_source_reference"
 
 
 def test_weekly_service_rejects_a_week_mismatch_from_the_model(

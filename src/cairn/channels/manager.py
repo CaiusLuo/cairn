@@ -309,6 +309,12 @@ class ChannelManager:
             supported_actions=tuple(actions),
         )
 
+    def latest_inbound_target(
+        self, connection_id: str, *, sender_id: str | None = None
+    ) -> str | None:
+        """The latest accepted conversation binding, scoped to one sender."""
+        return self.store.latest_inbound_binding(connection_id, sender_id=sender_id)
+
     def request_receipt(self, request_id: str) -> RequestReceipt | None:
         """Read a write receipt for lost-response reconciliation."""
         return self.store.request_receipt(request_id)

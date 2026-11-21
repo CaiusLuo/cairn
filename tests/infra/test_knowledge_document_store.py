@@ -188,6 +188,76 @@ def test_embedding_space_registration_is_stable_and_checked(tmp_path: Path) -> N
         store.register_embedding_space("qwen-embedding", 16)
 
 
+def test_documents_touched_between_is_half_open_and_owner_scoped(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    database = database_for(tmp_path)
+    before, _ = store.create_upload("before.txt", "text/plain", b"before")
+    at_start, _ = store.create_upload("start.txt", "text/plain", b"start")
+    updated, _ = store.create_upload("updated.txt", "text/plain", b"updated")
+    after, _ = store.create_upload("after.txt", "text/plain", b"after")
+    other = DocumentStore(database, tmp_path / "library-other", owner="other")
+    foreign, _ = other.create_upload("foreign.txt", "text/plain", b"foreign")
+
+    start = "2026-01-14T16:00:00+00:00"
+    end = "2026-01-15T16:00:00+00:00"
+    with database.connect("knowledge") as connection:
+        connection.execute(
+            "UPDATE documents SET created_at = %s, updated_at = %s "
+            "WHERE owner = %s AND document_id = %s",
+            (
+                "2026-01-14T15:59:59+00:00",
+                "2026-01-14T15:59:59+00:00",
+                "owner",
+                before.document_id,
+            ),
+        )
+        connection.execute(
+            "UPDATE documents SET created_at = %s, updated_at = %s "
+            "WHERE owner = %s AND document_id = %s",
+            (start, start, "owner", at_start.document_id),
+        )
+        connection.execute(
+            "UPDATE documents SET created_at = %s, updated_at = %s "
+            "WHERE owner = %s AND document_id = %s",
+            (
+                "2026-01-14T15:00:00+00:00",
+                "2026-01-15T10:00:00+00:00",
+                "owner",
+                updated.document_id,
+            ),
+        )
+        connection.execute(
+            "UPDATE documents SET created_at = %s, updated_at = %s "
+            "WHERE owner = %s AND document_id = %s",
+            (end, end, "owner", after.document_id),
+        )
+        connection.execute(
+            "UPDATE documents SET created_at = %s, updated_at = %s "
+            "WHERE owner = %s AND document_id = %s",
+            (start, start, "other", foreign.document_id),
+        )
+
+    touched = store.list_documents_touched_between(start, end)
+    assert [document.document_id for document in touched] == [
+        at_start.document_id,
+        updated.document_id,
+    ]
+    assert [
+        document.document_id
+        for document in store.list_documents_touched_between(
+            end, "2026-01-16T16:00:00+00:00"
+        )
+    ] == [after.document_id]
+    with pytest.raises(ValueError, match="invalid"):
+        store.list_documents_touched_between(end, start)
+    with pytest.raises(ValueError, match="invalid"):
+        store.list_documents_touched_between("", start)
+    with pytest.raises(ValueError, match="strings"):
+        store.list_documents_touched_between(1, 2)  # type: ignore[arg-type]
+
+
 def test_delete_removes_row_chunks_and_original(tmp_path: Path) -> None:
     store = _store(tmp_path)
     document, _ = store.create_upload("a.txt", "text/plain", b"hello")

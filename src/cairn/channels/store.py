@@ -1356,6 +1356,32 @@ class ChannelStore:
             )
             return int(updated.rowcount)
 
+    def latest_inbound_binding(
+        self, connection_id: str, *, sender_id: str | None = None
+    ) -> str | None:
+        """The latest accepted conversation target for one connection."""
+        if not connection_id:
+            raise ValueError("connection_id must not be blank")
+        clauses = [
+            "connection_id = %s",
+            "state = 'accepted'",
+            "conversation_binding != ''",
+        ]
+        parameters: list[str] = [connection_id]
+        if sender_id is not None:
+            if not sender_id:
+                raise ValueError("sender_id must not be blank")
+            clauses.append("sender_id = %s")
+            parameters.append(sender_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT conversation_binding FROM channel_inbound WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY received_at DESC, external_message_id DESC LIMIT 1",
+                parameters,
+            ).fetchone()
+        return None if row is None else str(row["conversation_binding"])
+
     def unreplied_inbound(self) -> tuple[UnrepliedInbound, ...]:
         with self._connect() as connection:
             rows = connection.execute(
