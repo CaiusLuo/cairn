@@ -131,6 +131,29 @@ visible to the owner. Deleting a document removes its chunks, graph rows and
 original file. Duplicate uploads are recognized by content hash. The configured
 extraction and chunk limits can make search cover less text than the preview.
 
+Scanned PDFs have no text layer. Install the optional OCR extra and enable it
+when those pages matter:
+
+```sh
+uv sync --extra ocr   # or: pip install 'cairn[ocr]'
+```
+
+```toml
+[knowledge]
+ocr_enabled = true
+ocr_max_pages = 30
+ocr_dpi = 200
+ocr_max_seconds = 120
+```
+
+Only pages without a usable text layer are rendered and recognized locally with
+RapidOCR; normal PDFs never load the model. OCR uses two CPU threads and the
+model is released after each document. Very large page dimensions are rendered
+at a reduced resolution so one page cannot exhaust server memory. Pages above
+the per-document page limit or time budget are reported in the extracted text. Without the extra,
+`ocr_enabled = true` fails the document with a clear error instead of calling a
+provider.
+
 Vector search needs an embedding model. Without one, lexical search still works:
 
 ```toml

@@ -55,6 +55,9 @@ def test_precedence_paths_and_budget_do_not_depend_on_cwd(
         '[knowledge]\nembedding_base_url = "ftp://example.invalid"',
         '[knowledge]\nembedding_key_env = "bad name"',
         "[knowledge]\nembedding_batch_size = 0",
+        '[knowledge]\nocr_enabled = "yes"',
+        "[knowledge]\nocr_dpi = 50",
+        "[knowledge]\nocr_max_seconds = 0",
         "[knowledge]\nunknown_option = true",
     ],
 )
@@ -130,6 +133,10 @@ def test_knowledge_defaults_and_overrides(
     assert default.knowledge.chunk_chars == 1200
     assert default.knowledge.chunk_overlap == 150
     assert default.knowledge.max_upload_bytes == 25 * 1024 * 1024
+    assert not default.knowledge.ocr_enabled
+    assert default.knowledge.ocr_max_pages == 30
+    assert default.knowledge.ocr_dpi == 200
+    assert default.knowledge.ocr_max_seconds == 120
     assert (
         default.knowledge.embedding_base_url
         == "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -140,17 +147,29 @@ def test_knowledge_defaults_and_overrides(
         'embedding_model = "qwen3.7-text-embedding-flash"\n'
         "embedding_dims = 1024\n"
         "graph_enabled = false\n"
+        "ocr_enabled = true\n"
+        "ocr_max_pages = 3\n"
+        "ocr_dpi = 150\n"
+        "ocr_max_seconds = 30\n"
     )
     configured = load_server_config(path)
     assert configured.knowledge.embedding_model == "qwen3.7-text-embedding-flash"
     assert configured.knowledge.embedding_dims == 1024
     assert not configured.knowledge.graph_enabled
+    assert configured.knowledge.ocr_enabled
+    assert configured.knowledge.ocr_max_pages == 3
+    assert configured.knowledge.ocr_dpi == 150
+    assert configured.knowledge.ocr_max_seconds == 30
 
     monkeypatch.setenv("CAIRN_KNOWLEDGE_GRAPH_ENABLED", "true")
     monkeypatch.setenv("CAIRN_KNOWLEDGE_CHUNK_CHARS", "2000")
+    monkeypatch.setenv("CAIRN_KNOWLEDGE_OCR_ENABLED", "false")
+    monkeypatch.setenv("CAIRN_KNOWLEDGE_OCR_DPI", "180")
     overridden = load_server_config(path)
     assert overridden.knowledge.graph_enabled
     assert overridden.knowledge.chunk_chars == 2000
+    assert not overridden.knowledge.ocr_enabled
+    assert overridden.knowledge.ocr_dpi == 180
 
 
 @pytest.mark.parametrize("location", ["workspace", "worktrees", "symlink"])

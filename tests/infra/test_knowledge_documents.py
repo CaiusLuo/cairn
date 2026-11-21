@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 from itertools import pairwise
 
 import pytest
+from pypdf import PdfWriter
 
 from cairn.knowledge.documents import (
     chunk_text,
@@ -14,6 +16,8 @@ from cairn.shared.text_extract import (
     PARSER_VERSION,
     ExtractionUnavailable,
     extract_bytes,
+    extract_pdf_pages,
+    is_pdf,
     is_supported,
 )
 
@@ -117,3 +121,22 @@ def test_supported_types_are_recognized_by_suffix_or_media_type() -> None:
     assert is_supported("payload", "text/plain")
     assert not is_supported("scan.png", "image/png")
     assert not is_supported("old.doc", "application/msword")
+    assert is_pdf("a.pdf", "application/octet-stream")
+    assert is_pdf("payload", "application/pdf; charset=binary")
+    assert not is_pdf("a.txt", "text/plain")
+
+
+def test_pdf_pages_are_exposed_for_the_ocr_fallback() -> None:
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.add_blank_page(width=612, height=792)
+    buffer = BytesIO()
+    writer.write(buffer)
+    data = buffer.getvalue()
+
+    extraction = extract_pdf_pages("scan.pdf", data, max_pdf_pages=1)
+    assert extraction.total_pages == 2
+    assert [page.index for page in extraction.pages] == [0]
+    assert extraction.pages[0].text.strip() == ""
+    with pytest.raises(ExtractionUnavailable, match="no extractable text"):
+        extract_bytes("scan.pdf", "application/pdf", len(data), data, max_pdf_pages=2)
