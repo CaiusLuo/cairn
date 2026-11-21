@@ -40,6 +40,13 @@ cairn = "cairn.server.bootstrap:main"
 cairn-cli = "cairn.interfaces.cli.client:app"
 cairn-pg-import = "cairn.server.pg_import:main"
 
+[project.optional-dependencies]
+ocr = [
+    "onnxruntime>=1.20,<2",
+    "pypdfium2>=5.15,<6",
+    "rapidocr>=3.10,<4",
+]
+
 [build-system]
 requires = ["uv_build>=0.11.3,<0.12.0"]
 build-backend = "uv_build"
@@ -73,6 +80,10 @@ pretty = true
 
 [[tool.mypy.overrides]]
 module = ["lark_oapi", "lark_oapi.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["pypdfium2", "pypdfium2.*", "rapidocr", "rapidocr.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -21,6 +21,7 @@ from cairn.knowledge.documents import (
 )
 from cairn.knowledge.graph import GraphEntity, GraphPayload, GraphRelation
 from cairn.knowledge.ingest import IngestionSettings, IngestionWorker
+from cairn.shared.text_extract import ExtractedText
 from tests.support.knowledge_fakes import (
     FailingEmbedder,
     FailingGraphExtractor,
@@ -47,6 +48,15 @@ def _graph() -> FakeGraphExtractor:
             relations=(GraphRelation("Cairn", "PostgreSQL", "uses", 0),),
         )
     )
+
+
+class FakePdfOcr:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, bytes, int]] = []
+
+    def extract(self, name: str, data: bytes, *, max_pdf_pages: int) -> ExtractedText:
+        self.calls.append((name, data, max_pdf_pages))
+        return ExtractedText("OCR document text " * 10, "pdf+ocr")
 
 
 def test_ingestion_embeds_chunks_and_builds_a_graph(tmp_path: Path) -> None:
@@ -151,6 +161,26 @@ def test_offline_mode_still_builds_searchable_chunks(tmp_path: Path) -> None:
     assert stored.embedding_status == STEP_SKIPPED
     assert stored.graph_status == STEP_SKIPPED
     assert store.document_text(document.document_id) is not None
+
+
+def test_pdf_ingestion_uses_the_ocr_extractor(tmp_path: Path) -> None:
+    database = database_for(tmp_path)
+    store = DocumentStore(database, tmp_path / "library")
+    ocr = FakePdfOcr()
+    worker = IngestionWorker(store, ocr=ocr)
+    document, _ = store.create_upload("scan.pdf", "application/pdf", b"%PDF-fake")
+
+    asyncio.run(worker.process_one())
+
+    stored = store.get(document.document_id)
+    assert stored is not None and stored.status == DOCUMENT_READY
+    assert ocr.calls == [("scan.pdf", b"%PDF-fake", 500)]
+    with database.connect("knowledge") as connection:
+        row = connection.execute(
+            "SELECT parser FROM document_texts WHERE document_id = %s",
+            (document.document_id,),
+        ).fetchone()
+        assert row is not None and row["parser"] == "pdf+ocr"
 
 
 def test_unparseable_upload_fails_with_a_safe_message(tmp_path: Path) -> None:

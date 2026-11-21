@@ -40,7 +40,12 @@ from cairn.knowledge.embeddings import (
     EmbeddingError,
 )
 from cairn.knowledge.graph import GraphExtractor, GraphPayload
-from cairn.shared.text_extract import ExtractionUnavailable, extract_bytes
+from cairn.knowledge.ocr import PdfOcr
+from cairn.shared.text_extract import (
+    ExtractionUnavailable,
+    extract_bytes,
+    is_pdf,
+)
 
 LOGGER = logging.getLogger(__name__)
 POLL_SECONDS = 2.0
@@ -66,12 +71,14 @@ class IngestionWorker:
         *,
         embedder: EmbeddingClient | None = None,
         graph: GraphExtractor | None = None,
+        ocr: PdfOcr | None = None,
         settings: IngestionSettings | None = None,
         poll_interval: float = POLL_SECONDS,
     ) -> None:
         self.store = store
         self.embedder = embedder
         self.graph = graph
+        self.ocr = ocr
         self.settings = settings or IngestionSettings()
         self.poll_interval = max(0.05, poll_interval)
         self._stop = asyncio.Event()
@@ -149,15 +156,23 @@ class IngestionWorker:
             return
         try:
             data = await asyncio.to_thread(path.read_bytes)
-            extracted = await asyncio.to_thread(
-                extract_bytes,
-                document.title,
-                document.media_type,
-                document.size_bytes,
-                data,
-                max_chars=self.settings.extraction_max_chars,
-                max_pdf_pages=self.settings.max_pdf_pages,
-            )
+            if self.ocr is not None and is_pdf(document.title, document.media_type):
+                extracted = await asyncio.to_thread(
+                    self.ocr.extract,
+                    document.title,
+                    data,
+                    max_pdf_pages=self.settings.max_pdf_pages,
+                )
+            else:
+                extracted = await asyncio.to_thread(
+                    extract_bytes,
+                    document.title,
+                    document.media_type,
+                    document.size_bytes,
+                    data,
+                    max_chars=self.settings.extraction_max_chars,
+                    max_pdf_pages=self.settings.max_pdf_pages,
+                )
         except ExtractionUnavailable as error:
             await self._finish_failed(document.document_id, str(error))
             return
