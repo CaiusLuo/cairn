@@ -51,6 +51,7 @@ from cairn.knowledge.document_store import DocumentStore
 from cairn.knowledge.embeddings import LiteLLMEmbeddingClient
 from cairn.knowledge.graph import LLMGraphExtractor
 from cairn.knowledge.ingest import IngestionSettings, IngestionWorker
+from cairn.knowledge.ocr import OcrSettings, PdfOcrExtractor, rapidocr_recognizer
 from cairn.knowledge.store import KnowledgeStore
 from cairn.review.collector import ReviewSourceCollector, WeeklySourceCollector
 from cairn.review.delivery import ReviewDeliveryCoordinator
@@ -181,6 +182,7 @@ def runtime_app(
                 document_store,
                 embedder=knowledge_embedder,
                 graph=graph,
+                ocr=_ocr_extractor(knowledge),
                 settings=IngestionSettings(
                     chunk_chars=knowledge.chunk_chars,
                     chunk_overlap=knowledge.chunk_overlap,
@@ -431,6 +433,19 @@ def validate_config(config: ServerConfig) -> Path:
             if not path.is_file():
                 raise ValueError(f"Host configuration file is missing: {path}")
     return require_web_assets(config.web_root or default_web_root())
+
+
+def _ocr_extractor(knowledge: KnowledgeConfig) -> PdfOcrExtractor | None:
+    if not knowledge.enabled or not knowledge.ocr_enabled:
+        return None
+    return PdfOcrExtractor(
+        rapidocr_recognizer,
+        OcrSettings(
+            max_pages=knowledge.ocr_max_pages,
+            dpi=knowledge.ocr_dpi,
+            max_seconds=float(knowledge.ocr_max_seconds),
+        ),
+    )
 
 
 def _embedding_client(

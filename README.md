@@ -136,6 +136,29 @@ to three sources below the answer. Open a source to read its exact chunk. Use
 **用此片段追问** to add the source to your draft, then send it when ready. A source
 becomes unavailable if its document or chunk no longer exists.
 
+Scanned PDFs have no text layer. Install the optional OCR extra and enable it
+when those pages matter:
+
+```sh
+uv sync --extra ocr   # or: pip install 'cairn[ocr]'
+```
+
+```toml
+[knowledge]
+ocr_enabled = true
+ocr_max_pages = 30
+ocr_dpi = 200
+ocr_max_seconds = 120
+```
+
+Only pages without a usable text layer are rendered and recognized locally with
+RapidOCR; normal PDFs never load the model. OCR uses two CPU threads and the
+model is released after each document. Very large page dimensions are rendered
+at a reduced resolution so one page cannot exhaust server memory. Pages above
+the per-document page limit or time budget are reported in the extracted text.
+Without the extra, `ocr_enabled = true` fails the document with a clear error
+instead of calling a provider.
+
 Vector search needs an embedding model. Without one, lexical search still works:
 
 ```toml

@@ -353,6 +353,27 @@ def test_dedicated_embedding_credential_is_in_runtime_secret_policy(
     assert captured["sensitive_values"] == ("fake-token", "fake-chat-key", key)
 
 
+def test_ocr_extractor_is_built_only_when_enabled() -> None:
+    assert bootstrap._ocr_extractor(KnowledgeConfig()) is None
+    assert (
+        bootstrap._ocr_extractor(KnowledgeConfig(enabled=False, ocr_enabled=True))
+        is None
+    )
+
+    extractor = bootstrap._ocr_extractor(
+        KnowledgeConfig(
+            ocr_enabled=True,
+            ocr_max_pages=7,
+            ocr_dpi=150,
+            ocr_max_seconds=45,
+        )
+    )
+    assert extractor is not None
+    assert extractor.settings.max_pages == 7
+    assert extractor.settings.dpi == 150
+    assert extractor.settings.max_seconds == 45.0
+
+
 @pytest.mark.parametrize("link", ["knowledge", "knowledge/documents"])
 def test_startup_rejects_symlinks_in_document_storage(
     tmp_path: Path, link: str

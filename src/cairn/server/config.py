@@ -50,12 +50,17 @@ class KnowledgeConfig:
     max_chunks: int = 400
     extraction_max_chars: int = 2_000_000
     max_pdf_pages: int = 500
+    # Scanned PDF pages only; the optional OCR extra must be installed.
+    ocr_enabled: bool = False
+    ocr_max_pages: int = 30
+    ocr_dpi: int = 200
+    ocr_max_seconds: int = 120
     graph_max_chunks: int = 12
     graph_max_chars: int = 12_000
 
 
 DEFAULT_KNOWLEDGE = KnowledgeConfig()
-_KNOWLEDGE_BOOLS = frozenset({"enabled", "graph_enabled"})
+_KNOWLEDGE_BOOLS = frozenset({"enabled", "graph_enabled", "ocr_enabled"})
 _KNOWLEDGE_STRINGS = frozenset(
     {"embedding_model", "embedding_base_url", "embedding_key_env"}
 )
@@ -68,6 +73,9 @@ _KNOWLEDGE_INTS = {
     "max_chunks": (1, 2_000),
     "extraction_max_chars": (1_000, MAX_DOCUMENT_TEXT_CHARS),
     "max_pdf_pages": (1, 5_000),
+    "ocr_max_pages": (0, 500),
+    "ocr_dpi": (72, 300),
+    "ocr_max_seconds": (1, 3_600),
     "graph_max_chunks": (1, 100),
     "graph_max_chars": (100, 100_000),
 }

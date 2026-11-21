@@ -44,6 +44,12 @@ embedding_dims = 0
 embedding_batch_size = 10
 graph_enabled = true
 max_upload_bytes = 26214400
+# Scanned PDF pages only; install the optional extra first.
+#   uv sync --locked --all-groups --extra ocr
+ocr_enabled = false
+ocr_max_pages = 30
+ocr_dpi = 200
+ocr_max_seconds = 120
 
 [logging]
 level = "info"
