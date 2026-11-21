@@ -24,7 +24,7 @@ function currentRoute() {
 export function App() {
   const [route, setRoute] = useState(currentRoute);
   const [navigationEpoch, setNavigationEpoch] = useState(0);
-  const [lastConversation, setLastConversation] = useState(() => sessionStorage.getItem(lastConversationKey) ?? "");
+  const [lastConversationId, setLastConversationId] = useState(() => sessionStorage.getItem(lastConversationKey) ?? "");
   const chatReturn = useRef<AbortController | null>(null);
   const { view, params } = route;
   const config = useResource<WorkbenchConfig>("management?section=workbench", 4500);
@@ -36,7 +36,8 @@ export function App() {
   const task = params.get("task") ?? "";
   const run = params.get("run") ?? "";
   const inChat = view === "home" || view === "chat";
-  const chatHref = href("chat", !inChat && lastConversation ? { conversation: lastConversation } : undefined);
+  const blankChatHref = href("chat");
+  const chatHref = inChat || !lastConversationId ? blankChatHref : href("chat", { conversation: lastConversationId });
 
   const cancelChatReturn = useCallback(() => {
     chatReturn.current?.abort();
@@ -65,13 +66,17 @@ export function App() {
   const refresh = useCallback(() => { conversations.refresh(); tasks.refresh(); runs.refresh(); }, [conversations.refresh, tasks.refresh, runs.refresh]);
   const rememberConversation = useCallback((conversationId: string) => {
     sessionStorage.setItem(lastConversationKey, conversationId);
-    setLastConversation(conversationId);
+    setLastConversationId(conversationId);
   }, []);
+  // Entering a conversation route is enough; do not wait for its detail fetch.
+  useEffect(() => { if (id) rememberConversation(id); }, [id, rememberConversation]);
 
-  async function openChat() {
-    if (inChat && !id) return;
-    if (inChat || !lastConversation) {
-      navigate(chatHref);
+  // Opening a conversation keeps it as the return target. A development
+  // composer is not a conversation, and a blank conversation keeps its draft.
+  async function returnToLastChat() {
+    if (inChat && !id && params.get("mode") !== "development") return;
+    if (inChat || !lastConversationId) {
+      navigate(blankChatHref);
       return;
     }
 
@@ -79,23 +84,24 @@ export function App() {
     const request = new AbortController();
     chatReturn.current = request;
     try {
-      await runtimeApi(`conversations/${encodeURIComponent(lastConversation)}`, undefined, request.signal);
+      await runtimeApi(`conversations/${encodeURIComponent(lastConversationId)}`, undefined, request.signal);
     } catch (error) {
       if (request.signal.aborted || (error instanceof RuntimeError && error.status === 401)) return;
       if (error instanceof RuntimeError && error.status === 404) {
         sessionStorage.removeItem(lastConversationKey);
-        setLastConversation("");
-        navigate(href("chat"));
+        setLastConversationId("");
+        navigate(blankChatHref);
         return;
       }
+      // Other failures open the last chat so its own error state is visible.
     }
     if (!request.signal.aborted) navigate(chatHref);
   }
 
-  return <Shell view={view} active={id} navigate={navigate} chatHref={chatHref} onChatClick={openChat} conversations={conversations.data ?? []} workspace={config.data?.workspace}
+  return <Shell view={view} active={id} navigate={navigate} chatHref={chatHref} onChatClick={returnToLastChat} conversations={conversations.data ?? []} workspace={config.data?.workspace}
     status={config.error ? "offline" : config.data ? "online" : "connecting"} onConversationsChanged={conversations.refresh}>
     <Suspense fallback={<p className="wb-muted" role="status">正在加载界面…</p>}>
-      {inChat && <Chat key={id || params.get("mode") || "new"} id={id} initialMode={params.get("mode") === "development" ? "development" : "conversation"} config={config.data} navigate={navigate} onSubmit={refresh} onConversationOpened={rememberConversation}/>}
+      {inChat && <Chat key={id || params.get("mode") || "new"} id={id} initialMode={params.get("mode") === "development" ? "development" : "conversation"} config={config.data} navigate={navigate} onSubmit={refresh}/>}
       {view === "tasks" && <Tasks tasks={development} id={task} navigate={navigate} refresh={refresh} loading={!tasks.data} error={tasks.error}/>}
       {view === "knowledge" && <Knowledge/>}
       {view === "channels" && <Channels key={navigationEpoch}/>}

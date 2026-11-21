@@ -70,9 +70,16 @@ export async function checkChatReturn(page, api, url) {
 
   const detailUrl = new URL(`/api/runtime/conversations/${promoted}`, url).href;
   const delayed = Promise.withResolvers();
+  const finished = Promise.withResolvers();
   await page.route(detailUrl, async route => {
-    await delayed.promise;
-    await route.fulfill({ status: 404, json: { error: "conversation_not_found" } });
+    try {
+      await delayed.promise;
+      await route.fulfill({ status: 404, json: { error: "conversation_not_found" } });
+    } catch {
+      // Navigating away can cancel the intercepted request.
+    } finally {
+      finished.resolve();
+    }
   }, { times: 1 });
   try {
     const checking = page.waitForRequest(detailUrl);
@@ -85,6 +92,7 @@ export async function checkChatReturn(page, api, url) {
     assert.equal(await chat.getAttribute("href"), chatUrl(promoted));
   } finally {
     delayed.resolve();
+    await finished.promise;
   }
 
   await remove(promoted);
@@ -92,6 +100,38 @@ export async function checkChatReturn(page, api, url) {
   await waitForChat();
   await settings.click();
   assert.equal(await chat.getAttribute("href"), chatUrl());
+
+  // The development composer is not a conversation; Chat must leave it.
+  await page.getByRole("link", { name: "开发任务", exact: true }).click();
+  await page.getByRole("button", { name: "新建任务" }).click();
+  assert.equal(await page.getByLabel("权限模式").inputValue(), "development");
+  await chat.click();
+  await waitForChat();
+  assert.equal(await page.getByLabel("权限模式").inputValue(), "conversation");
+
+  // Entering a conversation is remembered before its detail request resolves.
+  const slowDetail = new URL(`/api/runtime/conversations/${second}`, url).href;
+  const releaseSlow = Promise.withResolvers();
+  await page.route(slowDetail, async route => {
+    try {
+      await releaseSlow.promise;
+      await route.continue();
+    } catch {
+      // Navigating away can cancel the intercepted request.
+    }
+  }, { times: 1 });
+  try {
+    await page.goto(new URL(chatUrl(second), url).href);
+    await knowledge.click();
+    await page.waitForFunction(
+      id => document.querySelector('nav[aria-label="主导航"] a[aria-label="对话"]')?.getAttribute("href") === `/chat.html?conversation=${id}`,
+      second,
+    );
+  } finally {
+    releaseSlow.resolve();
+    await page.unroute(slowDetail);
+  }
+
   await remove(first);
   await remove(second);
   console.log("Chat rail return, blank drafts, first submission, and deleted conversations passed.");

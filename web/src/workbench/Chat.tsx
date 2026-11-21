@@ -48,13 +48,11 @@ type Queued = Pick<Submission, "id" | "prompt" | "model" | "attachment_ids" | "a
 const sizeLabel = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MiB` : `${Math.max(1, Math.round(bytes / 1024))} KiB`;
 const attachmentNames = (items?: { name: string }[]) => items?.map(item => item.name).join(" · ");
 
-export function Chat({ id, initialMode, config, navigate, onSubmit, onConversationOpened }: {
+export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   id: string; initialMode: Submission["mode"]; config?: WorkbenchConfig; navigate: (url: string) => void; onSubmit: () => void;
-  onConversationOpened: (id: string) => void;
 }) {
   const key = `cairn.web.pending.${config?.workspace ?? "workspace"}:${id || "new"}`;
   const detail = useResource<{ conversation: Conversation; runs: Run[] }>(id ? `conversations/${encodeURIComponent(id)}` : null, 1200);
-  const openedConversation = detail.data?.conversation.conversation_id;
   const observed = detail.data?.runs?.at(-1);
   const [acknowledged, setAcknowledged] = useState<Run>();
   const run = acknowledged && observed?.run_id !== acknowledged.run_id &&
@@ -90,7 +88,6 @@ export function Chat({ id, initialMode, config, navigate, onSubmit, onConversati
   useSteerAnimation(steerRef, steer?.phase ?? null);
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  useEffect(() => { if (openedConversation) onConversationOpened(openedConversation); }, [openedConversation, onConversationOpened]);
   useEffect(() => { setPending(readSubmission(key)); }, [key]);
   useEffect(() => { setSteer(null); setDraftSource(null); }, [id]);
   useEffect(() => {
@@ -127,7 +124,6 @@ export function Chat({ id, initialMode, config, navigate, onSubmit, onConversati
         navigate(href("tasks", { task: result.task.task_id }));
       } else if (result.run) {
         if (result.run.conversation_id !== id) {
-          onConversationOpened(result.run.conversation_id);
           navigate(href("chat", { conversation: result.run.conversation_id }));
         } else { setAcknowledged(result.run); detail.refresh(); }
       }
