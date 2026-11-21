@@ -58,13 +58,15 @@ export function useAppearance() {
   return { theme, chooseTheme };
 }
 
-export function Shell({ view, active, conversations, workspace, status, navigate, onConversationsChanged, children }: {
+export function Shell({ view, active, conversations, workspace, status, navigate, chatHref, onChatClick, onConversationsChanged, children }: {
   view: View;
   active?: string;
   conversations: Conversation[];
   workspace?: string;
   status: "online" | "offline" | "connecting";
   navigate: (url: string) => void;
+  chatHref: string;
+  onChatClick: () => void;
   onConversationsChanged?: () => void;
   children: ReactNode;
 }) {
@@ -154,13 +156,13 @@ export function Shell({ view, active, conversations, workspace, status, navigate
     }
   }
 
-  function link(url: string, label: string, icon: IconName, selected: boolean) {
-    return <a href={url} className="rail-link" aria-label={label} aria-current={selected ? "page" : undefined} title={label} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); setMobileOpen(false); navigate(url); } }}><Icon name={icon} size={19} /></a>;
+  function link(url: string, label: string, icon: IconName, selected: boolean, follow = () => navigate(url)) {
+    return <a href={url} className="rail-link" aria-label={label} aria-current={selected ? "page" : undefined} title={label} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); setMobileOpen(false); follow(); } }}><Icon name={icon} size={19} /></a>;
   }
 
   return <div className={`workbench ${collapsed ? "side-collapsed" : ""} ${mobileOpen ? "side-mobile-open" : ""}`}>
     <nav className="wb-rail" aria-label="主导航">
-      <div className="rail-group">{navigation.map(item => <div key={item.view}>{link(href(item.view), item.label, item.icon, activeView === item.view)}</div>)}</div>
+      <div className="rail-group">{navigation.map(item => <div key={item.view}>{link(item.view === "chat" ? chatHref : href(item.view), item.label, item.icon, activeView === item.view, item.view === "chat" ? onChatClick : undefined)}</div>)}</div>
       <div className="rail-group">
         <button className="rail-link" aria-label="切换会话侧栏" aria-controls="workbench-sidebar" aria-expanded={narrow ? mobileOpen : !collapsed} title="切换会话侧栏" onClick={() => { if (narrow) setMobileOpen(value => !value); else { setCollapsed(!collapsed); localStorage.setItem("cairn-sidebar", collapsed ? "open" : "closed"); } }}><Icon name="panel-left" /></button>
         {link(href("settings"), "设置", "settings", view === "settings")}
