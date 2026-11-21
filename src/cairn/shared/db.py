@@ -22,7 +22,16 @@ DEFAULT_NAMESPACE = "cairn"
 DOMAINS = ("core", "agent", "knowledge", "channel", "ops")
 _NAMESPACE = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
 _SCHEMA_SQL = (Path(__file__).with_name("schema.sql")).read_text(encoding="utf-8")
-_SCHEMA_VERSION = "0001"
+_MIGRATION_0002_SQL = (
+    Path(__file__).with_name("migrations") / "0002_knowledge_rag.sql"
+).read_text(encoding="utf-8")
+# Versioned migrations, applied in order. 0001 is the original schema.sql and
+# contains non-idempotent ALTER TABLE statements, so later versions must be
+# separate idempotent files rather than a re-run of the base schema.
+_MIGRATIONS = (
+    ("0001", _SCHEMA_SQL),
+    ("0002", _MIGRATION_0002_SQL),
+)
 # A bounded wait mirrors the old database's busy timeout; a stuck lock is a
 # storage failure, not an unbounded hang.
 _CONNECT_OPTIONS = "-c lock_timeout=2000"
@@ -179,7 +188,7 @@ class Database:
             connection.close()
 
     def migrate(self) -> None:
-        """Create every store's tables and record the schema version."""
+        """Create every store's tables and apply pending schema versions."""
         with self._pool.connection() as raw:
             for schema in self.schemas:
                 raw.execute(
@@ -187,26 +196,33 @@ class Database:
                         psql.Identifier(schema)
                     )
                 )
-        rendered = _SCHEMA_SQL
-        for domain in DOMAINS:
-            rendered = rendered.replace(f"__{domain.upper()}__", self.schema(domain))
         with self.connect("ops") as connection:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations ("
                 "version text PRIMARY KEY, "
                 "applied_at timestamptz NOT NULL DEFAULT now())"
             )
-            applied = connection.execute(
-                "SELECT 1 FROM schema_migrations WHERE version = %s",
-                (_SCHEMA_VERSION,),
-            ).fetchone()
-            if applied is None:
+            applied = {
+                str(row["version"])
+                for row in connection.execute(
+                    "SELECT version FROM schema_migrations"
+                ).fetchall()
+            }
+            for version, template in _MIGRATIONS:
+                if version in applied:
+                    continue
+                rendered = template
+                for domain in DOMAINS:
+                    rendered = rendered.replace(
+                        f"__{domain.upper()}__", self.schema(domain)
+                    )
                 for statement in rendered.split(";"):
                     if statement.strip():
                         connection.execute(statement)
                 connection.execute(
-                    "INSERT INTO schema_migrations(version) VALUES (%s)",
-                    (_SCHEMA_VERSION,),
+                    "INSERT INTO schema_migrations(version) VALUES (%s) "
+                    "ON CONFLICT (version) DO NOTHING",
+                    (version,),
                 )
 
     def drop_schemas(self) -> None:

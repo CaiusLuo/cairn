@@ -1,8 +1,9 @@
-"""Authenticated HTTP surface for private knowledge clips."""
+"""Authenticated HTTP surface for private knowledge clips and documents."""
 
 from __future__ import annotations
 
 import json
+from urllib.parse import unquote
 
 from psycopg import Error as PostgresError
 from pydantic import (
@@ -13,11 +14,14 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
 from cairn.interfaces.web.auth import operator_request
+from cairn.knowledge.document_store import DocumentStore
+from cairn.knowledge.documents import MAX_DOCUMENT_TEXT_CHARS, Document
 from cairn.knowledge.models import (
     CLIP_CONTENT_MAX_LENGTH,
     CLIP_REQUEST_ID_MAX_LENGTH,
@@ -33,6 +37,7 @@ from cairn.knowledge.store import (
     KnowledgeRequestConflict,
     KnowledgeStore,
 )
+from cairn.shared.text_extract import is_supported
 
 # The generic runtime reader caps bodies at 256 KiB. A 100k-character clip can
 # exceed that in UTF-8, so this surface has its own bounded reader.
@@ -253,4 +258,145 @@ def knowledge_routes(
     ]
 
 
-__all__ = ["knowledge_routes"]
+MAX_DOCUMENT_NAME_CHARS = 255
+DEFAULT_DOCUMENT_READ_CHARS = 20_000
+MAX_DOCUMENT_READ_CHARS = 100_000
+
+
+def document_routes(
+    store: DocumentStore, runtime_token: str | None = None
+) -> list[BaseRoute]:
+    def document_payload(document: Document) -> dict[str, object]:
+        return document.model_dump(mode="json")
+
+    async def handle(request: Request) -> JSONResponse:
+        try:
+            path = request.url.path
+            if path == "/api/knowledge/documents":
+                if request.method == "GET":
+                    documents = await run_in_threadpool(
+                        store.list_documents,
+                        limit=_integer(
+                            request, "limit", DEFAULT_LIST_LIMIT, 1, MAX_LIST_LIMIT
+                        ),
+                        offset=_integer(request, "offset", 0, 0, 1_000_000),
+                    )
+                    return JSONResponse(
+                        {"documents": [document_payload(item) for item in documents]},
+                        headers=_json_headers(),
+                    )
+                if request.method != "POST":
+                    return _error(405, "method_not_allowed")
+                if not operator_request(request, runtime_token):
+                    return _error(403, "invalid_origin")
+                # Header values are latin-1; the browser percent-encodes UTF-8.
+                name = unquote(request.headers.get("x-cairn-filename", "")).strip()
+                if not name or len(name) > MAX_DOCUMENT_NAME_CHARS:
+                    return _error(422, "invalid_document_upload")
+                media_type = (
+                    request.headers.get("content-type", "application/octet-stream")
+                    .split(";", 1)[0]
+                    .strip()
+                    .lower()
+                )
+                if not is_supported(name, media_type):
+                    return _error(415, "unsupported_document_type")
+                body = bytearray()
+                async for chunk in request.stream():
+                    if len(body) + len(chunk) > store.max_upload_bytes:
+                        return _error(413, "document_too_large")
+                    body.extend(chunk)
+                if not body:
+                    return _error(422, "invalid_document_upload")
+                document, created = await run_in_threadpool(
+                    store.create_upload, name, media_type, bytes(body)
+                )
+                return JSONResponse(
+                    {
+                        "document": document_payload(document),
+                        "deduplicated": not created,
+                    },
+                    headers=_json_headers(),
+                )
+            document_id = request.path_params.get("document_id", "")
+            action = request.path_params.get("action")
+            if request.method == "GET":
+                if action == "text":
+                    offset = _integer(request, "offset", 0, 0, MAX_DOCUMENT_TEXT_CHARS)
+                    max_chars = _integer(
+                        request,
+                        "max_chars",
+                        DEFAULT_DOCUMENT_READ_CHARS,
+                        1,
+                        MAX_DOCUMENT_READ_CHARS,
+                    )
+                    page = await run_in_threadpool(
+                        store.document_text,
+                        document_id,
+                        offset=offset,
+                        max_chars=max_chars,
+                    )
+                    if page is None:
+                        return _error(404, "document_not_found")
+                    return JSONResponse(
+                        {
+                            "document": document_payload(page.document),
+                            "content": page.content,
+                            "offset": page.offset,
+                            "total_chars": page.total_chars,
+                            "next_offset": page.next_offset,
+                        },
+                        headers=_json_headers(),
+                    )
+                if action is not None:
+                    return _error(405, "method_not_allowed")
+                found = await run_in_threadpool(store.get, document_id)
+                if found is None:
+                    return _error(404, "document_not_found")
+                return JSONResponse(
+                    {"document": document_payload(found)},
+                    headers=_json_headers(),
+                )
+            if request.method == "DELETE":
+                if action is not None:
+                    return _error(405, "method_not_allowed")
+                if not operator_request(request, runtime_token):
+                    return _error(403, "invalid_origin")
+                if not await run_in_threadpool(store.delete, document_id):
+                    return _error(404, "document_not_found")
+                return JSONResponse({"deleted": True}, headers=_json_headers())
+            if request.method != "POST":
+                return _error(405, "method_not_allowed")
+            if not operator_request(request, runtime_token):
+                return _error(403, "invalid_origin")
+            if action == "retry":
+                retried = await run_in_threadpool(store.retry, document_id)
+                if retried is None:
+                    # Missing or already processing; retrying cannot race it.
+                    return _error(404, "document_not_found")
+                return JSONResponse(
+                    {"document": document_payload(retried)},
+                    headers=_json_headers(),
+                )
+            return _error(404, "not_found")
+        except ValueError:
+            return _error(422, "invalid_knowledge_request")
+        except (OSError, PostgresError):
+            return _error(503, "knowledge_store_unavailable")
+
+    return [
+        Route("/api/knowledge/documents", handle, methods=["GET", "POST"]),
+        Route(
+            "/api/knowledge/documents/{document_id}",
+            handle,
+            methods=["GET", "DELETE", "POST"],
+        ),
+        Route(
+            "/api/knowledge/documents/{document_id}/{action}",
+            handle,
+            methods=["GET", "POST"],
+        ),
+    ]
+
+
+__all__ = ["document_routes", "knowledge_routes"]

@@ -3,6 +3,7 @@ import { newRequestId } from "../ids";
 import { knowledgeApi, type Clip } from "../knowledge-api";
 import { RuntimeError } from "../runtime-api";
 import { dateLabel, sourceLabel } from "./data";
+import { Documents } from "./Documents";
 import { Drawer, Markdown } from "./evidence";
 import { Empty, ErrorText, PageHeader } from "./execution";
 import { Icon } from "./Icon";
@@ -92,18 +93,17 @@ function pagePath(query: string, showArchived: boolean, offset: number) {
   return `clips?${params}`;
 }
 
-type Pane = "clips" | "reviews";
+type Pane = "clips" | "documents" | "reviews";
 
 function readPane(): Pane {
-  return new URLSearchParams(location.search).get("pane") === "reviews"
-    ? "reviews"
-    : "clips";
+  const pane = new URLSearchParams(location.search).get("pane");
+  return pane === "reviews" || pane === "documents" ? pane : "clips";
 }
 
 function writePane(pane: Pane) {
   const params = new URLSearchParams(location.search);
-  if (pane === "reviews") params.set("pane", "reviews");
-  else params.delete("pane");
+  if (pane === "clips") params.delete("pane");
+  else params.set("pane", pane);
   const query = params.toString();
   history.pushState({}, "", location.pathname + (query ? `?${query}` : ""));
 }
@@ -123,12 +123,13 @@ export function Knowledge() {
   }
 
   return <div className="wb-page">
-    <PageHeader icon="doc" title="知识" description="私有片段与 Daily / Weekly 复盘报告"/>
+    <PageHeader icon="doc" title="知识" description="私有片段、上传文档与 Daily / Weekly 复盘报告"/>
     <nav className="settings-tabs knowledge-tabs" aria-label="知识类别">
       <button aria-current={pane === "clips" ? "page" : undefined} onClick={() => switchPane("clips")}>片段</button>
+      <button aria-current={pane === "documents" ? "page" : undefined} onClick={() => switchPane("documents")}>文档</button>
       <button aria-current={pane === "reviews" ? "page" : undefined} onClick={() => switchPane("reviews")}>复盘</button>
     </nav>
-    {pane === "reviews" ? <Reviews/> : <ClipLibrary/>}
+    {pane === "reviews" ? <Reviews/> : pane === "documents" ? <Documents/> : <ClipLibrary/>}
   </div>;
 }
 

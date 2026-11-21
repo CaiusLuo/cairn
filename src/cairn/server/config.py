@@ -11,6 +11,12 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cairn.agent.budget import DEFAULT_MAX_STEPS, RunBudget
+from cairn.knowledge.documents import MAX_DOCUMENT_TEXT_CHARS
+from cairn.knowledge.embeddings import (
+    DEFAULT_EMBEDDING_BASE_URL,
+    DEFAULT_EMBEDDING_BATCH_SIZE,
+    MAX_VECTOR_DIMS,
+)
 from cairn.server.paths import ServerPaths, default_data_root
 
 DEFAULT_CONFIG = Path("/etc/cairn/config.toml")
@@ -25,6 +31,46 @@ class Services:
 
 
 DEFAULT_SERVICES = Services()
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeConfig:
+    enabled: bool = True
+    # Empty embedding_model disables vectors; lexical search still works.
+    embedding_model: str = ""
+    embedding_base_url: str = DEFAULT_EMBEDDING_BASE_URL
+    # Empty key env reuses the approved provider key when endpoints match.
+    embedding_key_env: str = ""
+    embedding_dims: int = 0  # 0 discovers the provider's dimension
+    embedding_batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE
+    graph_enabled: bool = True
+    max_upload_bytes: int = 25 * 1024 * 1024
+    chunk_chars: int = 1200
+    chunk_overlap: int = 150
+    max_chunks: int = 400
+    extraction_max_chars: int = 2_000_000
+    max_pdf_pages: int = 500
+    graph_max_chunks: int = 12
+    graph_max_chars: int = 12_000
+
+
+DEFAULT_KNOWLEDGE = KnowledgeConfig()
+_KNOWLEDGE_BOOLS = frozenset({"enabled", "graph_enabled"})
+_KNOWLEDGE_STRINGS = frozenset(
+    {"embedding_model", "embedding_base_url", "embedding_key_env"}
+)
+_KNOWLEDGE_INTS = {
+    "embedding_dims": (0, MAX_VECTOR_DIMS),
+    "embedding_batch_size": (1, 512),
+    "max_upload_bytes": (1, 100 * 1024 * 1024),
+    "chunk_chars": (64, 20_000),
+    "chunk_overlap": (0, 19_999),
+    "max_chunks": (1, 2_000),
+    "extraction_max_chars": (1_000, MAX_DOCUMENT_TEXT_CHARS),
+    "max_pdf_pages": (1, 5_000),
+    "graph_max_chunks": (1, 100),
+    "graph_max_chars": (100, 100_000),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +121,7 @@ class ServerConfig:
     )
     services: Services = field(default_factory=Services)
     review: ReviewConfig = field(default_factory=ReviewConfig)
+    knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
     logging: Logging = field(default_factory=Logging)
 
     @property
@@ -160,11 +207,19 @@ def parse_server_config(
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError:
         raise ValueError("Invalid Server TOML configuration") from None
-    sections = {"server", "database", "budget", "services", "review", "logging"}
+    sections = {
+        "server",
+        "database",
+        "budget",
+        "services",
+        "review",
+        "knowledge",
+        "logging",
+    }
     if set(data) - sections or any(not isinstance(v, dict) for v in data.values()):
         raise ValueError(
             "Expected only [server], [database], [budget], [services], "
-            "[review], [logging]"
+            "[review], [knowledge], [logging]"
         )
     server_fields = {
         "workspace",
@@ -185,6 +240,7 @@ def parse_server_config(
         "budget": budget_fields,
         "services": {f.name for f in fields(Services)},
         "review": {f.name for f in fields(ReviewConfig)},
+        "knowledge": {f.name for f in fields(KnowledgeConfig)},
         "logging": {f.name for f in fields(Logging)},
     }
     for section, names in allowed.items():
@@ -357,10 +413,55 @@ def parse_server_config(
         account_id=review_account,
         recipient=review_recipient,
     )
+    knowledge_group = dict(data.get("knowledge", {}))
+    for key in allowed["knowledge"]:
+        env = os.environ.get("CAIRN_KNOWLEDGE_" + key.upper())
+        if env is None:
+            continue
+        if key in _KNOWLEDGE_BOOLS:
+            knowledge_group[key] = _boolean(env)
+        elif key in _KNOWLEDGE_INTS:
+            try:
+                knowledge_group[key] = int(env)
+            except ValueError:
+                raise ValueError(f"knowledge.{key} must be an integer") from None
+        else:
+            knowledge_group[key] = env
+    for key in allowed["knowledge"]:
+        knowledge_group.setdefault(key, getattr(DEFAULT_KNOWLEDGE, key))
+    for key in _KNOWLEDGE_BOOLS:
+        value = knowledge_group.get(key, getattr(DEFAULT_KNOWLEDGE, key))
+        if type(value) is not bool:
+            raise ValueError(f"knowledge.{key} must be boolean")
+    for key in _KNOWLEDGE_STRINGS:
+        value = knowledge_group.get(key, getattr(DEFAULT_KNOWLEDGE, key))
+        if not isinstance(value, str):
+            raise ValueError(f"knowledge.{key} must be a string")
+        knowledge_group[key] = value.strip()
+    for key, (low, high) in _KNOWLEDGE_INTS.items():
+        value = knowledge_group.get(key, getattr(DEFAULT_KNOWLEDGE, key))
+        if type(value) is not int or not low <= value <= high:
+            raise ValueError(
+                f"knowledge.{key} must be an integer between {low} and {high}"
+            )
+    if knowledge_group["chunk_overlap"] >= knowledge_group["chunk_chars"]:
+        raise ValueError(
+            "knowledge.chunk_overlap must be smaller than knowledge.chunk_chars"
+        )
+    base_url = knowledge_group["embedding_base_url"]
+    if base_url and not base_url.startswith(("http://", "https://")):
+        raise ValueError("knowledge.embedding_base_url must be an HTTP(S) URL")
+    key_env = knowledge_group["embedding_key_env"]
+    if key_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key_env):
+        raise ValueError(
+            "knowledge.embedding_key_env must be an environment variable name"
+        )
+    knowledge = KnowledgeConfig(**knowledge_group)
     return ServerConfig(
         config_file=chosen,
         **values,
         budget=RunBudget(**budget),
         review=review,
+        knowledge=knowledge,
         **groups,
     )

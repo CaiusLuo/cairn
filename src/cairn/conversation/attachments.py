@@ -17,6 +17,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from uuid import uuid4
 
+from cairn.shared.artifacts import atomic_write_private_bytes
+
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 MAX_ATTACHMENTS_PER_MESSAGE = 5
 MAX_ATTACHMENT_TOTAL_BYTES = 25 * 1024 * 1024
@@ -43,19 +45,6 @@ def safe_attachment_name(raw: str) -> str:
             + extension
         )
     return base or "attachment"
-
-
-def _write_private(path: Path, data: bytes) -> None:
-    temporary = path.with_name(path.name + ".tmp-" + uuid4().hex)
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,8 +88,8 @@ class AttachmentStore:
         cleaned = safe_attachment_name(name)
         media = (media_type or "application/octet-stream").split(";")[0].strip().lower()
         digest = hashlib.sha256(data).hexdigest()
-        _write_private(self.uploads / attachment_id, data)
-        _write_private(
+        atomic_write_private_bytes(self.uploads / attachment_id, data)
+        atomic_write_private_bytes(
             self.uploads / (attachment_id + ".json"),
             json.dumps(
                 {
@@ -157,7 +146,7 @@ class AttachmentStore:
         run_dir.chmod(0o700)
         # Persist the full plan before claiming the first file, so a restart can
         # finish a partial claim with the original names and upload identities.
-        _write_private(
+        atomic_write_private_bytes(
             run_dir / "manifest.json",
             json.dumps([asdict(plan) for plan in plans], ensure_ascii=False).encode(),
         )

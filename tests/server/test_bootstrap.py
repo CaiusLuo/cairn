@@ -2,6 +2,7 @@
 
 import json
 import socket
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -9,7 +10,14 @@ from pathlib import Path
 import httpx
 import pytest
 
+from cairn.agent.budget import RunBudget
+from cairn.agent.context.window import ContextBudget
+from cairn.agent.models.catalog import NamedProvider
+from cairn.agent.models.runtime import build_provider_runtime
+from cairn.agent.models.selection import ModelConfig, ProviderConfig
 from cairn.integrations.wechat.state import WechatServeLock
+from cairn.server import bootstrap
+from cairn.server.config import KnowledgeConfig
 from tests.support.git import initialize_repository
 from tests.support.pg import database_for
 from tests.support.server_process import ROOT, ServerProcess
@@ -272,3 +280,96 @@ def test_review_policy_is_visible_without_claiming_hot_reload(tmp_path: Path) ->
         assert token not in json.dumps(review)
     finally:
         server.stop()
+
+
+@pytest.mark.parametrize(
+    "endpoint,key_env,expected",
+    [
+        ("https://approved.invalid/v1/", "", "fake-chat-key"),
+        ("https://approved.invalid/another", "", None),
+        ("https://embedding.invalid/v1", "", None),
+        (
+            "https://embedding.invalid/v1",
+            "CAIRN_TEST_EMBEDDING_KEY",
+            "fake-embedding-key",
+        ),
+        ("", "", None),
+    ],
+)
+def test_embedding_credential_is_bound_to_its_configured_endpoint(
+    monkeypatch: pytest.MonkeyPatch, endpoint: str, key_env: str, expected: str | None
+) -> None:
+    monkeypatch.setenv("CAIRN_TEST_EMBEDDING_KEY", "fake-embedding-key")
+    provider = NamedProvider(
+        "chat",
+        ProviderConfig(
+            "https://approved.invalid/v1",
+            "CAIRN_TEST_CHAT_KEY",
+            (ModelConfig("default", ("openai/fake-chat",)),),
+        ),
+    )
+    runtime = build_provider_runtime(provider, "fake-chat-key", ContextBudget())
+    config = KnowledgeConfig(
+        embedding_model="fake-model",
+        embedding_base_url=endpoint,
+        embedding_key_env=key_env,
+    )
+
+    client = bootstrap._embedding_client(config, runtime)
+    assert client.api_key == expected
+    assert client.api_base == endpoint.rstrip("/")
+
+
+def test_dedicated_embedding_credential_is_in_runtime_secret_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key_name = "CAIRN_TEST_EMBEDDING_KEY"
+    key = "fake-embedding-key"
+    monkeypatch.setenv(key_name, key)
+    captured: dict[str, object] = {}
+
+    class CapturedExecution(RuntimeError):
+        pass
+
+    def observe_execution(*args: object, **kwargs: object) -> None:
+        captured.update(kwargs)
+        raise CapturedExecution
+
+    monkeypatch.setattr(bootstrap, "ServiceExecution", observe_execution)
+    with pytest.raises(CapturedExecution):
+        bootstrap.runtime_app(
+            tmp_path / "workspace",
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(max_steps=8),
+            database=database_for(tmp_path),
+            token="fake-token",
+            secret_env_keys=frozenset({"CAIRN_TEST_CHAT_KEY"}),
+            sensitive_values=("fake-chat-key",),
+            knowledge=KnowledgeConfig(embedding_key_env=key_name),
+        )
+
+    assert captured["secret_env_keys"] == {"CAIRN_TEST_CHAT_KEY", key_name}
+    assert captured["sensitive_values"] == ("fake-token", "fake-chat-key", key)
+
+
+@pytest.mark.parametrize("link", ["knowledge", "knowledge/documents"])
+def test_startup_rejects_symlinks_in_document_storage(
+    tmp_path: Path, link: str
+) -> None:
+    server = configured(tmp_path)
+    outside = tmp_path / "unrelated"
+    outside.mkdir(mode=0o755)
+    unrelated = outside / ("0" * 64)
+    unrelated.write_text("unrelated file")
+    initial_mode = stat.S_IMODE(outside.stat().st_mode)
+    path = server.state / link
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(outside, target_is_directory=True)
+
+    result = invoke(server)
+
+    assert result.returncode != 0
+    assert "document originals directory" in result.stderr
+    assert unrelated.read_text() == "unrelated file"
+    assert stat.S_IMODE(outside.stat().st_mode) == initial_mode

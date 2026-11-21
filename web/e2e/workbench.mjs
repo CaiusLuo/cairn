@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, request } from "playwright";
+import { checkDocumentLibrary } from "./documents.mjs";
 
 const url = process.env.CAIRN_WEB_E2E_URL;
 const tokenPath = process.env.CAIRN_WEB_E2E_TOKEN_FILE;
@@ -440,6 +441,7 @@ try {
     await page.waitForFunction(() => document.querySelectorAll(".knowledge-card").length === 50);
     await page.getByRole("button", { name: "加载更多" }).waitFor();
     console.log("Knowledge pagination, search reset and archive reset passed with 120 clips.");
+    await checkDocumentLibrary(page, api);
 
     await page.getByRole("button", { name: "复盘", exact: true }).click();
     await page.getByRole("tab", { name: "日报", exact: true }).waitFor();

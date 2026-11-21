@@ -10,7 +10,7 @@ import socket
 from contextlib import AbstractAsyncContextManager
 from datetime import time as wall_time
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import typer
 import uvicorn
@@ -20,6 +20,7 @@ from starlette.routing import Route
 from cairn.agent.budget import RunBudget
 from cairn.agent.models.config.admission import ProviderApproval, load_approved_provider
 from cairn.agent.models.offline import OfflineDevelopmentModel
+from cairn.agent.models.providers.litellm_client import LiteLLMClient
 from cairn.agent.models.runtime import ProviderRuntime, build_provider_runtime
 from cairn.agent.tracing.tracer import Tracer
 from cairn.agent.workspace.lease import WorkspaceLease
@@ -46,6 +47,10 @@ from cairn.interfaces.web.assets import default_web_root, require_web_assets
 from cairn.interfaces.web.config import WebConfig
 from cairn.interfaces.web.management import management_routes
 from cairn.interfaces.web.reviews import review_routes
+from cairn.knowledge.document_store import DocumentStore
+from cairn.knowledge.embeddings import LiteLLMEmbeddingClient
+from cairn.knowledge.graph import LLMGraphExtractor
+from cairn.knowledge.ingest import IngestionSettings, IngestionWorker
 from cairn.knowledge.store import KnowledgeStore
 from cairn.review.collector import ReviewSourceCollector, WeeklySourceCollector
 from cairn.review.delivery import ReviewDeliveryCoordinator
@@ -57,8 +62,10 @@ from cairn.review.weekly import WeeklyReviewService
 from cairn.review.weekly_schedule import WeeklyReviewScheduleCoordinator
 from cairn.server.client import read_runtime_token as read_token
 from cairn.server.config import (
+    DEFAULT_KNOWLEDGE,
     DEFAULT_REVIEW,
     DEFAULT_SERVICES,
+    KnowledgeConfig,
     ReviewConfig,
     ServerConfig,
     Services,
@@ -96,10 +103,16 @@ def runtime_app(
     host: str = "127.0.0.1",
     services: Services = DEFAULT_SERVICES,
     review: ReviewConfig = DEFAULT_REVIEW,
+    knowledge: KnowledgeConfig = DEFAULT_KNOWLEDGE,
     config_file: Path | None = None,
     protected_paths: tuple[Path, ...] = (),
     tracer: Tracer | None = None,
 ) -> Any:
+    if knowledge.embedding_key_env:
+        secret_env_keys |= {knowledge.embedding_key_env}
+        embedding_key = os.environ.get(knowledge.embedding_key_env)
+        if embedding_key:
+            sensitive_values = (*sensitive_values, embedding_key)
     catalogue = RuntimeCatalogue(database, sensitive_values=(token, *sensitive_values))
     try:
         execution = ServiceExecution(
@@ -142,6 +155,42 @@ def runtime_app(
     service.reconciler = execution.reconcile
     try:
         knowledge_store = KnowledgeStore(database)
+        document_store: DocumentStore | None = None
+        knowledge_worker: IngestionWorker | None = None
+        knowledge_embedder: LiteLLMEmbeddingClient | None = None
+        if knowledge.enabled:
+            originals = state.resolve() / "knowledge" / "documents"
+            if originals.resolve() != originals or originals.parent.is_symlink():
+                raise ValueError(
+                    "document originals directory must be inside runtime state"
+                )
+            document_store = DocumentStore(
+                database,
+                originals,
+                max_upload_bytes=knowledge.max_upload_bytes,
+            )
+            if provider_runtime is not None and knowledge.embedding_model:
+                knowledge_embedder = _embedding_client(knowledge, provider_runtime)
+            graph = None
+            if provider_runtime is not None and knowledge.graph_enabled:
+                graph = LLMGraphExtractor(
+                    cast(LiteLLMClient, provider_runtime.llm),
+                    max_chars=knowledge.graph_max_chars,
+                )
+            knowledge_worker = IngestionWorker(
+                document_store,
+                embedder=knowledge_embedder,
+                graph=graph,
+                settings=IngestionSettings(
+                    chunk_chars=knowledge.chunk_chars,
+                    chunk_overlap=knowledge.chunk_overlap,
+                    max_chunks=knowledge.max_chunks,
+                    extraction_max_chars=knowledge.extraction_max_chars,
+                    max_pdf_pages=knowledge.max_pdf_pages,
+                    embedding_batch_size=knowledge.embedding_batch_size,
+                    graph_max_chunks=knowledge.graph_max_chunks,
+                ),
+            )
         channel_root = (channels_state or state / "channels").expanduser()
         channel_resolved = channel_root.resolve()
         for writable in (workspace.resolve(), worktrees.resolve()):
@@ -189,6 +238,7 @@ def runtime_app(
             session_file=state / "web-sessions.json",
             database=database,
             knowledge_store=knowledge_store,
+            documents=document_store,
             channels=channel_manager,
         )
     except BaseException:
@@ -211,6 +261,8 @@ def runtime_app(
             schedule_state=schedule_state or state / "schedules",
             channels_state=channel_root,
             knowledge_store=knowledge_store,
+            document_store=document_store,
+            knowledge_embedder=knowledge_embedder,
             services=services,
             review=review,
             config_file=config_file,
@@ -357,6 +409,7 @@ def runtime_app(
             channel_replies,
             weekly_reviews,
             weekly_review_schedule,
+            knowledge_worker,
         )
 
     web.router.lifespan_context = lifespan
@@ -378,6 +431,23 @@ def validate_config(config: ServerConfig) -> Path:
             if not path.is_file():
                 raise ValueError(f"Host configuration file is missing: {path}")
     return require_web_assets(config.web_root or default_web_root())
+
+
+def _embedding_client(
+    knowledge: KnowledgeConfig, provider_runtime: ProviderRuntime
+) -> LiteLLMEmbeddingClient:
+    base_url = knowledge.embedding_base_url.rstrip("/")
+    key = None
+    if knowledge.embedding_key_env:
+        key = os.environ.get(knowledge.embedding_key_env)
+    elif base_url and base_url == provider_runtime.provider.config.base_url.rstrip("/"):
+        key = cast(str | None, getattr(provider_runtime.llm, "api_key", None))
+    return LiteLLMEmbeddingClient(
+        knowledge.embedding_model,
+        api_key=key,
+        api_base=base_url,
+        dims=knowledge.embedding_dims,
+    )
 
 
 def _load_provider(
@@ -465,6 +535,7 @@ def run_server(config: ServerConfig) -> None:
             channels_state=paths.channels,
             services=config.services,
             review=config.review,
+            knowledge=config.knowledge,
             config_file=config.config_file,
             protected_paths=tuple(
                 p for p in (config.config_file, config.provider_approval) if p
@@ -592,6 +663,26 @@ def check_running(
             "Running Server uses different paths; no service was stopped"
         )
     typer.echo("Running Server matches the selected configuration")
+
+
+@app.command("knowledge-probe")
+def knowledge_probe(ctx: typer.Context) -> None:
+    """Embed one short text with the configured model; never prints the key."""
+    settings: ServerConfig = ctx.obj
+    knowledge = settings.knowledge
+    if not knowledge.embedding_model:
+        raise ValueError("knowledge.embedding_model is not configured")
+    provider_runtime, _names, _values = _load_provider(settings)
+    if provider_runtime is None:
+        raise ValueError("An approved provider is required for a knowledge probe")
+    client = _embedding_client(knowledge, provider_runtime)
+
+    async def probe() -> list[float]:
+        vectors = await client.embed(["Cairn knowledge embedding probe"])
+        return vectors[0]
+
+    vector = asyncio.run(probe())
+    typer.echo(f"Embedding OK: model={client.model} dims={len(vector)}")
 
 
 def main() -> None:

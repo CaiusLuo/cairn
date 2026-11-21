@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
 from cairn.interfaces.web.app import create_app
 from cairn.interfaces.web.config import WebConfig
+from cairn.knowledge.document_store import DocumentStore
+from cairn.knowledge.ingest import IngestionWorker
 from tests.support.pg import database_for
 
 PASSPHRASE = "knowledge-passphrase"
@@ -241,6 +245,194 @@ def test_invalid_input_is_rejected_without_echoing_content(tmp_path: Path) -> No
         response = client.get("/api/knowledge/clips?" + query)
         assert response.status_code == 422, query
         assert response.json()["error"] == "invalid_knowledge_request"
+
+
+def _document_client(
+    tmp_path: Path, *, max_upload_bytes: int = 25 * 1024 * 1024
+) -> tuple[TestClient, DocumentStore]:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    config = WebConfig(
+        workspace=workspace,
+        tasks_dir=tmp_path / "tasks",
+        knowledge_dir=tmp_path / "knowledge",
+        web_root=None,
+        auth_passphrase=PASSPHRASE,
+    )
+    store = DocumentStore(
+        database_for(tmp_path),
+        tmp_path / "documents",
+        max_upload_bytes=max_upload_bytes,
+    )
+    app = create_app(
+        config,
+        runtime_token="host-token",
+        database=database_for(tmp_path),
+        documents=store,
+    )
+    client = TestClient(app, base_url=ORIGIN)
+    login = client.post(
+        "/api/login", json={"username": "cairn", "auth_passphrase": PASSPHRASE}
+    )
+    assert login.status_code == 200
+    return client, store
+
+
+def _upload(
+    client: TestClient,
+    *,
+    name: str = "notes.md",
+    data: bytes = "# 标题\n\n数据库备份在停机前完成。".encode(),
+    media_type: str = "text/markdown",
+    origin: str | None = ORIGIN,
+) -> Any:
+    headers = {"content-type": media_type, "X-Cairn-Filename": quote(name)}
+    if origin is not None:
+        headers["Origin"] = origin
+    return client.post("/api/knowledge/documents", content=data, headers=headers)
+
+
+def test_document_upload_list_read_searchable_text_and_delete(tmp_path: Path) -> None:
+    client, store = _document_client(tmp_path)
+
+    created = _upload(client)
+    assert created.status_code == 200
+    document = created.json()["document"]
+    assert created.json()["deduplicated"] is False
+    assert document["title"] == "notes.md"
+    assert document["media_type"] == "text/markdown"
+    assert document["status"] == "pending"
+    document_id = document["document_id"]
+
+    duplicate = _upload(client)
+    assert duplicate.status_code == 200
+    assert duplicate.json()["deduplicated"] is True
+    assert duplicate.json()["document"]["document_id"] == document_id
+    listing = client.get("/api/knowledge/documents").json()["documents"]
+    assert [item["document_id"] for item in listing] == [document_id]
+
+    detail = client.get(f"/api/knowledge/documents/{document_id}")
+    assert detail.status_code == 200
+    assert detail.json()["document"]["sha256"] == document["sha256"]
+    assert client.get("/api/knowledge/documents/missing").status_code == 404
+    assert client.get(f"/api/knowledge/documents/{document_id}/text").status_code == 404
+
+    asyncio.run(IngestionWorker(store).process_one())
+    assert (
+        client.get(f"/api/knowledge/documents/{document_id}").json()["document"][
+            "status"
+        ]
+        == "ready"
+    )
+    page = client.get(f"/api/knowledge/documents/{document_id}/text?max_chars=5").json()
+    assert page["content"]
+    assert page["next_offset"] == 5
+    assert page["total_chars"] > 5
+    rest = client.get(
+        f"/api/knowledge/documents/{document_id}/text?offset=5&max_chars=1000"
+    ).json()
+    assert "数据库备份" in rest["content"]
+    assert rest["next_offset"] is None
+
+    retried = client.post(
+        f"/api/knowledge/documents/{document_id}/retry", headers={"Origin": ORIGIN}
+    )
+    assert retried.status_code == 200
+    assert retried.json()["document"]["status"] == "pending"
+    assert (
+        client.post(
+            "/api/knowledge/documents/missing/retry", headers={"Origin": ORIGIN}
+        ).status_code
+        == 404
+    )
+
+    deleted = client.delete(
+        f"/api/knowledge/documents/{document_id}", headers={"Origin": ORIGIN}
+    )
+    assert deleted.status_code == 200
+    assert deleted.json() == {"deleted": True}
+    assert client.get(f"/api/knowledge/documents/{document_id}").status_code == 404
+    assert client.get("/api/knowledge/documents").json()["documents"] == []
+
+
+def test_document_routes_require_auth_origin_and_supported_files(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    anonymous = TestClient(
+        create_app(
+            WebConfig(
+                workspace=workspace,
+                tasks_dir=tmp_path / "tasks",
+                knowledge_dir=tmp_path / "knowledge",
+                web_root=None,
+                auth_passphrase=PASSPHRASE,
+            ),
+            runtime_token="host-token",
+            database=database_for(tmp_path),
+            documents=DocumentStore(database_for(tmp_path), tmp_path / "documents"),
+        ),
+        base_url=ORIGIN,
+    )
+    assert anonymous.get("/api/knowledge/documents").status_code == 401
+    assert _upload(anonymous).status_code == 401
+
+    client, _store = _document_client(tmp_path)
+    assert _upload(client, origin=None).status_code == 403
+    assert _upload(client, origin="http://evil.example").status_code == 403
+    assert (
+        _upload(
+            client, name="payload.exe", media_type="application/octet-stream"
+        ).status_code
+        == 415
+    )
+    assert _upload(client, name="").status_code == 422
+    assert _upload(client, data=b"").status_code == 422
+
+
+def test_document_upload_is_size_bounded(tmp_path: Path) -> None:
+    client, _store = _document_client(tmp_path, max_upload_bytes=8)
+
+    response = _upload(client, data=b"x" * 9)
+
+    assert response.status_code == 413
+    assert response.json() == {"error": "document_too_large"}
+
+
+def test_documents_survive_an_app_restart(tmp_path: Path) -> None:
+    first, _store = _document_client(tmp_path)
+    created = _upload(first).json()["document"]
+
+    restarted, _store = _document_client(tmp_path)
+    listing = restarted.get("/api/knowledge/documents").json()["documents"]
+
+    assert [item["document_id"] for item in listing] == [created["document_id"]]
+    detail = restarted.get(f"/api/knowledge/documents/{created['document_id']}")
+    assert detail.status_code == 200
+    assert detail.json()["document"]["title"] == "notes.md"
+
+
+def test_document_routes_do_not_exist_in_read_only_snapshot_mode(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = WebConfig(
+        workspace=workspace,
+        tasks_dir=tmp_path / "tasks",
+        knowledge_dir=tmp_path / "knowledge",
+        web_root=None,
+    )
+    client = TestClient(
+        create_app(
+            config,
+            database=database_for(tmp_path),
+            documents=DocumentStore(database_for(tmp_path), tmp_path / "documents"),
+        ),
+        base_url=ORIGIN,
+    )
+    assert client.get("/api/knowledge/documents").status_code == 404
 
 
 def test_read_only_snapshot_mode_exposes_no_knowledge_writes(tmp_path: Path) -> None:

@@ -32,6 +32,19 @@ wechat = true
 schedule = true
 memory = true
 
+[knowledge]
+# Lexical document search works without vectors; set a model for semantic search.
+enabled = true
+embedding_model = "qwen3.7-text-embedding-flash"
+embedding_base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+# Empty reuses the approved provider key when the base URLs match.
+embedding_key_env = ""
+embedding_dims = 0
+# Set to a batch size supported by the selected embedding model.
+embedding_batch_size = 10
+graph_enabled = true
+max_upload_bytes = 26214400
+
 [logging]
 level = "info"
 access_log = true

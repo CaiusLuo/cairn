@@ -65,9 +65,9 @@ from `[server]`. Offline mode makes no paid model requests.
 Open **http://127.0.0.1:8777/chat.html**. Sign in as `cairn`, using the contents
 of `data_root/runtime/runtime.token` as the password (`data_root` is in the
 server configuration). For remote use, put the listener behind a reverse proxy
-with TLS. If you use nginx, allow a 10 MiB request body for
-`/api/runtime/attachments` to match Cairn's per-file limit. You can also
-connect through an SSH tunnel:
+with TLS. If you use nginx, allow 10 MiB for `/api/runtime/attachments`
+and 25 MiB for `/api/knowledge/documents` (or your configured document upload
+limit). You can also connect through an SSH tunnel:
 
 ```sh
 ssh -N -L 8777:127.0.0.1:8777 YOUR_SERVER
@@ -120,6 +120,34 @@ questions such as “What is in my knowledge base?” or “Find my notes about 
 The owner's Agent reads clips on demand and cites their IDs; archived clips are
 excluded. Clips are not automatically added to every conversation or personal
 memory, and other senders do not gain access to your private knowledge.
+
+Knowledge also accepts uploaded documents. Open **Knowledge → 文档** and upload
+PDF, Word, Excel, PowerPoint, HTML, Markdown or plain text (25 MiB per file).
+Cairn extracts the text, splits it into citeable chunks, and builds a hybrid
+index: PostgreSQL full-text, Chinese-friendly trigram matching, and optional
+vectors. The owner's Agent searches documents with `knowledge_search` and reads
+them with `document_read`, citing `document_id` and `chunk_id`. Uploads are only
+visible to the owner. Deleting a document removes its chunks, graph rows and
+original file. Duplicate uploads are recognized by content hash. The configured
+extraction and chunk limits can make search cover less text than the preview.
+
+Vector search needs an embedding model. Without one, lexical search still works:
+
+```toml
+[knowledge]
+embedding_model = "qwen3.7-text-embedding-flash"
+embedding_base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+# Empty reuses the approved provider key when the base URLs match.
+embedding_key_env = ""
+```
+
+For a different endpoint, set `embedding_key_env` to the name of its credential
+in the service environment. Requests use up to 10 chunks per embedding batch
+by default. Run `cairn knowledge-probe` with the server's configuration and
+credential environment to verify the embedding model and print its dimension.
+The current chat model extracts relationships between entities across documents.
+If graph extraction or embedding fails, the document stays searchable
+lexically and Cairn records the failure on the document.
 
 Daily and weekly reviews can run on a schedule. To enable both, add this to
 `/etc/cairn/config.toml`, set your authorized WeChat recipient and restart:

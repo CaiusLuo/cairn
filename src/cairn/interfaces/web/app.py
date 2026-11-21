@@ -42,9 +42,10 @@ from cairn.interfaces.web.auth import (
     AuthSessions,
 )
 from cairn.interfaces.web.config import WebConfig
-from cairn.interfaces.web.knowledge import knowledge_routes
+from cairn.interfaces.web.knowledge import document_routes, knowledge_routes
 from cairn.interfaces.web.reader import SnapshotReader
 from cairn.interfaces.web.reviews import review_routes
+from cairn.knowledge.document_store import DocumentStore
 from cairn.knowledge.store import KnowledgeStore
 from cairn.review.service import DailyReviewService
 from cairn.shared.db import Database
@@ -151,6 +152,7 @@ def create_app(
     session_file: Path | None = None,
     database: Database | None = None,
     knowledge_store: KnowledgeStore | None = None,
+    documents: DocumentStore | None = None,
     reviews: DailyReviewService | None = None,
     review_cutoff: time | None = None,
     review_timezone: str | None = None,
@@ -371,6 +373,8 @@ def create_app(
     ]
     if clip_store is not None:
         routes.extend(knowledge_routes(clip_store, runtime_token))
+        if documents is not None and config.auth_passphrase:
+            routes.extend(document_routes(documents, runtime_token))
         if reviews is not None:
             routes.extend(
                 review_routes(

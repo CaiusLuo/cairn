@@ -298,6 +298,7 @@ class ServiceExecution:
                         "knowledge_list",
                         "knowledge_search",
                         "knowledge_get",
+                        "document_read",
                         "memory_remember",
                         "memory_forget",
                         "memory_correct",

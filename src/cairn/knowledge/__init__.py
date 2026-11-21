@@ -1,1 +1,1 @@
-"""Private knowledge clips: durable, low-trust text the Agent never inherits."""
+"""Private knowledge: durable clips, uploaded documents and their indexes."""
