@@ -22,6 +22,7 @@ from cairn.knowledge.documents import (
     STEP_FAILED,
     STEP_READY,
     STEP_SKIPPED,
+    DocumentReference,
     chunk_text,
 )
 from tests.support.pg import database_for
@@ -296,3 +297,32 @@ def test_deleting_one_owners_copy_keeps_the_other_original(tmp_path: Path) -> No
     assert alice.delete(first.document_id)
     original = bob.original_path(second.document_id)
     assert original is not None and original.read_bytes() == b"same bytes"
+
+
+def test_source_labels_and_preview_require_a_usable_locator(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    text = "# Guide\n\nThe backup procedure is documented here."
+    document, _ = store.create_upload("guide.md", "text/markdown", text.encode())
+    (chunk_id,) = store.save_extraction(
+        document.document_id, text, "text", "1", chunk_text(text)
+    )
+    store.finish(
+        document.document_id,
+        status=DOCUMENT_READY,
+        error=None,
+        embedding_status=STEP_SKIPPED,
+        graph_status=STEP_SKIPPED,
+    )
+    reference = DocumentReference(document_id=document.document_id, chunk_id=chunk_id)
+
+    assert reference in store.document_source_labels([reference])
+    assert store.document_chunk(reference) is not None
+
+    with store.db.connect("knowledge") as connection:
+        connection.execute(
+            "UPDATE chunks SET locator = '{}'::jsonb WHERE chunk_id = %s",
+            (chunk_id,),
+        )
+
+    assert store.document_source_labels([reference]) == {}
+    assert store.document_chunk(reference) is None

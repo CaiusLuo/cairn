@@ -3,7 +3,7 @@ import { A2uiSurface, createComponentImplementation, type ReactCatalogComponent 
 import { Catalog, MessageProcessor, type SurfaceModel } from "@a2ui/web_core";
 import { z } from "zod";
 import type { KnowledgeSource } from "./data";
-import { SourcesList } from "./KnowledgeSources";
+import { SourcesList } from "./KnowledgeSourceList";
 
 const sourcesSchema = z.array(z.object({
   document_id: z.string().regex(/^doc-[0-9a-f]{32}$/),

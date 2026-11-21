@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -17,6 +17,7 @@ from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.conversation.models import ConversationSource, Run, RunStatus
 from cairn.development.catalogue import ChannelPrincipal
 from cairn.integrations.wechat.state import WechatAccount, WechatState
+from cairn.interfaces.web.knowledge_sources import label_knowledge_sources
 from cairn.knowledge.document_store import DocumentStore
 from cairn.knowledge.ingest import IngestionWorker
 from cairn.knowledge.models import Clip
@@ -686,6 +687,27 @@ def test_legacy_wechat_owner_reads_but_trusted_sender_cannot(
     asyncio.run(scenario())
 
 
+def test_transient_label_failure_does_not_claim_sources_are_gone() -> None:
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "assistant",
+            "content": "answer",
+            "knowledge": {
+                "run_id": "run-1",
+                "references": [{"document_id": "doc-" + "a" * 32, "chunk_id": 1}],
+            },
+        }
+    ]
+
+    class BrokenStore:
+        def document_source_labels(self, _references: object) -> dict[object, object]:
+            raise PostgresError("database unavailable")
+
+    label_knowledge_sources(messages, cast(Any, BrokenStore()))
+
+    assert "knowledge" not in messages[0]
+
+
 def test_web_knowledge_sources_keep_their_answer_and_recheck_document(
     tmp_path: Path,
 ) -> None:
@@ -748,6 +770,11 @@ def test_web_knowledge_sources_keep_their_answer_and_recheck_document(
                 document.document_id, "doc-" + "0" * 32
             )
             assert (await browser.get(wrong_document, params=params)).status_code == 404
+            malformed = await browser.get(
+                "/api/knowledge/documents/not-a-document/chunk", params=params
+            )
+            assert malformed.status_code == 422
+
             async with http(app, authenticated=False) as anonymous:
                 assert (
                     await anonymous.get(preview_path, params=params)

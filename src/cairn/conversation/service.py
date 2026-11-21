@@ -817,15 +817,9 @@ class ConversationService:
                     return self._run_fact_messages(runs, include_knowledge_sources)
                 if include_knowledge_sources:
                     for run in runs[first_latest_index:]:
-                        offset = run.metadata.get("knowledge_message_offset")
-                        if type(offset) is int and 0 <= offset < len(messages):
-                            message = messages[offset]
-                            if (
-                                message["role"] == "assistant"
-                                and not message.get("tool_calls")
-                                and message.get("content") == run.result
-                            ):
-                                self._add_knowledge_sources(message, run)
+                        message = self._knowledge_message(messages, run)
+                        if message is not None:
+                            self._add_knowledge_sources(message, run)
                 return [
                     *self._run_fact_messages(
                         runs[:first_latest_index], include_knowledge_sources
@@ -844,6 +838,22 @@ class ConversationService:
             and refs
         ):
             message["knowledge"] = {"run_id": run.run_id, "references": refs}
+
+    @staticmethod
+    def _knowledge_message(
+        messages: list[dict[str, Any]], run: Run
+    ) -> dict[str, Any] | None:
+        offset = run.metadata.get("knowledge_message_offset")
+        if type(offset) is not int or not 0 <= offset < len(messages):
+            return None
+        message = messages[offset]
+        if (
+            message.get("role") == "assistant"
+            and not message.get("tool_calls")
+            and message.get("content") == run.result
+        ):
+            return message
+        return None
 
     @staticmethod
     def _run_fact_messages(

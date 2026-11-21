@@ -136,6 +136,19 @@ def _normalized(name: str) -> str:
     return " ".join(name.casefold().split())
 
 
+def _heading(heading_path: list[str] | None) -> str:
+    return " / ".join(part[:160] for part in (heading_path or [])[-3:])
+
+
+def _chunk_offset(locator: object) -> int | None:
+    if not isinstance(locator, dict):
+        return None
+    offset = locator.get("char_start")
+    if type(offset) is not int or offset < 0:
+        return None
+    return offset
+
+
 class DocumentStore:
     """The owner's durable document library and its ingestion queue."""
 
@@ -381,7 +394,7 @@ class DocumentStore:
             return {}
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT d.document_id, c.chunk_id, d.title, c.heading_path "
+                "SELECT d.document_id, c.chunk_id, d.title, c.heading_path, c.locator "
                 "FROM unnest(%s::text[], %s::bigint[]) AS ref(document_id, chunk_id) "
                 "JOIN chunks c USING (document_id, chunk_id) "
                 "JOIN documents d ON d.document_id = c.document_id "
@@ -393,17 +406,19 @@ class DocumentStore:
                     DOCUMENT_READY,
                 ),
             ).fetchall()
-        return {
-            DocumentReference(
+        labels: dict[DocumentReference, dict[str, object]] = {}
+        for row in rows:
+            # Match the preview: a chunk without a usable offset cannot be opened.
+            if _chunk_offset(row["locator"]) is None:
+                continue
+            reference = DocumentReference(
                 document_id=row["document_id"], chunk_id=row["chunk_id"]
-            ): {
+            )
+            labels[reference] = {
                 "title": row["title"],
-                "heading": " / ".join(
-                    part[:160] for part in (row["heading_path"] or [])[-3:]
-                ),
+                "heading": _heading(row["heading_path"]),
             }
-            for row in rows
-        }
+        return labels
 
     def document_chunk(self, reference: DocumentReference) -> dict[str, object] | None:
         with self._connect() as connection:
@@ -414,16 +429,14 @@ class DocumentStore:
                 "AND c.chunk_id = %s",
                 (self.owner, DOCUMENT_READY, reference.document_id, reference.chunk_id),
             ).fetchone()
-        if row is None or not isinstance(row["locator"], dict):
+        if row is None:
             return None
-        offset = row["locator"].get("char_start")
-        if type(offset) is not int or offset < 0:
+        offset = _chunk_offset(row["locator"])
+        if offset is None:
             return None
         return {
             "title": row["title"],
-            "heading": " / ".join(
-                part[:160] for part in (row["heading_path"] or [])[-3:]
-            ),
+            "heading": _heading(row["heading_path"]),
             "content": row["text"],
             "offset": offset,
         }

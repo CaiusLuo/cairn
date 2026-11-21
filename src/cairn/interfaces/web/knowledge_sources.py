@@ -1,5 +1,6 @@
 """Resolve durable chat references against the current private library."""
 
+import logging
 from typing import Any
 
 from psycopg import Error as PostgresError
@@ -7,6 +8,8 @@ from pydantic import ValidationError
 
 from cairn.knowledge.document_store import DocumentStore
 from cairn.knowledge.documents import MAX_KNOWLEDGE_SOURCES, DocumentReference
+
+LOGGER = logging.getLogger(__name__)
 
 
 def label_knowledge_sources(
@@ -30,8 +33,10 @@ def label_knowledge_sources(
         labels = documents.document_source_labels(
             list(dict.fromkeys(ref for _, _, refs in cards for ref in refs))
         )
-    except (OSError, PostgresError):
-        labels = {}
+    except (OSError, PostgresError) as error:
+        # A transient lookup failure must not claim the documents were deleted.
+        LOGGER.warning("knowledge source labels unavailable: %s", type(error).__name__)
+        return
 
     for message, run_id, references in cards:
         message["knowledge"] = {
