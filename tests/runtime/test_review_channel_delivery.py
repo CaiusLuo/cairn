@@ -59,6 +59,18 @@ class _LegacyWechat:
     def health(self) -> ChannelAdapterHealth:
         return ChannelAdapterHealth(actual_state=ChannelActualState.RUNNING)
 
+    def identity(self) -> str | None:
+        return None
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+    async def reconnect(self) -> None:
+        return None
+
     async def send(
         self, target: str, message: str, idempotency_key: str
     ) -> ChannelSendResult:
