@@ -11,6 +11,21 @@ from cairn.agent.models.messages import LLMUsage, Message, ToolCall
 from cairn.agent.models.providers.litellm_client import LiteLLMClient
 
 
+def test_output_allowance_can_exceed_a_chat_budget() -> None:
+    client = LiteLLMClient(model="provider/model", max_output_tokens=256)
+    raised = client.with_output_allowance(4096)
+    assert raised.max_output_tokens == 4096
+    assert client.max_output_tokens == 256
+    # A later, smaller request cannot shrink an allowance that is already larger.
+    assert raised.with_output_allowance(1024).max_output_tokens == 4096
+    assert (
+        LiteLLMClient(model="provider/model")
+        .with_output_allowance(4096)
+        .max_output_tokens
+        == 4096
+    )
+
+
 @pytest.mark.parametrize(
     ("model", "supported"),
     [

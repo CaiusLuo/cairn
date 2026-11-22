@@ -18,6 +18,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from cairn.agent.budget import RunBudget
+from cairn.agent.models.client import LLMClient
 from cairn.agent.models.config.admission import ProviderApproval, load_approved_provider
 from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.agent.models.providers.litellm_client import LiteLLMClient
@@ -59,7 +60,7 @@ from cairn.review.collector import ReviewSourceCollector, WeeklySourceCollector
 from cairn.review.delivery import ReviewDeliveryCoordinator
 from cairn.review.models import DeliveryTarget, StoredReview
 from cairn.review.schedule import ReviewScheduleCoordinator
-from cairn.review.service import DailyReviewService
+from cairn.review.service import MIN_OUTPUT_TOKENS, DailyReviewService
 from cairn.review.store import ReviewStore
 from cairn.review.weekly import WeeklyReviewService
 from cairn.review.weekly_schedule import WeeklyReviewScheduleCoordinator
@@ -292,7 +293,15 @@ def runtime_app(
         recipient=review.recipient,
     )
     review_store = ReviewStore(knowledge_store)
-    review_llm = None if provider_runtime is None else provider_runtime.llm
+    review_llm: LLMClient | None
+    if provider_runtime is None:
+        review_llm = None
+    elif isinstance(provider_runtime.llm, LiteLLMClient):
+        # Reports are non-interactive and may need more output tokens than a
+        # chat turn; never lower an explicitly configured larger allowance.
+        review_llm = provider_runtime.llm.with_output_allowance(MIN_OUTPUT_TOKENS)
+    else:
+        review_llm = provider_runtime.llm
     review_model_id = (
         None
         if provider_runtime is None

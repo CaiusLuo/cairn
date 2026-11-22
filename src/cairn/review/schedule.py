@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 from psycopg import Error as PostgresError
 
 from cairn.review.models import ReviewStatus, StoredReview
-from cairn.review.service import DailyReviewService
+from cairn.review.service import TIMEOUT_SECONDS, DailyReviewService
 from cairn.scheduling.store import ScheduleStore
 
 REVIEW_TIMEZONE = "Asia/Shanghai"
@@ -28,7 +28,9 @@ REVIEW_CUTOFF = time(20, 30)
 REVIEW_REQUEST_PREFIX = "host-daily-review"
 REVIEW_SCHEDULE_VERSION = 1
 DEFAULT_POLL_SECONDS = 30.0
-DEFAULT_SETTLE_SECONDS = 300.0
+# Wait past the generation deadline so a late but successful report still
+# reaches the generic channel dispatcher and records its schedule outcome.
+DEFAULT_SETTLE_SECONDS = TIMEOUT_SECONDS + 120.0
 RETRY_SECONDS = 300.0
 # A long shutdown compensates at most this many unclaimed cutoff days. Older
 # periods are recorded as skipped instead of generating a burst of stale
@@ -334,7 +336,10 @@ class ReviewScheduleCoordinator:
                 review.review_id, timeout=self.settle_timeout
             )
         except TimeoutError:
-            self._save(last_status="generating")
+            self._save(
+                last_status="generating",
+                last_review_id=review.review_id,
+            )
             return review
         self._record_settled(day, settled)
         if settled.status is ReviewStatus.COMPLETED and self.on_settled is not None:
@@ -409,7 +414,10 @@ class ReviewScheduleCoordinator:
                 review.review_id, timeout=self.settle_timeout
             )
         except TimeoutError:
-            self._save(last_status="generating")
+            self._save(
+                last_status="generating",
+                last_review_id=review.review_id,
+            )
             return review
         if key is not None:
             receipts[key] = {

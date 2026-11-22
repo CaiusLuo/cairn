@@ -304,6 +304,8 @@ def test_retry_timeout_does_not_persist_a_receipt(tmp_path: Path) -> None:
         assert first.status is ReviewStatus.PENDING
         assert not coordinator.state.get("retry_requests")
         assert "2026-W03" in coordinator.state["failed_weeks"]
+        # A restart reconciles the retry attempt, not the older scheduled row.
+        assert coordinator.state["last_review_id"] == first.review_id
 
         second = await coordinator.retry_failed("2026-W03", "operator-timeout-1")
         assert second is not None

@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 from psycopg import Error as PostgresError
 
 from cairn.review.models import ReviewStatus, StoredReview
+from cairn.review.service import TIMEOUT_SECONDS
 from cairn.review.weekly import (
     DEFAULT_WEEKLY_CUTOFF,
     WeeklyReviewService,
@@ -34,7 +35,9 @@ REVIEW_WEEKLY_TIME = time(20, 40)
 REVIEW_WEEKLY_REQUEST_PREFIX = "host-weekly-review"
 WEEKLY_SCHEDULE_VERSION = 1
 DEFAULT_POLL_SECONDS = 30.0
-DEFAULT_SETTLE_SECONDS = 300.0
+# Wait past the generation deadline so a late but successful report still
+# reaches the generic channel dispatcher and records its schedule outcome.
+DEFAULT_SETTLE_SECONDS = TIMEOUT_SECONDS + 120.0
 RETRY_SECONDS = 300.0
 SUNDAY = 6
 # A long shutdown generates only the most recent week. Older periods are
@@ -404,7 +407,7 @@ class WeeklyReviewScheduleCoordinator:
             # No receipt until the attempt is terminal. A replay with the same
             # operator request_id re-enters the deterministic store request and
             # observes this same review instead of creating a second version.
-            self._save(last_status="generating")
+            self._save(last_status="generating", last_review_id=review.review_id)
             return review
         receipts[key] = {
             "week_id": week_id,

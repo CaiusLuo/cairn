@@ -25,11 +25,15 @@ from cairn.review.models import (
 from cairn.review.store import ReviewStore
 from cairn.shared.redaction import redact_text
 
-# Report generation is non-interactive; a reasoning model can take close to two
-# minutes on a full day's evidence, and the schedule waits five minutes for it.
-# Keep enough headroom that a slow but successful generation is not marked
-# failed, while still bounding a genuinely stalled provider.
-TIMEOUT_SECONDS = 240.0
+# Report generation is non-interactive but can be slow: a weekly report includes
+# the week's original evidence and a reasoning model may spend several minutes
+# on it. Keep enough headroom that a slow but successful generation is not
+# marked failed, while still bounding a genuinely stalled provider.
+TIMEOUT_SECONDS = 600.0
+# Chat turns reserve 8192 output tokens by default. Reviews are not chat replies:
+# their reasoning can exhaust that reserve and leave an empty answer. Give the
+# review model a larger allowance without changing the shared chat budget.
+MIN_OUTPUT_TOKENS = 32_768
 MAX_MODEL_OUTPUT_CHARS = 100_000
 MAX_MARKDOWN_CHARS = 40_000
 
@@ -238,6 +242,8 @@ class ReviewServiceBase:
             response = await self._call_model(self._messages(review_input))
             if response.tool_calls:
                 raise ReviewGenerationError("model_tool_calls_forbidden")
+            if response.truncated:
+                raise ReviewGenerationError("model_output_truncated")
             content = response.content
             if content is None or not content.strip():
                 raise ReviewGenerationError("empty_model_response")

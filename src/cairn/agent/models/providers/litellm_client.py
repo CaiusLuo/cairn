@@ -138,6 +138,28 @@ class LiteLLMClient:
             missing_credential=self.missing_credential,
         )
 
+    def with_output_allowance(self, max_output_tokens: int) -> "LiteLLMClient":
+        """This client with at least the requested output allowance.
+
+        Chat clients are built with the turn budget's response reserve. A
+        non-interactive report may need a larger allowance, but must never
+        silently shrink an explicitly configured one.
+        """
+        if max_output_tokens < 1:
+            raise ValueError("max_output_tokens must be positive")
+        limit = (
+            max_output_tokens
+            if self.max_output_tokens is None
+            else max(self.max_output_tokens, max_output_tokens)
+        )
+        return LiteLLMClient(
+            model=self.model,
+            api_key=self.api_key,
+            api_base=self.api_base,
+            max_output_tokens=limit,
+            missing_credential=self.missing_credential,
+        )
+
     @property
     def supports_streaming(self) -> bool:
         """Select only audited chat routes using local configuration/SDK metadata.

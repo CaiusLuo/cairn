@@ -754,6 +754,18 @@ def test_missing_provider_is_an_explicit_failure(tmp_path: Path) -> None:
         ),
         ("empty", FakeLLM([LLMResponse(content="   ")]), None, "empty_model_response"),
         (
+            "truncated",
+            FakeLLM([LLMResponse(content="", truncated=True)]),
+            None,
+            "model_output_truncated",
+        ),
+        (
+            "truncated_partial_json",
+            FakeLLM([LLMResponse(content='{"date": "2026-01-15"', truncated=True)]),
+            None,
+            "model_output_truncated",
+        ),
+        (
             "invalid_json",
             FakeLLM([LLMResponse(content="not json")]),
             None,
