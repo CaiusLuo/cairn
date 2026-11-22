@@ -97,7 +97,7 @@ Hard rules:
   and leave the unsupported arrays empty. Do not add motivational filler.
 - Maximum counts: major_events 6, progress 6, conversation_highlights 6,
   knowledge_insights 5, knowledge_recall 6, recurring_problems 5,
-  next_week_priorities 5.
+  next_week_priorities 5, confidence_notes 5.
 - Write in the language used by the source material. Do not output Markdown
   fences or tool calls.
 """

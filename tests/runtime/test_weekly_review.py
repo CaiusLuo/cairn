@@ -958,3 +958,26 @@ def test_weekly_service_rejects_a_week_mismatch_from_the_model(
     settled = asyncio.run(scenario())
     assert settled.status is ReviewStatus.FAILED
     assert settled.error == "invalid_model_output"
+
+
+def test_weekly_service_trims_extra_confidence_notes(tmp_path: Path) -> None:
+    period = week_period(WEEK, timezone=TZ)
+    notes = [f"note {index}" for index in range(6)]
+    service, _ = _service(
+        tmp_path,
+        _weekly_input(period, (_task_source("task-1"),)),
+        llm=FakeLLM(_payload(period, confidence_notes=notes)),
+    )
+
+    async def scenario() -> Any:
+        created = await service.generate_weekly_review(
+            WEEK, "weekly-extra-notes", timezone=TZ
+        )
+        settled = await service.wait_for_review(created.review_id)
+        await service.close()
+        return settled
+
+    settled = asyncio.run(scenario())
+    assert settled.status is ReviewStatus.COMPLETED
+    assert isinstance(settled.summary, WeeklyReview)
+    assert settled.summary.confidence_notes == tuple(notes[:5])

@@ -22,6 +22,7 @@ REVIEW_REQUEST_ID_MAX_LENGTH = 200
 REVIEW_TIMEZONE_MAX_LENGTH = 64
 MAX_SOURCE_REFS = 128
 MAX_ITEM_SOURCE_REFS = 16
+MAX_CONFIDENCE_NOTES = 5
 
 
 class ReviewType(StrEnum):
@@ -304,7 +305,9 @@ class DailyReview(BaseModel):
     problems: tuple[ReviewItem, ...] = Field(default=(), max_length=3)
     recommendations: tuple[ReviewItem, ...] = Field(default=(), max_length=3)
     source_refs: tuple[str, ...] = Field(default=(), max_length=MAX_SOURCE_REFS)
-    confidence_notes: tuple[str, ...] = Field(default=(), max_length=5)
+    confidence_notes: tuple[str, ...] = Field(
+        default=(), max_length=MAX_CONFIDENCE_NOTES
+    )
 
     @field_validator("overview")
     @classmethod
@@ -328,6 +331,16 @@ class DailyReview(BaseModel):
             if item not in cleaned:
                 cleaned.append(item)
         return tuple(cleaned)
+
+    @field_validator("confidence_notes", mode="before")
+    @classmethod
+    def _trim_confidence_notes(cls, values: object) -> object:
+        # Confidence notes are auxiliary; an extra note must not discard the
+        # whole report. The model is asked for at most five, but truncating is
+        # safer than failing a scheduled review over one unlisted remark.
+        if isinstance(values, (list, tuple)):
+            return values[:MAX_CONFIDENCE_NOTES]
+        return values
 
     @field_validator("confidence_notes")
     @classmethod
@@ -357,7 +370,9 @@ class WeeklyReview(BaseModel):
     recurring_problems: tuple[ReviewItem, ...] = Field(default=(), max_length=5)
     next_week_priorities: tuple[ReviewItem, ...] = Field(default=(), max_length=5)
     source_refs: tuple[str, ...] = Field(default=(), max_length=MAX_SOURCE_REFS)
-    confidence_notes: tuple[str, ...] = Field(default=(), max_length=5)
+    confidence_notes: tuple[str, ...] = Field(
+        default=(), max_length=MAX_CONFIDENCE_NOTES
+    )
 
     @field_validator("overview")
     @classmethod
@@ -381,6 +396,16 @@ class WeeklyReview(BaseModel):
             if item not in cleaned:
                 cleaned.append(item)
         return tuple(cleaned)
+
+    @field_validator("confidence_notes", mode="before")
+    @classmethod
+    def _trim_confidence_notes(cls, values: object) -> object:
+        # Confidence notes are auxiliary; an extra note must not discard the
+        # whole report. The model is asked for at most five, but truncating is
+        # safer than failing a scheduled review over one unlisted remark.
+        if isinstance(values, (list, tuple)):
+            return values[:MAX_CONFIDENCE_NOTES]
+        return values
 
     @field_validator("confidence_notes")
     @classmethod

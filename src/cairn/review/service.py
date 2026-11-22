@@ -95,7 +95,8 @@ Hard rules:
   confidence_notes, and leave the unsupported arrays empty. Do not add
   motivational filler.
 - Maximum counts: completed_activities 5, conversation_highlights 5,
-  knowledge_insights 3, knowledge_recall 5, problems 3, recommendations 3.
+  knowledge_insights 3, knowledge_recall 5, problems 3, recommendations 3,
+  confidence_notes 5.
 - Write in the language used by the source material. Do not output Markdown
   fences or tool calls.
 """

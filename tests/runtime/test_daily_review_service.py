@@ -241,6 +241,27 @@ def test_valid_report_is_persisted_with_citations_and_no_tools(tmp_path: Path) -
     asyncio.run(scenario())
 
 
+def test_extra_confidence_notes_do_not_discard_the_report(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        notes = [f"note {index}" for index in range(6)]
+        service = _service(
+            tmp_path,
+            llm=FakeLLM([LLMResponse(content=_payload(confidence_notes=notes))]),
+        )
+        try:
+            created = await service.generate_daily_review(
+                DAY, "extra-confidence-notes", timezone=TZ
+            )
+            stored = await service.wait_for_review(created.review_id)
+            assert stored.status is ReviewStatus.COMPLETED
+            assert isinstance(stored.summary, DailyReview)
+            assert stored.summary.confidence_notes == tuple(notes[:5])
+        finally:
+            await service.close()
+
+    asyncio.run(scenario())
+
+
 def test_conversation_highlights_and_recall_are_cited_and_rendered(
     tmp_path: Path,
 ) -> None:
