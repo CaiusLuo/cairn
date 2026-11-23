@@ -299,6 +299,7 @@ def test_host_environment_credential_is_not_overwritten(
 ) -> None:
     service = _service(workspace, monkeypatch)
     monkeypatch.setenv("BAILIAN_KEY", "host-managed")
+    (workspace[0] / ".env").write_text("BACKUP_KEY=backup-secret-alt\nOTHER=keep-me")
     before = (workspace[2].read_bytes(), (workspace[0] / ".env").read_bytes())
 
     with pytest.raises(ModelSettingsError) as caught:
@@ -307,6 +308,24 @@ def test_host_environment_credential_is_not_overwritten(
     assert caught.value.code == "host_env_credential"
     assert (workspace[2].read_bytes(), (workspace[0] / ".env").read_bytes()) == before
     assert service.read()["providers"][0]["key_source"] == "host"
+
+
+def test_workspace_env_key_can_be_replaced_even_if_exported(
+    workspace: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _, _ = workspace
+    service = _service(workspace, monkeypatch)
+    monkeypatch.setenv("BAILIAN_KEY", "host-stale")
+    expected = _update().api_key
+    assert expected is not None
+    assert service.read()["providers"][0]["key_source"] == "dotenv"
+
+    result = service.save(_update())
+
+    assert result["restart_required"] is True
+    text = (root / ".env").read_text()
+    assert f"BAILIAN_KEY={expected}" in text
+    assert "host-stale" not in text
 
 
 def test_invalid_endpoint_and_missing_credential_write_nothing(
@@ -555,6 +574,28 @@ def test_probe_returns_model_ids_without_exposing_the_key(
     assert _FakeClient.seen[0][0] == "https://probe.example/v1/models"
     assert _FakeClient.seen[0][1]["Authorization"] == "Bearer probe-secret"
     assert "probe-secret" not in json.dumps(result)
+
+
+def test_probe_prefers_the_workspace_credential(
+    workspace: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _service(workspace, monkeypatch)
+    monkeypatch.setenv("BAILIAN_KEY", "host-stale")
+    _FakeClient.seen = []
+    _FakeClient.status = 200
+    _FakeClient.body = b'{"data": [{"id": "model-a"}]}'
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    stored = dotenv_values(workspace[0] / ".env")["BAILIAN_KEY"]
+
+    service.probe(
+        ProbeModels(
+            base_url="https://probe.example/v1",
+            api_key_env="BAILIAN_KEY",
+            api_key=None,
+        )
+    )
+
+    assert _FakeClient.seen[0][1]["Authorization"] == f"Bearer {stored}"
 
 
 def test_probe_maps_rejected_credentials(

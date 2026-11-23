@@ -333,10 +333,12 @@ def _env_values(path: Path) -> dict[str, str | None]:
 def _key_state(
     api_key_env: str, env_values: Mapping[str, str | None]
 ) -> tuple[bool, str]:
-    if os.environ.get(api_key_env):
-        return True, "host"
+    # The workspace .env is the Web-managed source. Report it even when the
+    # running process also inherited the same name from its environment.
     if env_values.get(api_key_env):
         return True, "dotenv"
+    if os.environ.get(api_key_env):
+        return True, "host"
     return False, "missing"
 
 
@@ -602,7 +604,7 @@ class ModelSettingsService:
         )
         key = _clean_api_key(request.api_key)
         if key is None:
-            key = os.environ.get(api_key_env) or env_values.get(api_key_env)
+            key = env_values.get(api_key_env) or os.environ.get(api_key_env)
         if not key:
             raise _error(
                 "credential_missing",
@@ -856,10 +858,18 @@ class ModelSettingsService:
         _validated_provider_config(base_url, api_key_env, group_name, model_ids)
 
         provided_key = _clean_api_key(request.api_key)
-        if provided_key is not None and os.environ.get(api_key_env):
+        # A workspace .env entry is the managed source and is loaded by the
+        # service EnvironmentFile on restart, so replacing it is safe even when
+        # the running process also sees the old value in its environment.
+        if (
+            provided_key is not None
+            and os.environ.get(api_key_env)
+            and api_key_env not in env_values
+        ):
             raise _error(
                 "host_env_credential",
-                f"{api_key_env} 由服务环境提供，Web 不能覆盖。请更新服务的环境变量后重启。",
+                f"{api_key_env} 由服务环境提供且不在工作区 .env 中，Web 不能覆盖。"
+                "请使用其他凭据变量名，或更新服务的环境变量后重启。",
             )
         key_configured, _key_source = _key_state(api_key_env, env_values)
         if provided_key is None and not key_configured:
