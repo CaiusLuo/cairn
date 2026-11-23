@@ -26,6 +26,7 @@ export default defineConfig({
         chat: `${root}chat.html`,
         channels: `${root}channels.html`,
         knowledge: `${root}knowledge.html`,
+        model: `${root}model.html`,
         settings: `${root}settings.html`,
         sessions: `${root}index.html`,
         tasks: `${root}tasks.html`,

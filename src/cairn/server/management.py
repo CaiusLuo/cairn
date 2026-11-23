@@ -711,7 +711,7 @@ class ServerControls:
             if args and args != "list":
                 return {
                     "ok": False,
-                    "message": "此操作未执行。Provider 和模型配置增删须由宿主修改 models.toml 并重新批准、重启 Server; /model use 可切换已批准组内的模型。",
+                    "message": "此操作未执行。Provider 和模型配置请在 Web 的「模型」页 (/model.html) 修改并重启 Server; /model use 可切换已批准组内的模型。",
                 }
             return {
                 "ok": True,

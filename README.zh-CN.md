@@ -101,6 +101,24 @@ ssh -N -L 8777:127.0.0.1:8777 YOUR_SERVER
 uv run cairn-cli --config /etc/cairn/config.toml
 ```
 
+### 模型配置
+
+登录后打开 **/model.html**，无需在服务器上编辑 TOML 即可配置提供方。可从国内
+OpenAI 兼容预设中选择：Magpie、阿里云百炼/DashScope、DeepSeek、Kimi、智谱、
+火山方舟、MiniMax、硅基流动，也可以填写自定义 HTTPS endpoint。使用「获取模型
+列表」发现模型 ID，或每行填写一个模型 ID。API Key 只写入、不回显：它保存在
+工作区 `.env` 中，不会返回给浏览器。
+
+保存时会保留其他提供方、模型组和 TOML 注释；选中的提供方和模型组会成为第一项，
+Cairn 会为下次启动重新生成 provider approval。执行页面提示的命令使配置生效：
+
+```sh
+sudo ./scripts/start.sh restart
+```
+
+重启前，当前正在执行的回合继续使用原模型。已有的 `.cairn/models.toml` 仍然
+受支持，`/model use` 仍可在已批准组内切换模型。
+
 ### 从旧版 SQLite 升级
 
 运行过旧版本的宿主会保留旧 SQLite 文件，直到执行导入。停止服务，先演练导入，再正式执行：

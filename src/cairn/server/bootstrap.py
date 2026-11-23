@@ -77,6 +77,7 @@ from cairn.server.config import (
 )
 from cairn.server.lifecycle import running_runtime
 from cairn.server.management import ServerControls
+from cairn.server.model_settings import ModelSettingsService
 from cairn.shared.db import Database
 
 app = typer.Typer(
@@ -109,6 +110,7 @@ def runtime_app(
     review: ReviewConfig = DEFAULT_REVIEW,
     knowledge: KnowledgeConfig = DEFAULT_KNOWLEDGE,
     config_file: Path | None = None,
+    provider_approval: Path | None = None,
     protected_paths: tuple[Path, ...] = (),
     tracer: Tracer | None = None,
 ) -> Any:
@@ -144,6 +146,11 @@ def runtime_app(
         execution,
         board=TaskBoardService(TaskBoardStore(state / "board"), project=str(workspace)),
     )
+    model_settings = ModelSettingsService(
+        workspace, state, provider_approval, execution
+    )
+    if provider_runtime is not None:
+        model_settings.clear_pending()
     domain_store = DomainStore(database)
     service.domain_store = domain_store
     conversations = ConversationService(
@@ -245,6 +252,7 @@ def runtime_app(
             knowledge_store=knowledge_store,
             documents=document_store,
             channels=channel_manager,
+            model_settings=model_settings,
         )
     except BaseException:
         execution.close()
@@ -285,6 +293,7 @@ def runtime_app(
     )
     channel_manager.set_secret_sink(controls.protect_channel_secrets)
     web.state.channels = channel_manager
+    web.state.model_settings = model_settings
     execution.protected_paths += protected_paths
     web.router.routes[0:0] = management_routes(controls, token)
     web.state.controls = controls
@@ -572,6 +581,7 @@ def run_server(config: ServerConfig) -> None:
             review=config.review,
             knowledge=config.knowledge,
             config_file=config.config_file,
+            provider_approval=config.provider_approval,
             protected_paths=tuple(
                 p for p in (config.config_file, config.provider_approval) if p
             ),

@@ -140,6 +140,27 @@ To use the CLI, run this on the server from the configured workspace:
 uv run cairn-cli --config /etc/cairn/config.toml
 ```
 
+### Model configuration
+
+After signing in, open **/model.html** to configure the provider without editing
+TOML on the server. Choose a preset for a domestic OpenAI-compatible provider —
+Magpie, Alibaba Cloud Bailian/DashScope, DeepSeek, Kimi, Zhipu, Volcengine Ark,
+MiniMax or SiliconFlow — or enter a custom HTTPS endpoint. Use **获取模型列表**
+to discover model IDs, or type them one per line. The API key is write-only: it
+is stored in the workspace `.env` and is never returned to the browser.
+
+Saving preserves the other providers, model groups and TOML comments. The saved
+provider and group become the first entries, and Cairn regenerates the provider
+approval for the next start. Run the displayed command to apply the change:
+
+```sh
+sudo ./scripts/start.sh restart
+```
+
+The currently running turn keeps its model until the restart. Existing
+`.cairn/models.toml` files remain supported, and `/model use` still switches
+between model IDs in the approved group.
+
 ### Upgrade from a legacy SQLite release
 
 A host that ran a previous release keeps its legacy SQLite files until they are

@@ -9,13 +9,14 @@ import { href, Shell, type View } from "./Shell";
 const Approvals = lazy(() => import("./Approvals").then(module => ({ default: module.Approvals })));
 const Knowledge = lazy(() => import("./Knowledge").then(module => ({ default: module.Knowledge })));
 const Channels = lazy(() => import("./Channels").then(module => ({ default: module.Channels })));
+const ModelPage = lazy(() => import("./ModelPage").then(module => ({ default: module.ModelPage })));
 const SettingsPage = lazy(() => import("../SettingsPage").then(module => ({ default: module.SettingsPage })));
 const lastConversationKey = "cairn.web.last-conversation";
 
 function currentRoute() {
   const params = new URLSearchParams(location.search);
   const requested = params.get("view");
-  const alias: Record<string, View> = { "/chat.html": params.has("task") ? "tasks" : "chat", "/settings.html": "settings", "/tasks.html": "tasks", "/knowledge.html": "knowledge", "/channels.html": "channels" };
+  const alias: Record<string, View> = { "/chat.html": params.has("task") ? "tasks" : "chat", "/settings.html": "settings", "/tasks.html": "tasks", "/knowledge.html": "knowledge", "/channels.html": "channels", "/model.html": "model" };
   // The graph view is gone; old bookmarks still land on their task.
   const view = requested === "workflow" ? "tasks" : requested === "runs" || requested === "approvals" || requested === "knowledge" ? requested : alias[location.pathname] ?? "home";
   return { view, params };
@@ -105,6 +106,7 @@ export function App() {
       {view === "tasks" && <Tasks tasks={development} id={task} navigate={navigate} refresh={refresh} loading={!tasks.data} error={tasks.error}/>}
       {view === "knowledge" && <Knowledge/>}
       {view === "channels" && <Channels key={navigationEpoch}/>}
+      {view === "model" && <ModelPage/>}
       {view === "runs" && <Runs runs={runs.data ?? []} id={run} navigate={navigate} error={runs.error}/>}
       {view === "approvals" && <Approvals task={task} run={run} tasks={development} runs={runs.data ?? []} navigate={navigate} refresh={refresh} error={runs.error || tasks.error}/>}
       {view === "settings" && <SettingsPage key={params.get("section")} />}

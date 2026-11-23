@@ -52,6 +52,7 @@ def test_custom_root_web_api_and_restart_share_persistent_state(tmp_path: Path) 
                 "/tasks.html",
                 "/knowledge.html",
                 "/channels.html",
+                "/model.html",
                 "/settings.html",
                 "/index.html",
             ):

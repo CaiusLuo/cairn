@@ -157,11 +157,16 @@ def create_app(
     review_cutoff: time | None = None,
     review_timezone: str | None = None,
     channels: ChannelManager | None = None,
+    model_settings: Any | None = None,
 ) -> Starlette:
     if runtime is not None and (not config.auth_passphrase or not runtime_token):
         raise ValueError("Runtime routes require authenticated host configuration")
     if channels is not None and (not config.auth_passphrase or not runtime_token):
         raise ValueError("Channel routes require authenticated host configuration")
+    if model_settings is not None and (not config.auth_passphrase or not runtime_token):
+        raise ValueError(
+            "Model settings routes require authenticated host configuration"
+        )
     if reader is None:
         if database is None:
             raise ValueError("A shared database is required for session history")
@@ -388,6 +393,10 @@ def create_app(
         from cairn.interfaces.web.channels import channel_routes
 
         routes.extend(channel_routes(channels, runtime_token))
+    if model_settings is not None:
+        from cairn.interfaces.web.model_settings import model_routes
+
+        routes.extend(model_routes(model_settings, runtime_token))
     if runtime is not None:
         from cairn.interfaces.web.runtime import task_routes
 
