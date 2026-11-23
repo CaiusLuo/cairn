@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
+import httpx
 import pytest
 from dotenv import dotenv_values
 
@@ -537,7 +538,7 @@ def test_probe_returns_model_ids_without_exposing_the_key(
     _FakeClient.seen = []
     _FakeClient.status = 200
     _FakeClient.body = b'{"data": [{"id": "model-a"}, {"id": "model-b"}]}'
-    monkeypatch.setattr(settings_module.httpx, "Client", _FakeClient)
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
 
     result = service.probe(
         ProbeModels(
@@ -561,7 +562,7 @@ def test_probe_maps_rejected_credentials(
 ) -> None:
     service = _service(workspace, monkeypatch)
     _FakeClient.status = 401
-    monkeypatch.setattr(settings_module.httpx, "Client", _FakeClient)
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
 
     with pytest.raises(ModelSettingsError) as caught:
         service.probe(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from starlette.testclient import TestClient
@@ -14,6 +15,8 @@ from cairn.agent.models.config.loader import load_project_providers
 from cairn.agent.models.selection import ModelManager
 from cairn.interfaces.web.app import create_app
 from cairn.interfaces.web.config import WebConfig
+from cairn.interfaces.web.reader import SnapshotReader
+from cairn.knowledge.store import KnowledgeStore
 from cairn.server.model_settings import ModelSettingsService
 
 TOML = """\
@@ -75,9 +78,12 @@ def _app(
     )
     app = create_app(
         config,
-        reader=SimpleNamespace(snapshot=lambda: {"read_only": True}),
+        reader=cast(
+            SnapshotReader,
+            SimpleNamespace(snapshot=lambda: {"read_only": True}),
+        ),
         runtime_token="host-token",
-        knowledge_store=SimpleNamespace(),
+        knowledge_store=cast(KnowledgeStore, SimpleNamespace()),
         model_settings=service,
     )
     return TestClient(app, base_url="http://127.0.0.1"), root, approval
