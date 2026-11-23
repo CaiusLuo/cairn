@@ -227,6 +227,7 @@ def _html(text: str) -> bytes:
             "bad()",
         ),
     ],
+    ids=["text", "pdf", "docx", "xlsx", "pptx", "html"],
 )
 def test_attachments_are_read_by_a_run_scoped_tool(
     tmp_path: Path,
