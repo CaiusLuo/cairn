@@ -1,13 +1,14 @@
 <p align="center">
-  <a href="https://github.com/CaiusLuo/cairn/releases/download/demo-video/cairn-promo.mp4">
-    <img src="assets/cairn-poster.png" alt="Cairn — self-hosted personal Agent" width="900">
-  </a>
+  <img src="assets/cairn-poster.png" alt="Cairn — self-hosted personal Agent" width="900">
 </p>
 
 <p align="center">
   <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
-  · <a href="https://github.com/CaiusLuo/cairn/releases/download/demo-video/cairn-promo.mp4">▶ Watch or download the 39-second demo</a>
 </p>
+
+https://github.com/user-attachments/assets/23328968-2fae-4fb0-a7c8-7710bfae6d0b
+
+*39-second product tour. The video uses demo data only.*
 
 Cairn is a personal Agent that runs on a Debian server. Use Web, CLI or messaging
 clients to chat, manage personal information and work on code. The server keeps
@@ -345,11 +346,6 @@ See [Tests](tests/README.md#feedback-cost) for full Debian acceptance and CI
 behavior, and [Operational scripts](scripts/README.md) for maintenance commands.
 Keep this README focused on setup, everyday use and current limitations;
 implementation details and change history belong in code, tests and commits.
-
-## Demo video
-
-[Watch or download the 39-second product tour](https://github.com/CaiusLuo/cairn/releases/download/demo-video/cairn-promo.mp4).
-The video uses demo data only.
 
 ## License
 

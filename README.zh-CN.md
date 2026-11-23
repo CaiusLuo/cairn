@@ -1,13 +1,14 @@
 <p align="center">
-  <a href="https://github.com/CaiusLuo/cairn/releases/download/demo-video/cairn-promo.mp4">
-    <img src="assets/cairn-poster.png" alt="Cairn — 自托管个人 Agent" width="900">
-  </a>
+  <img src="assets/cairn-poster.png" alt="Cairn — 自托管个人 Agent" width="900">
 </p>
 
 <p align="center">
   <a href="README.md">English</a> · <strong>简体中文</strong>
-  · <a href="https://github.com/CaiusLuo/cairn/releases/download/demo-video/cairn-promo.mp4">▶ 观看或下载 39 秒演示视频</a>
 </p>
+
+https://github.com/user-attachments/assets/23328968-2fae-4fb0-a7c8-7710bfae6d0b
+
+*39 秒产品演示。视频仅使用演示数据。*
 
 Cairn 是运行在 Debian 服务器上的个人 Agent。通过 Web、CLI 或消息客户端聊天、管理个人信息和处理代码。关闭客户端后，服务器上的对话和任务仍会继续运行。
 
@@ -228,10 +229,6 @@ uv run mypy src tests scripts/ci
 ```
 
 完整 Debian 验收和 CI 行为见[测试说明](tests/README.md#feedback-cost)，维护命令见[运维脚本](scripts/README.md)。README 只保留安装、日常使用和当前限制；实现细节和变更历史放在代码、测试和提交中。
-
-## 演示视频
-
-[观看或下载 39 秒产品演示](https://github.com/CaiusLuo/cairn/releases/download/demo-video/cairn-promo.mp4)。视频仅使用演示数据。
 
 ## 许可证
 
