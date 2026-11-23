@@ -6,7 +6,38 @@ Cairn is a personal Agent that runs on a Debian server. Use Web, CLI or messagin
 clients to chat, manage personal information and work on code. The server keeps
 conversations and tasks running when you close a client.
 
-## What you can do
+## 一眼看懂 Cairn / Cairn at a glance
+
+Cairn 是一个运行在自有服务器上的个人 AI Agent。Web、CLI 和微信共享同一份对话与任务状态，关闭客户端不会中断服务器上的工作。
+
+1. **对话**：提问、跟进和查看历史，跨端继续同一段对话。
+2. **交给它一项任务**：开发任务在独立 Git 工作树中执行，执行轨迹和结果可追踪、可恢复。
+3. **沉淀知识**：保存私有片段、上传文档，回答时引用原文来源。
+4. **自动复盘**：每天/每周汇总对话、知识和文档，按计划推送到已连接的渠道。
+5. **连接常用渠道**：微信、飞书、Telegram、QQ、Discord 统一接入；凭据只写入、不回显。
+
+![Chat with cited knowledge](assets/screenshots/chat-conversation.png)
+
+*对话会带上知识库来源和执行轨迹；同一段对话可在 Web、CLI 或微信继续。截图使用演示数据，不包含真实账号、令牌、聊天内容或个人记忆。*
+
+<details>
+<summary>更多界面：空白对话页、日报列表、飞书连接配置</summary>
+
+![Chat welcome](assets/screenshots/chat-welcome.png)
+
+*从空白对话页开始，支持快捷入口。*
+
+![Daily reviews](assets/screenshots/daily-reviews.png)
+
+*日报列表保留每个版本的生成状态和来源范围。*
+
+![Feishu connection](assets/screenshots/feishu-connection.png)
+
+*飞书连接配置；凭据只写入、不回显。*
+
+</details>
+
+## What you can do / 能力一览
 
 - **Chat and develop:** keep conversation history, follow progress, and start
   explicit development tasks in separate Git worktrees.
@@ -104,6 +135,10 @@ Chat normally for questions and personal assistance. Use `/develop GOAL` when
 you want a development task. Web and CLI can continue the same development task
 by its Task ID, retaining its session and worktree.
 
+![Development task](assets/screenshots/development-task.png)
+
+*开发任务拥有独立工作树、执行时间线和可恢复的结果。*
+
 | CLI command | Use |
 | --- | --- |
 | `/new` | Start a conversation |
@@ -130,6 +165,10 @@ them with `document_read`, citing `document_id` and `chunk_id`. Uploads are only
 visible to the owner. Deleting a document removes its chunks, graph rows and
 original file. Duplicate uploads are recognized by content hash. The configured
 extraction and chunk limits can make search cover less text than the preview.
+
+![Knowledge documents](assets/screenshots/knowledge-documents.png)
+
+*文档上传后会显示解析与索引状态，并可通过全文、中文三元组和向量混合检索。*
 
 In Web chat, completed replies that searched the document library can show up
 to three sources below the answer. Open a source to read its exact chunk. Use
@@ -208,7 +247,15 @@ owner is skipped rather than sent to a guessed target. Check report delivery
 status separately from whether generation succeeded. An unknown send outcome is
 not retried automatically.
 
+![Weekly review detail](assets/screenshots/weekly-review-detail.png)
+
+*周报详情展示正文、投递状态和来源清单；日报与周报都可以按计划生成并推送。*
+
 ## Messaging channels
+
+![Channel connections](assets/screenshots/channels-overview.png)
+
+*渠道配置与连接状态集中在一个页面；凭据只写入、不回显。*
 
 Open **`/channels.html`** to configure connections and inspect their status.
 
