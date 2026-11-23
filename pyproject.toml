@@ -3,6 +3,8 @@ name = "cairn"
 version = "0.1.0"
 description = "A lightweight agent harness built from first principles"
 readme = "README.md"
+license = "GPL-3.0-only"
+license-files = ["LICENSE", "NOTICE"]
 authors = [
     { name = "caius", email = "luoxiongcai5@gmail.com" }
 ]
