@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from dotenv import dotenv_values
@@ -21,12 +21,25 @@ from cairn.agent.models.selection import ModelConfig
 
 
 @dataclass(frozen=True, slots=True)
+class ApprovedGroup:
+    """One model group the operator approved, with its exact ordered model ids."""
+
+    name: str
+    model_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderApproval:
     """The exact provider facts an operator approves, bound before any credential.
 
-    Binding identity, endpoint, model group, credential *variable name* and the
-    full ordered model ids means a changed provider configuration cannot inherit a
-    stale approval; a mismatch is rejected before credential resolution or network.
+    Binding identity, endpoint, credential *variable name* and every approved
+    model group with its full ordered model ids means a changed provider
+    configuration cannot inherit a stale approval; a mismatch is rejected
+    before credential resolution or network.
+
+    ``groups`` is the ordered set available to the chat selector; the first
+    entry is the default. An empty ``groups`` is a legacy approval that binds
+    only ``group``/``model_ids``, which must be the provider's first group.
     """
 
     name: str
@@ -34,6 +47,7 @@ class ProviderApproval:
     group: str
     key_env: str
     model_ids: tuple[str, ...]
+    groups: tuple[ApprovedGroup, ...] = ()
 
 
 class ProviderApprovalRequired(ValueError):
@@ -42,6 +56,88 @@ class ProviderApprovalRequired(ValueError):
 
 class ProviderApprovalMismatch(ValueError):
     """The approved provider facts do not match the configured provider."""
+
+
+_APPROVAL_FIELDS = frozenset({"name", "endpoint", "group", "key_env", "model_ids"})
+
+
+def _approval_fields(data: object) -> dict[str, object]:
+    if not isinstance(data, dict):
+        raise ValueError("provider approval must be a JSON object")
+    fields: dict[str, object] = {}
+    for key, value in data.items():
+        if not isinstance(key, str):
+            raise ValueError("provider approval keys must be strings")
+        fields[key] = value
+    return fields
+
+
+def _approval_text(fields: Mapping[str, object], key: str) -> str:
+    value = fields.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"provider approval {key} must be a non-empty string")
+    return value
+
+
+def _approval_model_ids(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value:
+        raise ValueError("provider approval model_ids must be a non-empty list")
+    model_ids: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("provider approval model_ids must be non-empty strings")
+        model_ids.append(item)
+    return tuple(model_ids)
+
+
+def _approval_groups(value: object) -> tuple[ApprovedGroup, ...]:
+    if not isinstance(value, list) or not value:
+        raise ValueError("provider approval groups must be a non-empty list")
+    groups: list[ApprovedGroup] = []
+    for entry in value:
+        fields = _approval_fields(entry)
+        if set(fields) != {"name", "model_ids"}:
+            raise ValueError(
+                "provider approval groups must contain only name and model_ids"
+            )
+        groups.append(
+            ApprovedGroup(
+                name=_approval_text(fields, "name"),
+                model_ids=_approval_model_ids(fields["model_ids"]),
+            )
+        )
+    if len({group.name for group in groups}) != len(groups):
+        raise ValueError("provider approval group names must be unique")
+    return tuple(groups)
+
+
+def parse_provider_approval(data: object) -> ProviderApproval:
+    """Parse an approval file, accepting the legacy single-group shape."""
+    fields = _approval_fields(data)
+    if not set(fields) >= _APPROVAL_FIELDS or set(fields) - _APPROVAL_FIELDS - {
+        "groups"
+    }:
+        raise ValueError("provider approval has missing or unexpected fields")
+    name = _approval_text(fields, "name")
+    endpoint = _approval_text(fields, "endpoint")
+    group = _approval_text(fields, "group")
+    key_env = _approval_text(fields, "key_env")
+    model_ids = _approval_model_ids(fields["model_ids"])
+    groups: tuple[ApprovedGroup, ...] = ()
+    if "groups" in fields:
+        groups = _approval_groups(fields["groups"])
+        if groups[0] != ApprovedGroup(group, model_ids):
+            raise ValueError(
+                "provider approval group must equal its first approved group"
+            )
+    return ProviderApproval(
+        name=name,
+        endpoint=endpoint,
+        group=group,
+        key_env=key_env,
+        model_ids=model_ids,
+        groups=groups,
+    )
 
 
 def secret_values(
@@ -55,15 +151,59 @@ def secret_values(
     return tuple(values)
 
 
-def expected_approval(provider: object, group: object) -> ProviderApproval:
+def expected_catalog_approval(provider: object) -> ProviderApproval:
+    """The approval for the provider's full ordered group catalog."""
     config = provider.config  # type: ignore[attr-defined]
+    groups = tuple(config.model_config)
+    if not groups:
+        raise ValueError("Provider must declare at least one model group")
+    first = groups[0]
     return ProviderApproval(
         name=provider.name,  # type: ignore[attr-defined]
         endpoint=config.base_url,
-        group=group.name,  # type: ignore[attr-defined]
+        group=first.name,
         key_env=config.api_key_env,
-        model_ids=tuple(group.model_ids),  # type: ignore[attr-defined]
+        model_ids=tuple(first.model_ids),
+        groups=tuple(
+            ApprovedGroup(name=group.name, model_ids=tuple(group.model_ids))
+            for group in groups
+        ),
     )
+
+
+def approved_groups(
+    approval: ProviderApproval, provider: NamedProvider
+) -> tuple[ModelConfig, ...] | None:
+    """The configured groups the approval covers, in approval order.
+
+    ``None`` means the approval does not match this provider at all. A legacy
+    approval (no ``groups``) covers only the configured first group, which is
+    the same boundary earlier releases enforced.
+    """
+    config = provider.config
+    if (
+        approval.name != provider.name
+        or approval.endpoint != config.base_url
+        or approval.key_env != config.api_key_env
+    ):
+        return None
+    if not approval.groups:
+        first = config.model_config[0]
+        if approval.group != first.name or approval.model_ids != tuple(first.model_ids):
+            return None
+        return (first,)
+    configured = {group.name: group for group in config.model_config}
+    selected: list[ModelConfig] = []
+    for approved in approval.groups:
+        group = configured.get(approved.name)
+        if group is None or tuple(group.model_ids) != approved.model_ids:
+            return None
+        selected.append(group)
+    return tuple(selected)
+
+
+def approval_matches(approval: ProviderApproval, provider: NamedProvider) -> bool:
+    return approved_groups(approval, provider) is not None
 
 
 @dataclass(frozen=True)
@@ -85,15 +225,21 @@ def load_approved_provider(
     values = dotenv_values(workspace / ".env")
     project = load_project_providers(workspace / ".cairn" / "models.toml")
     provider = default_provider(project, os.environ, values)
-    group = provider.config.model_config[0]
     if approval is None:
         raise ProviderApprovalRequired(
             "Pass --approve-provider-name, --approve-provider-endpoint, --approve-provider-group, --approve-provider-key-env and --approve-provider-models to authorize this provider."
         )
-    expected = expected_approval(provider, group)
-    if approval != expected:
+    matched = approved_groups(approval, provider)
+    if matched is None:
         raise ProviderApprovalMismatch(
-            f"approved provider does not match the configured provider (approved {approval}; configured {expected})"
+            "approved provider does not match the configured provider"
+        )
+    group = matched[0]
+    if tuple(provider.config.model_config) != matched:
+        # The running runtime must never expose a group the operator did not
+        # approve, even though the file may declare more.
+        provider = replace(
+            provider, config=replace(provider.config, model_config=matched)
         )
     key = resolve_provider_api_key(provider.config, os.environ, values)
     names = frozenset(

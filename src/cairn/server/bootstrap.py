@@ -19,7 +19,10 @@ from starlette.routing import Route
 
 from cairn.agent.budget import RunBudget
 from cairn.agent.models.client import LLMClient
-from cairn.agent.models.config.admission import ProviderApproval, load_approved_provider
+from cairn.agent.models.config.admission import (
+    load_approved_provider,
+    parse_provider_approval,
+)
 from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.agent.models.providers.litellm_client import LiteLLMClient
 from cairn.agent.models.runtime import ProviderRuntime, build_provider_runtime
@@ -503,22 +506,8 @@ def _load_provider(
     if config.provider_approval is not None:
         try:
             data = json.loads(config.provider_approval.read_text())
-            expected = {"name", "endpoint", "group", "key_env", "model_ids"}
-            if (
-                not isinstance(data, dict)
-                or set(data) != expected
-                or not isinstance(data["model_ids"], list)
-                or not data["model_ids"]
-                or not all(isinstance(value, str) for value in data["model_ids"])
-                or not all(
-                    isinstance(data[key], str) for key in expected - {"model_ids"}
-                )
-            ):
-                raise ValueError("Invalid provider approval file")
-            data["model_ids"] = tuple(data["model_ids"])
-            approved = load_approved_provider(
-                config.paths.workspace, ProviderApproval(**data)
-            )
+            approval = parse_provider_approval(data)
+            approved = load_approved_provider(config.paths.workspace, approval)
             names, known_values = approved.secret_env_keys, approved.sensitive_values
             profile = build_provider_runtime(
                 approved.provider,

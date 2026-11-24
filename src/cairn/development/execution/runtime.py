@@ -161,9 +161,10 @@ class ServiceExecution:
         profile = self.provider_runtime
         if profile is None or task.model_id is None:
             return profile
-        group = profile.model_manager.current_model()
-        if task.model_id not in group.model_ids:
-            raise ValueError("Model not in the host-approved group")
+        try:
+            group = profile.model_manager.resolve_model_id(task.model_id)
+        except ValueError:
+            raise ValueError("Model is outside the approved groups") from None
         selected = replace(
             group,
             model_ids=(

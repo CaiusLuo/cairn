@@ -180,10 +180,14 @@ def test_workbench_admits_and_persists_only_approved_run_model(tmp_path: Path) -
     async def scenario() -> None:
         app = _app(tmp_path)
         primary, alternate = "fixture/primary", "fixture/alternate"
+        reasoning = "fixture/reasoning"
         config = ProviderConfig(
             "https://fixture.invalid",
             "TEST_KEY",
-            (ModelConfig("chat", (primary, alternate)),),
+            (
+                ModelConfig("chat", (primary, alternate)),
+                ModelConfig("reasoning", (reasoning,)),
+            ),
         )
         model_manager = ModelManager(config)
         used: list[str] = []
@@ -216,6 +220,20 @@ def test_workbench_admits_and_persists_only_approved_run_model(tmp_path: Path) -
             )
             conversation_id = created.raise_for_status().json()["conversation_id"]
             path = prefix + f"conversations/{conversation_id}/messages"
+            snapshot = (
+                (
+                    await client.get(
+                        prefix + "management?section=workbench", headers=auth
+                    )
+                )
+                .raise_for_status()
+                .json()
+            )
+            assert snapshot["models"] == [primary, alternate, reasoning]
+            assert snapshot["model_groups"] == [
+                {"name": "chat", "model_ids": [primary, alternate]},
+                {"name": "reasoning", "model_ids": [reasoning]},
+            ]
             payload = {
                 "prompt": "choose model",
                 "source": "web",
@@ -246,12 +264,29 @@ def test_workbench_admits_and_persists_only_approved_run_model(tmp_path: Path) -
             )
             assert changed.status_code == 409
 
+            cross = await client.post(
+                path,
+                headers=auth,
+                json={**payload, "request_id": "cross-group", "model_id": reasoning},
+            )
+            cross_id = cross.raise_for_status().json()["run_id"]
+            await asyncio.wait_for(app.state.conversations.queue.join(), timeout=5)
+            cross_result = (
+                (await client.get(prefix + f"runs/{cross_id}", headers=auth))
+                .raise_for_status()
+                .json()
+            )
+            assert cross_result["status"] == "completed"
+            assert cross_result["model_id"] == reasoning
+            assert set(used) == {alternate, reasoning}
+            assert model_manager.current_model_id() == primary
+
             rows = (
                 (await client.get(prefix + "runs", headers=auth))
                 .raise_for_status()
                 .json()
             )
-            assert [row["run_id"] for row in rows] == [run_id]
+            assert {row["run_id"] for row in rows} == {run_id, cross_id}
             assert (await client.get(prefix + "runs")).status_code == 401
             wrong_workspace = await client.get(
                 prefix + "runs", headers={**auth, "X-Cairn-Workspace": "file:///wrong"}

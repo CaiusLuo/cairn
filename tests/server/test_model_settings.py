@@ -78,6 +78,10 @@ def workspace(tmp_path: Path) -> tuple[Path, Path, Path]:
     approval = tmp_path / "policy/provider.json"
     approval.parent.mkdir()
     provider = load_project_providers(config).providers[0]
+    groups = [
+        {"name": group.name, "model_ids": list(group.model_ids)}
+        for group in provider.config.model_config
+    ]
     approval.write_text(
         json.dumps(
             {
@@ -86,6 +90,7 @@ def workspace(tmp_path: Path) -> tuple[Path, Path, Path]:
                 "group": provider.config.model_config[0].name,
                 "key_env": provider.config.api_key_env,
                 "model_ids": list(provider.config.model_config[0].model_ids),
+                "groups": groups,
             }
         )
     )
@@ -99,6 +104,8 @@ def _service(
     state = root.parent / "state"
     monkeypatch.delenv("BAILIAN_KEY", raising=False)
     monkeypatch.delenv("BACKUP_KEY", raising=False)
+    # litellm imports load the repository .env into the test process.
+    monkeypatch.delenv("CAIRN_LLM_API_KEY", raising=False)
     execution = SimpleNamespace(provider_runtime=_runtime(config))
     return ModelSettingsService(root, state, approval, execution)
 
@@ -133,6 +140,11 @@ def test_read_describes_files_and_running_provider_without_secrets(
     assert result["active_model"] == "openai/kimi"
     assert result["providers"][0]["key_source"] == "dotenv"
     assert result["providers"][0]["groups"][1]["next_start"] is False
+    assert [group["approved"] for group in result["providers"][0]["groups"]] == [
+        True,
+        True,
+    ]
+    assert [group["approved"] for group in result["providers"][1]["groups"]] == [False]
     assert result["running"] == {
         "provider": "bailian",
         "group": "kimi",
@@ -189,6 +201,13 @@ def test_save_switches_group_preserves_other_groups_and_providers(
         "group": "deepseek-fast",
         "key_env": "BAILIAN_KEY",
         "model_ids": ["openai/deepseek-v2", "openai/deepseek-backup"],
+        "groups": [
+            {
+                "name": "deepseek-fast",
+                "model_ids": ["openai/deepseek-v2", "openai/deepseek-backup"],
+            },
+            {"name": "kimi", "model_ids": ["openai/kimi"]},
+        ],
     }
     assert result["restart_required"] is True
     assert result["settings"]["active_group"] == "deepseek-fast"
@@ -390,6 +409,7 @@ def test_failed_approval_write_rolls_back_config_and_env(
     root, approval, config = workspace
     service = _service(workspace, monkeypatch)
     before = (config.read_bytes(), (root / ".env").read_bytes())
+    before_approval = approval.read_bytes()
     real_write = settings_module._write_file
 
     def fail_approval(
@@ -405,18 +425,7 @@ def test_failed_approval_write_rolls_back_config_and_env(
         service.save(_update())
 
     assert (config.read_bytes(), (root / ".env").read_bytes()) == before
-    assert (
-        approval.read_bytes()
-        == json.dumps(
-            {
-                "name": "bailian",
-                "endpoint": "https://old.example/v1",
-                "group": "kimi",
-                "key_env": "BAILIAN_KEY",
-                "model_ids": ["openai/kimi"],
-            }
-        ).encode()
-    )
+    assert approval.read_bytes() == before_approval
     assert not (root.parent / "state/model-settings-pending.json").exists()
 
 

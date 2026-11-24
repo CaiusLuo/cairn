@@ -772,7 +772,7 @@ def test_agent_schedule_tool_and_cli_share_the_real_store(tmp_path: Path) -> Non
     asyncio.run(scenario())
 
 
-def test_model_selection_stays_inside_host_approved_group(tmp_path: Path) -> None:
+def test_model_selection_stays_inside_approved_groups(tmp_path: Path) -> None:
     from cairn.agent.context.window import ContextBuilder
     from cairn.agent.models.catalog import NamedProvider
     from cairn.agent.models.executor import ModelExecutor
@@ -784,12 +784,14 @@ def test_model_selection_stays_inside_host_approved_group(tmp_path: Path) -> Non
         app, api = control_runtime(tmp_path)
         built: list[str] = []
         executed: list[str] = []
+        # The runtime only ever contains approved groups; unapproved groups are
+        # filtered before the provider is built.
         config = ProviderConfig(
             "https://example.invalid",
             "KEY",
             (
                 ModelConfig("approved", ("first", "second")),
-                ModelConfig("not-approved", ("other",)),
+                ModelConfig("long-context", ("third",)),
             ),
         )
         manager = ModelManager(config)
@@ -820,11 +822,17 @@ def test_model_selection_stays_inside_host_approved_group(tmp_path: Path) -> Non
             await asyncio.wait_for(app.state.runtime.queue.join(), 10)
             assert (await api.inspect(task["task_id"]))["status"] == "completed"
             assert executed == ["second"]
-            assert "other" not in built
             assert (
                 manager.current_model_id() == "first"
             )  # No global in-flight binding changed.
             assert (await api.inspect(task["task_id"]))["model_id"] == "second"
+
+            assert (await command(api, "/model", "use long-context"))["ok"]
+            second = await api.submit("again", "cli", mode="conversation")
+            await asyncio.wait_for(app.state.runtime.queue.join(), 10)
+            assert (await api.inspect(second["task_id"]))["status"] == "completed"
+            assert executed == ["second", "third"]
+            assert (await api.inspect(second["task_id"]))["model_id"] == "third"
 
     asyncio.run(scenario())
 

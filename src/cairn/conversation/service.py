@@ -590,11 +590,12 @@ class ConversationService:
         if existing is None:
             if model_id is not None:
                 profile = self.execution.provider_runtime
-                if (
-                    profile is None
-                    or model_id not in profile.model_manager.current_model().model_ids
-                ):
-                    raise ValueError("Model is outside the approved group")
+                try:
+                    if profile is None:
+                        raise ValueError
+                    profile.model_manager.resolve_model_id(model_id)
+                except ValueError:
+                    raise ValueError("Model is outside the approved groups") from None
             runs = self.store.list_runs_for_conversation(conversation_id)
             if any(run.status is RunStatus.RECOVERY_REQUIRED for run in runs):
                 raise ConversationRecoveryRequired(

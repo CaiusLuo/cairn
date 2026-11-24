@@ -110,14 +110,16 @@ OpenAI 兼容预设中选择：Magpie、阿里云百炼/DashScope、DeepSeek、K
 工作区 `.env` 中，不会返回给浏览器。
 
 保存时会保留其他提供方、模型组和 TOML 注释；选中的提供方和模型组会成为第一项，
-Cairn 会为下次启动重新生成 provider approval。执行页面提示的命令使配置生效：
+Cairn 会为该提供方的**全部模型组**重新生成 provider approval。执行页面提示的命令
+使配置生效：
 
 ```sh
 sudo ./scripts/start.sh restart
 ```
 
-重启前，当前正在执行的回合继续使用原模型。已有的 `.cairn/models.toml` 仍然
-受支持，`/model use` 仍可在已批准组内切换模型。
+重启后，对话框的模型菜单会按模型组列出所有已批准模型；选择哪一个，本次请求就使用
+哪一个，不需要再次修改配置或重启。重启前，当前正在执行的回合继续使用原模型。已有的
+`.cairn/models.toml` 仍然受支持，`/model use` 也可在已批准组内切换后续请求的默认模型。
 
 ### 从旧版 SQLite 升级
 

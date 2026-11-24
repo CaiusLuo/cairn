@@ -365,13 +365,16 @@ class ServerControls:
     async def snapshot(self, section: str = "summary") -> dict[str, Any]:
         if section == "workbench":
             provider = self.execution.provider_runtime
-            models = (
-                provider.model_manager.current_model().model_ids if provider else ()
-            )
+            groups = provider.model_manager.list_models() if provider else ()
+            models = tuple(ident for group in groups for ident in group.model_ids)
             return {
                 "workspace": str(self.workspace),
                 "provider": provider.provider.name if provider else None,
                 "models": list(models),
+                "model_groups": [
+                    {"name": group.name, "model_ids": list(group.model_ids)}
+                    for group in groups
+                ],
                 "conversation_model": models[0] if models else None,
                 "development_model": self.service.default_model_id
                 or (models[0] if models else None),
@@ -679,16 +682,29 @@ class ServerControls:
             if profile is None:
                 return {"ok": True, "message": "Server 当前使用离线验收模型。"}
             current = profile.model_manager.current_model()
+            approved = tuple(
+                ident
+                for group in profile.model_manager.list_models()
+                for ident in group.model_ids
+            )
             parts = args.split()
             if name == "/model" and parts[:1] == ["use"] and len(parts) == 2:
                 ident = parts[1]
-                if ident == current.name:
-                    ident = current.model_ids[0]
-                if ident not in current.model_ids:
+                group = next(
+                    (
+                        item
+                        for item in profile.model_manager.list_models()
+                        if item.name == ident
+                    ),
+                    None,
+                )
+                if group is not None:
+                    ident = group.model_ids[0]
+                elif ident not in approved:
                     return {
                         "ok": False,
                         "message": "模型不在宿主已批准的组内。批准列表: "
-                        + ", ".join(current.model_ids),
+                        + ", ".join(approved),
                     }
                 task_id = request.get("task_id")
                 if task_id:
@@ -718,7 +734,12 @@ class ServerControls:
                 "message": "Provider: "
                 + profile.provider.name
                 + "\n已批准模型: "
-                + ", ".join(current.model_ids)
+                + ", ".join(approved)
+                + "\n模型组: "
+                + "; ".join(
+                    f"{group.name} ({', '.join(group.model_ids)})"
+                    for group in profile.model_manager.list_models()
+                )
                 + "\n默认: "
                 + str(self.service.default_model_id or current.model_ids[0]),
             }

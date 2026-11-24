@@ -11,7 +11,9 @@ a secret value.
 Only the selected provider and its selected model group are edited. Other
 providers, other groups and unrelated TOML keys stay in the document. The
 selection is committed by moving the chosen provider and group first, because
-startup chooses the first provider and the approval binds its first group.
+startup chooses the first provider and its first group. Every model group of
+that provider is approved, so the chat selector can switch among them after
+the restart without another configuration change.
 """
 
 from __future__ import annotations
@@ -35,7 +37,12 @@ import tomlkit
 from dotenv import dotenv_values
 
 from cairn.agent.models.catalog import NamedProvider
-from cairn.agent.models.config.admission import ProviderApproval, expected_approval
+from cairn.agent.models.config.admission import (
+    ProviderApproval,
+    approved_groups,
+    expected_catalog_approval,
+    parse_provider_approval,
+)
 from cairn.agent.models.config.loader import load_project_providers
 from cairn.agent.models.config.schema import (
     CAIRN_LLM_API_KEY_ENV_NAME,
@@ -308,19 +315,9 @@ def _read_approval(path: Path | None) -> tuple[ProviderApproval | None, bool]:
         return None, False
     try:
         data = json.loads(path.read_bytes())
+        return parse_provider_approval(data), True
     except (OSError, ValueError):
         return None, False
-    keys = {"name", "endpoint", "group", "key_env", "model_ids"}
-    if (
-        not isinstance(data, dict)
-        or set(data) != keys
-        or not isinstance(data["model_ids"], list)
-        or not data["model_ids"]
-        or not all(isinstance(value, str) for value in data["model_ids"])
-        or not all(isinstance(data[key], str) for key in keys - {"model_ids"})
-    ):
-        return None, False
-    return ProviderApproval(**{**data, "model_ids": tuple(data["model_ids"])}), True
 
 
 def _env_values(path: Path) -> dict[str, str | None]:
@@ -657,6 +654,11 @@ class ModelSettingsService:
         approval, approval_valid = _read_approval(self.approval_path)
         providers = project.providers
         provider_views: list[dict[str, Any]] = []
+        approved_names: set[str] = set()
+        if approval is not None and providers:
+            approved = approved_groups(approval, providers[0])
+            if approved is not None:
+                approved_names = {group.name for group in approved}
 
         active_provider: str | None = None
         active_group: str | None = None
@@ -671,6 +673,7 @@ class ModelSettingsService:
                         "name": group.name,
                         "model_ids": list(group.model_ids),
                         "next_start": index == 0 and group_index == 0,
+                        "approved": index == 0 and group.name in approved_names,
                     }
                 )
             provider_views.append(
@@ -761,24 +764,24 @@ class ModelSettingsService:
             return not approval_valid and self.approval_path is not None
         if not approval_valid or approval is None:
             return True
-        expected = expected_approval(providers[0], providers[0].config.model_config[0])
-        if approval != expected:
+        expected = approved_groups(approval, providers[0])
+        if expected is None:
             return True
         runtime = self.execution.provider_runtime
         if runtime is None:
             return False
         running_provider = runtime.provider
         configured = providers[0]
-        if (
+        return (
             running_provider.name != configured.name
             or running_provider.config.base_url != configured.config.base_url
-        ):
-            return True
-        running_group = runtime.model_manager.current_model()
-        configured_group = configured.config.model_config[0]
-        return running_group.name != configured_group.name or tuple(
-            running_group.model_ids
-        ) != tuple(configured_group.model_ids)
+            or running_provider.config.api_key_env != configured.config.api_key_env
+            or tuple(
+                (group.name, group.model_ids)
+                for group in runtime.model_manager.list_models()
+            )
+            != tuple((group.name, group.model_ids) for group in expected)
+        )
 
     def _blocked_reason(self) -> str | None:
         if self.approval_path is None:
@@ -889,8 +892,8 @@ class ModelSettingsService:
             model_ids,
         )
         updated = tomlkit.dumps(document)
-        first, first_group = self._validated_document(updated)
-        expected = expected_approval(first, first_group)
+        first = self._validated_document(updated)
+        expected = expected_catalog_approval(first)
         approval_bytes = _atomic_json(asdict(expected))
         if first.name != provider_name:
             raise _error(
@@ -1104,7 +1107,7 @@ class ModelSettingsService:
         return document
 
     @staticmethod
-    def _validated_document(text: str) -> tuple[NamedProvider, ModelConfig]:
+    def _validated_document(text: str) -> NamedProvider:
         try:
             values = tomllib.loads(text)
             if "providers" in values:
@@ -1121,7 +1124,7 @@ class ModelSettingsService:
             ) from None
         if not providers or not providers[0].config.model_config:
             raise _error("invalid_model_settings", "配置必须包含至少一个模型组。")
-        return providers[0], providers[0].config.model_config[0]
+        return providers[0]
 
 
 def _probe_models(base_url: str, api_key: str) -> dict[str, Any]:

@@ -73,10 +73,16 @@ export function useResource<T>(path: string | null, interval = 0) {
   return { ...(entry.path === path ? entry.value : {}), refresh };
 }
 
+export type WorkbenchModelGroup = {
+  name: string;
+  model_ids: string[];
+};
+
 export type WorkbenchConfig = {
   workspace: string;
   provider: string | null;
   models: string[];
+  model_groups: WorkbenchModelGroup[];
   conversation_model: string | null;
   development_model: string | null;
   development_shell: boolean;

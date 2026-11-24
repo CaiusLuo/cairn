@@ -434,7 +434,7 @@ export function ModelPage() {
           <section className="settings-section">
             <h2>提供方</h2>
             <p className="muted">
-              Server 启动时使用列表中的第一个提供方及其第一个模型组。选择另一个提供方或模型组并保存，会把它移到第一位；其余配置保留。
+              Server 启动时使用列表中的第一个提供方及其第一个模型组。选择另一个提供方或模型组并保存，会把它移到第一位；其余配置保留。保存会批准该提供方的全部模型组，重启后可在对话框的模型菜单中选择。
             </p>
             <div className="model-provider-list">
               {settings.providers.map(item => (
@@ -456,6 +456,8 @@ export function ModelPage() {
                   <span className="wb-muted">
                     {item.key_configured ? "密钥已配置" : "密钥未配置"} ·{" "}
                     {item.groups.length} 个模型组
+                    {item.groups.some(group => group.approved) &&
+                      ` · ${item.groups.filter(group => group.approved).length} 个已批准`}
                   </span>
                 </button>
               ))}
@@ -562,6 +564,7 @@ export function ModelPage() {
                         <option key={group.name} value={group.name}>
                           {group.name}
                           {group.next_start ? "（下次启动）" : ""}
+                          {group.approved ? "（已批准）" : ""}
                         </option>
                       ))}
                     </select>
@@ -590,6 +593,9 @@ export function ModelPage() {
                     }
                   />
                 </label>
+                <p className="model-key-hint full-width">
+                  保存会批准该提供方的所有模型组；重启后可在对话框的模型菜单中按组切换，无需再改配置。
+                </p>
                 <details className="full-width model-advanced">
                   <summary>高级：凭据环境变量</summary>
                   <label>

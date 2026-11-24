@@ -15,6 +15,7 @@ export type ModelGroup = {
   name: string;
   model_ids: string[];
   next_start: boolean;
+  approved: boolean;
 };
 
 export type ModelProvider = {

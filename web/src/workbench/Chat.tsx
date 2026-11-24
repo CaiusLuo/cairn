@@ -91,6 +91,9 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   useEffect(() => { setPending(readSubmission(key)); }, [key]);
   useEffect(() => { setSteer(null); setDraftSource(null); }, [id]);
   useEffect(() => {
+    if (model && config && !config.models.includes(model)) setModel("");
+  }, [config, model]);
+  useEffect(() => {
     if (!steer || steer.phase === "queued" || steer.phase === "applied") return;
     const match = [...stream.events].reverse().find(event =>
       (event.kind === "steer_applied" || event.kind === "steer_unapplied") &&
@@ -304,7 +307,9 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
         <button className="composer-icon" type="button" aria-label="添加附件" title="添加附件（文本、PDF、Office 或 HTML）" disabled={mode === "development" || uploading || steering || attachments.length >= 5} onClick={() => fileInput.current?.click()}><Icon name={uploading ? "clock" : "doc"} size={16}/></button>
         <label><Icon name="server" size={15}/><select aria-label="模型" disabled={mode === "development" || !config?.models.length} value={mode === "development" ? "" : model} onChange={event => setModel(event.target.value)}>
           <option value="">{mode === "development" ? config?.development_model ?? "Server 默认模型" : config?.conversation_model ?? "离线验收模型"}</option>
-          {config?.models.map(item => <option key={item} value={item}>{item}</option>)}
+          {config?.model_groups.map(group => <optgroup key={group.name} label={group.name}>
+            {group.model_ids.map(item => <option key={`${group.name}:${item}`} value={item}>{item}</option>)}
+          </optgroup>)}
         </select></label>
         <label title={mode === "development" ? `Shell ${config?.development_shell ? "宿主已授权" : "关闭"} · 网络 ${config?.development_network ? "宿主已授权" : "关闭"}` : "对话中的项目文件只读"}><Icon name="lock" size={15}/><select aria-label="权限模式" value={mode} onChange={event => setMode(event.target.value as Submission["mode"])}>
           <option value="conversation">对话 · 项目只读</option><option value="development" disabled={uploading || attachments.length > 0 || !!draftSource}>开发 · 独立工作树</option>
