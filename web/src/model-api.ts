@@ -16,6 +16,7 @@ export type ModelGroup = {
   model_ids: string[];
   next_start: boolean;
   approved: boolean;
+  active: boolean;
 };
 
 export type ModelProvider = {
@@ -25,7 +26,14 @@ export type ModelProvider = {
   key_configured: boolean;
   key_source: ModelKeySource;
   next_start: boolean;
+  approved: boolean;
   groups: ModelGroup[];
+};
+
+export type ModelChoice = {
+  provider: string;
+  group: string;
+  model_id: string;
 };
 
 export type ModelDraft = {
@@ -45,6 +53,7 @@ export type ModelSettings = {
   config_exists: boolean;
   layout: "env" | "legacy" | "catalog";
   providers: ModelProvider[];
+  models: ModelChoice[];
   active_provider: string | null;
   active_group: string | null;
   active_model: string | null;
@@ -83,6 +92,17 @@ export type SaveModelResult = {
   message: string;
 };
 
+export type SelectModelBody = {
+  provider: string;
+  group: string;
+  model: string;
+};
+
+export type SelectModelResult = {
+  settings: ModelSettings;
+  message: string;
+};
+
 export type ProbeModelResult = {
   endpoint: string;
   models: string[];
@@ -112,6 +132,9 @@ const FAILURE_TEXT: Record<string, string> = {
   host_env_credential:
     "该 API Key 由服务环境提供，Web 不能覆盖；请更新服务的环境变量后重启。",
   credential_missing: "还没有可用的 API Key，请填写后再保存。",
+  invalid_model_selection:
+    "该模型不在当前已启用的提供方和模型组内；请先保存配置或刷新页面。",
+  model_selection_unavailable: "当前没有运行中的提供方，无法切换模型。",
   model_settings_rollback_failed:
     "保存失败且回滚不完整；请立即在服务器上核对 models.toml、.env 和 provider approval。",
   probe_credential_rejected: "提供方拒绝了该 API Key，请检查 Key 或 endpoint。",
@@ -178,6 +201,10 @@ export async function getModelSettings(
 
 export function saveModelSettings(body: SaveModelBody) {
   return modelApi<SaveModelResult>("", { method: "PUT", body });
+}
+
+export function selectModel(body: SelectModelBody) {
+  return modelApi<SelectModelResult>("/select", { method: "POST", body });
 }
 
 export function probeModels(body: {

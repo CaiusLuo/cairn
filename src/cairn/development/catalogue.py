@@ -94,6 +94,10 @@ class RuntimeTask(BaseModel):
     prompt: str = Field(min_length=1, max_length=32000)
     source: RuntimeSource
     model_id: str | None = None
+    # A full selection is persisted with the task/run so recovery and traces
+    # never have to guess which provider served a model id.
+    provider_name: str | None = None
+    model_group: str | None = None
     delivery_recipient: str | None = Field(default=None, max_length=256)
     delivery_account: str | None = Field(default=None, max_length=256)
     channel_principal: ChannelPrincipal | None = None

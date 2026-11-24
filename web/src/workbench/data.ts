@@ -76,18 +76,48 @@ export function useResource<T>(path: string | null, interval = 0) {
 export type WorkbenchModelGroup = {
   name: string;
   model_ids: string[];
+  provider?: string;
+};
+
+export type WorkbenchProvider = {
+  name: string;
+  groups: WorkbenchModelGroup[];
 };
 
 export type WorkbenchConfig = {
   workspace: string;
   provider: string | null;
+  providers: WorkbenchProvider[];
   models: string[];
   model_groups: WorkbenchModelGroup[];
+  active_provider: string | null;
+  active_group: string | null;
+  active_model: string | null;
   conversation_model: string | null;
   development_model: string | null;
   development_shell: boolean;
   development_network: boolean;
 };
+
+/** A provider/group/model triple encoded for use as an option value. */
+export function modelKey(provider: string, group: string, model: string) {
+  return JSON.stringify([provider, group, model]);
+}
+
+export function parseModelKey(
+  key: string,
+): { provider: string; group: string; model: string } | null {
+  try {
+    const value = JSON.parse(key);
+    return Array.isArray(value) &&
+      value.length === 3 &&
+      value.every(item => typeof item === "string" && item)
+      ? { provider: value[0], group: value[1], model: value[2] }
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 export type TaskInput = {
   request_id: string;

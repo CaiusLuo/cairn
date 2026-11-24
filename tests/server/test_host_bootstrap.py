@@ -60,7 +60,10 @@ def test_first_use_preserves_model_secrets_and_existing_host_files(
     secrets = (root / ".env").read_bytes()
     bootstrap.prepare(root, config, user)
     approval = config.parent / "provider-approval.json"
-    assert json.loads(approval.read_text())["model_ids"] == ["openai/fixture"]
+    approved = json.loads(approval.read_text())
+    assert approved["version"] == 2
+    assert approved["providers"][0]["name"] == "fixture"
+    assert approved["providers"][0]["model_ids"] == ["openai/fixture"]
     assert "private-test-value" not in config.read_text() + approval.read_text()
     assert config.stat().st_mode & 0o777 == 0o600
     assert approval.stat().st_mode & 0o777 == 0o600

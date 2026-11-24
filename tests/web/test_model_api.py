@@ -11,8 +11,16 @@ import pytest
 from starlette.testclient import TestClient
 
 import cairn.server.model_settings as settings_module
+from cairn.agent.models.config.admission import ApprovedCatalog
 from cairn.agent.models.config.loader import load_project_providers
-from cairn.agent.models.selection import ModelManager
+from cairn.agent.models.registry import ModelSelectionError
+from cairn.agent.models.runtime import (
+    ProviderActivation,
+    build_provider_runtime,
+    runtime_for_model,
+)
+from cairn.agent.models.selection import ModelManager, ModelRef
+from cairn.agent.models.selection_store import ModelSelectionStore
 from cairn.interfaces.web.app import create_app
 from cairn.interfaces.web.config import WebConfig
 from cairn.interfaces.web.reader import SnapshotReader
@@ -33,11 +41,110 @@ API_KEY = "route-test-key"
 
 
 class _Execution:
-    def __init__(self, runtime: Any) -> None:
+    def __init__(self, runtime: Any, store: ModelSelectionStore) -> None:
         self.provider_runtime = runtime
+        self.selection_store = store
+        self.catalog: ApprovedCatalog | None = None
+
+    def current_model_ref(self) -> ModelRef | None:
+        runtime = self.provider_runtime
+        if runtime is None:
+            return None
+        group = runtime.model_manager.current_model()
+        return ModelRef(
+            runtime.provider.name,
+            group.name,
+            runtime.model_manager.current_model_id(),
+        )
+
+    def model_catalog_signature(self) -> tuple[tuple[object, ...], ...]:
+        if self.catalog is not None:
+            return tuple(
+                (
+                    approved.provider.name,
+                    approved.provider.config.base_url,
+                    approved.provider.config.api_key_env,
+                    tuple(
+                        (group.name, tuple(group.model_ids))
+                        for group in approved.provider.config.model_config
+                    ),
+                )
+                for approved in self.catalog.providers
+            )
+        runtime = self.provider_runtime
+        if runtime is None:
+            return ()
+        return (
+            (
+                runtime.provider.name,
+                runtime.provider.config.base_url,
+                runtime.provider.config.api_key_env,
+                tuple(
+                    (group.name, tuple(group.model_ids))
+                    for group in runtime.model_manager.list_models()
+                ),
+            ),
+        )
 
     def install_provider_activation(self, activation: Any) -> None:
         self.provider_runtime = activation.runtime
+
+    def install_model_catalog(
+        self,
+        catalog: ApprovedCatalog,
+        selection: ModelRef | None,
+        *,
+        persist: bool = True,
+    ) -> ProviderActivation:
+        approved = (
+            catalog.by_name(selection.provider)
+            if selection is not None
+            else catalog.providers[0]
+        )
+        assert approved is not None
+        group = (
+            next(
+                group
+                for group in approved.provider.config.model_config
+                if group.name == selection.group
+            )
+            if selection is not None
+            else approved.group
+        )
+        runtime = build_provider_runtime(
+            approved.provider,
+            approved.api_key,
+            approved.context_budget,
+            group=group.name,
+            missing_credential=approved.missing_credential,
+        )
+        if (
+            selection is not None
+            and runtime.model_manager.current_model_id() != selection.model
+        ):
+            runtime = runtime_for_model(runtime, selection.model)
+        ref = selection or ModelRef(
+            approved.provider.name, group.name, group.model_ids[0]
+        )
+        activation = ProviderActivation(
+            runtime=runtime,
+            secret_env_keys=catalog.secret_env_keys,
+            sensitive_values=catalog.sensitive_values,
+            ref=ref,
+        )
+        self.catalog = catalog
+        self.provider_runtime = runtime
+        if persist:
+            self.selection_store.save(ref)
+        return activation
+
+    def select_model(
+        self, ref: ModelRef, *, persist: bool = True
+    ) -> ProviderActivation:
+        if self.catalog is None or self.catalog.by_name(ref.provider) is None:
+            raise ModelSelectionError("Provider is not in the approved catalog")
+        activation = self.install_model_catalog(self.catalog, ref, persist=persist)
+        return activation
 
 
 def _workspace(tmp_path: Path) -> tuple[Path, Path]:
@@ -77,7 +184,9 @@ def _app(
         root,
         tmp_path / "state",
         approval,
-        _Execution(runtime),
+        _Execution(
+            runtime, ModelSelectionStore(tmp_path / "state/model-selection.json")
+        ),
     )
     config = WebConfig(
         workspace=root,
@@ -173,7 +282,10 @@ def test_save_requires_json_and_never_echoes_the_credential(
     assert body["settings"]["running"]["base_url"] == "https://new.example/v1"
     assert API_KEY not in response.text
     assert API_KEY in (root / ".env").read_text()
-    assert json.loads(approval.read_text())["model_ids"] == ["openai/kimi-v2"]
+    allowlist = json.loads(approval.read_text())
+    assert allowlist["version"] == 2
+    assert allowlist["providers"][0]["name"] == "bailian"
+    assert allowlist["providers"][0]["model_ids"] == ["openai/kimi-v2"]
 
     read = client.get("/api/model")
     assert read.status_code == 200
@@ -197,6 +309,53 @@ def test_invalid_request_does_not_echo_the_submitted_key(
     assert response.status_code == 422
     assert response.json()["error"] == "invalid_model_settings"
     assert oversized not in response.text
+
+
+def test_selection_switches_models_without_touching_deployment_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, root, approval = _app(tmp_path, monkeypatch)
+    _login(client)
+    saved = client.put(
+        "/api/model",
+        headers={"Origin": "http://127.0.0.1"},
+        json=_save_body(model_ids=["openai/kimi-v2", "openai/kimi-v3"]),
+    )
+    assert saved.status_code == 200
+    config_before = (root / ".cairn/models.toml").read_bytes()
+    approval_before = approval.read_bytes()
+
+    denied = client.post(
+        "/api/model/select",
+        headers={"Origin": "http://evil.example"},
+        json={"provider": "bailian", "group": "kimi", "model": "openai/kimi-v3"},
+    )
+    assert denied.status_code == 403
+
+    response = client.post(
+        "/api/model/select",
+        headers={"Origin": "http://127.0.0.1"},
+        json={"provider": "bailian", "group": "kimi", "model": "openai/kimi-v3"},
+    )
+
+    assert response.status_code == 200
+    settings = response.json()["settings"]
+    assert settings["active_provider"] == "bailian"
+    assert settings["active_group"] == "kimi"
+    assert settings["active_model"] == "openai/kimi-v3"
+    assert settings["restart_required"] is False
+    assert (root / ".cairn/models.toml").read_bytes() == config_before
+    assert approval.read_bytes() == approval_before
+    state = json.loads((tmp_path / "state/model-selection.json").read_text())
+    assert state["default"]["model"] == "openai/kimi-v3"
+
+    unknown = client.post(
+        "/api/model/select",
+        headers={"Origin": "http://127.0.0.1"},
+        json={"provider": "elsewhere", "group": "kimi", "model": "openai/kimi-v3"},
+    )
+    assert unknown.status_code == 409
+    assert unknown.json()["error"] == "invalid_model_selection"
 
 
 def test_probe_is_write_authorized_and_returns_only_model_ids(

@@ -17,9 +17,14 @@ from uuid import uuid4
 from cairn.agent.budget import RunBudget
 from cairn.agent.harness import Agent
 from cairn.agent.models.client import LLMClient
-from cairn.agent.models.executor import ModelExecutor
-from cairn.agent.models.runtime import ProviderActivation, ProviderRuntime
-from cairn.agent.models.selection import ModelManager
+from cairn.agent.models.config.admission import ApprovedCatalog
+from cairn.agent.models.registry import ModelSelectionError, ProviderRegistry
+from cairn.agent.models.runtime import (
+    ProviderActivation,
+    ProviderRuntime,
+)
+from cairn.agent.models.selection import ModelRef
+from cairn.agent.models.selection_store import ModelSelectionStore
 from cairn.agent.permissions import (
     PermissionCapability,
     PermissionChoice,
@@ -92,6 +97,8 @@ class ServiceExecution:
         allow_shell: bool = False,
         allow_network: bool = False,
         provider_runtime: ProviderRuntime | None = None,
+        provider_catalog: ApprovedCatalog | None = None,
+        selection_store: ModelSelectionStore | None = None,
         secret_env_keys: frozenset[str] = frozenset(),
         sensitive_values: tuple[str, ...] = (),
         tracer: Tracer | None = None,
@@ -124,7 +131,35 @@ class ServiceExecution:
             )
             self.tracer = Tracer(redactor)
             self._trace_redactor = redactor
-        self.provider_runtime = provider_runtime
+        self.selection_store = selection_store or ModelSelectionStore(
+            state / "model-selection.json"
+        )
+        selection = self.selection_store.load().default
+        fallback = None
+        if provider_catalog is None and provider_runtime is not None:
+            group = provider_runtime.model_manager.current_model()
+            fallback = ProviderActivation(
+                runtime=provider_runtime,
+                secret_env_keys=secret_env_keys,
+                sensitive_values=sensitive_values,
+                ref=ModelRef(
+                    provider_runtime.provider.name,
+                    group.name,
+                    provider_runtime.model_manager.current_model_id(),
+                ),
+            )
+        self.model_registry = ProviderRegistry(
+            provider_catalog, selection, fallback=fallback
+        )
+        initial = self.model_registry.current_activation()
+        self.provider_runtime = (
+            initial.runtime if initial is not None else provider_runtime
+        )
+        if initial is not None:
+            secret_env_keys = secret_env_keys | initial.secret_env_keys
+            sensitive_values = tuple(
+                dict.fromkeys((*sensitive_values, *initial.sensitive_values))
+            )
         self.secret_env_keys = secret_env_keys
         self.allow_network = allow_network
         self.provider = WorktreeProvider(
@@ -173,19 +208,83 @@ class ServiceExecution:
         self._provider_listeners.append(listener)
 
     def install_provider_activation(self, activation: ProviderActivation) -> None:
-        """Serve new work from a freshly approved provider.
+        """Install one pre-built runtime, preserving the former single-provider API."""
+        self.model_registry.install_activation(activation)
+        self._publish_activation(activation)
 
-        The runtime is one immutable reference: a run that already captured its
-        profile keeps it, while every later lookup sees the new provider.
-        Credential names and redaction values are only ever added, because an
-        active run may still hold a value discovered before this swap. They are
-        extended before the swap so a failure there leaves the old provider
-        serving and lets the caller roll its files back.
+    def install_model_catalog(
+        self,
+        catalog: ApprovedCatalog,
+        selection: ModelRef | None,
+        *,
+        persist: bool = True,
+    ) -> ProviderActivation:
+        """Install a freshly approved catalog and select its target model.
+
+        The activation is built before any state changes.  A caller inside its
+        own file transaction can pass ``persist=False`` and include the
+        selection file itself, so a later failure rolls files and runtime back
+        together.
         """
+        activation = self.model_registry.prepare_catalog(catalog, selection)
+        if activation.ref is None:
+            raise ModelSelectionError("No model is available for the new catalog")
+        if persist:
+            self.selection_store.save(activation.ref)
+        self.model_registry.install_prepared(catalog, activation)
+        self._publish_activation(activation)
+        return activation
+
+    def select_model(
+        self, ref: ModelRef, *, persist: bool = True
+    ) -> ProviderActivation:
+        """Serve new work with ``ref`` after validating and building it."""
+        self._adopt_manual_runtime()
+        activation = self.model_registry.prepare(ref)
+        if persist:
+            self.selection_store.save(ref)
+        self.model_registry.commit(activation)
+        self._publish_activation(activation)
+        return activation
+
+    def _adopt_manual_runtime(self) -> None:
+        """Make a directly assigned ``provider_runtime`` selectable.
+
+        Tests and embedders may replace ``provider_runtime`` without going
+        through an install method.  Adopt it as the static catalog the registry
+        resolves against, so switching models still validates against exactly
+        the groups that runtime exposes.
+        """
+        if self.model_registry.catalog is not None:
+            return
+        runtime = self.provider_runtime
+        if runtime is None or self.model_registry.current_ref() is not None:
+            return
+        group = runtime.model_manager.current_model()
+        self.model_registry.install_activation(
+            ProviderActivation(
+                runtime=runtime,
+                secret_env_keys=self.secret_env_keys,
+                sensitive_values=self.sensitive_values,
+                ref=ModelRef(
+                    runtime.provider.name,
+                    group.name,
+                    runtime.model_manager.current_model_id(),
+                ),
+            )
+        )
+
+    def _publish_activation(self, activation: ProviderActivation) -> None:
         self.secret_env_keys = self.secret_env_keys | activation.secret_env_keys
         self.provider.add_secret_env_keys(activation.secret_env_keys)
         self.protect_secrets(activation.sensitive_values)
         self.provider_runtime = activation.runtime
+        if self.service is not None and activation.ref is not None:
+            # Development and background tasks created after this swap must
+            # persist the full selection, not just a model id that another
+            # provider might also expose.
+            self.service.default_model_ref = activation.ref
+            self.service.default_model_id = activation.ref.model
         for listener in tuple(self._provider_listeners):
             try:
                 listener(activation)
@@ -195,34 +294,137 @@ class ServiceExecution:
                     "provider activation listener failed: %s", type(error).__name__
                 )
 
-    def profile_for(self, task: RuntimeTask) -> ProviderRuntime | None:
-        profile = self.provider_runtime
-        if profile is None or task.model_id is None:
-            return profile
+    def current_model_ref(self) -> ModelRef | None:
+        """The durable selection, falling back to the current runtime."""
+        activation = self.model_registry.current_activation()
+        if activation is not None and (
+            self.provider_runtime is None or self.provider_runtime is activation.runtime
+        ):
+            return activation.ref
+        return self._runtime_ref(self.provider_runtime)
+
+    def model_choices(self) -> tuple[ModelRef, ...]:
+        self._adopt_manual_runtime()
+        choices = self.model_registry.choices()
+        if choices:
+            return tuple(choice.ref for choice in choices)
+        runtime = self.provider_runtime
+        if runtime is None:
+            return ()
+        return tuple(
+            ModelRef(runtime.provider.name, group.name, model_id)
+            for group in runtime.model_manager.list_models()
+            for model_id in group.model_ids
+        )
+
+    def model_catalog_signature(self) -> tuple[tuple[Any, ...], ...]:
+        """Structural identity of the catalog the runtime currently serves.
+
+        Used by the settings page to prove that an external file edit has not
+        silently diverged from the running process.  It contains no secrets.
+        """
+        catalog = self.model_registry.catalog
+        if catalog is not None:
+            return tuple(
+                (
+                    approved.provider.name,
+                    approved.provider.config.base_url,
+                    approved.provider.config.api_key_env,
+                    tuple(
+                        (group.name, tuple(group.model_ids))
+                        for group in approved.provider.config.model_config
+                    ),
+                )
+                for approved in catalog.providers
+            )
+        runtime = self.provider_runtime
+        if runtime is None:
+            return ()
+        return (
+            (
+                runtime.provider.name,
+                runtime.provider.config.base_url,
+                runtime.provider.config.api_key_env,
+                tuple(
+                    (group.name, tuple(group.model_ids))
+                    for group in runtime.model_manager.list_models()
+                ),
+            ),
+        )
+
+    def find_model_ref(self, ident: str, *, provider: str | None = None) -> ModelRef:
+        """Resolve a CLI/Web identifier against the approved choices."""
+        self._adopt_manual_runtime()
         try:
-            group = profile.model_manager.resolve_model_id(task.model_id)
-        except ValueError:
-            raise ValueError("Model is outside the approved groups") from None
-        selected = replace(
-            group,
-            model_ids=(
-                task.model_id,
-                *(ident for ident in group.model_ids if ident != task.model_id),
-            ),
-        )
-        manager = ModelManager(
-            replace(profile.provider.config, model_config=(selected,))
-        )
-        manager.select_model_id(task.model_id)
-        llm, context = profile.runtime_factory(task.model_id)
-        return replace(
-            profile,
-            model_manager=manager,
-            llm=llm,
-            context_builder=context,
-            model_executor=ModelExecutor(
-                manager, profile.runtime_factory, allow_fallback=profile.allow_fallback
-            ),
+            return self.model_registry.find(ident, provider=provider)
+        except ModelSelectionError:
+            # A manually assigned runtime (tests and embedders) is still a
+            # legitimate single-provider catalog.
+            choices = self.model_choices()
+            if not choices:
+                raise
+            current = self.current_model_ref()
+            ordered = sorted(
+                choices,
+                key=lambda ref: (
+                    ref.provider != (current.provider if current else ""),
+                    ref.group != (current.group if current else ""),
+                ),
+            )
+            exact = [ref for ref in ordered if ref.model == ident]
+            if exact:
+                return exact[0]
+            groups = [ref for ref in ordered if ref.group == ident]
+            if groups:
+                return groups[0]
+            providers = [ref for ref in ordered if ref.provider == ident]
+            if providers:
+                return providers[0]
+            raise ModelSelectionError("Model is outside the approved groups") from None
+
+    def runtime_for_model(
+        self, model_id: str, *, provider: str | None = None
+    ) -> ProviderRuntime | None:
+        """Resolve a background role (for example an embedding model)."""
+        return self.model_registry.runtime_for_model(model_id, provider=provider)
+
+    def profile_for(self, task: RuntimeTask) -> ProviderRuntime | None:
+        self._adopt_manual_runtime()
+        ref: ModelRef | None = None
+        if task.provider_name and task.model_group and task.model_id:
+            ref = ModelRef(task.provider_name, task.model_group, task.model_id)
+        elif task.model_id is not None:
+            ref = self.find_model_ref(task.model_id, provider=task.provider_name)
+        elif task.provider_name and task.model_group:
+            choice = next(
+                (
+                    item
+                    for item in self.model_choices()
+                    if item.provider == task.provider_name
+                    and item.group == task.model_group
+                ),
+                None,
+            )
+            if choice is None:
+                raise ValueError("Model is outside the approved groups")
+            ref = choice
+        if ref is not None:
+            activation = self.model_registry.resolve(ref)
+            if activation is None:
+                raise ValueError("Model is outside the approved groups")
+            return activation.runtime
+        profile = self.provider_runtime
+        return profile
+
+    @staticmethod
+    def _runtime_ref(runtime: ProviderRuntime | None) -> ModelRef | None:
+        if runtime is None:
+            return None
+        group = runtime.model_manager.current_model()
+        return ModelRef(
+            runtime.provider.name,
+            group.name,
+            runtime.model_manager.current_model_id(),
         )
 
     async def __call__(

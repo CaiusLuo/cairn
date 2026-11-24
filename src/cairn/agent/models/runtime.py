@@ -19,11 +19,16 @@ from cairn.agent.context.window import ContextBudget, ContextBuilder
 from cairn.agent.models.catalog import NamedProvider, ProviderCatalog
 from cairn.agent.models.client import LLMClient
 from cairn.agent.models.config.admission import (
-    load_approved_provider,
-    parse_provider_approval,
+    load_approved_catalog,
+    parse_provider_allowlist,
 )
 from cairn.agent.models.executor import ModelExecutor
-from cairn.agent.models.selection import ModelConfig, ModelManager, ProviderConfig
+from cairn.agent.models.selection import (
+    ModelConfig,
+    ModelManager,
+    ModelRef,
+    ProviderConfig,
+)
 
 if TYPE_CHECKING:
     from cairn.agent.harness import Agent
@@ -116,6 +121,38 @@ def build_provider_runtime(
     )
 
 
+def runtime_for_model(runtime: ProviderRuntime, model_id: str) -> ProviderRuntime:
+    """Return a runtime pinned to one concrete model in the same provider.
+
+    The group is narrowed to the requested model, so fallback candidates cannot
+    silently leave the model the caller selected.  The base runtime and its
+    manager are not mutated: concurrent runs may still hold the original.
+    """
+    try:
+        group = runtime.model_manager.resolve_model_id(model_id)
+    except ValueError:
+        raise ValueError("Model is outside the approved groups") from None
+    selected = replace(
+        group,
+        model_ids=(
+            model_id,
+            *(ident for ident in group.model_ids if ident != model_id),
+        ),
+    )
+    manager = ModelManager(replace(runtime.provider.config, model_config=(selected,)))
+    manager.select_model_id(model_id)
+    llm, context = runtime.runtime_factory(model_id)
+    return replace(
+        runtime,
+        model_manager=manager,
+        llm=llm,
+        context_builder=context,
+        model_executor=ModelExecutor(
+            manager, runtime.runtime_factory, allow_fallback=runtime.allow_fallback
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class ProviderActivation:
     """A freshly approved provider, ready to serve all new work."""
@@ -123,6 +160,7 @@ class ProviderActivation:
     runtime: ProviderRuntime
     secret_env_keys: frozenset[str]
     sensitive_values: tuple[str, ...] = field(repr=False)
+    ref: ModelRef | None = None
 
 
 def load_provider_activation(
@@ -133,13 +171,18 @@ def load_provider_activation(
 ) -> ProviderActivation:
     """Read the host-approved provider from disk and build its runtime.
 
-    This is the one path from persisted policy to a servable provider: startup
-    and a live settings save both go through it, so a reload can never apply
-    more or less than a restart would. Nothing here touches a live session;
-    the caller installs the returned activation.
+    Legacy single-provider approvals select the first approved provider.  The
+    catalog form still starts on the first approved provider here; the running
+    server applies its persisted selection on top of the same catalog.
     """
-    approval = parse_provider_approval(json.loads(approval_path.read_text()))
-    approved = load_approved_provider(workspace, approval, host_env=host_env)
+    allowlist = parse_provider_allowlist(json.loads(approval_path.read_text()))
+    catalog = load_approved_catalog(workspace, allowlist, host_env=host_env)
+    approved = catalog.providers[0]
+    ref = ModelRef(
+        provider=approved.provider.name,
+        group=approved.group.name,
+        model=approved.group.model_ids[0],
+    )
     runtime = build_provider_runtime(
         approved.provider,
         approved.api_key,
@@ -148,8 +191,9 @@ def load_provider_activation(
     )
     return ProviderActivation(
         runtime=runtime,
-        secret_env_keys=approved.secret_env_keys,
-        sensitive_values=approved.sensitive_values,
+        secret_env_keys=catalog.secret_env_keys,
+        sensitive_values=catalog.sensitive_values,
+        ref=ref,
     )
 
 

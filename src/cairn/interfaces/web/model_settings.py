@@ -18,6 +18,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
+from cairn.agent.models.selection import ModelRef
 from cairn.interfaces.web.auth import operator_request
 from cairn.server.model_settings import (
     ModelSettingsError,
@@ -34,6 +35,8 @@ class _BodyTooLarge(ValueError):
 
 _FAILURE_STATUS = {
     "invalid_model_settings": 422,
+    "invalid_model_selection": 409,
+    "model_selection_unavailable": 409,
     "model_config_invalid": 409,
     "model_settings_unavailable": 503,
     "model_config_conflict": 409,
@@ -50,6 +53,8 @@ class ModelSettingsService(Protocol):
     def read(self) -> dict[str, Any]: ...
 
     def save(self, request: SaveModelSettings) -> dict[str, Any]: ...
+
+    def select(self, ref: ModelRef) -> dict[str, Any]: ...
 
     def probe(self, request: ProbeModels) -> dict[str, Any]: ...
 
@@ -94,6 +99,17 @@ class ProbeRequest(BaseModel):
             api_key_env=self.api_key_env,
             api_key=self.api_key,
         )
+
+
+class SelectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    provider: str = Field(min_length=1, max_length=120)
+    group: str = Field(min_length=1, max_length=120)
+    model: str = Field(min_length=1, max_length=500)
+
+    def service_ref(self) -> ModelRef:
+        return ModelRef(self.provider, self.group, self.model)
 
 
 def _headers() -> dict[str, str]:
@@ -157,6 +173,28 @@ def model_routes(
             return _error(503, "model_settings_unavailable")
         return JSONResponse(result, headers=_headers())
 
+    async def select(request: Request) -> JSONResponse:
+        if not operator_request(request, runtime_token):
+            return _error(403, "invalid_origin")
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+        if content_type != "application/json":
+            return _error(415, "unsupported_media_type")
+        try:
+            payload = SelectRequest.model_validate(await _body(request))
+        except _BodyTooLarge:
+            return _error(413, "request_too_large")
+        except ValidationError:
+            return _error(422, "invalid_model_selection")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return _error(400, "invalid_json")
+        try:
+            result = await asyncio.to_thread(service.select, payload.service_ref())
+        except ModelSettingsError as error:
+            return _settings_error(error)
+        except OSError:
+            return _error(503, "model_settings_unavailable")
+        return JSONResponse(result, headers=_headers())
+
     async def probe(request: Request) -> JSONResponse:
         if not operator_request(request, runtime_token):
             return _error(403, "invalid_origin")
@@ -181,6 +219,7 @@ def model_routes(
 
     return [
         Route("/api/model", handle, methods=["GET", "PUT"]),
+        Route("/api/model/select", select, methods=["POST"]),
         Route("/api/model/probe", probe, methods=["POST"]),
     ]
 

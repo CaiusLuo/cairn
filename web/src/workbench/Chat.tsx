@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { newRequestId } from "../ids";
 import { RuntimeError, runtimeApi, uploadAttachment, type UploadedAttachment } from "../runtime-api";
 import { readSubmission, sendSubmission, useRunStream, type Submission } from "./chat-state";
-import { conversationTitle, isActive, sourceLabel, useResource, type Conversation, type KnowledgeSource, type Message, type Run, type WorkbenchConfig } from "./data";
+import { conversationTitle, isActive, modelKey, parseModelKey, sourceLabel, useResource, type Conversation, type KnowledgeSource, type Message, type Run, type WorkbenchConfig } from "./data";
 import { Badge, Drawer, Markdown, Outputs, Timeline } from "./evidence";
 import { CairnMark } from "./Brand";
 import { Icon } from "./Icon";
@@ -43,7 +43,20 @@ function useSteerAnimation(ref: RefObject<HTMLDivElement | null>, phase: SteerPh
   }, [ref, phase]);
 }
 
-type Queued = Pick<Submission, "id" | "prompt" | "model" | "attachment_ids" | "attachments">;
+type Queued = Pick<Submission, "id" | "prompt" | "model" | "provider" | "group" | "attachment_ids" | "attachments">;
+
+function modelOptions(config?: WorkbenchConfig) {
+  return (config?.providers ?? []).flatMap(provider =>
+    provider.groups.flatMap(group =>
+      group.model_ids.map(model => ({
+        key: modelKey(provider.name, group.name, model),
+        provider: provider.name,
+        group: group.name,
+        model,
+      })),
+    ),
+  );
+}
 
 const sizeLabel = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MiB` : `${Math.max(1, Math.round(bytes / 1024))} KiB`;
 const attachmentNames = (items?: { name: string }[]) => items?.map(item => item.name).join(" · ");
@@ -91,7 +104,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
   useEffect(() => { setPending(readSubmission(key)); }, [key]);
   useEffect(() => { setSteer(null); setDraftSource(null); }, [id]);
   useEffect(() => {
-    if (model && config && !config.models.includes(model)) setModel("");
+    if (model && config && !modelOptions(config).some(option => option.key === model)) setModel("");
   }, [config, model]);
   useEffect(() => {
     if (!steer || steer.phase === "queued" || steer.phase === "applied") return;
@@ -219,8 +232,9 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
       setPending(null);
     }
     const attachment_ids = attachments.map(item => item.attachment_id);
+    const choice = mode === "conversation" && model ? parseModelKey(model) : null;
     const next = {
-      id: newRequestId(), prompt, model: mode === "conversation" && model ? model : undefined,
+      id: newRequestId(), prompt, ...(choice ?? {}),
       ...(attachment_ids.length ? { attachment_ids, attachments } : {}),
     };
     setDraft("");
@@ -272,7 +286,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
           setDraft(item.prompt);
           setDraftSource(null);
           setMode("conversation");
-          setModel(item.model ?? "");
+          setModel(item.provider && item.group && item.model ? modelKey(item.provider, item.group, item.model) : modelOptions(config).find(option => option.model === item.model)?.key ?? "");
           setAttachments(item.attachments ?? []);
           setQueue(rows => rows.filter(row => row.id !== item.id));
         }}>编辑</button>
@@ -305,11 +319,11 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
         <span className="composer-harness"><Icon name="sparkles" size={15}/>Cairn Agent</span>
         <input ref={fileInput} type="file" multiple hidden onChange={event => void attachFiles(event.target.files)}/>
         <button className="composer-icon" type="button" aria-label="添加附件" title="添加附件（文本、PDF、Office 或 HTML）" disabled={mode === "development" || uploading || steering || attachments.length >= 5} onClick={() => fileInput.current?.click()}><Icon name={uploading ? "clock" : "doc"} size={16}/></button>
-        <label><Icon name="server" size={15}/><select aria-label="模型" disabled={mode === "development" || !config?.models.length} value={mode === "development" ? "" : model} onChange={event => setModel(event.target.value)}>
-          <option value="">{mode === "development" ? config?.development_model ?? "Server 默认模型" : config?.conversation_model ?? "离线验收模型"}</option>
-          {config?.model_groups.map(group => <optgroup key={group.name} label={group.name}>
-            {group.model_ids.map(item => <option key={`${group.name}:${item}`} value={item}>{item}</option>)}
-          </optgroup>)}
+        <label><Icon name="server" size={15}/><select aria-label="模型" disabled={mode === "development" || !modelOptions(config).length} value={mode === "development" ? "" : model} onChange={event => setModel(event.target.value)}>
+          <option value="">{mode === "development" ? config?.development_model ?? "Server 默认模型" : config?.active_model ? `${config.active_provider} / ${config.active_group} / ${config.active_model}` : config?.conversation_model ?? "离线验收模型"}</option>
+          {(config?.providers ?? []).map(provider => provider.groups.map(group => <optgroup key={`${provider.name}:${group.name}`} label={`${provider.name} · ${group.name}`}>
+            {group.model_ids.map(item => <option key={modelKey(provider.name, group.name, item)} value={modelKey(provider.name, group.name, item)}>{item}</option>)}
+          </optgroup>))}
         </select></label>
         <label title={mode === "development" ? `Shell ${config?.development_shell ? "宿主已授权" : "关闭"} · 网络 ${config?.development_network ? "宿主已授权" : "关闭"}` : "对话中的项目文件只读"}><Icon name="lock" size={15}/><select aria-label="权限模式" value={mode} onChange={event => setMode(event.target.value as Submission["mode"])}>
           <option value="conversation">对话 · 项目只读</option><option value="development" disabled={uploading || attachments.length > 0 || !!draftSource}>开发 · 独立工作树</option>

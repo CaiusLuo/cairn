@@ -19,7 +19,7 @@ import tomlkit
 from dotenv import dotenv_values
 
 from cairn.agent.models.config import default_provider, load_project_providers
-from cairn.agent.models.config.admission import expected_catalog_approval
+from cairn.agent.models.config.admission import expected_catalog_allowlist
 from cairn.server.config import parse_server_config
 
 SYSTEM_UNIT_DIRECTORY = Path("/etc/systemd/system")
@@ -77,12 +77,14 @@ def prepare(root: Path, config: Path, user: str) -> None:
         if not approval.exists():
             require_file_owner(account)
             project = load_project_providers(paths.workspace / ".cairn/models.toml")
-            provider = default_provider(
-                project, os.environ, dotenv_values(paths.workspace / ".env")
+            providers = tuple(project.providers) or (
+                default_provider(
+                    project, os.environ, dotenv_values(paths.workspace / ".env")
+                ),
             )
-            if not provider.config.model_config:
+            if not all(provider.config.model_config for provider in providers):
                 raise ValueError("Provider must declare at least one model group")
-            record = expected_catalog_approval(provider)
+            record = expected_catalog_allowlist(providers)
             pending.append((approval, json.dumps(asdict(record), indent=2) + "\n"))
     for directory in (paths.data_root, paths.worktrees):
         if directory.exists() and directory.stat().st_uid != account.pw_uid:

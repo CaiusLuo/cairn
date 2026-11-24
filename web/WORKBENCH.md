@@ -17,7 +17,7 @@ See [asset provenance](src/vendor/harness/SOURCE.md) and the MIT notices under `
 
 | Workbench area | Server surface | Data owner |
 | --- | --- | --- |
-| Workspace and model options | `GET /api/runtime/management?section=workbench` | Host workspace, approved provider group and execution policy. The picker changes the requested model for a Conversation Run and keeps the existing provider fallback policy. |
+| Workspace and model options | `GET /api/runtime/management?section=workbench` | Host workspace, every approved provider/group and the active selection. The picker submits a full provider/group/model selection for a Conversation Run; switching the default is `POST /api/model/select`. |
 | Conversation and history | `GET/POST /api/runtime/conversations`, `GET /conversations/{id}/history`, `POST /conversations/{id}/messages` | ConversationService and DomainStore. CLI, Web and WeChat share IDs and stored history. Rename, archive and delete are available from the conversation tree. |
 | Runs and execution trace | `GET /api/runtime/runs`, `GET /runs/{id}`, `GET /runs/{id}/events`, Run WebSocket | DomainStore and RunLedger. The list is bounded to the latest 100 Runs in the Server workspace. The live channel pairs preview text with ordered execution events. |
 | Development Task and Worktree | `GET/POST /api/runtime/tasks`, `GET /tasks/{id}`, `GET /tasks/{id}/events`, `POST /tasks/{id}/messages` | TaskService and RuntimeCatalogue, with persisted checkpoints and existing domain projection. Task detail keeps the execution timeline and recovery review. |

@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from cairn.agent.models.selection import ModelRef
 from cairn.agent.session.models import CheckpointReceipt
 from cairn.conversation.store import DomainStore
 from cairn.development.board.models import TaskBoardItem, TaskBoardStatus, TaskSource
@@ -76,6 +77,10 @@ class TaskService:
         # follow-up validator: existing Tasks keep their stored binding.
         self.authorize_new_submission: Callable[[RuntimeTask], None] | None = None
         self.default_model_id: str | None = None
+        #: Full default selection for new development/background tasks.  The
+        #: bare id is kept for older embedders; this one records the provider
+        #: and group so a later switch cannot silently rebind an accepted task.
+        self.default_model_ref: ModelRef | None = None
         self.on_settled: Callable[[RuntimeTask], None] | None = None
         self.board = board
         self.projections: dict[str, RuntimeTask] = {}
@@ -329,6 +334,7 @@ class TaskService:
                     return previous
         if self.queue.full():
             raise asyncio.QueueFull
+        selection = self.default_model_ref
         task = RuntimeTask.model_validate(
             {
                 "prompt": prompt,
@@ -337,7 +343,9 @@ class TaskService:
                 "input_id": request_id or "input:" + uuid4().hex,
                 "mode": mode,
                 "conversation_key": conversation_key,
-                "model_id": self.default_model_id,
+                "model_id": selection.model if selection else self.default_model_id,
+                "provider_name": selection.provider if selection else None,
+                "model_group": selection.group if selection else None,
                 "delivery_recipient": delivery_recipient,
                 "delivery_account": delivery_account,
                 "history_origins": history_origins,

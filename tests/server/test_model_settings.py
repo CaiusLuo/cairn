@@ -13,9 +13,16 @@ from dotenv import dotenv_values
 
 import cairn.server.model_settings as settings_module
 from cairn.agent.budget import RunBudget
+from cairn.agent.models.config.admission import ApprovedCatalog
 from cairn.agent.models.config.loader import load_project_providers
-from cairn.agent.models.runtime import ProviderActivation, load_provider_activation
-from cairn.agent.models.selection import ModelManager
+from cairn.agent.models.runtime import (
+    ProviderActivation,
+    build_provider_runtime,
+    load_provider_activation,
+    runtime_for_model,
+)
+from cairn.agent.models.selection import ModelManager, ModelRef
+from cairn.agent.models.selection_store import ModelSelectionStore
 from cairn.server.bootstrap import runtime_app
 from cairn.server.model_settings import (
     ModelSettingsError,
@@ -73,13 +80,123 @@ def _runtime(path: Path) -> SimpleNamespace:
 class _Execution:
     """The install seam a running Server exposes to model settings."""
 
-    def __init__(self, runtime: Any) -> None:
+    def __init__(self, runtime: Any, store: ModelSelectionStore) -> None:
         self.provider_runtime = runtime
+        self.selection_store = store
+        self.catalog: ApprovedCatalog | None = None
         self.activations: list[ProviderActivation] = []
+
+    def current_model_ref(self) -> ModelRef | None:
+        runtime = self.provider_runtime
+        if runtime is None:
+            return None
+        group = runtime.model_manager.current_model()
+        return ModelRef(
+            runtime.provider.name,
+            group.name,
+            runtime.model_manager.current_model_id(),
+        )
+
+    def model_catalog_signature(self) -> tuple[tuple[object, ...], ...]:
+        if self.catalog is not None:
+            return tuple(
+                (
+                    approved.provider.name,
+                    approved.provider.config.base_url,
+                    approved.provider.config.api_key_env,
+                    tuple(
+                        (group.name, tuple(group.model_ids))
+                        for group in approved.provider.config.model_config
+                    ),
+                )
+                for approved in self.catalog.providers
+            )
+        runtime = self.provider_runtime
+        if runtime is None:
+            return ()
+        return (
+            (
+                runtime.provider.name,
+                runtime.provider.config.base_url,
+                runtime.provider.config.api_key_env,
+                tuple(
+                    (group.name, tuple(group.model_ids))
+                    for group in runtime.model_manager.list_models()
+                ),
+            ),
+        )
 
     def install_provider_activation(self, activation: ProviderActivation) -> None:
         self.provider_runtime = activation.runtime
         self.activations.append(activation)
+
+    def install_model_catalog(
+        self,
+        catalog: ApprovedCatalog,
+        selection: ModelRef | None,
+        *,
+        persist: bool = True,
+    ) -> ProviderActivation:
+        approved = (
+            catalog.by_name(selection.provider)
+            if selection is not None
+            else catalog.providers[0]
+        )
+        assert approved is not None
+        group = (
+            next(
+                group
+                for group in approved.provider.config.model_config
+                if group.name == selection.group
+            )
+            if selection is not None
+            else approved.group
+        )
+        runtime = build_provider_runtime(
+            approved.provider,
+            approved.api_key,
+            approved.context_budget,
+            group=group.name,
+        )
+        if (
+            selection is not None
+            and runtime.model_manager.current_model_id() != selection.model
+        ):
+            runtime = runtime_for_model(runtime, selection.model)
+        ref = selection or ModelRef(
+            approved.provider.name, group.name, group.model_ids[0]
+        )
+        activation = ProviderActivation(
+            runtime=runtime,
+            secret_env_keys=catalog.secret_env_keys,
+            sensitive_values=catalog.sensitive_values,
+            ref=ref,
+        )
+        self.catalog = catalog
+        self.provider_runtime = runtime
+        self.activations.append(activation)
+        if persist:
+            self.selection_store.save(ref)
+        return activation
+
+    def select_model(
+        self, ref: ModelRef, *, persist: bool = True
+    ) -> ProviderActivation:
+        runtime = self.provider_runtime
+        if runtime is None:
+            raise ValueError("No running provider")
+        selected = runtime_for_model(runtime, ref.model)
+        activation = ProviderActivation(
+            runtime=selected,
+            secret_env_keys=frozenset(),
+            sensitive_values=(),
+            ref=ref,
+        )
+        self.provider_runtime = selected
+        self.activations.append(activation)
+        if persist:
+            self.selection_store.save(ref)
+        return activation
 
 
 @pytest.fixture
@@ -122,7 +239,9 @@ def _service(
     monkeypatch.delenv("BACKUP_KEY", raising=False)
     # litellm imports load the repository .env into the test process.
     monkeypatch.delenv("CAIRN_LLM_API_KEY", raising=False)
-    execution = _Execution(_runtime(config))
+    execution = _Execution(
+        _runtime(config), ModelSelectionStore(state / "model-selection.json")
+    )
     return ModelSettingsService(root, state, approval, execution)
 
 
@@ -193,10 +312,10 @@ def test_save_switches_group_preserves_other_groups_and_providers(
     assert provider.name == "bailian"
     assert provider.config.base_url == "https://new.example/v1"
     assert [group.name for group in provider.config.model_config] == [
-        "deepseek-fast",
         "kimi",
+        "deepseek-fast",
     ]
-    assert provider.config.model_config[0].model_ids == (
+    assert provider.config.model_config[1].model_ids == (
         "openai/deepseek-v2",
         "openai/deepseek-backup",
     )
@@ -212,17 +331,35 @@ def test_save_switches_group_preserves_other_groups_and_providers(
 
     approved = json.loads(approval.read_text())
     assert approved == {
-        "name": "bailian",
-        "endpoint": "https://new.example/v1",
-        "group": "deepseek-fast",
-        "key_env": "BAILIAN_KEY",
-        "model_ids": ["openai/deepseek-v2", "openai/deepseek-backup"],
-        "groups": [
+        "version": 2,
+        "providers": [
             {
-                "name": "deepseek-fast",
-                "model_ids": ["openai/deepseek-v2", "openai/deepseek-backup"],
+                "name": "bailian",
+                "endpoint": "https://new.example/v1",
+                "group": "kimi",
+                "key_env": "BAILIAN_KEY",
+                "model_ids": ["openai/kimi"],
+                "groups": [
+                    {"name": "kimi", "model_ids": ["openai/kimi"]},
+                    {
+                        "name": "deepseek-fast",
+                        "model_ids": [
+                            "openai/deepseek-v2",
+                            "openai/deepseek-backup",
+                        ],
+                    },
+                ],
             },
-            {"name": "kimi", "model_ids": ["openai/kimi"]},
+            {
+                "name": "backup",
+                "endpoint": "https://backup.example/v1",
+                "group": "backup",
+                "key_env": "BACKUP_KEY",
+                "model_ids": ["backup/model"],
+                "groups": [
+                    {"name": "backup", "model_ids": ["backup/model"]},
+                ],
+            },
         ],
     }
     assert result["restart_required"] is False
@@ -300,13 +437,20 @@ def test_create_uses_a_free_credential_name_and_keeps_existing_providers(
 
     project = load_project_providers(config)
     assert [item.name for item in project.providers] == [
-        "magpie",
         "bailian",
         "backup",
+        "magpie",
     ]
-    assert project.providers[0].config.api_key_env == "CAIRN_LLM_API_KEY"
+    assert project.providers[2].config.api_key_env == "CAIRN_LLM_API_KEY"
     assert "CAIRN_LLM_API_KEY=local" in (root / ".env").read_text()
-    assert json.loads(approval.read_text())["name"] == "magpie"
+    approved = json.loads(approval.read_text())
+    assert approved["version"] == 2
+    assert [item["name"] for item in approved["providers"]] == [
+        "bailian",
+        "backup",
+        "magpie",
+    ]
+    assert service.read()["active_provider"] == "magpie"
 
 
 def test_runtime_app_serves_a_saved_provider_without_restart(
@@ -355,6 +499,62 @@ def test_runtime_app_serves_a_saved_provider_without_restart(
         # Captured background clients follow the same activation.
         assert app.state.reviews.model_id == "openai/deepseek-v2"
         assert app.state.weekly_reviews.model_id == "openai/deepseek-v2"
+    finally:
+        app.state.execution.close()
+
+
+def test_runtime_app_switches_between_saved_providers_without_writing_files(
+    workspace: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, approval, config = workspace
+    for name in ("BAILIAN_KEY", "BACKUP_KEY", "CAIRN_LLM_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    activation = load_provider_activation(root, approval)
+    app = runtime_app(
+        root,
+        root.parent / "state",
+        root.parent / "worktrees",
+        budget=RunBudget(max_steps=4),
+        token="host-token",
+        database=database_for(root.parent),
+        provider_runtime=activation.runtime,
+        secret_env_keys=activation.secret_env_keys,
+        sensitive_values=activation.sensitive_values,
+        provider_approval=approval,
+    )
+    service = app.state.model_settings
+    try:
+        saved = service.save(
+            _update(
+                active_provider="backup",
+                provider_name="backup",
+                base_url="https://backup.example/v1",
+                api_key=None,
+                active_group="backup",
+                group_name="backup",
+                model_ids=("backup/model",),
+            )
+        )
+        assert saved["settings"]["active_provider"] == "backup"
+        config_bytes = config.read_bytes()
+        approval_bytes = approval.read_bytes()
+
+        switched = service.select(ModelRef("bailian", "kimi", "openai/kimi"))
+
+        assert switched["settings"]["active_provider"] == "bailian"
+        assert switched["settings"]["active_model"] == "openai/kimi"
+        assert (
+            app.state.execution.provider_runtime.provider.config.base_url
+            == "https://old.example/v1"
+        )
+        assert config.read_bytes() == config_bytes
+        assert approval.read_bytes() == approval_bytes
+        assert service.read()["running"]["provider"] == "bailian"
+
+        with pytest.raises(ModelSettingsError) as caught:
+            service.select(ModelRef("bailian", "kimi", "outside"))
+        assert caught.value.code == "invalid_model_selection"
+        assert service.read()["active_model"] == "openai/kimi"
     finally:
         app.state.execution.close()
 
@@ -531,7 +731,10 @@ def test_legacy_update_stays_legacy_and_rename_converts_to_catalog(
         )
     )
     monkeypatch.delenv("BAILIAN_KEY", raising=False)
-    execution = _Execution(_runtime(config))
+    execution = _Execution(
+        _runtime(config),
+        ModelSelectionStore(tmp_path / "state" / "model-selection.json"),
+    )
     service = ModelSettingsService(root, tmp_path / "state", approval, execution)
 
     service.save(
@@ -567,7 +770,9 @@ def test_env_layout_create_writes_a_catalog(
     approval = tmp_path / "policy/provider.json"
     approval.parent.mkdir()
     monkeypatch.delenv("CAIRN_LLM_API_KEY", raising=False)
-    execution = _Execution(None)
+    execution = _Execution(
+        None, ModelSelectionStore(tmp_path / "state" / "model-selection.json")
+    )
     service = ModelSettingsService(root, tmp_path / "state", approval, execution)
 
     assert service.read()["layout"] == "env"
@@ -589,7 +794,7 @@ def test_env_layout_create_writes_a_catalog(
     project = load_project_providers(root / ".cairn/models.toml")
     assert project.providers[0].name == "deepseek"
     assert project.providers[0].config.model_config[0].model_ids == ("deepseek-chat",)
-    assert json.loads(approval.read_text())["name"] == "deepseek"
+    assert json.loads(approval.read_text())["providers"][0]["name"] == "deepseek"
 
 
 def test_read_after_external_change_requires_a_restart(

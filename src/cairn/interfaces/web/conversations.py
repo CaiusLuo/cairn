@@ -76,6 +76,8 @@ class ConversationMessage(BaseModel):
     source: ConversationSource = ConversationSource.CLI
     request_id: str = Field(min_length=1, max_length=200)
     model_id: str | None = Field(default=None, min_length=1, max_length=200)
+    provider: str | None = Field(default=None, min_length=1, max_length=120)
+    group: str | None = Field(default=None, min_length=1, max_length=120)
     attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     # The WeChat bridge supplies the exact identity that admitted this message.
     # The Host uses it only to scope durable history; tool authorization still
@@ -141,6 +143,8 @@ def conversation_routes(
             "task_id": run.task_id,
             "status": run.status.value,
             "model_id": run.metadata.get("model_id"),
+            "provider": run.metadata.get("provider"),
+            "group": run.metadata.get("group"),
             "mode": run.mode,
             "source": run.source,
             "prompt": run.prompt,
@@ -345,6 +349,8 @@ def conversation_routes(
                     message_body.source,
                     message_body.request_id,
                     model_id=message_body.model_id,
+                    provider=message_body.provider,
+                    group=message_body.group,
                     attachment_ids=tuple(message_body.attachment_ids),
                     metadata=(
                         {

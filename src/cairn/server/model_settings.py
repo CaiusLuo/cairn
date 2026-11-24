@@ -1,20 +1,21 @@
 # ruff: noqa: RUF001
 """Host-authorized provider configuration from the Web console.
 
-A save edits the same files a restart would read — the active provider and
-model group in ``.cairn/models.toml``, the credential in the workspace ``.env``,
-and the regenerated approval — then installs that approved provider into the
-running Server. New work uses it immediately; a turn that already started keeps
-the runtime it captured. The install goes through the startup loader, so a
-reload can never apply more or less than a restart would. Responses never
-resolve a credential value.
+A save edits the same files a restart would read — the provider catalog in
+``.cairn/models.toml``, the credential in the workspace ``.env``, the regenerated
+allowlist and the durable model selection — then installs the approved catalog
+into the running Server. New work uses it immediately; a turn that already
+started keeps the runtime it captured. Responses never resolve a credential
+value.
 
-Only the selected provider and its selected model group are edited. Other
-providers, other groups and unrelated TOML keys stay in the document. The
-selection is committed by moving the chosen provider and group first. Every
-model group of that provider is approved, so the chat selector can switch among
-them without another save. An external file edit still requires a restart,
-because the running process cannot prove it is the intended operator change.
+Only the provider and model group being edited are changed. Other providers,
+other groups, their order and unrelated TOML keys stay in the document. Every
+provider in the catalog is approved on save, so any configured model can be
+selected without a separate enable step. A selection change is a separate
+operation: :meth:`ModelSettingsService.select` updates the runtime preference
+without rewriting deployment files. An external file edit still requires a
+restart, because the running process cannot prove it is the intended operator
+change.
 """
 
 from __future__ import annotations
@@ -39,10 +40,12 @@ from dotenv import dotenv_values
 
 from cairn.agent.models.catalog import NamedProvider
 from cairn.agent.models.config.admission import (
-    ProviderApproval,
-    approved_groups,
-    expected_catalog_approval,
-    parse_provider_approval,
+    ApprovedCatalog,
+    ProviderAllowlist,
+    approved_groups_for,
+    expected_catalog_allowlist,
+    load_approved_catalog,
+    parse_provider_allowlist,
 )
 from cairn.agent.models.config.loader import load_project_providers
 from cairn.agent.models.config.schema import (
@@ -53,8 +56,10 @@ from cairn.agent.models.config.schema import (
     parse_provider_catalog,
     validate_runtime_provider,
 )
-from cairn.agent.models.runtime import ProviderActivation, load_provider_activation
-from cairn.agent.models.selection import ModelConfig, ProviderConfig
+from cairn.agent.models.registry import ModelSelectionError
+from cairn.agent.models.runtime import ProviderActivation
+from cairn.agent.models.selection import ModelConfig, ModelRef, ProviderConfig
+from cairn.agent.models.selection_store import ModelSelectionStore
 from cairn.server import host
 from cairn.shared import platform
 
@@ -169,7 +174,24 @@ class _Execution(Protocol):
     @property
     def provider_runtime(self) -> _Runtime | None: ...
 
-    def install_provider_activation(self, activation: ProviderActivation) -> None: ...
+    @property
+    def selection_store(self) -> ModelSelectionStore: ...
+
+    def current_model_ref(self) -> ModelRef | None: ...
+
+    def model_catalog_signature(self) -> tuple[tuple[object, ...], ...]: ...
+
+    def install_model_catalog(
+        self,
+        catalog: ApprovedCatalog,
+        selection: ModelRef | None,
+        *,
+        persist: bool = True,
+    ) -> ProviderActivation: ...
+
+    def select_model(
+        self, ref: ModelRef, *, persist: bool = True
+    ) -> ProviderActivation: ...
 
 
 @dataclass(frozen=True)
@@ -308,7 +330,7 @@ def _validated_provider_config(
     return config
 
 
-def _read_approval(path: Path | None) -> tuple[ProviderApproval | None, bool]:
+def _read_approval(path: Path | None) -> tuple[ProviderAllowlist | None, bool]:
     if path is None:
         return None, False
     try:
@@ -319,7 +341,7 @@ def _read_approval(path: Path | None) -> tuple[ProviderApproval | None, bool]:
         return None, False
     try:
         data = json.loads(path.read_bytes())
-        return parse_provider_approval(data), True
+        return parse_provider_allowlist(data), True
     except (OSError, ValueError):
         return None, False
 
@@ -662,31 +684,44 @@ class ModelSettingsService:
     def _read_locked(self) -> dict[str, Any]:
         project = self._load_project()
         env_values = _env_values(self.env_path)
-        approval, approval_valid = _read_approval(self.approval_path)
+        allowlist, approval_valid = _read_approval(self.approval_path)
         providers = project.providers
+        active_ref = self._effective_ref(project, allowlist)
         provider_views: list[dict[str, Any]] = []
-        approved_names: set[str] = set()
-        if approval is not None and providers:
-            approved = approved_groups(approval, providers[0])
-            if approved is not None:
-                approved_names = {group.name for group in approved}
-
-        active_provider: str | None = None
-        active_group: str | None = None
-        for index, provider in enumerate(providers):
+        model_views: list[dict[str, str]] = []
+        for provider in providers:
             key_configured, key_source = _key_state(
                 provider.config.api_key_env, env_values
             )
+            matched = (
+                None if allowlist is None else approved_groups_for(allowlist, provider)
+            )
+            approved_ids = {group.name for group in matched or ()}
             groups = []
-            for group_index, group in enumerate(provider.config.model_config):
+            for group in provider.config.model_config:
+                active = (
+                    active_ref is not None
+                    and active_ref.provider == provider.name
+                    and active_ref.group == group.name
+                )
                 groups.append(
                     {
                         "name": group.name,
                         "model_ids": list(group.model_ids),
-                        "next_start": index == 0 and group_index == 0,
-                        "approved": index == 0 and group.name in approved_names,
+                        "next_start": active,
+                        "approved": group.name in approved_ids,
+                        "active": active,
                     }
                 )
+                if group.name in approved_ids:
+                    model_views.extend(
+                        {
+                            "provider": provider.name,
+                            "group": group.name,
+                            "model_id": model_id,
+                        }
+                        for model_id in group.model_ids
+                    )
             provider_views.append(
                 {
                     "name": provider.name,
@@ -694,13 +729,12 @@ class ModelSettingsService:
                     "api_key_env": provider.config.api_key_env,
                     "key_configured": key_configured,
                     "key_source": key_source,
-                    "next_start": index == 0,
+                    "next_start": active_ref is not None
+                    and active_ref.provider == provider.name,
+                    "approved": matched is not None,
                     "groups": groups,
                 }
             )
-        if providers:
-            active_provider = providers[0].name
-            active_group = providers[0].config.model_config[0].name
 
         runtime = self.execution.provider_runtime
         running = None
@@ -713,15 +747,11 @@ class ModelSettingsService:
                 "base_url": runtime.provider.config.base_url,
             }
 
-        restart_required = self._restart_required(project, approval, approval_valid)
+        restart_required = self._restart_required(project, allowlist, approval_valid)
         blocked_reason = self._blocked_reason()
         draft = None
         if not providers:
             draft = self._env_draft(env_values)
-        active_model = None
-        if providers:
-            ids = providers[0].config.model_config[0].model_ids
-            active_model = ids[0] if ids else None
         return {
             "workspace": str(self.workspace),
             "config_path": str(self.config_path),
@@ -731,9 +761,10 @@ class ModelSettingsService:
             "config_exists": project.original is not None,
             "layout": project.layout.value,
             "providers": provider_views,
-            "active_provider": active_provider,
-            "active_group": active_group,
-            "active_model": active_model,
+            "models": model_views,
+            "active_provider": active_ref.provider if active_ref else None,
+            "active_group": active_ref.group if active_ref else None,
+            "active_model": active_ref.model if active_ref else None,
             "running": running,
             "offline": runtime is None,
             "approval_valid": approval_valid,
@@ -744,6 +775,45 @@ class ModelSettingsService:
             "draft": draft,
             "presets": list(PRESETS),
         }
+
+    def _effective_ref(
+        self, project: _ProjectSnapshot, allowlist: ProviderAllowlist | None
+    ) -> ModelRef | None:
+        ref = self.execution.current_model_ref()
+        if ref is not None and self._ref_available(project, allowlist, ref):
+            return ref
+        for provider in project.providers:
+            matched = (
+                None if allowlist is None else approved_groups_for(allowlist, provider)
+            )
+            if matched:
+                group = matched[0]
+                return ModelRef(provider.name, group.name, group.model_ids[0])
+        if project.providers:
+            provider = project.providers[0]
+            group = provider.config.model_config[0]
+            return ModelRef(provider.name, group.name, group.model_ids[0])
+        return None
+
+    @staticmethod
+    def _ref_available(
+        project: _ProjectSnapshot,
+        allowlist: ProviderAllowlist | None,
+        ref: ModelRef,
+    ) -> bool:
+        provider = next(
+            (item for item in project.providers if item.name == ref.provider),
+            None,
+        )
+        if provider is None or allowlist is None:
+            return False
+        matched = approved_groups_for(allowlist, provider)
+        if not matched:
+            return False
+        return any(
+            group.name == ref.group and ref.model in group.model_ids
+            for group in matched
+        )
 
     def _env_draft(self, env_values: Mapping[str, str | None]) -> dict[str, Any]:
         def setting(name: str) -> str:
@@ -765,7 +835,7 @@ class ModelSettingsService:
     def _restart_required(
         self,
         project: _ProjectSnapshot,
-        approval: ProviderApproval | None,
+        allowlist: ProviderAllowlist | None,
         approval_valid: bool,
     ) -> bool:
         if self.pending_path.exists():
@@ -773,26 +843,25 @@ class ModelSettingsService:
         providers = project.providers
         if not providers:
             return not approval_valid and self.approval_path is not None
-        if not approval_valid or approval is None:
-            return True
-        expected = approved_groups(approval, providers[0])
-        if expected is None:
+        if not approval_valid or allowlist is None:
             return True
         runtime = self.execution.provider_runtime
         if runtime is None:
             return False
-        running_provider = runtime.provider
-        configured = providers[0]
-        return (
-            running_provider.name != configured.name
-            or running_provider.config.base_url != configured.config.base_url
-            or running_provider.config.api_key_env != configured.config.api_key_env
-            or tuple(
-                (group.name, group.model_ids)
-                for group in runtime.model_manager.list_models()
+        expected = tuple(
+            (
+                provider.name,
+                provider.config.base_url,
+                provider.config.api_key_env,
+                tuple(
+                    (group.name, tuple(group.model_ids))
+                    for group in (approved_groups_for(allowlist, provider) or ())
+                ),
             )
-            != tuple((group.name, group.model_ids) for group in expected)
+            for provider in providers
+            if approved_groups_for(allowlist, provider) is not None
         )
+        return expected != self.execution.model_catalog_signature()
 
     def _blocked_reason(self) -> str | None:
         if self.approval_path is None:
@@ -803,6 +872,8 @@ class ModelSettingsService:
             return "env_not_writable"
         if not _writable(self.approval_path):
             return "approval_not_writable"
+        if not _writable(self.execution.selection_store.path):
+            return "state_not_writable"
         if not _writable(self.pending_path):
             return "state_not_writable"
         return None
@@ -820,6 +891,7 @@ class ModelSettingsService:
         approval_state = _read_state(self.approval_path)
         approval_path = self.approval_path
         pending_state = _read_state(self.pending_path)
+        selection_state = _read_state(self.execution.selection_store.path)
         env_values = _env_values(self.env_path)
 
         mode = request.mode.strip().lower()
@@ -904,14 +976,28 @@ class ModelSettingsService:
             model_ids,
         )
         updated = tomlkit.dumps(document)
-        first = self._validated_document(updated)
-        expected = expected_catalog_approval(first)
-        approval_bytes = _atomic_json(asdict(expected))
-        if first.name != provider_name:
+        providers = self._validated_providers(updated)
+        provider = next(
+            (item for item in providers if item.name == provider_name),
+            None,
+        )
+        if provider is None:
             raise _error(
                 "model_settings_unavailable",
-                "保存后的提供方顺序无效；请刷新后重试。",
+                "保存后的提供方不存在；请刷新后重试。",
             )
+        group = next(
+            (item for item in provider.config.model_config if item.name == group_name),
+            None,
+        )
+        if group is None or not group.model_ids:
+            raise _error(
+                "model_settings_unavailable",
+                "保存后的模型组不存在；请刷新后重试。",
+            )
+        preferred = ModelRef(provider_name, group_name, group.model_ids[0])
+        approval_bytes = _atomic_json(asdict(expected_catalog_allowlist(providers)))
+        selection_bytes = self.execution.selection_store.encode(preferred)
 
         env_text = (
             _replace_dotenv_value(
@@ -950,6 +1036,14 @@ class ModelSettingsService:
         )
         self._plan_write(
             writes,
+            self.execution.selection_store.path,
+            selection_state.data,
+            selection_bytes,
+            selection_state.mode,
+            0o600,
+        )
+        self._plan_write(
+            writes,
             self.pending_path,
             pending_state.data,
             pending_bytes,
@@ -981,7 +1075,7 @@ class ModelSettingsService:
                 completed.append(write)
             # Prove the written files are readable before rebinding anything.
             self._read_locked()
-            applied = self._install_saved_provider(approval_path)
+            applied = self._install_saved_catalog(approval_path, preferred)
         except BaseException as error:
             failures = self._rollback(completed)
             if failures:
@@ -1005,13 +1099,14 @@ class ModelSettingsService:
             ),
         }
 
-    def _install_saved_provider(self, approval_path: Path) -> bool:
-        """Install the approved provider the save just wrote, or stay pending.
+    def _install_saved_catalog(self, approval_path: Path, preferred: ModelRef) -> bool:
+        """Install the catalog the save just wrote, or stay pending.
 
         The workspace ``.env`` is the Web-managed source, so its values win for
         this reload. A process started by systemd may still carry the previous
         credential in ``os.environ``; preferring that copy would silently keep
-        using a key the operator just replaced.
+        using a key the operator just replaced.  Selection is already part of
+        the file transaction, so this method must not persist it again.
         """
         if self.execution.provider_runtime is None:
             return False
@@ -1021,13 +1116,14 @@ class ModelSettingsService:
             if value is not None
         }
         try:
-            activation = load_provider_activation(
+            allowlist = parse_provider_allowlist(json.loads(approval_path.read_bytes()))
+            catalog = load_approved_catalog(
                 self.workspace,
-                approval_path,
+                allowlist,
                 host_env={**os.environ, **managed},
             )
-            self.execution.install_provider_activation(activation)
-        except Exception as error:
+            self.execution.install_model_catalog(catalog, preferred, persist=False)
+        except (OSError, ValueError) as error:
             # The files are already written; the caller rolls them back so the
             # next start cannot disagree with the runtime that stayed active.
             raise _error(
@@ -1036,6 +1132,26 @@ class ModelSettingsService:
             ) from error
         self.clear_pending()
         return True
+
+    def select(self, ref: ModelRef) -> dict[str, Any]:
+        """Switch the running default without touching deployment files."""
+        with self._lock:
+            if self.execution.provider_runtime is None:
+                raise _error(
+                    "model_selection_unavailable",
+                    "当前没有运行中的提供方，无法切换模型。",
+                )
+            try:
+                self.execution.select_model(ref)
+            except ModelSelectionError:
+                raise _error(
+                    "invalid_model_selection",
+                    "该模型不在宿主已批准的提供方和模型组内。",
+                ) from None
+            return {
+                "settings": self._read_locked(),
+                "message": f"已切换到 {ref.provider} / {ref.group} / {ref.model}；新的回合立即使用。",
+            }
 
     @staticmethod
     def env_state_text(state: _FileState) -> str:
@@ -1113,11 +1229,10 @@ class ModelSettingsService:
                 raise _error(
                     "model_settings_unavailable", "无法把当前配置升级为多提供方格式。"
                 )
-            providers.insert(
-                0,
+            providers.append(
                 _new_provider_table(
                     provider_name, base_url, api_key_env, group_name, model_ids
-                ),
+                )
             )
         else:
             if catalog:
@@ -1152,16 +1267,10 @@ class ModelSettingsService:
             group = models[group_index]
             group["name"] = group_name
             group["model_ids"] = list(model_ids)
-            if group_index != 0:
-                del models[group_index]
-                models.insert(0, group)
-            if catalog and provider_index != 0:
-                del document["providers"][provider_index]
-                document["providers"].insert(0, provider)
         return document
 
     @staticmethod
-    def _validated_document(text: str) -> NamedProvider:
+    def _validated_providers(text: str) -> tuple[NamedProvider, ...]:
         try:
             values = tomllib.loads(text)
             if "providers" in values:
@@ -1176,9 +1285,11 @@ class ModelSettingsService:
                 "invalid_model_settings",
                 "保存后的配置未通过校验；未写入任何文件。",
             ) from None
-        if not providers or not providers[0].config.model_config:
-            raise _error("invalid_model_settings", "配置必须包含至少一个模型组。")
-        return providers[0]
+        if not providers or any(
+            not provider.config.model_config for provider in providers
+        ):
+            raise _error("invalid_model_settings", "每个提供方必须包含至少一个模型组。")
+        return tuple(providers)
 
 
 def _probe_models(base_url: str, api_key: str) -> dict[str, Any]:

@@ -4,12 +4,15 @@ import {
   getModelSettings,
   probeModels,
   saveModelSettings,
+  selectModel,
   type ModelKeySource,
   type ModelPreset,
   type ModelProvider,
   type ModelSettings,
 } from "../model-api";
 import { PageHeader } from "./execution";
+
+type Selection = { provider: string; group: string; model: string };
 
 type Draft = {
   mode: "create" | "update";
@@ -58,6 +61,29 @@ function groupFor(provider: ModelProvider, name?: string | null) {
     provider.groups.find(group => group.next_start) ??
     provider.groups[0]
   );
+}
+
+function approvedGroups(provider: ModelProvider) {
+  return provider.groups.filter(group => group.approved);
+}
+
+function selectionFrom(settings: ModelSettings): Selection | null {
+  const provider =
+    settings.providers.find(
+      item =>
+        item.name === settings.active_provider &&
+        approvedGroups(item).length > 0,
+    ) ?? settings.providers.find(item => approvedGroups(item).length > 0);
+  if (!provider) return null;
+  const group =
+    approvedGroups(provider).find(
+      item => item.name === settings.active_group,
+    ) ?? approvedGroups(provider)[0];
+  if (!group) return null;
+  const model = group.model_ids.includes(settings.active_model ?? "")
+    ? (settings.active_model as string)
+    : group.model_ids[0];
+  return model ? { provider: provider.name, group: group.name, model } : null;
 }
 
 function uniqueProviderName(settings: ModelSettings, base: string): string {
@@ -193,6 +219,8 @@ export function ModelPage() {
   const [error, setError] = useState("");
   const [feedback, setFeedback] = useState("");
   const [savedRestart, setSavedRestart] = useState(false);
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const [selecting, setSelecting] = useState(false);
   const [probeMessage, setProbeMessage] = useState("");
   const [probed, setProbed] = useState<string[]>([]);
   const [curlText, setCurlText] = useState("");
@@ -222,6 +250,43 @@ export function ModelPage() {
   useEffect(() => {
     void load(true);
   }, [load]);
+
+  useEffect(() => {
+    if (settings) setSelection(selectionFrom(settings));
+  }, [settings]);
+
+  function changeSelectionProvider(name: string) {
+    if (!settings) return;
+    const provider = providerFor(settings, name);
+    const group = provider ? approvedGroups(provider)[0] : undefined;
+    if (group?.model_ids[0])
+      setSelection({ provider: name, group: group.name, model: group.model_ids[0] });
+  }
+
+  function changeSelectionGroup(name: string) {
+    if (!settings || !selection) return;
+    const provider = providerFor(settings, selection.provider);
+    const group = provider?.groups.find(item => item.name === name && item.approved);
+    if (group?.model_ids[0])
+      setSelection({ ...selection, group: name, model: group.model_ids[0] });
+  }
+
+  async function switchSelection() {
+    if (!selection || selecting) return;
+    setSelecting(true);
+    setError("");
+    setFeedback("");
+    try {
+      const result = await selectModel(selection);
+      setSettings(result.settings);
+      setSavedRestart(false);
+      setFeedback(result.message);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSelecting(false);
+    }
+  }
 
   function replaceDraft(next: Draft) {
     setDraft(next);
@@ -392,6 +457,16 @@ export function ModelPage() {
     settings && draft?.mode === "update"
       ? providerFor(settings, draft.originalProvider)
       : undefined;
+  const selectionProvider =
+    settings && selection
+      ? providerFor(settings, selection.provider)
+      : undefined;
+  const selectionGroups = selectionProvider
+    ? approvedGroups(selectionProvider)
+    : [];
+  const selectionGroup = selectionGroups.find(
+    group => group.name === selection?.group,
+  );
   const running = settings?.running;
   const selectedPreset = settings?.presets.find(
     item => item.id === presetId,
@@ -532,10 +607,87 @@ export function ModelPage() {
             </article>
           </section>
 
+          <section className="settings-section model-selection" aria-label="切换当前模型">
+            <div className="model-section-head">
+              <h2>当前选择</h2>
+              <Help text="切换只更新运行时的默认模型：不改写 models.toml 或 provider approval，也不需要重启。已经在运行的回合继续使用原模型，新回合立即使用这里的选择。" />
+            </div>
+            {selection && selectionProvider && selectionGroup ? (
+              <div className="model-selection-controls">
+                <label>
+                  提供方
+                  <select
+                    value={selection.provider}
+                    disabled={selecting}
+                    onChange={event => changeSelectionProvider(event.target.value)}
+                  >
+                    {settings.providers
+                      .filter(item => approvedGroups(item).length > 0)
+                      .map(item => (
+                        <option key={item.name} value={item.name}>
+                          {item.name}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <label>
+                  模型组
+                  <select
+                    value={selection.group}
+                    disabled={selecting}
+                    onChange={event => changeSelectionGroup(event.target.value)}
+                  >
+                    {selectionGroups.map(group => (
+                      <option key={group.name} value={group.name}>
+                        {group.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  模型
+                  <select
+                    value={selection.model}
+                    disabled={selecting}
+                    onChange={event =>
+                      setSelection(current =>
+                        current ? { ...current, model: event.target.value } : current,
+                      )
+                    }
+                  >
+                    {selectionGroup.model_ids.map(model => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  disabled={
+                    selecting ||
+                    settings.offline ||
+                    selection.provider === settings.active_provider &&
+                    selection.group === settings.active_group &&
+                    selection.model === settings.active_model
+                  }
+                  onClick={() => void switchSelection()}
+                >
+                  {selecting ? "切换中…" : "切换"}
+                </button>
+              </div>
+            ) : (
+              <p className="wb-muted">还没有可切换的模型；保存一个提供方后即可直接选用。</p>
+            )}
+            <p className="model-note">
+              保存新的提供方或模型组后，它会立即出现在这里和对话框的模型菜单中，无需重启。
+            </p>
+          </section>
+
           <section className="settings-section">
             <div className="model-section-head">
               <h2>提供方</h2>
-              <Help text="新的对话回合使用列表中的第一个提供方及其第一个模型组。保存另一个提供方或模型组会把它移到第一位并立即生效，同时批准该提供方的全部模型组；对话框的模型菜单随后可按组切换。" />
+              <Help text="保存会更新或追加这一个提供方，保留其他提供方、模型组和 TOML 注释；所有已保存的提供方都会自动批准并立即可以切换，不需要额外的启用步骤。" />
             </div>
             <div className="model-provider-list">
               {settings.providers.map(item => (

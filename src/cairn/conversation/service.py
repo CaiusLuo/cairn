@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from cairn.agent.models.selection import ModelRef
 from cairn.agent.session.models import CheckpointReceipt, SessionStoreError
 from cairn.agent.turn.steering import PendingMessage, SteerQueue
 from cairn.conversation.attachments import AttachmentPlan, AttachmentStore
@@ -103,6 +104,8 @@ class RunLedger:
             conversation_key=run.conversation_id,
             input_prompt=run.prompt or None,
             model_id=run.metadata.get("model_id"),
+            provider_name=run.metadata.get("provider"),
+            model_group=run.metadata.get("group"),
             channel_principal=channel_principal,
             attachments=tuple(
                 RuntimeAttachment.model_validate(item)
@@ -195,6 +198,23 @@ class RunLedger:
         self.store.append_run_event(self.run_id, kind, data or {})
         self._wake(kind, persisted=True)
         return updated
+
+
+def _recorded_selection(metadata: dict[str, Any]) -> ModelRef | None:
+    """The selection a previously accepted Run recorded, if any."""
+    provider = metadata.get("provider")
+    group = metadata.get("group")
+    model = metadata.get("model_id")
+    if (
+        isinstance(provider, str)
+        and provider
+        and isinstance(group, str)
+        and group
+        and isinstance(model, str)
+        and model
+    ):
+        return ModelRef(provider, group, model)
+    return None
 
 
 class ConversationService:
@@ -578,6 +598,8 @@ class ConversationService:
         request_id: str,
         *,
         model_id: str | None = None,
+        provider: str | None = None,
+        group: str | None = None,
         metadata: dict[str, Any] | None = None,
         attachment_ids: tuple[str, ...] = (),
     ) -> Run:
@@ -587,15 +609,34 @@ class ConversationService:
         if conversation is None:
             raise ValueError("Conversation not found")
         existing = self.store.get_run_by_request(conversation_id, request_id)
+        selection = None
         if existing is None:
-            if model_id is not None:
-                profile = self.execution.provider_runtime
+            requested = (
+                model_id is not None or provider is not None or group is not None
+            )
+            if requested:
                 try:
-                    if profile is None:
-                        raise ValueError
-                    profile.model_manager.resolve_model_id(model_id)
+                    if model_id is not None:
+                        selection = self.execution.find_model_ref(
+                            model_id, provider=provider
+                        )
+                        if group is not None and selection.group != group:
+                            raise ValueError("Model is outside the selected group")
+                    else:
+                        choices = tuple(
+                            item
+                            for item in self.execution.model_choices()
+                            if (provider is None or item.provider == provider)
+                            and (group is None or item.group == group)
+                        )
+                        if not choices:
+                            raise ValueError("Model is outside the approved groups")
+                        selection = choices[0]
                 except ValueError:
                     raise ValueError("Model is outside the approved groups") from None
+            else:
+                current = getattr(self.execution, "current_model_ref", None)
+                selection = current() if callable(current) else None
             runs = self.store.list_runs_for_conversation(conversation_id)
             if any(run.status is RunStatus.RECOVERY_REQUIRED for run in runs):
                 raise ConversationRecoveryRequired(
@@ -603,8 +644,22 @@ class ConversationService:
                 )
             if any(run.status in {RunStatus.QUEUED, RunStatus.RUNNING} for run in runs):
                 raise ConversationBusy("Conversation already has an active Run")
+        else:
+            # A retry must fingerprint the selection the original request
+            # recorded, not whatever the runtime is serving now.  Otherwise a
+            # model switch between the two attempts would look like a
+            # different request and break idempotency.
+            selection = _recorded_selection(existing.metadata)
         planned: tuple[AttachmentPlan, ...] = ()
         request_metadata = dict(metadata or {})
+        if selection is not None:
+            request_metadata.update(
+                {
+                    "model_id": selection.model,
+                    "provider": selection.provider,
+                    "group": selection.group,
+                }
+            )
         if attachment_ids:
             # The IDs, not the staged files, make the request fingerprint. A
             # retry after a lost response must match even though admission has
@@ -879,6 +934,9 @@ class ConversationService:
             mode="conversation",
             conversation_key=run.conversation_id,
             session_id=run.session_id,
+            model_id=run.metadata.get("model_id"),
+            provider_name=run.metadata.get("provider"),
+            model_group=run.metadata.get("group"),
         )
 
     def _clean_receipt(

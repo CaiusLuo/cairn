@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import secrets
 import socket
@@ -18,12 +19,17 @@ from starlette.routing import Route
 
 from cairn.agent.budget import RunBudget
 from cairn.agent.models.client import LLMClient
+from cairn.agent.models.config.admission import (
+    ApprovedCatalog,
+    load_approved_catalog,
+    parse_provider_allowlist,
+)
 from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.agent.models.providers.litellm_client import LiteLLMClient
 from cairn.agent.models.runtime import (
     ProviderActivation,
     ProviderRuntime,
-    load_provider_activation,
+    build_provider_runtime,
 )
 from cairn.agent.tracing.tracer import Tracer
 from cairn.agent.workspace.lease import WorkspaceLease
@@ -99,6 +105,7 @@ def runtime_app(
     web_root: Path | None = None,
     port: int = 8777,
     provider_runtime: ProviderRuntime | None = None,
+    provider_catalog: ApprovedCatalog | None = None,
     secret_env_keys: frozenset[str] = frozenset(),
     sensitive_values: tuple[str, ...] = (),
     allow_shell: bool = False,
@@ -127,12 +134,11 @@ def runtime_app(
             workspace,
             state,
             worktrees,
-            OfflineDevelopmentModel
-            if provider_runtime is None
-            else lambda: provider_runtime.llm,
+            OfflineDevelopmentModel,
             database=database,
             budget=budget,
             provider_runtime=provider_runtime,
+            provider_catalog=provider_catalog,
             secret_env_keys=secret_env_keys,
             sensitive_values=(token, *sensitive_values),
             allow_shell=allow_shell,
@@ -140,6 +146,14 @@ def runtime_app(
             tracer=tracer,
             trace_root=state / "traces",
         )
+        initial_runtime = execution.provider_runtime
+        if initial_runtime is not None:
+
+            def initial_llm() -> LLMClient:
+                runtime = execution.provider_runtime
+                return runtime.llm if runtime is not None else OfflineDevelopmentModel()
+
+            execution.llm_factory = initial_llm
     except BaseException:
         catalogue.close()
         raise
@@ -148,10 +162,15 @@ def runtime_app(
         execution,
         board=TaskBoardService(TaskBoardStore(state / "board"), project=str(workspace)),
     )
+    initial_selection = execution.current_model_ref()
+    service.default_model_ref = initial_selection
+    service.default_model_id = (
+        initial_selection.model if initial_selection is not None else None
+    )
     model_settings = ModelSettingsService(
         workspace, state, provider_approval, execution
     )
-    if provider_runtime is not None:
+    if initial_runtime is not None:
         model_settings.clear_pending()
     domain_store = DomainStore(database)
     service.domain_store = domain_store
@@ -182,12 +201,18 @@ def runtime_app(
                 originals,
                 max_upload_bytes=knowledge.max_upload_bytes,
             )
-            if provider_runtime is not None and knowledge.embedding_model:
-                knowledge_embedder = _embedding_client(knowledge, provider_runtime)
+            embedding_runtime = (
+                execution.runtime_for_model(knowledge.embedding_model)
+                or initial_runtime
+                if initial_runtime is not None and knowledge.embedding_model
+                else None
+            )
+            if embedding_runtime is not None:
+                knowledge_embedder = _embedding_client(knowledge, embedding_runtime)
             graph = None
-            if provider_runtime is not None and knowledge.graph_enabled:
+            if initial_runtime is not None and knowledge.graph_enabled:
                 graph = LLMGraphExtractor(
-                    cast(LiteLLMClient, provider_runtime.llm),
+                    cast(LiteLLMClient, initial_runtime.llm),
                     max_chars=knowledge.graph_max_chars,
                 )
             knowledge_worker = IngestionWorker(
@@ -304,11 +329,11 @@ def runtime_app(
         recipient=review.recipient,
     )
     review_store = ReviewStore(knowledge_store)
-    review_llm = _review_llm(provider_runtime)
+    review_llm = _review_llm(initial_runtime)
     review_model_id = (
         None
-        if provider_runtime is None
-        else provider_runtime.model_manager.current_model_id()
+        if initial_runtime is None
+        else initial_runtime.model_manager.current_model_id()
     )
     review_searcher = (
         DocumentSearcher(document_store) if document_store is not None else None
@@ -369,9 +394,14 @@ def runtime_app(
         reviews.apply_model(llm, model_id)
         weekly_reviews.apply_model(llm, model_id)
         if knowledge_worker is not None:
-            embedder = (
-                _embedding_client(knowledge, runtime)
+            embedding_runtime = (
+                execution.runtime_for_model(knowledge.embedding_model) or runtime
                 if knowledge.embedding_model
+                else None
+            )
+            embedder = (
+                _embedding_client(knowledge, embedding_runtime)
+                if embedding_runtime is not None
                 else None
             )
             graph = (
@@ -386,6 +416,12 @@ def runtime_app(
             controls.knowledge_embedder = embedder
 
     execution.on_provider_activation(refresh_provider_consumers)
+    current_activation = execution.model_registry.current_activation()
+    if current_activation is not None:
+        # A persisted selection or a migrated legacy ``selected_model`` may
+        # differ from the first catalog model.  Rebind once after the listener
+        # exists so background consumers start on the same model as chat.
+        refresh_provider_consumers(current_activation)
     web.router.routes[0:0] = review_routes(
         reviews,
         token,
@@ -431,7 +467,7 @@ def runtime_app(
             timezone=review.timezone,
             cutoff=wall_time.fromisoformat(review.time),
         )
-        if provider_runtime is not None and review.enabled
+        if initial_runtime is not None and review.enabled
         else None
     )
     web.state.review_schedule = review_schedule
@@ -445,7 +481,7 @@ def runtime_app(
             cutoff=wall_time.fromisoformat(review.time),
             scheduled_time=wall_time.fromisoformat(review.weekly_time),
         )
-        if provider_runtime is not None and review.weekly_enabled
+        if initial_runtime is not None and review.weekly_enabled
         else None
     )
     web.state.weekly_review_schedule = weekly_review_schedule
@@ -529,32 +565,29 @@ def _embedding_client(
     )
 
 
-def _load_provider(
+def _load_catalog(
     config: ServerConfig,
-) -> tuple[ProviderRuntime | None, frozenset[str], tuple[str, ...]]:
-    activation = None
+) -> tuple[ApprovedCatalog | None, frozenset[str], tuple[str, ...]]:
+    catalog = None
     if config.provider_approval is not None:
         try:
-            activation = load_provider_activation(
-                config.paths.workspace, config.provider_approval
+            allowlist = parse_provider_allowlist(
+                json.loads(config.provider_approval.read_text())
             )
+            catalog = load_approved_catalog(config.paths.workspace, allowlist)
         except Exception as exc:
             raise ValueError(
                 "Provider configuration rejected: " + type(exc).__name__
             ) from None
-    if activation is None:
+    if catalog is None:
         return None, frozenset(), ()
-    return (
-        activation.runtime,
-        activation.secret_env_keys,
-        activation.sensitive_values,
-    )
+    return catalog, catalog.secret_env_keys, catalog.sensitive_values
 
 
 def run_server(config: ServerConfig) -> None:
     web_root = validate_config(config)
     paths = config.paths
-    profile, names, known_values = _load_provider(config)
+    catalog, names, known_values = _load_catalog(config)
     paths.data_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     paths.data_root.chmod(0o700)
     lease = WorkspaceLease(paths.data_root / "server.lock")
@@ -586,7 +619,7 @@ def run_server(config: ServerConfig) -> None:
             web_root=web_root,
             host=config.host,
             port=config.port,
-            provider_runtime=profile,
+            provider_catalog=catalog,
             secret_env_keys=names,
             sensitive_values=known_values,
             allow_shell=config.allow_shell,
@@ -677,7 +710,7 @@ def check_config(ctx: typer.Context) -> None:
     """Validate bootstrap paths, provider configuration and assets without creating state."""
     settings: ServerConfig = ctx.obj
     validate_config(settings)
-    _load_provider(settings)
+    _load_catalog(settings)
     typer.echo(f"Configuration OK: {settings.url}; data_root={settings.data_root}")
 
 
@@ -735,10 +768,25 @@ def knowledge_probe(ctx: typer.Context) -> None:
     knowledge = settings.knowledge
     if not knowledge.embedding_model:
         raise ValueError("knowledge.embedding_model is not configured")
-    provider_runtime, _names, _values = _load_provider(settings)
-    if provider_runtime is None:
+    catalog, _names, _values = _load_catalog(settings)
+    if catalog is None:
         raise ValueError("An approved provider is required for a knowledge probe")
-    client = _embedding_client(knowledge, provider_runtime)
+    approved = next(
+        (
+            item
+            for item in catalog.providers
+            for group in item.provider.config.model_config
+            if knowledge.embedding_model in group.model_ids
+        ),
+        catalog.providers[0],
+    )
+    runtime = build_provider_runtime(
+        approved.provider,
+        approved.api_key,
+        approved.context_budget,
+        group=approved.group.name,
+    )
+    client = _embedding_client(knowledge, runtime)
 
     async def probe() -> list[float]:
         vectors = await client.embed(["Cairn knowledge embedding probe"])

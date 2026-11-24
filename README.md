@@ -152,18 +152,24 @@ Base URL, API key and model ID automatically. The curl is parsed in the browser
 only and is not uploaded. The API key is write-only: it is stored in the
 workspace `.env` and is never returned to the browser.
 
-Saving preserves the other providers, model groups and TOML comments. The saved
-provider and group become the first entries, and Cairn regenerates the provider
-approval for **every model group of that provider**, then installs it in the
-running Server. New chat and development turns use it immediately; a turn that
-already started keeps its model. No restart is needed. A restart is still
-required after editing `models.toml`, `.env` or the approval file outside Cairn,
-or after changing host environment credentials.
+Saving preserves the other providers, model groups, their order and TOML
+comments. Cairn approves every provider in the saved catalog, so anything you
+configure is immediately available — there is no separate enable step. A
+missing credential keeps that provider visible and selectable but reports the
+missing variable when a request uses it. The saved group's first model becomes
+the current selection and is installed in the running Server; new chat and
+development turns use it immediately, while a turn that already started keeps
+its model. No restart is needed.
 
-The chat model menu lists every approved model grouped by model group, and
-updates within a few seconds. The selected model is used for that request only.
-Existing `.cairn/models.toml` files remain supported, and `/model use` can also
-switch the default model within any approved group.
+The **模型** page's **当前选择** control switches the default provider, group and
+model without rewriting `models.toml` or the approval file. The chat model menu
+lists every approved model across providers, grouped by provider and model
+group; a model chosen there applies to that request only.
+
+A restart is still required after editing `models.toml`, `.env` or the approval
+file outside Cairn, or after changing host environment credentials. Existing
+`.cairn/models.toml` files remain supported, and `/provider use` and `/model use`
+switch the same default from the CLI.
 
 ### Upgrade from a legacy SQLite release
 

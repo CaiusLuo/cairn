@@ -19,6 +19,7 @@ import qrcode  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
 from cairn.agent.harness import Agent
+from cairn.agent.models.selection import ModelRef
 from cairn.agent.skills import layered_skills
 from cairn.agent.tools.skill import ReadSkillResourceTool, ReadSkillTool
 from cairn.development.board.commands import TaskBoardController
@@ -66,6 +67,26 @@ def digest(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()
+
+
+def _provider_groups(
+    choices: tuple[ModelRef, ...],
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Group approved choices by provider while preserving catalog order."""
+    rows: list[tuple[str, list[dict[str, Any]]]] = []
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    for ref in choices:
+        if ref.provider not in by_name:
+            by_name[ref.provider] = []
+            rows.append((ref.provider, by_name[ref.provider]))
+        group = groups.get((ref.provider, ref.group))
+        if group is None:
+            group = {"name": ref.group, "model_ids": []}
+            groups[(ref.provider, ref.group)] = group
+            by_name[ref.provider].append(group)
+        group["model_ids"].append(ref.model)
+    return rows
 
 
 class ServerControls:
@@ -133,7 +154,7 @@ class ServerControls:
         )
         self.memory_controller = MemoryController(self.memory)
         self.execution.protected_paths = tuple(path.resolve() for path in private_paths)
-        self.service.default_model_id = self.state.selected_model
+        self._migrate_model_selection()
         self.notices: deque[str] = deque(maxlen=20)
         self.qr_image: str | None = None
         self.qr_content: str | None = None
@@ -188,6 +209,24 @@ class ServerControls:
         self.service.authorize_new_submission = self.authorize_new_task
         self.service.on_settled = self.observe_settled
 
+    def _migrate_model_selection(self) -> None:
+        """Adopt the legacy ``selected_model`` once, without overriding state."""
+        stored = self.execution.selection_store.load().default
+        legacy = self.state.selected_model
+        if stored is None and legacy:
+            try:
+                ref = self.execution.find_model_ref(legacy)
+            except ValueError:
+                ref = None
+            if ref is not None:
+                self.execution.select_model(ref)
+                self.service.default_model_ref = ref
+                self.service.default_model_id = ref.model
+                return
+        current = self.execution.current_model_ref()
+        self.service.default_model_ref = current
+        self.service.default_model_id = current.model if current is not None else None
+
     def _notice(self, text: str) -> None:
         self.notices.append(self.memory.redact(text))
 
@@ -239,6 +278,41 @@ class ServerControls:
     def _save(self, **updates: Any) -> None:
         self.state = ControlState.model_validate({**self.state.model_dump(), **updates})
         atomic_write(self.path, self.state.model_dump(mode="json"))
+
+    def _apply_model_selection(
+        self, ref: ModelRef, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        task_id = request.get("task_id")
+        if task_id:
+            task = self.service.inspect(task_id)
+            if task.status not in {"completed", "paused"}:
+                raise ValueError("Only an idle clean task can change model")
+            updated = task.model_copy(
+                update={
+                    "model_id": ref.model,
+                    "provider_name": ref.provider,
+                    "model_group": ref.group,
+                }
+            )
+            self.execution.profile_for(updated)
+            self.service.record(updated, "model_selected")
+        try:
+            self.execution.select_model(ref)
+        except ValueError:
+            return {
+                "ok": False,
+                "message": "该模型不在宿主已批准的提供方和模型组内。",
+                "task_id": task_id,
+            }
+        self.service.default_model_id = ref.model
+        self.service.default_model_ref = ref
+        self._save(selected_model=ref.model)
+        return {
+            "ok": True,
+            "message": f"后续请求使用 {ref.provider} / {ref.group} / {ref.model}",
+            "task_id": task_id,
+            "model": ref.as_dict(),
+        }
 
     async def start(self) -> None:
         if self.services.memory:
@@ -364,20 +438,49 @@ class ServerControls:
 
     async def snapshot(self, section: str = "summary") -> dict[str, Any]:
         if section == "workbench":
-            provider = self.execution.provider_runtime
-            groups = provider.model_manager.list_models() if provider else ()
-            models = tuple(ident for group in groups for ident in group.model_ids)
+            choices = self.execution.model_choices()
+            active = self.execution.current_model_ref()
+            providers: list[dict[str, Any]] = []
+            by_provider: dict[str, dict[str, Any]] = {}
+            by_group: dict[tuple[str, str], dict[str, Any]] = {}
+            for ref in choices:
+                provider = by_provider.get(ref.provider)
+                if provider is None:
+                    provider = {"name": ref.provider, "groups": []}
+                    by_provider[ref.provider] = provider
+                    providers.append(provider)
+                key = (ref.provider, ref.group)
+                group = by_group.get(key)
+                if group is None:
+                    group = {
+                        "name": ref.group,
+                        "model_ids": [],
+                        "provider": ref.provider,
+                    }
+                    by_group[key] = group
+                    provider["groups"].append(group)
+                group["model_ids"].append(ref.model)
+            groups = (
+                by_provider.get(active.provider, {}).get("groups", [])
+                if active is not None
+                else []
+            )
+            if not groups and choices:
+                groups = providers[0]["groups"]
             return {
                 "workspace": str(self.workspace),
-                "provider": provider.provider.name if provider else None,
-                "models": list(models),
+                "provider": active.provider if active else None,
+                "providers": providers,
+                "models": [ref.model for ref in choices],
                 "model_groups": [
-                    {"name": group.name, "model_ids": list(group.model_ids)}
+                    {"name": group["name"], "model_ids": list(group["model_ids"])}
                     for group in groups
                 ],
-                "conversation_model": models[0] if models else None,
-                "development_model": self.service.default_model_id
-                or (models[0] if models else None),
+                "active_provider": active.provider if active else None,
+                "active_group": active.group if active else None,
+                "active_model": active.model if active else None,
+                "conversation_model": active.model if active else None,
+                "development_model": active.model if active else None,
                 "development_shell": self.execution.allow_shell,
                 "development_network": self.execution.allow_network,
             }
@@ -678,70 +781,69 @@ class ServerControls:
             )
             return result
         elif name in {"/model", "/provider"}:
-            profile = self.execution.provider_runtime
-            if profile is None:
+            choices = self.execution.model_choices()
+            if not choices:
                 return {"ok": True, "message": "Server 当前使用离线验收模型。"}
-            current = profile.model_manager.current_model()
-            approved = tuple(
-                ident
-                for group in profile.model_manager.list_models()
-                for ident in group.model_ids
-            )
             parts = args.split()
-            if name == "/model" and parts[:1] == ["use"] and len(parts) == 2:
-                ident = parts[1]
-                group = next(
-                    (
-                        item
-                        for item in profile.model_manager.list_models()
-                        if item.name == ident
-                    ),
-                    None,
-                )
-                if group is not None:
-                    ident = group.model_ids[0]
-                elif ident not in approved:
+            if name == "/provider" and parts[:1] == ["use"] and len(parts) == 2:
+                try:
+                    ref = self.execution.find_model_ref(parts[1], provider=parts[1])
+                except ValueError:
                     return {
                         "ok": False,
-                        "message": "模型不在宿主已批准的组内。批准列表: "
-                        + ", ".join(approved),
+                        "message": "提供方不在宿主已批准的列表中。可用提供方: "
+                        + ", ".join(dict.fromkeys(ref.provider for ref in choices)),
                     }
-                task_id = request.get("task_id")
-                if task_id:
-                    task = self.service.inspect(task_id)
-                    if task.status not in {"completed", "paused"}:
-                        raise ValueError("Only an idle clean task can change model")
-                    self.execution.profile_for(
-                        task.model_copy(update={"model_id": ident})
-                    )
-                    self.service.record(
-                        task.model_copy(update={"model_id": ident}), "model_selected"
-                    )
-                self._save(selected_model=ident)
-                self.service.default_model_id = ident
-                return {
-                    "ok": True,
-                    "message": "后续请求使用 " + ident,
-                    "task_id": task_id,
-                }
+                return self._apply_model_selection(ref, request)
+            if name == "/model" and parts[:1] == ["use"] and len(parts) == 2:
+                try:
+                    ref = self.execution.find_model_ref(parts[1])
+                except ValueError:
+                    return {
+                        "ok": False,
+                        "message": "模型不在宿主已批准的列表中。可用模型: "
+                        + ", ".join(
+                            f"{ref.provider}/{ref.group}/{ref.model}" for ref in choices
+                        ),
+                    }
+                return self._apply_model_selection(ref, request)
             if args and args != "list":
                 return {
                     "ok": False,
-                    "message": "此操作未执行。Provider 和模型配置请在 Web 的「模型」页 (/model.html) 修改并重启 Server; /model use 可切换已批准组内的模型。",
+                    "message": "此操作未执行。使用 /provider list|use、/model list|use 选择已批准的提供方和模型。",
+                }
+            current = self.execution.current_model_ref()
+            if name == "/provider":
+                return {
+                    "ok": True,
+                    "message": "已批准提供方:\n"
+                    + "\n".join(
+                        f"- {provider}: "
+                        + "; ".join(
+                            f"{group['name']} ({', '.join(group['model_ids'])})"
+                            for group in groups
+                        )
+                        for provider, groups in _provider_groups(choices)
+                    )
+                    + "\n当前: "
+                    + (
+                        f"{current.provider} / {current.group} / {current.model}"
+                        if current
+                        else "未选择"
+                    ),
                 }
             return {
                 "ok": True,
-                "message": "Provider: "
-                + profile.provider.name
-                + "\n已批准模型: "
-                + ", ".join(approved)
-                + "\n模型组: "
-                + "; ".join(
-                    f"{group.name} ({', '.join(group.model_ids)})"
-                    for group in profile.model_manager.list_models()
+                "message": "已批准模型:\n"
+                + "\n".join(
+                    f"- {ref.provider} / {ref.group} / {ref.model}" for ref in choices
                 )
-                + "\n默认: "
-                + str(self.service.default_model_id or current.model_ids[0]),
+                + "\n当前: "
+                + (
+                    f"{current.provider} / {current.group} / {current.model}"
+                    if current
+                    else "未选择"
+                ),
             }
         elif name == "/task":
             parts = args.split()

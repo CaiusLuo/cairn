@@ -8,6 +8,8 @@ export type Submission = {
   conversation: string;
   mode: "conversation" | "development";
   model?: string;
+  provider?: string;
+  group?: string;
   attachment_ids?: string[];
   attachments?: UploadedAttachment[];
 };
@@ -58,6 +60,8 @@ export async function sendSubmission(submission: Submission, key: string) {
   const run = await runtimeApi<Run>(`conversations/${encodeURIComponent(submission.conversation)}/messages`, {
     prompt: submission.prompt, source: "web", request_id: submission.id,
     ...(submission.model ? { model_id: submission.model } : {}),
+    ...(submission.provider ? { provider: submission.provider } : {}),
+    ...(submission.group ? { group: submission.group } : {}),
     ...(submission.attachment_ids?.length ? { attachment_ids: submission.attachment_ids } : {}),
   });
   sessionStorage.removeItem(key);

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -10,12 +11,16 @@ import pytest
 from cairn.agent.models.catalog import NamedProvider
 from cairn.agent.models.config.admission import (
     ApprovedGroup,
+    ProviderAllowlist,
     ProviderApproval,
     ProviderApprovalMismatch,
     approval_matches,
     approved_groups,
+    expected_catalog_allowlist,
     expected_catalog_approval,
+    load_approved_catalog,
     load_approved_provider,
+    parse_provider_allowlist,
     parse_provider_approval,
 )
 from cairn.agent.models.config.loader import load_project_providers
@@ -195,3 +200,142 @@ def test_parse_rejects_invalid_group_lists(groups: list[object]) -> None:
 
     with pytest.raises(ValueError):
         parse_provider_approval(data)
+
+
+MULTI_CATALOG = """\
+[[providers]]
+name = "primary"
+base_url = "https://primary.test/v1"
+api_key_env = "PRIMARY_KEY"
+
+[[providers.models]]
+name = "fast"
+model_ids = ["fast-1"]
+
+[[providers]]
+name = "secondary"
+base_url = "https://secondary.test/v1"
+api_key_env = "SECONDARY_KEY"
+
+[[providers.models]]
+name = "deep"
+model_ids = ["deep-1", "deep-2"]
+
+[[providers]]
+name = "unapproved"
+base_url = "https://hidden.test/v1"
+api_key_env = "HIDDEN_KEY"
+
+[[providers.models]]
+name = "hidden"
+model_ids = ["hidden-1"]
+"""
+
+
+def test_allowlist_v2_round_trips_and_tracks_every_provider(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    (workspace / ".cairn/models.toml").write_text(MULTI_CATALOG)
+    providers = load_project_providers(workspace / ".cairn/models.toml").providers
+
+    allowlist = expected_catalog_allowlist(providers)
+    encoded = json.dumps(asdict(allowlist))
+    parsed = parse_provider_allowlist(json.loads(encoded))
+
+    assert parsed == allowlist
+    assert [approval.name for approval in parsed.providers] == [
+        "primary",
+        "secondary",
+        "unapproved",
+    ]
+    assert parsed.by_name("secondary").model_ids == ("deep-1", "deep-2")
+    assert parsed.by_name("missing") is None
+    legacy = parse_provider_allowlist(
+        {
+            "name": "primary",
+            "endpoint": "https://primary.test/v1",
+            "group": "fast",
+            "key_env": "PRIMARY_KEY",
+            "model_ids": ["fast-1"],
+        }
+    )
+    assert legacy.version == 1
+    assert [approval.name for approval in legacy.providers] == ["primary"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"version": 1, "providers": []},
+        {"version": 2, "providers": []},
+        {"providers": [{"name": "only"}]},
+        {"version": 2, "providers": [], "extra": True},
+    ],
+)
+def test_allowlist_rejects_malformed_catalogs(payload: object) -> None:
+    with pytest.raises(ValueError):
+        parse_provider_allowlist(payload)
+
+
+def test_catalog_covers_every_approved_provider_and_keeps_missing_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PRIMARY_KEY", raising=False)
+    monkeypatch.delenv("SECONDARY_KEY", raising=False)
+    workspace = _workspace(tmp_path)
+    (workspace / ".cairn/models.toml").write_text(MULTI_CATALOG)
+    (workspace / ".env").write_text("PRIMARY_KEY=primary-secret\n")
+    providers = load_project_providers(workspace / ".cairn/models.toml").providers
+    allowlist = expected_catalog_allowlist(providers)
+
+    catalog = load_approved_catalog(workspace, allowlist, host_env={})
+
+    assert [approved.provider.name for approved in catalog.providers] == [
+        "primary",
+        "secondary",
+        "unapproved",
+    ]
+    secondary = catalog.by_name("secondary")
+    assert secondary is not None
+    assert secondary.api_key is None
+    assert secondary.missing_credential == "SECONDARY_KEY"
+    assert [group.name for group in secondary.provider.config.model_config] == ["deep"]
+    assert "primary-secret" not in repr(catalog)
+    assert "PRIMARY_KEY" in catalog.secret_env_keys
+
+
+def test_catalog_refuses_startup_when_no_provider_has_a_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PRIMARY_KEY", raising=False)
+    monkeypatch.delenv("SECONDARY_KEY", raising=False)
+    workspace = _workspace(tmp_path)
+    (workspace / ".cairn/models.toml").write_text(MULTI_CATALOG)
+    (workspace / ".env").write_text("")
+    providers = load_project_providers(workspace / ".cairn/models.toml").providers
+
+    with pytest.raises(ProviderApprovalMismatch):
+        load_approved_catalog(
+            workspace, expected_catalog_allowlist(providers), host_env={}
+        )
+
+
+def test_catalog_drops_providers_the_allowlist_does_not_cover(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PRIMARY_KEY", raising=False)
+    workspace = _workspace(tmp_path)
+    (workspace / ".cairn/models.toml").write_text(MULTI_CATALOG)
+    (workspace / ".env").write_text("PRIMARY_KEY=primary-secret\n")
+    approval = ProviderApproval(
+        name="primary",
+        endpoint="https://primary.test/v1",
+        group="fast",
+        key_env="PRIMARY_KEY",
+        model_ids=("fast-1",),
+    )
+
+    catalog = load_approved_catalog(
+        workspace, ProviderAllowlist((approval,)), host_env={}
+    )
+
+    assert [approved.provider.name for approved in catalog.providers] == ["primary"]

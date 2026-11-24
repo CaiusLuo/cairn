@@ -50,6 +50,26 @@ class ProviderApproval:
     groups: tuple[ApprovedGroup, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class ProviderAllowlist:
+    """Every provider the host has approved, plus the legacy single-provider form.
+
+    A version-1 approval binds one provider.  Version 2 keeps the same exact
+    binding per provider but allows the runtime to select among them without
+    rewriting deployment files.  The allowlist is still host policy: a provider
+    present in ``models.toml`` but absent here can never be served.
+    """
+
+    providers: tuple[ProviderApproval, ...]
+    version: int = 2
+
+    def by_name(self, name: str) -> ProviderApproval | None:
+        return next(
+            (approval for approval in self.providers if approval.name == name),
+            None,
+        )
+
+
 class ProviderApprovalRequired(ValueError):
     """The operator did not state the full provider facts to approve."""
 
@@ -140,6 +160,29 @@ def parse_provider_approval(data: object) -> ProviderApproval:
     )
 
 
+def parse_provider_allowlist(data: object) -> ProviderAllowlist:
+    """Parse a v2 allowlist or the legacy single-provider approval.
+
+    The legacy shape is accepted so an existing deployment can start, inspect
+    its settings and migrate on the next explicit save.  It binds exactly one
+    provider and therefore behaves like the previous release until then.
+    """
+    fields = _approval_fields(data)
+    if "providers" not in fields:
+        return ProviderAllowlist((parse_provider_approval(data),), version=1)
+    unexpected = set(fields) - {"version", "providers"}
+    if unexpected or fields.get("version") != 2:
+        raise ValueError("provider allowlist has missing or unexpected fields")
+    entries = fields["providers"]
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("provider allowlist providers must be a non-empty list")
+    providers = tuple(parse_provider_approval(entry) for entry in entries)
+    names = {approval.name for approval in providers}
+    if len(names) != len(providers):
+        raise ValueError("provider allowlist names must be unique")
+    return ProviderAllowlist(providers)
+
+
 def secret_values(
     secret_env_keys: frozenset[str],
     env_file_values: dict[str, str | None],
@@ -171,6 +214,17 @@ def expected_catalog_approval(provider: object) -> ProviderApproval:
             ApprovedGroup(name=group.name, model_ids=tuple(group.model_ids))
             for group in groups
         ),
+    )
+
+
+def expected_catalog_allowlist(
+    providers: Sequence[object],
+) -> ProviderAllowlist:
+    """Approve every provider declared by the catalog in one explicit save."""
+    if not providers:
+        raise ValueError("Provider catalog must declare at least one provider")
+    return ProviderAllowlist(
+        tuple(expected_catalog_approval(provider) for provider in providers)
     )
 
 
@@ -209,6 +263,16 @@ def approval_matches(approval: ProviderApproval, provider: NamedProvider) -> boo
     return approved_groups(approval, provider) is not None
 
 
+def approved_groups_for(
+    allowlist: ProviderAllowlist, provider: NamedProvider
+) -> tuple[ModelConfig, ...] | None:
+    """The groups this allowlist permits for one configured provider."""
+    approval = allowlist.by_name(provider.name)
+    if approval is None:
+        return None
+    return approved_groups(approval, provider)
+
+
 @dataclass(frozen=True)
 class ApprovedProvider:
     provider: NamedProvider
@@ -217,6 +281,24 @@ class ApprovedProvider:
     secret_env_keys: frozenset[str]
     sensitive_values: tuple[str, ...] = field(repr=False)
     context_budget: ContextBudget
+    #: Set when the provider is approved but its credential is not configured;
+    #: selecting it produces a clear runtime error instead of hiding it.
+    missing_credential: str | None = None
+
+
+@dataclass(frozen=True)
+class ApprovedCatalog:
+    """The host-approved subset of the configured provider catalog."""
+
+    providers: tuple[ApprovedProvider, ...]
+    secret_env_keys: frozenset[str]
+    sensitive_values: tuple[str, ...] = field(repr=False)
+
+    def by_name(self, name: str) -> ApprovedProvider | None:
+        return next(
+            (provider for provider in self.providers if provider.provider.name == name),
+            None,
+        )
 
 
 def load_approved_provider(
@@ -265,3 +347,90 @@ def load_approved_provider(
         reserve_percent=getattr(project, "context_reserve_percent", 10),
     )
     return ApprovedProvider(provider, group, key, names, secrets, budget)
+
+
+def load_approved_catalog(
+    workspace: Path,
+    allowlist: ProviderAllowlist | None,
+    *,
+    on_secrets_resolved: Callable[[Sequence[str]], None] | None = None,
+    host_env: Mapping[str, str] | None = None,
+) -> ApprovedCatalog:
+    """Load every configured provider covered by the host allowlist.
+
+    An unapproved or mismatched provider is simply not part of the result; it
+    is never served and its model groups never appear as choices.  The function
+    still resolves credentials for every approved provider up front, so a
+    missing credential is visible before a selection tries to use it.
+    """
+    host = os.environ if host_env is None else host_env
+    values = dotenv_values(workspace / ".env")
+    project = load_project_providers(workspace / ".cairn" / "models.toml")
+    configured = (
+        tuple(project.providers)
+        if project.providers
+        else (default_provider(project, host, values),)
+    )
+    if allowlist is None:
+        raise ProviderApprovalRequired(
+            "Pass --approve-provider-name, --approve-provider-endpoint, --approve-provider-group, --approve-provider-key-env and --approve-provider-models to authorize this provider."
+        )
+    budget = resolve_context_budget(
+        os.environ,
+        values,
+        reserve_percent=getattr(project, "context_reserve_percent", 10),
+    )
+    approved: list[ApprovedProvider] = []
+    for provider in configured:
+        approval = allowlist.by_name(provider.name)
+        if approval is None:
+            continue
+        matched = approved_groups(approval, provider)
+        if matched is None:
+            continue
+        if tuple(provider.config.model_config) != matched:
+            provider = replace(
+                provider, config=replace(provider.config, model_config=matched)
+            )
+        try:
+            key = resolve_provider_api_key(provider.config, host, values)
+        except ValueError:
+            # A missing key makes this provider unusable, not the whole
+            # catalog.  Keep it selectable so the UI can explain the missing
+            # credential instead of silently dropping the provider.
+            key = None
+        approved.append(
+            ApprovedProvider(
+                provider=provider,
+                group=matched[0],
+                api_key=key,
+                secret_env_keys=frozenset(
+                    item.config.api_key_env for item in configured
+                ),
+                sensitive_values=(),
+                context_budget=budget,
+                missing_credential=(
+                    provider.config.api_key_env if key is None else None
+                ),
+            )
+        )
+    if not approved:
+        raise ProviderApprovalMismatch(
+            "approved provider does not match the configured provider"
+        )
+    if all(item.missing_credential is not None for item in approved):
+        # Nothing can serve a request.  Fail startup with a clear message
+        # instead of looking healthy; one usable provider is enough to start,
+        # and the others stay selectable with their own error.
+        raise ProviderApprovalMismatch(
+            "no approved provider has a configured credential"
+        )
+    names = frozenset(item.config.api_key_env for item in configured)
+    secrets = secret_values(names, values, host)
+    if on_secrets_resolved is not None:
+        on_secrets_resolved(secrets)
+    return ApprovedCatalog(
+        providers=tuple(replace(item, sensitive_values=secrets) for item in approved),
+        secret_env_keys=names,
+        sensitive_values=secrets,
+    )
