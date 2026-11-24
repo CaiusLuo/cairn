@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import secrets
 import socket
@@ -19,13 +18,13 @@ from starlette.routing import Route
 
 from cairn.agent.budget import RunBudget
 from cairn.agent.models.client import LLMClient
-from cairn.agent.models.config.admission import (
-    load_approved_provider,
-    parse_provider_approval,
-)
 from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.agent.models.providers.litellm_client import LiteLLMClient
-from cairn.agent.models.runtime import ProviderRuntime, build_provider_runtime
+from cairn.agent.models.runtime import (
+    ProviderActivation,
+    ProviderRuntime,
+    load_provider_activation,
+)
 from cairn.agent.tracing.tracer import Tracer
 from cairn.agent.workspace.lease import WorkspaceLease
 from cairn.channels.adapter import ChannelAdapterRegistry
@@ -305,15 +304,7 @@ def runtime_app(
         recipient=review.recipient,
     )
     review_store = ReviewStore(knowledge_store)
-    review_llm: LLMClient | None
-    if provider_runtime is None:
-        review_llm = None
-    elif isinstance(provider_runtime.llm, LiteLLMClient):
-        # Reports are non-interactive and may need more output tokens than a
-        # chat turn; never lower an explicitly configured larger allowance.
-        review_llm = provider_runtime.llm.with_output_allowance(MIN_OUTPUT_TOKENS)
-    else:
-        review_llm = provider_runtime.llm
+    review_llm = _review_llm(provider_runtime)
     review_model_id = (
         None
         if provider_runtime is None
@@ -364,6 +355,37 @@ def runtime_app(
         execution.close()
         catalogue.close()
         raise
+
+    def refresh_provider_consumers(activation: ProviderActivation) -> None:
+        """Move reports and ingestion onto a provider saved from Web.
+
+        Chat and development runs resolve the runtime per run. These services
+        capture a client at construction, so the install must rebind them too;
+        otherwise they would keep using the credential from process start.
+        """
+        runtime = activation.runtime
+        model_id = runtime.model_manager.current_model_id()
+        llm = _review_llm(runtime)
+        reviews.apply_model(llm, model_id)
+        weekly_reviews.apply_model(llm, model_id)
+        if knowledge_worker is not None:
+            embedder = (
+                _embedding_client(knowledge, runtime)
+                if knowledge.embedding_model
+                else None
+            )
+            graph = (
+                LLMGraphExtractor(
+                    cast(LiteLLMClient, runtime.llm),
+                    max_chars=knowledge.graph_max_chars,
+                )
+                if knowledge.graph_enabled
+                else None
+            )
+            knowledge_worker.apply_model(embedder=embedder, graph=graph)
+            controls.knowledge_embedder = embedder
+
+    execution.on_provider_activation(refresh_provider_consumers)
     web.router.routes[0:0] = review_routes(
         reviews,
         token,
@@ -480,6 +502,16 @@ def _ocr_extractor(knowledge: KnowledgeConfig) -> PdfOcrExtractor | None:
     )
 
 
+def _review_llm(runtime: ProviderRuntime | None) -> LLMClient | None:
+    if runtime is None:
+        return None
+    if isinstance(runtime.llm, LiteLLMClient):
+        # Reports are non-interactive and may need more output tokens than a
+        # chat turn; never lower an explicitly configured larger allowance.
+        return runtime.llm.with_output_allowance(MIN_OUTPUT_TOKENS)
+    return runtime.llm
+
+
 def _embedding_client(
     knowledge: KnowledgeConfig, provider_runtime: ProviderRuntime
 ) -> LiteLLMEmbeddingClient:
@@ -500,26 +532,23 @@ def _embedding_client(
 def _load_provider(
     config: ServerConfig,
 ) -> tuple[ProviderRuntime | None, frozenset[str], tuple[str, ...]]:
-    profile = None
-    names: frozenset[str] = frozenset()
-    known_values: tuple[str, ...] = ()
+    activation = None
     if config.provider_approval is not None:
         try:
-            data = json.loads(config.provider_approval.read_text())
-            approval = parse_provider_approval(data)
-            approved = load_approved_provider(config.paths.workspace, approval)
-            names, known_values = approved.secret_env_keys, approved.sensitive_values
-            profile = build_provider_runtime(
-                approved.provider,
-                approved.api_key,
-                approved.context_budget,
-                group=approved.group.name,
+            activation = load_provider_activation(
+                config.paths.workspace, config.provider_approval
             )
         except Exception as exc:
             raise ValueError(
                 "Provider configuration rejected: " + type(exc).__name__
             ) from None
-    return profile, names, known_values
+    if activation is None:
+        return None, frozenset(), ()
+    return (
+        activation.runtime,
+        activation.secret_env_keys,
+        activation.sensitive_values,
+    )
 
 
 def run_server(config: ServerConfig) -> None:

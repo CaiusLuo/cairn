@@ -5,21 +5,25 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import httpx
 import pytest
 from dotenv import dotenv_values
 
 import cairn.server.model_settings as settings_module
+from cairn.agent.budget import RunBudget
 from cairn.agent.models.config.loader import load_project_providers
+from cairn.agent.models.runtime import ProviderActivation, load_provider_activation
 from cairn.agent.models.selection import ModelManager
+from cairn.server.bootstrap import runtime_app
 from cairn.server.model_settings import (
     ModelSettingsError,
     ModelSettingsService,
     ProbeModels,
     SaveModelSettings,
 )
+from tests.support.pg import database_for
 
 TOML = """\
 # Workspace provider catalog
@@ -66,6 +70,18 @@ def _runtime(path: Path) -> SimpleNamespace:
     )
 
 
+class _Execution:
+    """The install seam a running Server exposes to model settings."""
+
+    def __init__(self, runtime: Any) -> None:
+        self.provider_runtime = runtime
+        self.activations: list[ProviderActivation] = []
+
+    def install_provider_activation(self, activation: ProviderActivation) -> None:
+        self.provider_runtime = activation.runtime
+        self.activations.append(activation)
+
+
 @pytest.fixture
 def workspace(tmp_path: Path) -> tuple[Path, Path, Path]:
     root = tmp_path / "workspace"
@@ -106,7 +122,7 @@ def _service(
     monkeypatch.delenv("BACKUP_KEY", raising=False)
     # litellm imports load the repository .env into the test process.
     monkeypatch.delenv("CAIRN_LLM_API_KEY", raising=False)
-    execution = SimpleNamespace(provider_runtime=_runtime(config))
+    execution = _Execution(_runtime(config))
     return ModelSettingsService(root, state, approval, execution)
 
 
@@ -209,11 +225,20 @@ def test_save_switches_group_preserves_other_groups_and_providers(
             {"name": "kimi", "model_ids": ["openai/kimi"]},
         ],
     }
-    assert result["restart_required"] is True
+    assert result["restart_required"] is False
     assert result["settings"]["active_group"] == "deepseek-fast"
-    assert result["settings"]["restart_required"] is True
+    assert result["settings"]["restart_required"] is False
+    assert result["settings"]["running"] == {
+        "provider": "bailian",
+        "group": "deepseek-fast",
+        "model": "openai/deepseek-v2",
+        "base_url": "https://new.example/v1",
+    }
     assert "new-secret" not in json.dumps(result)
-    assert (root.parent / "state/model-settings-pending.json").is_file()
+    assert not (root.parent / "state/model-settings-pending.json").exists()
+    execution = cast(_Execution, service.execution)
+    assert len(execution.activations) == 1
+    assert execution.provider_runtime.provider.name == "bailian"
 
 
 def test_save_replaces_every_duplicate_credential_line(
@@ -236,7 +261,7 @@ def test_save_replaces_every_duplicate_credential_line(
     assert dotenv_values(env_path)["BAILIAN_KEY"] == expected
 
 
-def test_key_only_change_stays_pending_until_a_restart(
+def test_key_only_change_applies_to_the_running_provider(
     workspace: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = _service(workspace, monkeypatch)
@@ -244,11 +269,13 @@ def test_key_only_change_stays_pending_until_a_restart(
 
     result = service.save(_update(base_url="https://old.example/v1"))
 
-    assert result["settings"]["restart_required"] is True
-    assert (workspace[0].parent / "state/model-settings-pending.json").exists()
-    service.clear_pending()
-    assert service.read()["restart_required"] is False
+    assert result["restart_required"] is False
+    assert not (workspace[0].parent / "state/model-settings-pending.json").exists()
     assert (workspace[0] / ".env").read_text().startswith("BAILIAN_KEY=new-secret\n")
+    execution = cast(_Execution, service.execution)
+    assert getattr(execution.activations[-1].runtime.llm, "api_key", None) == (
+        _update().api_key
+    )
 
 
 def test_create_uses_a_free_credential_name_and_keeps_existing_providers(
@@ -280,6 +307,56 @@ def test_create_uses_a_free_credential_name_and_keeps_existing_providers(
     assert project.providers[0].config.api_key_env == "CAIRN_LLM_API_KEY"
     assert "CAIRN_LLM_API_KEY=local" in (root / ".env").read_text()
     assert json.loads(approval.read_text())["name"] == "magpie"
+
+
+def test_runtime_app_serves_a_saved_provider_without_restart(
+    workspace: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, approval, _config = workspace
+    for name in ("BAILIAN_KEY", "BACKUP_KEY", "CAIRN_LLM_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    activation = load_provider_activation(root, approval)
+    app = runtime_app(
+        root,
+        root.parent / "state",
+        root.parent / "worktrees",
+        budget=RunBudget(max_steps=4),
+        token="test-token",
+        database=database_for(root.parent),
+        provider_runtime=activation.runtime,
+        secret_env_keys=activation.secret_env_keys,
+        sensitive_values=activation.sensitive_values,
+        provider_approval=approval,
+    )
+    service = app.state.model_settings
+    try:
+        assert service.read()["running"]["base_url"] == "https://old.example/v1"
+
+        result = service.save(
+            _update(
+                active_group="deepseek",
+                group_name="deepseek-fast",
+                model_ids=("openai/deepseek-v2",),
+            )
+        )
+
+        assert result["restart_required"] is False
+        assert service.read()["running"] == {
+            "provider": "bailian",
+            "group": "deepseek-fast",
+            "model": "openai/deepseek-v2",
+            "base_url": "https://new.example/v1",
+        }
+        execution = app.state.execution
+        assert (
+            execution.provider_runtime.provider.config.base_url
+            == "https://new.example/v1"
+        )
+        # Captured background clients follow the same activation.
+        assert app.state.reviews.model_id == "openai/deepseek-v2"
+        assert app.state.weekly_reviews.model_id == "openai/deepseek-v2"
+    finally:
+        app.state.execution.close()
 
 
 def test_create_refuses_a_credential_name_used_by_another_provider(
@@ -341,10 +418,12 @@ def test_workspace_env_key_can_be_replaced_even_if_exported(
 
     result = service.save(_update())
 
-    assert result["restart_required"] is True
+    assert result["restart_required"] is False
     text = (root / ".env").read_text()
     assert f"BAILIAN_KEY={expected}" in text
     assert "host-stale" not in text
+    execution = cast(_Execution, service.execution)
+    assert getattr(execution.activations[-1].runtime.llm, "api_key", None) == expected
 
 
 def test_invalid_endpoint_and_missing_credential_write_nothing(
@@ -452,7 +531,7 @@ def test_legacy_update_stays_legacy_and_rename_converts_to_catalog(
         )
     )
     monkeypatch.delenv("BAILIAN_KEY", raising=False)
-    execution = SimpleNamespace(provider_runtime=_runtime(config))
+    execution = _Execution(_runtime(config))
     service = ModelSettingsService(root, tmp_path / "state", approval, execution)
 
     service.save(
@@ -488,11 +567,11 @@ def test_env_layout_create_writes_a_catalog(
     approval = tmp_path / "policy/provider.json"
     approval.parent.mkdir()
     monkeypatch.delenv("CAIRN_LLM_API_KEY", raising=False)
-    execution = SimpleNamespace(provider_runtime=None)
+    execution = _Execution(None)
     service = ModelSettingsService(root, tmp_path / "state", approval, execution)
 
     assert service.read()["layout"] == "env"
-    service.save(
+    result = service.save(
         SaveModelSettings(
             mode="create",
             active_provider="",
@@ -505,6 +584,8 @@ def test_env_layout_create_writes_a_catalog(
             model_ids=("deepseek-chat",),
         )
     )
+    assert result["restart_required"] is True
+    assert (tmp_path / "state/model-settings-pending.json").exists()
     project = load_project_providers(root / ".cairn/models.toml")
     assert project.providers[0].name == "deepseek"
     assert project.providers[0].config.model_config[0].model_ids == ("deepseek-chat",)

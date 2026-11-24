@@ -154,18 +154,16 @@ workspace `.env` and is never returned to the browser.
 
 Saving preserves the other providers, model groups and TOML comments. The saved
 provider and group become the first entries, and Cairn regenerates the provider
-approval for **every model group of that provider**. Run the displayed command
-to apply the change:
+approval for **every model group of that provider**, then installs it in the
+running Server. New chat and development turns use it immediately; a turn that
+already started keeps its model. No restart is needed. A restart is still
+required after editing `models.toml`, `.env` or the approval file outside Cairn,
+or after changing host environment credentials.
 
-```sh
-sudo ./scripts/start.sh restart
-```
-
-After the restart, the chat model menu lists every approved model grouped by
-model group. The selected model is used for that request only; no further
-configuration edit or restart is needed. The currently running turn keeps its
-model until the restart. Existing `.cairn/models.toml` files remain supported,
-and `/model use` can also switch the default model within any approved group.
+The chat model menu lists every approved model grouped by model group, and
+updates within a few seconds. The selected model is used for that request only.
+Existing `.cairn/models.toml` files remain supported, and `/model use` can also
+switch the default model within any approved group.
 
 ### Upgrade from a legacy SQLite release
 

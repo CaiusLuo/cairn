@@ -594,6 +594,15 @@ class WorktreeProvider:
         self.parent = parent.resolve()
         self.secret_env_keys = secret_env_keys
 
+    def add_secret_env_keys(self, names: frozenset[str]) -> None:
+        """Extend the credential policy for worktrees created from now on.
+
+        Names are only added: an operation that started under the old policy
+        keeps its environment, and a value discovered late still stays out of
+        later Git environments.
+        """
+        self.secret_env_keys = self.secret_env_keys | names
+
     async def create(self, base_ref: str, branch: str | None) -> WorktreeHandle:
         git = _WorktreeGit(self.source, self.secret_env_keys)
         await git.check_filters(self.source.root)

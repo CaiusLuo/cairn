@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from starlette.testclient import TestClient
@@ -30,6 +30,14 @@ name = "kimi"
 model_ids = ["openai/kimi"]
 """
 API_KEY = "route-test-key"
+
+
+class _Execution:
+    def __init__(self, runtime: Any) -> None:
+        self.provider_runtime = runtime
+
+    def install_provider_activation(self, activation: Any) -> None:
+        self.provider_runtime = activation.runtime
 
 
 def _workspace(tmp_path: Path) -> tuple[Path, Path]:
@@ -69,7 +77,7 @@ def _app(
         root,
         tmp_path / "state",
         approval,
-        SimpleNamespace(provider_runtime=runtime),
+        _Execution(runtime),
     )
     config = WebConfig(
         workspace=root,
@@ -160,8 +168,9 @@ def test_save_requires_json_and_never_echoes_the_credential(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["restart_required"] is True
+    assert body["restart_required"] is False
     assert body["settings"]["active_group"] == "kimi"
+    assert body["settings"]["running"]["base_url"] == "https://new.example/v1"
     assert API_KEY not in response.text
     assert API_KEY in (root / ".env").read_text()
     assert json.loads(approval.read_text())["model_ids"] == ["openai/kimi-v2"]

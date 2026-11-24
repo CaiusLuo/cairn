@@ -141,11 +141,14 @@ def parse_provider_approval(data: object) -> ProviderApproval:
 
 
 def secret_values(
-    secret_env_keys: frozenset[str], env_file_values: dict[str, str | None]
+    secret_env_keys: frozenset[str],
+    env_file_values: dict[str, str | None],
+    host_env: Mapping[str, str] | None = None,
 ) -> tuple[str, ...]:
+    host = os.environ if host_env is None else host_env
     values: list[str] = []
     for key in secret_env_keys:
-        value = os.environ.get(key) or env_file_values.get(key)
+        value = host.get(key) or env_file_values.get(key)
         if value:
             values.append(value)
     return tuple(values)
@@ -221,10 +224,18 @@ def load_approved_provider(
     approval: ProviderApproval | None,
     *,
     on_secrets_resolved: Callable[[Sequence[str]], None] | None = None,
+    host_env: Mapping[str, str] | None = None,
 ) -> ApprovedProvider:
+    """Load the approved provider and resolve only its credential.
+
+    ``host_env`` lets a running process re-read a workspace credential it just
+    wrote without restarting systemd: startup passes the process environment,
+    while a live install passes the workspace-managed values where they exist.
+    """
+    host = os.environ if host_env is None else host_env
     values = dotenv_values(workspace / ".env")
     project = load_project_providers(workspace / ".cairn" / "models.toml")
-    provider = default_provider(project, os.environ, values)
+    provider = default_provider(project, host, values)
     if approval is None:
         raise ProviderApprovalRequired(
             "Pass --approve-provider-name, --approve-provider-endpoint, --approve-provider-group, --approve-provider-key-env and --approve-provider-models to authorize this provider."
@@ -241,11 +252,11 @@ def load_approved_provider(
         provider = replace(
             provider, config=replace(provider.config, model_config=matched)
         )
-    key = resolve_provider_api_key(provider.config, os.environ, values)
+    key = resolve_provider_api_key(provider.config, host, values)
     names = frozenset(
         named.config.api_key_env for named in project.providers or (provider,)
     )
-    secrets = secret_values(names, values)
+    secrets = secret_values(names, values, host)
     if on_secrets_resolved is not None:
         on_secrets_resolved(secrets)
     budget = resolve_context_budget(

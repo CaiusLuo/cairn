@@ -85,6 +85,21 @@ class IngestionWorker:
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
+    def apply_model(
+        self,
+        *,
+        embedder: EmbeddingClient | None,
+        graph: GraphExtractor | None,
+    ) -> None:
+        """Use a newly activated provider for documents processed from now on.
+
+        A document already being ingested may finish on the previous client;
+        the checked-in indexes stay consistent because both clients target the
+        same configured embedding model.
+        """
+        self.embedder = embedder
+        self.graph = graph
+
     def start(self) -> None:
         if self._task is not None:
             return

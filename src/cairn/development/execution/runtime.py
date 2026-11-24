@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import asdict, replace
@@ -17,7 +18,7 @@ from cairn.agent.budget import RunBudget
 from cairn.agent.harness import Agent
 from cairn.agent.models.client import LLMClient
 from cairn.agent.models.executor import ModelExecutor
-from cairn.agent.models.runtime import ProviderRuntime
+from cairn.agent.models.runtime import ProviderActivation, ProviderRuntime
 from cairn.agent.models.selection import ModelManager
 from cairn.agent.permissions import (
     PermissionCapability,
@@ -56,6 +57,8 @@ from cairn.development.worktree import WorktreeProvider
 from cairn.shared.credential_paths import protect_host_paths
 from cairn.shared.db import Database
 from cairn.shared.redaction import StreamRedactor, redact_text
+
+LOGGER = logging.getLogger(__name__)
 
 
 def owner_principal(principal: ChannelPrincipal | None) -> bool:
@@ -127,6 +130,7 @@ class ServiceExecution:
         self.provider = WorktreeProvider(
             self.source, self.worktrees, secret_env_keys=secret_env_keys
         )
+        self._provider_listeners: list[Callable[[ProviderActivation], None]] = []
         self._store: SessionStore | None = None
         self.llm_factory = llm_factory
         self.budget = budget
@@ -156,6 +160,40 @@ class ServiceExecution:
             )
         if self._store is not None:
             self._store.sensitive_values = self.sensitive_values
+
+    def on_provider_activation(
+        self, listener: Callable[[ProviderActivation], None]
+    ) -> None:
+        """Observe each provider installed after startup.
+
+        Listeners run after the swap on the saving thread. A failing listener is
+        logged by type only and never rolls back a provider that is already
+        serving new work.
+        """
+        self._provider_listeners.append(listener)
+
+    def install_provider_activation(self, activation: ProviderActivation) -> None:
+        """Serve new work from a freshly approved provider.
+
+        The runtime is one immutable reference: a run that already captured its
+        profile keeps it, while every later lookup sees the new provider.
+        Credential names and redaction values are only ever added, because an
+        active run may still hold a value discovered before this swap. They are
+        extended before the swap so a failure there leaves the old provider
+        serving and lets the caller roll its files back.
+        """
+        self.secret_env_keys = self.secret_env_keys | activation.secret_env_keys
+        self.provider.add_secret_env_keys(activation.secret_env_keys)
+        self.protect_secrets(activation.sensitive_values)
+        self.provider_runtime = activation.runtime
+        for listener in tuple(self._provider_listeners):
+            try:
+                listener(activation)
+            except Exception as error:
+                # The provider is already serving; this is a consumer refresh.
+                LOGGER.warning(
+                    "provider activation listener failed: %s", type(error).__name__
+                )
 
     def profile_for(self, task: RuntimeTask) -> ProviderRuntime | None:
         profile = self.provider_runtime

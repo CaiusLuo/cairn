@@ -3,6 +3,7 @@ import dataclasses
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
@@ -245,3 +246,55 @@ def test_runtime_factory_uses_latest_hot_reloaded_budget() -> None:
     _llm, builder = runtime.runtime_factory("openai/model-c")
     assert builder.budget == updated
     assert runtime.context_builder.budget == updated
+
+
+def test_install_activation_swaps_future_work_and_extends_secret_policy(
+    tmp_path: Path,
+) -> None:
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from cairn.agent.budget import RunBudget
+    from cairn.agent.models.runtime import ProviderActivation
+    from cairn.development.execution.runtime import ServiceExecution
+    from cairn.shared.db import Database
+
+    first = build_provider_runtime(make_provider("first"), "first-key", BUDGET)
+    second = build_provider_runtime(
+        make_provider("second", base_url="https://second.test/v1"),
+        "second-key",
+        BUDGET,
+    )
+    source = tmp_path / "workspace"
+    source.mkdir()
+    execution = ServiceExecution(
+        source,
+        tmp_path / "state",
+        tmp_path / "worktrees",
+        lambda: first.llm,
+        database=cast(Database, SimpleNamespace()),
+        budget=RunBudget(max_steps=2),
+        provider_runtime=first,
+        secret_env_keys=frozenset({"FIRST_API_KEY"}),
+        sensitive_values=("first-secret",),
+    )
+    seen: list[ProviderActivation] = []
+
+    def failing_listener(activation: Any) -> None:
+        raise RuntimeError("consumer refresh failed")
+
+    execution.on_provider_activation(seen.append)
+    execution.on_provider_activation(failing_listener)
+    activation = ProviderActivation(
+        runtime=second,
+        secret_env_keys=frozenset({"SECOND_API_KEY"}),
+        sensitive_values=("second-secret",),
+    )
+
+    execution.install_provider_activation(activation)
+
+    assert execution.provider_runtime is second
+    assert "SECOND_API_KEY" in execution.secret_env_keys
+    assert "SECOND_API_KEY" in execution.provider.secret_env_keys
+    assert "second-secret" in execution.sensitive_values
+    assert seen == [activation]

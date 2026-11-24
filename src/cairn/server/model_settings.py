@@ -1,19 +1,20 @@
 # ruff: noqa: RUF001
 """Host-authorized provider configuration from the Web console.
 
-The running provider is built once at startup from the approved facts in
-``provider_approval``. This module changes the files that the *next* startup
-will read: the active provider and model group in ``.cairn/models.toml``, the
-credential in the workspace ``.env``, and the regenerated approval. It never
-rebinds the running Agent, resolves a credential into the response, or returns
-a secret value.
+A save edits the same files a restart would read — the active provider and
+model group in ``.cairn/models.toml``, the credential in the workspace ``.env``,
+and the regenerated approval — then installs that approved provider into the
+running Server. New work uses it immediately; a turn that already started keeps
+the runtime it captured. The install goes through the startup loader, so a
+reload can never apply more or less than a restart would. Responses never
+resolve a credential value.
 
 Only the selected provider and its selected model group are edited. Other
 providers, other groups and unrelated TOML keys stay in the document. The
-selection is committed by moving the chosen provider and group first, because
-startup chooses the first provider and its first group. Every model group of
-that provider is approved, so the chat selector can switch among them after
-the restart without another configuration change.
+selection is committed by moving the chosen provider and group first. Every
+model group of that provider is approved, so the chat selector can switch among
+them without another save. An external file edit still requires a restart,
+because the running process cannot prove it is the intended operator change.
 """
 
 from __future__ import annotations
@@ -52,6 +53,7 @@ from cairn.agent.models.config.schema import (
     parse_provider_catalog,
     validate_runtime_provider,
 )
+from cairn.agent.models.runtime import ProviderActivation, load_provider_activation
 from cairn.agent.models.selection import ModelConfig, ProviderConfig
 from cairn.server import host
 from cairn.shared import platform
@@ -166,6 +168,8 @@ class _Runtime(Protocol):
 class _Execution(Protocol):
     @property
     def provider_runtime(self) -> _Runtime | None: ...
+
+    def install_provider_activation(self, activation: ProviderActivation) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -557,7 +561,14 @@ def _atomic_json(payload: Mapping[str, Any]) -> bytes:
 
 
 class ModelSettingsService:
-    """Read, save and probe the provider files the next startup will load."""
+    """Own the provider configuration the running Server serves.
+
+    Reads describe the files and the active runtime without secrets. A save is
+    one transaction: write the files, install the approved provider under the
+    same rules as startup, and roll every file back if the new runtime cannot
+    be built. Without a running provider (offline mode) the save stays pending
+    until the next start.
+    """
 
     def __init__(
         self,
@@ -807,6 +818,7 @@ class ModelSettingsService:
                 "Server 没有配置 provider_approval，无法保存模型设置。",
             )
         approval_state = _read_state(self.approval_path)
+        approval_path = self.approval_path
         pending_state = _read_state(self.pending_path)
         env_values = _env_values(self.env_path)
 
@@ -957,6 +969,7 @@ class ModelSettingsService:
                 )
 
         completed: list[_PendingWrite] = []
+        applied = False
         try:
             for write in writes:
                 _write_file(
@@ -966,7 +979,9 @@ class ModelSettingsService:
                     write.state.data,
                 )
                 completed.append(write)
-            current = self._read_locked()
+            # Prove the written files are readable before rebinding anything.
+            self._read_locked()
+            applied = self._install_saved_provider(approval_path)
         except BaseException as error:
             failures = self._rollback(completed)
             if failures:
@@ -975,13 +990,52 @@ class ModelSettingsService:
                     "保存失败且回滚不完整；请立即在服务器上核对 models.toml、.env 和 provider approval。",
                 ) from error
             raise
+        # The install never raises after the swap; a read failure here leaves
+        # files and runtime consistent and must not roll either one back.
+        current = self._read_locked()
 
         return {
             "settings": current,
-            "restart_required": True,
+            "restart_required": current["restart_required"],
             "restart_command": RESTART_COMMAND,
-            "message": "模型配置已保存。重启 Cairn Server 后生效。",
+            "message": (
+                "模型配置已保存并立即生效；新的对话回合会使用新的模型。"
+                if applied
+                else "模型配置已保存；当前没有运行中的提供方，重启 Cairn Server 后生效。"
+            ),
         }
+
+    def _install_saved_provider(self, approval_path: Path) -> bool:
+        """Install the approved provider the save just wrote, or stay pending.
+
+        The workspace ``.env`` is the Web-managed source, so its values win for
+        this reload. A process started by systemd may still carry the previous
+        credential in ``os.environ``; preferring that copy would silently keep
+        using a key the operator just replaced.
+        """
+        if self.execution.provider_runtime is None:
+            return False
+        managed = {
+            name: value
+            for name, value in dotenv_values(self.env_path).items()
+            if value is not None
+        }
+        try:
+            activation = load_provider_activation(
+                self.workspace,
+                approval_path,
+                host_env={**os.environ, **managed},
+            )
+            self.execution.install_provider_activation(activation)
+        except Exception as error:
+            # The files are already written; the caller rolls them back so the
+            # next start cannot disagree with the runtime that stayed active.
+            raise _error(
+                "model_settings_unavailable",
+                f"新的模型配置无法启用（{type(error).__name__}）；本次保存已回滚。",
+            ) from error
+        self.clear_pending()
+        return True
 
     @staticmethod
     def env_state_text(state: _FileState) -> str:

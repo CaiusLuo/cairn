@@ -345,7 +345,7 @@ export function ModelPage() {
       setProbed([]);
       setProbeMessage("");
       setFeedback(result.message);
-      setSavedRestart(true);
+      setSavedRestart(result.restart_required);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -403,7 +403,7 @@ export function ModelPage() {
       <PageHeader
         icon="sparkles"
         title="模型"
-        description="配置 OpenAI 兼容的提供方和模型。优先提供国内模型预设；保存后重启 Server 生效。"
+        description="配置 OpenAI 兼容的提供方和模型。优先提供国内模型预设；保存后立即用于新的对话回合。"
         actions={
           <button
             disabled={busy}
@@ -487,7 +487,7 @@ export function ModelPage() {
               )}
             </article>
             <article className="wb-card">
-              <h2>下次启动</h2>
+              <h2>默认配置</h2>
               <dl>
                 <div>
                   <dt>提供方</dt>
@@ -535,7 +535,7 @@ export function ModelPage() {
           <section className="settings-section">
             <div className="model-section-head">
               <h2>提供方</h2>
-              <Help text="Server 启动时使用列表中的第一个提供方及其第一个模型组。保存另一个提供方或模型组会把它移到第一位，并批准该提供方的全部模型组；重启后可在对话框的模型菜单中切换。" />
+              <Help text="新的对话回合使用列表中的第一个提供方及其第一个模型组。保存另一个提供方或模型组会把它移到第一位并立即生效，同时批准该提供方的全部模型组；对话框的模型菜单随后可按组切换。" />
             </div>
             <div className="model-provider-list">
               {settings.providers.map(item => (
@@ -551,7 +551,7 @@ export function ModelPage() {
                 >
                   <span className="model-provider-head">
                     <strong>{item.name}</strong>
-                    {item.next_start && <em>下次启动</em>}
+                    {item.next_start && <em>默认</em>}
                   </span>
                   <code>{item.base_url}</code>
                   <span className="wb-muted">
@@ -591,7 +591,7 @@ export function ModelPage() {
                     ? "新增提供方"
                     : `编辑 ${draft.originalProvider}`}
                 </h2>
-                <Help text="选择预设或从 curl 导入会新建一个提供方，不会覆盖现有配置；保存后它成为下次启动使用的提供方。" />
+                <Help text="选择预设或从 curl 导入会新建一个提供方，不会覆盖现有配置；保存后立即成为新回合使用的提供方。" />
               </div>
               <div className="model-curl">
                 <div className="model-curl-head">
@@ -701,7 +701,7 @@ export function ModelPage() {
                       {provider.groups.map(group => (
                         <option key={group.name} value={group.name}>
                           {group.name}
-                          {group.next_start ? "（下次启动）" : ""}
+                          {group.next_start ? "（默认）" : ""}
                           {group.approved ? "（已批准）" : ""}
                         </option>
                       ))}
@@ -732,7 +732,7 @@ export function ModelPage() {
                   />
                 </label>
                 <p className="model-key-hint full-width">
-                  保存会批准该提供方的所有模型组；重启后可在对话框的模型菜单中按组切换，无需再改配置。
+                  保存会批准该提供方的所有模型组；保存后即可在对话框的模型菜单中按组切换，无需重启。
                 </p>
                 <details className="full-width model-advanced">
                   <summary>高级：凭据环境变量</summary>
@@ -782,8 +782,8 @@ export function ModelPage() {
                     disabled={!canSave}
                   >
                     {draft.mode === "create"
-                      ? "新增并设为下次启动"
-                      : "保存并设为下次启动"}
+                      ? "新增并启用"
+                      : "保存并启用"}
                   </button>
                 </div>
                 {probeMessage && (
@@ -792,8 +792,7 @@ export function ModelPage() {
                   </p>
                 )}
                 <p className="model-note">
-                  保存只更新选中的提供方和模型组；其他提供方、模型组和 TOML 注释会保留。保存后执行{" "}
-                  <code>{settings.restart_command}</code> 使配置生效。
+                  保存只更新选中的提供方和模型组；其他提供方、模型组和 TOML 注释会保留。保存会立即用于新的对话回合；正在执行的回合继续使用原模型。
                 </p>
               </form>
             </section>

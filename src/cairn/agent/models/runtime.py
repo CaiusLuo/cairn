@@ -8,14 +8,20 @@ provider untouched. :class:`ProviderSession` owns that ordering and the
 rebinding it performs.
 """
 
-from collections.abc import Callable
+import json
+from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from cairn.agent.context.window import ContextBudget, ContextBuilder
 from cairn.agent.models.catalog import NamedProvider, ProviderCatalog
 from cairn.agent.models.client import LLMClient
+from cairn.agent.models.config.admission import (
+    load_approved_provider,
+    parse_provider_approval,
+)
 from cairn.agent.models.executor import ModelExecutor
 from cairn.agent.models.selection import ModelConfig, ModelManager, ProviderConfig
 
@@ -107,6 +113,43 @@ def build_provider_runtime(
         context_budget=context_budget,
         missing_credential=missing_credential,
         budget_ref=budget_ref,
+    )
+
+
+@dataclass(frozen=True)
+class ProviderActivation:
+    """A freshly approved provider, ready to serve all new work."""
+
+    runtime: ProviderRuntime
+    secret_env_keys: frozenset[str]
+    sensitive_values: tuple[str, ...] = field(repr=False)
+
+
+def load_provider_activation(
+    workspace: Path,
+    approval_path: Path,
+    *,
+    host_env: Mapping[str, str] | None = None,
+) -> ProviderActivation:
+    """Read the host-approved provider from disk and build its runtime.
+
+    This is the one path from persisted policy to a servable provider: startup
+    and a live settings save both go through it, so a reload can never apply
+    more or less than a restart would. Nothing here touches a live session;
+    the caller installs the returned activation.
+    """
+    approval = parse_provider_approval(json.loads(approval_path.read_text()))
+    approved = load_approved_provider(workspace, approval, host_env=host_env)
+    runtime = build_provider_runtime(
+        approved.provider,
+        approved.api_key,
+        approved.context_budget,
+        group=approved.group.name,
+    )
+    return ProviderActivation(
+        runtime=runtime,
+        secret_env_keys=approved.secret_env_keys,
+        sensitive_values=approved.sensitive_values,
     )
 
 

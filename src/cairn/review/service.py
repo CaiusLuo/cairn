@@ -148,6 +148,15 @@ class ReviewServiceBase:
         self._started = False
         self._closed = False
 
+    def apply_model(self, llm: LLMClient | None, model_id: str | None) -> None:
+        """Use a newly activated provider for generations started from now on.
+
+        A generation already running keeps the client and model it captured, so
+        one stored report never mixes providers.
+        """
+        self.llm = llm
+        self.model_id = model_id
+
     async def start(self) -> None:
         """Make crash-interrupted generations explicitly queryable as failed."""
         async with self._start_lock:
@@ -226,9 +235,11 @@ class ReviewServiceBase:
         *,
         request_delivery: bool = False,
     ) -> None:
+        llm = self.llm
+        model_id = self.model_id
         try:
             claimed = await asyncio.to_thread(
-                self.store.mark_generating, review_id, self.model_id
+                self.store.mark_generating, review_id, model_id
             )
             if claimed.status is not ReviewStatus.GENERATING:
                 if request_delivery and claimed.status is ReviewStatus.COMPLETED:
@@ -238,9 +249,9 @@ class ReviewServiceBase:
                         target=self.delivery_target,
                     )
                 return
-            if self.llm is None:
+            if llm is None:
                 raise ReviewGenerationError("provider_unavailable")
-            response = await self._call_model(self._messages(review_input))
+            response = await self._call_model(llm, self._messages(review_input))
             if response.tool_calls:
                 raise ReviewGenerationError("model_tool_calls_forbidden")
             if response.truncated:
@@ -257,7 +268,7 @@ class ReviewServiceBase:
                 review_id,
                 summary=summary,
                 summary_markdown=markdown,
-                model_id=self.model_id,
+                model_id=model_id,
                 request_delivery=request_delivery,
                 delivery_target=(self.delivery_target if request_delivery else None),
             )
@@ -269,11 +280,10 @@ class ReviewServiceBase:
         except Exception:
             await asyncio.to_thread(self.store.fail, review_id, "model_error")
 
-    async def _call_model(self, messages: list[Message]) -> LLMResponse:
-        assert self.llm is not None
+    async def _call_model(self, llm: LLMClient, messages: list[Message]) -> LLMResponse:
         try:
             return await asyncio.wait_for(
-                self.llm.generate(messages, tools=None),
+                llm.generate(messages, tools=None),
                 timeout=self.timeout_seconds,
             )
         except TimeoutError:

@@ -190,6 +190,33 @@ def _service(
     )
 
 
+def test_apply_model_serves_later_reviews_with_the_new_provider(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        first = FakeLLM()
+        second = FakeLLM()
+        service = _service(tmp_path, llm=first)
+        try:
+            before = await service.generate_daily_review(
+                DAY, "before-switch", timezone=TZ
+            )
+            before_done = await service.wait_for_review(before.review_id)
+            assert before_done.model_id == MODEL_ID
+
+            service.apply_model(second, "new-model")
+            after = await service.generate_daily_review(
+                DAY, "after-switch", timezone=TZ, regenerate=True
+            )
+            after_done = await service.wait_for_review(after.review_id)
+
+            assert after_done.model_id == "new-model"
+            assert len(first.calls) == 1
+            assert len(second.calls) == 1
+        finally:
+            await service.close()
+
+    asyncio.run(scenario())
+
+
 def test_valid_report_is_persisted_with_citations_and_no_tools(tmp_path: Path) -> None:
     async def scenario() -> None:
         llm = FakeLLM(
