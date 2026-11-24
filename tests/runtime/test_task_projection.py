@@ -187,7 +187,12 @@ def test_domain_projection_failure_is_recorded_without_losing_execution(
             )
             service.projections["task-projected"] = service.inspect("task-projected")
             service.projection_signal.set()
-            await asyncio.sleep(0.05)
+            # The projection runs in a worker thread. A fixed sleep can lose the
+            # race with the thread pool under a loaded full-suite run.
+            for _ in range(200):
+                if service.domain_projection_error == "OSError":
+                    break
+                await asyncio.sleep(0.01)
             assert service.domain_projection_error == "OSError"
             # RuntimeCatalogue remains the execution authority.
             assert service.inspect("task-projected").status == "queued"
