@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build && node package-assets.mjs",
     "typecheck": "tsc --noEmit",
+    "test:unit": "node --test e2e/curl-import.test.ts",
     "test:e2e": "node e2e/workbench.mjs"
   },
   "dependencies": {

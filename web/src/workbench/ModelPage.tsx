@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { parseCurl } from "../curl-import";
 import {
   getModelSettings,
   probeModels,
@@ -67,6 +68,48 @@ function uniqueProviderName(settings: ModelSettings, base: string): string {
   return `${base}-${suffix}`;
 }
 
+function presetFor(
+  presets: ModelPreset[],
+  baseUrl: string | null,
+): ModelPreset | undefined {
+  if (!baseUrl) return undefined;
+  const normalized = baseUrl.replace(/\/+$/, "").toLowerCase();
+  const exact = presets.find(
+    preset =>
+      preset.base_url.replace(/\/+$/, "").toLowerCase() === normalized,
+  );
+  if (exact) return exact;
+  try {
+    const url = new URL(baseUrl);
+    const path = url.pathname.replace(/\/+$/, "");
+    if (path && path !== "/") return undefined;
+    return presets.find(preset => {
+      if (!preset.base_url) return false;
+      try {
+        return new URL(preset.base_url).host.toLowerCase() === url.host.toLowerCase();
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function Help({ text }: { text: string }) {
+  return (
+    <span
+      className="model-help"
+      role="img"
+      aria-label={text}
+      data-tip={text}
+      tabIndex={0}
+    >
+      ?
+    </span>
+  );
+}
+
 function draftFromProvider(
   provider: ModelProvider,
   groupName?: string | null,
@@ -121,6 +164,9 @@ function initialDraft(settings: ModelSettings): Draft {
 }
 
 function keyHint(draft: Draft): string {
+  if (draft.apiKey) {
+    return "保存时会写入该 API Key；输入框内容不会回显。";
+  }
   if (draft.keySource === "host") {
     return `当前密钥由服务环境变量 ${draft.apiKeyEnv} 提供；Web 不能覆盖它。`;
   }
@@ -149,6 +195,9 @@ export function ModelPage() {
   const [savedRestart, setSavedRestart] = useState(false);
   const [probeMessage, setProbeMessage] = useState("");
   const [probed, setProbed] = useState<string[]>([]);
+  const [curlText, setCurlText] = useState("");
+  const [curlFeedback, setCurlFeedback] = useState("");
+  const [curlFailed, setCurlFailed] = useState(false);
 
   const load = useCallback(async (resetDraft: boolean) => {
     setError("");
@@ -161,6 +210,9 @@ export function ModelPage() {
         setPresetId("");
         setProbed([]);
         setProbeMessage("");
+        setCurlText("");
+        setCurlFeedback("");
+        setCurlFailed(false);
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -177,6 +229,9 @@ export function ModelPage() {
     setPresetId("");
     setProbed([]);
     setProbeMessage("");
+    setCurlText("");
+    setCurlFeedback("");
+    setCurlFailed(false);
   }
 
   function chooseProvider(provider: ModelProvider) {
@@ -204,6 +259,52 @@ export function ModelPage() {
     setDraft(current => (current ? { ...current, ...changes } : current));
     setDirty(true);
     setSavedRestart(false);
+  }
+
+  function importCurl() {
+    if (!draft || !settings) return;
+    const parsed = parseCurl(curlText);
+    setCurlFailed(false);
+    if (parsed.error) {
+      setCurlFailed(true);
+      setCurlFeedback(parsed.error);
+      return;
+    }
+    const preset = presetFor(settings.presets, parsed.baseUrl);
+    const baseUrl = preset?.base_url || parsed.baseUrl;
+    const suggested =
+      preset?.provider_name ??
+      parsed.providerName ??
+      draft.providerName ??
+      "custom";
+    const providerName =
+      draft.mode === "create"
+        ? uniqueProviderName(settings, suggested.trim() || "custom")
+        : draft.providerName;
+    const modelIds = parsed.modelIds.length
+      ? parsed.modelIds
+      : preset?.model_ids ?? [];
+    const changes: Partial<Draft> = {};
+    if (baseUrl) changes.baseUrl = baseUrl;
+    if (parsed.apiKey) changes.apiKey = parsed.apiKey;
+    if (modelIds.length) changes.modelIdsText = modelIds.join("\n");
+    if (draft.mode === "create") {
+      changes.providerName = providerName;
+      changes.groupName = `${providerName}-default`;
+    }
+    if (Object.keys(changes).length) update(changes);
+    setCurlText("");
+    const filled = [
+      baseUrl ? "Base URL" : "",
+      parsed.apiKey ? "API Key" : "",
+      modelIds.length ? `${modelIds.length} 个模型 ID` : "",
+    ].filter(Boolean);
+    setCurlFeedback(
+      [
+        filled.length ? `已填入 ${filled.join("、")}` : "没有可填入的字段",
+        ...parsed.warnings,
+      ].join("；"),
+    );
   }
 
   async function save(event: FormEvent) {
@@ -432,10 +533,10 @@ export function ModelPage() {
           </section>
 
           <section className="settings-section">
-            <h2>提供方</h2>
-            <p className="muted">
-              Server 启动时使用列表中的第一个提供方及其第一个模型组。选择另一个提供方或模型组并保存，会把它移到第一位；其余配置保留。保存会批准该提供方的全部模型组，重启后可在对话框的模型菜单中选择。
-            </p>
+            <div className="model-section-head">
+              <h2>提供方</h2>
+              <Help text="Server 启动时使用列表中的第一个提供方及其第一个模型组。保存另一个提供方或模型组会把它移到第一位，并批准该提供方的全部模型组；重启后可在对话框的模型菜单中切换。" />
+            </div>
             <div className="model-provider-list">
               {settings.providers.map(item => (
                 <button
@@ -484,14 +585,51 @@ export function ModelPage() {
 
           {draft && (
             <section className="settings-section model-editor">
-              <h2>
-                {draft.mode === "create"
-                  ? "新增提供方"
-                  : `编辑 ${draft.originalProvider}`}
-              </h2>
-              <p className="muted">
-                选择预设会新建一个提供方，不会覆盖现有配置；保存后它成为下次启动使用的提供方。
-              </p>
+              <div className="model-section-head">
+                <h2>
+                  {draft.mode === "create"
+                    ? "新增提供方"
+                    : `编辑 ${draft.originalProvider}`}
+                </h2>
+                <Help text="选择预设或从 curl 导入会新建一个提供方，不会覆盖现有配置；保存后它成为下次启动使用的提供方。" />
+              </div>
+              <div className="model-curl">
+                <div className="model-curl-head">
+                  <strong>从 curl 自动填充</strong>
+                  <span className="model-note">
+                    只在本浏览器解析；成功后原始 curl 会被清除
+                  </span>
+                </div>
+                <textarea
+                  aria-label="curl 命令"
+                  rows={4}
+                  spellCheck={false}
+                  placeholder={`curl https://api.example.com/v1/chat/completions \\\n  -H "Authorization: Bearer sk-..." \\\n  -H "Content-Type: application/json" \\\n  -d '{"model": "my-model", "messages": []}'`}
+                  value={curlText}
+                  onChange={event => {
+                    setCurlText(event.target.value);
+                    setCurlFeedback("");
+                    setCurlFailed(false);
+                  }}
+                />
+                <div className="model-curl-actions">
+                  <button
+                    type="button"
+                    disabled={!curlText.trim() || busy}
+                    onClick={importCurl}
+                  >
+                    解析并填入
+                  </button>
+                  {curlFeedback && (
+                    <span
+                      className={curlFailed ? "wb-error" : "model-note"}
+                      role={curlFailed ? "alert" : "status"}
+                    >
+                      {curlFeedback}
+                    </span>
+                  )}
+                </div>
+              </div>
               <div className="model-presets" aria-label="国内模型预设">
                 {settings.presets.map(preset => (
                   <button

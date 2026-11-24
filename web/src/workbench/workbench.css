@@ -712,6 +712,43 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   border-color: var(--hui-accent); background: var(--hui-accent-soft);
   color: var(--hui-accent);
 }
+.model-section-head {
+  display: flex; align-items: center; gap: 7px; margin-block-end: 8px;
+}
+.model-section-head h2 { margin: 0; }
+.model-help {
+  position: relative; display: inline-grid; place-items: center;
+  inline-size: 18px; block-size: 18px; flex: none;
+  border: 1px solid var(--hui-border-strong); border-radius: 50%;
+  color: var(--hui-muted); font-size: 11px; line-height: 1; cursor: help;
+}
+.model-help::after {
+  content: attr(data-tip);
+  position: absolute; inset-block-start: calc(100% + 8px); inset-inline-start: 0;
+  z-index: 30; inline-size: max-content; max-inline-size: min(360px, 70vw);
+  padding: 8px 10px; border: 1px solid var(--hui-border-strong);
+  border-radius: 9px; background: var(--hui-surface);
+  box-shadow: var(--hui-popover-shadow); color: var(--hui-text);
+  font-size: 12px; font-weight: 400; line-height: 1.55; text-align: start;
+  visibility: hidden; opacity: 0; pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.model-help:hover::after, .model-help:focus-visible::after {
+  visibility: visible; opacity: 1;
+}
+.model-curl {
+  display: grid; gap: 8px; margin-block: 12px; padding: 12px;
+  border: 1px solid var(--hui-border); border-radius: 10px;
+  background: var(--hui-canvas);
+}
+.model-curl-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.model-curl-head .model-note { margin: 0; }
+.model-curl textarea {
+  inline-size: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; line-height: 1.5;
+}
+.model-curl-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.model-curl-actions .model-note, .model-curl-actions .wb-error { margin: 0; }
 .model-form label { flex: 1 1 240px; display: grid; gap: 4px; min-width: 0; }
 .model-form .model-key-hint { flex-basis: 100%; margin: 0; color: var(--hui-muted); font-size: 12px; }
 .model-form .model-actions { flex-basis: 100%; margin: 2px 0 0; }

@@ -95,6 +95,8 @@ jobs:
           npm install --global pnpm@11.4.0
           pnpm --dir web install --frozen-lockfile
           pnpm --dir web build
+      - name: Test Web curl import parser
+        run: pnpm --dir web test:unit
       - name: Full suite with coverage
         run: >-
           uv run --no-sync pytest -n 2 --dist loadfile --max-worker-restart=0 --maxfail=1
