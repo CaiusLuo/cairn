@@ -11,6 +11,7 @@ from cairn.agent.context.window import ContextBudget
 from cairn.agent.models.catalog import NamedProvider
 from cairn.agent.models.config.admission import ApprovedCatalog, ApprovedProvider
 from cairn.agent.models.registry import ModelSelectionError, ProviderRegistry
+from cairn.agent.models.runtime import ProviderActivation, build_provider_runtime
 from cairn.agent.models.selection import ModelConfig, ModelRef, ProviderConfig
 from cairn.agent.models.selection_store import ModelSelectionStore
 
@@ -53,6 +54,12 @@ def _catalog() -> ApprovedCatalog:
     )
 
 
+def _current(registry: ProviderRegistry) -> ProviderActivation:
+    activation = registry.current_activation()
+    assert activation is not None
+    return activation
+
+
 def test_registry_switches_between_approved_providers_without_a_new_catalog() -> None:
     registry = ProviderRegistry(_catalog(), ModelRef("primary", "chat", "a"))
 
@@ -62,7 +69,7 @@ def test_registry_switches_between_approved_providers_without_a_new_catalog() ->
     registry.commit(secondary)
 
     assert registry.current_ref() == ModelRef("secondary", "chat", "c")
-    assert registry.current_activation().runtime.provider.name == "secondary"
+    assert _current(registry).runtime.provider.name == "secondary"
     assert {choice.ref for choice in registry.choices()} == {
         ModelRef("primary", "chat", "a"),
         ModelRef("primary", "chat", "b"),
@@ -83,7 +90,38 @@ def test_stale_saved_selection_falls_back_to_the_catalog_first_model() -> None:
     registry = ProviderRegistry(_catalog(), ModelRef("gone", "chat", "a"))
 
     assert registry.current_ref() == ModelRef("primary", "chat", "a")
-    assert registry.current_activation().runtime.provider.name == "primary"
+    assert _current(registry).runtime.provider.name == "primary"
+
+
+def test_saved_selection_survives_a_restart(tmp_path: Path) -> None:
+    store = ModelSelectionStore(tmp_path / "state/model-selection.json")
+    selected = ModelRef("secondary", "chat", "c")
+    store.save(selected)
+
+    restarted = ProviderRegistry(_catalog(), store.load())
+
+    assert restarted.current_ref() == selected
+    assert _current(restarted).runtime.provider.name == "secondary"
+
+
+def test_fallback_registry_honours_a_saved_selection(tmp_path: Path) -> None:
+    provider = _approved("primary", models=("a", "b")).provider
+    runtime = build_provider_runtime(provider, "credential", BUDGET)
+    fallback = ProviderActivation(
+        runtime=runtime,
+        secret_env_keys=frozenset({"PRIMARY_KEY"}),
+        sensitive_values=(),
+        ref=ModelRef("primary", "chat", "a"),
+    )
+    store = ModelSelectionStore(tmp_path / "state/model-selection.json")
+    store.save(ModelRef("primary", "chat", "b"))
+
+    registry = ProviderRegistry(selection=store.load(), fallback=fallback)
+
+    assert registry.current_ref() == ModelRef("primary", "chat", "b")
+    activation = registry.current_activation()
+    assert activation is not None
+    assert activation.runtime.model_manager.current_model_id() == "b"
 
 
 def test_default_prefers_a_provider_with_a_configured_credential() -> None:
@@ -128,7 +166,7 @@ def test_preparing_a_new_catalog_does_not_publish_it() -> None:
 
     assert registry.current_ref() == ModelRef("replacement", "chat", "model-a")
     assert registry.catalog is replacement
-    assert registry.current_activation().runtime.provider.name == "replacement"
+    assert _current(registry).runtime.provider.name == "replacement"
 
 
 def test_find_prefers_the_current_provider_for_ambiguous_model_ids() -> None:
@@ -149,31 +187,59 @@ def test_find_prefers_the_current_provider_for_ambiguous_model_ids() -> None:
     )
 
 
-def test_selection_store_round_trips_default_and_roles(tmp_path: Path) -> None:
+def test_find_uses_the_group_when_a_model_id_appears_twice() -> None:
+    provider = NamedProvider(
+        name="primary",
+        config=ProviderConfig(
+            base_url="https://primary.test/v1",
+            api_key_env="PRIMARY_KEY",
+            model_config=(
+                ModelConfig("fast", ("shared",)),
+                ModelConfig("deep", ("shared",)),
+            ),
+        ),
+    )
+    catalog = ApprovedCatalog(
+        providers=(
+            ApprovedProvider(
+                provider=provider,
+                group=provider.config.model_config[0],
+                api_key="credential",
+                secret_env_keys=frozenset({"PRIMARY_KEY"}),
+                sensitive_values=(),
+                context_budget=BUDGET,
+            ),
+        ),
+        secret_env_keys=frozenset({"PRIMARY_KEY"}),
+        sensitive_values=(),
+    )
+    registry = ProviderRegistry(catalog, ModelRef("primary", "fast", "shared"))
+
+    assert registry.find("shared", provider="primary", group="deep") == ModelRef(
+        "primary", "deep", "shared"
+    )
+
+
+def test_selection_store_round_trips_the_current_selection(tmp_path: Path) -> None:
     store = ModelSelectionStore(tmp_path / "state/model-selection.json")
-    default = ModelRef("primary", "chat", "a")
-    embedding = ModelRef("secondary", "embed", "e")
+    selected = ModelRef("primary", "chat", "a")
 
-    store.save(default)
-    store.save(embedding, role="embedding")
+    store.save(selected)
 
-    loaded = store.load()
-    assert loaded.default == default
-    assert loaded.for_role("embedding") == embedding
-    assert loaded.for_role("missing") == default
+    assert store.load() == selected
     assert (store.path.stat().st_mode & 0o777) == 0o600
 
 
 def test_selection_store_degrades_missing_and_corrupt_state(tmp_path: Path) -> None:
     store = ModelSelectionStore(tmp_path / "state/model-selection.json")
-    assert store.load().default is None
+    assert store.load() is None
 
     store.path.parent.mkdir(parents=True)
     store.path.write_text(json.dumps({"version": 1, "default": "broken"}))
-    assert store.load().default is None
+    assert store.load() is None
 
     store.path.write_text("{not json")
-    assert store.load().default is None
+    assert store.load() is None
 
 
 def test_selection_store_rejects_symlinks(tmp_path: Path) -> None:

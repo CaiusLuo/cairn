@@ -618,10 +618,8 @@ class ConversationService:
                 try:
                     if model_id is not None:
                         selection = self.execution.find_model_ref(
-                            model_id, provider=provider
+                            model_id, provider=provider, group=group
                         )
-                        if group is not None and selection.group != group:
-                            raise ValueError("Model is outside the selected group")
                     else:
                         choices = tuple(
                             item

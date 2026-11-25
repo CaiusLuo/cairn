@@ -131,8 +131,8 @@ class ProviderRegistry:
             try:
                 self.prepare(selection)
             except ModelSelectionError:
-                # A stale preference must not prevent startup.  The caller can
-                # persist the fallback once the UI reads the effective state.
+                # A stale preference must not prevent startup; the default
+                # below becomes the effective selection for this process.
                 self._selection = None
         if self._selection is None:
             self._selection = self._default_ref()
@@ -171,14 +171,22 @@ class ProviderRegistry:
 
     def current_activation(self) -> ProviderActivation | None:
         with self._lock:
-            if self._catalog is None:
-                return self._fallback
             ref = self.current_ref()
             if ref is None:
-                return None
+                return self._fallback
+            if self._catalog is None and self._selection is None:
+                # No catalog and no remembered selection: the fallback runtime
+                # is the whole deployment, not merely a model to pin.
+                return self._fallback
             return self.resolve(ref)
 
-    def find(self, model_id: str, *, provider: str | None = None) -> ModelRef:
+    def find(
+        self,
+        model_id: str,
+        *,
+        provider: str | None = None,
+        group: str | None = None,
+    ) -> ModelRef:
         """Resolve a bare model id, preferring the current provider.
 
         Model ids are not globally unique: two providers may expose the same
@@ -191,6 +199,10 @@ class ProviderRegistry:
             if provider is not None:
                 choices = tuple(
                     choice for choice in choices if choice.ref.provider == provider
+                )
+            if group is not None:
+                choices = tuple(
+                    choice for choice in choices if choice.ref.group == group
                 )
             current = self.current_ref()
             ordered = sorted(
@@ -214,11 +226,15 @@ class ProviderRegistry:
         raise ModelSelectionError("Model is outside the approved groups")
 
     def runtime_for_model(
-        self, model_id: str, *, provider: str | None = None
+        self,
+        model_id: str,
+        *,
+        provider: str | None = None,
+        group: str | None = None,
     ) -> ProviderRuntime | None:
         """Resolve a model for a background role without changing selection."""
         try:
-            ref = self.find(model_id, provider=provider)
+            ref = self.find(model_id, provider=provider, group=group)
         except ModelSelectionError:
             return None
         try:
@@ -235,15 +251,17 @@ class ProviderRegistry:
                 return None
             group = approved.provider.config.model_config[0]
             return ModelRef(approved.provider.name, group.name, group.model_ids[0])
-        if (
-            self._fallback is not None
-            and self._fallback.runtime.provider.config.model_config
-        ):
+        if self._fallback is not None:
+            if self._fallback.ref is not None:
+                # A directly assigned runtime may already be pinned to a model;
+                # its current model is the default, not the group's first id.
+                return self._fallback.ref
             config = self._fallback.runtime.provider.config
-            group = config.model_config[0]
-            return ModelRef(
-                self._fallback.runtime.provider.name, group.name, group.model_ids[0]
-            )
+            if config.model_config:
+                group = config.model_config[0]
+                return ModelRef(
+                    self._fallback.runtime.provider.name, group.name, group.model_ids[0]
+                )
         return None
 
     def prepare(self, ref: ModelRef) -> ProviderActivation:

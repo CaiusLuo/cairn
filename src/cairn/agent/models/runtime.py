@@ -132,13 +132,7 @@ def runtime_for_model(runtime: ProviderRuntime, model_id: str) -> ProviderRuntim
         group = runtime.model_manager.resolve_model_id(model_id)
     except ValueError:
         raise ValueError("Model is outside the approved groups") from None
-    selected = replace(
-        group,
-        model_ids=(
-            model_id,
-            *(ident for ident in group.model_ids if ident != model_id),
-        ),
-    )
+    selected = replace(group, model_ids=(model_id,))
     manager = ModelManager(replace(runtime.provider.config, model_config=(selected,)))
     manager.select_model_id(model_id)
     llm, context = runtime.runtime_factory(model_id)

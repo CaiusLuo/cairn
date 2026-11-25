@@ -156,20 +156,24 @@ Saving preserves the other providers, model groups, their order and TOML
 comments. Cairn approves every provider in the saved catalog, so anything you
 configure is immediately available — there is no separate enable step. A
 missing credential keeps that provider visible and selectable but reports the
-missing variable when a request uses it. The saved group's first model becomes
-the current selection and is installed in the running Server; new chat and
-development turns use it immediately, while a turn that already started keeps
-its model. No restart is needed.
+missing variable when a request uses it; if every approved provider lacks a
+credential, startup fails with that error instead of serving nothing. The saved
+group's first model becomes the current selection and is installed in the
+running Server; new chat and development turns use it immediately, while a turn
+that already started keeps its model. No restart is needed.
 
 The **模型** page's **当前选择** control switches the default provider, group and
 model without rewriting `models.toml` or the approval file. The chat model menu
 lists every approved model across providers, grouped by provider and model
-group; a model chosen there applies to that request only.
+group; a model chosen there applies to that request only, including its exact
+provider and group when the same model ID appears more than once.
 
-A restart is still required after editing `models.toml`, `.env` or the approval
-file outside Cairn, or after changing host environment credentials. Existing
-`.cairn/models.toml` files remain supported, and `/provider use` and `/model use`
-switch the same default from the CLI.
+Editing `models.toml`, `.env` or the approval file outside Cairn still requires
+a restart, and a changed provider or model list must be covered by the approval
+file first — restarting alone does not approve it. The simplest path is to make
+the change from **模型**, which regenerates the approval and installs the catalog
+in place. Existing `.cairn/models.toml` files remain supported, and
+`/provider use` and `/model use` switch the same default from the CLI.
 
 ### Upgrade from a legacy SQLite release
 

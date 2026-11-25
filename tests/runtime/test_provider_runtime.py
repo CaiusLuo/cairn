@@ -18,6 +18,7 @@ from cairn.agent.models.runtime import (
     ProviderRuntime,
     ProviderSession,
     build_provider_runtime,
+    runtime_for_model,
 )
 from cairn.agent.models.selection import ModelConfig, ProviderConfig
 from cairn.agent.permissions import PermissionCapability, SessionPermissionHandler
@@ -237,6 +238,16 @@ def test_provider_cancellation_after_commit_keeps_new_bindings(
     assert agent.session_owner is session
     assert agent.state.messages == history
     assert observed == [previous, candidate]
+
+
+def test_runtime_for_model_does_not_leave_sibling_fallbacks() -> None:
+    runtime = build_provider_runtime(make_provider(), "credential", BUDGET)
+
+    pinned = runtime_for_model(runtime, "openai/model-b")
+
+    assert pinned.model_manager.current_model_id() == "openai/model-b"
+    assert pinned.model_manager.current_model().model_ids == ("openai/model-b",)
+    assert runtime.model_manager.current_model_id() == "openai/model-a"
 
 
 def test_runtime_factory_uses_latest_hot_reloaded_budget() -> None:

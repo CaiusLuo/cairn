@@ -211,7 +211,7 @@ class ServerControls:
 
     def _migrate_model_selection(self) -> None:
         """Adopt the legacy ``selected_model`` once, without overriding state."""
-        stored = self.execution.selection_store.load().default
+        stored = self.execution.selection_store.load()
         legacy = self.state.selected_model
         if stored is None and legacy:
             try:
@@ -283,6 +283,7 @@ class ServerControls:
         self, ref: ModelRef, request: dict[str, Any]
     ) -> dict[str, Any]:
         task_id = request.get("task_id")
+        updated = None
         if task_id:
             task = self.service.inspect(task_id)
             if task.status not in {"completed", "paused"}:
@@ -294,8 +295,8 @@ class ServerControls:
                     "model_group": ref.group,
                 }
             )
+            # Validate the task's model before changing either durable state.
             self.execution.profile_for(updated)
-            self.service.record(updated, "model_selected")
         try:
             self.execution.select_model(ref)
         except ValueError:
@@ -304,6 +305,10 @@ class ServerControls:
                 "message": "该模型不在宿主已批准的提供方和模型组内。",
                 "task_id": task_id,
             }
+        if updated is not None:
+            # Record only after the runtime accepted the selection, so a failed
+            # switch cannot leave the task pointing at a model we did not adopt.
+            self.service.record(updated, "model_selected")
         self.service.default_model_id = ref.model
         self.service.default_model_ref = ref
         self._save(selected_model=ref.model)

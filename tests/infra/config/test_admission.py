@@ -247,7 +247,9 @@ def test_allowlist_v2_round_trips_and_tracks_every_provider(tmp_path: Path) -> N
         "secondary",
         "unapproved",
     ]
-    assert parsed.by_name("secondary").model_ids == ("deep-1", "deep-2")
+    secondary_approval = parsed.by_name("secondary")
+    assert secondary_approval is not None
+    assert secondary_approval.model_ids == ("deep-1", "deep-2")
     assert parsed.by_name("missing") is None
     legacy = parse_provider_allowlist(
         {
@@ -325,7 +327,9 @@ def test_catalog_drops_providers_the_allowlist_does_not_cover(
     monkeypatch.delenv("PRIMARY_KEY", raising=False)
     workspace = _workspace(tmp_path)
     (workspace / ".cairn/models.toml").write_text(MULTI_CATALOG)
-    (workspace / ".env").write_text("PRIMARY_KEY=primary-secret\n")
+    (workspace / ".env").write_text(
+        "PRIMARY_KEY=primary-secret\nHIDDEN_KEY=hidden-secret\n"
+    )
     approval = ProviderApproval(
         name="primary",
         endpoint="https://primary.test/v1",
@@ -339,3 +343,5 @@ def test_catalog_drops_providers_the_allowlist_does_not_cover(
     )
 
     assert [approved.provider.name for approved in catalog.providers] == ["primary"]
+    assert "HIDDEN_KEY" not in catalog.secret_env_keys
+    assert "hidden-secret" not in catalog.sensitive_values

@@ -134,7 +134,7 @@ class ServiceExecution:
         self.selection_store = selection_store or ModelSelectionStore(
             state / "model-selection.json"
         )
-        selection = self.selection_store.load().default
+        selection = self.selection_store.load()
         fallback = None
         if provider_catalog is None and provider_runtime is not None:
             group = provider_runtime.model_manager.current_model()
@@ -352,15 +352,26 @@ class ServiceExecution:
             ),
         )
 
-    def find_model_ref(self, ident: str, *, provider: str | None = None) -> ModelRef:
+    def find_model_ref(
+        self,
+        ident: str,
+        *,
+        provider: str | None = None,
+        group: str | None = None,
+    ) -> ModelRef:
         """Resolve a CLI/Web identifier against the approved choices."""
         self._adopt_manual_runtime()
         try:
-            return self.model_registry.find(ident, provider=provider)
+            return self.model_registry.find(ident, provider=provider, group=group)
         except ModelSelectionError:
             # A manually assigned runtime (tests and embedders) is still a
             # legitimate single-provider catalog.
-            choices = self.model_choices()
+            choices = tuple(
+                ref
+                for ref in self.model_choices()
+                if (provider is None or ref.provider == provider)
+                and (group is None or ref.group == group)
+            )
             if not choices:
                 raise
             current = self.current_model_ref()

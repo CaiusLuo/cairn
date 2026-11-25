@@ -425,12 +425,15 @@ def load_approved_catalog(
         raise ProviderApprovalMismatch(
             "no approved provider has a configured credential"
         )
-    names = frozenset(item.config.api_key_env for item in configured)
+    names = frozenset(item.provider.config.api_key_env for item in approved)
     secrets = secret_values(names, values, host)
     if on_secrets_resolved is not None:
         on_secrets_resolved(secrets)
     return ApprovedCatalog(
-        providers=tuple(replace(item, sensitive_values=secrets) for item in approved),
+        providers=tuple(
+            replace(item, secret_env_keys=names, sensitive_values=secrets)
+            for item in approved
+        ),
         secret_env_keys=names,
         sensitive_values=secrets,
     )
