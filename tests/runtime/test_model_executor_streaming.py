@@ -93,7 +93,6 @@ def throttled() -> RateLimitError:
         "deepseek/deepseek-chat",
         "gemini/gemini-2.0-flash",
         "azure_ai/model",
-        "gpt-4o",
         "openai/responses/gpt-4o",
         "text-completion-openai/text-davinci-003",
     ],

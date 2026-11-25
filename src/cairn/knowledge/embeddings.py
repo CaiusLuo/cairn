@@ -11,6 +11,7 @@ import math
 from collections.abc import Sequence
 from typing import Any, Protocol
 
+from cairn.agent.models.providers.routing import openai_compatible_model
 from cairn.shared.redaction import redact_text
 
 MAX_ERROR_CHARS = 300
@@ -29,11 +30,6 @@ class EmbeddingClient(Protocol):
     model: str
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]: ...
-
-
-def litellm_model(model: str) -> str:
-    """Treat provider-style model IDs as names on the configured endpoint."""
-    return model if model.startswith("openai/") else "openai/" + model
 
 
 class LiteLLMEmbeddingClient:
@@ -66,7 +62,7 @@ class LiteLLMEmbeddingClient:
             options["dimensions"] = self.dims
         try:
             response = await litellm.aembedding(
-                model=litellm_model(self.model),
+                model=openai_compatible_model(self.model),
                 input=list(texts),
                 api_key=self.api_key,
                 api_base=self.api_base,
@@ -153,6 +149,5 @@ __all__ = [
     "EmbeddingClient",
     "EmbeddingError",
     "LiteLLMEmbeddingClient",
-    "litellm_model",
     "parse_vectors",
 ]
