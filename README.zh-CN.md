@@ -229,6 +229,7 @@ recipient = "YOUR_WECHAT_USER_ID"
 - 普通聊天不会分配开发工作树。开发任务需要显式发起；shell 和网络访问取决于宿主配置。
 - 关闭 CLI 或 Web 不会停止服务器。继续有不确定副作用的中断任务前，先查看恢复信息。
 - 使用 `sudo ./scripts/start.sh status` 或 `sudo ./scripts/start.sh logs` 诊断问题；配置变更后使用 `sudo ./scripts/start.sh restart`；使用 `sudo ./scripts/end.sh` 停止服务。
+- 部署后运行 `uv run python -m cairn.interfaces.cli.update_notice --since <上一个 SHA>`，通过既有定时任务把本次提交的一行摘要推送到微信。上次推送的提交记录在 `<state>/update-notice.json`，之后省略 `--since` 即可续接。微信未登录时不会排队，部署不受影响。
 
 ## 开发
 

@@ -347,6 +347,11 @@ account or bot.
 - Use `sudo ./scripts/start.sh status` or `sudo ./scripts/start.sh logs` to
   diagnose issues, `sudo ./scripts/start.sh restart` after configuration changes,
   and `sudo ./scripts/end.sh` to stop the service.
+- After a deploy, `uv run python -m cairn.interfaces.cli.update_notice --since <previous-sha>`
+  queues a one-line WeChat summary of the new commits through the schedule
+  runner. The last notified commit is kept in `<state>/update-notice.json`;
+  omit `--since` afterwards and the next deploy continues from it. Without a
+  signed-in WeChat account nothing is queued and the deploy is unaffected.
 
 ## Development
 
