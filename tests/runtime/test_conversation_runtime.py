@@ -9,10 +9,11 @@ from typing import Any
 import httpx
 
 from cairn.agent.budget import RunBudget
+from cairn.agent.models.executor import AllModelsUnavailable
 from cairn.agent.models.messages import LLMResponse, LLMUsage, Message, ToolCall
 from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.conversation.models import ConversationSource, RunStatus, utc_now
-from cairn.conversation.service import HISTORY_CONTEXT_LIMIT
+from cairn.conversation.service import HISTORY_CONTEXT_LIMIT, _failure_label
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
@@ -800,6 +801,24 @@ def test_quote_heavy_legacy_history_stays_within_task_bounds(tmp_path: Path) -> 
             assert all(len(value) <= HISTORY_CONTEXT_LIMIT for value in contexts)
 
     asyncio.run(scenario())
+
+
+def test_failure_label_explains_model_outages_without_provider_text() -> None:
+    failure = AllModelsUnavailable(
+        (
+            ("openai/model-a", ValueError("provider detail")),
+            ("openai/model-b", RuntimeError("provider detail")),
+        )
+    )
+
+    label = _failure_label(failure)
+
+    assert label == (
+        "All candidate models are unavailable: 'openai/model-a' (ValueError), "
+        "'openai/model-b' (RuntimeError)."
+    )
+    assert "provider detail" not in label
+    assert _failure_label(RuntimeError("provider detail")) == "RuntimeError"
 
 
 def test_setup_failure_settles_observers_and_fails_the_run(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from cairn.agent.models.executor import AllModelsUnavailable
 from cairn.agent.models.selection import ModelRef
 from cairn.agent.session.models import CheckpointReceipt, SessionStoreError
 from cairn.agent.turn.steering import PendingMessage, SteerQueue
@@ -70,6 +71,13 @@ class ConversationProtected(RuntimeError):
 
 class RunNotSteerable(RuntimeError):
     """The Run is not running, so an instruction cannot join its turn."""
+
+
+def _failure_label(exc: Exception) -> str:
+    """Safe run-error label; provider error text never reaches the client."""
+    if isinstance(exc, AllModelsUnavailable):
+        return str(exc)
+    return type(exc).__name__
 
 
 class RunLedger:
@@ -1488,7 +1496,7 @@ class ConversationService:
             self.store.update_run(
                 run_id,
                 status=RunStatus.FAILED,
-                error=type(exc).__name__,
+                error=_failure_label(exc),
                 **self._evidence(ledger),
                 ended_at=utc_now(),
             )

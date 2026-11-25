@@ -122,17 +122,24 @@ def build_provider_runtime(
 
 
 def runtime_for_model(runtime: ProviderRuntime, model_id: str) -> ProviderRuntime:
-    """Return a runtime pinned to one concrete model in the same provider.
+    """Return a runtime that tries one concrete model before its group siblings.
 
-    The group is narrowed to the requested model, so fallback candidates cannot
-    silently leave the model the caller selected.  The base runtime and its
-    manager are not mutated: concurrent runs may still hold the original.
+    The requested model stays first; the other models of its approved group
+    remain fallback candidates, so a model-level outage does not turn a request
+    into a hard failure. The base runtime and its manager are not mutated:
+    concurrent runs may still hold the original.
     """
     try:
         group = runtime.model_manager.resolve_model_id(model_id)
     except ValueError:
         raise ValueError("Model is outside the approved groups") from None
-    selected = replace(group, model_ids=(model_id,))
+    selected = replace(
+        group,
+        model_ids=(
+            model_id,
+            *(ident for ident in group.model_ids if ident != model_id),
+        ),
+    )
     manager = ModelManager(replace(runtime.provider.config, model_config=(selected,)))
     manager.select_model_id(model_id)
     llm, context = runtime.runtime_factory(model_id)
