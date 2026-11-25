@@ -16,6 +16,50 @@ function SettledTrace({ id }: { id: string }) {
   return log.rows.length ? <details className="wb-process"><summary>执行轨迹 · {log.rows.length} 条活动</summary><Timeline events={log.rows} compact/></details> : null;
 }
 
+// Plain HTTP pages have no navigator.clipboard, so keep the textarea fallback.
+function legacyCopy(text: string) {
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+  document.body.append(area);
+  area.select();
+  try {
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    area.remove();
+  }
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [status, setStatus] = useState<"copied" | "failed" | null>(null);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  function mark(next: "copied" | "failed") {
+    setStatus(next);
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setStatus(null), 1800);
+  }
+  function copy() {
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(
+        () => mark("copied"),
+        () => mark(legacyCopy(text) ? "copied" : "failed"),
+      );
+    } else {
+      mark(legacyCopy(text) ? "copied" : "failed");
+    }
+  }
+  const label = status === "copied" ? "已复制" : status === "failed" ? "复制失败，请手动选择文本" : "复制回答";
+  return <button type="button" className="icon-button wb-message-copy" data-status={status ?? undefined} aria-label={label} title={label} onClick={copy}>
+    {status === "copied"
+      ? <Icon name="check" size={14}/>
+      : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect width="12" height="12" x="9" y="9" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>}
+  </button>;
+}
+
 type SteerPhase = "sending" | "accepted" | "applied" | "queued";
 type Steering = { id: string; text: string; phase: SteerPhase; after: number; pending?: number };
 
@@ -346,13 +390,16 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
     <div className="wb-transcript" ref={transcript} onScroll={() => { const element = transcript.current; if (element) stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 160; }}>
       <div className="wb-transcript-inner">
         {!detail.data && !detail.error && <p className="wb-muted">正在读取对话…</p>}
-        {messages.map((message, index) => <article key={message.knowledge?.run_id ?? index} className={`wb-message ${message.role}`}>
-          {message.role === "assistant" && <CairnMark size={22}/>}
-          {message.knowledge ? <div className="wb-message-with-sources">
+        {messages.map((message, index) => {
+          const content = message.knowledge ? <div className="wb-message-with-sources">
             <Markdown text={message.content!}/>
             <KnowledgeSources card={message.knowledge} onAsk={askAboutSource}/>
-          </div> : <Markdown text={message.content!}/>}
-        </article>)}
+          </div> : <Markdown text={message.content!}/>;
+          return <article key={message.knowledge?.run_id ?? index} className={`wb-message ${message.role}`}>
+            {message.role === "assistant" && <CairnMark size={22}/>}
+            {message.role === "assistant" ? <div className="wb-message-body">{content}<CopyButton text={message.content!}/></div> : content}
+          </article>;
+        })}
         {active && run?.prompt && (messages.at(-1)?.role !== "user" || messages.at(-1)?.content !== run.prompt) && <article className="wb-message user"><Markdown text={run.prompt}/>{!!run.attachments?.length && <p className="wb-muted">附件：{attachmentNames(run.attachments)}</p>}</article>}
         {active && <article className="wb-message assistant" aria-live="polite"><CairnMark size={22}/><div>
           {stream.events.length > 0 && <details className="wb-process" open={!stream.preview}><summary>正在处理 · {stream.events.length} 条活动</summary><Timeline events={stream.events} compact/></details>}

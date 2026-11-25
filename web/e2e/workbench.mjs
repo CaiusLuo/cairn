@@ -13,6 +13,7 @@ const token = readFileSync(tokenPath, "utf8").trim();
 const browser = await chromium.launch({ channel: process.env.CAIRN_WEB_E2E_CHANNEL });
 const api = await request.newContext({ baseURL: url, extraHTTPHeaders: { Authorization: "Bearer " + token } });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, colorScheme: "light" });
+await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: url });
 page.setDefaultTimeout(20000);
 const errors = [];
 page.on("pageerror", error => errors.push(error.name));
@@ -129,6 +130,10 @@ try {
     assert.match(await page.getByRole("alert").innerText(), /对话不存在/);
     await (await conversationLink(new RegExp(cliPrompt))).click();
     await page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first().waitFor();
+    const copiedReply = page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first();
+    await copiedReply.getByRole("button", { name: "复制回答" }).click();
+    await copiedReply.getByRole("button", { name: "已复制" }).waitFor();
+    assert.match(await page.evaluate(() => navigator.clipboard.readText()), /离线共享对话已连接/);
 
     await page.context().setOffline(true);
     await page.getByRole("link", { name: "对话", exact: true }).click();
