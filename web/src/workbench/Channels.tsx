@@ -49,7 +49,7 @@ const platformName: Record<ChannelPlatform, string> = {
 const platformBlurb: Record<ChannelPlatform, string> = {
   wechat: "复用宿主登录会话，在私聊与群聊中收发消息。",
   feishu: "用企业自建应用接入飞书，通过长连接接收私聊消息。",
-  wecom: "企业微信接入尚未集成，暂时只展示连接配置。",
+  wecom: "企业微信接入待支持，可先保存连接配置。",
   qq: "用支持长连接的 QQ 机器人收发私聊文本。",
   telegram: "用 Bot Token 接入 Telegram，接收私聊消息。",
   discord: "用 Bot Token 接入 Discord，收发机器人私信。",
@@ -1183,8 +1183,13 @@ export function Channels() {
   }
 
   const headerActions = (
-    <button disabled={loading} onClick={() => setRevision(value => value + 1)}>
-      刷新
+    <button
+      aria-label="刷新"
+      title="刷新"
+      disabled={loading}
+      onClick={() => setRevision(value => value + 1)}
+    >
+      <Icon name="refresh" size={15} />
     </button>
   );
 
@@ -1244,9 +1249,6 @@ export function Channels() {
               })}
             </div>
           )}
-          <p className="wb-muted channels-footnote">
-            六个平台固定展示；状态、配置数和运行数均取自 Server 的真实连接状态。
-          </p>
         </>
       )}
 

@@ -49,7 +49,6 @@ export function Approvals({ task, run, tasks, runs, refresh, navigate, error }: 
         <div className="wb-run-list">{rows.map(row => <a key={row.id} href={href("approvals", "task" in row ? { task: row.task! } : { run: row.run! })}><span className="task-symbol"><Icon name="gate" size={15}/></span><div><strong>{row.text}</strong><small>{row.id}</small></div><Icon name="arrow-right" size={16}/></a>)}</div>
         {!rows.length && <Empty icon="gate" text="当前没有需要恢复核对的执行。"/>}
       </>}
-    <section className="wb-card"><h2>工作流审批</h2><p className="wb-muted">Workflow 审批节点等待 Server 契约。现有个人记忆规则审批可在设置中完成。</p><a className="wb-inline-link" href={href("settings", { section: "memory" })}>打开记忆设置 <Icon name="arrow-right" size={14}/></a></section>
   </div>;
 }
 

@@ -11,6 +11,7 @@ import {
   type ModelSettings,
 } from "../model-api";
 import { PageHeader } from "./execution";
+import { Icon } from "./Icon";
 
 type Selection = { provider: string; group: string; model: string };
 
@@ -122,20 +123,6 @@ function presetFor(
   }
 }
 
-function Help({ text }: { text: string }) {
-  return (
-    <span
-      className="model-help"
-      role="img"
-      aria-label={text}
-      data-tip={text}
-      tabIndex={0}
-    >
-      ?
-    </span>
-  );
-}
-
 function draftFromProvider(
   provider: ModelProvider,
   groupName?: string | null,
@@ -190,19 +177,10 @@ function initialDraft(settings: ModelSettings): Draft {
 }
 
 function keyHint(draft: Draft): string {
-  if (draft.apiKey) {
-    return "保存时会写入该 API Key；输入框内容不会回显。";
-  }
-  if (draft.keySource === "host") {
-    return `当前密钥由服务环境变量 ${draft.apiKeyEnv} 提供；Web 不能覆盖它。`;
-  }
-  if (draft.keyConfigured) {
-    return `已配置 ${draft.apiKeyEnv || "凭据"}；留空表示保持不变。`;
-  }
-  if (draft.mode === "create") {
-    return "新提供方通常需要填写 API Key。留空时服务器会尝试自动选择凭据变量。";
-  }
-  return "尚未配置 API Key；保存前需要填写。";
+  if (draft.apiKey) return "";
+  if (draft.keySource === "host") return `密钥来自 ${draft.apiKeyEnv}`;
+  if (draft.keyConfigured) return `已配置 ${draft.apiKeyEnv || "凭据"}`;
+  return draft.mode === "create" ? "" : "尚未配置 API Key";
 }
 
 function blockedText(reason: string | null): string {
@@ -478,16 +456,18 @@ export function ModelPage() {
       <PageHeader
         icon="sparkles"
         title="模型"
-        description="配置 OpenAI 兼容的提供方和模型。优先提供国内模型预设；保存后立即用于新的对话回合。"
+        description="配置 OpenAI 兼容的提供方；保存后立即用于新的对话回合。"
         actions={
           <button
+            aria-label="刷新"
+            title="刷新"
             disabled={busy}
             onClick={() => {
               if (dirty && !window.confirm("当前修改尚未保存，仍要刷新吗？")) return;
               void load(true);
             }}
           >
-            刷新
+            <Icon name="refresh" size={15} />
           </button>
         }
       />
@@ -516,8 +496,8 @@ export function ModelPage() {
           )}
           {settings.restart_required && !savedRestart && (
             <p className="model-warning" role="status">
-              有已保存但尚未生效的模型修改。执行{" "}
-              <code>{settings.restart_command}</code> 后会使用新的提供方和模型。
+              已保存的修改尚未生效；执行 <code>{settings.restart_command}</code>{" "}
+              后启用。
             </p>
           )}
           {!settings.approval_valid && settings.approval_path && (
@@ -531,86 +511,57 @@ export function ModelPage() {
             </p>
           )}
 
-          <section className="model-status-grid" aria-label="模型运行状态">
-            <article className="wb-card">
-              <h2>当前运行</h2>
-              {running ? (
-                <dl>
-                  <div>
-                    <dt>提供方</dt>
-                    <dd>{running.provider}</dd>
-                  </div>
-                  <div>
-                    <dt>模型组</dt>
-                    <dd>{running.group}</dd>
-                  </div>
-                  <div>
-                    <dt>模型</dt>
-                    <dd>
-                      <code>{running.model}</code>
-                    </dd>
-                  </div>
-                  <div>
+          <section className="model-runtime" aria-label="模型运行状态">
+            <Icon name="sparkles" size={16} />
+            {running ? (
+              <code>
+                {running.provider} / {running.group} / {running.model}
+              </code>
+            ) : (
+              <span className="wb-muted">离线模式，未加载提供方</span>
+            )}
+            <details className="model-config">
+              <summary>配置文件</summary>
+              <dl>
+                <dt>格式</dt>
+                <dd>
+                  {settings.layout === "catalog"
+                    ? "多提供方目录"
+                    : settings.layout === "legacy"
+                      ? "旧版单提供方"
+                      : ".env"}
+                </dd>
+                <dt>默认</dt>
+                <dd>
+                  <code>
+                    {settings.active_provider ?? "—"} /{" "}
+                    {settings.active_group ?? "—"} /{" "}
+                    {settings.active_model ?? "—"}
+                  </code>
+                </dd>
+                {running && (
+                  <>
                     <dt>Endpoint</dt>
                     <dd>
                       <code>{running.base_url}</code>
                     </dd>
-                  </div>
-                </dl>
-              ) : (
-                <p className="wb-muted">离线模式，当前没有加载提供方。</p>
-              )}
-            </article>
-            <article className="wb-card">
-              <h2>默认配置</h2>
-              <dl>
-                <div>
-                  <dt>提供方</dt>
-                  <dd>{settings.active_provider ?? "尚未配置"}</dd>
-                </div>
-                <div>
-                  <dt>模型组</dt>
-                  <dd>{settings.active_group ?? "尚未配置"}</dd>
-                </div>
-                <div>
-                  <dt>模型</dt>
-                  <dd>
-                    {settings.active_model ? (
-                      <code>{settings.active_model}</code>
-                    ) : (
-                      "尚未配置"
-                    )}
-                  </dd>
-                </div>
+                  </>
+                )}
+                <dt>models.toml</dt>
+                <dd>
+                  <code>{settings.config_path}</code>
+                </dd>
+                <dt>approval</dt>
+                <dd>
+                  <code>{settings.approval_path ?? "未配置"}</code>
+                </dd>
               </dl>
-            </article>
-            <article className="wb-card">
-              <h2>配置文件</h2>
-              <dl>
-                <div>
-                  <dt>格式</dt>
-                  <dd>{settings.layout === "catalog" ? "多提供方目录" : settings.layout === "legacy" ? "旧版单提供方" : ".env"}</dd>
-                </div>
-                <div>
-                  <dt>models.toml</dt>
-                  <dd>
-                    <code>{settings.config_path}</code>
-                  </dd>
-                </div>
-                <div>
-                  <dt>approval</dt>
-                  <dd>
-                    <code>{settings.approval_path ?? "未配置"}</code>
-                  </dd>
-                </div>
-              </dl>
-            </article>
+            </details>
           </section>
 
           <section className="settings-section model-selection" aria-label="切换当前模型">
             <div className="model-section-head">
               <h2>当前选择</h2>
-              <Help text="切换只更新运行时的默认模型：不改写 models.toml 或 provider approval，也不需要重启。已经在运行的回合继续使用原模型，新回合立即使用这里的选择。" />
             </div>
             {selection && selectionProvider && selectionGroup ? (
               <div className="model-selection-controls">
@@ -673,21 +624,18 @@ export function ModelPage() {
                   }
                   onClick={() => void switchSelection()}
                 >
-                  {selecting ? "切换中…" : "切换"}
+                  <Icon name="check" size={15} />
+                  {selecting ? "切换中…" : "使用"}
                 </button>
               </div>
             ) : (
               <p className="wb-muted">还没有可切换的模型；保存一个提供方后即可直接选用。</p>
             )}
-            <p className="model-note">
-              保存新的提供方或模型组后，它会立即出现在这里和对话框的模型菜单中，无需重启。
-            </p>
           </section>
 
           <section className="settings-section">
             <div className="model-section-head">
               <h2>提供方</h2>
-              <Help text="保存会更新或追加这一个提供方，保留其他提供方、模型组和 TOML 注释；所有已保存的提供方都会自动批准并立即可以切换，不需要额外的启用步骤。" />
             </div>
             <div className="model-provider-list">
               {settings.providers.map(item => (
@@ -707,6 +655,7 @@ export function ModelPage() {
                   </span>
                   <code>{item.base_url}</code>
                   <span className="wb-muted">
+                    <Icon name={item.key_configured ? "check" : "alert"} size={12} />{" "}
                     {item.key_configured ? "密钥已配置" : "密钥未配置"} ·{" "}
                     {item.groups.length} 个模型组
                     {item.groups.some(group => group.approved) &&
@@ -721,17 +670,15 @@ export function ModelPage() {
                 onClick={() => startNewProvider()}
               >
                 <span className="model-provider-head">
-                  <strong>+ 新增提供方</strong>
+                  <strong>
+                    <Icon name="plus" size={14} /> 新增提供方
+                  </strong>
                 </span>
-                <span className="wb-muted">
-                  从国内模型预设开始，或填写自定义 endpoint。
-                </span>
+                <span className="wb-muted">国内模型预设或自定义 endpoint</span>
               </button>
             </div>
             {settings.providers.length === 0 && (
-              <p className="model-note">
-                当前由工作区 .env 提供模型设置。保存一个提供方后，会写入 .cairn/models.toml。
-              </p>
+              <p className="model-note">当前由工作区 .env 提供模型设置。</p>
             )}
           </section>
 
@@ -743,15 +690,9 @@ export function ModelPage() {
                     ? "新增提供方"
                     : `编辑 ${draft.originalProvider}`}
                 </h2>
-                <Help text="选择预设或从 curl 导入会新建一个提供方，不会覆盖现有配置；保存后立即成为新回合使用的提供方。" />
               </div>
-              <div className="model-curl">
-                <div className="model-curl-head">
-                  <strong>从 curl 自动填充</strong>
-                  <span className="model-note">
-                    只在本浏览器解析；成功后原始 curl 会被清除
-                  </span>
-                </div>
+              <details className="model-curl">
+                <summary>从 curl 导入</summary>
                 <textarea
                   aria-label="curl 命令"
                   rows={4}
@@ -781,7 +722,7 @@ export function ModelPage() {
                     </span>
                   )}
                 </div>
-              </div>
+              </details>
               <div className="model-presets" aria-label="国内模型预设">
                 {settings.presets.map(preset => (
                   <button
@@ -883,9 +824,6 @@ export function ModelPage() {
                     }
                   />
                 </label>
-                <p className="model-key-hint full-width">
-                  保存会批准该提供方的所有模型组；保存后即可在对话框的模型菜单中按组切换，无需重启。
-                </p>
                 <details className="full-width model-advanced">
                   <summary>高级：凭据环境变量</summary>
                   <label>
@@ -901,9 +839,7 @@ export function ModelPage() {
                       }
                     />
                   </label>
-                  <p className="model-note">
-                    密钥写入工作区 .env。若该变量由服务环境提供，Web 会拒绝覆盖。
-                  </p>
+                  <p className="model-note">变量由服务环境提供时 Web 不能覆盖。</p>
                 </details>
 
                 <div className="control-row model-actions">
@@ -912,7 +848,7 @@ export function ModelPage() {
                     disabled={busy || !draft.baseUrl.trim()}
                     onClick={() => void probe()}
                   >
-                    获取模型列表
+                    <Icon name="search" size={15} /> 探测模型
                   </button>
                   {probed.length > 0 && (
                     <select
@@ -933,9 +869,8 @@ export function ModelPage() {
                     type="submit"
                     disabled={!canSave}
                   >
-                    {draft.mode === "create"
-                      ? "新增并启用"
-                      : "保存并启用"}
+                    <Icon name="check" size={15} />
+                    {draft.mode === "create" ? "新增并启用" : "保存并启用"}
                   </button>
                 </div>
                 {probeMessage && (
@@ -943,9 +878,6 @@ export function ModelPage() {
                     {probeMessage}
                   </p>
                 )}
-                <p className="model-note">
-                  保存只更新选中的提供方和模型组；其他提供方、模型组和 TOML 注释会保留。保存会立即用于新的对话回合；正在执行的回合继续使用原模型。
-                </p>
               </form>
             </section>
           )}

@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { newRequestId } from "./ids";
 import { PageHeader } from "./workbench/execution";
+import { Icon, type IconName } from "./workbench/Icon";
 import { runtimeApi as api } from "./runtime-api";
 
 type Section = "wechat" | "schedule" | "review" | "memory";
+const sections: { key: Section; label: string; icon: IconName }[] = [
+  { key: "wechat", label: "微信", icon: "chat" },
+  { key: "schedule", label: "定时任务", icon: "clock" },
+  { key: "review", label: "复盘", icon: "history" },
+  { key: "memory", label: "记忆", icon: "doc" },
+];
 type Wx = { status: string; running: boolean; login_pending: boolean; verification_required: boolean; qr_image: string | null; account_saved: boolean; enabled: boolean; trusted_senders: string[] };
 type Job = { job_id: string; prompt: string; kind: string; next_run_at: string | null; enabled: boolean; reminder: boolean };
 type Memory = { enabled: boolean; agent_md: string; memory_md: string; daily_days: number; pending: { text: string; reason: string } | null; proposal_digest: string | null };
@@ -63,8 +70,8 @@ export function SettingsPage() {
   }
   const wx = data?.wechat, schedules = data?.schedule, review = data?.review, memory = data?.memory;
   return <div className="wb-page settings-main">
-    <PageHeader icon="settings" title="设置" description="管理微信连接、定时任务与个人记忆" actions={<button disabled={busy} onClick={() => void refresh()}>刷新</button>}/>
-    <nav className="settings-tabs" aria-label="管理分类">{([ ["wechat", "微信"], ["schedule", "定时任务"], ["review", "复盘"], ["memory", "记忆"] ] as const).map(([key, label]) => <button key={key} aria-current={section === key ? "page" : undefined} disabled={busy} onClick={() => chooseSection(key)}>{label}</button>)}</nav>
+    <PageHeader icon="settings" title="设置" description="微信连接、定时任务、复盘与个人记忆" actions={<button aria-label="刷新" title="刷新" disabled={busy} onClick={() => void refresh()}><Icon name="refresh" size={15}/></button>}/>
+    <nav className="settings-tabs" aria-label="管理分类">{sections.map(({ key, label, icon }) => <button key={key} aria-current={section === key ? "page" : undefined} disabled={busy} onClick={() => chooseSection(key)}><Icon name={icon} size={15}/>{label}</button>)}</nav>
     {error && <p role="alert" className="control-error">{error}。操作结果不明时先刷新核对, 重试会沿用原请求编号。</p>}
     {feedback && <pre className="control-feedback" role="status">{feedback}</pre>}
     {!data && !error && <p>正在读取 Server 状态…</p>}
@@ -75,14 +82,14 @@ export function SettingsPage() {
       <h3>允许接入项目的微信用户</h3><p className="muted">绑定用户可使用个人记忆和自己的计划。额外用户只获得项目访问。</p><ul>{wx.trusted_senders.map(id => <li key={id}>{id}</li>)}</ul><form className="control-row" onSubmit={event => { event.preventDefault(); void command("/wx", `allow ${sender}`).then(ok => { if (ok) setSender(""); }); }}><label>用户 ID<input value={sender} onChange={event => setSender(event.target.value)} maxLength={200}/></label><button disabled={busy || !sender.trim()}>允许接入</button></form>
       <details className="danger-controls"><summary>移除登录</summary><label><input type="checkbox" checked={disconnect} onChange={event => setDisconnect(event.target.checked)}/>确认停止微信并移除保存的账号</label><button disabled={busy || !disconnect} onClick={() => void command("/wx", "disconnect").then(ok => { if (ok) setDisconnect(false); })}>断开并移除账号</button></details>
     </section>}
-    {schedules && <section className="settings-section"><h2>定时任务</h2><p className="muted">纯提醒独立发送。执行任务进入共享队列; 离线期间未执行的计划恢复后补跑, 不重放结果不明的操作。</p>{!schedules.owner_available && <p>先在「微信」登录并绑定提醒接收人。</p>}
+    {schedules && <section className="settings-section"><h2>定时任务</h2>{!schedules.owner_available && <p>先在「微信」登录并绑定提醒接收人。</p>}
       <form onSubmit={event => { event.preventDefault(); void addSchedule(); }} className="schedule-form"><label>类型<select value={reminder ? "remind" : "execute"} onChange={event => setReminder(event.target.value === "remind")}><option value="remind">纯提醒</option><option value="execute">执行 Agent 任务后通知</option></select></label><label>频率<select value={kind} onChange={event => { setKind(event.target.value); setWhen(""); }}><option value="once">一次性</option><option value="daily">每天</option><option value="interval">间隔秒数</option></select></label><label>{kind === "daily" ? "Asia/Shanghai 时间" : kind === "interval" ? "间隔秒数" : "执行时间 (浏览器本地时间)"}<input required type={kind === "once" ? "datetime-local" : kind === "daily" ? "time" : "number"} value={when} min={kind === "interval" ? 60 : undefined} onChange={event => setWhen(event.target.value)}/></label><label className="full-width">{reminder ? "提醒内容" : "任务目标"}<textarea required value={goal} onChange={event => setGoal(event.target.value)} maxLength={12000} rows={3}/></label><button className="primary" disabled={busy || !schedules.owner_available || !goal.trim() || !when}>创建计划</button></form>
       <div className="schedule-list">{schedules.jobs.map(job => <article key={job.job_id}><div><h3>{job.prompt}</h3><p className="muted">{job.job_id} · {job.reminder ? "提醒" : "执行"} · {job.enabled ? "启用" : "暂停"} · {job.next_run_at ? new Date(job.next_run_at).toLocaleString() : "已结束"}</p></div><div className="control-row"><button disabled={busy} onClick={() => void command("/schedule", `${job.enabled ? "pause" : "resume"} ${job.job_id}`)}>{job.enabled ? "暂停" : "恢复"}</button><button disabled={busy} onClick={() => void command("/schedule", `remove ${job.job_id}`)}>移除</button></div></article>)}{!schedules.jobs.length && <p className="muted">暂无计划</p>}</div>
       <details><summary>最近执行记录</summary><pre>{JSON.stringify(schedules.runs, null, 2)}</pre></details>
     </section>}
     {review && <section className="settings-section">
       <h2>复盘报告</h2>
-      <p className="muted">以下是 Server 启动时读取的复盘策略。Web 只能查看，不能在这里启用、停用或修改时间。</p>
+      <p className="muted">Server 启动时读取；Web 只读。</p>
       <dl className="review-policy">
         <div><dt>时区</dt><dd>{review.timezone}</dd></div>
         <div><dt>日报</dt><dd>{review.daily.enabled ? `启用 · 每天 ${review.daily.time}` : "未启用"} · {review.daily.scheduler_active ? "调度运行中" : "调度未启动"}</dd></div>
@@ -90,9 +97,9 @@ export function SettingsPage() {
         <div><dt>微信接收人</dt><dd>{review.delivery.recipient_authorized ? `已授权${review.delivery.account_id ? ` · 账号 ${review.delivery.account_id}` : ""}` : "未配置，复盘不会投递到微信"}</dd></div>
         <div><dt>配置文件</dt><dd>{review.config_file ?? "未使用配置文件"}</dd></div>
       </dl>
-      {review.restart_required_for_changes && <p className="review-restart" role="status">修改复盘设置需要编辑 Server 配置并重启 cairn.service 才会生效。当前进程不会热加载配置，Web 也不会把未生效的修改显示为已启用。</p>}
+      {review.restart_required_for_changes && <p className="review-restart" role="status">修改复盘设置需要编辑 Server 配置并重启 cairn.service 才会生效。</p>}
     </section>}
-    {memory && <section className="settings-section"><h2>个人记忆</h2><p className="muted">{memory.enabled ? "已启用" : "宿主已禁用"} · 已记录 {memory.daily_days} 天。任务结果自动记录, 行为规则需确认后生效。</p><form onSubmit={event => { event.preventDefault(); void command("/memory", `note ${note}`).then(ok => { if (ok) setNote(""); }); }}><label>记录偏好或经验<textarea value={note} onChange={event => setNote(event.target.value)} maxLength={12000} rows={3}/></label><button disabled={busy || !note.trim()}>保存记忆</button></form><div className="control-row"><button disabled={busy} onClick={() => void command("/memory", "distill")}>提炼近期经验</button><button disabled={busy} onClick={() => void command("/memory", "propose-auto")}>根据经验生成规则候选</button></div>
+    {memory && <section className="settings-section"><h2>个人记忆</h2><p className="muted">{memory.enabled ? "已启用" : "宿主已禁用"} · 已记录 {memory.daily_days} 天 · 规则变更需确认</p><form onSubmit={event => { event.preventDefault(); void command("/memory", `note ${note}`).then(ok => { if (ok) setNote(""); }); }}><label>记录偏好或经验<textarea value={note} onChange={event => setNote(event.target.value)} maxLength={12000} rows={3}/></label><button disabled={busy || !note.trim()}>保存记忆</button></form><div className="control-row"><button disabled={busy} onClick={() => void command("/memory", "distill")}>提炼近期经验</button><button disabled={busy} onClick={() => void command("/memory", "propose-auto")}>根据经验生成规则候选</button></div>
       <details><summary>当前 AGENT.md</summary><pre>{memory.agent_md}</pre></details><details><summary>长期记忆 MEMORY.md</summary><pre>{memory.memory_md}</pre></details>
       <form onSubmit={event => { event.preventDefault(); void command("/memory", `propose ${proposal}`).then(ok => { if (ok) setProposal(""); }); }}><label>提出行为规则变更<textarea value={proposal} onChange={event => setProposal(event.target.value)} maxLength={12000} rows={3}/></label><button disabled={busy || !proposal.trim()}>生成候选</button></form>
       {memory.pending && <section className="proposal"><h3>待审批候选</h3><p>{memory.pending.reason}</p><pre>{memory.pending.text}</pre><label><input type="checkbox" checked={approved} onChange={event => setApproved(event.target.checked)}/>已审阅上方候选, 确认应用这份规则</label><div className="control-row"><button className="primary" disabled={busy || !approved} onClick={() => void command("/memory", "approve", true, memory.proposal_digest)}>应用候选</button><button disabled={busy} onClick={() => void command("/memory", "reject")}>放弃候选</button></div></section>}
