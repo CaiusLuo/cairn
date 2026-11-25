@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -13,7 +13,7 @@ from cairn.agent.models.executor import AllModelsUnavailable
 from cairn.agent.models.messages import LLMResponse, LLMUsage, Message, ToolCall
 from cairn.agent.models.offline import OfflineDevelopmentModel
 from cairn.conversation.models import ConversationSource, RunStatus, utc_now
-from cairn.conversation.service import HISTORY_CONTEXT_LIMIT, _failure_label
+from cairn.conversation.service import HISTORY_CONTEXT_LIMIT
 from cairn.server.bootstrap import runtime_app
 from cairn.server.client import RuntimeClient
 from tests.support.git import initialize_repository
@@ -803,22 +803,62 @@ def test_quote_heavy_legacy_history_stays_within_task_bounds(tmp_path: Path) -> 
     asyncio.run(scenario())
 
 
-def test_failure_label_explains_model_outages_without_provider_text() -> None:
-    failure = AllModelsUnavailable(
-        (
-            ("openai/model-a", ValueError("provider detail")),
-            ("openai/model-b", RuntimeError("provider detail")),
+def test_all_models_unavailable_persists_safe_attempts(tmp_path: Path) -> None:
+    class FailingExecution:
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+        async def __call__(self, *_args: Any, **_kwargs: Any) -> str:
+            raise AllModelsUnavailable(
+                (("openai/model-a", ValueError("provider detail")),)
+            )
+
+    async def scenario() -> None:
+        source = tmp_path / "source"
+        source.mkdir()
+        initialize_repository(source)
+        app = runtime_app(
+            source,
+            tmp_path / "state",
+            tmp_path / "worktrees",
+            budget=RunBudget(5),
+            token="zzzz",
+            database=database_for(tmp_path),
         )
-    )
+        api = RuntimeClient(
+            "http://127.0.0.1:8777",
+            "zzzz",
+            transport=httpx.ASGITransport(app=app),
+        )
+        async with app.router.lifespan_context(app):
+            service = app.state.conversations
+            service.execution = cast(Any, FailingExecution(service.execution))
+            conversation = service.create_conversation(
+                "model failure", ConversationSource.CLI
+            )
+            run = await api.send_conversation(
+                conversation.conversation_id,
+                "hello",
+                source="cli",
+                request_id="model-failure",
+            )
+            current: dict[str, Any] = {}
+            for _ in range(100):
+                current = await api.get_run(run["run_id"])
+                if current["status"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.02)
 
-    label = _failure_label(failure)
+        assert current["status"] == "failed", current
+        assert current["error"] == (
+            "All candidate models are unavailable: 'openai/model-a' (ValueError)."
+        )
+        assert "provider detail" not in current["error"]
 
-    assert label == (
-        "All candidate models are unavailable: 'openai/model-a' (ValueError), "
-        "'openai/model-b' (RuntimeError)."
-    )
-    assert "provider detail" not in label
-    assert _failure_label(RuntimeError("provider detail")) == "RuntimeError"
+    asyncio.run(scenario())
 
 
 def test_setup_failure_settles_observers_and_fails_the_run(tmp_path: Path) -> None:

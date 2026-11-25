@@ -10,6 +10,7 @@ from litellm.exceptions import (
     AuthenticationError,
     BadRequestError,
     ContextWindowExceededError,
+    NotFoundError,
     PermissionDeniedError,
     RateLimitError,
     ServiceUnavailableError,
@@ -215,6 +216,27 @@ def test_fallback_accepts_an_unclassified_vendor_rate_limit() -> None:
     assert is_fallback_error(error)
 
 
+def test_fallback_accepts_a_missing_selected_model() -> None:
+    error = NotFoundError(
+        message="model not found",
+        model="openai/removed",
+        llm_provider="openai",
+    )
+
+    assert is_fallback_error(error)
+
+
+def test_fallback_accepts_a_structured_model_not_found_bad_request() -> None:
+    error = BadRequestError(
+        message="invalid model",
+        model="openai/removed",
+        llm_provider="openai",
+    )
+    error.__context__ = ProviderPayloadError({"error": {"code": "model_not_found"}})
+
+    assert is_fallback_error(error)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -341,6 +363,32 @@ def test_all_unavailable_snapshots_ordered_causes_without_printing_provider_secr
     assert "TimeoutError" in str(error)
     assert secret not in str(error) + repr(error)
     assert str(AllModelsUnavailable([])) == "No candidate models are available."
+
+
+def test_executor_falls_back_when_the_selected_model_is_missing() -> None:
+    response = LLMResponse(content="done")
+    llm = ScriptedLLM(
+        NotFoundError(
+            message="model not found", model="openai/flash", llm_provider="openai"
+        ),
+        response,
+    )
+    agent = make_agent(llm, RecordingCounter())
+    manager = make_manager()
+
+    _, actual = asyncio.run(
+        make_executor(agent, manager).execute(
+            primary_runtime=(agent.llm, agent.context_builder),
+            system_messages=[],
+            history=agent.state.messages,
+            current_turn_start=0,
+            tools=[],
+        )
+    )
+
+    assert actual is response
+    assert len(llm.calls) == 2
+    assert manager.current_model().name == "flash"
 
 
 @pytest.mark.parametrize("fails_first", [False, True])

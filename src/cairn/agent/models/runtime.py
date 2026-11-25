@@ -80,15 +80,17 @@ def build_provider_runtime(
     """
     # Keep the provider SDK out of the core/CLI import path until needed.
     from cairn.agent.models.providers.litellm_client import LiteLLMClient
+    from cairn.agent.models.providers.routing import openai_compatible_model
     from cairn.agent.models.providers.token_counter import LiteLLMTokenCounter
 
     budget_ref = [context_budget]
 
     def create_model_runtime(model_id: str) -> tuple[LLMClient, ContextBuilder]:
         budget = budget_ref[0]
+        routed = openai_compatible_model(model_id)
         return (
             LiteLLMClient(
-                model=model_id,
+                model=routed,
                 api_key=credential,
                 api_base=provider.config.base_url,
                 max_output_tokens=budget.response_tokens,
@@ -96,7 +98,7 @@ def build_provider_runtime(
             ),
             ContextBuilder(
                 budget=budget,
-                counter=LiteLLMTokenCounter(model_id),
+                counter=LiteLLMTokenCounter(routed),
             ),
         )
 
@@ -122,25 +124,30 @@ def build_provider_runtime(
 
 
 def runtime_for_model(runtime: ProviderRuntime, model_id: str) -> ProviderRuntime:
-    """Return a runtime that tries one concrete model before its group siblings.
+    """Return a runtime that tries one concrete model before later candidates.
 
-    The requested model stays first; the other models of its approved group
-    remain fallback candidates, so a model-level outage does not turn a request
-    into a hard failure. The base runtime and its manager are not mutated:
-    concurrent runs may still hold the original.
+    The requested model stays first; the rest of its approved group and every
+    later configured model group remain fallback candidates, so a model-level
+    outage does not turn a request into a hard failure. The base runtime and its
+    manager are not mutated: concurrent runs may still hold the original.
     """
     try:
         group = runtime.model_manager.resolve_model_id(model_id)
     except ValueError:
         raise ValueError("Model is outside the approved groups") from None
-    selected = replace(
-        group,
-        model_ids=(
-            model_id,
-            *(ident for ident in group.model_ids if ident != model_id),
-        ),
+    groups = tuple(
+        replace(
+            item,
+            model_ids=(
+                model_id,
+                *(ident for ident in item.model_ids if ident != model_id),
+            ),
+        )
+        if item.name == group.name
+        else item
+        for item in runtime.provider.config.model_config
     )
-    manager = ModelManager(replace(runtime.provider.config, model_config=(selected,)))
+    manager = ModelManager(replace(runtime.provider.config, model_config=groups))
     manager.select_model_id(model_id)
     llm, context = runtime.runtime_factory(model_id)
     return replace(

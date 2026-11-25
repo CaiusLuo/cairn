@@ -2,6 +2,9 @@
 #: Another candidate behind the same API key cannot clear them.
 _SHARED_QUOTA_CODES = frozenset({"insufficient_quota", "billing_hard_limit_reached"})
 
+#: Code for one model that is unavailable, which another candidate can clear.
+_MODEL_NOT_FOUND_CODES = frozenset({"model_not_found"})
+
 #: Code for one model's free-tier allowance (Alibaba Cloud Model Studio). It is
 #: model-level: another configured model keeps its own free-tier allowance.
 _FREE_TIER_QUOTA_CODES = frozenset({"AllocationQuota.FreeTierOnly"})
@@ -89,9 +92,10 @@ def is_fallback_error(error: BaseException) -> bool:
     no structured payload marks the account itself as out of quota. It also
     falls back when one model's free-tier allowance is exhausted (Alibaba Cloud
     Model Studio ``AllocationQuota.FreeTierOnly``), which another candidate's own
-    allowance can clear.
+    allowance can clear, and when the selected model itself is unavailable (a
+    404 or a structured ``model_not_found``), which another candidate can replace.
 
-    Everything else propagates: cancellation, invalid requests, authentication
+    Everything else propagates: cancellation, malformed requests, authentication
     failures, context overflow, timeouts, service-unavailable responses and
     ambiguous billing failures. Timeouts and 503s are not model-level, and every
     candidate shares this endpoint and credential, so retrying cannot be shown to
@@ -105,11 +109,16 @@ def is_fallback_error(error: BaseException) -> bool:
     """
     # Keep the provider SDK out of the core/CLI import path until needed.
     from litellm.exceptions import (
+        NotFoundError,
         RateLimitError,
         RateLimitErrorCategory,
         RateLimitType,
     )
 
+    if isinstance(error, NotFoundError):
+        return True
+    if _structured_error_fields(error) & _MODEL_NOT_FOUND_CODES:
+        return True
     if not isinstance(error, RateLimitError):
         return _is_model_free_tier_exhaustion(error)
     if error.category != RateLimitErrorCategory.VENDOR_RATE_LIMIT.value:

@@ -8,22 +8,12 @@ from types import SimpleNamespace
 import litellm
 import pytest
 
-from cairn.agent.models.providers.routing import openai_compatible_model
 from cairn.knowledge.embeddings import (
     EmbeddingError,
     LiteLLMEmbeddingClient,
     parse_vectors,
 )
 from tests.support.knowledge_fakes import FailingEmbedder, FakeEmbedder
-
-
-def test_bare_model_ids_are_routed_through_openai_compatible_client() -> None:
-    assert (
-        openai_compatible_model("qwen3.7-text-embedding-flash")
-        == "openai/qwen3.7-text-embedding-flash"
-    )
-    assert openai_compatible_model("openai/custom") == "openai/custom"
-    assert openai_compatible_model("publisher/custom") == "openai/publisher/custom"
 
 
 def test_parse_vectors_accepts_objects_and_dicts() -> None:

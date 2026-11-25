@@ -9,7 +9,6 @@ from litellm import acompletion
 from cairn.agent.models.client import LLMStreamChunk, StreamProtocolError
 from cairn.agent.models.messages import LLMResponse, LLMUsage, Message, ToolCall
 from cairn.agent.models.providers.litellm_stream import stream_completion
-from cairn.agent.models.providers.routing import openai_compatible_model
 
 
 def _parse_tool_arguments(
@@ -116,7 +115,7 @@ class LiteLLMClient:
         max_output_tokens: int | None = None,
         missing_credential: str | None = None,
     ) -> None:
-        self.model = openai_compatible_model(model)
+        self.model = model
         self.api_key = api_key
         self.api_base = api_base
         self.max_output_tokens = max_output_tokens

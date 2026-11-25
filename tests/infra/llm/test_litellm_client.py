@@ -19,14 +19,13 @@ from cairn.agent.models.providers.routing import openai_compatible_model
         ("deepseek-chat", "openai/deepseek-chat"),
         ("Qwen/Qwen3-32B", "openai/Qwen/Qwen3-32B"),
         ("openai/gpt-4o", "openai/gpt-4o"),
-        ("azure/deployment", "azure/deployment"),
+        ("azure/deployment", "openai/azure/deployment"),
     ],
 )
-def test_model_ids_without_a_known_provider_use_the_openai_route(
+def test_configured_model_ids_use_the_openai_compatible_route(
     model: str, routed: str
 ) -> None:
     assert openai_compatible_model(model) == routed
-    assert LiteLLMClient(model).model == routed
 
 
 def test_output_allowance_can_exceed_a_chat_budget() -> None:
@@ -50,8 +49,6 @@ def test_output_allowance_can_exceed_a_chat_budget() -> None:
         ("openai/local-model", True),
         ("azure/deployment", True),
         ("openai/known-chat", True),
-        ("deepseek-v4.1-flash-1017", True),
-        ("gpt-4o", True),
         ("openai/known-responses", False),
         ("azure/known-responses", False),
         ("openai/text-davinci-003", False),
@@ -225,7 +222,7 @@ def test_generate_forwards_request_and_parses_tool_calls(
     else:
         assert captured.pop("max_tokens") == max_output_tokens
     assert captured == {
-        "model": "openai/provider/model",
+        "model": "provider/model",
         "num_retries": 0,
         "max_retries": 0,
         "messages": [

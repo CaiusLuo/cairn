@@ -240,6 +240,25 @@ def test_provider_cancellation_after_commit_keeps_new_bindings(
     assert observed == [previous, candidate]
 
 
+def test_runtime_routes_bare_model_ids_through_the_openai_compatible_client() -> None:
+    provider = NamedProvider(
+        name="custom",
+        config=ProviderConfig(
+            base_url="https://example.test/v1",
+            api_key_env="CUSTOM_API_KEY",
+            model_config=(ModelConfig("default", ("deepseek-v4.1-flash-1017",)),),
+        ),
+    )
+
+    runtime = build_provider_runtime(provider, "credential", BUDGET)
+
+    assert isinstance(runtime.llm, LiteLLMClient)
+    assert runtime.llm.model == "openai/deepseek-v4.1-flash-1017"
+    counter = runtime.context_builder.counter
+    assert isinstance(counter, LiteLLMTokenCounter)
+    assert counter.model == "openai/deepseek-v4.1-flash-1017"
+
+
 def test_runtime_for_model_tries_the_selection_before_group_fallbacks() -> None:
     runtime = build_provider_runtime(make_provider(), "credential", BUDGET)
 
@@ -250,6 +269,10 @@ def test_runtime_for_model_tries_the_selection_before_group_fallbacks() -> None:
         "openai/model-b",
         "openai/model-a",
     )
+    assert [group.name for group in pinned.model_manager.candidates()] == [
+        "flash",
+        "plus",
+    ]
     assert runtime.model_manager.current_model_id() == "openai/model-a"
 
 
