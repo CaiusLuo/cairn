@@ -782,7 +782,9 @@ export function ModelPage() {
                     onChange={event => update({ apiKey: event.target.value })}
                   />
                 </label>
-                <p className="model-key-hint">{keyHint(draft)}</p>
+                {keyHint(draft) && (
+                  <p className="model-key-hint">{keyHint(draft)}</p>
+                )}
 
                 {provider && provider.groups.length > 1 && (
                   <label>
