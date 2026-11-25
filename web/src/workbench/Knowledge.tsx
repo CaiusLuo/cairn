@@ -409,7 +409,7 @@ function ClipLibrary() {
           {previewing ? <Markdown text={detail.content}/> : <pre className="knowledge-content">{detail.content}</pre>}
           {!!detail.tags.length && <div className="knowledge-tags">{detail.tags.map(tag => <span className="knowledge-tag" key={tag}>{tag}</span>)}</div>}
           <p className="knowledge-hash">SHA-256 · {detail.content_hash}</p>
-          <p className="wb-muted">仅保存在私有知识库。</p>
+          <p className="wb-muted">仅保存在私有知识库，不会自动加入对话。</p>
         </>}
       </div>
     </Drawer>}

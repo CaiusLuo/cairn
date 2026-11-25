@@ -49,6 +49,12 @@ async function send(text) {
   await page.getByRole("textbox", { name: "消息" }).fill(text);
   await page.getByRole("button", { name: "发送", exact: true }).click();
 }
+async function copyReply(reply) {
+  await reply.getByRole("button", { name: "复制回答" }).waitFor();
+  await reply.getByRole("button", { name: "复制回答" }).click();
+  await reply.getByRole("button", { name: "已复制" }).waitFor();
+  return page.evaluate(() => (window.__clipboard ?? navigator.clipboard).readText());
+}
 async function waitForPath(path, timeout = 10000) {
   const started = Date.now();
   while (Date.now() - started < timeout) {
@@ -131,19 +137,15 @@ try {
     await (await conversationLink(new RegExp(cliPrompt))).click();
     const copiedReply = page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first();
     await copiedReply.waitFor();
-    await copiedReply.getByRole("button", { name: "复制回答" }).click();
-    await copiedReply.getByRole("button", { name: "已复制" }).waitFor();
-    assert.match(await page.evaluate(() => navigator.clipboard.readText()), /离线共享对话已连接/);
+    assert.match(await copyReply(copiedReply), /离线共享对话已连接/);
 
     // The public entry is plain HTTP, where navigator.clipboard is unavailable.
-    await copiedReply.getByRole("button", { name: "复制回答" }).waitFor();
     await page.evaluate(() => {
       window.__clipboard = navigator.clipboard;
       Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
     });
-    await copiedReply.getByRole("button", { name: "复制回答" }).click();
-    await copiedReply.getByRole("button", { name: "已复制" }).waitFor();
-    assert.match(await page.evaluate(() => window.__clipboard.readText()), /离线共享对话已连接/);
+    assert.match(await copyReply(copiedReply), /离线共享对话已连接/);
+    await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { value: window.__clipboard, configurable: true }));
 
     await page.context().setOffline(true);
     await page.getByRole("link", { name: "对话", exact: true }).click();

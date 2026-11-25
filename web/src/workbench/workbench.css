@@ -483,7 +483,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   box-shadow: var(--hui-ind-shadow); text-align: left; cursor: pointer;
   transition: border-color 160ms var(--hui-ease-flow), box-shadow 160ms var(--hui-ease-flow), transform 160ms var(--hui-ease-flow);
 }
-.channels-platform-top { display: flex; align-items: flex-start; gap: 14px; min-width: 0; }
+.channels-platform-top { display: flex; flex: 1; align-items: flex-start; gap: 14px; min-width: 0; }
 .channels-page .channels-platform:hover {
   border-color: color-mix(in srgb, var(--hui-accent) 34%, var(--hui-border));
   background: var(--hui-surface);
@@ -784,8 +784,6 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   .review-toolbar > .primary { flex: 1; justify-content: center; }
   .channels-page .channels-connection { padding: 13px 14px; }
   .channels-connection-main { min-width: 140px; }
-  .channels-platform-foot { flex-wrap: wrap; gap: 12px; }
-  .channels-page .channels-platform .channel-state { align-self: flex-start; }
 }
 
 .wb-message-with-sources { flex: 1; }
