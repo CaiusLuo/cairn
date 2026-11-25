@@ -37,20 +37,17 @@ function CopyButton({ text }: { text: string }) {
   const [status, setStatus] = useState<"copied" | "failed" | null>(null);
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(timer.current), []);
-  function mark(next: "copied" | "failed") {
+  function flashStatus(next: "copied" | "failed") {
     setStatus(next);
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setStatus(null), 1800);
   }
+  function fallbackCopy() {
+    flashStatus(legacyCopy(text) ? "copied" : "failed");
+  }
   function copy() {
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).then(
-        () => mark("copied"),
-        () => mark(legacyCopy(text) ? "copied" : "failed"),
-      );
-    } else {
-      mark(legacyCopy(text) ? "copied" : "failed");
-    }
+    if (!navigator.clipboard?.writeText) return fallbackCopy();
+    navigator.clipboard.writeText(text).then(() => flashStatus("copied"), fallbackCopy);
   }
   const label = status === "copied" ? "已复制" : status === "failed" ? "复制失败，请手动选择文本" : "复制回答";
   return <button type="button" className="icon-button wb-message-copy" data-status={status ?? undefined} aria-label={label} title={label} onClick={copy}>

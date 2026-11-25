@@ -184,8 +184,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .wb-message.assistant { display: flex; align-items: flex-start; gap: 10px; }
 .wb-message.assistant > .cairn-mark { flex: none; margin-top: 3px; }
 .wb-message.assistant > div { min-width: 0; }
-.wb-message-body { display: flex; flex-direction: column; }
-.wb-message-copy { align-self: flex-end; width: 26px; height: 26px; margin-top: 2px; }
+.wb-message-body { flex: 1; display: flex; flex-direction: column; }
+.wb-main .wb-message-copy { align-self: flex-end; width: 26px; height: 26px; margin-top: 2px; border: 0; padding: 0; background: transparent; }
 .wb-message-copy[data-status="copied"] { color: var(--hui-success); }
 .wb-message-copy[data-status="failed"] { color: var(--hui-error); }
 .wb-markdown { min-width: 0; line-height: 1.65; overflow-wrap: anywhere; }
