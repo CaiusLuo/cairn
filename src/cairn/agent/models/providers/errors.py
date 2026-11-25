@@ -72,9 +72,14 @@ def _is_model_free_tier_exhaustion(error: BaseException) -> bool:
     exception. LiteLLM otherwise rebuilds a bare ``APIError`` with ``body=None``
     (its openai mapper has no 403 branch), so the documented 403 message is the
     remaining narrow signature.
+
+    Model Studio also labels this stop ``insufficient_quota``, its generic quota
+    taxonomy, so that code cannot mean the account here: the documented message
+    names the free tier, whose allowance belongs to one model. A hard billing
+    limit stays account-level and never falls back.
     """
     fields = _structured_error_fields(error)
-    if fields & _SHARED_QUOTA_CODES:
+    if "billing_hard_limit_reached" in fields:
         return False
     if fields & _FREE_TIER_QUOTA_CODES:
         return True
@@ -91,9 +96,10 @@ def is_fallback_error(error: BaseException) -> bool:
     provider throttled this model (not LiteLLM's own key/team/model limiter) and
     no structured payload marks the account itself as out of quota. It also
     falls back when one model's free-tier allowance is exhausted (Alibaba Cloud
-    Model Studio ``AllocationQuota.FreeTierOnly``), which another candidate's own
-    allowance can clear, and when the selected model itself is unavailable (a
-    404 or a structured ``model_not_found``), which another candidate can replace.
+    Model Studio ``AllocationQuota.FreeTierOnly`` or its documented 403 message,
+    which another candidate's own allowance can clear), and when the selected
+    model itself is unavailable (a 404 or a structured ``model_not_found``),
+    which another candidate can replace.
 
     Everything else propagates: cancellation, malformed requests, authentication
     failures, context overflow, timeouts, service-unavailable responses and

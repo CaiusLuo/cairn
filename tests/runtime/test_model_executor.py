@@ -199,11 +199,24 @@ def test_fallback_rejects_generic_403_and_partial_free_tier_signatures(
     assert not is_fallback_error(error)
 
 
-def test_shared_billing_payload_beats_the_free_tier_signature() -> None:
+def test_hard_billing_limit_beats_the_free_tier_signature() -> None:
     error = free_tier_api_error()
-    error.__context__ = ProviderPayloadError({"error": {"code": "insufficient_quota"}})
+    error.__context__ = ProviderPayloadError(
+        {"error": {"code": "billing_hard_limit_reached"}}
+    )
 
     assert not is_fallback_error(error)
+
+
+def test_free_tier_signature_beats_the_generic_insufficient_quota_code() -> None:
+    # Model Studio reports its per-model free-tier stop as ``insufficient_quota``
+    # alongside the documented message; the free tier belongs to one model.
+    error = free_tier_api_error()
+    error.__context__ = ProviderPayloadError(
+        {"error": {"code": "insufficient_quota", "type": "insufficient_quota"}}
+    )
+
+    assert is_fallback_error(error)
 
 
 def test_fallback_accepts_an_unclassified_vendor_rate_limit() -> None:
