@@ -359,9 +359,11 @@ def load_approved_catalog(
     """Load every configured provider covered by the host allowlist.
 
     An unapproved or mismatched provider is simply not part of the result; it
-    is never served and its model groups never appear as choices.  The function
-    still resolves credentials for every approved provider up front, so a
-    missing credential is visible before a selection tries to use it.
+    is never served and its model groups never appear as choices.  Every
+    configured provider's credential name and value still join the redaction
+    policy, so an unapproved key cannot leak through a worktree or a message.
+    Approved providers resolve their key up front, making a missing credential
+    visible before a selection tries to use it.
     """
     host = os.environ if host_env is None else host_env
     values = dotenv_values(workspace / ".env")
@@ -425,15 +427,12 @@ def load_approved_catalog(
         raise ProviderApprovalMismatch(
             "no approved provider has a configured credential"
         )
-    names = frozenset(item.provider.config.api_key_env for item in approved)
+    names = frozenset(item.config.api_key_env for item in configured)
     secrets = secret_values(names, values, host)
     if on_secrets_resolved is not None:
         on_secrets_resolved(secrets)
     return ApprovedCatalog(
-        providers=tuple(
-            replace(item, secret_env_keys=names, sensitive_values=secrets)
-            for item in approved
-        ),
+        providers=tuple(replace(item, sensitive_values=secrets) for item in approved),
         secret_env_keys=names,
         sensitive_values=secrets,
     )

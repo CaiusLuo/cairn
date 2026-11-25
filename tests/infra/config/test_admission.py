@@ -343,5 +343,7 @@ def test_catalog_drops_providers_the_allowlist_does_not_cover(
     )
 
     assert [approved.provider.name for approved in catalog.providers] == ["primary"]
-    assert "HIDDEN_KEY" not in catalog.secret_env_keys
-    assert "hidden-secret" not in catalog.sensitive_values
+    # An unapproved provider is not served, but its credential must still be
+    # withheld from worktrees and redacted from output.
+    assert "HIDDEN_KEY" in catalog.secret_env_keys
+    assert "hidden-secret" in catalog.sensitive_values
