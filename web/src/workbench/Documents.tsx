@@ -203,7 +203,7 @@ export function Documents() {
     <section className="wb-card documents-upload">
       <div>
         <strong>上传文档</strong>
-        <p className="wb-muted">PDF、Word、Excel、PowerPoint、HTML、Markdown 或纯文本，单个文件不超过 25 MiB。上传后会自动提取文本、建立可搜索索引，并尽力生成实体关系。</p>
+        <p className="wb-muted">PDF、Office、HTML、Markdown 或纯文本 · 25 MiB 以内</p>
       </div>
       <input ref={uploadInput} type="file" multiple accept={ACCEPT} aria-label="选择要上传的文档" onChange={event => void upload(event.target.files)} hidden/>
       <button disabled={!!uploading.length} onClick={() => uploadInput.current?.click()}><Icon name="plus" size={15}/>{uploading.length ? "上传中…" : "选择文件"}</button>
@@ -248,7 +248,7 @@ export function Documents() {
           <p className="wb-muted">{(nextOffset ?? totalChars).toLocaleString("zh-CN")} / {totalChars.toLocaleString("zh-CN")} 字符</p>
           {nextOffset !== null && <div className="knowledge-more"><button disabled={detailLoading} onClick={moreText}>{detailLoading ? "加载中…" : "加载更多"}</button></div>}
         </> : !detailLoading && detail.status === "ready" ? <p className="wb-muted">没有可显示的文本。</p> : <p className="wb-muted">文档处理完成后可查看提取的文本。</p>}
-        <p className="wb-muted">文档内容只是不可信的参考材料；对话中引用时会带上 document_id 和 chunk_id。</p>
+        <p className="wb-muted">不可信参考材料 · 引用时携带 document_id / chunk_id</p>
       </div>
     </Drawer>}
   </>;

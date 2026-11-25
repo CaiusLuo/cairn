@@ -82,7 +82,7 @@ export function Tasks({ tasks, id, navigate, refresh, loading, error }: {
   if (id) return <TaskDetail key={id} id={id} navigate={navigate} refresh={refresh}/>;
   const matches = tasks.filter(task => (filter === "all" || (filter === "active" ? isActive(task.status) : filter === "review" ? task.status === "recovery_required" : task.status === filter)) && (task.prompt + " " + task.task_id).toLowerCase().includes(search.toLowerCase()));
   return <div className="wb-page">
-    <PageHeader icon="board" title="开发任务" description="共享工作区中的开发目标和执行进度" actions={<button className="primary" onClick={() => navigate(href("home", { mode: "development" }))}><Icon name="plus" size={15}/> 新建任务</button>}/>
+    <PageHeader icon="board" title="开发任务" actions={<button className="primary" onClick={() => navigate(href("home", { mode: "development" }))}><Icon name="plus" size={15}/> 新建任务</button>}/>
     <div className="wb-toolbar">
       <label><Icon name="search" size={15}/><input type="search" aria-label="搜索任务" placeholder="搜索任务" value={search} onChange={event => setSearch(event.target.value)}/></label>
       <select aria-label="筛选任务状态" value={filter} onChange={event => setFilter(event.target.value)}><option value="all">全部状态</option><option value="active">运行中</option><option value="review">待核对</option><option value="completed">已完成</option><option value="failed">失败</option></select>
@@ -191,7 +191,7 @@ export function Runs({ runs, id, navigate, error }: { runs: Run[]; id: string; n
   if (id) return <RunDetail key={id} id={id} navigate={navigate}/>;
   const matches = runs.filter(run => `${run.prompt ?? ""} ${run.run_id} ${sourceLabel(run.source)}`.toLowerCase().includes(filter.toLowerCase()));
   return <div className="wb-page">
-    <PageHeader icon="runs" title="运行" description="当前工作区最近 100 次共享执行"/>
+    <PageHeader icon="runs" title="运行"/>
     <div className="wb-toolbar"><label><Icon name="search" size={15}/><input type="search" aria-label="搜索运行" placeholder="搜索运行或来源" value={filter} onChange={event => setFilter(event.target.value)}/></label></div>
     <ErrorText value={error}/>
     <div className="wb-run-list">{matches.map(run => <a key={run.run_id} href={href("runs", { run: run.run_id })} onClick={event => { if (!event.metaKey && !event.ctrlKey) { event.preventDefault(); navigate(event.currentTarget.getAttribute("href")!); } }}>

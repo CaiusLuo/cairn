@@ -46,14 +46,6 @@ const platformName: Record<ChannelPlatform, string> = {
   telegram: "Telegram",
   discord: "Discord",
 };
-const platformBlurb: Record<ChannelPlatform, string> = {
-  wechat: "复用宿主登录会话，在私聊与群聊中收发消息。",
-  feishu: "用企业自建应用接入飞书，通过长连接接收私聊消息。",
-  wecom: "企业微信接入待支持，可先保存连接配置。",
-  qq: "用支持长连接的 QQ 机器人收发私聊文本。",
-  telegram: "用 Bot Token 接入 Telegram，接收私聊消息。",
-  discord: "用 Bot Token 接入 Discord，收发机器人私信。",
-};
 const ownerPlaceholder: Record<ChannelPlatform, string> = {
   wechat: "平台侧的用户身份",
   feishu: "飞书用户 open_id（ou_…）",
@@ -1200,7 +1192,6 @@ export function Channels() {
           <PageHeader
             icon="server"
             title="连接"
-            description="管理微信、飞书、企业微信、QQ、Telegram 与 Discord 的连接和运行状态"
             actions={headerActions}
           />
           {overviewError && (
@@ -1236,11 +1227,6 @@ export function Channels() {
                         <span className="wb-muted">
                           已配置 {row?.connections ?? 0} · 运行中 {row?.running ?? 0}
                         </span>
-                      </span>
-                    </span>
-                    <span className="channels-platform-foot">
-                      <span className="channels-platform-note">
-                        {platformBlurb[candidate]}
                       </span>
                       <StatusPill state={state} />
                     </span>

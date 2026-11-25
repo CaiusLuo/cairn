@@ -74,7 +74,6 @@ export function Outputs({ result, history }: { result?: string | null; history: 
       {item.id === -1 ? <Markdown text={item.text}/> : <pre>{item.text}</pre>}
     </details>)}
     {!matches.length && <p className="wb-muted">{query ? "没有匹配的产物。" : "暂无已提交的运行结果或工具输出。"}</p>}
-    <p className="wb-muted">文件与 Diff 预览需要 Server 提供受限的产物读取接口。</p>
   </div>;
 }
 

@@ -49,7 +49,7 @@ function CopyButton({ text }: { text: string }) {
     if (!navigator.clipboard?.writeText) return fallbackCopy();
     navigator.clipboard.writeText(text).then(() => flashStatus("copied"), fallbackCopy);
   }
-  const label = status === "copied" ? "已复制" : status === "failed" ? "复制失败，请手动选择文本" : "复制回答";
+  const label = status === "copied" ? "已复制" : status === "failed" ? "复制失败" : "复制回答";
   return <button type="button" className="icon-button wb-message-copy" data-status={status ?? undefined} aria-label={label} title={label} onClick={copy}>
     {status === "copied"
       ? <Icon name="check" size={14}/>
@@ -377,13 +377,13 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
     </form>
   </div>;
 
-  if (!id) return <div className="wb-home"><div className="wb-home-inner"><BrandIntro/>{form}<div className="wb-shortcuts">{shortcuts.map(item => <a key={item.title} href={item.href} onClick={event => { event.preventDefault(); navigate(item.href); }}><span><Icon name={item.icon}/></span><strong>{item.title}</strong><small>{item.detail}</small></a>)}</div></div></div>;
+  if (!id) return <div className="wb-home"><div className="wb-home-inner"><BrandIntro/>{form}<div className="wb-shortcuts">{shortcuts.map(item => <a key={item.title} href={item.href} onClick={event => { event.preventDefault(); navigate(item.href); }}><span><Icon name={item.icon}/></span><strong>{item.title}</strong></a>)}</div></div></div>;
   return <section className="wb-chat">
     <header className="wb-chat-header">
       <div><h1 title={title}>{conversationTitle(title)}</h1>{detail.data && <small>{sourceLabel(detail.data.conversation.source)}</small>}</div>
       {run && <><Badge status={run.status}/><button title="查看运行详情" aria-label="查看运行详情" onClick={() => navigate(href("runs", { run: run.run_id }))}><Icon name="runs" size={17}/></button><button title="产物" aria-label="产物" onClick={() => setArtifacts(true)}><Icon name="chat-artifacts" size={17}/></button></>}
     </header>
-    {degraded && <p className="wb-muted" role="status">旧 Session 记录不可用，本次已在新 Session 中继续；历史来自持久化 Run 记录，旧操作不会重放。</p>}
+    {degraded && <p className="wb-muted" role="status">旧 Session 记录不可用，已在新 Session 继续；旧操作不会重放。</p>}
     <div className="wb-transcript" ref={transcript} onScroll={() => { const element = transcript.current; if (element) stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 160; }}>
       <div className="wb-transcript-inner">
         {!detail.data && !detail.error && <p className="wb-muted">正在读取对话…</p>}

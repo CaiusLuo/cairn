@@ -123,7 +123,7 @@ export function Knowledge() {
   }
 
   return <div className="wb-page">
-    <PageHeader icon="doc" title="知识" description="私有片段、上传文档与 Daily / Weekly 复盘报告"/>
+    <PageHeader icon="doc" title="知识"/>
     <nav className="settings-tabs knowledge-tabs" aria-label="知识类别">
       <button aria-current={pane === "clips" ? "page" : undefined} onClick={() => switchPane("clips")}><Icon name="doc" size={15}/>片段</button>
       <button aria-current={pane === "documents" ? "page" : undefined} onClick={() => switchPane("documents")}><Icon name="folder" size={15}/>文档</button>
@@ -409,7 +409,7 @@ function ClipLibrary() {
           {previewing ? <Markdown text={detail.content}/> : <pre className="knowledge-content">{detail.content}</pre>}
           {!!detail.tags.length && <div className="knowledge-tags">{detail.tags.map(tag => <span className="knowledge-tag" key={tag}>{tag}</span>)}</div>}
           <p className="knowledge-hash">SHA-256 · {detail.content_hash}</p>
-          <p className="wb-muted">片段只保存在私有知识库，不会自动加入对话、系统提示或 Agent 记忆。</p>
+          <p className="wb-muted">仅保存在私有知识库。</p>
         </>}
       </div>
     </Drawer>}

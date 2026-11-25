@@ -125,7 +125,6 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .wb-intro { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 28px; }
 .wb-intro-heading { margin: 0; line-height: 0; }
 .wb-intro-logo { height: 72px; }
-.wb-intro p { margin: 0 0 6px; color: var(--hui-muted); }
 .wb-start { display: flex; align-items: center; gap: 10px; padding: 25px 18px; border: 1px solid var(--hui-border-strong); border-radius: 16px; box-shadow: var(--hui-ind-shadow); }
 .wb-start svg:last-child { margin-left: auto; }
 .wb-start:hover { border-color: var(--hui-accent); }
@@ -133,7 +132,6 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .wb-shortcuts a { min-width: 0; display: grid; gap: 9px; border: 1px solid var(--hui-border); border-radius: 12px; padding: 14px; }
 .wb-shortcuts a:hover { border-color: var(--hui-border-strong); background: var(--hui-canvas); }
 .wb-shortcuts svg { color: var(--hui-accent); }
-.wb-shortcuts small { color: var(--hui-muted); }
 .wb-scrim { display: none; }
 @media (max-width: 800px) {
   .workbench, .workbench.side-collapsed { grid-template-columns: 48px minmax(0, 1fr); }
@@ -147,7 +145,6 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 @media (max-width: 520px) {
   .wb-shortcuts { grid-template-columns: 1fr; gap: 8px; margin-top: 16px; }
   .wb-shortcuts a { grid-template-columns: 22px 1fr; gap: 3px 8px; padding: 9px; }
-  .wb-shortcuts small { grid-column: 2; }
   .wb-intro { margin-bottom: 18px; }
   .wb-intro-logo { height: 56px; }
 }
@@ -480,8 +477,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 
 .channels-overview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .channels-page .channels-platform {
-  display: flex; flex-direction: column; gap: 24px;
-  width: 100%; min-height: 198px; margin: 0; padding: 22px;
+  display: flex; align-items: center;
+  width: 100%; margin: 0; padding: 22px;
   border-color: var(--hui-border); border-radius: 18px; background: var(--hui-surface);
   box-shadow: var(--hui-ind-shadow); text-align: left; cursor: pointer;
   transition: border-color 160ms var(--hui-ease-flow), box-shadow 160ms var(--hui-ease-flow), transform 160ms var(--hui-ease-flow);
@@ -510,12 +507,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .channels-platform-copy { display: grid; gap: 4px; flex: 1; min-width: 0; padding-top: 2px; }
 .channels-platform-copy strong { font-size: 15px; letter-spacing: -0.01em; }
 .channels-platform-copy .wb-muted { font-size: 12px; }
-.channels-platform-foot {
-  display: flex; align-items: flex-end; justify-content: space-between; gap: 18px;
-  margin-top: auto;
-}
-.channels-platform-note { flex: 1; min-width: 0; color: var(--hui-muted); font-size: 12.5px; line-height: 1.6; }
-.channels-page .channels-platform .channel-state { flex: none; align-self: flex-end; }
+.channels-page .channels-platform .channel-state { flex: none; margin-left: auto; align-self: flex-start; }
 .channel-state {
   --channel-state: var(--hui-muted);
   display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px;
@@ -765,7 +757,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 }
 @media (max-width: 640px) {
   .channels-overview { grid-template-columns: 1fr; }
-  .channels-page .channels-platform { min-height: 0; padding: 19px; gap: 20px; }
+  .channels-page .channels-platform { padding: 19px; }
   .channels-dialog { width: calc(100vw - 24px); max-height: calc(100dvh - 32px); }
   .channels-dialog-body { max-height: calc(100dvh - 128px); }
   .channels-dialog-head { padding: 19px 18px 12px; }
@@ -776,7 +768,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   .composer-controls { gap: 5px; }
   .wb-main .composer-controls select { max-width: 128px; font-size: 11px; }
   .composer-controls label svg { display: none; }
-  .wb-shortcuts a > span { grid-row: span 2; width: 22px; height: 22px; border-radius: 6px; }
+  .wb-shortcuts a > span { width: 22px; height: 22px; border-radius: 6px; }
   .wb-shortcuts a svg { width: 14px; height: 14px; }
   .wb-page-head { flex-wrap: wrap; }
   .wb-page-head h1 { font-size: 19px; }
@@ -793,7 +785,6 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   .channels-page .channels-connection { padding: 13px 14px; }
   .channels-connection-main { min-width: 140px; }
   .channels-platform-foot { flex-wrap: wrap; gap: 12px; }
-  .channels-platform-note { flex-basis: 100%; }
   .channels-page .channels-platform .channel-state { align-self: flex-start; }
 }
 

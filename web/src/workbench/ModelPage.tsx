@@ -457,7 +457,6 @@ export function ModelPage() {
       <PageHeader
         icon="sparkles"
         title="模型"
-        description="配置 OpenAI 兼容的提供方；保存后立即用于新的对话回合。"
         actions={
           <button
             aria-label="刷新"
@@ -628,7 +627,7 @@ export function ModelPage() {
                 </button>
               </div>
             ) : (
-              <p className="wb-muted">还没有可切换的模型；保存一个提供方后即可直接选用。</p>
+              <p className="wb-muted">还没有可切换的模型。</p>
             )}
           </section>
 

@@ -70,13 +70,13 @@ export function SettingsPage() {
   }
   const wx = data?.wechat, schedules = data?.schedule, review = data?.review, memory = data?.memory;
   return <div className="wb-page settings-main">
-    <PageHeader icon="settings" title="设置" description="微信连接、定时任务、复盘与个人记忆" actions={<button aria-label="刷新" title="刷新" disabled={busy} onClick={() => void refresh()}><Icon name="refresh" size={15}/></button>}/>
+    <PageHeader icon="settings" title="设置" actions={<button aria-label="刷新" title="刷新" disabled={busy} onClick={() => void refresh()}><Icon name="refresh" size={15}/></button>}/>
     <nav className="settings-tabs" aria-label="管理分类">{sections.map(({ key, label, icon }) => <button key={key} aria-current={section === key ? "page" : undefined} disabled={busy} onClick={() => chooseSection(key)}><Icon name={icon} size={15}/>{label}</button>)}</nav>
     {error && <p role="alert" className="control-error">{error}。操作结果不明时先刷新核对, 重试会沿用原请求编号。</p>}
     {feedback && <pre className="control-feedback" role="status">{feedback}</pre>}
     {!data && !error && <p>正在读取 Server 状态…</p>}
     {wx && <section className="settings-section"><h2>微信连接</h2><pre className="connection-status">{wx.status}</pre><div className="control-row"><button className="primary" disabled={busy || wx.running || wx.login_pending} onClick={() => void command("/wx", "")}>{wx.account_saved ? "启动已登录账号" : "登录微信"}</button><button disabled={busy || wx.running || wx.login_pending} onClick={() => void command("/wx", "login")}>重新扫码登录</button><button disabled={busy || (!wx.running && !wx.login_pending)} onClick={() => void command("/wx", "stop")}>停止接收</button></div>
-      {wx.login_pending && <p role="status">等待扫码。关闭网页或 CLI 后, 登录流程仍由 Server 继续。</p>}
+      {wx.login_pending && <p role="status">等待扫码；关闭页面不会中断登录。</p>}
       {wx.qr_image && <figure className="wechat-qr"><img src={wx.qr_image} width="240" height="240" alt="微信登录二维码"/><figcaption>使用微信扫码登录</figcaption></figure>}
       {wx.verification_required && <form onSubmit={event => { event.preventDefault(); void command("/wx", `verify ${code}`).then(ok => { if (ok) setCode(""); }); }}><label>登录验证码<input autoComplete="one-time-code" value={code} onChange={event => setCode(event.target.value)} maxLength={50}/></label><button disabled={busy || !code.trim()}>提交验证码</button></form>}
       <h3>允许接入项目的微信用户</h3><p className="muted">绑定用户可使用个人记忆和自己的计划。额外用户只获得项目访问。</p><ul>{wx.trusted_senders.map(id => <li key={id}>{id}</li>)}</ul><form className="control-row" onSubmit={event => { event.preventDefault(); void command("/wx", `allow ${sender}`).then(ok => { if (ok) setSender(""); }); }}><label>用户 ID<input value={sender} onChange={event => setSender(event.target.value)} maxLength={200}/></label><button disabled={busy || !sender.trim()}>允许接入</button></form>
@@ -89,7 +89,6 @@ export function SettingsPage() {
     </section>}
     {review && <section className="settings-section">
       <h2>复盘报告</h2>
-      <p className="muted">Server 启动时读取；Web 只读。</p>
       <dl className="review-policy">
         <div><dt>时区</dt><dd>{review.timezone}</dd></div>
         <div><dt>日报</dt><dd>{review.daily.enabled ? `启用 · 每天 ${review.daily.time}` : "未启用"} · {review.daily.scheduler_active ? "调度运行中" : "调度未启动"}</dd></div>
@@ -105,6 +104,6 @@ export function SettingsPage() {
       {memory.pending && <section className="proposal"><h3>待审批候选</h3><p>{memory.pending.reason}</p><pre>{memory.pending.text}</pre><label><input type="checkbox" checked={approved} onChange={event => setApproved(event.target.checked)}/>已审阅上方候选, 确认应用这份规则</label><div className="control-row"><button className="primary" disabled={busy || !approved} onClick={() => void command("/memory", "approve", true, memory.proposal_digest)}>应用候选</button><button disabled={busy} onClick={() => void command("/memory", "reject")}>放弃候选</button></div></section>}
       <button disabled={busy} onClick={() => void command("/memory", "rollback")}>回滚最近一次规则变更</button>
     </section>}
-    {!!data?.pending_operations.length && <section className="settings-section"><h2>需要人工核对的管理操作</h2><p>先查看实际结果, 确认后只解除等待, 不会重放。</p><label><input type="checkbox" checked={ack} onChange={event => setAck(event.target.checked)}/>已核对对应操作结果</label>{data.pending_operations.map(operation => <div className="control-row" key={operation.id}><code>{operation.command} · {operation.id}</code><button disabled={busy || !ack} onClick={() => void command("/management", `acknowledge ${operation.id}`, true)}>记录核对结果</button></div>)}</section>}
+    {!!data?.pending_operations.length && <section className="settings-section"><h2>需要人工核对的管理操作</h2><p>核对实际结果；确认只解除等待，不会重放。</p><label><input type="checkbox" checked={ack} onChange={event => setAck(event.target.checked)}/>已核对对应操作结果</label>{data.pending_operations.map(operation => <div className="control-row" key={operation.id}><code>{operation.command} · {operation.id}</code><button disabled={busy || !ack} onClick={() => void command("/management", `acknowledge ${operation.id}`, true)}>记录核对结果</button></div>)}</section>}
   </div>;
 }

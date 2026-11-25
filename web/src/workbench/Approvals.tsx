@@ -42,7 +42,7 @@ export function Approvals({ task, run, tasks, runs, refresh, navigate, error }: 
   const path = task ? `tasks/${encodeURIComponent(task)}` : run ? `runs/${encodeURIComponent(run)}` : null;
   const returnUrl = task ? href("tasks", { task }) : href("runs", { run });
   return <div className="wb-page">
-    <PageHeader icon="gate" title="待我确认" description="检查已持久化的执行证据，明确记录恢复决定。"/>
+    <PageHeader icon="gate" title="待我确认"/>
     <ErrorText value={error}/>
     {path ? <><Review key={path} path={path} returnUrl={returnUrl} onApplied={() => { refresh(); navigate(returnUrl); }} />{run && <HandoffReview runId={run} onApplied={() => { refresh(); navigate(returnUrl); }} />}</> :
       <>
