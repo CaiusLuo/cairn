@@ -85,7 +85,7 @@ PRESETS: tuple[dict[str, Any], ...] = (
         "provider_name": "magpie",
         "base_url": "http://127.0.0.1:3425/v1",
         "model_ids": [],
-        "note": "本地 OpenAI 兼容网关。启动 Magpie 后点「获取模型列表」；API Key 通常填 local。",
+        "note": "本地 OpenAI 兼容网关。启动 Magpie 后点「探测模型」；API Key 通常填 local。",
     },
     {
         "id": "bailian",
@@ -109,7 +109,7 @@ PRESETS: tuple[dict[str, Any], ...] = (
         "provider_name": "kimi",
         "base_url": "https://api.moonshot.cn/v1",
         "model_ids": [],
-        "note": "先填 API Key，再点「获取模型列表」选择可用模型。",
+        "note": "先填 API Key，再点「探测模型」选择可用模型。",
     },
     {
         "id": "zhipu",
@@ -117,7 +117,7 @@ PRESETS: tuple[dict[str, Any], ...] = (
         "provider_name": "zhipu",
         "base_url": "https://open.bigmodel.cn/api/paas/v4",
         "model_ids": [],
-        "note": "先填 API Key，再点「获取模型列表」选择可用模型。",
+        "note": "先填 API Key，再点「探测模型」选择可用模型。",
     },
     {
         "id": "ark",
@@ -125,7 +125,7 @@ PRESETS: tuple[dict[str, Any], ...] = (
         "provider_name": "ark",
         "base_url": "https://ark.cn-beijing.volces.com/api/v3",
         "model_ids": [],
-        "note": "模型 ID 通常使用方舟推理接入点 ID（ep-…）；可先试「获取模型列表」。",
+        "note": "模型 ID 通常使用方舟推理接入点 ID（ep-…）；可先试「探测模型」。",
     },
     {
         "id": "minimax",
@@ -133,7 +133,7 @@ PRESETS: tuple[dict[str, Any], ...] = (
         "provider_name": "minimax",
         "base_url": "https://api.minimax.chat/v1",
         "model_ids": [],
-        "note": "先填 API Key，再点「获取模型列表」选择可用模型。",
+        "note": "先填 API Key，再点「探测模型」选择可用模型。",
     },
     {
         "id": "siliconflow",
@@ -141,7 +141,7 @@ PRESETS: tuple[dict[str, Any], ...] = (
         "provider_name": "siliconflow",
         "base_url": "https://api.siliconflow.cn/v1",
         "model_ids": [],
-        "note": "国产模型聚合接口；先填 API Key，再获取模型列表。",
+        "note": "国产模型聚合接口；先填 API Key，再探测模型。",
     },
     {
         "id": "custom",
@@ -638,7 +638,7 @@ class ModelSettingsService:
         if not key:
             raise _error(
                 "credential_missing",
-                f"未找到 {api_key_env}。请填写 API Key 后再获取模型列表。",
+                f"未找到 {api_key_env}。请填写 API Key 后再探测模型。",
             )
         base_url = _clean_base_url(request.base_url)
         _validated_provider_config(base_url, api_key_env, "probe", ("probe",))

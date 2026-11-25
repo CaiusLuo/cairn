@@ -524,7 +524,6 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .channel-state[data-state="silent"] { --channel-state: var(--hui-warn); }
 .channel-state[data-state="connecting"] { --channel-state: var(--hui-info); }
 .channel-state[data-state="error"] { --channel-state: var(--hui-error); }
-.channels-footnote { margin: 18px 0 0; }
 .channels-list { display: grid; gap: 10px; margin-top: 14px; }
 .channels-page .channels-connection {
   margin: 0; padding: 14px 16px; border-color: var(--hui-border); border-radius: 14px;
@@ -730,10 +729,6 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   border-color: var(--hui-accent); background: var(--hui-accent-soft);
   color: var(--hui-accent);
 }
-.model-section-head {
-  display: flex; align-items: center; gap: 7px; margin-block-end: 8px;
-}
-.model-section-head h2 { margin: 0; }
 .model-curl {
   display: grid; gap: 8px; margin-block: 12px; padding: 12px;
   border: 1px solid var(--hui-border); border-radius: 10px;

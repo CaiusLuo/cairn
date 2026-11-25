@@ -450,6 +450,7 @@ export function ModelPage() {
     item => item.id === presetId,
   );
   const canSave = Boolean(settings?.can_save) && !busy;
+  const keyHintText = draft ? keyHint(draft) : "";
 
   return (
     <div className="wb-page model-page">
@@ -560,9 +561,7 @@ export function ModelPage() {
           </section>
 
           <section className="settings-section model-selection" aria-label="切换当前模型">
-            <div className="model-section-head">
-              <h2>当前选择</h2>
-            </div>
+            <h2>当前选择</h2>
             {selection && selectionProvider && selectionGroup ? (
               <div className="model-selection-controls">
                 <label>
@@ -634,9 +633,7 @@ export function ModelPage() {
           </section>
 
           <section className="settings-section">
-            <div className="model-section-head">
-              <h2>提供方</h2>
-            </div>
+            <h2>提供方</h2>
             <div className="model-provider-list">
               {settings.providers.map(item => (
                 <button
@@ -684,13 +681,11 @@ export function ModelPage() {
 
           {draft && (
             <section className="settings-section model-editor">
-              <div className="model-section-head">
-                <h2>
-                  {draft.mode === "create"
-                    ? "新增提供方"
-                    : `编辑 ${draft.originalProvider}`}
-                </h2>
-              </div>
+              <h2>
+                {draft.mode === "create"
+                  ? "新增提供方"
+                  : `编辑 ${draft.originalProvider}`}
+              </h2>
               <details className="model-curl">
                 <summary>从 curl 导入</summary>
                 <textarea
@@ -782,8 +777,8 @@ export function ModelPage() {
                     onChange={event => update({ apiKey: event.target.value })}
                   />
                 </label>
-                {keyHint(draft) && (
-                  <p className="model-key-hint">{keyHint(draft)}</p>
+                {keyHintText && (
+                  <p className="model-key-hint">{keyHintText}</p>
                 )}
 
                 {provider && provider.groups.length > 1 && (

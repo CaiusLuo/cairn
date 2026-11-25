@@ -138,7 +138,7 @@ const FAILURE_TEXT: Record<string, string> = {
   model_settings_rollback_failed:
     "保存失败且回滚不完整；请立即在服务器上核对 models.toml、.env 和 provider approval。",
   probe_credential_rejected: "提供方拒绝了该 API Key，请检查 Key 或 endpoint。",
-  probe_failed: "无法获取模型列表；可以直接手填模型 ID。",
+  probe_failed: "探测模型失败；可以直接手填模型 ID。",
   probe_timeout: "连接提供方超时；请检查 endpoint 或网络。",
   request_too_large: "请求内容过大。",
   invalid_json: "请求内容不是有效的 JSON。",

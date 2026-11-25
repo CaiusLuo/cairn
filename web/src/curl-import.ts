@@ -360,7 +360,7 @@ export function parseCurl(command: string): ParsedCurl {
   if (!apiKey) warnings.push("未找到可用的 API Key，请手动填写。");
   const modelIds = bodyModelIds(data.join(""), endpoint);
   if (!modelIds.length) {
-    warnings.push("未找到模型 ID，请手动填写或保存后获取模型列表。");
+    warnings.push("未找到模型 ID，请手动填写或保存后探测模型。");
   }
   return {
     endpoint,

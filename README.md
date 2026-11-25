@@ -145,9 +145,9 @@ uv run cairn-cli --config /etc/cairn/config.toml
 After signing in, open **/model.html** to configure the provider without editing
 TOML on the server. Choose a preset for a domestic OpenAI-compatible provider —
 Magpie, Alibaba Cloud Bailian/DashScope, DeepSeek, Kimi, Zhipu, Volcengine Ark,
-MiniMax or SiliconFlow — or enter a custom HTTPS endpoint. Use **获取模型列表**
+MiniMax or SiliconFlow — or enter a custom HTTPS endpoint. Use **探测模型**
 to discover model IDs, or type them one per line. You can also paste a curl
-command from the provider's documentation into **从 curl 自动填充** to detect the
+command from the provider's documentation into **从 curl 导入** to detect the
 Base URL, API key and model ID automatically. The curl is parsed in the browser
 only and is not uploaded. The API key is write-only: it is stored in the
 workspace `.env` and is never returned to the browser.

@@ -105,9 +105,9 @@ uv run cairn-cli --config /etc/cairn/config.toml
 
 登录后打开 **/model.html**，无需在服务器上编辑 TOML 即可配置提供方。可从国内
 OpenAI 兼容预设中选择：Magpie、阿里云百炼/DashScope、DeepSeek、Kimi、智谱、
-火山方舟、MiniMax、硅基流动，也可以填写自定义 HTTPS endpoint。使用「获取模型
-列表」发现模型 ID，或每行填写一个模型 ID；也可以把提供方文档中的 curl 命令粘贴到
-「从 curl 自动填充」，自动识别 Base URL、API Key 和模型 ID。curl 只在浏览器内解析，
+火山方舟、MiniMax、硅基流动，也可以填写自定义 HTTPS endpoint。使用「探测模型」
+发现模型 ID，或每行填写一个模型 ID；也可以把提供方文档中的 curl 命令粘贴到
+「从 curl 导入」，自动识别 Base URL、API Key 和模型 ID。curl 只在浏览器内解析，
 不会上传。API Key 只写入、不回显：它保存在工作区 `.env` 中，不会返回给浏览器。
 
 在**模型**页面选择默认提供方、模型组和模型，或在对话框的模型菜单中选择本次请求使用

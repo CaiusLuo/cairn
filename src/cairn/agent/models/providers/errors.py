@@ -1,6 +1,9 @@
 #: Provider error codes that mark the credential/account rather than one model.
-#: Another candidate behind the same API key cannot clear them.
+#: Another candidate behind the same API key cannot clear them. Model Studio
+#: reuses ``insufficient_quota`` for a per-model free-tier stop, so only the
+#: remaining codes are unconditionally account-level.
 _SHARED_QUOTA_CODES = frozenset({"insufficient_quota", "billing_hard_limit_reached"})
+_ACCOUNT_BILLING_CODES = _SHARED_QUOTA_CODES - {"insufficient_quota"}
 
 #: Code for one model that is unavailable, which another candidate can clear.
 _MODEL_NOT_FOUND_CODES = frozenset({"model_not_found"})
@@ -79,7 +82,7 @@ def _is_model_free_tier_exhaustion(error: BaseException) -> bool:
     limit stays account-level and never falls back.
     """
     fields = _structured_error_fields(error)
-    if "billing_hard_limit_reached" in fields:
+    if fields & _ACCOUNT_BILLING_CODES:
         return False
     if fields & _FREE_TIER_QUOTA_CODES:
         return True
