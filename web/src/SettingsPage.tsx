@@ -71,7 +71,9 @@ export function SettingsPage() {
   const wx = data?.wechat, schedules = data?.schedule, review = data?.review, memory = data?.memory;
   return <div className="wb-page settings-main">
     <PageHeader icon="settings" title="设置" actions={<button aria-label="刷新" title="刷新" disabled={busy} onClick={() => void refresh()}><Icon name="refresh" size={15}/></button>}/>
+    <div className="settings-layout">
     <nav className="settings-tabs" aria-label="管理分类">{sections.map(({ key, label, icon }) => <button key={key} aria-current={section === key ? "page" : undefined} disabled={busy} onClick={() => chooseSection(key)}><Icon name={icon} size={15}/>{label}</button>)}</nav>
+    <div className="settings-content">
     {error && <p role="alert" className="control-error">{error}。操作结果不明时先刷新核对, 重试会沿用原请求编号。</p>}
     {feedback && <pre className="control-feedback" role="status">{feedback}</pre>}
     {!data && !error && <p>正在读取 Server 状态…</p>}
@@ -79,7 +81,7 @@ export function SettingsPage() {
       {wx.login_pending && <p role="status">等待扫码；关闭页面不会中断登录。</p>}
       {wx.qr_image && <figure className="wechat-qr"><img src={wx.qr_image} width="240" height="240" alt="微信登录二维码"/><figcaption>使用微信扫码登录</figcaption></figure>}
       {wx.verification_required && <form onSubmit={event => { event.preventDefault(); void command("/wx", `verify ${code}`).then(ok => { if (ok) setCode(""); }); }}><label>登录验证码<input autoComplete="one-time-code" value={code} onChange={event => setCode(event.target.value)} maxLength={50}/></label><button disabled={busy || !code.trim()}>提交验证码</button></form>}
-      <h3>允许接入项目的微信用户</h3><p className="muted">绑定用户可使用个人记忆和自己的计划。额外用户只获得项目访问。</p><ul>{wx.trusted_senders.map(id => <li key={id}>{id}</li>)}</ul><form className="control-row" onSubmit={event => { event.preventDefault(); void command("/wx", `allow ${sender}`).then(ok => { if (ok) setSender(""); }); }}><label>用户 ID<input value={sender} onChange={event => setSender(event.target.value)} maxLength={200}/></label><button disabled={busy || !sender.trim()}>允许接入</button></form>
+      <h3>允许接入项目的微信用户</h3><p className="muted">绑定用户可使用个人记忆和自己的计划。额外用户只获得项目访问。</p><ul className="trusted-senders">{wx.trusted_senders.map(id => <li key={id}>{id}</li>)}</ul><form className="control-row" onSubmit={event => { event.preventDefault(); void command("/wx", `allow ${sender}`).then(ok => { if (ok) setSender(""); }); }}><label>用户 ID<input value={sender} onChange={event => setSender(event.target.value)} maxLength={200}/></label><button disabled={busy || !sender.trim()}>允许接入</button></form>
       <details className="danger-controls"><summary>移除登录</summary><label><input type="checkbox" checked={disconnect} onChange={event => setDisconnect(event.target.checked)}/>确认停止微信并移除保存的账号</label><button disabled={busy || !disconnect} onClick={() => void command("/wx", "disconnect").then(ok => { if (ok) setDisconnect(false); })}>断开并移除账号</button></details>
     </section>}
     {schedules && <section className="settings-section"><h2>定时任务</h2>{!schedules.owner_available && <p>先在「微信」登录并绑定提醒接收人。</p>}
@@ -105,5 +107,7 @@ export function SettingsPage() {
       <button disabled={busy} onClick={() => void command("/memory", "rollback")}>回滚最近一次规则变更</button>
     </section>}
     {!!data?.pending_operations.length && <section className="settings-section"><h2>需要人工核对的管理操作</h2><p>核对实际结果；确认只解除等待，不会重放。</p><label><input type="checkbox" checked={ack} onChange={event => setAck(event.target.checked)}/>已核对对应操作结果</label>{data.pending_operations.map(operation => <div className="control-row" key={operation.id}><code>{operation.command} · {operation.id}</code><button disabled={busy || !ack} onClick={() => void command("/management", `acknowledge ${operation.id}`, true)}>记录核对结果</button></div>)}</section>}
+    </div>
+    </div>
   </div>;
 }

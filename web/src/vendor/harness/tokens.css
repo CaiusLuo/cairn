@@ -17,8 +17,8 @@
   --hui-surface: #f4f5f7;
   --hui-stage: #e9ebee;
   --hui-on-accent: #fff;
-  --hui-panel-shadow: 0 24px 56px rgba(37, 30, 78, .10), 0 2px 7px rgba(37, 30, 78, .05);
-  --hui-popover-shadow: 0 24px 56px rgba(37, 30, 78, .10), 0 2px 7px rgba(37, 30, 78, .05);
+  --hui-panel-shadow: 0 10px 30px rgba(37, 30, 78, .10), 0 2px 6px rgba(37, 30, 78, .05);
+  --hui-popover-shadow: 0 10px 30px rgba(37, 30, 78, .10), 0 2px 6px rgba(37, 30, 78, .05);
   --hui-ind-shadow: 0 1px 3px rgba(24, 24, 27, .06), 0 2px 5px rgba(24, 24, 27, .04);
   --hui-info: #597dcc;
   --hui-success: #338768;
@@ -50,8 +50,8 @@ html[data-theme="dark"] {
   --hui-surface: #141417;
   --hui-stage: #18181c;
   --hui-on-accent: #141417;
-  --hui-panel-shadow: 0 16px 44px rgba(0, 0, 0, .32), 0 3px 10px rgba(0, 0, 0, .12);
-  --hui-popover-shadow: 0 16px 44px rgba(0, 0, 0, .32), 0 3px 10px rgba(0, 0, 0, .12);
+  --hui-panel-shadow: 0 10px 30px rgba(0, 0, 0, .35), 0 2px 6px rgba(0, 0, 0, .18);
+  --hui-popover-shadow: 0 10px 30px rgba(0, 0, 0, .35), 0 2px 6px rgba(0, 0, 0, .18);
   --hui-ind-shadow: 0 1px 3px rgba(0, 0, 0, .4);
   --hui-info: #8aa8ee;
   --hui-success: #34d399;
