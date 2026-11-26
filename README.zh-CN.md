@@ -8,9 +8,9 @@
 
 ![发送消息并等待回复](assets/screenshots/chat-send-demo.gif)
 
-*在 Web 对话中点击发送，回复会带上知识来源和执行轨迹。仅使用演示数据。*
+*在 Web 对话中点击发送，回复会带上知识来源和执行轨迹。仅使用演示数据。下方 13 秒演示视频包含这两段动效。*
 
-[观看完整演示视频（MP4，13 秒）](assets/cairn-demo.mp4)
+https://github.com/user-attachments/assets/9ec89e2c-6277-4561-9cc9-df7119c58425
 
 Cairn 是运行在 Debian 服务器上的个人 Agent。通过 Web、CLI 或消息客户端聊天、管理个人信息和处理代码。关闭客户端后，服务器上的对话和任务仍会继续运行。
 
