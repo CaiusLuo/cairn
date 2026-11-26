@@ -9,10 +9,9 @@
 ![Sending a message and watching the reply arrive](assets/screenshots/chat-send-demo.gif)
 
 *Send a message in Web chat and the reply arrives with knowledge sources and an
-execution trace. Demo data only. The 13-second video below covers both
-interactions.*
+execution trace. Demo data only. The video below tours the workbench.*
 
-https://github.com/user-attachments/assets/9ec89e2c-6277-4561-9cc9-df7119c58425
+https://github.com/user-attachments/assets/c75649a3-4348-4791-ba73-ee92334bbcfe
 
 Cairn is a personal Agent that runs on a Debian server. Use Web, CLI or messaging
 clients to chat, manage personal information and work on code. The server keeps
