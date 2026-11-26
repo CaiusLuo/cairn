@@ -303,21 +303,24 @@ class PersonalMemoryService:
             return []
         tokens = self._search_tokens(normalized)
         facts: list[tuple[str, str, str]] = []
+        seen_facts: set[str] = set()
         for line in self.store.read_memory_md().splitlines():
             stripped = line.strip()
             if stripped.startswith("- "):
-                facts.append(("MEMORY.md", "", self.redact(stripped[2:].strip())))
+                fact = self.redact(stripped[2:].strip())
+                key = self._normalize_fact(fact)
+                if key and key not in seen_facts:
+                    seen_facts.add(key)
+                    facts.append(("MEMORY.md", "", fact))
         for day in self.store.list_daily_days()[-31:]:
             for line in self.store.read_daily(day).splitlines():
                 stripped = line.strip()
                 if stripped.startswith("- text:") or stripped.startswith("- lesson:"):
-                    facts.append(
-                        (
-                            day.isoformat(),
-                            "",
-                            self.redact(stripped.split(":", 1)[1].strip()),
-                        )
-                    )
+                    fact = self.redact(stripped.split(":", 1)[1].strip())
+                    key = self._normalize_fact(fact)
+                    if key and key not in seen_facts:
+                        seen_facts.add(key)
+                        facts.append((day.isoformat(), "", fact))
         scored: list[tuple[int, str, str, str]] = []
         exact_match = False
         for source, date, fact in facts:
@@ -492,31 +495,52 @@ class PersonalMemoryService:
         clean = self.redact(" ".join(text.split()).strip())
         if not clean:
             raise ValueError("memory fact cannot be empty")
-        existing = self.store.read_memory_md()
-        if any(
-            self._normalize_fact(line.strip()[2:]) == self._normalize_fact(clean)
-            for line in existing.splitlines()
-            if line.strip().startswith("- ")
-        ):
-            return False
-        moment = now or self.clock()
-        if source is MemorySource.USER_EXPLICIT:
-            self.store.append_memory_md(
-                f"\n## Remembered {moment:%Y-%m-%d}\n"
-                f"- [user_explicit] {moment.date().isoformat()}: {clean[:2000]}\n"
+        with self.store.profile_lock():
+            existing = self.store.read_memory_md()
+            if any(
+                self._normalize_fact(line.strip()[2:]) == self._normalize_fact(clean)
+                for line in existing.splitlines()
+                if line.strip().startswith("- ")
+            ):
+                return False
+            moment = now or self.clock()
+            if source is MemorySource.USER_EXPLICIT:
+                self.store.append_memory_md(
+                    f"\n## Remembered {moment:%Y-%m-%d}\n"
+                    f"- [user_explicit] {moment.date().isoformat()}: {clean[:2000]}\n"
+                )
+            else:
+                self.store.append_daily(
+                    moment.date(),
+                    f"\n## {moment:%H:%M} candidate\n"
+                    f"- source: agent_inferred\n"
+                    f"- text: {clean[:2000]}\n",
+                )
+                self._append_inferred_fact(clean, moment)
+            self.store.append_audit(
+                f"\n## {moment:%Y-%m-%d %H:%M:%S} remembered fact\n"
+                f"- source: {source.value}\n- text: {clean[:2000]}\n"
             )
-        else:
-            self.store.append_daily(
-                moment.date(),
-                f"\n## {moment:%H:%M} candidate\n"
-                f"- source: agent_inferred\n"
-                f"- text: {clean[:2000]}\n",
-            )
-        self.store.append_audit(
-            f"\n## {moment:%Y-%m-%d %H:%M:%S} remembered fact\n"
-            f"- source: {source.value}\n- text: {clean[:2000]}\n"
-        )
         return True
+
+    def _append_inferred_fact(self, text: str, moment: datetime) -> None:
+        """Keep inferred facts durable under one stable section."""
+        self.store.ensure_initialized()
+        existing = self.store.read_memory_md().rstrip()
+        last_header = next(
+            (
+                line.strip()
+                for line in reversed(existing.splitlines())
+                if line.strip().startswith("## ")
+            ),
+            "",
+        )
+        fact = f"- [agent_inferred] {moment.date().isoformat()}: {text[:2000]}"
+        if last_header == "## Learned":
+            updated = f"{existing}\n{fact}\n"
+        else:
+            updated = f"{existing}\n\n## Learned\n{fact}\n"
+        self.store.write_memory_md(updated)
 
     def forget_fact(self, query: str, *, now: datetime | None = None) -> bool:
         with self.store.profile_lock():

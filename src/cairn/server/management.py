@@ -37,7 +37,7 @@ from cairn.memory.commands import MemoryController
 from cairn.memory.journal import TaskJournal
 from cairn.memory.service import PersonalMemoryService
 from cairn.memory.store import PersonalMemoryStore
-from cairn.memory.tools import personal_memory_tools
+from cairn.memory.tools import MEMORY_POLICY, personal_memory_tools
 from cairn.scheduling.commands import ScheduleController
 from cairn.scheduling.store import ScheduleStore
 from cairn.scheduling.tools import (
@@ -1074,6 +1074,7 @@ class ServerControls:
             )
             for tool in personal_memory_tools(self.memory):
                 agent.tools.register_tool(tool)
+            agent.system_prompt += "\n\n" + MEMORY_POLICY
         # Knowledge is an explicit, owner-only read capability. It never
         # injects saved clip bodies into unrelated conversations.
         if personal and self.knowledge_store is not None:

@@ -73,6 +73,7 @@ def agent_with_registry() -> tuple[Agent, ToolRegistry]:
         SimpleNamespace(
             tools=registry,
             personal_context="",
+            system_prompt="Assistant.",
             skill_library=None,
         ),
     )
@@ -111,9 +112,22 @@ def test_allowed_sender_gets_no_personal_memory_or_skills() -> None:
     # the host's memory service at all.
     controls().configure_agent(agent, task)
     assert agent.personal_context == ""
+    assert "memory_remember" not in registry.tools
+    assert "memory_remember" not in agent.system_prompt
     assert agent.skill_library is None
     assert "read_skill" not in registry.tools
     assert "bash" in registry.tools  # removed later by the execution gate
+
+
+def test_owner_gets_proactive_memory_policy(tmp_path: Path) -> None:
+    owner = controls()
+    owner.workspace = tmp_path
+    owner.memory = PersonalMemoryService(PersonalMemoryStore(tmp_path / "agent"))
+    agent, registry = agent_with_registry()
+    owner.configure_agent(agent, channel_task("owner"))
+    assert "memory_remember" in registry.tools
+    assert "memory_search" in registry.tools
+    assert "memory_remember" in agent.system_prompt
 
 
 def test_owner_gets_skills_but_direct_controls_are_unused_for_guests(

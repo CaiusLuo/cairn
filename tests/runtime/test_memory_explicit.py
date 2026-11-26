@@ -36,7 +36,10 @@ def test_model_cannot_forge_explicit_without_user_text(tmp_path: Path) -> None:
         )
     )
     assert result.exit_code == 0
-    assert "inferred fact" not in store.read_memory_md()
+    memory = store.read_memory_md()
+    assert "inferred fact" in memory
+    assert "[agent_inferred]" in memory
+    assert "[user_explicit]" not in memory
     assert any(
         "inferred fact" in body
         for _, body in store.recent_daily_entries(service.clock())
@@ -74,7 +77,22 @@ def test_exact_fact_without_memory_request_stays_inferred(tmp_path: Path) -> Non
         )
     )
     assert result.exit_code == 0
-    assert "I like tea" not in store.read_memory_md()
+    memory = store.read_memory_md()
+    assert "I like tea" in memory
+    assert "[agent_inferred]" in memory
+    assert "[user_explicit]" not in memory
+
+
+def test_inferred_facts_share_one_learned_section(tmp_path: Path) -> None:
+    store = PersonalMemoryStore(tmp_path / "agent")
+    service = PersonalMemoryService(store)
+    tool = MemoryRememberTool(service)
+    for fact in ("likes tea", "likes coffee"):
+        asyncio.run(tool.execute({"text": fact}))
+    memory = store.read_memory_md()
+    assert memory.count("## Learned") == 1
+    assert memory.count("[agent_inferred]") == 2
+    assert memory.count("likes tea") == 1
 
 
 def test_negative_memory_request_does_not_authorize_explicit(tmp_path: Path) -> None:

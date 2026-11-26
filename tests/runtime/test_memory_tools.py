@@ -46,3 +46,13 @@ def test_memory_tools_remember_search_correct_forget(tmp_path: Path) -> None:
 
     assert asyncio.run(forget.execute({"query": "short"})).exit_code == 0
     assert "short" not in service.store.read_memory_md()
+
+
+def test_inferred_fact_is_searchable_once(tmp_path: Path) -> None:
+    service = PersonalMemoryService(PersonalMemoryStore(tmp_path / "agent"))
+    remember = MemoryRememberTool(service)
+    search = MemorySearchTool(service)
+
+    assert asyncio.run(remember.execute({"text": "likes tea"})).exit_code == 0
+    found = asyncio.run(search.execute({"query": "tea"}))
+    assert found.stdout.count("likes tea") == 1

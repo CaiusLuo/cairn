@@ -200,7 +200,10 @@ recoverable result.*
 | `/schedule history JOB_ID` | Inspect reminder results and delivery failures |
 
 Web provides chat, development tasks, run history and recovery controls.
-Settings manages memory, schedules and WeChat. Save clips in Knowledge, then ask
+Settings manages memory, schedules and WeChat. The owner's Agent saves stable
+personal facts and preferences automatically as it learns them; review, correct
+or forget them in Settings. It does not save credentials or one-off task state.
+Save clips in Knowledge, then ask
 questions such as “What is in my knowledge base?” or “Find my notes about X.”
 The owner's Agent reads clips on demand and cites their IDs; archived clips are
 excluded. Clips are not automatically added to every conversation or personal
