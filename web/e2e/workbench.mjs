@@ -52,7 +52,7 @@ async function send(text) {
 async function copyMessage(message, label) {
   await message.getByRole("button", { name: label }).waitFor();
   await message.getByRole("button", { name: label }).click();
-  await message.getByRole("button", { name: "已复制" }).waitFor();
+  await message.locator(".wb-copy-status").filter({ hasText: "已复制" }).waitFor({ state: "attached" });
   return page.evaluate(() => (window.__clipboard ?? navigator.clipboard).readText());
 }
 async function waitForPath(path, timeout = 10000) {

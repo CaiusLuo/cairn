@@ -182,7 +182,9 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .wb-message.assistant > .cairn-mark { flex: none; margin-top: 3px; }
 .wb-message.assistant > div { min-width: 0; }
 .wb-message-body { min-width: 0; display: flex; flex-direction: column; }
-.wb-main .wb-message-copy { align-self: flex-end; width: 26px; height: 26px; margin-top: 2px; border: 0; padding: 0; background: transparent; }
+.wb-message-copy-wrap { position: relative; align-self: flex-end; display: inline-flex; }
+.wb-main .wb-message-copy { width: 26px; height: 26px; margin-top: 2px; border: 0; padding: 0; background: transparent; }
+.wb-copy-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .wb-message-copy[data-status="copied"] { color: var(--hui-success); }
 .wb-message-copy[data-status="failed"] { color: var(--hui-error); }
 .wb-markdown { min-width: 0; line-height: 1.65; overflow-wrap: anywhere; }

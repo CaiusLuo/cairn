@@ -18,6 +18,7 @@ function SettledTrace({ id }: { id: string }) {
 
 // Plain HTTP pages have no navigator.clipboard, so keep the textarea fallback.
 function legacyCopy(text: string) {
+  const previous = document.activeElement;
   const area = document.createElement("textarea");
   area.value = text;
   area.setAttribute("readonly", "");
@@ -30,6 +31,7 @@ function legacyCopy(text: string) {
     return false;
   } finally {
     area.remove();
+    if (previous instanceof HTMLElement) previous.focus({ preventScroll: true });
   }
 }
 
@@ -37,24 +39,33 @@ function CopyButton({ text, label: idleLabel }: { text: string; label: string })
   const [status, setStatus] = useState<"copied" | "failed" | null>(null);
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(timer.current), []);
+  function resetStatus() {
+    window.clearTimeout(timer.current);
+    setStatus(null);
+  }
   function flashStatus(next: "copied" | "failed") {
     setStatus(next);
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setStatus(null), 1800);
   }
   function fallbackCopy() {
+    resetStatus();
     flashStatus(legacyCopy(text) ? "copied" : "failed");
   }
   function copy() {
+    resetStatus();
     if (!navigator.clipboard?.writeText) return fallbackCopy();
     navigator.clipboard.writeText(text).then(() => flashStatus("copied"), fallbackCopy);
   }
-  const label = status === "copied" ? "已复制" : status === "failed" ? "复制失败" : idleLabel;
-  return <button type="button" className="icon-button wb-message-copy" data-status={status ?? undefined} aria-label={label} title={label} onClick={copy}>
-    {status === "copied"
-      ? <Icon name="check" size={14}/>
-      : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect width="12" height="12" x="9" y="9" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>}
-  </button>;
+  const title = status === "copied" ? "已复制" : status === "failed" ? "复制失败" : idleLabel;
+  return <span className="wb-message-copy-wrap">
+    <button type="button" className="icon-button wb-message-copy" data-status={status ?? undefined} aria-label={idleLabel} title={title} onClick={copy}>
+      {status === "copied"
+        ? <Icon name="check" size={14}/>
+        : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect width="12" height="12" x="9" y="9" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>}
+    </button>
+    <span className="wb-copy-status" role="status">{status === "copied" ? "已复制" : status === "failed" ? "复制失败" : ""}</span>
+  </span>;
 }
 
 type SteerPhase = "sending" | "accepted" | "applied" | "queued";
