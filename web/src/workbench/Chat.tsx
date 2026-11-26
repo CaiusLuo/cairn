@@ -33,7 +33,7 @@ function legacyCopy(text: string) {
   }
 }
 
-function CopyButton({ text }: { text: string }) {
+function CopyButton({ text, label: idleLabel }: { text: string; label: string }) {
   const [status, setStatus] = useState<"copied" | "failed" | null>(null);
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(timer.current), []);
@@ -49,7 +49,7 @@ function CopyButton({ text }: { text: string }) {
     if (!navigator.clipboard?.writeText) return fallbackCopy();
     navigator.clipboard.writeText(text).then(() => flashStatus("copied"), fallbackCopy);
   }
-  const label = status === "copied" ? "已复制" : status === "failed" ? "复制失败" : "复制回答";
+  const label = status === "copied" ? "已复制" : status === "failed" ? "复制失败" : idleLabel;
   return <button type="button" className="icon-button wb-message-copy" data-status={status ?? undefined} aria-label={label} title={label} onClick={copy}>
     {status === "copied"
       ? <Icon name="check" size={14}/>
@@ -394,10 +394,10 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
           </div> : <Markdown text={message.content!}/>;
           return <article key={message.knowledge?.run_id ?? index} className={`wb-message ${message.role}`}>
             {message.role === "assistant" && <CairnMark size={22}/>}
-            {message.role === "assistant" ? <div className="wb-message-body">{content}<CopyButton text={message.content!}/></div> : content}
+            <div className="wb-message-body">{content}<CopyButton text={message.content!} label={message.role === "assistant" ? "复制回答" : "复制提问"}/></div>
           </article>;
         })}
-        {active && run?.prompt && (messages.at(-1)?.role !== "user" || messages.at(-1)?.content !== run.prompt) && <article className="wb-message user"><Markdown text={run.prompt}/>{!!run.attachments?.length && <p className="wb-muted">附件：{attachmentNames(run.attachments)}</p>}</article>}
+        {active && run?.prompt && (messages.at(-1)?.role !== "user" || messages.at(-1)?.content !== run.prompt) && <article className="wb-message user"><div className="wb-message-body"><Markdown text={run.prompt}/>{!!run.attachments?.length && <p className="wb-muted">附件：{attachmentNames(run.attachments)}</p>}<CopyButton text={run.prompt} label="复制提问"/></div></article>}
         {active && <article className="wb-message assistant" aria-live="polite"><CairnMark size={22}/><div>
           {stream.events.length > 0 && <details className="wb-process" open={!stream.preview}><summary>正在处理 · {stream.events.length} 条活动</summary><Timeline events={stream.events} compact/></details>}
           {stream.preview ? <Markdown text={stream.preview}/> : <p className="wb-muted">{run?.status === "queued" ? "等待 Server 执行…" : "Cairn 正在处理…"}</p>}
