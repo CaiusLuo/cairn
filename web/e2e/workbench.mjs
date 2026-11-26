@@ -141,6 +141,10 @@ try {
     const copiedReply = page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first();
     await copiedReply.waitFor();
     assert.equal(await copiedReply.locator(".wb-message-copy").count(), 1);
+    const replyBox = await copiedReply.boundingBox();
+    const copyBox = await copiedReply.locator(".wb-message-copy").boundingBox();
+    assert(replyBox && copyBox);
+    assert(Math.abs(copyBox.x + copyBox.width - (replyBox.x + replyBox.width)) <= 1);
     assert.match(await copyMessage(copiedReply, "复制回答"), /离线共享对话已连接/);
     const copiedPrompt = page.locator(".wb-message.user").filter({ hasText: cliPrompt }).first();
     await copiedPrompt.waitFor();
