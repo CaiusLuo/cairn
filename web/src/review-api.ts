@@ -141,6 +141,7 @@ const FAILURE_TEXT: Record<string, string> = {
   request_id_conflict: "该请求编号此前对应了不同操作，请重新发起。",
   review_period_completed: "该周期已有完成报告；生成新版本需要明确重新生成。",
   review_period_not_ended: "该复盘周期尚未结束，暂时不能生成。",
+  review_no_content: "该周期没有可复盘的内容，未创建报告。",
   review_not_found: "复盘报告不存在或已被删除。",
   review_store_unavailable: "复盘存储暂时不可用，请稍后重试。",
   weekly_review_unavailable: "Server 未启用周报服务。",

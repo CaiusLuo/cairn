@@ -51,7 +51,6 @@ class FakeService:
         regenerate: bool = False,
         cutoff: Any = None,
         deliver: bool = False,
-        skip_when_empty: bool = False,
     ) -> Any:
         if self.fail is not None:
             raise self.fail
@@ -63,7 +62,6 @@ class FakeService:
                 "regenerate": regenerate,
                 "cutoff": cutoff,
                 "deliver": deliver,
-                "skip_when_empty": skip_when_empty,
             }
         )
         self._counter += 1
@@ -132,7 +130,6 @@ class GatedService(FakeService):
         regenerate: bool = False,
         cutoff: Any = None,
         deliver: bool = False,
-        skip_when_empty: bool = False,
     ) -> Any:
         self.started.set()
         await self.gate.wait()
@@ -143,7 +140,6 @@ class GatedService(FakeService):
             regenerate=regenerate,
             cutoff=cutoff,
             deliver=deliver,
-            skip_when_empty=skip_when_empty,
         )
 
 
@@ -260,7 +256,6 @@ def test_tick_generates_once_with_cutoff_and_delivery_intent(
                 "regenerate": False,
                 "cutoff": time(20, 30),
                 "deliver": True,
-                "skip_when_empty": True,
             }
         ]
         assert [row.status for row in settled] == [ReviewStatus.COMPLETED]

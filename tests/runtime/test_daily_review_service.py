@@ -26,7 +26,7 @@ from cairn.review.models import (
     SourceSnapshot,
     SourceTrust,
 )
-from cairn.review.service import NO_SOURCE_MESSAGES, DailyReviewService
+from cairn.review.service import DailyReviewService, ReviewNoContent
 from cairn.review.store import ReviewPeriodCompleted, ReviewStore
 from tests.support.pg import database_for
 
@@ -509,17 +509,14 @@ def test_report_source_snapshots_survive_clip_edits_and_archiving(
             assert old.source_snapshots[0].snapshot == original_snapshot
 
             knowledge.set_archived(clip.clip_id, archived=True)
-            archived = await service.generate_daily_review(
-                DAY, "snapshot-archived", timezone=TZ, regenerate=True
-            )
-            archived = await service.wait_for_review(archived.review_id)
-            assert archived.status is ReviewStatus.COMPLETED
-            assert archived.summary is not None
-            assert archived.summary.overview in NO_SOURCE_MESSAGES
-            assert archived.source_snapshots == ()
+            with pytest.raises(ReviewNoContent):
+                await service.generate_daily_review(
+                    DAY, "snapshot-archived", timezone=TZ, regenerate=True
+                )
             unchanged = await service.get_review(completed.review_id)
             assert unchanged is not None
             assert unchanged.source_snapshots[0].snapshot == original_snapshot
+            assert len(await service.list_reviews(review_type=ReviewType.DAILY)) == 2
             assert len(llm.calls) == 2
         finally:
             await service.close()
@@ -527,9 +524,7 @@ def test_report_source_snapshots_survive_clip_edits_and_archiving(
     asyncio.run(scenario())
 
 
-def test_budget_omitted_sources_are_not_reported_as_an_empty_day(
-    tmp_path: Path,
-) -> None:
+def test_budget_omitted_sources_create_no_report(tmp_path: Path) -> None:
     async def scenario() -> None:
         source = _source().model_copy(
             update={
@@ -545,14 +540,9 @@ def test_budget_omitted_sources_are_not_reported_as_an_empty_day(
             review_input=_input(sources=(source,)),
         )
         try:
-            stored = await service.generate_daily_review(
-                DAY, "budget-omitted", timezone=TZ
-            )
-            assert stored.status is ReviewStatus.COMPLETED
-            assert isinstance(stored.summary, DailyReview)
-            assert stored.summary.overview not in NO_SOURCE_MESSAGES
-            assert "预算" in stored.summary.overview
-            assert stored.summary.completed_activities == ()
+            with pytest.raises(ReviewNoContent):
+                await service.generate_daily_review(DAY, "budget-omitted", timezone=TZ)
+            assert await service.list_reviews(review_type=ReviewType.DAILY) == ()
             assert llm.calls == []
         finally:
             await service.close()
@@ -560,21 +550,14 @@ def test_budget_omitted_sources_are_not_reported_as_an_empty_day(
     asyncio.run(scenario())
 
 
-def test_no_sources_finishes_without_calling_the_model(tmp_path: Path) -> None:
+def test_no_sources_creates_no_review(tmp_path: Path) -> None:
     async def scenario() -> None:
         llm = FakeLLM(error=AssertionError("model must not be called"))
         service = _service(tmp_path, llm=llm, review_input=_input(sources=()))
         try:
-            stored = await service.generate_daily_review(DAY, "empty-day", timezone=TZ)
-            assert stored.status is ReviewStatus.COMPLETED
-            assert isinstance(stored.summary, DailyReview)
-            assert stored.summary.overview in NO_SOURCE_MESSAGES
-            assert stored.summary.completed_activities == ()
-            assert stored.summary.knowledge_insights == ()
-            assert stored.summary.problems == ()
-            assert stored.summary.recommendations == ()
-            assert stored.summary_markdown is not None
-            assert stored.summary.overview in stored.summary_markdown
+            with pytest.raises(ReviewNoContent):
+                await service.generate_daily_review(DAY, "empty-day", timezone=TZ)
+            assert await service.list_reviews(review_type=ReviewType.DAILY) == ()
             assert llm.calls == []
         finally:
             await service.close()
@@ -1018,9 +1001,7 @@ def test_scheduled_review_creates_delivery_outbox_on_completion(
     asyncio.run(scenario())
 
 
-def test_manual_review_and_no_source_review_delivery_policy(tmp_path: Path) -> None:
-    from cairn.review.models import ReviewDeliveryStatus
-
+def test_manual_review_and_empty_period_delivery_policy(tmp_path: Path) -> None:
     llm = FakeLLM()
     service = _service(tmp_path, llm=llm)
 
@@ -1038,13 +1019,11 @@ def test_manual_review_and_no_source_review_delivery_policy(tmp_path: Path) -> N
     )
 
     async def no_source() -> None:
-        review = await no_source_service.generate_daily_review(
-            DAY, "host-no-source", deliver=True
-        )
-        assert review.status is ReviewStatus.COMPLETED
-        delivery = no_source_service.store.get_delivery(review.review_id)
-        assert delivery is not None
-        assert delivery.status is ReviewDeliveryStatus.PENDING
+        with pytest.raises(ReviewNoContent):
+            await no_source_service.generate_daily_review(
+                DAY, "host-no-source", deliver=True
+            )
+        assert await no_source_service.list_reviews() == ()
         await no_source_service.close()
 
     asyncio.run(no_source())

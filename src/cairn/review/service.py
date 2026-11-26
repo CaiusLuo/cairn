@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import random
 from datetime import date, time
 from typing import Any, Protocol
 
@@ -36,13 +35,6 @@ TIMEOUT_SECONDS = 600.0
 MIN_OUTPUT_TOKENS = 32_768
 MAX_MODEL_OUTPUT_CHARS = 100_000
 MAX_MARKDOWN_CHARS = 40_000
-
-NO_SOURCE_MESSAGES = (
-    "这一天好像什么都没有捞到呢~",
-    "这一天安安静静, 没有沉淀下可复盘的内容~",
-    "这一天没有捞到可以复盘的东西, 先空着吧~",
-    "这一天风平浪静, 没有新的沉淀可以复盘~",
-)
 
 SOURCE_SYSTEM_PROMPT = """You write Cairn's daily review for one person.
 
@@ -117,7 +109,7 @@ class ReviewGenerationError(RuntimeError):
 
 
 class ReviewNoContent(RuntimeError):
-    """A scheduled period has no included source, so no report is created."""
+    """The period has no usable evidence, so no report is created."""
 
 
 class ReviewServiceBase:
@@ -184,26 +176,6 @@ class ReviewServiceBase:
             await asyncio.to_thread(self.store.fail, review_id, "generation_cancelled")
         self._tasks.clear()
         self._started = False
-
-    async def _finish_without_sources(
-        self,
-        review: StoredReview,
-        review_input: ReviewInput,
-        *,
-        request_delivery: bool = False,
-    ) -> StoredReview:
-        await asyncio.to_thread(self.store.mark_generating, review.review_id, None)
-        summary = self._insufficient_summary(review_input)
-        markdown = self._render_markdown(summary, review_input)
-        return await asyncio.to_thread(
-            self.store.complete,
-            review.review_id,
-            summary=summary,
-            summary_markdown=markdown,
-            model_id=None,
-            request_delivery=request_delivery,
-            delivery_target=self.delivery_target if request_delivery else None,
-        )
 
     def _ensure_generation(
         self,
@@ -319,9 +291,6 @@ class ReviewServiceBase:
     ) -> str:
         raise NotImplementedError
 
-    def _insufficient_summary(self, review_input: ReviewInput) -> ReviewSummary:
-        raise NotImplementedError
-
     @staticmethod
     def _extract_json(content: str) -> object:
         text = content.strip()
@@ -394,15 +363,14 @@ class DailyReviewService(ReviewServiceBase):
         regenerate: bool = False,
         cutoff: time | None = None,
         deliver: bool = False,
-        skip_when_empty: bool = False,
     ) -> StoredReview:
         """Create/reuse a review and schedule generation without awaiting it.
 
         ``cutoff`` is host-schedule policy, not user input: it keeps the review
         window contiguous across days. ``deliver`` writes a pending WeChat
         delivery row atomically with completion; it never waits for login.
-        ``skip_when_empty`` lets the host schedule leave a quiet period
-        unrecorded instead of persisting a no-source report.
+        A period with no included source raises ``ReviewNoContent`` instead of
+        creating an empty report.
         """
         if not self._started:
             await self.start()
@@ -418,7 +386,7 @@ class DailyReviewService(ReviewServiceBase):
             review_input = await asyncio.to_thread(
                 self.collector.collect_daily, day, timezone, cutoff=cutoff
             )
-        if skip_when_empty and not review_input.included_sources:
+        if not review_input.included_sources:
             raise ReviewNoContent
         result = await asyncio.to_thread(
             self.store.create_or_get,
@@ -437,14 +405,6 @@ class DailyReviewService(ReviewServiceBase):
             regenerate=regenerate,
         )
         if result.created:
-            if not review_input.included_sources:
-                # Nothing to summarize: finish locally with a short, explicit
-                # no-source note. This avoids a pointless model call.
-                return await self._finish_without_sources(
-                    result.review,
-                    review_input,
-                    request_delivery=deliver,
-                )
             self._ensure_generation(
                 result.review.review_id,
                 review_input,
@@ -586,19 +546,6 @@ class DailyReviewService(ReviewServiceBase):
             }
         )
 
-    def _insufficient_summary(self, review_input: ReviewInput) -> DailyReview:
-        if review_input.sources:
-            return DailyReview(
-                date=review_input.date,
-                overview=("当天有来源, 但都因输入预算限制未纳入, 无法生成复盘。"),
-                confidence_notes=("所有来源均被预算省略。",),
-            )
-        return DailyReview(
-            date=review_input.date,
-            overview=random.choice(NO_SOURCE_MESSAGES),
-            confidence_notes=("当天没有收集到任何可复盘的来源。",),
-        )
-
     def _render_markdown(
         self, summary: ReviewSummary, review_input: ReviewInput
     ) -> str:
@@ -650,10 +597,10 @@ def render_markdown(summary: DailyReview, review_input: ReviewInput) -> str:
 
 
 __all__ = [
-    "NO_SOURCE_MESSAGES",
     "DailyReviewService",
     "ReviewCollector",
     "ReviewGenerationError",
+    "ReviewNoContent",
     "ReviewServiceBase",
     "render_markdown",
 ]

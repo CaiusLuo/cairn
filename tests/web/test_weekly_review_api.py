@@ -6,7 +6,7 @@ import asyncio
 import json
 import threading
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from datetime import time as wall_time
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,7 +29,7 @@ from cairn.review.models import (
     SourceSnapshot,
     SourceTrust,
 )
-from cairn.review.service import DailyReviewService
+from cairn.review.service import DailyReviewService, ReviewNoContent
 from cairn.review.store import ReviewStore
 from cairn.review.weekly import WeeklyReviewService, week_period
 from tests.support.pg import database_for
@@ -41,18 +41,43 @@ TZ = "Asia/Shanghai"
 
 
 class NoopDailyCollector:
+    """A daily input with one source, so manual daily generation is accepted."""
+
     def collect_daily(
         self, day: date, timezone: str, *, cutoff: Any = None
     ) -> ReviewInput:
         zone = ZoneInfo(timezone)
+        if cutoff is None:
+            start = datetime.combine(day, wall_time.min, tzinfo=zone)
+            end = start + timedelta(days=1)
+        else:
+            end = datetime.combine(day, cutoff, tzinfo=zone)
+            start = end - timedelta(days=1)
+        source = SourceSnapshot(
+            source_type="development_task",
+            source_id="task-1",
+            content_hash="a" * 64,
+            occurred_at=start.isoformat(),
+            trust=SourceTrust.SYSTEM_RECEIPT,
+            may_prove_completion=True,
+            verification="business_status=done",
+            snapshot='{"task_id":"task-1"}',
+        )
         return ReviewInput.build(
             review_type=ReviewType.DAILY,
             day=day,
             timezone=timezone,
-            period_start=datetime.combine(day, wall_time.min, tzinfo=zone),
-            period_end=datetime.combine(day, wall_time.max, tzinfo=zone),
-            sources=(),
-            collection_status=(),
+            period_start=start,
+            period_end=end,
+            sources=(source,),
+            collection_status=(
+                SourceCollectionStatus(
+                    source_type="development_task",
+                    status=SourceCollectionState.OK,
+                    discovered=1,
+                    included=1,
+                ),
+            ),
             budget_chars=60_000,
         )
 
@@ -315,6 +340,39 @@ def test_weekly_review_rejects_a_period_that_has_not_ended(tmp_path: Path) -> No
         assert response.json() == {"error": "review_period_not_ended"}
 
 
+def test_empty_week_returns_no_content_and_creates_no_review(
+    tmp_path: Path,
+) -> None:
+    gate = threading.Event()
+    gate.set()
+    web, weekly, _store = _app(tmp_path, gate)
+    period = week_period(WEEK, timezone=TZ)
+    weekly.collector = FakeWeeklyCollector(
+        ReviewInput.build(
+            review_type=ReviewType.WEEKLY,
+            day=period.day,
+            timezone=TZ,
+            period_start=period.period_start,
+            period_end=period.period_end,
+            sources=(),
+            collection_status=(),
+            budget_chars=200_000,
+        )
+    )
+    with TestClient(web, base_url=ORIGIN) as client:
+        _login(client)
+        response = client.post(
+            "/api/knowledge/reviews/weekly",
+            json={"week_id": WEEK, "request_id": "weekly-empty"},
+            headers={"Origin": ORIGIN},
+        )
+        assert response.status_code == 409
+        assert response.json() == {"error": "review_no_content"}
+        assert client.get("/api/knowledge/reviews?type=weekly").json() == {
+            "reviews": []
+        }
+
+
 def test_weekly_schedule_retry_entry_reports_disabled_and_not_failed(
     tmp_path: Path,
 ) -> None:
@@ -360,6 +418,18 @@ def test_weekly_schedule_retry_entry_reports_disabled_and_not_failed(
         )
         assert reused_id.status_code == 409
         assert reused_id.json() == {"error": "retry_request_conflict"}
+
+        async def no_content(_week_id: str, _request_id: str) -> None:
+            raise ReviewNoContent
+
+        web.state.weekly_review_schedule = SimpleNamespace(retry_failed=no_content)
+        quiet = client.post(
+            "/api/knowledge/reviews/schedule/weekly/retry",
+            json={"week_id": WEEK, "request_id": "retry-empty"},
+            headers={"Origin": ORIGIN},
+        )
+        assert quiet.status_code == 409
+        assert quiet.json() == {"error": "review_no_content"}
 
 
 async def _none() -> None:

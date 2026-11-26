@@ -20,6 +20,7 @@ from cairn.review.models import (
     ReviewType,
     SourceCollectionState,
     SourceCollectionStatus,
+    WeeklyReview,
 )
 from cairn.review.store import ReviewStore
 from cairn.review.weekly import WeeklyReviewService, week_period
@@ -54,7 +55,6 @@ class FakeWeeklyService:
         period_end: datetime | None = None,
         deliver: bool = False,
         reuse_completed: bool = False,
-        skip_when_empty: bool = False,
     ) -> Any:
         self.calls.append(
             {
@@ -65,7 +65,6 @@ class FakeWeeklyService:
                 "period_end": period_end,
                 "deliver": deliver,
                 "reuse_completed": reuse_completed,
-                "skip_when_empty": skip_when_empty,
             }
         )
         self._counter += 1
@@ -228,7 +227,6 @@ def test_tick_generates_once_and_delivers_only_the_current_week(tmp_path: Path) 
                 "period_end": week_period("2026-W03", timezone=TZ).period_end,
                 "deliver": True,
                 "reuse_completed": True,
-                "skip_when_empty": True,
             }
         ]
         assert [row.status for row in settled] == [ReviewStatus.COMPLETED]
@@ -385,17 +383,48 @@ def test_schedule_delivers_a_manual_report_created_before_the_tick(
     tmp_path: Path,
 ) -> None:
     reviews = ReviewStore(KnowledgeStore(database_for(tmp_path)))
+    period = week_period("2026-W03", timezone=TZ)
+    review_input = ReviewInput.build(
+        review_type=ReviewType.WEEKLY,
+        day=period.day,
+        timezone=TZ,
+        period_start=period.period_start,
+        period_end=period.period_end,
+        sources=(),
+        collection_status=(),
+        budget_chars=60_000,
+    )
+    created = reviews.create_or_get(
+        request_id="manual-weekly",
+        review_type=ReviewType.WEEKLY,
+        day=period.day,
+        period_start=period.period_start.isoformat(),
+        period_end=period.period_end.isoformat(),
+        timezone=TZ,
+        input_fingerprint=review_input.input_fingerprint,
+        source_manifest=(),
+        collection_status=(),
+    )
+    reviews.mark_generating(created.review.review_id, "test-model")
+    manual = reviews.complete(
+        created.review.review_id,
+        summary=WeeklyReview(
+            week_id="2026-W03",
+            period_start=period.period_start,
+            period_end=period.period_end,
+            overview="Manual weekly report.",
+        ),
+        summary_markdown="# Manual weekly report.",
+        model_id="test-model",
+    )
+    assert reviews.get_delivery(manual.review_id) is None
+
     service = WeeklyReviewService(
         store=reviews,
         collector=EmptyWeeklyCollector(),
         llm=None,
         delivery_target=DeliveryTarget(recipient="owner"),
     )
-    manual = asyncio.run(
-        service.generate_weekly_review("2026-W03", "manual-weekly", timezone=TZ)
-    )
-    assert reviews.get_delivery(manual.review_id) is None
-
     coordinator = WeeklyReviewScheduleCoordinator(
         service=service,
         store=ScheduleStore(database_for(tmp_path)),

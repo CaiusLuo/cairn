@@ -29,6 +29,7 @@ from cairn.review.models import (
     SourceTrust,
     WeeklyReview,
 )
+from cairn.review.service import ReviewNoContent
 from cairn.review.store import ReviewPeriodCompleted, ReviewStore
 from cairn.review.weekly import (
     ReviewPeriodNotEnded,
@@ -526,9 +527,7 @@ def test_weekly_collector_uses_the_last_occurrence_when_a_hash_repeats(
     assert "task-aba" in review_input.completion_source_ids
 
 
-def test_identity_only_week_ends_with_an_explicit_insufficient_note(
-    tmp_path: Path,
-) -> None:
+def test_identity_only_week_creates_no_review(tmp_path: Path) -> None:
     period = week_period(WEEK, timezone=TZ)
     source = WeeklySourceCollector._identity_source(
         _task_source("task-identity").manifest_entry()
@@ -537,18 +536,16 @@ def test_identity_only_week_ends_with_an_explicit_insufficient_note(
     service, _ = _service(tmp_path, _weekly_input(period, (source,)), llm=llm)
 
     async def scenario() -> Any:
-        created = await service.generate_weekly_review(
-            WEEK, "weekly-identity", timezone=TZ
-        )
-        await service.close()
-        return created
+        try:
+            with pytest.raises(ReviewNoContent):
+                await service.generate_weekly_review(
+                    WEEK, "weekly-identity", timezone=TZ
+                )
+            return await service.list_reviews(review_type=ReviewType.WEEKLY)
+        finally:
+            await service.close()
 
-    created = asyncio.run(scenario())
-    assert created.status is ReviewStatus.COMPLETED
-    assert isinstance(created.summary, WeeklyReview)
-    assert "身份记录" in created.summary.overview
-    assert created.summary.confidence_notes
-    assert created.summary.progress == ()
+    assert asyncio.run(scenario()) == ()
     assert llm.calls == []
 
 
@@ -750,25 +747,20 @@ def test_progress_without_original_completion_evidence_fails(tmp_path: Path) -> 
     assert settled.error == "fabricated_completion"
 
 
-def test_week_without_sources_completes_with_an_explicit_no_record_note(
-    tmp_path: Path,
-) -> None:
+def test_week_without_sources_creates_no_review(tmp_path: Path) -> None:
     period = week_period(WEEK, timezone=TZ)
     llm = FakeLLM()
     service, _ = _service(tmp_path, _weekly_input(period, ()), llm=llm)
 
     async def scenario() -> Any:
-        created = await service.generate_weekly_review(
-            WEEK, "weekly-empty", timezone=TZ
-        )
-        await service.close()
-        return created
+        try:
+            with pytest.raises(ReviewNoContent):
+                await service.generate_weekly_review(WEEK, "weekly-empty", timezone=TZ)
+            return await service.list_reviews(review_type=ReviewType.WEEKLY)
+        finally:
+            await service.close()
 
-    created = asyncio.run(scenario())
-    assert created.status is ReviewStatus.COMPLETED
-    assert isinstance(created.summary, WeeklyReview)
-    assert "没有收集到可复盘的" in created.summary.overview
-    assert created.summary.confidence_notes
+    assert asyncio.run(scenario()) == ()
     assert llm.calls == []
 
 
@@ -806,7 +798,7 @@ def test_weekly_review_accepts_the_cutoff_moment_and_later(tmp_path: Path) -> No
     ):
         service, _ = _service(
             tmp_path / str(index),
-            _weekly_input(period, ()),
+            _weekly_input(period, (_task_source("task-1"),)),
             clock=lambda moment=moment: moment,
         )
 
@@ -816,8 +808,9 @@ def test_weekly_review_accepts_the_cutoff_moment_and_later(tmp_path: Path) -> No
             created = await service.generate_weekly_review(
                 WEEK, f"weekly-ended-{index}", timezone=TZ
             )
+            settled = await service.wait_for_review(created.review_id)
             await service.close()
-            return created
+            return settled
 
         assert asyncio.run(scenario()).status is ReviewStatus.COMPLETED
 

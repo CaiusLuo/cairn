@@ -30,7 +30,7 @@ from cairn.review.models import (
     SourceSnapshot,
     SourceTrust,
 )
-from cairn.review.service import DailyReviewService
+from cairn.review.service import DailyReviewService, ReviewNoContent
 from cairn.review.store import ReviewStore
 from tests.support.pg import database_for
 
@@ -71,6 +71,27 @@ def _review_input(
                 status=SourceCollectionState.OK,
                 discovered=1,
                 included=1,
+            ),
+        ),
+        budget_chars=60_000,
+    )
+
+
+def _empty_input() -> ReviewInput:
+    start = datetime(DAY.year, DAY.month, DAY.day, tzinfo=ZoneInfo(TZ))
+    return ReviewInput.build(
+        review_type=ReviewType.DAILY,
+        day=DAY,
+        timezone=TZ,
+        period_start=start,
+        period_end=start + timedelta(days=1),
+        sources=(),
+        collection_status=(
+            SourceCollectionStatus(
+                source_type="development_run",
+                status=SourceCollectionState.EMPTY,
+                discovered=0,
+                included=0,
             ),
         ),
         budget_chars=60_000,
@@ -356,6 +377,22 @@ def test_create_poll_list_detail_replay_and_regenerate(tmp_path: Path) -> None:
         assert len(client.get("/api/knowledge/reviews").json()["reviews"]) == 2
 
 
+def test_empty_period_returns_no_content_and_creates_no_review(
+    tmp_path: Path,
+) -> None:
+    web, _service, _store = _app(tmp_path, collector=FakeCollector(_empty_input()))
+    with TestClient(web, base_url=ORIGIN) as client:
+        _login(client)
+        response = client.post(
+            "/api/knowledge/reviews/daily",
+            json={"date": DAY.isoformat(), "request_id": "api-empty"},
+            headers={"Origin": ORIGIN},
+        )
+        assert response.status_code == 409
+        assert response.json() == {"error": "review_no_content"}
+        assert client.get("/api/knowledge/reviews").json() == {"reviews": []}
+
+
 def test_read_only_mode_does_not_expose_review_routes(tmp_path: Path) -> None:
     web, _service, _store = _app(tmp_path, auth=False)
     with TestClient(web, base_url=ORIGIN) as client:
@@ -634,6 +671,21 @@ def test_scheduled_failed_period_retry_is_explicit(tmp_path: Path) -> None:
         )
         assert missing.status_code == 409
         assert missing.json() == {"error": "review_day_not_failed"}
+
+        class NoContent(FakeSchedule):
+            async def retry_failed(
+                self, day: date, request_id: str | None = None
+            ) -> Any:
+                raise ReviewNoContent
+
+        web.state.review_schedule = NoContent()
+        quiet = client.post(
+            "/api/knowledge/reviews/schedule/retry",
+            json=body,
+            headers={"Origin": ORIGIN},
+        )
+        assert quiet.status_code == 409
+        assert quiet.json() == {"error": "review_no_content"}
 
     with TestClient(web, base_url=ORIGIN) as anonymous:
         assert anonymous.post(

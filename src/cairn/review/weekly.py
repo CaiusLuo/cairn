@@ -205,7 +205,6 @@ class WeeklyReviewService(ReviewServiceBase):
         period_end: datetime | None = None,
         deliver: bool = False,
         reuse_completed: bool = False,
-        skip_when_empty: bool = False,
     ) -> StoredReview:
         """Create/reuse a weekly report and schedule model work in background.
 
@@ -213,8 +212,8 @@ class WeeklyReviewService(ReviewServiceBase):
         cutoff that was due instead of re-deriving a possibly different week.
         ``reuse_completed`` lets the host schedule reuse an operator's completed
         default report instead of failing on an already-completed period.
-        ``skip_when_empty`` leaves a week without substantive evidence
-        unrecorded instead of persisting a no-record report.
+        A week without substantive evidence raises ``ReviewNoContent`` instead
+        of creating an empty report.
         """
         if not self._started:
             await self.start()
@@ -238,7 +237,7 @@ class WeeklyReviewService(ReviewServiceBase):
         review_input = await asyncio.to_thread(
             self.collector.collect_weekly, period, timezone
         )
-        if skip_when_empty and not self._has_substantive_evidence(review_input):
+        if not self._has_substantive_evidence(review_input):
             completed = (
                 await self._reuse_completed(review_input, timezone, deliver=deliver)
                 if reuse_completed
@@ -274,12 +273,6 @@ class WeeklyReviewService(ReviewServiceBase):
                 raise
             return completed
         if result.created:
-            if not self._has_substantive_evidence(review_input):
-                return await self._finish_without_sources(
-                    result.review,
-                    review_input,
-                    request_delivery=deliver,
-                )
             self._ensure_generation(
                 result.review.review_id,
                 review_input,
@@ -442,24 +435,6 @@ class WeeklyReviewService(ReviewServiceBase):
             and source.snapshot
             and "identity_only" not in source.verification
             for source in review_input.included_sources
-        )
-
-    def _insufficient_summary(self, review_input: ReviewInput) -> WeeklyReview:
-        if not review_input.sources:
-            overview = "本周没有收集到可复盘的日报或原始记录。"
-            note = "没有可用来源; 这表示没有记录, 不代表没有活动。"
-        elif not review_input.included_sources:
-            overview = "本周有来源, 但都因输入预算限制未纳入, 无法生成周报。"
-            note = "所有来源均被预算省略。"
-        else:
-            overview = "本周只收集到来源身份记录, 缺少可验证正文, 无法生成周报。"
-            note = "仅有 identity/hash 的来源不构成活动或完成证据。"
-        return WeeklyReview(
-            week_id=iso_week_id(review_input.date),
-            period_start=review_input.period_start,
-            period_end=review_input.period_end,
-            overview=overview,
-            confidence_notes=(note,),
         )
 
     def _render_markdown(

@@ -294,7 +294,6 @@ class WeeklyReviewScheduleCoordinator:
                     period_end=period.period_end,
                     deliver=deliver,
                     reuse_completed=True,
-                    skip_when_empty=True,
                 )
             except ReviewNoContent:
                 # A quiet week leaves no report and no delivery; moving the

@@ -24,7 +24,7 @@ from cairn.review.models import (
     StoredReviewDelivery,
     WeeklyReview,
 )
-from cairn.review.service import DailyReviewService
+from cairn.review.service import DailyReviewService, ReviewNoContent
 from cairn.review.store import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
@@ -346,6 +346,8 @@ def review_routes(
             return _error(409, "request_id_conflict")
         except ReviewPeriodCompleted:
             return _error(409, "review_period_completed")
+        except ReviewNoContent:
+            return _error(409, "review_no_content")
         except ValueError:
             return _error(422, "invalid_review_request")
         except (OSError, PostgresError):
@@ -380,6 +382,8 @@ def review_routes(
             return _error(409, "review_period_not_ended")
         except ReviewPeriodCompleted:
             return _error(409, "review_period_completed")
+        except ReviewNoContent:
+            return _error(409, "review_no_content")
         except ValueError:
             return _error(422, "invalid_review_request")
         except (OSError, PostgresError):
@@ -457,6 +461,8 @@ def review_routes(
             return _error(503, "review_schedule_disabled")
         try:
             record = await coordinator.retry_failed(payload.day, payload.request_id)
+        except ReviewNoContent:
+            return _error(409, "review_no_content")
         except RuntimeError:
             return _error(503, "review_schedule_busy")
         except ValueError:
@@ -488,6 +494,8 @@ def review_routes(
             record = await coordinator.retry_failed(
                 payload.week_id.strip(), payload.request_id
             )
+        except ReviewNoContent:
+            return _error(409, "review_no_content")
         except RuntimeError:
             return _error(503, "review_schedule_busy")
         except ValueError:

@@ -304,7 +304,6 @@ class ReviewScheduleCoordinator:
                     timezone=self.timezone,
                     cutoff=self.cutoff,
                     deliver=deliver,
-                    skip_when_empty=True,
                 )
             except ReviewNoContent:
                 # A quiet day leaves no report and no delivery; moving the
