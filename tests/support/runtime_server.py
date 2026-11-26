@@ -18,14 +18,22 @@ class GatedModel(OfflineDevelopmentModel):
         gates = Path(os.environ["CAIRN_TEST_GATES"])
         phase = "after" if any(m.role == "tool" for m in messages) else "before"
         gate = gates / phase
-        if gate.exists():
-            (gates / (phase + ".entered")).touch()
-            while gate.exists():
-                await asyncio.sleep(0.02)
-        names = {tool["function"]["name"] for tool in tools or ()}
         last_user = next(
             (message for message in reversed(messages) if message.role == "user"), None
         )
+        # An empty gate pauses every Run; a gate holding text pauses only the
+        # Run whose latest user message is that text, so another Run that is
+        # still settling cannot consume this gate.
+        if gate.exists():
+            try:
+                wanted = gate.read_text(encoding="utf-8").strip()
+            except OSError:
+                wanted = ""
+            if not wanted or (last_user is not None and last_user.content == wanted):
+                (gates / (phase + ".entered")).touch()
+                while gate.exists():
+                    await asyncio.sleep(0.02)
+        names = {tool["function"]["name"] for tool in tools or ()}
         if (
             "knowledge_search" in names
             and last_user is not None

@@ -328,6 +328,12 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
     .at(-1);
   const title = detail.data?.conversation.title || detail.data?.conversation.initial_prompt;
   const messages = (history.data ?? []).filter(message => ["user", "assistant"].includes(message.role) && message.content);
+  const modelLabel = mode === "development"
+    ? config?.development_model ?? "Server 默认模型"
+    : config?.active_model ?? config?.conversation_model ?? "离线验收模型";
+  const modelTitle = config?.active_model
+    ? [config.active_provider, config.active_group, config.active_model].filter(Boolean).join(" / ")
+    : undefined;
   const form = <div className="composer-stack">
     {!!queue.length && <div className="queued-tray">
       {!auto && <p className="wb-muted">排队消息已暂停自动发送。</p>}
@@ -368,11 +374,10 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
       </div>}
       <textarea ref={composerInput} aria-label="消息" placeholder={mode === "development" ? "描述要完成的开发目标…" : steerable ? "输入以引导当前运行…" : "问 Cairn，或交给它一项工作…"} value={draft} maxLength={32000} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); sendDraft(); } }}/>
       <div className="composer-controls">
-        <span className="composer-harness"><Icon name="sparkles" size={15}/>Cairn Agent</span>
         <input ref={fileInput} type="file" multiple hidden onChange={event => void attachFiles(event.target.files)}/>
         <button className="composer-icon" type="button" aria-label="添加附件" title="添加附件（文本、PDF、Office 或 HTML）" disabled={mode === "development" || uploading || steering || attachments.length >= 5} onClick={() => fileInput.current?.click()}><Icon name={uploading ? "clock" : "doc"} size={16}/></button>
-        <label><Icon name="server" size={15}/><select aria-label="模型" disabled={mode === "development" || !modelOptions(config).length} value={mode === "development" ? "" : model} onChange={event => setModel(event.target.value)}>
-          <option value="">{mode === "development" ? config?.development_model ?? "Server 默认模型" : config?.active_model ? `${config.active_provider} / ${config.active_group} / ${config.active_model}` : config?.conversation_model ?? "离线验收模型"}</option>
+        <label title={modelTitle}><Icon name="server" size={15}/><select aria-label="模型" title={modelTitle} disabled={mode === "development" || !modelOptions(config).length} value={mode === "development" ? "" : model} onChange={event => setModel(event.target.value)}>
+          <option value="">{modelLabel}</option>
           {(config?.providers ?? []).map(provider => provider.groups.map(group => <optgroup key={`${provider.name}:${group.name}`} label={`${provider.name} · ${group.name}`}>
             {group.model_ids.map(item => <option key={modelKey(provider.name, group.name, item)} value={modelKey(provider.name, group.name, item)}>{item}</option>)}
           </optgroup>))}

@@ -5,7 +5,9 @@ import {
   readThemePreference,
   resolveTheme,
   storeThemePreference,
+  themeOrigin,
   transitionTheme,
+  type ThemeOrigin,
   type ThemePreference,
 } from "../theme";
 import { CairnLogo } from "./Brand";
@@ -30,8 +32,7 @@ export function href(view: View, params: Record<string, string> = {}) {
   return page + (query.size ? "?" + query : "");
 }
 
-const themeOrder: ThemePreference[] = ["light", "dark", "system"];
-const themeLabels: Record<ThemePreference, string> = { light: "亮色", dark: "暗色", system: "跟随系统" };
+const themeLabels: Record<ThemePreference, string> = { light: "亮色", dark: "暗色" };
 
 function mutationError(error: unknown, fallback: string) {
   if (!(error instanceof Error)) return fallback;
@@ -42,19 +43,14 @@ function mutationError(error: unknown, fallback: string) {
 export function useAppearance() {
   const [theme, setTheme] = useState<ThemePreference>(() => readThemePreference() ?? resolveTheme(null));
   useEffect(() => {
-    const system = matchMedia("(prefers-color-scheme: dark)");
-    const update = () => applyTheme(resolveTheme(theme, system.matches));
-    update();
-    if (theme !== "system") return;
-    system.addEventListener("change", update);
-    return () => system.removeEventListener("change", update);
+    applyTheme(theme);
   }, [theme]);
-  function chooseTheme(next: ThemePreference) {
+  function chooseTheme(next: ThemePreference, origin?: ThemeOrigin) {
     transitionTheme(() => {
-      applyTheme(resolveTheme(next));
+      applyTheme(next);
       setTheme(next);
       storeThemePreference(next);
-    });
+    }, origin);
   }
   return { theme, chooseTheme };
 }
@@ -167,7 +163,7 @@ export function Shell({ view, active, conversations, workspace, status, navigate
       <div className="rail-group">
         <button className="rail-link" aria-label="切换会话侧栏" aria-controls="workbench-sidebar" aria-expanded={narrow ? mobileOpen : !collapsed} title="切换会话侧栏" onClick={() => { if (narrow) setMobileOpen(value => !value); else { setCollapsed(!collapsed); localStorage.setItem("cairn-sidebar", collapsed ? "open" : "closed"); } }}><Icon name="panel-left" /></button>
         {link(href("settings"), "设置", "settings", view === "settings")}
-        <button className="rail-link" aria-label="切换主题" title={`当前主题：${themeLabels[theme]}（点击切换）`} onClick={() => chooseTheme(themeOrder[(themeOrder.indexOf(theme) + 1) % themeOrder.length])}><Icon name={theme === "system" ? "monitor" : theme === "dark" ? "moon" : "sun"} /></button>
+        <button className="rail-link" aria-label="切换主题" title={`当前主题：${themeLabels[theme]}（点击切换为${themeLabels[theme === "dark" ? "light" : "dark"]}）`} onClick={event => chooseTheme(theme === "dark" ? "light" : "dark", themeOrigin(event))}><Icon name={theme === "dark" ? "moon" : "sun"} /></button>
       </div>
     </nav>
     {mobileOpen && <button className="wb-scrim" aria-label="关闭会话侧栏" onClick={() => setMobileOpen(false)} />}

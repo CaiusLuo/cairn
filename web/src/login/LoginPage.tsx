@@ -8,6 +8,7 @@ import {
   readThemePreference,
   resolveTheme,
   storeThemePreference,
+  themeOrigin,
   transitionTheme,
   type ThemePreference,
 } from "../theme";
@@ -23,7 +24,6 @@ function warmWorkbench() {
 const themeOptions: { value: ThemePreference; label: string; icon: IconName }[] = [
   { value: "light", label: "Light theme", icon: "sun" },
   { value: "dark", label: "Dark theme", icon: "moon" },
-  { value: "system", label: "Follow system theme", icon: "monitor" },
 ];
 
 export function LoginPage() {
@@ -35,12 +35,7 @@ export function LoginPage() {
   const themeRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const system = matchMedia("(prefers-color-scheme: dark)");
-    const update = () => applyTheme(resolveTheme(theme, system.matches));
-    update();
-    if (theme !== "system") return;
-    system.addEventListener("change", update);
-    return () => system.removeEventListener("change", update);
+    applyTheme(theme);
   }, [theme]);
 
   useEffect(() => {
@@ -93,12 +88,13 @@ export function LoginPage() {
     };
   }, []);
 
-  function chooseTheme(next: ThemePreference) {
+  function chooseTheme(next: ThemePreference, event: React.MouseEvent<HTMLButtonElement>) {
+    if (next === theme) return;
     transitionTheme(() => {
-      applyTheme(resolveTheme(next, matchMedia("(prefers-color-scheme: dark)").matches));
+      applyTheme(next);
       setTheme(next);
       storeThemePreference(next);
-    });
+    }, themeOrigin(event));
   }
 
   async function submit(event: React.FormEvent) {
@@ -141,7 +137,7 @@ export function LoginPage() {
             aria-label={option.label}
             aria-pressed={theme === option.value}
             title={option.label}
-            onClick={() => chooseTheme(option.value)}
+            onClick={(event) => chooseTheme(option.value, event)}
           >
             <Icon name={option.icon} size={16} />
           </button>

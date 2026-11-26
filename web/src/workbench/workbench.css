@@ -11,6 +11,17 @@
   --rail: #0a0a0b;
   --selected: #26262c;
 }
+::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+::view-transition-new(root) {
+  clip-path: circle(0px at var(--theme-x, 50%) var(--theme-y, 50%));
+  animation: theme-reveal 520ms cubic-bezier(.16, 1, .3, 1) forwards;
+}
+@keyframes theme-reveal {
+  to { clip-path: circle(var(--theme-radius, 150vmax) at var(--theme-x, 50%) var(--theme-y, 50%)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-new(root) { animation: none; }
+}
 *, *::before, *::after { box-sizing: border-box; }
 body { margin: 0; }
 button, input, select, textarea { font: inherit; color: inherit; }
@@ -203,15 +214,15 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .wb-chat-compose { padding: 10px 24px 22px; width: min(100%, 912px); margin: auto; }
 .wb-composer {
   position: relative; border: 1px solid var(--hui-border-strong); border-radius: 16px; background: var(--hui-surface);
-  box-shadow: var(--hui-ind-shadow); padding: 10px 12px 9px; min-width: 0;
+  padding: 10px 12px 9px; min-width: 0;
 }
-.wb-composer:focus-within { border-color: color-mix(in srgb, var(--hui-accent) 60%, var(--hui-border)); box-shadow: 0 0 0 2px var(--hui-accent-soft), var(--hui-ind-shadow); }
+.wb-composer:focus-within { border-color: var(--hui-accent); }
 .wb-main .wb-composer textarea {
-  display: block; width: 100%; min-height: 80px; max-height: 190px; resize: vertical; padding: 6px; border: 0; background: transparent; outline: none;
+  display: block; width: 100%; min-height: 80px; max-height: 190px; resize: none; padding: 6px; border: 0; background: transparent; outline: none;
 }
 .wb-composer textarea::placeholder { color: var(--hui-muted); }
 .composer-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 11px; padding-left: 4px; }
-.composer-controls label, .composer-harness { display: flex; align-items: center; gap: 4px; min-width: 0; color: var(--hui-secondary); font-size: 13px; }
+.composer-controls label { display: flex; align-items: center; gap: 4px; min-width: 0; color: var(--hui-secondary); font-size: 13px; }
 .wb-main .composer-controls select { font-size: 13px; max-width: min(205px, 30vw); padding: 2px 4px; border: 0; background: transparent; }
 .attachment-tray { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 6px 8px; }
 .attachment-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 4px 6px 4px 8px; border: 1px solid var(--hui-border); border-radius: 9px; font-size: 12px; }
@@ -222,8 +233,9 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .composer-controls > .composer-icon:hover:enabled { background: var(--hui-accent-soft); color: var(--hui-text); }
 .composer-controls > .composer-icon:disabled { cursor: default; opacity: .45; }
 .composer-send { margin-left: auto; display: flex; gap: 5px; align-items: center; }
+.wb-main .composer-send .composer-icon { border-radius: 50%; }
 .wb-main .composer-send button { width: 36px; height: 36px; display: grid; place-items: center; padding: 0; border-radius: 10px; }
-.wb-main .composer-send .send-button { background: var(--hui-text); color: var(--hui-surface); border-color: transparent; }
+.wb-main .composer-send .send-button { background: var(--hui-text); color: var(--hui-surface); border-color: transparent; border-radius: 50%; }
 .wb-main .composer-send .send-button:hover:enabled { background: var(--hui-accent); color: var(--hui-on-accent); }
 .queued-tray, .submission-review {
   padding: 8px 10px; margin: 0 10px -5px; border: 1px solid var(--hui-border); border-radius: 12px 12px 0 0;
@@ -767,7 +779,6 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   .channels-dialog-body { padding: 0 18px 19px; }
 }
 @media (max-width: 520px) {
-  .composer-harness { display: none; }
   .composer-controls { gap: 5px; }
   .wb-main .composer-controls select { max-width: 128px; font-size: 11px; }
   .composer-controls label svg { display: none; }

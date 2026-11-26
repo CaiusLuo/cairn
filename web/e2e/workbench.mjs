@@ -290,7 +290,9 @@ try {
       const gates = process.env.CAIRN_WEB_E2E_GATES;
       const gate = join(gates, "before");
       const entered = join(gates, "before.entered");
-      writeFileSync(gate, "");
+      // Only the steering Run pauses on this gate; a preceding Run that is
+      // still settling must not consume it.
+      writeFileSync(gate, "Steered browser run");
       try {
         await page.goto(new URL("/chat.html", url).href);
         await page.getByRole("status").filter({ hasText: "Server 已连接" }).waitFor();
@@ -1435,12 +1437,16 @@ try {
     await shot("Cairn-workbench-run");
     const runUrl = page.url();
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole("link", { name: "对话", exact: true }).click();
-    // The toggle cycles light -> dark -> system; pin a known starting point.
+    await page.goto(chatUrl);
+    await page.getByRole("heading", { name: "CLI browser takeover" }).waitFor();
+    // The toggle cycles light -> dark; pin a known starting point.
     await page.evaluate(() => localStorage.setItem("cairn-theme", "light"));
     await page.reload();
+    await page.getByRole("heading", { name: "CLI browser takeover" }).waitFor();
     await page.getByRole("button", { name: "切换主题" }).click();
     await page.waitForSelector('html[data-theme="dark"]', { state: "attached" });
+    assert.match(await page.getByRole("button", { name: "切换主题" }).getAttribute("title") ?? "", /暗色.*亮色/);
+    assert(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--theme-radius").trim() !== ""));
     await assertNoOverflow();
     await shot("Cairn-workbench-mobile");
     const toggle = page.getByRole("button", { name: "切换会话侧栏" });
