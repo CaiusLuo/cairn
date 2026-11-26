@@ -54,7 +54,9 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   display: grid; place-items: center; height: 39px; width: 39px; border: 0; border-radius: 12px;
   color: var(--hui-muted); background: transparent; transition: color 150ms, background 150ms;
 }
-.rail-link[aria-current="page"], .rail-link:hover { background: var(--selected); color: var(--hui-text); }
+.rail-link[aria-current="page"] { background: transparent; color: var(--hui-accent); }
+.rail-link:hover { background: var(--selected); color: var(--hui-text); }
+.rail-link[aria-current="page"]:hover { color: var(--hui-accent); }
 .wb-side { overflow: hidden; padding-block: 14px; min-width: 0; }
 .wb-side-card {
   width: calc(304px - 10px); height: 100%; display: flex; flex-direction: column; gap: 10px; overflow: auto;
