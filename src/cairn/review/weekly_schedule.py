@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from psycopg import Error as PostgresError
 
 from cairn.review.models import ReviewStatus, StoredReview
-from cairn.review.service import TIMEOUT_SECONDS
+from cairn.review.service import TIMEOUT_SECONDS, ReviewNoContent
 from cairn.review.weekly import (
     DEFAULT_WEEKLY_CUTOFF,
     WeeklyReviewService,
@@ -294,7 +294,18 @@ class WeeklyReviewScheduleCoordinator:
                     period_end=period.period_end,
                     deliver=deliver,
                     reuse_completed=True,
+                    skip_when_empty=True,
                 )
+            except ReviewNoContent:
+                # A quiet week leaves no report and no delivery; moving the
+                # cursor past it keeps the next tick from retrying it.
+                self._save(
+                    last_attempt_week=period.week_id,
+                    last_status="skipped",
+                    last_error=None,
+                    next_retry_at=None,
+                )
+                return None
             except (OSError, PostgresError) as exc:
                 self._save(
                     last_error=f"{type(exc).__name__}: {exc}",

@@ -30,6 +30,7 @@ from cairn.review.models import (
 from cairn.review.service import (
     MAX_MARKDOWN_CHARS,
     ReviewGenerationError,
+    ReviewNoContent,
     ReviewServiceBase,
 )
 from cairn.review.store import ReviewPeriodCompleted
@@ -204,6 +205,7 @@ class WeeklyReviewService(ReviewServiceBase):
         period_end: datetime | None = None,
         deliver: bool = False,
         reuse_completed: bool = False,
+        skip_when_empty: bool = False,
     ) -> StoredReview:
         """Create/reuse a weekly report and schedule model work in background.
 
@@ -211,6 +213,8 @@ class WeeklyReviewService(ReviewServiceBase):
         cutoff that was due instead of re-deriving a possibly different week.
         ``reuse_completed`` lets the host schedule reuse an operator's completed
         default report instead of failing on an already-completed period.
+        ``skip_when_empty`` leaves a week without substantive evidence
+        unrecorded instead of persisting a no-record report.
         """
         if not self._started:
             await self.start()
@@ -234,6 +238,15 @@ class WeeklyReviewService(ReviewServiceBase):
         review_input = await asyncio.to_thread(
             self.collector.collect_weekly, period, timezone
         )
+        if skip_when_empty and not self._has_substantive_evidence(review_input):
+            completed = (
+                await self._reuse_completed(review_input, timezone, deliver=deliver)
+                if reuse_completed
+                else None
+            )
+            if completed is None:
+                raise ReviewNoContent
+            return completed
         create_args: dict[str, Any] = {
             "request_id": request_id,
             "review_type": review_input.review_type,
@@ -254,17 +267,11 @@ class WeeklyReviewService(ReviewServiceBase):
         except ReviewPeriodCompleted:
             if not reuse_completed:
                 raise
-            completed = await asyncio.to_thread(
-                self.store.latest_completed,
-                review_type=review_input.review_type,
-                period_start=review_input.period_start.isoformat(),
-                period_end=review_input.period_end.isoformat(),
-                timezone=timezone,
+            completed = await self._reuse_completed(
+                review_input, timezone, deliver=deliver
             )
             if completed is None:
                 raise
-            if deliver:
-                await self.ensure_delivery(completed.review_id)
             return completed
         if result.created:
             if not self._has_substantive_evidence(review_input):
@@ -281,6 +288,20 @@ class WeeklyReviewService(ReviewServiceBase):
         elif deliver and result.review.status is ReviewStatus.COMPLETED:
             await self.ensure_delivery(result.review.review_id)
         return result.review
+
+    async def _reuse_completed(
+        self, review_input: ReviewInput, timezone: str, *, deliver: bool
+    ) -> StoredReview | None:
+        completed = await asyncio.to_thread(
+            self.store.latest_completed,
+            review_type=review_input.review_type,
+            period_start=review_input.period_start.isoformat(),
+            period_end=review_input.period_end.isoformat(),
+            timezone=timezone,
+        )
+        if completed is not None and deliver:
+            await self.ensure_delivery(completed.review_id)
+        return completed
 
     def _messages(self, review_input: ReviewInput) -> list[Message]:
         sources = [

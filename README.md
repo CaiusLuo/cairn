@@ -303,7 +303,9 @@ knowledge Clips and ready documents, and related older knowledge recalled from
 the document library. Conversation highlights and recalled knowledge are cited
 separately from verified completion, so background information is not presented
 as new work. Weekly reviews reuse the period's daily reports and fill missing
-days from raw records.
+days from raw records. A scheduled day or week with no conversations, knowledge
+content, documents or other recorded activity creates no report; the scan
+resumes when content exists.
 
 Weekly reviews run on Sunday. Scheduled reports are pushed to every enabled,
 running IM connection that has an owner identity and a previously accepted

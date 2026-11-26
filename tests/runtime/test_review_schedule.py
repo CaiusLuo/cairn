@@ -15,7 +15,6 @@ from cairn.knowledge.store import KnowledgeStore
 from cairn.review.models import (
     REVIEW_REQUEST_ID_MAX_LENGTH,
     DeliveryTarget,
-    ReviewDeliveryStatus,
     ReviewInput,
     ReviewStatus,
     ReviewType,
@@ -52,6 +51,7 @@ class FakeService:
         regenerate: bool = False,
         cutoff: Any = None,
         deliver: bool = False,
+        skip_when_empty: bool = False,
     ) -> Any:
         if self.fail is not None:
             raise self.fail
@@ -63,6 +63,7 @@ class FakeService:
                 "regenerate": regenerate,
                 "cutoff": cutoff,
                 "deliver": deliver,
+                "skip_when_empty": skip_when_empty,
             }
         )
         self._counter += 1
@@ -85,7 +86,7 @@ class FakeService:
 
 
 class EmptyCollector:
-    """A real service input with no sources: no provider call is needed."""
+    """A real service input with no sources: a scheduled scan creates no report."""
 
     def collect_daily(
         self, day: Any, timezone: str, *, cutoff: Any = None
@@ -131,6 +132,7 @@ class GatedService(FakeService):
         regenerate: bool = False,
         cutoff: Any = None,
         deliver: bool = False,
+        skip_when_empty: bool = False,
     ) -> Any:
         self.started.set()
         await self.gate.wait()
@@ -141,6 +143,7 @@ class GatedService(FakeService):
             regenerate=regenerate,
             cutoff=cutoff,
             deliver=deliver,
+            skip_when_empty=skip_when_empty,
         )
 
 
@@ -194,7 +197,7 @@ def test_cutoff_day_is_the_most_recent_2030_boundary(tmp_path: Path) -> None:
         assert due.isoformat() == expected
 
 
-def test_scheduled_review_completes_without_wechat_login(tmp_path: Path) -> None:
+def test_scheduled_empty_day_creates_no_review(tmp_path: Path) -> None:
     reviews = ReviewStore(KnowledgeStore(database_for(tmp_path)))
     service = DailyReviewService(
         store=reviews,
@@ -210,11 +213,11 @@ def test_scheduled_review_completes_without_wechat_login(tmp_path: Path) -> None
     )
 
     review = asyncio.run(coordinator.tick())
-    assert review is not None
-    assert review.status is ReviewStatus.COMPLETED
-    delivery = reviews.get_delivery(review.review_id)
-    assert delivery is not None
-    assert delivery.status is ReviewDeliveryStatus.PENDING
+
+    assert review is None
+    assert reviews.list_reviews(review_type=ReviewType.DAILY) == ()
+    assert coordinator.state["last_status"] == "skipped"
+    assert coordinator.state["last_attempt_day"] == AFTER_CUTOFF.date().isoformat()
 
 
 def test_generation_identity_includes_cutoff_and_timezone(tmp_path: Path) -> None:
@@ -257,6 +260,7 @@ def test_tick_generates_once_with_cutoff_and_delivery_intent(
                 "regenerate": False,
                 "cutoff": time(20, 30),
                 "deliver": True,
+                "skip_when_empty": True,
             }
         ]
         assert [row.status for row in settled] == [ReviewStatus.COMPLETED]

@@ -54,6 +54,7 @@ class FakeWeeklyService:
         period_end: datetime | None = None,
         deliver: bool = False,
         reuse_completed: bool = False,
+        skip_when_empty: bool = False,
     ) -> Any:
         self.calls.append(
             {
@@ -64,6 +65,7 @@ class FakeWeeklyService:
                 "period_end": period_end,
                 "deliver": deliver,
                 "reuse_completed": reuse_completed,
+                "skip_when_empty": skip_when_empty,
             }
         )
         self._counter += 1
@@ -119,6 +121,52 @@ def _seed_state(tmp_path: Path, **fields: Any) -> ScheduleStore:
     payload.update(fields)
     store.save_state("weekly-review-schedule", payload)
     return store
+
+
+class EmptyWeeklyCollector:
+    """A real weekly input with no sources: no report should be created."""
+
+    def collect_weekly(self, period: Any, timezone: str) -> ReviewInput:
+        return ReviewInput.build(
+            review_type=ReviewType.WEEKLY,
+            day=period.day,
+            timezone=timezone,
+            period_start=period.period_start,
+            period_end=period.period_end,
+            sources=(),
+            collection_status=(
+                SourceCollectionStatus(
+                    source_type="knowledge_clip",
+                    status=SourceCollectionState.EMPTY,
+                    discovered=0,
+                    included=0,
+                ),
+            ),
+            budget_chars=60_000,
+        )
+
+
+def test_scheduled_empty_week_creates_no_review(tmp_path: Path) -> None:
+    reviews = ReviewStore(KnowledgeStore(database_for(tmp_path)))
+    service = WeeklyReviewService(
+        store=reviews,
+        collector=EmptyWeeklyCollector(),
+        llm=None,
+        delivery_target=DeliveryTarget(recipient="owner"),
+    )
+    coordinator = WeeklyReviewScheduleCoordinator(
+        service=service,
+        store=ScheduleStore(database_for(tmp_path)),
+        clock=lambda: AFTER_BOUNDARY,
+        settle_timeout=1.0,
+    )
+
+    week = asyncio.run(coordinator.tick())
+
+    assert week is None
+    assert reviews.list_reviews(review_type=ReviewType.WEEKLY) == ()
+    assert coordinator.state["last_status"] == "skipped"
+    assert coordinator.state["last_attempt_week"] == "2026-W03"
 
 
 def test_latest_due_week_uses_the_sunday_2040_boundary(tmp_path: Path) -> None:
@@ -180,6 +228,7 @@ def test_tick_generates_once_and_delivers_only_the_current_week(tmp_path: Path) 
                 "period_end": week_period("2026-W03", timezone=TZ).period_end,
                 "deliver": True,
                 "reuse_completed": True,
+                "skip_when_empty": True,
             }
         ]
         assert [row.status for row in settled] == [ReviewStatus.COMPLETED]
@@ -330,53 +379,6 @@ def test_weekly_schedule_state_is_separate_from_the_daily_schedule(
         assert store.load_state("review-schedule") == daily_state
 
     asyncio.run(scenario())
-
-
-class EmptyWeeklyCollector:
-    def collect_weekly(self, period: Any, timezone: str) -> ReviewInput:
-        return ReviewInput.build(
-            review_type=ReviewType.WEEKLY,
-            day=period.day,
-            timezone=timezone,
-            period_start=period.period_start,
-            period_end=period.period_end,
-            sources=(),
-            collection_status=(
-                SourceCollectionStatus(
-                    source_type="daily_review",
-                    status=SourceCollectionState.EMPTY,
-                    discovered=7,
-                    included=0,
-                    omitted=7,
-                ),
-            ),
-            budget_chars=100_000,
-        )
-
-
-def test_scheduled_weekly_review_completes_without_wechat_login(
-    tmp_path: Path,
-) -> None:
-    reviews = ReviewStore(KnowledgeStore(database_for(tmp_path)))
-    service = WeeklyReviewService(
-        store=reviews,
-        collector=EmptyWeeklyCollector(),
-        llm=None,
-        delivery_target=DeliveryTarget(recipient="owner"),
-    )
-    coordinator = WeeklyReviewScheduleCoordinator(
-        service=service,
-        store=ScheduleStore(database_for(tmp_path)),
-        clock=lambda: AFTER_BOUNDARY,
-        settle_timeout=1.0,
-    )
-
-    review = asyncio.run(coordinator.tick())
-    assert review is not None
-    assert review.status is ReviewStatus.COMPLETED
-    delivery = reviews.get_delivery(review.review_id)
-    assert delivery is not None
-    assert delivery.status is ReviewDeliveryStatus.PENDING
 
 
 def test_schedule_delivers_a_manual_report_created_before_the_tick(

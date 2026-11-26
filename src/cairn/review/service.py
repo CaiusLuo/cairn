@@ -116,6 +116,10 @@ class ReviewGenerationError(RuntimeError):
         super().__init__(code)
 
 
+class ReviewNoContent(RuntimeError):
+    """A scheduled period has no included source, so no report is created."""
+
+
 class ReviewServiceBase:
     """Own the small asynchronous boundary between HTTP and one LLM call.
 
@@ -390,12 +394,15 @@ class DailyReviewService(ReviewServiceBase):
         regenerate: bool = False,
         cutoff: time | None = None,
         deliver: bool = False,
+        skip_when_empty: bool = False,
     ) -> StoredReview:
         """Create/reuse a review and schedule generation without awaiting it.
 
         ``cutoff`` is host-schedule policy, not user input: it keeps the review
         window contiguous across days. ``deliver`` writes a pending WeChat
         delivery row atomically with completion; it never waits for login.
+        ``skip_when_empty`` lets the host schedule leave a quiet period
+        unrecorded instead of persisting a no-source report.
         """
         if not self._started:
             await self.start()
@@ -411,6 +418,8 @@ class DailyReviewService(ReviewServiceBase):
             review_input = await asyncio.to_thread(
                 self.collector.collect_daily, day, timezone, cutoff=cutoff
             )
+        if skip_when_empty and not review_input.included_sources:
+            raise ReviewNoContent
         result = await asyncio.to_thread(
             self.store.create_or_get,
             request_id=request_id,

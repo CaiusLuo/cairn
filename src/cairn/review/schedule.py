@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 from psycopg import Error as PostgresError
 
 from cairn.review.models import ReviewStatus, StoredReview
-from cairn.review.service import TIMEOUT_SECONDS, DailyReviewService
+from cairn.review.service import TIMEOUT_SECONDS, DailyReviewService, ReviewNoContent
 from cairn.scheduling.store import ScheduleStore
 
 REVIEW_TIMEZONE = "Asia/Shanghai"
@@ -304,7 +304,18 @@ class ReviewScheduleCoordinator:
                     timezone=self.timezone,
                     cutoff=self.cutoff,
                     deliver=deliver,
+                    skip_when_empty=True,
                 )
+            except ReviewNoContent:
+                # A quiet day leaves no report and no delivery; moving the
+                # cursor past it keeps the next tick from retrying it.
+                self._save(
+                    last_attempt_day=day.isoformat(),
+                    last_status="skipped",
+                    last_error=None,
+                    next_retry_at=None,
+                )
+                return None
             except (OSError, PostgresError) as exc:
                 # A temporarily unavailable store is retried later; a policy
                 # rejection is not retried in a loop for the same cutoff day.
