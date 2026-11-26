@@ -52,8 +52,11 @@ async function send(text) {
 async function copyMessage(message, label) {
   await message.getByRole("button", { name: label }).waitFor();
   await message.getByRole("button", { name: label }).click();
-  await message.locator(".wb-copy-status").filter({ hasText: "已复制" }).waitFor({ state: "attached" });
-  return page.evaluate(() => (window.__clipboard ?? navigator.clipboard).readText());
+  const status = message.locator(".wb-copy-status").filter({ hasText: "已复制" });
+  await status.waitFor({ state: "attached" });
+  const text = await page.evaluate(() => (window.__clipboard ?? navigator.clipboard).readText());
+  await status.waitFor({ state: "detached", timeout: 5000 });
+  return text;
 }
 async function waitForPath(path, timeout = 10000) {
   const started = Date.now();
@@ -137,9 +140,11 @@ try {
     await (await conversationLink(new RegExp(cliPrompt))).click();
     const copiedReply = page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first();
     await copiedReply.waitFor();
-    assert.match(await copyMessage(copiedReply, "复制回答"), /离线共享对话已连接/);
+    assert.equal(await copiedReply.locator(".wb-message-copy").count(), 0);
     const copiedPrompt = page.locator(".wb-message.user").filter({ hasText: cliPrompt }).first();
     await copiedPrompt.waitFor();
+    assert.equal(await copiedPrompt.locator(".wb-message-bubble .wb-message-copy").count(), 0);
+    assert.equal(await copiedPrompt.locator(".wb-message-copy").count(), 1);
     assert.equal(await copyMessage(copiedPrompt, "复制提问"), cliPrompt);
 
     // The public entry is plain HTTP, where navigator.clipboard is unavailable.
@@ -147,7 +152,7 @@ try {
       window.__clipboard = navigator.clipboard;
       Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
     });
-    assert.match(await copyMessage(copiedReply, "复制回答"), /离线共享对话已连接/);
+    assert.equal(await copyMessage(copiedPrompt, "复制提问"), cliPrompt);
     await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { value: window.__clipboard, configurable: true }));
 
     await page.context().setOffline(true);

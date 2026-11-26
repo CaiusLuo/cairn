@@ -405,10 +405,12 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
           </div> : <Markdown text={message.content!}/>;
           return <article key={message.knowledge?.run_id ?? index} className={`wb-message ${message.role}`}>
             {message.role === "assistant" && <CairnMark size={22}/>}
-            <div className="wb-message-body">{content}<CopyButton text={message.content!} label={message.role === "assistant" ? "复制回答" : "复制提问"}/></div>
+            {message.role === "user"
+              ? <><div className="wb-message-bubble">{content}</div><CopyButton text={message.content!} label="复制提问"/></>
+              : <div className="wb-message-body">{content}</div>}
           </article>;
         })}
-        {active && run?.prompt && (messages.at(-1)?.role !== "user" || messages.at(-1)?.content !== run.prompt) && <article className="wb-message user"><div className="wb-message-body"><Markdown text={run.prompt}/>{!!run.attachments?.length && <p className="wb-muted">附件：{attachmentNames(run.attachments)}</p>}<CopyButton text={run.prompt} label="复制提问"/></div></article>}
+        {active && run?.prompt && (messages.at(-1)?.role !== "user" || messages.at(-1)?.content !== run.prompt) && <article className="wb-message user"><div className="wb-message-bubble"><Markdown text={run.prompt}/>{!!run.attachments?.length && <p className="wb-muted">附件：{attachmentNames(run.attachments)}</p>}</div><CopyButton text={run.prompt} label="复制提问"/></article>}
         {active && <article className="wb-message assistant" aria-live="polite"><CairnMark size={22}/><div>
           {stream.events.length > 0 && <details className="wb-process" open={!stream.preview}><summary>正在处理 · {stream.events.length} 条活动</summary><Timeline events={stream.events} compact/></details>}
           {stream.preview ? <Markdown text={stream.preview}/> : <p className="wb-muted">{run?.status === "queued" ? "等待 Server 执行…" : "Cairn 正在处理…"}</p>}
