@@ -6,9 +6,10 @@
   <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-https://github.com/user-attachments/assets/23328968-2fae-4fb0-a7c8-7710bfae6d0b
+![Sending a message and watching the reply arrive](assets/screenshots/chat-send-demo.gif)
 
-*39-second product tour. The video uses demo data only.*
+*Send a message in Web chat and the reply arrives with knowledge sources and an
+execution trace. Demo data only.*
 
 Cairn is a personal Agent that runs on a Debian server. Use Web, CLI or messaging
 clients to chat, manage personal information and work on code. The server keeps
@@ -39,7 +40,7 @@ conversation can continue in Web, CLI or WeChat. Screenshots use demo data only;
 they contain no real accounts, tokens, chat messages or personal memory.*
 
 <details>
-<summary>More screens: empty chat, daily reviews, Feishu connection</summary>
+<summary>More screens: empty chat, daily reviews, Feishu connection, theme toggle</summary>
 
 ![Chat welcome](assets/screenshots/chat-welcome.png)
 
@@ -52,6 +53,10 @@ they contain no real accounts, tokens, chat messages or personal memory.*
 ![Feishu connection](assets/screenshots/feishu-connection.png)
 
 *Feishu connection settings; credentials are write-only and never echoed back.*
+
+![Switching between light and dark themes](assets/screenshots/theme-toggle-demo.gif)
+
+*Switch between light and dark themes; the new theme reveals from the toggle.*
 
 </details>
 
@@ -186,8 +191,8 @@ by its Task ID, retaining its session and worktree.
 
 ![Development task](assets/screenshots/development-task.png)
 
-*Development tasks have an isolated worktree, an execution timeline, and a
-recoverable result.*
+*Development tasks run in isolated Git worktrees; each card keeps its status and
+a recoverable execution timeline.*
 
 | CLI command | Use |
 | --- | --- |
@@ -208,6 +213,11 @@ questions such as “What is in my knowledge base?” or “Find my notes about 
 The owner's Agent reads clips on demand and cites their IDs; archived clips are
 excluded. Clips are not automatically added to every conversation or personal
 memory, and other senders do not gain access to your private knowledge.
+
+![Memory settings](assets/screenshots/settings.png)
+
+*Settings keeps memory, schedules and WeChat in one place. Rule changes require
+confirmation.*
 
 Knowledge also accepts uploaded documents. Open **Knowledge → 文档 (Documents)**
 and upload PDF, Word, Excel, PowerPoint, HTML, Markdown or plain text (25 MiB per

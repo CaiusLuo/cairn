@@ -6,9 +6,9 @@
   <a href="README.md">English</a> · <strong>简体中文</strong>
 </p>
 
-https://github.com/user-attachments/assets/23328968-2fae-4fb0-a7c8-7710bfae6d0b
+![发送消息并等待回复](assets/screenshots/chat-send-demo.gif)
 
-*39 秒产品演示。视频仅使用演示数据。*
+*在 Web 对话中点击发送，回复会带上知识来源和执行轨迹。仅使用演示数据。*
 
 Cairn 是运行在 Debian 服务器上的个人 Agent。通过 Web、CLI 或消息客户端聊天、管理个人信息和处理代码。关闭客户端后，服务器上的对话和任务仍会继续运行。
 
@@ -27,7 +27,7 @@ Cairn 是自托管的个人 AI Agent。Web、CLI 和消息渠道共享同一份�
 *回答可以带知识库来源和执行轨迹；同一段对话可在 Web、CLI 或微信继续。截图仅使用演示数据，不包含真实账号、令牌、聊天内容或个人记忆。*
 
 <details>
-<summary>更多界面：空白对话、日报列表、飞书连接</summary>
+<summary>更多界面：空白对话、日报列表、飞书连接、亮暗切换</summary>
 
 ![空白对话](assets/screenshots/chat-welcome.png)
 
@@ -40,6 +40,10 @@ Cairn 是自托管的个人 AI Agent。Web、CLI 和消息渠道共享同一份�
 ![飞书连接](assets/screenshots/feishu-connection.png)
 
 *飞书连接配置；凭据只写入、不回显。*
+
+![在亮色与暗色主题之间切换](assets/screenshots/theme-toggle-demo.gif)
+
+*在亮色与暗色主题之间切换，新主题从切换按钮处扩散展开。*
 
 </details>
 
@@ -133,7 +137,7 @@ sudo ./scripts/start.sh
 
 ![开发任务](assets/screenshots/development-task.png)
 
-*开发任务拥有独立工作树、执行时间线和可恢复的结果。*
+*开发任务在独立 Git 工作树中运行；任务卡片保留状态和可恢复的执行时间线。*
 
 | CLI 命令 | 用途 |
 | --- | --- |
@@ -146,6 +150,10 @@ sudo ./scripts/start.sh
 | `/schedule history JOB_ID` | 查看提醒结果和投递失败 |
 
 Web 提供对话、开发任务、运行历史和恢复控制。设置页管理记忆、定时任务和微信。所有者的 Agent 会在对话中自动保存稳定的个人信息和偏好，可在设置中查看、纠正或忘记；不会保存凭据或一次性任务状态。在知识库中保存片段，然后提问，例如“我的知识库里有什么？”或“找一下关于 X 的笔记。”所有者的 Agent 会按需读取片段并引用片段 ID；已归档片段会被排除。片段不会自动加入每段对话或个人记忆，其他发送者也无法访问你的私有知识。
+
+![记忆设置](assets/screenshots/settings.png)
+
+*设置页统一管理记忆、定时任务和微信；规则变更需要确认。*
 
 知识库也接受上传文档。打开 **Knowledge → 文档**，上传 PDF、Word、Excel、PowerPoint、HTML、Markdown 或纯文本（单文件 25 MiB）。Cairn 会抽取文本、切分为可引用的 chunk，并建立混合索引：PostgreSQL 全文检索、中文友好的 trigram 匹配，以及可选的向量。所有者的 Agent 使用 `knowledge_search` 搜索文档，使用 `document_read` 阅读，并引用 `document_id` 和 `chunk_id`。上传内容只对所有者可见。删除文档会同时删除其 chunk、图谱行和原始文件。重复上传会按内容哈希识别。配置的抽取和切分上限可能导致检索覆盖的文本少于预览内容。
 
