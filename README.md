@@ -11,6 +11,8 @@
 *Send a message in Web chat and the reply arrives with knowledge sources and an
 execution trace. Demo data only.*
 
+[Watch the full demo video (MP4, 13 s)](assets/cairn-demo.mp4)
+
 Cairn is a personal Agent that runs on a Debian server. Use Web, CLI or messaging
 clients to chat, manage personal information and work on code. The server keeps
 conversations and tasks running when you close a client.
