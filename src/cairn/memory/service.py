@@ -524,23 +524,28 @@ class PersonalMemoryService:
         return True
 
     def _append_inferred_fact(self, text: str, moment: datetime) -> None:
-        """Keep inferred facts durable under one stable section."""
+        """Keep inferred facts in one stable Learned section."""
         self.store.ensure_initialized()
-        existing = self.store.read_memory_md().rstrip()
-        last_header = next(
-            (
-                line.strip()
-                for line in reversed(existing.splitlines())
-                if line.strip().startswith("## ")
-            ),
-            "",
-        )
+        lines = self.store.read_memory_md().rstrip().splitlines()
         fact = f"- [agent_inferred] {moment.date().isoformat()}: {text[:2000]}"
-        if last_header == "## Learned":
-            updated = f"{existing}\n{fact}\n"
+        start = next(
+            (i for i, line in enumerate(lines) if line.strip() == "## Learned"), None
+        )
+        if start is None:
+            lines += ["", "## Learned", fact]
         else:
-            updated = f"{existing}\n\n## Learned\n{fact}\n"
-        self.store.write_memory_md(updated)
+            end = next(
+                (
+                    i
+                    for i in range(start + 1, len(lines))
+                    if lines[i].lstrip().startswith("## ")
+                ),
+                len(lines),
+            )
+            while end > start + 1 and not lines[end - 1].strip():
+                end -= 1
+            lines.insert(end, fact)
+        self.store.write_memory_md("\n".join(lines).rstrip() + "\n")
 
     def forget_fact(self, query: str, *, now: datetime | None = None) -> bool:
         with self.store.profile_lock():

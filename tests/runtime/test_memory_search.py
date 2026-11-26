@@ -71,7 +71,8 @@ def test_correct_fact_replaces_daily_candidate_before_distill(tmp_path: Path) ->
     daily = "\n".join(body for _, body in store.recent_daily_entries(service.clock()))
     assert "prefers coffee" in daily
     assert "prefers tea" not in daily
-    assert service.distill(days=1) == 1
+    # Inferred facts are already durable, so distillation adds no duplicate.
+    assert service.distill(days=1) == 0
     memory = store.read_memory_md()
-    assert "prefers coffee" in memory
+    assert memory.count("prefers coffee") == 1
     assert "prefers tea" not in memory

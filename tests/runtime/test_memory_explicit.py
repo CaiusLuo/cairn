@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 
 from cairn.agent.tools.base import ToolExecutionContext
+from cairn.memory.models import MemorySource
 from cairn.memory.service import PersonalMemoryService
 from cairn.memory.store import PersonalMemoryStore
 from cairn.memory.tools import MemoryRememberTool
@@ -89,10 +90,13 @@ def test_inferred_facts_share_one_learned_section(tmp_path: Path) -> None:
     tool = MemoryRememberTool(service)
     for fact in ("likes tea", "likes coffee"):
         asyncio.run(tool.execute({"text": fact}))
+    service.remember_fact("likes cocoa", source=MemorySource.USER_EXPLICIT)
+    asyncio.run(tool.execute({"text": "likes water"}))
     memory = store.read_memory_md()
     assert memory.count("## Learned") == 1
-    assert memory.count("[agent_inferred]") == 2
+    assert memory.count("[agent_inferred]") == 3
     assert memory.count("likes tea") == 1
+    assert memory.index("likes water") < memory.index("## Remembered")
 
 
 def test_negative_memory_request_does_not_authorize_explicit(tmp_path: Path) -> None:
