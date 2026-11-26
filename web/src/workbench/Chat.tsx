@@ -407,7 +407,7 @@ export function Chat({ id, initialMode, config, navigate, onSubmit }: {
             {message.role === "assistant" && <CairnMark size={22}/>}
             {message.role === "user"
               ? <><div className="wb-message-bubble">{content}</div><CopyButton text={message.content!} label="复制提问"/></>
-              : <div className="wb-message-body">{content}</div>}
+              : <div className="wb-message-body">{content}<CopyButton text={message.content!} label="复制回答"/></div>}
           </article>;
         })}
         {active && run?.prompt && (messages.at(-1)?.role !== "user" || messages.at(-1)?.content !== run.prompt) && <article className="wb-message user"><div className="wb-message-bubble"><Markdown text={run.prompt}/>{!!run.attachments?.length && <p className="wb-muted">附件：{attachmentNames(run.attachments)}</p>}</div><CopyButton text={run.prompt} label="复制提问"/></article>}

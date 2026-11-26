@@ -140,7 +140,8 @@ try {
     await (await conversationLink(new RegExp(cliPrompt))).click();
     const copiedReply = page.locator(".wb-message.assistant").filter({ hasText: "离线共享对话已连接" }).first();
     await copiedReply.waitFor();
-    assert.equal(await copiedReply.locator(".wb-message-copy").count(), 0);
+    assert.equal(await copiedReply.locator(".wb-message-copy").count(), 1);
+    assert.match(await copyMessage(copiedReply, "复制回答"), /离线共享对话已连接/);
     const copiedPrompt = page.locator(".wb-message.user").filter({ hasText: cliPrompt }).first();
     await copiedPrompt.waitFor();
     assert.equal(await copiedPrompt.locator(".wb-message-bubble .wb-message-copy").count(), 0);
@@ -152,7 +153,7 @@ try {
       window.__clipboard = navigator.clipboard;
       Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
     });
-    assert.equal(await copyMessage(copiedPrompt, "复制提问"), cliPrompt);
+    assert.match(await copyMessage(copiedReply, "复制回答"), /离线共享对话已连接/);
     await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { value: window.__clipboard, configurable: true }));
 
     await page.context().setOffline(true);
